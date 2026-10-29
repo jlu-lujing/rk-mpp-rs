@@ -2,8 +2,10 @@
 
 mod dma_heap;
 mod jpeg;
+mod jpeg_regs;
 mod mpp;
 mod scale;
+mod tables;
 
 use mpp::*;
 use std::time::Instant;

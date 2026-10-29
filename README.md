@@ -26,7 +26,7 @@ the kernel interface directly means no C library, no ABI mismatch and no
 | `mpp_service` session (`MPP_CMD_INIT_CLIENT_TYPE`) | **working** |
 | `MPP_CMD_PROBE_HW_SUPPORT` / `QUERY_HW_ID` | **working** |
 | JPEG parser (SOF/DQT/DHT/DRI/SOS, zigzag tables) | **working**, 7 tests |
-| jpegd register set (`hal_jpegd_rkv.c` port) | todo |
+| jpegd register map (`hal_jpegd_rkv_reg.h`, generated) | **working**, 42 words / 116 fields |
 | submit / poll (`SET_REG_WRITE`, `POLL_HW_FINISH`) | todo |
 | NV12 or RGB888 output | todo |
 | RGB888 bilinear letterbox scaler | **working**, 0.84 ms (1080p) / 0.53 ms (640) |
@@ -80,8 +80,10 @@ and the loop reduces to a strided copy; a 1:1 mapping becomes a `memcpy`.
 1. ~~**JPEG parser**~~ done (`src/jpeg.rs`): SOF0/SOF1/SOF2, DQT (8/16-bit),
    DHT, DRI, SOS; tables kept in file (zigzag) order; entropy range computed.
    `rk-mpp-rs jpeg-info frame.jpg` prints dimensions, sampling, components.
-2. **Table buffer** (`jpegd_vpu7xx_write_qtbl`/`write_htbl` port).
-3. **Register builder**: port `mpp/hal/vpu/jpegd/hal_jpegd_rkv.c`
+2. ~~**Table buffer**~~ done (`src/tables.rs`): 384 B quant (zigzag -> raster),
+   704 B min-code/acc-addr blocks, 576 B symbols; 1280 B total, matching
+   `RKD_TABLE_SIZE`.
+3. **Register builder** (map generated into `src/jpeg_regs.rs`): port `mpp/hal/vpu/jpegd/hal_jpegd_rkv.c`
    (`jpegd_gen_regs`, `setup_output_fmt`) into a typed `JpegRegSet`.
 4. **Submit/poll**: `MPP_CMD_SET_REG_WRITE` then `MPP_CMD_POLL_HW_FINISH`,
    buffers translated with `MPP_CMD_TRANS_FD_TO_IOVA`.
