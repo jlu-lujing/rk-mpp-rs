@@ -29,6 +29,10 @@ pub const MPP_CMD_QUERY_HW_ID: u32 = 1;
 pub const MPP_CMD_QUERY_CMD_SUPPORT: u32 = 2;
 pub const MPP_CMD_INIT_CLIENT_TYPE: u32 = 0x100;
 pub const MPP_CMD_SET_REG_WRITE: u32 = 0x200;
+
+pub const MPP_FLAGS_MULTI_MSG: u32 = 0x1;
+pub const MPP_FLAGS_LAST_MSG: u32 = 0x2;
+pub const MPP_FLAGS_REG_OFFSET_ALONE: u32 = 0x10;
 pub const MPP_CMD_SET_REG_READ: u32 = 0x201;
 pub const MPP_CMD_POLL_HW_FINISH: u32 = 0x300;
 pub const MPP_CMD_RESET_SESSION: u32 = 0x400;
@@ -88,6 +92,58 @@ impl MppService {
         } else {
             Ok(r)
         }
+    }
+
+    /// Send the register file for one job and wait for the hardware.
+    pub fn submit_regs(&self, regs: &[u32]) -> io::Result<()> {
+        let mut req = MppReqV1 {
+            cmd: MPP_CMD_SET_REG_WRITE,
+            flag: MPP_FLAGS_LAST_MSG,
+            size: (regs.len() * 4) as u32,
+            offset: 0,
+            data_ptr: regs.as_ptr() as u64,
+        };
+        let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Poll until the job finishes.
+    pub fn poll_hw_finish(&self) -> io::Result<()> {
+        #[repr(C)]
+        struct SliceInfo {
+            val: u32,
+            last: u32,
+        }
+        #[repr(C)]
+        struct PollCfg {
+            poll_type: i32,
+            poll_ret: i32,
+            count_max: i32,
+            count_ret: i32,
+            slice_info: [SliceInfo; 1],
+        }
+        let mut cfg = PollCfg {
+            poll_type: 0,
+            poll_ret: 0,
+            count_max: 1,
+            count_ret: 0,
+            slice_info: [SliceInfo { val: 0, last: 1 }],
+        };
+        let mut req = MppReqV1 {
+            cmd: MPP_CMD_POLL_HW_FINISH,
+            flag: MPP_FLAGS_LAST_MSG | MPP_FLAGS_REG_OFFSET_ALONE,
+            size: std::mem::size_of::<PollCfg>() as u32,
+            offset: 0,
+            data_ptr: &mut cfg as *mut PollCfg as u64,
+        };
+        let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     /// Hardware support bitmask (bit N == VPU_CLIENT_* N is present).

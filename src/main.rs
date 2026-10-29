@@ -1,6 +1,7 @@
 //! Probe: does the pure-Rust MPP client reach the JPEG decoder?
 
 mod dma_heap;
+mod decode;
 mod jpeg;
 mod jpeg_regs;
 mod mpp;
@@ -12,6 +13,88 @@ use std::time::Instant;
 
 fn us(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1e6
+}
+
+fn decode_to_rgb(path: &str, out_path: &str) -> Result<(usize, usize, usize), String> {
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let info = jpeg::parse(&data).map_err(|e| e.to_string())?;
+    let tables = tables::Tables::build(&info).map_err(|e| format!("{e:?}"))?;
+
+    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+
+    // table buffer, stream buffer, output buffer
+    let mut table_buf = dma_heap::DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false)
+        .map_err(|e| e.to_string())?;
+    table_buf.as_mut_slice()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
+
+    let mut stream_buf = dma_heap::DmaBuf::alloc("system", data.len(), false)
+        .map_err(|e| e.to_string())?;
+    stream_buf.as_mut_slice()[..data.len()].copy_from_slice(&data);
+
+    // Worst case RGB888: align(width,16) aligned height, 3 bytes per pixel.
+    let aw = (info.width + 15) / 16 * 16;
+    let ah = (info.height + 15) / 8 * 8;
+    let mut out_buf = dma_heap::DmaBuf::alloc("system", aw * ah * 3, false)
+        .map_err(|e| e.to_string())?;
+
+    let (regs, geom) = decode::build(&decode::Job {
+        info: &info,
+        table_fd: table_buf.fd(),
+        stream_fd: stream_buf.fd(),
+        stream_len: data.len(),
+        output_fd: out_buf.fd(),
+        rgb: std::env::var("RKMPP_NV12").is_err(),
+    })
+    .map_err(|e| e.to_string())?;
+
+    svc.submit_regs(&regs.words).map_err(|e| format!("submit: {e}"))?;
+    svc.poll_hw_finish().map_err(|e| format!("poll: {e}"))?;
+
+    let n = geom.frame_size.min(out_buf.len());
+    std::fs::write(out_path, &out_buf.as_slice()[..n]).map_err(|e| e.to_string())?;
+    Ok((geom.out_width, geom.out_height, geom.stride_bytes))
+}
+
+fn bench_decode(path: &str, iters: usize) -> Result<(f64, usize, usize), String> {
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let info = jpeg::parse(&data).map_err(|e| e.to_string())?;
+    let tables = tables::Tables::build(&info).map_err(|e| format!("{e:?}"))?;
+    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+
+    let mut table_buf = dma_heap::DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false)
+        .map_err(|e| e.to_string())?;
+    table_buf.as_mut_slice()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
+    let mut stream_buf =
+        dma_heap::DmaBuf::alloc("system", data.len(), false).map_err(|e| e.to_string())?;
+    stream_buf.as_mut_slice()[..data.len()].copy_from_slice(&data);
+
+    let aw = (info.width + 15) / 16 * 16;
+    let ah = (info.height + 15) / 8 * 8;
+    let out_buf = dma_heap::DmaBuf::alloc("system", aw * ah * 3, false)
+        .map_err(|e| e.to_string())?;
+
+    let (regs, geom) = decode::build(&decode::Job {
+        info: &info,
+        table_fd: table_buf.fd(),
+        stream_fd: stream_buf.fd(),
+        stream_len: data.len(),
+        output_fd: out_buf.fd(),
+        rgb: true,
+    })
+    .map_err(|e| e.to_string())?;
+
+    // warmup
+    for _ in 0..5 {
+        svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
+        svc.poll_hw_finish().map_err(|e| e.to_string())?;
+    }
+    let t = Instant::now();
+    for _ in 0..iters {
+        svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
+        svc.poll_hw_finish().map_err(|e| e.to_string())?;
+    }
+    let ms = us(t.elapsed()) / iters as f64 / 1000.0;
+    Ok((ms, geom.out_width, geom.out_height))
 }
 
 fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
@@ -37,6 +120,31 @@ fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "bench-decode" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
+        let iters: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
+        match bench_decode(path, iters) {
+            Ok((ms, w, h)) => println!(
+                "decode {} : {:.3} ms/frame ({:.0} fps) at {}x{}",
+                path,
+                ms,
+                1000.0 / ms,
+                w,
+                h
+            ),
+            Err(e) => println!("decode failed: {e}"),
+        }
+        return;
+    }
+    if args.len() > 1 && args[1] == "decode" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
+        let out = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/rust_dec.rgb");
+        match decode_to_rgb(path, out) {
+            Ok((w, h, stride)) => println!("decoded {path} -> {out} ({w}x{h}, stride {stride} bytes)"),
+            Err(e) => println!("decode failed: {e}"),
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "jpeg-info" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
         match std::fs::read(path) {

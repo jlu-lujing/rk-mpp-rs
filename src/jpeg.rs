@@ -167,7 +167,7 @@ pub fn parse(data: &[u8]) -> Result<JpegInfo, Error> {
                         return Err(Error::BadTable("scan references unknown component"));
                     }
                 }
-                info.entropy_start = i - 2 + len; // offset of the marker + length
+                info.entropy_start = i + len; // i is at the length field, len includes it
                 if info.entropy_start > data.len() {
                     return Err(Error::Truncated);
                 }
