@@ -1,0 +1,89 @@
+# rk-mpp-rs
+
+Pure-Rust replacement for the parts of Rockchip **MPP** (and eventually **RGA**)
+that `rknn-fastinfer` needs: hardware JPEG decode and a 2D scale/letterbox, with
+no `librockchip_mpp` / `librga` dependency.
+
+## Why
+
+`rknn-fastinfer` measured, on a NanoPC-T6 (RK3588, driver `mpp_jpgdec`):
+
+| input | shippped MPP / TurboJPEG | source-built MPP | pure-Rust target |
+| --- | ---: | ---: | ---: |
+| 640x640 JPEG | 4.95 ms | 1.34 ms | <= 1.3 ms |
+| 1920x1080 JPEG | 15.9 ms | 2.60 ms | <= 2.6 ms |
+
+The shipped MPP never submits JPEG jobs at all; a source build of
+rockchip-linux/mpp fixes it (see `rknn-fastinfer/docs/NATIVE_CONV.md`). Driving
+the kernel interface directly means no C library, no ABI mismatch and no
+"version of the day" behaviour.
+
+## Status
+
+| piece | state |
+| --- | --- |
+| dma-heap allocation + mmap | **working** |
+| `mpp_service` session (`MPP_CMD_INIT_CLIENT_TYPE`) | **working** |
+| `MPP_CMD_PROBE_HW_SUPPORT` / `QUERY_HW_ID` | **working** |
+| JPEG frame header parse (SOF/DQT/DHT/SOS) | todo |
+| jpegd register set (`hal_jpegd_rkv.c` port) | todo |
+| submit / poll (`SET_REG_WRITE`, `POLL_HW_FINISH`) | todo |
+| NV12 or RGB888 output | todo |
+| NEON scaler (replaces RGA for our use) | todo |
+| RGA3 driver port | optional, see below |
+
+Verified on the board:
+
+```
+$ ./target/release/rk-mpp-rs
+rk-mpp-rs probe
+  session: client_type=13
+  hw support mask: 0x1009321a
+  jpeg dec present: true
+  rkvdec present:  true
+  hw id: 3676241925
+  dma-heap system: 1048576 bytes, fd=4
+  dma-heap system-uncached: 1048576 bytes, fd=4
+  dma-heap cma: 1048576 bytes, fd=4
+```
+
+## Layout
+
+```
+src/mpp.rs       mpp_service ioctl client (single MPP_IOC_CFG_V1 command channel)
+src/dma_heap.rs  /dev/dma_heap alloc + mmap
+src/main.rs      probe binary
+```
+
+The protocol is one ioctl (`_IOW('v', 1, u32)`) taking a `MppReqV1`; definitions
+are ported from `rockchip-linux/mpp`: `osal/inc/mpp_service.h`,
+`osal/inc/mpp_dev_defs.h`, `osal/driver/inc/mpp_service_impl.h`.
+
+## Plan
+
+1. **JPEG parser**: SOF0/SOF2, DQT, DHT, DRI, SOS; produce the quant/huffman
+   table layout the hardware expects (reference: `mpp/codec/dec/jpeg/jpegd_parser.c`).
+2. **Register builder**: port `mpp/hal/vpu/jpegd/hal_jpegd_rkv.c`
+   (`jpegd_gen_regs`, `setup_output_fmt`) into a typed `JpegRegSet`.
+3. **Submit/poll**: `MPP_CMD_SET_REG_WRITE` then `MPP_CMD_POLL_HW_FINISH`,
+   buffers translated with `MPP_CMD_TRANS_FD_TO_IOVA`.
+4. **Output**: ask for `YUV420SP` first (simplest), then `RGB888` like the C path
+   did (the PP does full-range YUV->RGB for JPEG frames).
+5. **Scaler**: NEON bilinear RGB888 -> letterboxed 640x640. Measured RGA costs
+   1.4 ms (640) / 2.3 ms (1080p); a NEON pass over 640x640 should be < 0.7 ms.
+6. **RGA (optional)**: the kernel ABI is public —
+   `drivers/video/rockchip/rga3/include/rga.h` (`RGA_IOC_REQUEST_CREATE/SUBMIT`,
+   `struct rga_user_request`) plus `rga3_reg_info.c` for the registers. Only
+   worth porting if we need operations a NEON kernel cannot do well
+   (rotation, format conversion, multi-plane composition).
+
+## Build
+
+```bash
+cargo build --release            # host, for type checking
+# on the board (aarch64):
+cargo build --release --offline
+./target/release/rk-mpp-rs
+```
+
+No third-party crates beyond `libc`.
