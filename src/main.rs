@@ -2,6 +2,7 @@
 
 mod dma_heap;
 mod mpp;
+mod scale;
 
 use mpp::*;
 use std::time::Instant;
@@ -10,7 +11,37 @@ fn us(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1e6
 }
 
+fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
+    let src = std::fs::read(path).expect("read source");
+    assert_eq!(src.len(), sw * sh * 3, "source size mismatch");
+    let mut dst = vec![0u8; 640 * 640 * 3];
+    let mut s = scale::Scaler::new(640, 640);
+
+    s.letterbox(&src, sw, sh, &mut dst);
+    let t = Instant::now();
+    for _ in 0..iters {
+        s.letterbox(&src, sw, sh, &mut dst);
+    }
+    let per = us(t.elapsed()) / iters as f64;
+    println!(
+        "scale {}x{} -> 640x640 letterbox: {:.3} ms/iter ({:.0} fps)",
+        sw,
+        sh,
+        per / 1000.0,
+        1e6 / per
+    );
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "bench-scale" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("/tmp/src1080.rgb");
+        let sw: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1920);
+        let sh: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1080);
+        let iters: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
+        bench_scale(path, sw, sh, iters);
+        return;
+    }
     println!("rk-mpp-rs probe");
 
     let t = Instant::now();
