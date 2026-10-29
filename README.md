@@ -25,7 +25,7 @@ the kernel interface directly means no C library, no ABI mismatch and no
 | dma-heap allocation + mmap | **working** |
 | `mpp_service` session (`MPP_CMD_INIT_CLIENT_TYPE`) | **working** |
 | `MPP_CMD_PROBE_HW_SUPPORT` / `QUERY_HW_ID` | **working** |
-| JPEG frame header parse (SOF/DQT/DHT/SOS) | todo |
+| JPEG parser (SOF/DQT/DHT/DRI/SOS, zigzag tables) | **working**, 7 tests |
 | jpegd register set (`hal_jpegd_rkv.c` port) | todo |
 | submit / poll (`SET_REG_WRITE`, `POLL_HW_FINISH`) | todo |
 | NV12 or RGB888 output | todo |
@@ -77,17 +77,19 @@ and the loop reduces to a strided copy; a 1:1 mapping becomes a `memcpy`.
 
 ## Plan
 
-1. **JPEG parser**: SOF0/SOF2, DQT, DHT, DRI, SOS; produce the quant/huffman
-   table layout the hardware expects (reference: `mpp/codec/dec/jpeg/jpegd_parser.c`).
-2. **Register builder**: port `mpp/hal/vpu/jpegd/hal_jpegd_rkv.c`
+1. ~~**JPEG parser**~~ done (`src/jpeg.rs`): SOF0/SOF1/SOF2, DQT (8/16-bit),
+   DHT, DRI, SOS; tables kept in file (zigzag) order; entropy range computed.
+   `rk-mpp-rs jpeg-info frame.jpg` prints dimensions, sampling, components.
+2. **Table buffer** (`jpegd_vpu7xx_write_qtbl`/`write_htbl` port).
+3. **Register builder**: port `mpp/hal/vpu/jpegd/hal_jpegd_rkv.c`
    (`jpegd_gen_regs`, `setup_output_fmt`) into a typed `JpegRegSet`.
-3. **Submit/poll**: `MPP_CMD_SET_REG_WRITE` then `MPP_CMD_POLL_HW_FINISH`,
+4. **Submit/poll**: `MPP_CMD_SET_REG_WRITE` then `MPP_CMD_POLL_HW_FINISH`,
    buffers translated with `MPP_CMD_TRANS_FD_TO_IOVA`.
-4. **Output**: ask for `YUV420SP` first (simplest), then `RGB888` like the C path
+5. **Output**: ask for `YUV420SP` first (simplest), then `RGB888` like the C path
    did (the PP does full-range YUV->RGB for JPEG frames).
-5. ~~Scaler~~ done; a NEON kernel for the non-integer ratios is still open
+6. ~~Scaler~~ done; a NEON kernel for the non-integer ratios is still open
    (e.g. 1280x960 -> 640x640 has fractional weights).
-6. **RGA (optional)**: the kernel ABI is public —
+7. **RGA (optional)**: the kernel ABI is public —
    `drivers/video/rockchip/rga3/include/rga.h` (`RGA_IOC_REQUEST_CREATE/SUBMIT`,
    `struct rga_user_request`) plus `rga3_reg_info.c` for the registers. Only
    worth porting if we need operations a NEON kernel cannot do well

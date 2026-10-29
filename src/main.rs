@@ -1,6 +1,7 @@
 //! Probe: does the pure-Rust MPP client reach the JPEG decoder?
 
 mod dma_heap;
+mod jpeg;
 mod mpp;
 mod scale;
 
@@ -34,6 +35,33 @@ fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "jpeg-info" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
+        match std::fs::read(path) {
+            Ok(d) => match jpeg::parse(&d) {
+                Ok(i) => {
+                    println!(
+                        "{}: {}x{} comps={} sampling={:?} progressive={} restart={} entropy={}..{}",
+                        path,
+                        i.width,
+                        i.height,
+                        i.components.len(),
+                        i.luma_sampling(),
+                        i.progressive,
+                        i.restart_interval,
+                        i.entropy_start,
+                        i.entropy_end
+                    );
+                    for (k, c) in i.components.iter().enumerate() {
+                        println!("  comp {k}: id={} h={} v={} tq={} td={} ta={}", c.id, c.h, c.v, c.tq, c.td, c.ta);
+                    }
+                }
+                Err(e) => println!("{path}: {e}"),
+            },
+            Err(e) => println!("{path}: {e}"),
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "bench-scale" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("/tmp/src1080.rgb");
         let sw: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1920);
