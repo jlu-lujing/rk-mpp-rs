@@ -5,6 +5,14 @@ edition = "2021"
 description = "Pure-Rust Rockchip MPP/RGA replacement for JPEG decode and 2D scaling"
 license = "MIT OR Apache-2.0"
 
+[lib]
+crate-type = ["staticlib", "rlib"]
+name = "rk_mpp_rs"
+
+[[bin]]
+name = "rk-mpp-rs"
+path = "src/main.rs"
+
 [dependencies]
 libc = "0.2"
 

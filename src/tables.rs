@@ -32,6 +32,7 @@ pub enum TableError {
     MissingDc(u8),
     MissingAc(u8),
     ComponentCount(usize),
+    Progressive,
 }
 
 pub struct Tables {
@@ -86,8 +87,13 @@ fn build_mincodes(t: &HuffTable) -> ([u16; 16], [u16; 16]) {
 impl Tables {
     /// Fill the hardware table buffer for `info`.
     pub fn build(info: &JpegInfo) -> Result<Tables, TableError> {
-        if info.components.len() != NB_COMPONENTS {
-            return Err(TableError::ComponentCount(info.components.len()));
+        if info.progressive {
+            return Err(TableError::Progressive);
+        }
+        // 1 component (grayscale), 3 (YCbCr); 2 can occur in odd encoders.
+        let nc = info.components.len();
+        if nc == 0 || nc > NB_COMPONENTS {
+            return Err(TableError::ComponentCount(nc));
         }
         let mut t = Tables {
             buf: Box::new([0u8; RKD_TABLE_SIZE]),

@@ -1,12 +1,6 @@
 //! Probe: does the pure-Rust MPP client reach the JPEG decoder?
 
-mod dma_heap;
-mod decode;
-mod jpeg;
-mod jpeg_regs;
-mod mpp;
-mod scale;
-mod tables;
+use rk_mpp_rs::{decode, dma_heap, jpeg, mpp, scale, tables};
 
 use mpp::*;
 use std::time::Instant;
@@ -55,6 +49,57 @@ fn decode_to_rgb(path: &str, out_path: &str) -> Result<(usize, usize, usize), St
     Ok((geom.out_width, geom.out_height, geom.stride_bytes))
 }
 
+fn bench_dma() {
+    let n = 640 * 640 * 3;
+    let mut buf = dma_heap::DmaBuf::alloc("system", n, false).unwrap();
+    for (i, b) in buf.as_mut_slice().iter_mut().enumerate() {
+        *b = (i & 0xff) as u8;
+    }
+    let mut dst = vec![0u8; n];
+    let iters = 300;
+    let t = Instant::now();
+    for _ in 0..iters {
+        dst.copy_from_slice(&buf.as_slice()[..n]);
+    }
+    let plain = us(t.elapsed()) / iters as f64 / 1000.0;
+    let t = Instant::now();
+    for _ in 0..iters {
+        let _ = buf.sync_read_begin();
+        dst.copy_from_slice(&buf.as_slice()[..n]);
+        let _ = buf.sync_read_end();
+    }
+    let synced = us(t.elapsed()) / iters as f64 / 1000.0;
+    let t = Instant::now();
+    for _ in 0..iters {
+        let _ = buf.sync_read_begin();
+        let _ = buf.sync_read_end();
+    }
+    let sync_only = us(t.elapsed()) / iters as f64 / 1000.0;
+    let mut sc = scale::Scaler::new(640, 640);
+    let mut dst2 = vec![0u8; n];
+    sc.letterbox(buf.as_slice(), 640, 640, &mut dst2);
+    let t = Instant::now();
+    for _ in 0..iters {
+        sc.letterbox(buf.as_slice(), 640, 640, &mut dst2);
+    }
+    let scale_dma = us(t.elapsed()) / iters as f64 / 1000.0;
+    let mut src_vec = vec![0u8; n];
+    src_vec.copy_from_slice(&buf.as_slice()[..n]);
+    let t = Instant::now();
+    for _ in 0..iters {
+        sc.letterbox(&src_vec, 640, 640, &mut dst2);
+    }
+    let scale_vec = us(t.elapsed()) / iters as f64 / 1000.0;
+    println!("  scaler: from dma {:.3} ms, from Vec {:.3} ms", scale_dma, scale_vec);
+    println!(
+        "dma-heap system, {:.2} MB: copy {:.3} ms, copy+sync {:.3} ms, sync only {:.3} ms",
+        n as f64 / 1e6,
+        plain,
+        synced,
+        sync_only
+    );
+}
+
 fn pipeline(path: &str, iters: usize, out_path: &str) -> Result<(f64, f64, f64), String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     let info = jpeg::parse(&data).map_err(|e| e.to_string())?;
@@ -101,13 +146,16 @@ fn pipeline(path: &str, iters: usize, out_path: &str) -> Result<(f64, f64, f64),
 
     let mut t_dec = 0.0;
     let mut t_sca = 0.0;
+    let mut t_sync = 0.0;
     for _ in 0..iters {
         let a = Instant::now();
         svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
         svc.poll_hw_finish().map_err(|e| e.to_string())?;
         let b = Instant::now();
         // The decoder wrote through the IOMMU; invalidate before CPU reads.
+        let sb = Instant::now();
         let _ = out_buf.sync_read_begin();
+        let se = Instant::now();
         scaler.letterbox_strided(
             out_buf.as_slice(),
             geom.stride_bytes,
@@ -119,11 +167,15 @@ fn pipeline(path: &str, iters: usize, out_path: &str) -> Result<(f64, f64, f64),
         let c = Instant::now();
         t_dec += us(b - a) / 1000.0;
         t_sca += us(c - b) / 1000.0;
+        t_sync += us(se - sb) / 1000.0;
     }
     if !out_path.is_empty() {
         std::fs::write(out_path, &model_in).map_err(|e| e.to_string())?;
     }
     let n = iters as f64;
+    if std::env::var("RKMPP_DEBUG").is_ok() {
+        eprintln!("  of which sync_begin {:.3} ms", t_sync / n);
+    }
     Ok((t_dec / n, t_sca / n, (t_dec + t_sca) / n))
 }
 
@@ -192,6 +244,10 @@ fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "bench-dma" {
+        bench_dma();
+        return;
+    }
     if args.len() > 1 && args[1] == "pipeline" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
         let iters: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);

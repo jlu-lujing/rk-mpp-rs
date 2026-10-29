@@ -55,8 +55,11 @@ impl JpegMode {
                 None
             };
         }
-        if info.components.len() != 3 {
+        if info.components.len() > 3 {
             return None;
+        }
+        if info.components.len() == 2 {
+            return None; // not a JPEG colour model we handle
         }
         let (h0, v0) = (info.components[0].h, info.components[0].v);
         let rest_11 = info.components[1..].iter().all(|c| c.h == 1 && c.v == 1);
@@ -113,6 +116,9 @@ pub struct Geometry {
 /// Build the 42-word command register file and report the output geometry.
 pub fn build(job: &Job) -> Result<(Regs, Geometry), &'static str> {
     let info = job.info;
+    if info.progressive {
+        return Err("progressive JPEG is not supported by the hardware decoder");
+    }
     let mode = JpegMode::from_info(info).ok_or("unsupported component sampling")?;
     let nb_components = info.components.len() as u32;
 
