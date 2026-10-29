@@ -44,6 +44,20 @@ the kernel interface directly means no C library, no ABI mismatch and no
 The C MPP wrapper takes 1.34 ms (640) and 2.60 ms (1080p) for the same work, so
 the Rust path is ~30% faster and drops the dependency.
 
+Full pipeline (decode + bilinear letterbox into the 640x640 model input), with
+`DMA_BUF_IOCTL_SYNC` around the CPU read of the decoder output:
+
+| image | decode | scale | total |
+| --- | ---: | ---: | ---: |
+| bus.jpg 640 | 1.00 ms | 1.22 ms | **2.22 ms** |
+| 1080p | 2.25 ms | 0.80 ms | **3.05 ms** |
+
+The produced model input is **bit-identical** to the C pipeline's output
+(PSNR infinite against `yolo_cli --hwdec --dump`), so the speed difference is
+pure overhead, not a different result. The 640 case is slower than the C path
+(1.4-1.8 ms) because the identity copy reads the whole uncached DMA buffer;
+1080p is faster than C (3.6-4.3 ms) because decimation reads far less.
+
 Verified on the board:
 
 ```

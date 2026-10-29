@@ -98,7 +98,20 @@ impl Scaler {
     /// Resize `src` (sw x sh, RGB888) into `dst` (dw x dh, RGB888), letterboxed
     /// and padded with 114.
     pub fn letterbox(&mut self, src: &[u8], sw: usize, sh: usize, dst: &mut [u8]) -> Geometry {
-        assert_eq!(src.len(), sw * sh * 3);
+        self.letterbox_strided(src, sw * 3, sw, sh, dst)
+    }
+
+    /// Same, for a source whose rows are `src_stride` bytes apart (the decoder
+    /// writes RGB with a stride aligned to 16 pixels).
+    pub fn letterbox_strided(
+        &mut self,
+        src: &[u8],
+        src_stride: usize,
+        sw: usize,
+        sh: usize,
+        dst: &mut [u8],
+    ) -> Geometry {
+        assert!(src.len() >= src_stride * (sh - 1) + sw * 3);
         assert_eq!(dst.len(), self.dw * self.dh * 3);
         let g = self.geometry(sw, sh);
         self.build_map(sw, &g);
@@ -120,8 +133,8 @@ impl Scaler {
             let y1 = if y0 + 1 < sh { y0 + 1 } else { y0 };
             let wy = ((fy - y0 as f32) * 256.0) as u32;
             let iwy = 256 - wy;
-            let r0 = &src[(y0 * sw) * 3..(y0 * sw + sw) * 3];
-            let r1 = &src[(y1 * sw) * 3..(y1 * sw + sw) * 3];
+            let r0 = &src[y0 * src_stride..y0 * src_stride + sw * 3];
+            let r1 = &src[y1 * src_stride..y1 * src_stride + sw * 3];
             let out_row = &mut dst[((g.pad_top as usize + y) * self.dw + g.pad_left as usize) * 3..];
             let out = &mut out_row[..g.new_w * 3];
 

@@ -55,6 +55,78 @@ fn decode_to_rgb(path: &str, out_path: &str) -> Result<(usize, usize, usize), St
     Ok((geom.out_width, geom.out_height, geom.stride_bytes))
 }
 
+fn pipeline(path: &str, iters: usize, out_path: &str) -> Result<(f64, f64, f64), String> {
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let info = jpeg::parse(&data).map_err(|e| e.to_string())?;
+    let tables = tables::Tables::build(&info).map_err(|e| format!("{e:?}"))?;
+    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+
+    let mut table_buf = dma_heap::DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false)
+        .map_err(|e| e.to_string())?;
+    table_buf.as_mut_slice()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
+    let mut stream_buf =
+        dma_heap::DmaBuf::alloc("system", data.len(), false).map_err(|e| e.to_string())?;
+    stream_buf.as_mut_slice()[..data.len()].copy_from_slice(&data);
+
+    let aw = (info.width + 15) / 16 * 16;
+    let ah = (info.height + 15) / 8 * 8;
+    let out_buf = dma_heap::DmaBuf::alloc("system", aw * ah * 3, false)
+        .map_err(|e| e.to_string())?;
+
+    let (regs, geom) = decode::build(&decode::Job {
+        info: &info,
+        table_fd: table_buf.fd(),
+        stream_fd: stream_buf.fd(),
+        stream_len: data.len(),
+        output_fd: out_buf.fd(),
+        rgb: true,
+    })
+    .map_err(|e| e.to_string())?;
+
+    let mut scaler = scale::Scaler::new(640, 640);
+    let mut model_in = vec![0u8; 640 * 640 * 3];
+
+    // warmup
+    for _ in 0..5 {
+        svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
+        svc.poll_hw_finish().map_err(|e| e.to_string())?;
+        scaler.letterbox_strided(
+            out_buf.as_slice(),
+            geom.stride_bytes,
+            geom.out_width,
+            geom.out_height,
+            &mut model_in,
+        );
+    }
+
+    let mut t_dec = 0.0;
+    let mut t_sca = 0.0;
+    for _ in 0..iters {
+        let a = Instant::now();
+        svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
+        svc.poll_hw_finish().map_err(|e| e.to_string())?;
+        let b = Instant::now();
+        // The decoder wrote through the IOMMU; invalidate before CPU reads.
+        let _ = out_buf.sync_read_begin();
+        scaler.letterbox_strided(
+            out_buf.as_slice(),
+            geom.stride_bytes,
+            geom.out_width,
+            geom.out_height,
+            &mut model_in,
+        );
+        let _ = out_buf.sync_read_end();
+        let c = Instant::now();
+        t_dec += us(b - a) / 1000.0;
+        t_sca += us(c - b) / 1000.0;
+    }
+    if !out_path.is_empty() {
+        std::fs::write(out_path, &model_in).map_err(|e| e.to_string())?;
+    }
+    let n = iters as f64;
+    Ok((t_dec / n, t_sca / n, (t_dec + t_sca) / n))
+}
+
 fn bench_decode(path: &str, iters: usize) -> Result<(f64, usize, usize), String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     let info = jpeg::parse(&data).map_err(|e| e.to_string())?;
@@ -120,6 +192,23 @@ fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "pipeline" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
+        let iters: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);
+        let out = args.get(4).map(|s| s.as_str()).unwrap_or("");
+        match pipeline(path, iters, out) {
+            Ok((dec, sca, tot)) => println!(
+                "pipeline {} : decode {:.3} ms + scale {:.3} ms = {:.3} ms ({:.0} fps)",
+                path,
+                dec,
+                sca,
+                tot,
+                1000.0 / tot
+            ),
+            Err(e) => println!("pipeline failed: {e}"),
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "bench-decode" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
         let iters: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(200);

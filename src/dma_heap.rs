@@ -26,6 +26,12 @@ const DMA_HEAP_IOCTL_ALLOC: c_ulong = iowr(
     std::mem::size_of::<DmaHeapAllocationData>() as u32,
 );
 
+/// DMA_BUF_IOCTL_SYNC, `_IOW('b', 0, struct dma_buf_sync)`
+const DMA_BUF_IOCTL_SYNC: c_ulong = (1u32 << 30 | (16u32 << 16) | (('b' as u32) << 8)) as c_ulong;
+const DMA_BUF_SYNC_READ: u64 = 1 << 0;
+const DMA_BUF_SYNC_START: u64 = 0 << 2;
+const DMA_BUF_SYNC_END: u64 = 1 << 2;
+
 pub struct DmaBuf {
     fd: c_int,
     len: usize,
@@ -89,6 +95,30 @@ impl DmaBuf {
 
     pub fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    /// Tell the kernel the CPU is about to read this buffer (cache invalidate).
+    pub fn sync_read_begin(&self) -> io::Result<()> {
+        self.sync(DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)
+    }
+
+    /// Finish the CPU read section.
+    pub fn sync_read_end(&self) -> io::Result<()> {
+        self.sync(DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)
+    }
+
+    fn sync(&self, flags: u64) -> io::Result<()> {
+        #[repr(C)]
+        struct Sync {
+            flags: u64,
+        }
+        let mut s = Sync { flags };
+        let r = unsafe { libc::ioctl(self.fd, DMA_BUF_IOCTL_SYNC, &mut s as *mut Sync) };
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
 }
 
