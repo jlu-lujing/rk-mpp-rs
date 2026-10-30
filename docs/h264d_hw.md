@@ -136,3 +136,36 @@ reg100.. high-bit POC (h2645_highpoc) for field pictures / error refs
 - field pictures / MBAFF (`frame_mbs_only == 0`)
 - multi-core CCU distribution
 - 10-bit and 4:2:2 output
+
+## Debugging the err 0x23 (in progress)
+
+The reference decoder can be instrumented to dump what it actually programs:
+
+```
+# on the board, in /tmp/mpp-develop
+# hal_h264d_vdpu34x.c: add an MPP_REG_DUMP block at the top of
+# vdpu34x_h264d_start() printing the named comm_gen / comm_paras /
+# comm_addr fields, and after prepare_spspps/prepare_framerps dump the
+# 48-byte spspps unit and the 128-byte rps block.
+make -j8
+sudo env MPP_REG_DUMP=1 LD_LIBRARY_PATH=build/mpp:build/osal:build/utils \
+     build/test/mpi_dec_test -i stream.264 -t 7 -n 3
+```
+
+Our side dumps the same things with `RFI_REG_DUMP=1` (register words) and
+`rk-mpp-rs spspps <file>` (SPS/PPS block).
+
+Findings so far:
+
+* bit order: MPP's `mpp_put_bits` is **LSB-first inside little-endian u64
+  words**. An MSB-first writer produces bit-reversed tables; the fixed writer
+  reproduces MPP's SPS/PPS byte for byte except
+  `second_chroma_qp_index_offset` (MPP 15, ours 0 for the 720p test stream).
+* register semantics confirmed equal: y_hor 80, y_vir 57600, slice_num
+  0x3fff, colmv_compress 1, scanlist_addr_valid 1, table bases are fds
+  (MPP shares one buffer for cabac/spspps/rps/sclst, we use one each — the
+  offsets are 0 either way).
+* difference still to check: `reg66` (current bottom-field POC) — MPP writes
+  the same value as the top-field POC, we write 0.
+* the RPS block for an IDR is all zeros on both sides, so the remaining fault
+  is likely in the slice payload framing or the ref list content of P frames.
