@@ -196,3 +196,24 @@ build (the H.264 path works). The RPS table layout in `codec::hevc::hw` is
 therefore ported from the source and covered by unit tests, but not yet
 verified byte-for-byte against MPP. Re-check once the HEVC HAL lands: the
 table is fixed-size (3200 bytes) and starts with 32 long-term entries.
+
+## HEVC bisection (which encoder features break the hardware)
+
+320x240 single-IDR streams, PSNR against the source picture we generated:
+
+| configuration | Y PSNR |
+|---|---:|
+| ctu16, all tools off | 48.7 dB |
+| + SAO / + deblock / + WPP / + strong-intra-smoothing (one at a time) | 48.2-48.7 |
+| SAO+WPP, SAO+DB, WPP+DB, SAO+WPP+DB, +SIS | 49.1-49.4 |
+| CTU 32 / CTU 64 | 50.5 |
+| 640x480, all tools off | 54.2 |
+| **x265 defaults** | **7.6** |
+| defaults with ctu16 / deblock=0 / sao=0 | 10.2 / 7.6 / 5.9 |
+
+So resolution, CTU size, SAO, WPP, deblocking and strong intra smoothing all
+decode correctly on their own and in pairs. Comparing the 112-byte packets of a
+good and a bad stream, only bit 192 (lf_across_slices), bit 204 (lists_mod) and
+bit 205 (merge level) differ; forcing lists_modification to 0 in the packet does
+not fix the bad stream, so the PPS summary is not the whole story — the next
+suspect is a slice-header syntax element that only the default encoder emits.
