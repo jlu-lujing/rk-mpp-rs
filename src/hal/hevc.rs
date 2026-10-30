@@ -13,6 +13,9 @@ use crate::hal::vdpu34x_regs as reg;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Client, MppService, RegOffsetInfo};
 
+/// HEVC CABAC initial context table (`cabac_table[27456]` in MPP).
+const CABAC_TABLE: &[u8; 27456] = include_bytes!("../../assets/hevc_cabac_table.bin");
+
 pub const PPS_PACKET_COPIES: usize = 64;
 pub const PPS_BUF_SIZE: usize = PPS_PACKET_COPIES * hw::PPS_PACKET_SIZE;
 
@@ -220,7 +223,8 @@ impl HevcHw {
         let svc = MppService::open(Client::RkvDec as u32)?;
         let pkt = DmaBuf::alloc("system", PPS_BUF_SIZE + 128, false)?;
         let rps = DmaBuf::alloc("system", hw::RPS_TABLE_SIZE + 128, false)?;
-        let cabac = DmaBuf::alloc("system", 4096, false)?;
+        let mut cabac = DmaBuf::alloc("system", CABAC_TABLE.len(), false)?;
+        cabac.as_mut_slice().copy_from_slice(CABAC_TABLE);
         let rcb = DmaBuf::alloc("system", 1 << 20, false)?;
         let mut hw = HevcHw {
             svc,
@@ -277,6 +281,7 @@ impl HevcHw {
     pub fn fill_regs(
         &mut self,
         sps: &Sps,
+        pps: &Pps,
         sh: &SliceHeader,
         poc: i32,
         cur: &Frame,
@@ -291,7 +296,7 @@ impl HevcHw {
         let r = &mut self.regs;
         r.set(reg::w16::REG016_STR_LEN, padded as u32)
             .set(reg::w17::SLICE_NUM, slice_count)
-            .set(reg::w12::WR_DDR_ALIGN_EN, (!sps.pcm_enabled) as u32)
+            .set(reg::w12::WR_DDR_ALIGN_EN, (!pps.tiles_enabled) as u32)
             .set(reg::w12::COLMV_COMPRESS_EN, 1)
             .set(reg::w18::Y_HOR_VIRSTRIDE, (cur.hor_stride / 16) as u32)
             .set(reg::w19::UV_HOR_VIRSTRIDE, (cur.hor_stride / 16) as u32)
@@ -375,7 +380,7 @@ impl HevcHw {
             self.rcb = DmaBuf::alloc("system", align(total, 4096), false)?;
         }
         self.rcb_info = rcb;
-        self.fill_regs(sps, sh, poc, cur, refs, ref_pocs, stream_len, slice_count);
+        self.fill_regs(sps, pps, sh, poc, cur, refs, ref_pocs, stream_len, slice_count);
 
         let r = &mut self.regs;
         r.set(reg::w128::REG128_RLC_BASE, stream.fd() as u32)

@@ -142,7 +142,9 @@ impl Decoder {
             let end = (n.offset + n.len).min(aub.len());
             payload.extend_from_slice(&aub[start..end]);
         }
-        payload.extend_from_slice(&[0; 64]);
+        let raw_len = payload.len();
+        let pad16 = (16 - raw_len % 16) % 16;
+        payload.extend(std::iter::repeat(0u8).take(pad16 + 64));
         let mut stream =
             DmaBuf::alloc("system", payload.len(), false).map_err(|e| e.to_string())?;
         stream.as_mut_slice()[..payload.len()].copy_from_slice(&payload);
@@ -159,7 +161,7 @@ impl Decoder {
                 &refs,
                 &ref_pocs,
                 &stream,
-                payload.len() - 64,
+                raw_len,
                 slice_count,
             )
             .map_err(|e| e.to_string())?;
