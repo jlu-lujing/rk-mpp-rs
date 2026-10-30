@@ -309,7 +309,10 @@ impl HevcHw {
                 reg::w20::REG020_Y_VIRSTRIDE_Y_VIRSTRIDE,
                 ((cur.hor_stride * cur.ver_stride) / 16) as u32,
             );
-        r.w[64] = 0; // rps_mode / frame_orslice / stream_mode
+        // HW-RPS path: the hardware derives the slice RPS itself, so rps_mode
+        // stays 0 and wait_reset_en is asserted like the C HAL does.
+        r.w[64] = 0;
+        r.set(reg::w12::WAIT_RESET_EN, 1);
         r.w[65] = poc as u32;
 
         r.set(reg::w130::REG130_DECOUT_BASE, cur.nv12.fd() as u32)

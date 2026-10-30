@@ -138,9 +138,13 @@ pub fn build_pps_packet(sps: &Sps, pps: &Pps) -> Vec<u8> {
     w.put(pps.constrained_intra_pred as u32, 1);
     w.put(pps.transform_skip_enabled as u32, 1);
     w.put(pps.cu_qp_delta_enabled as u32, 1);
-    // log2_min_cb + diff - diff_cu_qp_delta_depth; the CU delta depth is not
-    // retained yet, so it is written as zero depth.
-    w.put(log2_min_cb + sps.log2_diff_max_min_cb, 3);
+    // log2_min_cb + log2_diff_max_min_cb - diff_cu_qp_delta_depth, exactly as
+    // hal_h265d_v345_output_pps_packet computes it.
+    w.put(
+        (log2_min_cb + sps.log2_diff_max_min_cb)
+            .saturating_sub(pps.diff_cu_qp_delta_depth),
+        3,
+    );
     w.put(pps.cb_qp_offset as u32, 5);
     w.put(pps.cr_qp_offset as u32, 5);
     w.put(pps.slice_chroma_qp_offsets_present as u32, 1);

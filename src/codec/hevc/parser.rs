@@ -417,6 +417,7 @@ pub struct Pps {
     pub constrained_intra_pred: bool,
     pub transform_skip_enabled: bool,
     pub cu_qp_delta_enabled: bool,
+    pub diff_cu_qp_delta_depth: u32,
     pub cb_qp_offset: i32,
     pub cr_qp_offset: i32,
     pub slice_chroma_qp_offsets_present: bool,
@@ -456,7 +457,7 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, HevcError> {
     pps.transform_skip_enabled = r.read_bit()? == 1;
     pps.cu_qp_delta_enabled = r.read_bit()? == 1;
     if pps.cu_qp_delta_enabled {
-        r.read_ue()?; // diff_cu_qp_delta_depth
+        pps.diff_cu_qp_delta_depth = r.read_ue()?;
     }
     pps.cb_qp_offset = r.read_se()?;
     pps.cr_qp_offset = r.read_se()?;
