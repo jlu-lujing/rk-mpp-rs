@@ -353,6 +353,9 @@ fn main() {
                         println!("    frame {i} submit+poll: {:.2} ms", t0.elapsed().as_secs_f64() * 1000.0);
                     }
                     out.write_all(&pic.yuv).expect("write frame");
+                    if std::env::var("RFI_DUMP_UV").is_ok() {
+                        std::fs::write("/tmp/raw_uv.bin", &pic.raw_uv).ok();
+                    }
                     if i < 3 {
                         let y = &pic.yuv[..pic.width * pic.height];
                         let sum: u64 = y.iter().map(|v| *v as u64).sum();

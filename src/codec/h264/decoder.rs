@@ -14,6 +14,8 @@ pub struct Picture {
     pub height: usize,
     /// Planar YUV 4:2:0, tightly packed.
     pub yuv: Vec<u8>,
+    /// Raw interleaved chroma as the hardware wrote it (stride = width).
+    pub raw_uv: Vec<u8>,
 }
 
 pub struct Decoder {
@@ -127,23 +129,13 @@ impl Decoder {
             .map(|e| self.frames.get(e.buf).and_then(|f| f.as_ref()))
             .collect();
 
-        // 5. submit. Only slice NALs go to the decoder: parameter sets and SEI
-        // travel through the SPS/PPS table. The first slice starts at its NAL
-        // header; further slices are separated by a 3-byte start code so the
-        // hardware parser can find them.
+        // 5. submit. MPP feeds the slice NALs *with* their start codes
+        // (verified against the reference decoder: the first bytes it hands to
+        // the hardware are `00 00 01 65 ...`), parameter sets excluded.
         let mut payload: Vec<u8> = Vec::with_capacity(aub.len());
-        let mut first_slice = true;
         for n in nals.iter().filter(|n| n.is_vcl()) {
-            let code_len = if aub.len() >= n.offset + 4 && &aub[n.offset..n.offset + 4] == [0, 0, 0, 1] {
-                4
-            } else {
-                3
-            };
-            if !first_slice {
-                payload.extend_from_slice(&[0, 0, 1]);
-            }
-            payload.extend_from_slice(&aub[n.offset + code_len..n.offset + n.len]);
-            first_slice = false;
+            let end = (n.offset + n.len).min(aub.len());
+            payload.extend_from_slice(&aub[n.offset..end]);
         }
         if payload.is_empty() {
             return Ok(None);
@@ -201,14 +193,33 @@ impl Decoder {
             let off = row * frame.hor_stride;
             yuv.extend_from_slice(&y[off..off + self.width]);
         }
+        // The hardware writes NV12 (interleaved U/V); the output is planar
+        // yuv420p, so de-interleave into a full U plane followed by a full V
+        // plane (per-row interleaving would mix the planes).
+        let pairs = self.width / 2;
         for row in 0..self.height / 2 {
             let off = row * frame.hor_stride;
-            yuv.extend_from_slice(&uv[off..off + self.width]);
+            for j in 0..pairs {
+                yuv.push(uv[off + 2 * j]);
+            }
         }
+        for row in 0..self.height / 2 {
+            let off = row * frame.hor_stride;
+            for j in 0..pairs {
+                yuv.push(uv[off + 2 * j + 1]);
+            }
+        }
+        let raw_uv: Vec<u8> = (0..self.height / 2)
+            .flat_map(|row| {
+                let off = row * frame.hor_stride;
+                uv[off..off + self.width].to_vec()
+            })
+            .collect();
         Ok(Some(Picture {
             width: self.width,
             height: self.height,
             yuv,
+            raw_uv,
         }))
     }
 }
