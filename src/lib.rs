@@ -2,8 +2,7 @@
 //!
 //! The C API at the bottom is what `rknn-fastinfer` links against; the modules
 //! are usable directly from Rust.
-//!
-//! `swjpeg` is a pure-Rust software decoder used when the (shared) VPU is busy.
+
 
 pub mod decode;
 pub mod dma_heap;
@@ -11,7 +10,6 @@ pub mod jpeg;
 pub mod jpeg_regs;
 pub mod mpp;
 pub mod scale;
-pub mod swjpeg;
 pub mod tables;
 
 use std::ffi::{c_char, CStr};

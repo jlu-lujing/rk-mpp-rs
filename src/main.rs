@@ -244,31 +244,6 @@ fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "bench-sw" {
-        let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
-        let iters: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(100);
-        let mut dec = match rk_mpp_rs::swjpeg::SwJpeg::open(path, 640, 640) {
-            Ok(d) => d,
-            Err(e) => {
-                println!("open failed: {e}");
-                return;
-            }
-        };
-        let mut dst = vec![0u8; 640 * 640 * 3];
-        dec.frame(&mut dst).unwrap();
-        let t = Instant::now();
-        for _ in 0..iters {
-            dec.frame(&mut dst).unwrap();
-        }
-        let us_per = us(t.elapsed()) / iters as f64;
-        println!(
-            "sw-decode {} : {:.3} ms/frame ({:.0} fps) [zune-jpeg + scaler]",
-            path,
-            us_per / 1000.0,
-            1e6 / us_per
-        );
-        return;
-    }
     if args.len() > 1 && args[1] == "bench-dma" {
         bench_dma();
         return;
