@@ -6,6 +6,7 @@
 //! `rkvenc`/`rkvdec` lives under `hal/`.
 
 pub mod parser;
+pub mod regs;
 
 pub use parser::{
     parse_pps, parse_slice_header, parse_sps, split_annex_b, NalUnit, Pps, SliceHeader, Sps,
