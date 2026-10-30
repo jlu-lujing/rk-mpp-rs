@@ -356,8 +356,12 @@ impl H264d {
         refs: &[Option<&Frame>],
         ref_pocs: &[i32],
         stream: &DmaBuf,
+        stream_len: usize,
         idr: bool,
     ) -> io::Result<()> {
+        if std::env::var("RFI_DUMP_LEN").is_ok() {
+            eprintln!("SUBMIT len={} idr={} fn={}", stream_len, idr, sh.frame_num);
+        }
         self.prepare_tables(sps, pps, sh, dpb, lists)?;
 
         let info = RcbInfo::compute(cur.width, cur.height, sps.bit_depth_luma as usize);
@@ -367,7 +371,7 @@ impl H264d {
         }
         self.rcb_info = info;
 
-        self.fill_regs(sps, sh, 0, cur, refs, ref_pocs, stream.len(), idr);
+        self.fill_regs(sps, sh, 0, cur, refs, ref_pocs, stream_len, idr);
 
         let r = &mut self.regs;
         r.set(reg::w128::REG128_RLC_BASE, stream.fd() as u32)

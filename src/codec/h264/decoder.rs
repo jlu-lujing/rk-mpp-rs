@@ -165,6 +165,7 @@ impl Decoder {
                 &ref_refs,
                 &ref_pocs,
                 &stream,
+                payload.len(),
                 idr,
             )
             .map_err(|e| e.to_string())?;
