@@ -230,8 +230,20 @@ impl H264d {
             .set(reg::w26::REG_CFG_GATING_EN, 1)
             .set(reg::w32::REG032_TIMEOUT_THRESHOLD, 0x3ffff)
             .set(reg::w28::SW_POC_ARB_FLAG, 0);
-        self.regs.w[65] = 0;
-        self.regs.w[66] = 0;
+        r.w[65] = 0;
+        r.w[66] = 0;
+        // vdpu34x_setup_statistic: perf counters + AXI QoS hints.
+        r.set(reg::w11::PIX_RANGE_DETECTION_E, 1)
+            .set(reg::w256::AXI_PERF_WORK_E, 1)
+            .set(reg::w256::AXI_PERF_CLR_E, 1)
+            .set(reg::w256::AXI_CNT_TYPE, 1)
+            .set(reg::w257::ADDR_ALIGN_TYPE, 1)
+            .set(reg::w270::BUS2MC_BUFFER_QOS_LEVEL, 255)
+            .set(reg::w270::AXI_RD_HURRY_LEVEL, 3)
+            .set(reg::w270::AXI_WR_HURRY_LEVEL, 1)
+            .set(reg::w270::AXI_WR_QOS, 1)
+            .set(reg::w270::AXI_RD_QOS, 3)
+            .set(reg::w271::REG271_WR_WAIT_CYCLE_QOS, 0);
     }
 
     /// Fill the register file for one frame.
@@ -379,11 +391,21 @@ impl H264d {
             .set(reg::w138::REG138_RCB_INTER_COL_BASE, rcb_fd)
             .set(reg::w142::REG142_RCB_FILTER_COL_BASE, rcb_fd);
 
-        // Registers 8..276 are contiguous in the file; write them in one go.
-        let words: Vec<u32> = r.w[8..276].to_vec();
+        // MPP writes four sections and never the interrupt-status words.
+        let comm_gen: Vec<u32> = r.w[8..64].to_vec();
+        let comm_paras: Vec<u32> = r.w[64..128].to_vec();
+        let comm_addr: Vec<u32> = r.w[128..200].to_vec();
+        let highpoc: Vec<u32> = r.w[200..205].to_vec();
+        let statistic: Vec<u32> = r.w[256..276].to_vec();
         let offs = self.rcb_info.offsets();
         let mut batch = Batch::new();
-        batch.reg_write(&words, 32).reg_offsets(&offs);
+        batch
+            .reg_write(&comm_gen, 32)
+            .reg_write(&comm_paras, 256)
+            .reg_write(&comm_addr, 512)
+            .reg_write(&highpoc, 800)
+            .reg_write(&statistic, 1024)
+            .reg_offsets(&offs);
         self.svc.submit_batch(&mut batch)?;
         self.svc.poll_hw_finish()?;
         Ok(())

@@ -170,8 +170,9 @@ impl Decoder {
             self.dpb.update_poc_state(&sh, &sps, poc);
         }
 
-        // 7. copy out
+        // 7. copy out (the dma-buf is CPU-cached, so sync before reading)
         let frame = self.frames[slot].as_ref().unwrap();
+        let _ = frame.nv12.sync_read_begin();
         let y = frame.y_plane();
         let uv = frame.uv_plane();
         let mut yuv = Vec::with_capacity(self.width * self.height * 3 / 2);
