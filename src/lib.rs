@@ -4,18 +4,19 @@
 //! are usable directly from Rust.
 
 
-pub mod decode;
-pub mod dma_heap;
-pub mod jpeg;
-pub mod jpeg_regs;
-pub mod mpp;
+pub mod codec;
+pub mod hal;
 pub mod scale;
-pub mod tables;
+pub mod service;
 
 use std::ffi::{c_char, CStr};
 
-use dma_heap::DmaBuf;
-use mpp::{MppService, VPU_CLIENT_JPEG_DEC};
+use codec::jpeg::parser as jpeg;
+use codec::jpeg::regs as jpeg_regs;
+use codec::jpeg::tables;
+use hal::jpegd as decode;
+use service::dma_heap::DmaBuf;
+use service::{MppService, VPU_CLIENT_JPEG_DEC};
 
 /// Decoder state kept across frames (buffers, tables, scaler).
 pub struct Decoder {

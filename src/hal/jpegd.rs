@@ -6,9 +6,9 @@
 //! Buffer registers carry `(offset << 10) | fd`; the kernel's translation table
 //! turns the low 10 bits into an IOVA and adds the byte offset.
 
-use crate::jpeg::JpegInfo;
-use crate::jpeg_regs::*;
-use crate::tables;
+use crate::codec::jpeg::parser::JpegInfo;
+use crate::codec::jpeg::regs::*;
+use crate::codec::jpeg::tables;
 
 // Output format (hal_jpegd_vpu7xx_com.h)
 pub const YUV_OUT_FMT_2_RGB888: u32 = 1;
@@ -273,7 +273,7 @@ pub fn build(job: &Job) -> Result<(Regs, Geometry), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jpeg;
+    use crate::codec::jpeg::parser as jpeg;
 
     const BUS: &str = "/home/user/projects/rknn-projects-test/baseline/images/bus.jpg";
 

@@ -1,8 +1,13 @@
 //! Probe: does the pure-Rust MPP client reach the JPEG decoder?
 
-use rk_mpp_rs::{decode, dma_heap, jpeg, mpp, scale, tables};
+use rk_mpp_rs::codec::jpeg::parser as jpeg;
+use rk_mpp_rs::codec::jpeg::tables;
+use rk_mpp_rs::hal::jpegd as decode;
+use rk_mpp_rs::scale;
+use rk_mpp_rs::service::dma_heap;
+use rk_mpp_rs::service::MppService;
 
-use mpp::*;
+use rk_mpp_rs::service::*;
 use std::time::Instant;
 
 fn us(d: std::time::Duration) -> f64 {
@@ -317,6 +322,66 @@ fn main() {
         }
         return;
     }
+    if args.len() > 1 && args[1] == "h264" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        if path.is_empty() {
+            println!("usage: rk-mpp-rs h264 <annexb.264>");
+            return;
+        }
+        let data = std::fs::read(path).expect("read stream");
+        let nals = rk_mpp_rs::codec::h264::split_annex_b(&data);
+        let mut sps_v = Vec::new();
+        let mut pps_v = Vec::new();
+        let mut vcl = 0usize;
+        for n in &nals {
+            match n.unit_type {
+                7 => {
+                    let sps = rk_mpp_rs::codec::h264::parse_sps(&n.rbsp).expect("sps");
+                    println!(
+                        "SPS id={} profile={} level={} {}x{} refs={} poc_type={}",
+                        sps.sps_id,
+                        sps.profile_idc,
+                        sps.level_idc,
+                        sps.width,
+                        sps.height,
+                        sps.max_num_ref_frames,
+                        sps.poc_type
+                    );
+                    sps_v.push(sps);
+                }
+                8 => {
+                    let pps = rk_mpp_rs::codec::h264::parse_pps(&n.rbsp).expect("pps");
+                    println!(
+                        "PPS id={} sps={} entropy={} cabac refs_l0={} deblock={}",
+                        pps.pps_id, pps.sps_id, pps.entropy_coding, pps.num_ref_idx_l0,
+                        pps.deblocking_filter_control
+                    );
+                    pps_v.push(pps);
+                }
+                1..=5 => vcl += 1,
+                _ => {}
+            }
+        }
+        if let (Some(sps), Some(pps)) = (sps_v.first(), pps_v.first()) {
+            for n in nals.iter().filter(|n| n.is_vcl()).take(3) {
+                match rk_mpp_rs::codec::h264::parse_slice_header(
+                    &n.rbsp,
+                    sps,
+                    pps,
+                    n.unit_type,
+                    n.ref_idc,
+                ) {
+                    Ok(h) => println!(
+                        "slice type={} first_mb={} frame_num={} idr={} poc={:?}",
+                        h.slice_type, h.first_mb, h.frame_num, h.idr_pic_id.is_some(), h.poc_lsb
+                    ),
+                    Err(e) => println!("slice parse: {e}"),
+                }
+            }
+        }
+        println!("NAL units: {} (vcl {vcl}), stream {} bytes", nals.len(), data.len());
+        return;
+    }
     if args.len() > 1 && args[1] == "bench-scale" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("/tmp/src1080.rgb");
         let sw: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1920);
@@ -351,14 +416,16 @@ fn main() {
             match probe {
                 Ok(mask) => {
                     println!("  hw support mask: 0x{mask:08x}");
-                    println!(
-                        "  jpeg dec present: {}",
-                        (mask >> VPU_CLIENT_JPEG_DEC) & 1 == 1
-                    );
-                    println!(
-                        "  rkvdec present:  {}",
-                        (mask >> VPU_CLIENT_RKVDEC) & 1 == 1
-                    );
+                    for (c, name) in Client::all() {
+                        let bit = *c as u32;
+                        let has = (mask >> bit) & 1 == 1;
+                        println!(
+                            "    [{:>5}] {:<40} {}",
+                            bit,
+                            name,
+                            if has { "present" } else { "-" }
+                        );
+                    }
                 }
                 Err(e) => println!("  probe_hw_support failed: {e}"),
             }

@@ -4,7 +4,7 @@
 //! rockchip-linux/mpp `mpp/hal/vpu/jpegd/hal_jpegd_vpu7xx_com.c`, using the
 //! offsets from `hal_jpegd_vpu7xx_com.h`.
 
-use crate::jpeg::{HuffTable, JpegInfo};
+use super::parser::{HuffTable, JpegInfo};
 
 pub const NB_COMPONENTS: usize = 3;
 pub const QUANTIZE_TABLE_LENGTH: usize = 64;
@@ -173,7 +173,7 @@ impl Tables {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jpeg;
+    use crate::codec::jpeg::parser as jpeg;
 
     const BUS: &str = "/home/user/projects/rknn-projects-test/baseline/images/bus.jpg";
 
