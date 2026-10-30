@@ -4,8 +4,10 @@
 //! the syntax (NAL split, VPS/SPS/PPS, slice header); the register HAL for
 //! rkvdec lands under `hal/` once the tables are ready.
 
+pub mod dpb;
 pub mod parser;
 
+pub use dpb::{Dpb, FrameStore};
 pub use parser::{
     parse_pps, parse_slice_header, parse_sps, parse_vps, split_annex_b, Pps, ShortTermRps,
     SliceHeader, Sps, Vps,

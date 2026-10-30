@@ -492,6 +492,62 @@ fn main() {
         println!("NAL units: {} (vcl {vcl}), stream {} bytes", nals.len(), data.len());
         return;
     }
+    if args.len() > 1 && args[1] == "hevcdpb" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        if path.is_empty() {
+            println!("usage: rk-mpp-rs hevcdpb <annexb.265>");
+            return;
+        }
+        let data = std::fs::read(path).expect("read stream");
+        use rk_mpp_rs::codec::hevc;
+        let nals = hevc::split_annex_b(&data);
+        let mut sps: Option<hevc::Sps> = None;
+        let mut pps: Option<hevc::Pps> = None;
+        let mut dpb = hevc::Dpb::new();
+        let mut slot = 0u8;
+        for n in &nals {
+            match n.unit_type {
+                hevc::parser::NAL_SPS => sps = Some(hevc::parse_sps(&n.rbsp).expect("sps")),
+                hevc::parser::NAL_PPS => pps = Some(hevc::parse_pps(&n.rbsp).expect("pps")),
+                t if t <= 31 => {
+                    let (sps_ref, pps_ref) = match (&sps, &pps) {
+                        (Some(a), Some(b)) => (a, b),
+                        _ => continue,
+                    };
+                    let sh = match hevc::parse_slice_header(&n.rbsp, sps_ref, pps_ref, t) {
+                        Ok(sh) => sh,
+                        Err(_) => continue,
+                    };
+                    if !sh.first_slice {
+                        continue;
+                    }
+                    let irap_no_rasl = t == 19 || t == 20 || (21..=23).contains(&t);
+                    let poc = dpb.compute_poc(&sh, sps_ref, irap_no_rasl);
+                    let l0 = dpb.build_ref_list(&sh.rps, poc);
+                    println!(
+                        "type={} poc={} sao={}{} refs={:?} dpb={:?}",
+                        sh.slice_type,
+                        poc,
+                        sh.sao_luma as u8,
+                        sh.sao_chroma as u8,
+                        l0,
+                        dpb.frames().iter().map(|f| f.poc).collect::<Vec<_>>()
+                    );
+                    if t < 16 || (16..=23).contains(&t) {
+                        dpb.push(hevc::FrameStore {
+                            poc,
+                            slot,
+                            buf: slot as usize,
+                            referenced: true,
+                        });
+                        slot = slot.wrapping_add(1) % 16;
+                    }
+                }
+                _ => {}
+            }
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "h264dpb" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
         if path.is_empty() {

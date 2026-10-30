@@ -31,7 +31,7 @@ multi-core, secure mode).
 | M1 | H.264 syntax: Annex-B, RBSP, Exp-Golomb, SPS/PPS/slice header, scaling lists | 3.5k | **done** |
 | M1 | H.264 register map generated from `hal_h264d_rkv_reg.h` (80 words, 122 fields) | 0.25k | **done** |
 | M2 | H.264 decode on rkvdec: reg writer, DPB, reference lists, MMCO, error concealment | 6.0k | **working** |
-| M3 | H.265 decode: syntax (VPS/SPS/PPS, RPS, tiles, WPP) + rkvdec HAL | 12k | todo |
+| M3 | H.265 decode: syntax (VPS/SPS/PPS, RPS, tiles, WPP) + rkvdec HAL | 12k | **syntax done** |
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | todo |
 | M5 | AV1 decode (frame headers, OBU, film grain off) | 14k | todo |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | todo |
@@ -53,7 +53,10 @@ multi-core, secure mode).
       reordering (`ref_pic_list_modification`) plus colmv validity
 - [ ] frame buffer free list (buffers are currently never reused)
 - [ ] H.264 multi-slice, field/MBAFF, long-term refs, error concealment
-- [ ] H.265 Main/Main10, tiles, WPP, RPS, SCC
+- [x] H.265 syntax: VPS/SPS/PPS, profile_tier_level, short-term RPS
+      (explicit + predicted), slice segment header, POC and reference lists —
+      validated on x265 720p/1080p streams
+- [ ] H.265 decode (rkvdec tables + registers), Main10, tiles, WPP, SCC
 - [ ] VP9 profile 0/2, 10-bit, superframes
 - [ ] AV1 Main, film grain
 - [ ] MPEG2, MPEG4 ASP, H.263, VP8, AVS+, AVS2
