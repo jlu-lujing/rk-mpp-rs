@@ -49,6 +49,14 @@ impl<'a> BitReader<'a> {
         BitReader { data, pos: 0 }
     }
 
+    pub fn bit_pos(&self) -> usize {
+        self.pos
+    }
+
+    pub fn is_aligned_byte(&self) -> bool {
+        self.pos % 8 == 0
+    }
+
     pub fn bits_left(&self) -> usize {
         self.data.len() * 8 - self.pos
     }
@@ -431,6 +439,7 @@ pub struct Pps {
     pub entropy_coding: bool,
     pub bottom_field_pic_order: bool,
     pub num_slice_groups: u32,
+    pub slice_group_map_type: u32,
     pub num_ref_idx_l0: u32,
     pub num_ref_idx_l1: u32,
     pub weighted_pred: bool,
@@ -457,6 +466,7 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, SpsError> {
     }
     if pps.num_slice_groups > 1 {
         let map_type = r.read_ue()?;
+        pps.slice_group_map_type = map_type;
         match map_type {
             0 => {
                 for _ in 0..pps.num_slice_groups {
@@ -522,6 +532,54 @@ fn read_weight_table(
     Ok(())
 }
 
+/// Reference-list reordering operation (modification_of_pic_nums_idc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefMod {
+    /// Subtract abs_diff_pic_num from the current frame number.
+    Sub(u32),
+    /// Add abs_diff_pic_num.
+    Add(u32),
+    /// Long-term reference with the given pic_num.
+    LongTerm(u32),
+    /// End of the list.
+    End,
+}
+
+/// Decoded reference picture marking operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mmco {
+    /// Mark as unused for short-term reference.
+    UnmarkShort,
+    /// Mark as unused for long-term reference.
+    UnmarkLong,
+    /// Mark a short-term picture as long-term with frame_num delta.
+    MakeLong { delta: u32, idx: u32 },
+    /// Limit the long-term index range.
+    MaxLong(u32),
+    /// Mark all pictures unused.
+    UnmarkAll,
+    /// Assign a long-term frame index.
+    MakeLongCurrent(u32),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Weights {
+    pub luma_log2_denom: u32,
+    pub chroma_log2_denom: u32,
+    pub l0: Vec<WeightEntry>,
+    pub l1: Vec<WeightEntry>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WeightEntry {
+    pub luma_flag: bool,
+    pub delta_luma_weight: i32,
+    pub luma_offset: i32,
+    pub chroma_flag: bool,
+    pub delta_chroma_weight: [i32; 2],
+    pub delta_chroma_offset: [i32; 2],
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SliceHeader {
     pub first_mb: u32,
@@ -532,9 +590,26 @@ pub struct SliceHeader {
     pub bottom_field: bool,
     pub idr_pic_id: Option<u32>,
     pub poc_lsb: Option<u32>,
+    pub delta_poc_bottom: Option<i32>,
+    pub redundant_pic_cnt: Option<u32>,
+    pub direct_spatial: bool,
     pub ref_idx_l0_active: u32,
     pub ref_idx_l1_active: u32,
+    pub mod_l0: Vec<RefMod>,
+    pub mod_l1: Vec<RefMod>,
+    pub weights: Option<Weights>,
+    pub mmco: Vec<Mmco>,
+    pub no_output_of_prior_pics: bool,
+    pub long_term_reference: bool,
+    pub cabac_init_idc: Option<u32>,
     pub qp_delta: i32,
+    pub qs_delta: i32,
+    pub deblocking_disable_idc: u32,
+    pub deblocking_alpha: i32,
+    pub deblocking_beta: i32,
+    pub slice_group_change_cycle: Option<u32>,
+    /// Bit offset of the slice data inside the RBSP (CABAC alignment point).
+    pub data_offset_bits: usize,
 }
 
 impl SliceHeader {
@@ -547,6 +622,15 @@ impl SliceHeader {
     pub fn is_b(&self) -> bool {
         self.slice_type % 5 == 1
     }
+}
+
+/// Read only `pps_id` from a slice header, so the caller can select the right
+/// PPS before running the full parse.
+pub fn slice_pps_id(rbsp: &[u8]) -> Result<u32, SpsError> {
+    let mut r = BitReader::new(rbsp);
+    let _first_mb = r.read_ue()?;
+    let _slice_type = r.read_ue()?;
+    r.read_ue()
 }
 
 pub fn parse_slice_header(
@@ -577,14 +661,16 @@ pub fn parse_slice_header(
     if sps.poc_type == 0 {
         sh.poc_lsb = Some(r.read_bits(sps.log2_max_poc_lsb)?);
         if pps.bottom_field_pic_order && !sh.field_pic {
-            let _ = r.read_se()?;
+            sh.delta_poc_bottom = Some(r.read_se()?);
         }
+    } else if sps.poc_type == 1 && !pps.bottom_field_pic_order && !sh.field_pic {
+        let _ = r.read_se()?; // delta_pic_order_cnt[0]
     }
     if pps.redundant_pic_cnt {
-        let _ = r.read_ue()?;
+        sh.redundant_pic_cnt = Some(r.read_ue()?);
     }
     if sh.is_b() {
-        let _ = r.read_bit()?; // direct_spatial_mv_pred
+        sh.direct_spatial = r.read_bit()? == 1;
     }
 
     let (mut l0, mut l1) = (1u32, 1u32);
@@ -598,75 +684,144 @@ pub fn parse_slice_header(
             }
         }
     }
-    let modify = |r: &mut BitReader<'_>| -> Result<(), SpsError> {
+    if l0 > 32 || l1 > 32 {
+        return Err(SpsError::Unsupported("num_ref_idx_active"));
+    }
+
+    let mut read_mods = |r: &mut BitReader<'_>| -> Result<Vec<RefMod>, SpsError> {
+        let mut out = Vec::new();
         if r.read_bit()? == 0 {
-            return Ok(());
+            return Ok(out);
         }
         loop {
             match r.read_ue()? {
-                0 | 1 | 2 | 4 | 5 => {
+                0 => out.push(RefMod::Sub(r.read_ue()?)),
+                1 => out.push(RefMod::Add(r.read_ue()?)),
+                2 => out.push(RefMod::LongTerm(r.read_ue()?)),
+                3 => {
+                    out.push(RefMod::End);
+                    break;
+                }
+                4 | 5 => {
                     let _ = r.read_ue()?;
                 }
-                3 => break,
                 _ => return Err(SpsError::Unsupported("ref_pic_list_modification")),
             }
+            if out.len() > 66 {
+                return Err(SpsError::Unsupported("ref_pic_list_modification length"));
+            }
         }
-        Ok(())
+        Ok(out)
     };
     if sh.is_p() || sh.is_b() {
-        modify(&mut r)?;
+        sh.mod_l0 = read_mods(&mut r)?;
     }
     if sh.is_b() {
-        modify(&mut r)?;
-        if pps.weighted_bipred_idc == 1 {
-            return Err(SpsError::Unsupported("weighted bipred predict"));
-        }
+        sh.mod_l1 = read_mods(&mut r)?;
     }
+
     if (pps.weighted_pred && sh.is_p()) || (pps.weighted_bipred_idc == 1 && sh.is_b()) {
-        let _luma_denom = r.read_ue()?;
+        let mut w = Weights {
+            luma_log2_denom: r.read_ue()?,
+            ..Default::default()
+        };
         if sps.chroma_format_idc != 0 {
-            let _chroma_denom = r.read_ue()?;
+            w.chroma_log2_denom = r.read_ue()?;
         }
-        read_weight_table(&mut r, l0, sps.chroma_format_idc != 0)?;
+        let chroma = sps.chroma_format_idc != 0;
+        w.l0 = read_weight_entries(&mut r, l0, chroma)?;
         if sh.is_b() {
-            read_weight_table(&mut r, l1, sps.chroma_format_idc != 0)?;
+            w.l1 = read_weight_entries(&mut r, l1, chroma)?;
         }
+        sh.weights = Some(w);
     }
+
     sh.ref_idx_l0_active = l0;
     sh.ref_idx_l1_active = l1;
 
     if ref_idc != 0 {
-        // dec_ref_pic_marking
         if nal_type == NAL_IDR {
-            r.skip(1)?; // no_output_of_prior_pics
-            r.skip(1)?; // long_term_reference_flag
+            sh.no_output_of_prior_pics = r.read_bit()? == 1;
+            sh.long_term_reference = r.read_bit()? == 1;
         } else if r.read_bit()? == 1 {
             loop {
                 let op = r.read_ue()?;
                 if op == 0 {
-                    let _ = r.read_ue()?;
-                } else if op == 1 {
-                    r.skip(1)?;
-                    let _ = r.read_ue()?;
-                } else if op == 2 {
-                    let _ = r.read_ue()?;
-                } else if op == 3 || op == 6 {
-                    let _ = r.read_ue()?;
-                } else if op == 4 {
-                    let _ = r.read_ue()?;
-                } else if op == 5 {
-                    let _ = r.read_ue()?;
-                } else {
                     break;
+                }
+                let mmco = match op {
+                    1 => {
+                        let _ = r.read_ue()?; // difference_of_pic_nums_minus1
+                        Mmco::UnmarkShort
+                    }
+                    2 => {
+                        let _ = r.read_ue()?; // long_term_pic_num
+                        Mmco::UnmarkLong
+                    }
+                    3 => Mmco::MakeLong {
+                        delta: r.read_ue()?,
+                        idx: r.read_ue()?,
+                    },
+                    4 => Mmco::MaxLong(r.read_ue()?),
+                    5 => Mmco::UnmarkAll,
+                    6 => Mmco::MakeLongCurrent(r.read_ue()?),
+                    _ => return Err(SpsError::Unsupported("memory_management_control_operation")),
+                };
+                sh.mmco.push(mmco);
+                if sh.mmco.len() > 66 {
+                    return Err(SpsError::Unsupported("mmco length"));
                 }
             }
         }
     }
     if pps.entropy_coding && !sh.is_i() {
-        let _ = r.read_ue()?; // cabac_init_idc
+        sh.cabac_init_idc = Some(r.read_ue()?);
     }
-    let _ = r.read_se()?; // slice_qp_delta
+    sh.qp_delta = r.read_se()?;
+    if pps.num_slice_groups > 1 && pps.slice_group_map_type == 6 {
+        sh.slice_group_change_cycle = Some(r.read_bits(16)?);
+    }
+    if pps.deblocking_filter_control {
+        sh.deblocking_disable_idc = r.read_ue()?;
+        if sh.deblocking_disable_idc != 1 {
+            sh.deblocking_alpha = r.read_se()?;
+            sh.deblocking_beta = r.read_se()?;
+        }
+    }
+    // CABAC 9-bit alignment before the slice data.
+    if pps.entropy_coding && !r.is_aligned_byte() {
+        sh.data_offset_bits = (r.bit_pos() + 9) & !7;
+    } else {
+        sh.data_offset_bits = r.bit_pos();
+    }
     Ok(sh)
+}
+
+fn read_weight_entries(
+    r: &mut BitReader<'_>,
+    refs: u32,
+    chroma: bool,
+) -> Result<Vec<WeightEntry>, SpsError> {
+    let mut out = Vec::with_capacity(refs as usize);
+    for _ in 0..refs {
+        let mut e = WeightEntry::default();
+        e.luma_flag = r.read_bit()? == 1;
+        if e.luma_flag {
+            e.delta_luma_weight = r.read_se()?;
+            e.luma_offset = r.read_se()?;
+        }
+        if chroma {
+            e.chroma_flag = r.read_bit()? == 1;
+            if e.chroma_flag {
+                for c in 0..2 {
+                    e.delta_chroma_weight[c] = r.read_se()?;
+                    e.delta_chroma_offset[c] = r.read_se()?;
+                }
+            }
+        }
+        out.push(e);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -853,10 +1008,75 @@ mod tests {
             .put(0, 4) // pic_order_cnt_lsb
             .put(0, 1) // no_output_of_prior_pics
             .put(0, 1) // long_term_reference_flag
-            .se(0); // slice_qp_delta
+            .se(0) // slice_qp_delta
+            .ue(0) // disable_deblocking_filter_idc
+            .se(0) // alpha_c0_offset_div2
+            .se(0); // beta_offset_div2
         let sh = parse_slice_header(&s.finish(), &sps, &pps, NAL_IDR, 3).unwrap();
         assert!(sh.is_i());
         assert_eq!(sh.idr_pic_id, Some(0));
         assert_eq!(sh.frame_num, 0);
+        assert!(!sh.no_output_of_prior_pics);
+        assert_eq!(sh.deblocking_disable_idc, 0);
+    }
+}
+
+
+#[cfg(test)]
+mod real_bitstream_tests {
+    use super::*;
+
+    /// A P slice from x264 that exercises the full header: CAVLC/CABAC header,
+    /// ref-index override, four list-modification ops, weighted prediction and
+    /// an MMCO-1 operation. Regression guard for field ordering.
+    fn fixture() -> Vec<u8> {
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/p_slice_mmco.264"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn parses_weighted_p_slice_with_mmco() {
+        let data = fixture();
+        let nals = split_annex_b(&data);
+        assert_eq!(nals.len(), 1);
+        let n = &nals[0];
+        assert_eq!(n.unit_type, NAL_SLICE);
+        assert_eq!(n.ref_idc, 2);
+
+        let mut sps = Sps::default();
+        sps.log2_max_frame_num = 4;
+        sps.poc_type = 0;
+        sps.log2_max_poc_lsb = 6;
+        sps.chroma_format_idc = 1;
+        sps.frame_mbs_only = true;
+
+        let mut pps = Pps::default();
+        pps.entropy_coding = true;
+        pps.num_ref_idx_l0 = 3;
+        pps.num_ref_idx_l1 = 1;
+        pps.weighted_pred = true;
+        pps.weighted_bipred_idc = 2;
+        pps.deblocking_filter_control = true;
+
+        let sh = parse_slice_header(&n.rbsp, &sps, &pps, n.unit_type, n.ref_idc).unwrap();
+        assert!(sh.is_p());
+        assert_eq!(sh.frame_num, 3);
+        assert_eq!(sh.poc_lsb, Some(58));
+        assert_eq!(sh.ref_idx_l0_active, 4, "override flag bumps the count");
+        assert_eq!(
+            sh.mod_l0,
+            vec![RefMod::Sub(1), RefMod::Sub(15), RefMod::Add(0), RefMod::Sub(2), RefMod::End]
+        );
+        let w = sh.weights.as_ref().unwrap();
+        assert_eq!(w.l0.len(), 4);
+        assert!(w.l0[1].luma_flag);
+        assert_eq!(w.l0[1].delta_luma_weight, 1);
+        assert_eq!(w.l0[1].luma_offset, -1);
+        assert_eq!(sh.mmco, vec![Mmco::UnmarkShort]);
+        assert_eq!(sh.cabac_init_idc, Some(0));
+        assert!(sh.data_offset_bits > 0);
     }
 }

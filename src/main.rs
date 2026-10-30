@@ -322,6 +322,103 @@ fn main() {
         }
         return;
     }
+    if args.len() > 1 && args[1] == "h264dpb" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        if path.is_empty() {
+            println!("usage: rk-mpp-rs h264dpb <annexb.264>");
+            return;
+        }
+        let data = std::fs::read(path).expect("read stream");
+        let nals = rk_mpp_rs::codec::h264::split_annex_b(&data);
+        use rk_mpp_rs::codec::h264::{Dpb, FrameStore};
+        let mut sps_map: [Option<rk_mpp_rs::codec::h264::Sps>; 32] = Default::default();
+        let mut pps_map: Vec<Option<rk_mpp_rs::codec::h264::Pps>> =
+            (0..256).map(|_| None).collect();
+        let mut dpb: Option<Dpb> = None;
+        let mut out_order = Vec::new();
+        for n in &nals {
+            match n.unit_type {
+                7 => {
+                    let sp = rk_mpp_rs::codec::h264::parse_sps(&n.rbsp).expect("sps");
+                    let idx = sp.sps_id as usize % 32;
+                    sps_map[idx] = Some(sp);
+                }
+                8 => {
+                    let pp = rk_mpp_rs::codec::h264::parse_pps(&n.rbsp).expect("pps");
+                    let idx = pp.pps_id as usize;
+                    pps_map[idx] = Some(pp);
+                }
+                1..=5 => {
+                    let pid = match rk_mpp_rs::codec::h264::parser::slice_pps_id(&n.rbsp) {
+                        Ok(v) => v as usize,
+                        Err(_) => continue,
+                    };
+                    let pps = match pps_map.get(pid).and_then(|p| p.as_ref()) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    let sps = match sps_map.get(pps.sps_id as usize % 32).and_then(|s| s.as_ref()) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    if dpb.is_none() {
+                        dpb = Some(Dpb::new(sps.max_num_ref_frames, 0));
+                    }
+                    let d = dpb.as_mut().unwrap();
+                    let idr = n.unit_type == 5;
+                    if idr {
+                        d.clear();
+                    }
+                    let sh = match rk_mpp_rs::codec::h264::parse_slice_header(
+                        &n.rbsp, sps, pps, n.unit_type, n.ref_idc,
+                    ) {
+                        Ok(sh) => sh,
+                        Err(e) => {
+                            println!(
+                                "slice err: {e} (nal type={} ref_idc={} len={} first8={:02x?})",
+                                n.unit_type, n.ref_idc, n.rbsp.len(), &n.rbsp[..n.rbsp.len().min(8)]
+                            );
+                            continue;
+                        }
+                    };
+                    if sh.first_mb != 0 {
+                        continue;
+                    }
+                    let fno = d.frame_num_offset(&sh, sps, idr, false);
+                    let poc = d.compute_poc(&sh, sps, idr, fno);
+                    d.set_frame_num_offset(fno);
+                    let (l0, l1) = d.build_ref_lists(&sh, poc);
+                    println!(
+                        "fn={:<2} poc={:<4} type={} dpb={} mmco={} refs_l0={:?} l1={:?}",
+                        sh.frame_num, poc, sh.slice_type, d.frames().len(), sh.mmco.len(), l0, l1
+                    );
+                    if n.ref_idc != 0 {
+                        if d.frames().len() >= d.max_size {
+                            d.sliding_window();
+                        }
+                        let slot = d.free_slot(16).unwrap_or(0);
+                        d.push(FrameStore {
+                            frame_num: sh.frame_num,
+                            poc,
+                            long_term: false,
+                            long_term_frame_idx: 0,
+                            slot,
+                            buf: slot as usize,
+                            referenced: true,
+                        });
+                        if !sh.mmco.is_empty() {
+                            d.apply_mmco(&sh.mmco, sh.frame_num, 0);
+                        }
+                        d.update_poc_state(&sh, sps, poc);
+                    }
+                    out_order.push(poc);
+                }
+                _ => {}
+            }
+        }
+        println!("output order by POC: {:?}", out_order);
+        return;
+    }
     if args.len() > 1 && args[1] == "h264" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
         if path.is_empty() {
