@@ -544,6 +544,37 @@ fn main() {
         println!("NAL units: {} (vcl {vcl}), stream {} bytes", nals.len(), data.len());
         return;
     }
+    if args.len() > 1 && args[1] == "hevcpps" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let data = std::fs::read(path).expect("read");
+        use rk_mpp_rs::codec::hevc;
+        let nals = hevc::split_annex_b(&data);
+        let mut sps_opt = None;
+        let mut pps_opt = None;
+        for n in &nals {
+            if n.unit_type == 33 && sps_opt.is_none() {
+                if let Ok(v) = hevc::parse_sps(&n.rbsp) {
+                    sps_opt = Some(v);
+                }
+            }
+            if n.unit_type == 34 && pps_opt.is_none() {
+                if let Ok(v) = hevc::parse_pps(&n.rbsp) {
+                    pps_opt = Some(v);
+                }
+            }
+        }
+        let (sps, pps) = match (sps_opt, pps_opt) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                println!("could not parse parameter sets");
+                return;
+            }
+        };
+        let pkt = hevc::hw::build_pps_packet(&sps, &pps);
+        let hex: Vec<String> = pkt.iter().map(|b| format!("{b:02x}")).collect();
+        println!("{}", hex.join(" "));
+        return;
+    }
     if args.len() > 1 && args[1] == "hevcdpb" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
         if path.is_empty() {

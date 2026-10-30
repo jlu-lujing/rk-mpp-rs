@@ -22,6 +22,7 @@ pub struct Decoder {
     frames: Vec<Option<Frame>>,
     width: usize,
     height: usize,
+    ctu_size: usize,
 }
 
 impl Decoder {
@@ -34,12 +35,13 @@ impl Decoder {
             frames: (0..17).map(|_| None).collect(),
             width: 0,
             height: 0,
+            ctu_size: 16,
         })
     }
 
     fn ensure_frame(&mut self, slot: usize) -> io::Result<()> {
         if self.frames[slot].is_none() {
-            self.frames[slot] = Some(Frame::alloc(self.width, self.height)?);
+            self.frames[slot] = Some(Frame::alloc(self.width, self.height, self.ctu_size)?);
         }
         Ok(())
     }
@@ -59,6 +61,7 @@ impl Decoder {
                         self.width = s.width as usize;
                         self.height = s.height as usize;
                         self.frames = (0..17).map(|_| None).collect();
+                        self.ctu_size = 1 << (s.log2_min_cb + s.log2_diff_max_min_cb);
                     }
                     self.sps[id] = Some(s);
                 }

@@ -30,12 +30,12 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn alloc(width: usize, height: usize) -> io::Result<Frame> {
+    pub fn alloc(width: usize, height: usize, ctu: usize) -> io::Result<Frame> {
         let hor_stride = align(width, 16);
         let ver_stride = align(height, 16);
         let y_size = hor_stride * ver_stride;
         let nv12 = DmaBuf::alloc("system", y_size * 3 / 2, false)?;
-        let colmv = DmaBuf::alloc("system", colmv_size(width, height), false)?;
+        let colmv = DmaBuf::alloc("system", colmv_size(width, height, ctu), false)?;
         Ok(Frame {
             nv12,
             colmv,
@@ -60,9 +60,10 @@ fn align(v: usize, a: usize) -> usize {
     (v + a - 1) / a * a
 }
 
-/// Compressed colmv layout with a 16-pixel CTU and 16 bytes per block.
-pub fn colmv_size(width: usize, height: usize) -> usize {
-    let ctu = 16usize;
+/// Compressed colmv layout (vdpu34x_get_colmv_size) for the picture's CTU
+/// size. The segment width is derived from the CTU, so a 64x64 CTU needs a
+/// bigger buffer than a 16x16 one.
+pub fn colmv_size(width: usize, height: usize, ctu: usize) -> usize {
     let seg_w = 64 * 4 * 4 / ctu; // 64
     let seg_h = ctu;
     let cnt_w = align(width, seg_w) / seg_w;
@@ -434,7 +435,18 @@ mod tests {
 
     #[test]
     fn colmv_grows_with_resolution() {
-        assert!(colmv_size(1920, 1080) > colmv_size(1280, 720));
+        assert!(colmv_size(1920, 1080, 64) > colmv_size(1280, 720, 64));
+    }
+
+    #[test]
+    fn colmv_grows_with_ctu_size() {
+        // A 64x64 CTU packs fewer blocks per segment but needs more segments,
+        // and the buffer must not be smaller than the 16-pixel layout.
+        let c16 = colmv_size(640, 480, 16);
+        let c32 = colmv_size(640, 480, 32);
+        let c64 = colmv_size(640, 480, 64);
+        assert!(c64 > c16, "ctu64 {c64} vs ctu16 {c16}");
+        assert_eq!(c16, c32, "same total for this geometry");
     }
 
     #[test]
