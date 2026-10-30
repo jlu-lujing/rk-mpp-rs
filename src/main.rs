@@ -432,7 +432,7 @@ fn main() {
                     let s = hevc::parse_sps(&n.rbsp).expect("sps");
                     sps_v = Some(s.clone());
                     println!(
-                        "SPS id={} vps={} {}x{} chroma={} depth={} poc_lsb={} st_rps={} sao={} tmvp={}",
+                        "SPS id={} vps={} {}x{} chroma={} depth={} poc_lsb={} st_rps={} sao={} tmvp={} ctb={}/{} tb={}/{} dpb={}",
                         s.sps_id,
                         s.vps_id,
                         s.width,
@@ -442,7 +442,12 @@ fn main() {
                         s.log2_max_pic_order_cnt_lsb,
                         s.num_short_term_ref_pic_sets,
                         s.sao_enabled,
-                        s.temporal_mvp_enabled
+                        s.temporal_mvp_enabled,
+                        s.log2_min_cb,
+                        s.log2_diff_max_min_cb,
+                        s.log2_min_tb,
+                        s.log2_diff_max_min_tb,
+                        s.max_dec_pic_buffering
                     );
                 }
                 hevc::parser::NAL_PPS => {

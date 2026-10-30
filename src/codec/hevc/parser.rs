@@ -225,6 +225,21 @@ pub struct Sps {
     pub sao_enabled: bool,
     pub pcm_enabled: bool,
     pub profile: ProfileTierLevel,
+    // Coding-tree geometry the hardware tables need.
+    pub log2_min_cb: u32,
+    pub log2_diff_max_min_cb: u32,
+    pub log2_min_tb: u32,
+    pub log2_diff_max_min_tb: u32,
+    pub max_transform_hierarchy_depth_inter: u32,
+    pub max_transform_hierarchy_depth_intra: u32,
+    pub scaling_list_enabled: bool,
+    pub pcm_bit_depth_luma: u32,
+    pub pcm_bit_depth_chroma: u32,
+    pub pcm_log2_min_cb: u32,
+    pub pcm_log2_diff_max_min_cb: u32,
+    pub pcm_loop_filter_disabled: bool,
+    pub max_dec_pic_buffering: u32,
+    pub num_long_term_ref_pics: u32,
 }
 
 pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, HevcError> {
@@ -274,20 +289,24 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, HevcError> {
     }
     sps.log2_max_pic_order_cnt_lsb = r.read_ue()? + 4;
     let sub_layer_ordering_present = r.read_bit()? == 1;
-    for _ in 0..(if sub_layer_ordering_present { max_sub_layers } else { 1 }) {
-        let _ = r.read_ue()?; // sps_max_dec_pic_buffering_minus1
+    for i in 0..(if sub_layer_ordering_present { max_sub_layers } else { 1 }) {
+        let dpb = r.read_ue()? + 1;
+        if i + 1 == (if sub_layer_ordering_present { max_sub_layers } else { 1 }) {
+            sps.max_dec_pic_buffering = dpb;
+        }
         let _ = r.read_ue()?; // sps_max_num_reorder_pics
         let _ = r.read_ue()?; // sps_max_latency_increase_plus1
     }
-    r.read_ue()?; // log2_min_luma_coding_block_size_minus3
-    r.read_ue()?; // log2_diff_max_min_luma_coding_block_size
-    r.read_ue()?; // log2_min_luma_transform_block_size_minus2
-    r.read_ue()?; // log2_diff_max_min_luma_transform_block_size
-    r.read_ue()?; // max_transform_hierarchy_depth_inter
-    r.read_ue()?; // max_transform_hierarchy_depth_intra
+    sps.log2_min_cb = r.read_ue()? + 3;
+    sps.log2_diff_max_min_cb = r.read_ue()?;
+    sps.log2_min_tb = r.read_ue()? + 2;
+    sps.log2_diff_max_min_tb = r.read_ue()?;
+    sps.max_transform_hierarchy_depth_inter = r.read_ue()?;
+    sps.max_transform_hierarchy_depth_intra = r.read_ue()?;
     // scaling_list_enabled_flag and its data block sit between the transform
     // hierarchy depths and amp_enabled_flag (H.265 7.3.2.2).
     let scaling_list_enabled = r.read_bit()? == 1;
+    sps.scaling_list_enabled = scaling_list_enabled;
     if scaling_list_enabled {
         let present = r.read_bit()? == 1;
         if present {
@@ -298,11 +317,11 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, HevcError> {
     sps.sao_enabled = r.read_bit()? == 1;
     sps.pcm_enabled = r.read_bit()? == 1;
     if sps.pcm_enabled {
-        r.skip(8)?; // pcm_sample_bit_depth_luma_minus1
-        r.skip(8)?; // pcm_sample_bit_depth_chroma_minus1
-        r.read_ue()?;
-        r.read_ue()?;
-        r.skip(1)?;
+        sps.pcm_bit_depth_luma = r.read_bits(4)? + 1;
+        sps.pcm_bit_depth_chroma = r.read_bits(4)? + 1;
+        sps.pcm_log2_min_cb = r.read_ue()? + 3;
+        sps.pcm_log2_diff_max_min_cb = r.read_ue()?;
+        sps.pcm_loop_filter_disabled = r.read_bit()? == 1;
     }
     sps.num_short_term_ref_pic_sets = r.read_ue()?;
     if sps.num_short_term_ref_pic_sets > 64 {
@@ -317,6 +336,7 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, HevcError> {
         if n > 32 {
             return Err(HevcError::Unsupported("num_long_term_ref_pics_sps"));
         }
+        sps.num_long_term_ref_pics = n;
         for _ in 0..n {
             r.skip(sps.log2_max_pic_order_cnt_lsb)?;
             r.skip(1)?;
