@@ -3,5 +3,6 @@
 //! `jpegd` drives `rockchip,rkv-jpeg-decoder-v1`. The video blocks of the
 //! official MPP (vdpu1/vdpu2/rkvdec/av1d/venc/vepu) are the roadmap.
 
+pub mod h264d;
 pub mod jpegd;
 pub mod vdpu34x_regs;

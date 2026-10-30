@@ -25,13 +25,22 @@ BASES = [
     ("Vdpu34xRegStatistic", 256),
 ]
 
+COMMENTS = []
+
 def strip_comments(t):
-    t = re.sub(r'/\*.*?\*/', lambda m: '\x00' + m.group(0).replace('\n', ' ') + '\x00', t, flags=re.S)
-    t = re.sub(r'//[^\n]*', '', t)
+    """Replace comments with \x00<index>\x00 tokens (content kept out of the
+    token stream so braces/semicolons inside comments cannot break parsing)."""
+    COMMENTS.clear()
+
+    def repl(m):
+        COMMENTS.append(m.group(0))
+        return f'\x00{len(COMMENTS) - 1}\x00'
+
+    t = re.sub(r'/\*.*?\*/', repl, t, flags=re.S)
+    t = re.sub(r'//[^\n]*', repl, t)
     return t
 
 def comment_before(text, pos):
-    # nearest \x00...\x00 comment before pos
     seg = text[:pos]
     i = seg.rfind('\x00')
     if i < 0:
@@ -39,7 +48,11 @@ def comment_before(text, pos):
     j = seg.rfind('\x00', 0, i)
     if j < 0:
         return None
-    c = seg[j + 1:i].strip()
+    tok = seg[j + 1:i]
+    if not tok.isdigit():
+        return None
+    c = COMMENTS[int(tok)]
+    c = re.sub(r'^/\*+|\*/$', '', c).strip()
     return c
 
 def split_members(body):
@@ -62,7 +75,7 @@ def split_members(body):
 def parse_bits(s):
     """Fields from a plain struct body: list of (name|None, width, comment)."""
     out = []
-    for m in re.finditer(r'(RK_U16|RK_U32)\s*(\w*)\s*(?::\s*(\d+))?\s*;', s):
+    for m in re.finditer(r'(RK_U16|RK_U32)\s*(\w*)\s*(?::\s*(\d+))?\s*;?', s):
         name = m.group(2) or None
         if m.group(3):
             width = int(m.group(3))
@@ -83,23 +96,27 @@ def parse_struct(name, text):
             members.append(('array', arr.group(1), int(arr.group(2)), []))
             continue
         # named member struct: "... } regNNN"
-        m = re.match(r'(?:struct|union)\s*\{(.*)\}\s*(\w+)$', txt, re.S)
+        m = re.match(r'(?:struct|union)\s*(?:\w+\s*)?\{(.*)\}\s*(\w+)$', txt, re.S)
         if m:
             fields = parse_bits(m.group(1))
             members.append(('word', m.group(2), 1, fields))
             continue
         # anonymous struct/union (no trailing name)
-        m = re.match(r'(?:struct|union)\s*\{(.*)\}$', txt, re.S)
+        m = re.match(r'(?:struct|union)\s*(?:\w+\s*)?\{(.*)\}$', txt, re.S)
         if m:
             inner = m.group(1)
             variants = []
             for sub in split_members(inner):
                 sub = sub.strip().rstrip(';').strip()
-                sm = re.match(r'struct\s*\{(.*)\}\s*(\w*)$', sub, re.S)
+                sm = re.match(r'struct\s*(?:\w+\s*)?\{(.*)\}\s*(\w*)$', sub, re.S)
                 if sm:
                     variants.append((sm.group(2) or '', parse_bits(sm.group(1))))
                 elif sub.startswith('RK_U32'):
-                    variants.append(('', parse_bits(sub)))
+                    am = re.match(r'RK_U32\s+(\w+)\s*\[(\d+)\]', sub)
+                    if am:
+                        variants.append(('', [am.group(1), int(am.group(2))] if False else [('__array__' + am.group(1), 32 * int(am.group(2)), None)]))
+                    else:
+                        variants.append(('', parse_bits(sub)))
             # prefix per variant from its leading comment
             named = []
             for i, (nm, fields) in enumerate(variants):
@@ -118,42 +135,77 @@ def parse_struct(name, text):
             members.append(('word', '', 1, fields))
     return members
 
+def extract_struct(text, want):
+    """Brace-match every `typedef struct TAG { ... } NAME;` and return the body
+    of the one whose NAME equals `want`."""
+    for m in re.finditer(r'typedef\s+struct\s+(\w+)\s*\{', text):
+        i = text.index('{', m.start())
+        depth = 0
+        j = i
+        while j < len(text):
+            if text[j] == '{':
+                depth += 1
+            elif text[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        tail = text[j + 1:j + 80]
+        nm = re.match(r'\s*(\w+)\s*;', tail)
+        if nm and nm.group(1) == want:
+            return text[i + 1:j]
+    return None
+
 def main():
     path, out_path = sys.argv[1], sys.argv[2]
     text = strip_comments(open(path).read())
     out = []
     entries = []  # (word, name, lsb, width)
     for struct, base in BASES:
-        m = re.search(
-            r'typedef\s+struct\s+\w+\s*\{(.*?)\n\}\s*' + struct + r';', text, re.S
-        )
-        if not m:
+        body = extract_struct(text, struct)
+        if body is None:
             print("missing", struct, file=sys.stderr)
             continue
-        members = parse_struct(struct, m.group(1))
-        word = base
-        lsb = 0
+        members = parse_struct(struct, body)
+        # Anchor-driven placement: named members carry their word number
+        # (`reg016_str_len` -> 16, `reg164_179_ref_base` -> 164..179),
+        # anonymous members are laid out at the running cursor.
+        cursor = base
         for kind, name, count, fields in members:
+            anchored = None
             if kind == 'array':
-                word += count + (1 if lsb else 0)
-                lsb = 0
+                m2 = re.match(r'reg(\d+)_(\d+)_', name)
+                if m2:
+                    anchored = int(m2.group(1))
+                    count = int(m2.group(2)) - anchored + 1
+                else:
+                    m2 = re.match(r'reg(\d+)', name)
+                    anchored = int(m2.group(1)) if m2 else None
+                cursor = (anchored if anchored is not None else cursor) + count
                 continue
+            anchor_src = name or (fields[0][0] if fields and fields[0][0] else '')
+            m2 = re.match(r'^reg(\d+)(?:_|$)', anchor_src)
+            if m2:
+                anchored = int(m2.group(1))
+            word = anchored if anchored is not None else cursor
             if kind == 'union':
-                if lsb:
-                    word += 1
-                    lsb = 0
+                span = 1
                 for prefix, fs in fields:
                     clsb = 0
                     cword = word
+                    total = 0
                     for fname, width, _c in fs:
                         if fname:
                             entries.append((cword, f'{prefix}_{fname}', clsb, width))
                         clsb += width
+                        total += width
                         if clsb >= 32:
                             cword += 1
                             clsb = 0
-                word += 1
+                    span = max(span, (total + 31) // 32)
+                cursor = word + span
                 continue
+            lsb = 0
             for fname, width, _c in fields:
                 if lsb + width > 32:
                     word += 1
@@ -164,8 +216,9 @@ def main():
                 if lsb >= 32:
                     word += 1
                     lsb = 0
+            cursor = word + (1 if lsb else 0)
 
-    n_words = 260
+    n_words = 276  # DEC_VDPU34X_REGISTERS
     out.append('//! vdpu34x (rkvdec2, RK3588) register map.')
     out.append('//!')
     out.append('//! Generated by `tools/gen_vdpu34x_regs.py` from the official MPP')

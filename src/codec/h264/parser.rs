@@ -194,7 +194,7 @@ pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
     }
 
     let mut out = Vec::with_capacity(starts.len());
-    for (n, &(_, payload_start)) in starts.iter().enumerate() {
+    for (n, &(sc_start, payload_start)) in starts.iter().enumerate() {
         let end = starts
             .get(n + 1)
             .map(|&(start, _)| start)
@@ -212,8 +212,8 @@ pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
             ref_idc: (header >> 5) & 3,
             unit_type: header & 0x1f,
             rbsp: ebsp_to_rbsp(body),
-            offset: payload_start - 1,
-            len: payload_end - (payload_start - 1),
+            offset: sc_start,
+            len: payload_end - sc_start,
         });
     }
     out

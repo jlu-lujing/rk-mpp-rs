@@ -322,6 +322,65 @@ fn main() {
         }
         return;
     }
+    if args.len() > 1 && args[1] == "h264dec" {
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/out.yuv");
+        if src.is_empty() {
+            println!("usage: rk-mpp-rs h264dec <in.264> <out.yuv>");
+            return;
+        }
+        let data = std::fs::read(src).expect("read stream");
+        let aus = rk_mpp_rs::codec::h264::decoder::split_access_units(&data);
+        println!("{} access units", aus.len());
+        let mut dec = match rk_mpp_rs::codec::h264::Decoder::new() {
+            Ok(d) => d,
+            Err(e) => {
+                println!("open rkvdec failed: {e}");
+                return;
+            }
+        };
+        let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
+        use std::io::Write;
+        let mut n = 0usize;
+        let t = Instant::now();
+        for (i, au) in aus.iter().enumerate() {
+            let t0 = Instant::now();
+            match dec.decode_access_unit(au) {
+                _ if false => {}
+                Ok(Some(pic)) => {
+                    n += 1;
+                    if i < 3 {
+                        println!("    frame {i} submit+poll: {:.2} ms", t0.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    out.write_all(&pic.yuv).expect("write frame");
+                    if i < 3 {
+                        let y = &pic.yuv[..pic.width * pic.height];
+                        let sum: u64 = y.iter().map(|v| *v as u64).sum();
+                        let maxv = y.iter().copied().max().unwrap_or(0);
+                        println!(
+                            "  frame {i}: {}x{} y_mean={:.1} y_max={} status={:08x}/{:08x}/{:08x}",
+                            pic.width,
+                            pic.height,
+                            sum as f64 / y.len() as f64,
+                            maxv,
+                            dec.status().0,
+                            dec.status().1,
+                            dec.status().2
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    println!("frame {i}: decode error: {e}");
+                    break;
+                }
+            }
+        }
+        out.flush().ok();
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        println!("decoded {n} frames in {ms:.1} ms ({:.1} fps)", n as f64 / (ms / 1000.0));
+        return;
+    }
     if args.len() > 1 && args[1] == "h264dpb" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
         if path.is_empty() {

@@ -65,16 +65,16 @@ impl BitWriter {
     }
 }
 
-/// SPS + PPS + DPB block (`sw42`).
+/// SPS + PPS + DPB block, exactly 48 bytes as `VDPU34X_SPSPPS_UNIT_SIZE`.
 ///
-/// `dpb` is the 16-entry reference table in slot order; `voidx` is the layer
-/// id, always 0 for non-MVC streams.
-pub fn build_sps_pps(sps: &Sps, pps: &Pps, dpb_slots: &[Option<&FrameStore>], sclst_fd: u32) -> Vec<u8> {
+/// Layout follows `prepare_spspps` in `hal_h264d_vdpu34x.c`: the SPS part is
+/// 128-bit aligned, dimensions are 12-bit MB counts, the PPS part ends with a
+/// zero scan-list address (the scan list has its own register), and the DPB
+/// flags share one 32-bit word.
+pub fn build_sps_pps(sps: &Sps, pps: &Pps, dpb_slots: &[Option<&FrameStore>]) -> Vec<u8> {
     let mut w = BitWriter::new();
     // SPS
-    w.put_ones(4); // seq_parameter_set_id (unused by hardware)
-    w.put_ones(8); // profile_idc
-    w.put_ones(1); // constraint_set3_flag
+    w.put_ones(13); // sps_id(4) | profile_idc(8) | constraint_set3(1)
     w.put(sps.chroma_format_idc, 2);
     w.put(sps.bit_depth_luma - 8, 3);
     w.put(sps.bit_depth_chroma - 8, 3);
@@ -84,8 +84,8 @@ pub fn build_sps_pps(sps: &Sps, pps: &Pps, dpb_slots: &[Option<&FrameStore>], sc
     w.put(sps.poc_type, 2);
     w.put(sps.log2_max_poc_lsb.saturating_sub(4), 4);
     w.put(0, 1); // delta_pic_order_always_zero_flag
-    w.put((sps.width + 15) / 16, 9); // width in MBs
-    w.put((sps.height + 15) / 16, 9);
+    w.put((sps.width + 15) / 16, 12);
+    w.put((sps.height + 15) / 16, 12);
     w.put(sps.frame_mbs_only as u32, 1);
     w.put(0, 1); // MbaffFrameFlag
     w.put(sps.direct_8x8_inference as u32, 1);
@@ -102,11 +102,10 @@ pub fn build_sps_pps(sps: &Sps, pps: &Pps, dpb_slots: &[Option<&FrameStore>], sc
     w.put(0, 10);
     w.put(0, 1);
     w.put(0, 10);
-    w.align(32);
+    w.align(128);
 
     // PPS
-    w.put_ones(8); // pps id
-    w.put_ones(5); // sps id
+    w.put_ones(13); // pps_id(8) | sps_id(5)
     w.put(pps.entropy_coding as u32, 1);
     w.put(pps.bottom_field_pic_order as u32, 1);
     w.put(pps.num_ref_idx_l0 - 1, 5);
@@ -122,22 +121,28 @@ pub fn build_sps_pps(sps: &Sps, pps: &Pps, dpb_slots: &[Option<&FrameStore>], sc
     w.put(pps.transform_8x8 as u32, 1);
     w.put(0, 5); // second_chroma_qp_index_offset
     w.put(0, 1); // scaling_list_enable_flag
-    w.put(sclst_fd, 32);
+    w.put(0, 32); // scan list address: has its own register
 
-    // DPB flags + layer ids
+    // DPB: 16 long-term flags then 16 layer ids in one word
+    let mut flags = 0u32;
     for i in 0..16 {
-        let long = dpb_slots.get(i).copied().flatten().map(|f| f.long_term).unwrap_or(false);
-        w.put(long as u32, 1);
+        let long = dpb_slots
+            .get(i)
+            .copied()
+            .flatten()
+            .map(|f| f.long_term)
+            .unwrap_or(false);
+        if long {
+            flags |= 1 << i;
+        }
     }
-    for _ in 0..16 {
-        w.put(0, 1); // voidx
-    }
+    w.put(flags, 32);
     w.align(64);
     w.bytes()
 }
 
-/// Frame RPS block (`sw43`): frame_num wrapping, then the three reference
-/// lists in `(index | valid << 4, bottom, voidx)` form.
+/// Frame RPS block: frame_num wrapping, then the three reference lists as
+/// 7-bit `(index | valid << 4, bottom, voidx)` entries.
 pub fn build_rps(
     sps: &Sps,
     sh: &SliceHeader,
@@ -145,6 +150,7 @@ pub fn build_rps(
     lists: [&[u8]; 3],
 ) -> Vec<u8> {
     let mut w = BitWriter::new();
+    w.align(128);
     let max_frame_num = 1u32 << sps.log2_max_frame_num;
     for i in 0..16 {
         let f = dpb_slots.get(i).copied().flatten();
@@ -161,26 +167,21 @@ pub fn build_rps(
         };
         w.put(wrap & 0xffff, 16);
     }
-    for _ in 0..16 {
-        w.put(0, 1); // null flag
-    }
+    w.put(0, 16); // NULL flags
+    let mut layer = 0u32;
     for i in 0..16 {
-        w.put(dpb_slots.get(i).copied().flatten().is_some() as u32, 1); // voidx
+        if dpb_slots.get(i).copied().flatten().is_some() {
+            layer |= 1 << i;
+        }
     }
+    w.put(layer, 16);
     for list in lists.iter() {
         for i in 0..32 {
-            match list.get(i) {
-                Some(&idx) => {
-                    w.put(idx as u32 | (1 << 4), 5);
-                    w.put(0, 1); // bottom field
-                    w.put(0, 1); // voidx
-                }
-                None => {
-                    w.put(0, 5);
-                    w.put(0, 1);
-                    w.put(0, 1);
-                }
-            }
+            let v = match list.get(i) {
+                Some(&idx) => (idx as u32 & 0x1f) | (1 << 4),
+                None => 0,
+            };
+            w.put(v, 7);
         }
     }
     w.align(128);
@@ -266,22 +267,18 @@ mod tests {
     fn sps_pps_block_has_expected_size() {
         let sps = sps();
         let pps = pps();
-        let block = build_sps_pps(&sps, &pps, &[], 0x1234);
-        // SPS 126 bits -> aligned to 32 = 128, PPS 56 bits + 32 fd = 88,
-        // DPB 32 bits = 248, aligned to 64 = 256 bits = 32 bytes.
-        assert_eq!(block.len(), 32, "matches MPP's 32-byte spspps block");
+        let block = build_sps_pps(&sps, &pps, &[]);
+        assert_eq!(block.len(), 48, "VDPU34X_SPSPPS_UNIT_SIZE");
         assert_eq!(block.len() % 8, 0, "64-bit aligned");
     }
 
     #[test]
     fn sps_block_encodes_dimensions() {
         let sps = sps();
-        let block = build_sps_pps(&sps, &pps(), &[], 0);
-        // Fields in order: 4+8+1+2+3+3+1 bits = 22, then log2(4)=4 -> 26,
-        // refs(5) -> 31, poc(2) -> 33, log2poc(4) -> 37, delta(1) -> 38,
-        // width_mbs(9) at bits 38..47 = 80 MBs (1280/16).
+        let block = build_sps_pps(&sps, &pps(), &[]);
+        // 13+2+3+3+1+4+5+2+4+1 = 38 bits before the width field (12 bits).
         let mut v = 0u32;
-        for i in 38..47 {
+        for i in 38..50 {
             v = (v << 1) | ((block[i / 8] >> (7 - i % 8)) & 1) as u32;
         }
         assert_eq!(v, 80);
@@ -306,9 +303,9 @@ mod tests {
         };
         let slots = [Some(&f0), None, None, None];
         let block = build_rps(&sps, &sh, &slots, [&[0u8], &[], &[]]);
-        // First 16 bits = frame_num_wrap of slot 0 = 0.
-        assert_eq!(&block[..2], &[0, 0]);
+        assert_eq!(&block[..2], &[0, 0], "frame_num_wrap of slot 0");
         assert_eq!(block.len() % 16, 0, "128-bit aligned");
+        assert!(block.len() <= 384, "VDPU34X_RPS_SIZE");
     }
 
     #[test]
