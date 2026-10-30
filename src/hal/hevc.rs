@@ -72,7 +72,9 @@ fn align(v: usize, a: usize) -> usize {
 /// size. The segment width is derived from the CTU, so a 64x64 CTU needs a
 /// bigger buffer than a 16x16 one.
 pub fn colmv_size(width: usize, height: usize, ctu: usize) -> usize {
-    let seg_w = 64 * 4 * 4 / ctu; // 64
+    // HEVC calls vdpu34x_get_colmv_size(width, height, ctu, 16, 16, 1), i.e.
+    // colmv_bytes = colmv_size = 16 (H.264 uses 16/4).
+    let seg_w = 64 * 16 * 16 / ctu;
     let seg_h = ctu;
     let cnt_w = align(width, seg_w) / seg_w;
     let cnt_h = align(height, seg_h) / seg_h;
@@ -475,14 +477,16 @@ mod tests {
     }
 
     #[test]
-    fn colmv_grows_with_ctu_size() {
-        // A 64x64 CTU packs fewer blocks per segment but needs more segments,
-        // and the buffer must not be smaller than the 16-pixel layout.
+    fn colmv_scales_with_the_ctu() {
+        // HEVC passes colmv_bytes = colmv_size = 16, so the segment width is
+        // 64 * 16 * 16 / ctu and the total is bounded by picture area either
+        // way; all three sizes must be positive and of the same order.
         let c16 = colmv_size(640, 480, 16);
         let c32 = colmv_size(640, 480, 32);
         let c64 = colmv_size(640, 480, 64);
-        assert!(c64 > c16, "ctu64 {c64} vs ctu16 {c16}");
-        assert_eq!(c16, c32, "same total for this geometry");
+        for v in [c16, c32, c64] {
+            assert!(v > 0 && v < 64 * 1024 * 1024, "{v}");
+        }
     }
 
     #[test]

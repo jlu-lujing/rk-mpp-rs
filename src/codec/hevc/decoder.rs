@@ -171,10 +171,11 @@ impl Decoder {
             .map_err(|e| e.to_string())?;
 
         if !sh.dependent {
-            if self.dpb.frames().len() >= 8 {
-                // Keep a bounded DPB; the HEVC RPS governs real retention.
-                self.dpb.retain_referenced(&l0);
-            }
+            // Bound memory by the SPS picture-buffering budget instead of the
+            // current L0: a picture missing from this frame's list may still be
+            // needed by a later RPS.
+            self.dpb
+                .trim(sps.max_dec_pic_buffering as usize + 2);
             self.dpb.push(FrameStore {
                 poc,
                 slot: slot as u8,

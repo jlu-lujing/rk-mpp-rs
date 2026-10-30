@@ -106,6 +106,17 @@ impl Dpb {
         self.frames.push(frame);
     }
 
+    /// Keep at most `max_keep` pictures, dropping the oldest by POC. HEVC has
+    /// no sliding window; this only bounds memory, the RPS decides what is
+    /// actually referenced.
+    pub fn trim(&mut self, max_keep: usize) {
+        if self.frames.len() <= max_keep.max(1) {
+            return;
+        }
+        self.frames.sort_by(|a, b| b.poc.cmp(&a.poc));
+        self.frames.truncate(max_keep.max(1));
+    }
+
     /// Drop pictures that no reference set points at any more.
     pub fn retain_referenced(&mut self, keep: &[u8]) {
         self.frames.retain(|f| keep.contains(&f.slot));
