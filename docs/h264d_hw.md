@@ -186,3 +186,13 @@ The 1080p stream prefers ascending order while the 640x480 P stream prefers
 descending, which means the *initial* list is still not what MPP produces.
 Next step is to dump MPP's `RefPicList[0][i]` for a specific frame and match
 it exactly, rather than deriving it from the spec alone.
+
+## HEVC cross-check status
+
+`hal_h265d_slice_hw_rps` in the board's MPP build was instrumented to dump
+`sw_rps_buf`, but `mpi_dec_test -t 16777227` (HEVC) fails with
+`mpp_init failed`, so the reference decoder is not usable for HEVC on this
+build (the H.264 path works). The RPS table layout in `codec::hevc::hw` is
+therefore ported from the source and covered by unit tests, but not yet
+verified byte-for-byte against MPP. Re-check once the HEVC HAL lands: the
+table is fixed-size (3200 bytes) and starts with 32 long-term entries.
