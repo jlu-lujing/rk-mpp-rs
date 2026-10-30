@@ -169,3 +169,20 @@ Findings so far:
   the same value as the top-field POC, we write 0.
 * the RPS block for an IDR is all zeros on both sides, so the remaining fault
   is likely in the slice payload framing or the ref list content of P frames.
+
+## Reference list reordering experiments (do not repeat)
+
+`ref_pic_list_modification` is parsed correctly (verified: x264 emits
+`Sub(1), Sub(15), Add(0), Sub(1), End` on one P slice), but applying it made
+things worse in every configuration tried:
+
+| initial L0 order | reordering | t_a min | 720p min | 1080p min |
+|---|---|---:|---:|---:|
+| frame_num desc | no  | **55.4 dB** | **34.5 dB** | 37.0 dB |
+| frame_num desc | yes | 41.8 | 33.7 | 37.0 |
+| frame_num asc  | yes | 38.5 | 32.6 | 36.2 |
+
+The 1080p stream prefers ascending order while the 640x480 P stream prefers
+descending, which means the *initial* list is still not what MPP produces.
+Next step is to dump MPP's `RefPicList[0][i]` for a specific frame and match
+it exactly, rather than deriving it from the spec alone.
