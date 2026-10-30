@@ -46,10 +46,11 @@ multi-core, secure mode).
 - [x] JPEG baseline, 4:2:0/4:2:2/4:4:4/gray, NV12 + RGB888 output
 - [ ] JPEG 1/2, 1/4 hardware downscale
 - [x] H.264 syntax (SPS/PPS/slice, CABAC-aware header, B-frames, weighted pred)
-- [x] H.264 decode on rkvdec: I/P streams **bit-exact** (4 IDR + 4 P stream at
-      475 fps), 720p/1080p decode with zero hardware errors at 162/72 fps;
-      multi-reference and B-frame prediction still 34-54 dB (reference-list
-      content beyond the first entry is the open item)
+- [x] H.264 decode on rkvdec: I/P streams **bit-exact** (4 IDR + 4 P at 475 fps);
+      720p / 1080p / 90-frame B-pyramid streams decode with **zero** hardware
+      errors at 162 / 72 / 67 fps. Single-reference P frames 55-69 dB, B frames
+      42-54 dB, multi-reference 19-48 dB: the open item is reference-list
+      reordering (`ref_pic_list_modification`) plus colmv validity
 - [ ] frame buffer free list (buffers are currently never reused)
 - [ ] H.264 multi-slice, field/MBAFF, long-term refs, error concealment
 - [ ] H.265 Main/Main10, tiles, WPP, RPS, SCC
