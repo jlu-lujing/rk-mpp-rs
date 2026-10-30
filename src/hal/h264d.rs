@@ -293,7 +293,11 @@ impl H264d {
         let mut nearest: Option<u32> = None;
         for i in 0..16usize {
             let f = refs.get(i).copied().flatten();
-            let fd = f.map(|f| f.nv12.fd() as u32).unwrap_or(0);
+            // MPP points missing reference slots at the current picture rather
+            // than leaving address 0 in the register.
+            let fd = f
+                .map(|f| f.nv12.fd() as u32)
+                .unwrap_or(cur.nv12.fd() as u32);
             // Progressive frame: not a field picture, both fields used, and the
             // reference's colmv is valid — that is what MPP's
             // RefPicFiledFlags / UsedForReferenceFlags / RefPicColmvUsedFlags
@@ -304,7 +308,9 @@ impl H264d {
                 .set(reg::Field { lsb: flag_fields[i].lsb + 2, ..flag_fields[i] }, present)
                 .set(reg::Field { lsb: flag_fields[i].lsb + 3, ..flag_fields[i] }, present);
             r.w[164 + i] = fd;
-            r.w[181 + i] = f.map(|f| f.colmv.fd() as u32).unwrap_or(0);
+            r.w[181 + i] = f
+                .map(|f| f.colmv.fd() as u32)
+                .unwrap_or(cur.colmv.fd() as u32);
             if f.is_some() && nearest.is_none() {
                 nearest = Some(fd);
             }

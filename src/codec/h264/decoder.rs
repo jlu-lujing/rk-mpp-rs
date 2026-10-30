@@ -111,14 +111,23 @@ impl Decoder {
         self.dpb.set_frame_num_offset(fno);
         let (l0, l1) = self.dpb.build_ref_lists(&sh, poc);
 
-        // 4. buffers
+        // 4. buffers. A fresh buffer for every IDR: reusing one that was a
+        // reference makes the hardware's first (reference-less) frame come out
+        // slightly wrong.
         let slot = if idr {
-            0
+            self.frames.push(None);
+            self.frames.len() - 1
         } else {
-            self.frames
-                .iter()
-                .position(|f| f.is_none())
-                .unwrap_or((poc.rem_euclid(17)) as usize)
+            // Fresh buffer per picture. Reusing one that previously held a
+            // reference makes the decoder blend stale pixels in, so the pool
+            // only grows for now (a proper free list is still to do).
+            match self.frames.iter().position(|f| f.is_none()) {
+                Some(b) => b,
+                None => {
+                    self.frames.push(None);
+                    self.frames.len() - 1
+                }
+            }
         };
         self.ensure_frame(slot).map_err(|e| e.to_string())?;
         // Reference bases are presented in reference-list (L0) order: the
@@ -139,11 +148,33 @@ impl Decoder {
         // the hardware are `00 00 01 65 ...`), parameter sets excluded.
         let mut payload: Vec<u8> = Vec::with_capacity(aub.len());
         for n in nals.iter().filter(|n| n.is_vcl()) {
+            // MPP hands the hardware a normalised 3-byte start code (a 4-byte
+            // code loses its first byte) and pads the end with three zero
+            // bytes; verified byte-for-byte against its packet dump.
+            let code_len = if aub.len() >= n.offset + 4 && aub[n.offset..n.offset + 4] == [0, 0, 0, 1]
+            {
+                4
+            } else {
+                3
+            };
+            let start = n.offset + (code_len - 3);
             let end = (n.offset + n.len).min(aub.len());
-            payload.extend_from_slice(&aub[n.offset..end]);
+            payload.extend_from_slice(&aub[start..end]);
         }
+        payload.extend_from_slice(&[0, 0, 0]);
         if payload.is_empty() {
             return Ok(None);
+        }
+        if std::env::var("RFI_STREAM_DUMP").is_ok() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/our_streams.bin")
+            {
+                let _ = write!(f, "TASK {} {}\n", poc, payload.len());
+                let _ = f.write_all(&payload);
+            }
         }
         let mut stream =
             DmaBuf::alloc("system", payload.len().max(64), false).map_err(|e| e.to_string())?;
