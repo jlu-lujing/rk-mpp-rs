@@ -118,15 +118,19 @@ impl Decoder {
             self.frames.push(None);
             self.frames.len() - 1
         } else {
-            // Fresh buffer per picture. Reusing one that previously held a
-            // reference makes the decoder blend stale pixels in, so the pool
-            // only grows for now (a proper free list is still to do).
-            match self.frames.iter().position(|f| f.is_none()) {
+            // Reuse a buffer no DPB entry points at any more; otherwise grow.
+            // A buffer that still backs a reference must never be the output.
+            let live: Vec<usize> = self.dpb.frames().iter().map(|f| f.buf).collect();
+            match (0..self.frames.len()).find(|b| !live.contains(b) && self.frames[*b].is_some())
+            {
                 Some(b) => b,
-                None => {
-                    self.frames.push(None);
-                    self.frames.len() - 1
-                }
+                None => match self.frames.iter().position(|f| f.is_none()) {
+                    Some(b) => b,
+                    None => {
+                        self.frames.push(None);
+                        self.frames.len() - 1
+                    }
+                },
             }
         };
         self.ensure_frame(slot).map_err(|e| e.to_string())?;

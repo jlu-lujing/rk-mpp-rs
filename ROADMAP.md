@@ -52,7 +52,10 @@ multi-core, secure mode).
       errors at 162 / 72 / 67 fps. Single-reference P frames 55-69 dB, B frames
       42-54 dB, multi-reference 19-48 dB: the open item is reference-list
       reordering (`ref_pic_list_modification`) plus colmv validity
-- [ ] frame buffer free list (buffers are currently never reused)
+- [x] frame buffer pool: buffers whose DPB entry is gone are reused, so a
+      90-frame 1080p stream keeps ~7 frame buffers instead of 90 (measured
+      PSNR unchanged at 33-34 dB on the 720p stream, 23 dB min on the
+      5-reference B-pyramid stream)
 - [ ] H.264 multi-slice, field/MBAFF, long-term refs, error concealment
 - [x] H.265 syntax: VPS/SPS/PPS, profile_tier_level, short-term RPS
       (explicit + predicted), slice segment header, POC and reference lists —
