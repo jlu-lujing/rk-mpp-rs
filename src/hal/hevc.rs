@@ -67,12 +67,151 @@ pub fn colmv_size(width: usize, height: usize) -> usize {
     align(cnt_w, 16) * cnt_h + cnt_w * cnt_h * 64 * 16
 }
 
+/// RCB regions in `vdpu34x_get_rcb_buf_size` order.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RcbInfo {
+    pub dblk: usize,
+    pub intra: usize,
+    pub transd_row: usize,
+    pub strmd_row: usize,
+    pub inter_row: usize,
+    pub sao: usize,
+    pub fbc: usize,
+    pub transd_col: usize,
+    pub inter_col: usize,
+    pub filt_col: usize,
+}
+
+fn rcb_bytes(bits: usize) -> usize {
+    align((bits + 7) / 8, 256)
+}
+
+impl RcbInfo {
+    /// `h265d_refine_rcb_size`; FBC is always off in this implementation.
+    pub fn compute(
+        width: usize,
+        height: usize,
+        chroma_idc: u32,
+        bit_depth: u32,
+        ctu_size: usize,
+        tile_col_cut: usize,
+    ) -> RcbInfo {
+        let w = align(width, ctu_size);
+        let h = align(height, ctu_size);
+        let bd = bit_depth as usize;
+        let ext = tile_col_cut * 64 * 8;
+        let sao_flag = true;
+
+        let strmd_row = if w > 8192 {
+            let factor = ctu_size / 16;
+            rcb_bytes((align(w, ctu_size) + factor - 1) * factor * 24 + ext)
+        } else {
+            0
+        };
+        let transd_row = if w > 8192 {
+            rcb_bytes(((w - 8192).next_multiple_of(4)) * 2 + ext)
+        } else {
+            0
+        };
+        let transd_col = if h > 8192 && tile_col_cut > 0 {
+            rcb_bytes((h - 8192).next_multiple_of(4) * 2)
+        } else {
+            0
+        };
+        let inter_row = rcb_bytes(w * 22 + ext);
+        let inter_col = if tile_col_cut > 0 { rcb_bytes(h * 22) } else { 0 };
+        let intra = rcb_bytes(w * 48 + ext);
+
+        let dblk_bits = if chroma_idc == 1 || chroma_idc == 2 {
+            if ctu_size == 32 {
+                w * (4 + 6 * bd)
+            } else {
+                w * (2 + 6 * bd)
+            }
+        } else if ctu_size == 32 {
+            w * (4 + 8 * bd)
+        } else {
+            w * (2 + 8 * bd)
+        } + tile_col_cut * (if bd == 8 { 256 } else { 192 })
+            + ext;
+        let dblk = rcb_bytes(dblk_bits);
+
+        let sao_bits = if sao_flag {
+            (if chroma_idc == 1 || chroma_idc == 2 {
+                w * (128 / ctu_size + 2 * bd)
+            } else {
+                w * (128 / ctu_size + 3 * bd)
+            }) + tile_col_cut * (if bd == 8 { 160 } else { 128 })
+                + ext
+        } else {
+            0
+        };
+        let sao = rcb_bytes(sao_bits);
+        let fbc = 0;
+        let filt_col = 0;
+        RcbInfo {
+            dblk,
+            intra,
+            transd_row,
+            strmd_row,
+            inter_row,
+            sao,
+            fbc,
+            transd_col,
+            inter_col,
+            filt_col,
+        }
+    }
+
+    pub fn total(&self) -> usize {
+        self.dblk
+            + self.intra
+            + self.transd_row
+            + self.strmd_row
+            + self.inter_row
+            + self.sao
+            + self.fbc
+            + self.transd_col
+            + self.inter_col
+            + self.filt_col
+    }
+
+    /// (register index, byte offset) pairs, identical ordering to H.264.
+    pub fn offsets(&self) -> Vec<RegOffsetInfo> {
+        let order = [
+            (139u32, self.dblk),
+            (133, self.intra),
+            (134, self.transd_row),
+            (136, self.strmd_row),
+            (137, self.inter_row),
+            (140, self.sao),
+            (141, self.fbc),
+            (135, self.transd_col),
+            (138, self.inter_col),
+            (142, self.filt_col),
+        ];
+        let mut off = 0u32;
+        order
+            .iter()
+            .map(|&(reg_idx, size)| {
+                let info = RegOffsetInfo {
+                    reg_idx,
+                    offset: off,
+                };
+                off += size as u32;
+                info
+            })
+            .collect()
+    }
+}
+
 pub struct HevcHw {
     svc: MppService,
     pkt: DmaBuf,
     rps: DmaBuf,
     cabac: DmaBuf,
     rcb: DmaBuf,
+    rcb_info: RcbInfo,
     pub regs: reg::Regs,
 }
 
@@ -89,6 +228,7 @@ impl HevcHw {
             rps,
             cabac,
             rcb,
+            rcb_info: RcbInfo::default(),
             regs: reg::Regs::new(),
         };
         hw.init_common();
@@ -221,6 +361,20 @@ impl HevcHw {
         slice_count: u32,
     ) -> io::Result<()> {
         self.prepare_tables(sps, pps);
+        let ctu_size = 1usize << (sps.log2_min_cb + sps.log2_diff_max_min_cb);
+        let rcb = RcbInfo::compute(
+            cur.width,
+            cur.height,
+            sps.chroma_format_idc,
+            sps.bit_depth_luma.max(sps.bit_depth_chroma),
+            ctu_size,
+            pps.tile_columns.saturating_sub(1) as usize,
+        );
+        let total = rcb.total().max(4096);
+        if total > self.rcb.len() {
+            self.rcb = DmaBuf::alloc("system", align(total, 4096), false)?;
+        }
+        self.rcb_info = rcb;
         self.fill_regs(sps, sh, poc, cur, refs, ref_pocs, stream_len, slice_count);
 
         let r = &mut self.regs;
@@ -244,15 +398,15 @@ impl HevcHw {
         let comm_addr: Vec<u32> = r.w[128..200].to_vec();
         let highpoc: Vec<u32> = r.w[200..205].to_vec();
         let statistic: Vec<u32> = r.w[256..276].to_vec();
-        let offs: Vec<RegOffsetInfo> = Vec::new();
-        let _ = offs;
+        let offs = self.rcb_info.offsets();
         let mut batch = crate::service::Batch::new();
         batch
             .reg_write(&comm_gen, 32)
             .reg_write(&comm_paras, 256)
             .reg_write(&comm_addr, 512)
             .reg_write(&highpoc, 800)
-            .reg_write(&statistic, 1024);
+            .reg_write(&statistic, 1024)
+            .reg_offsets(&offs);
         self.svc.submit_batch(&mut batch)?;
         self.svc.poll_hw_finish()?;
         Ok(())
@@ -271,5 +425,44 @@ mod tests {
     #[test]
     fn pps_buffer_holds_64_copies() {
         assert_eq!(PPS_BUF_SIZE, 64 * 112);
+    }
+
+    #[test]
+    fn rcb_matches_the_c_formula_for_1080p() {
+        // 1920x1080, 4:2:0, 8-bit, 64x64 CTU, no tiles.
+        let r = RcbInfo::compute(1920, 1080, 1, 8, 64, 0);
+        assert_eq!(r.dblk, rcb_bytes(1920 * (2 + 6 * 8)));
+        assert_eq!(r.intra, rcb_bytes(1920 * 48));
+        assert_eq!(r.inter_row, rcb_bytes(1920 * 22));
+        assert_eq!(r.sao, rcb_bytes(1920 * (128 / 64 + 2 * 8)));
+        assert_eq!(r.strmd_row, 0, "only above 8192 wide");
+        assert_eq!(r.filt_col, 0, "only with tiles");
+        assert!(r.total() > 0);
+    }
+
+    #[test]
+    fn rcb_offsets_accumulate_in_order() {
+        let r = RcbInfo::compute(1920, 1080, 1, 8, 64, 0);
+        let offs = r.offsets();
+        assert_eq!(offs.len(), 10);
+        assert_eq!((offs[0].reg_idx, offs[9].reg_idx), (139, 142));
+        assert_eq!(offs[0].offset, 0);
+        let mut expect = 0u32;
+        for (o, size) in offs.iter().zip([
+            r.dblk,
+            r.intra,
+            r.transd_row,
+            r.strmd_row,
+            r.inter_row,
+            r.sao,
+            r.fbc,
+            r.transd_col,
+            r.inter_col,
+            r.filt_col,
+        ]) {
+            assert_eq!(o.offset, expect);
+            expect += size as u32;
+        }
+        assert_eq!(expect as usize, r.total());
     }
 }
