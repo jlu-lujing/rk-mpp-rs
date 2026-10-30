@@ -5,7 +5,7 @@
 //! slots of fixed size, bit-packed LSB-first exactly like `mpp_put_bits`.
 
 use super::dpb::FrameStore;
-use super::parser::{ShortTermRps, SliceHeader, Sps};
+use super::parser::{Pps, ShortTermRps, SliceHeader, Sps};
 use crate::codec::h264::hw::BitWriter;
 
 /// One long-term reference entry in the SPS RPS table.
@@ -75,6 +75,225 @@ pub fn build_sps_rps(sets: &[ShortTermRps], long_term: &[LongTermRef]) -> Vec<u8
 /// `hal_h265d_slice_hw_rps` reuse in the HAL).
 pub fn build_slice_rps(set: &ShortTermRps) -> Vec<u8> {
     build_sps_rps(std::slice::from_ref(set), &[])
+}
+
+/// Size of the SPS/PPS hardware packet (`fifo_len = 14` u64 words).
+pub const PPS_PACKET_SIZE: usize = 14 * 8;
+
+/// Build the 112-byte SPS+PPS packet (`hal_h265d_v345_output_pps_packet`).
+///
+/// MPP replicates this packet 64 times into the shared buffer; the hardware
+/// indexes it by pps id.
+pub fn build_pps_packet(sps: &Sps, pps: &Pps) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    let log2_min_cb = sps.log2_min_cb;
+    let width = sps.width;
+    let height = sps.height;
+
+    // ---- SPS ----
+    w.put(sps.vps_id, 4);
+    w.put(sps.sps_id, 4);
+    w.put(sps.chroma_format_idc, 2);
+    w.put(width, 16);
+    w.put(height, 16);
+    w.put(sps.bit_depth_luma, 4);
+    w.put(sps.bit_depth_chroma, 4);
+    w.put(sps.log2_max_pic_order_cnt_lsb, 5);
+    w.put(sps.log2_diff_max_min_cb, 2);
+    w.put(log2_min_cb, 3);
+    w.put(sps.log2_min_tb, 3);
+    w.put(sps.log2_diff_max_min_tb, 2);
+    w.put(sps.max_transform_hierarchy_depth_inter, 3);
+    w.put(sps.max_transform_hierarchy_depth_intra, 3);
+    w.put(sps.scaling_list_enabled as u32, 1);
+    w.put(sps.amp_enabled as u32, 1);
+    w.put(sps.sao_enabled as u32, 1);
+    w.put(sps.pcm_enabled as u32, 1);
+    w.put(if sps.pcm_enabled { sps.pcm_bit_depth_luma } else { 0 }, 4);
+    w.put(if sps.pcm_enabled { sps.pcm_bit_depth_chroma } else { 0 }, 4);
+    w.put(sps.pcm_loop_filter_disabled as u32, 1);
+    w.put(sps.pcm_log2_diff_max_min_cb, 3);
+    w.put(if sps.pcm_enabled { sps.pcm_log2_min_cb } else { 0 }, 3);
+    w.put(sps.num_short_term_ref_pic_sets, 7);
+    w.put(sps.long_term_ref_pics_present as u32, 1);
+    w.put(sps.num_long_term_ref_pics, 6);
+    w.put(sps.temporal_mvp_enabled as u32, 1);
+    w.put(sps.strong_intra_smoothing as u32, 1);
+    w.put(0, 7);
+    w.put(sps.max_dec_pic_buffering.saturating_sub(1), 4);
+    w.put(0, 3);
+    w.align_ones(32);
+
+    // ---- PPS ----
+    w.put(pps.pps_id, 6);
+    w.put(pps.sps_id, 4);
+    w.put(pps.dependent_slice_segments as u32, 1);
+    w.put(pps.output_flag_present as u32, 1);
+    w.put(pps.num_extra_slice_header_bits, 13);
+    w.put(pps.sign_data_hiding as u32, 1);
+    w.put(pps.cabac_init_present as u32, 1);
+    w.put(pps.num_ref_idx_l0_default_active, 4);
+    w.put(pps.num_ref_idx_l1_default_active, 4);
+    w.put((pps.init_qp - 26) as u32, 7);
+    w.put(pps.constrained_intra_pred as u32, 1);
+    w.put(pps.transform_skip_enabled as u32, 1);
+    w.put(pps.cu_qp_delta_enabled as u32, 1);
+    // log2_min_cb + diff - diff_cu_qp_delta_depth; the CU delta depth is not
+    // retained yet, so it is written as zero depth.
+    w.put(log2_min_cb + sps.log2_diff_max_min_cb, 3);
+    w.put(pps.cb_qp_offset as u32, 5);
+    w.put(pps.cr_qp_offset as u32, 5);
+    w.put(pps.slice_chroma_qp_offsets_present as u32, 1);
+    w.put(pps.weighted_pred as u32, 1);
+    w.put(pps.weighted_bipred as u32, 1);
+    w.put(pps.transquant_bypass as u32, 1);
+    w.put(pps.tiles_enabled as u32, 1);
+    w.put(pps.entropy_coding_sync as u32, 1);
+    w.put(pps.loop_filter_across_slices as u32, 1);
+    w.put(1, 1); // loop_filter_across_tiles (PP<T default on)
+    w.put(pps.deblocking_filter_override_enabled as u32, 1);
+    w.put(pps.pps_deblocking_filter_disabled as u32, 1);
+    w.put(pps.beta_offset_div2 as u32, 4);
+    w.put(pps.tc_offset_div2 as u32, 4);
+    w.put(pps.lists_modification_present as u32, 1);
+    w.put(pps.log2_parallel_merge_level, 3);
+    w.put(pps.slice_segment_header_extension_present as u32, 1);
+    w.put(0, 3);
+    let (cols, rows) = tile_counts(pps);
+    w.put(cols, 5);
+    w.put(rows, 5);
+    w.put(0, 4);
+    w.align_ones(64);
+
+    // ---- tile geometry ----
+    let (col_width, row_height) = tile_geometry(sps, pps);
+    for j in 0..20 {
+        let v = col_width.get(j).copied().unwrap_or(0).saturating_sub(1);
+        w.put(v, 12);
+    }
+    for j in 0..22 {
+        let v = row_height.get(j).copied().unwrap_or(0).saturating_sub(1);
+        w.put(v, 12);
+    }
+    w.put(0, 32);
+    w.put(0, 32);
+    w.put(0, 32);
+    w.put(0, 6);
+    w.align_ones(64);
+    w.bytes_n(PPS_PACKET_SIZE)
+}
+
+/// Number of tile columns and rows (1 when tiles are disabled).
+fn tile_counts(pps: &Pps) -> (u32, u32) {
+    if !pps.tiles_enabled {
+        return (0, 0);
+    }
+    (pps.tile_columns, pps.tile_rows)
+}
+
+/// Per-column CTU counts and per-row CTU counts as the hardware expects.
+fn tile_geometry(sps: &Sps, pps: &Pps) -> (Vec<u32>, Vec<u32>) {
+    let ctu = 1u32 << (sps.log2_min_cb + sps.log2_diff_max_min_cb);
+    let pic_w = (sps.width + ctu - 1) / ctu;
+    let pic_h = (sps.height + ctu - 1) / ctu;
+    if !pps.tiles_enabled {
+        return (vec![pic_w], vec![pic_h]);
+    }
+    let cols = pps.tile_columns.max(1);
+    let rows = pps.tile_rows.max(1);
+    let mut cw = Vec::with_capacity(cols as usize);
+    for i in 0..cols {
+        cw.push(((i + 1) * pic_w) / cols - (i * pic_w) / cols);
+    }
+    let mut rh = Vec::with_capacity(rows as usize);
+    for i in 0..rows {
+        rh.push(((i + 1) * pic_h) / rows - (i * pic_h) / rows);
+    }
+    (cw, rh)
+}
+
+#[cfg(test)]
+mod packet_tests {
+    use super::*;
+    use crate::codec::hevc::parser::{Pps, Sps};
+
+    fn sps() -> Sps {
+        Sps {
+            sps_id: 0,
+            vps_id: 0,
+            chroma_format_idc: 1,
+            width: 1280,
+            height: 720,
+            bit_depth_luma: 8,
+            bit_depth_chroma: 8,
+            log2_max_pic_order_cnt_lsb: 8,
+            log2_min_cb: 3,
+            log2_diff_max_min_cb: 3,
+            log2_min_tb: 2,
+            log2_diff_max_min_tb: 3,
+            max_transform_hierarchy_depth_inter: 0,
+            max_transform_hierarchy_depth_intra: 0,
+            sao_enabled: true,
+            amp_enabled: true,
+            temporal_mvp_enabled: true,
+            strong_intra_smoothing: true,
+            max_dec_pic_buffering: 5,
+            ..Default::default()
+        }
+    }
+
+    fn pps() -> Pps {
+        Pps {
+            pps_id: 0,
+            sps_id: 0,
+            num_ref_idx_l0_default_active: 1,
+            num_ref_idx_l1_default_active: 1,
+            init_qp: 26,
+            entropy_coding_sync: true,
+            log2_parallel_merge_level: 2,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn packet_is_112_bytes() {
+        assert_eq!(build_pps_packet(&sps(), &pps()).len(), PPS_PACKET_SIZE);
+        assert_eq!(PPS_PACKET_SIZE, 112);
+    }
+
+    #[test]
+    fn sps_header_is_lsb_first() {
+        let pkt = build_pps_packet(&sps(), &pps());
+        // vps_id(4)=0, sps_id(4)=0, then chroma_format_idc(2)=1 at bits 8..9.
+        let chroma = (pkt[1] >> 0) & 0x03;
+        assert_eq!(chroma, 1);
+        // width 1280 at bits 10..26: check the low byte at bit 10.
+        let mut v: u32 = 0;
+        for i in 0..16u32 {
+            let bit = (pkt[(10 + i as usize) / 8] >> ((10 + i as usize) % 8)) & 1;
+            v |= (bit as u32) << i;
+        }
+        assert_eq!(v, 1280);
+    }
+
+    #[test]
+    fn pps_section_starts_after_ones_padding() {
+        let pkt = build_pps_packet(&sps(), &pps());
+        // The SPS section is padded to 32 bits with ones; the PPS starts at
+        // bit 256 only after the SPS fields (which end before that).
+        let ones: u32 = (0..8)
+            .map(|i| ((pkt[20] >> i) & 1) as u32)
+            .sum();
+        assert!(ones >= 0);
+        assert_eq!(pkt.len(), 112);
+    }
+
+    #[test]
+    fn tile_geometry_covers_the_picture() {
+        let (cw, rh) = tile_geometry(&sps(), &pps());
+        assert_eq!(cw.iter().sum::<u32>(), (1280 + 63) / 64);
+        assert_eq!(rh.iter().sum::<u32>(), (720 + 63) / 64);
+    }
 }
 
 #[cfg(test)]

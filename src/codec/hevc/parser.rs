@@ -222,6 +222,7 @@ pub struct Sps {
     pub temporal_mvp_enabled: bool,
     pub sample_adaptive_offset: bool,
     pub amp_enabled: bool,
+    pub strong_intra_smoothing: bool,
     pub sao_enabled: bool,
     pub pcm_enabled: bool,
     pub profile: ProfileTierLevel,
@@ -343,7 +344,7 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, HevcError> {
         }
     }
     sps.temporal_mvp_enabled = r.read_bit()? == 1;
-    r.skip(1)?; // strong_intra_smoothing_enabled_flag
+    sps.strong_intra_smoothing = r.read_bit()? == 1;
     Ok(sps)
 }
 
@@ -423,6 +424,9 @@ pub struct Pps {
     pub weighted_bipred: bool,
     pub transquant_bypass: bool,
     pub tiles_enabled: bool,
+    pub tile_columns: u32,
+    pub tile_rows: u32,
+    pub uniform_spacing: bool,
     pub entropy_coding_sync: bool,
     pub loop_filter_across_slices: bool,
     pub deblocking_filter_control_present: bool,
@@ -468,7 +472,10 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, HevcError> {
         if cols > 20 || rows > 22 {
             return Err(HevcError::Unsupported("tile grid too large"));
         }
+        pps.tile_columns = cols;
+        pps.tile_rows = rows;
         let uniform = r.read_bit()? == 1;
+        pps.uniform_spacing = uniform;
         if !uniform {
             for _ in 0..(cols - 1) {
                 r.read_ue()?;

@@ -59,12 +59,23 @@ impl BitWriter {
 
     /// Pad with zero bits to a multiple of `align_bits`.
     pub fn align(&mut self, align_bits: u32) {
+        self.pad(align_bits, false)
+    }
+
+    /// Pad to a multiple of `align_bits` with one bits, matching
+    /// `mpp_put_align(ctx, bits, 1)`.
+    pub fn align_ones(&mut self, align_bits: u32) {
+        self.pad(align_bits, true)
+    }
+
+    fn pad(&mut self, align_bits: u32, ones: bool) {
         let total = (self.words.len() - 1) * 64 + self.bitpos;
         let pad = (align_bits as usize - total % align_bits as usize) % align_bits as usize;
+        let bits = if ones { u32::MAX } else { 0 };
         let mut left = pad;
         while left > 0 {
             let step = left.min(32);
-            self.put(0, step as u32);
+            self.put(bits, step as u32);
             left -= step;
         }
     }
