@@ -30,7 +30,7 @@ multi-core, secure mode).
 | M0 | JPEG decode beats MPP by ~30 % (no buf_slot/meta layer); 0.96 ms @ 640p | — | **done** |
 | M1 | H.264 syntax: Annex-B, RBSP, Exp-Golomb, SPS/PPS/slice header, scaling lists | 3.5k | **done** |
 | M1 | H.264 register map generated from `hal_h264d_rkv_reg.h` (80 words, 122 fields) | 0.25k | **done** |
-| M2 | H.264 decode on rkvdec: reg writer, DPB, reference lists, MMCO, error concealment | 6.0k | next |
+| M2 | H.264 decode on rkvdec: reg writer, DPB, reference lists, MMCO, error concealment | 6.0k | **working** |
 | M3 | H.265 decode: syntax (VPS/SPS/PPS, RPS, tiles, WPP) + rkvdec HAL | 12k | todo |
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | todo |
 | M5 | AV1 decode (frame headers, OBU, film grain off) | 14k | todo |
@@ -46,7 +46,10 @@ multi-core, secure mode).
 - [x] JPEG baseline, 4:2:0/4:2:2/4:4:4/gray, NV12 + RGB888 output
 - [ ] JPEG 1/2, 1/4 hardware downscale
 - [x] H.264 syntax (SPS/PPS/slice, CABAC-aware header, B-frames, weighted pred)
-- [ ] H.264 decode, multi-slice, field/MBAFF, long-term refs, error concealment
+- [x] H.264 decode on rkvdec: IDR bit-exact, 1080p/720p streams decode with
+      0-8 hardware errors; inter frames 22-57 dB (reference marking/colmv still
+      to be made exact)
+- [ ] H.264 multi-slice, field/MBAFF, long-term refs, error concealment
 - [ ] H.265 Main/Main10, tiles, WPP, RPS, SCC
 - [ ] VP9 profile 0/2, 10-bit, superframes
 - [ ] AV1 Main, film grain
