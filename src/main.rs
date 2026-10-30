@@ -403,6 +403,64 @@ fn main() {
         println!("{}", hex.join(" "));
         return;
     }
+    if args.len() > 1 && args[1] == "hevc" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        if path.is_empty() {
+            println!("usage: rk-mpp-rs hevc <annexb.265>");
+            return;
+        }
+        let data = std::fs::read(path).expect("read stream");
+        use rk_mpp_rs::codec::hevc;
+        let nals = hevc::split_annex_b(&data);
+        let mut vcl = 0usize;
+        for n in &nals {
+            match n.unit_type {
+                hevc::parser::NAL_VPS => {
+                    let v = hevc::parse_vps(&n.rbsp).expect("vps");
+                    println!(
+                        "VPS id={} sub_layers={} profile={} level={}",
+                        v.vps_id,
+                        v.max_sub_layers,
+                        v.profile.general_profile_idc,
+                        v.profile.general_level_idc
+                    );
+                }
+                hevc::parser::NAL_SPS => {
+                    let s = hevc::parse_sps(&n.rbsp).expect("sps");
+                    println!(
+                        "SPS id={} vps={} {}x{} chroma={} depth={} poc_lsb={} st_rps={} sao={} tmvp={}",
+                        s.sps_id,
+                        s.vps_id,
+                        s.width,
+                        s.height,
+                        s.chroma_format_idc,
+                        s.bit_depth_luma,
+                        s.log2_max_pic_order_cnt_lsb,
+                        s.num_short_term_ref_pic_sets,
+                        s.sao_enabled,
+                        s.temporal_mvp_enabled
+                    );
+                }
+                hevc::parser::NAL_PPS => {
+                    let p = hevc::parse_pps(&n.rbsp).expect("pps");
+                    println!(
+                        "PPS id={} sps={} init_qp={} weighted_pred={} tiles={} wpp={} lists_mod={}",
+                        p.pps_id,
+                        p.sps_id,
+                        p.init_qp,
+                        p.weighted_pred,
+                        p.tiles_enabled,
+                        p.entropy_coding_sync,
+                        p.lists_modification_present
+                    );
+                }
+                t if t <= 31 => vcl += 1,
+                _ => {}
+            }
+        }
+        println!("NAL units: {} (vcl {vcl}), stream {} bytes", nals.len(), data.len());
+        return;
+    }
     if args.len() > 1 && args[1] == "h264dpb" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
         if path.is_empty() {
