@@ -131,6 +131,18 @@ impl Decoder {
             }
         }
 
+        if std::env::var("RFI_HEVC_LISTS").is_ok() {
+            eprintln!(
+                "AU type={} poc={} rps s0={:?} s1={:?} l0={:?} dpb={:?}",
+                first.unit_type,
+                poc,
+                sh.rps.s0,
+                sh.rps.s1,
+                l0,
+                self.dpb.frames().iter().map(|f| (f.slot, f.poc)).collect::<Vec<_>>()
+            );
+        }
+
         // The decoder reads from the first byte, so the access unit is fed from
         // the first NAL header (start code stripped) like the H.264 path.
         let mut payload: Vec<u8> = Vec::with_capacity(aub.len());

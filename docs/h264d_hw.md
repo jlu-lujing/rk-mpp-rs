@@ -240,3 +240,24 @@ Next: walk the PPS syntax against both payloads bit by bit, find the field
 where our reader diverges (candidates: the sign-data-hiding/cabac pair order,
 `diff_cu_qp_delta_depth`, or the entropy-coding-sync substream flag), fix the
 alignment, and re-check that the good stream still lands on the stop bit.
+
+## HEVC: non-IDR frames never decode (measurement correction)
+
+Comparing MD5s of the decoded luma planes showed frames 0 and 3 are **byte
+identical**, while frames 1-3 differ from each other but all have mean 125.
+That is stale heap memory, not decoded pictures: every non-IDR job raises
+`err 0x23` (18 events for 9 such frames, two cores per event) and writes
+nothing, so the output buffer keeps whatever the dma-heap page contained from
+an earlier run.
+
+Consequence: the "38 dB / 40 dB / 26 dB" figures reported for multi-frame HEVC
+were comparisons against recycled memory, not decode quality. Only the IDR
+(56-57 dB) is a real measurement.
+
+Register experiments that produced byte-identical output (rps_mode, the slice
+RPS table, error_intra_mode, DPB trimming, colmv sizing) were therefore all
+inconclusive: the frames they would have affected never decoded.
+
+Next: find why a P/B job is rejected. The reference list and POCs printed by
+RFI_HEVC_LISTS look correct (poc order 0,4,2,1,3,9,7,5 and matching s0/s1), so
+the rejection is more likely a register or table precondition than the lists.
