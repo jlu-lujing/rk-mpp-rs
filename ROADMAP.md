@@ -39,6 +39,7 @@ multi-core, secure mode).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | todo |
 | M9 | Post-processor: vdpu-pp deinterlace/scale/format, RGA interop | 8k | todo |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
 
 ## Feature checklist (per official capability)
 
@@ -84,5 +85,9 @@ multi-core, secure mode).
 - Unit tests: `cargo test` (25 today: parser, registers, tables, scaler, NEON).
 - Real streams: `rk-mpp-rs h264 <file.264>` prints SPS/PPS/slice fields; validated
   against x264 output (720p main with B-frames, 1080p baseline).
-- Bit-exactness target for every decoder: MD5/PSNR against `ffmpeg -c:v <codec>`.
+- Bit-exactness target for every decoder: the software reference in
+  `reference/` decodes the stream, and the hardware path must match it
+  bit-for-bit. Both are validated against the *original* picture the test
+  stream was encoded from (a synthetic source we generate), so no external
+  decoder is needed.
 - Performance target: never slower than the C MPP on the same stream.

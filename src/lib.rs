@@ -5,6 +5,7 @@
 
 
 pub mod codec;
+pub mod reference;
 pub mod hal;
 pub mod scale;
 pub mod service;
