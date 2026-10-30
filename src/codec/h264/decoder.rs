@@ -127,10 +127,31 @@ impl Decoder {
             .map(|e| self.frames.get(e.buf).and_then(|f| f.as_ref()))
             .collect();
 
-        // 5. submit
+        // 5. submit. Only slice NALs go to the decoder: parameter sets and SEI
+        // travel through the SPS/PPS table. The first slice starts at its NAL
+        // header; further slices are separated by a 3-byte start code so the
+        // hardware parser can find them.
+        let mut payload: Vec<u8> = Vec::with_capacity(aub.len());
+        let mut first_slice = true;
+        for n in nals.iter().filter(|n| n.is_vcl()) {
+            let code_len = if aub.len() >= n.offset + 4 && &aub[n.offset..n.offset + 4] == [0, 0, 0, 1] {
+                4
+            } else {
+                3
+            };
+            if !first_slice {
+                payload.extend_from_slice(&[0, 0, 1]);
+            }
+            payload.extend_from_slice(&aub[n.offset + code_len..n.offset + n.len]);
+            first_slice = false;
+        }
+        if payload.is_empty() {
+            return Ok(None);
+        }
         let mut stream =
-            DmaBuf::alloc("system", aub.len().max(64), false).map_err(|e| e.to_string())?;
-        stream.as_mut_slice()[..aub.len()].copy_from_slice(aub);
+            DmaBuf::alloc("system", payload.len().max(64), false).map_err(|e| e.to_string())?;
+        stream.as_mut_slice()[..payload.len()].copy_from_slice(&payload);
+
         let dpb_slots: Vec<Option<&FrameStore>> = (0..16)
             .map(|i| self.dpb.frames().get(i))
             .collect();
