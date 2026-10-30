@@ -294,7 +294,15 @@ impl H264d {
         for i in 0..16usize {
             let f = refs.get(i).copied().flatten();
             let fd = f.map(|f| f.nv12.fd() as u32).unwrap_or(0);
-            r.set(flag_fields[i], (f.is_some()) as u32);
+            // Progressive frame: not a field picture, both fields used, and the
+            // reference's colmv is valid — that is what MPP's
+            // RefPicFiledFlags / UsedForReferenceFlags / RefPicColmvUsedFlags
+            // hold for frame-coded streams.
+            let present = f.is_some() as u32;
+            r.set(flag_fields[i], present)
+                .set(reg::Field { lsb: flag_fields[i].lsb + 1, ..flag_fields[i] }, present)
+                .set(reg::Field { lsb: flag_fields[i].lsb + 2, ..flag_fields[i] }, present)
+                .set(reg::Field { lsb: flag_fields[i].lsb + 3, ..flag_fields[i] }, present);
             r.w[164 + i] = fd;
             r.w[181 + i] = f.map(|f| f.colmv.fd() as u32).unwrap_or(0);
             if f.is_some() && nearest.is_none() {
@@ -346,6 +354,7 @@ impl H264d {
         lists: [&[u8]; 3],
         cur: &Frame,
         refs: &[Option<&Frame>],
+        ref_pocs: &[i32],
         stream: &DmaBuf,
         idr: bool,
     ) -> io::Result<()> {
@@ -358,18 +367,7 @@ impl H264d {
         }
         self.rcb_info = info;
 
-        let ref_pocs: Vec<i32> = (0..32)
-            .map(|i| dpb.get(i).copied().flatten().map(|f| f.poc).unwrap_or(0))
-            .collect();
-        let mut refs16: Vec<Option<&Frame>> = vec![None; 16];
-        for (i, slot) in dpb.iter().enumerate().take(16) {
-            if let Some(f) = slot {
-                if let Some(r) = refs.get(f.slot as usize).copied().flatten() {
-                    refs16[i] = Some(r);
-                }
-            }
-        }
-        self.fill_regs(sps, sh, 0, cur, &refs16, &ref_pocs, stream.len(), idr);
+        self.fill_regs(sps, sh, 0, cur, refs, ref_pocs, stream.len(), idr);
 
         let r = &mut self.regs;
         r.set(reg::w128::REG128_RLC_BASE, stream.fd() as u32)

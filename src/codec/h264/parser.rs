@@ -123,19 +123,21 @@ impl<'a> BitReader<'a> {
         Ok(v as i32)
     }
 
+    /// §7.2: true when at least one syntax element remains before the
+    /// rbsp_stop_one_bit. The tail is the last set bit in the RBSP.
     pub fn more_rbsp_data(&self) -> bool {
-        if self.pos >= self.data.len() * 8 {
+        let total = self.data.len() * 8;
+        if self.pos >= total {
             return false;
         }
-        let byte = self.pos / 8;
-        let bit = self.pos % 8;
-        if bit == 0 {
-            // A trailing 0x80 (possibly followed by nothing) marks rbsp_stop.
-            let rest = &self.data[byte..];
-            !(rest.len() == 1 && rest[0] == 0x80)
-        } else {
-            true
+        let mut last = total;
+        for i in (self.pos..total).rev() {
+            if (self.data[i / 8] >> (7 - i % 8)) & 1 == 1 {
+                last = i;
+                break;
+            }
         }
+        self.pos < last
     }
 }
 
@@ -505,6 +507,17 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, SpsError> {
     pps.deblocking_filter_control = r.read_bit()? == 1;
     pps.constrained_intra_pred = r.read_bit()? == 1;
     pps.redundant_pic_cnt = r.read_bit()? == 1;
+    pps.transform_8x8 = false;
+    // When the optional tail is absent, second_chroma_qp_index_offset is
+    // inferred to equal chroma_qp_index_offset (H.264 §7.3.2.2 / §7.4.2.2).
+    pps.second_chroma_qp_offset = pps.chroma_qp_offset;
+    if r.more_rbsp_data() {
+        pps.transform_8x8 = r.read_bit()? == 1;
+        if r.read_bit()? == 1 {
+            return Err(SpsError::Unsupported("pic_scaling_matrix"));
+        }
+        pps.second_chroma_qp_offset = r.read_se()?;
+    }
     Ok(pps)
 }
 

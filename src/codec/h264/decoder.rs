@@ -121,13 +121,18 @@ impl Decoder {
                 .unwrap_or((poc.rem_euclid(17)) as usize)
         };
         self.ensure_frame(slot).map_err(|e| e.to_string())?;
-        let ref_refs: Vec<Option<&Frame>> = self
-            .dpb
-            .frames()
-            .iter()
-            .take(16)
-            .map(|e| self.frames.get(e.buf).and_then(|f| f.as_ref()))
-            .collect();
+        // Reference bases are presented in reference-list (L0) order: the
+        // hardware indexes reg164_179_ref_base[i] by list position and
+        // reg67_98_ref_poc[2i] carries that picture's POC.
+        let mut ref_refs: Vec<Option<&Frame>> = vec![None; 16];
+        let mut ref_pocs: Vec<i32> = vec![0; 32];
+        for (i, &slot) in l0.iter().enumerate().take(16) {
+            if let Some(f) = self.dpb.frames().iter().find(|f| f.slot == slot) {
+                ref_refs[i] = self.frames.get(f.buf).and_then(|fr| fr.as_ref());
+                ref_pocs[2 * i] = f.poc;
+                ref_pocs[2 * i + 1] = f.poc;
+            }
+        }
 
         // 5. submit. MPP feeds the slice NALs *with* their start codes
         // (verified against the reference decoder: the first bytes it hands to
@@ -158,6 +163,7 @@ impl Decoder {
                 lists,
                 cur,
                 &ref_refs,
+                &ref_pocs,
                 &stream,
                 idr,
             )
