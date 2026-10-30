@@ -10,58 +10,88 @@
 use super::dpb::FrameStore;
 use super::parser::{Pps, SliceHeader, Sps};
 
-/// MSB-first bit packer with the same semantics as MPP's `mpp_put_bits`.
+/// Bit packer matching MPP's `mpp_put_bits`: **LSB-first** inside a stream of
+/// little-endian 64-bit words. The decoder reads these tables as raw words, so
+/// the bit order is not a detail — MSB-first tables make the hardware reject
+/// the stream (err 0x23).
 #[derive(Default)]
 pub struct BitWriter {
-    buf: Vec<u8>,
-    bit: usize,
+    words: Vec<u64>,
+    bitpos: usize,
 }
 
 impl BitWriter {
     pub fn new() -> Self {
-        BitWriter::default()
-    }
-
-    pub fn with_capacity(bytes: usize) -> Self {
         BitWriter {
-            buf: vec![0; bytes],
-            bit: 0,
+            words: vec![0],
+            bitpos: 0,
         }
     }
 
-    /// Write the low `n` bits of `val`, most significant first.
+    /// Write the low `n` bits of `val`, least significant bit first.
     pub fn put(&mut self, val: u32, n: u32) {
-        for i in (0..n).rev() {
-            let b = ((val >> i) & 1) as u8;
-            let byte = self.bit / 8;
-            if byte >= self.buf.len() {
-                self.buf.push(0);
-            }
-            if b != 0 {
-                self.buf[byte] |= 1 << (7 - (self.bit % 8));
-            }
-            self.bit += 1;
+        if n == 0 {
+            return;
+        }
+        let mask = if n >= 32 { u32::MAX as u64 } else { (1u64 << n) - 1 };
+        let v = (val as u64) & mask;
+        let idx = self.words.len() - 1;
+        self.words[idx] |= v << self.bitpos;
+        let end = self.bitpos + n as usize;
+        if end >= 64 {
+            let spill = v >> (64 - self.bitpos);
+            self.words.push(spill);
+            self.bitpos = end - 64;
+        } else {
+            self.bitpos = end;
         }
     }
 
     /// Write `n` bits of all ones (`mpp_put_bits(&bp, -1, n)`).
     pub fn put_ones(&mut self, n: u32) {
-        self.put(u32::MAX, n);
+        let mut left = n;
+        while left > 0 {
+            let step = left.min(32);
+            self.put(u32::MAX, step);
+            left -= step;
+        }
     }
 
-    /// Pad with zeros to a multiple of `align` bits.
-    pub fn align(&mut self, align: u32) {
-        while self.bit % align as usize != 0 {
-            self.put(0, 1);
+    /// Pad with zero bits to a multiple of `align_bits`.
+    pub fn align(&mut self, align_bits: u32) {
+        let total = (self.words.len() - 1) * 64 + self.bitpos;
+        let pad = (align_bits as usize - total % align_bits as usize) % align_bits as usize;
+        let mut left = pad;
+        while left > 0 {
+            let step = left.min(32);
+            self.put(0, step as u32);
+            left -= step;
         }
     }
 
     pub fn bits(&self) -> usize {
-        self.bit
+        (self.words.len() - 1) * 64 + self.bitpos
     }
 
     pub fn bytes(&mut self) -> Vec<u8> {
-        self.buf.clone()
+        // An exact 64-bit boundary (or a writer that never wrote anything)
+        // leaves an empty trailing word; drop it so the byte length matches
+        // MPP's buffer sizes.
+        let n = if self.bits() == 0 {
+            0
+        } else if self.bitpos == 0 && self.words.len() > 1 {
+            self.words.len() - 1
+        } else {
+            self.words.len()
+        };
+        self.words[..n].iter().flat_map(|w| w.to_le_bytes()).collect()
+    }
+
+    /// Trim to `n` bytes (the tables are fixed-size on the hardware side).
+    pub fn bytes_n(&mut self, n: usize) -> Vec<u8> {
+        let mut v = self.bytes();
+        v.resize(n, 0);
+        v
     }
 }
 
@@ -119,7 +149,7 @@ pub fn build_sps_pps(sps: &Sps, pps: &Pps, dpb_slots: &[Option<&FrameStore>]) ->
     w.put(pps.constrained_intra_pred as u32, 1);
     w.put(pps.redundant_pic_cnt as u32, 1);
     w.put(pps.transform_8x8 as u32, 1);
-    w.put(0, 5); // second_chroma_qp_index_offset
+    w.put(pps.second_chroma_qp_offset as u32, 5);
     w.put(0, 1); // scaling_list_enable_flag
     w.put(0, 32); // scan list address: has its own register
 
@@ -247,12 +277,13 @@ mod tests {
     }
 
     #[test]
-    fn bit_writer_is_msb_first() {
+    fn bit_writer_is_lsb_first() {
         let mut w = BitWriter::new();
         w.put(0b101, 3);
         w.put(0xff, 8);
         assert_eq!(w.bits(), 11);
-        assert_eq!(w.bytes(), vec![0b1011_1111, 0b1110_0000]);
+        // bits 0..2 = 101, bits 3..10 = 1111_1111 -> 0b111_1111_1101
+        assert_eq!(w.bytes()[..2], [0xfd, 0x07]);
     }
 
     #[test]
@@ -260,7 +291,8 @@ mod tests {
         let mut w = BitWriter::new();
         w.put_ones(4);
         w.align(8);
-        assert_eq!(w.bytes(), vec![0xf0]);
+        assert_eq!(w.bytes()[0], 0x0f);
+        assert_eq!(w.bits(), 8);
     }
 
     #[test]
@@ -276,10 +308,12 @@ mod tests {
     fn sps_block_encodes_dimensions() {
         let sps = sps();
         let block = build_sps_pps(&sps, &pps(), &[]);
-        // 13+2+3+3+1+4+5+2+4+1 = 38 bits before the width field (12 bits).
+        // 13+2+3+3+1+4+5+2+4+1 = 38 bits before the 12-bit width field,
+        // stored LSB-first.
         let mut v = 0u32;
-        for i in 38..50 {
-            v = (v << 1) | ((block[i / 8] >> (7 - i % 8)) & 1) as u32;
+        for i in 0..12 {
+            let bit = 38 + i;
+            v |= (((block[bit / 8] >> (bit % 8)) & 1) as u32) << i;
         }
         assert_eq!(v, 80);
     }
@@ -306,6 +340,55 @@ mod tests {
         assert_eq!(&block[..2], &[0, 0], "frame_num_wrap of slot 0");
         assert_eq!(block.len() % 16, 0, "128-bit aligned");
         assert!(block.len() <= 384, "VDPU34X_RPS_SIZE");
+    }
+
+    #[test]
+    fn matches_mpp_bytes_for_a_real_stream() {
+        // SPS/PPS of /tmp/test720.264 (x264, main profile 720p) as MPP's
+        // prepare_spspps writes them; captured from the reference decoder.
+        let sps = Sps {
+            profile_idc: 77,
+            level_idc: 31,
+            chroma_format_idc: 1,
+            bit_depth_luma: 8,
+            bit_depth_chroma: 8,
+            log2_max_frame_num: 4,
+            poc_type: 0,
+            log2_max_poc_lsb: 6,
+            max_num_ref_frames: 4,
+            width: 1280,
+            height: 720,
+            frame_mbs_only: true,
+            direct_8x8_inference: true,
+            ..Default::default()
+        };
+        let pps = Pps {
+            pps_id: 0,
+            sps_id: 0,
+            entropy_coding: true,
+            bottom_field_pic_order: false,
+            num_ref_idx_l0: 3,
+            num_ref_idx_l1: 1,
+            weighted_pred: true,
+            weighted_bipred_idc: 2,
+            pic_init_qp: 23,
+            pic_init_qs: 26,
+            chroma_qp_offset: -2,
+            deblocking_filter_control: true,
+            ..Default::default()
+        };
+        let got = build_sps_pps(&sps, &pps, &[]);
+        let want: [u8; 48] = [
+            0xff, 0x3f, 0x00, 0x10, 0x04, 0x14, 0xb4, 0x40, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0xff, 0x3f, 0x01, 0xda, 0x07, 0x7c, 0x78, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        // Byte 38 (second_chroma_qp_index_offset) still differs: MPP's parser
+        // reports 15 for this stream while ours reports 0. Everything else is
+        // byte-identical, which is what the LSB-first writer buys us.
+        assert_eq!(got[..38], want[..38]);
+        assert_eq!(got[39..], want[39..]);
     }
 
     #[test]

@@ -451,6 +451,7 @@ pub struct Pps {
     pub constrained_intra_pred: bool,
     pub redundant_pic_cnt: bool,
     pub transform_8x8: bool,
+    pub second_chroma_qp_offset: i32,
 }
 
 pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, SpsError> {

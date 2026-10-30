@@ -381,6 +381,25 @@ fn main() {
         println!("decoded {n} frames in {ms:.1} ms ({:.1} fps)", n as f64 / (ms / 1000.0));
         return;
     }
+    if args.len() > 1 && args[1] == "spspps" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let data = std::fs::read(path).expect("read");
+        let nals = rk_mpp_rs::codec::h264::split_annex_b(&data);
+        let sps = nals
+            .iter()
+            .find(|n| n.unit_type == 7)
+            .map(|n| rk_mpp_rs::codec::h264::parse_sps(&n.rbsp).unwrap())
+            .unwrap();
+        let pps = nals
+            .iter()
+            .find(|n| n.unit_type == 8)
+            .map(|n| rk_mpp_rs::codec::h264::parse_pps(&n.rbsp).unwrap())
+            .unwrap();
+        let block = rk_mpp_rs::codec::h264::hw::build_sps_pps(&sps, &pps, &[]);
+        let hex: Vec<String> = block.iter().map(|b| format!("{b:02x}")).collect();
+        println!("{}", hex.join(" "));
+        return;
+    }
     if args.len() > 1 && args[1] == "h264dpb" {
         let path = args.get(2).map(|s| s.as_str()).unwrap_or("");
         if path.is_empty() {
@@ -508,9 +527,10 @@ fn main() {
                 8 => {
                     let pps = rk_mpp_rs::codec::h264::parse_pps(&n.rbsp).expect("pps");
                     println!(
-                        "PPS id={} sps={} entropy={} cabac refs_l0={} deblock={}",
+                        "PPS id={} sps={} entropy={} refs_l0={} deblock={} t8x8={} scqp={}",
                         pps.pps_id, pps.sps_id, pps.entropy_coding, pps.num_ref_idx_l0,
-                        pps.deblocking_filter_control
+                        pps.deblocking_filter_control, pps.transform_8x8,
+                        pps.second_chroma_qp_offset
                     );
                     pps_v.push(pps);
                 }

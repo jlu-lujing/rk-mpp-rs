@@ -397,6 +397,15 @@ impl H264d {
         let comm_addr: Vec<u32> = r.w[128..200].to_vec();
         let highpoc: Vec<u32> = r.w[200..205].to_vec();
         let statistic: Vec<u32> = r.w[256..276].to_vec();
+        if std::env::var("RFI_REG_DUMP").is_ok() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::File::create("/tmp/our_regs.txt") {
+                for i in 8..284 {
+                    let v = if i < r.w.len() { r.w[i] } else { 0 };
+                    let _ = writeln!(f, "{:08x}", v);
+                }
+            }
+        }
         let offs = self.rcb_info.offsets();
         let mut batch = Batch::new();
         batch
