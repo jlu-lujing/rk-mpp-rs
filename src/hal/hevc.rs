@@ -1,0 +1,275 @@
+//! rkvdec (vdpu34x) HEVC decode HAL for RK3588.
+//!
+//! Port of `hal/rkdec/h265d/hal_h265d_vdpu34x.c::hal_h265d_vdpu34x_gen_regs`:
+//! the driver receives the 276-word register file, the 112-byte SPS/PPS packet
+//! replicated 64 times, the RPS table and the bitstream. Register semantics
+//! follow the C source; the tables come from `codec::hevc::hw`.
+
+use std::io;
+
+use crate::codec::hevc::hw;
+use crate::codec::hevc::parser::{Pps, SliceHeader, Sps};
+use crate::hal::vdpu34x_regs as reg;
+use crate::service::dma_heap::DmaBuf;
+use crate::service::{Client, MppService, RegOffsetInfo};
+
+pub const PPS_PACKET_COPIES: usize = 64;
+pub const PPS_BUF_SIZE: usize = PPS_PACKET_COPIES * hw::PPS_PACKET_SIZE;
+
+/// One decoded picture: NV12 planes plus its colmv buffer.
+pub struct Frame {
+    pub nv12: DmaBuf,
+    pub colmv: DmaBuf,
+    pub width: usize,
+    pub height: usize,
+    pub hor_stride: usize,
+    pub ver_stride: usize,
+}
+
+impl Frame {
+    pub fn alloc(width: usize, height: usize) -> io::Result<Frame> {
+        let hor_stride = align(width, 16);
+        let ver_stride = align(height, 16);
+        let y_size = hor_stride * ver_stride;
+        let nv12 = DmaBuf::alloc("system", y_size * 3 / 2, false)?;
+        let colmv = DmaBuf::alloc("system", colmv_size(width, height), false)?;
+        Ok(Frame {
+            nv12,
+            colmv,
+            width,
+            height,
+            hor_stride,
+            ver_stride,
+        })
+    }
+
+    pub fn y_plane(&self) -> &[u8] {
+        &self.nv12.as_slice()[..self.hor_stride * self.ver_stride]
+    }
+
+    pub fn uv_plane(&self) -> &[u8] {
+        let y = self.hor_stride * self.ver_stride;
+        &self.nv12.as_slice()[y..y + y / 2]
+    }
+}
+
+fn align(v: usize, a: usize) -> usize {
+    (v + a - 1) / a * a
+}
+
+/// Compressed colmv layout with a 16-pixel CTU and 16 bytes per block.
+pub fn colmv_size(width: usize, height: usize) -> usize {
+    let ctu = 16usize;
+    let seg_w = 64 * 4 * 4 / ctu; // 64
+    let seg_h = ctu;
+    let cnt_w = align(width, seg_w) / seg_w;
+    let cnt_h = align(height, seg_h) / seg_h;
+    align(cnt_w, 16) * cnt_h + cnt_w * cnt_h * 64 * 16
+}
+
+pub struct HevcHw {
+    svc: MppService,
+    pkt: DmaBuf,
+    rps: DmaBuf,
+    cabac: DmaBuf,
+    rcb: DmaBuf,
+    pub regs: reg::Regs,
+}
+
+impl HevcHw {
+    pub fn open() -> io::Result<HevcHw> {
+        let svc = MppService::open(Client::RkvDec as u32)?;
+        let pkt = DmaBuf::alloc("system", PPS_BUF_SIZE + 128, false)?;
+        let rps = DmaBuf::alloc("system", hw::RPS_TABLE_SIZE + 128, false)?;
+        let cabac = DmaBuf::alloc("system", 4096, false)?;
+        let rcb = DmaBuf::alloc("system", 1 << 20, false)?;
+        let mut hw = HevcHw {
+            svc,
+            pkt,
+            rps,
+            cabac,
+            rcb,
+            regs: reg::Regs::new(),
+        };
+        hw.init_common();
+        Ok(hw)
+    }
+
+    fn init_common(&mut self) {
+        let r = &mut self.regs;
+        // The HEVC HAL leaves reg009.dec_mode at its reset value (0); only the
+        // H.264 HAL programs it (as 1).
+        r.set(reg::w9::DEC_MODE, 0)
+            .set(reg::w11::BUF_EMPTY_EN, 1)
+            .set(reg::w11::DEC_TIMEOUT_E, 1)
+            .set(reg::w11::DEC_CLKGATE_E, 1)
+            .set(reg::w11::DEC_E_STRMD_CLKGATE_DIS, 0)
+            .set(reg::w10::DEC_E, 1)
+            .set(reg::w12::COLMV_COMPRESS_EN, 1)
+            .set(reg::w13::H26X_ERROR_MODE, 1)
+            .set(reg::w13::H26X_STREAMD_ERROR_MODE, 1)
+            .set(reg::w13::COLMV_ERROR_MODE, 1)
+            .set(reg::w21::ERROR_DEB_EN, 1)
+            .set(reg::w21::INTER_ERROR_PRC_MODE, 0)
+            .set(reg::w21::ERROR_INTRA_MODE, 1)
+            .set(reg::w24::CABAC_ERR_EN_LOWBITS, 0)
+            .set(reg::w25::CABAC_ERR_EN_HIGHBITS, 0)
+            .set(reg::w26::SWREG_BLOCK_GATING_E, 0xfffef)
+            .set(reg::w26::REG_CFG_GATING_EN, 1)
+            .set(reg::w32::REG032_TIMEOUT_THRESHOLD, 0x3ffff)
+            .set(reg::w103::REF_PIC_LAYER_SAME_WITH_CUR, 0xffff);
+    }
+
+    fn prepare_tables(&mut self, sps: &Sps, pps: &Pps) {
+        let pkt = hw::build_pps_packet(sps, pps);
+        let buf = self.pkt.as_mut_slice();
+        for i in 0..PPS_PACKET_COPIES {
+            let off = i * hw::PPS_PACKET_SIZE;
+            buf[off..off + hw::PPS_PACKET_SIZE].copy_from_slice(&pkt);
+        }
+        let rps = hw::build_sps_rps(&[], &[]);
+        let n = rps.len().min(self.rps.len());
+        self.rps.as_mut_slice()[..n].copy_from_slice(&rps[..n]);
+    }
+
+    /// Fill the register file for one picture.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_regs(
+        &mut self,
+        sps: &Sps,
+        sh: &SliceHeader,
+        poc: i32,
+        cur: &Frame,
+        refs: &[Option<&Frame>],
+        ref_pocs: &[i32],
+        stream_len: usize,
+        slice_count: u32,
+    ) {
+        // HEVC pads the bitstream length to 16 bytes plus 64 and always keeps
+        // wr_ddr_align_en except for tiles.
+        let padded = align(stream_len, 16) + 64;
+        let r = &mut self.regs;
+        r.set(reg::w16::REG016_STR_LEN, padded as u32)
+            .set(reg::w17::SLICE_NUM, slice_count)
+            .set(reg::w12::WR_DDR_ALIGN_EN, (!sps.pcm_enabled) as u32)
+            .set(reg::w12::COLMV_COMPRESS_EN, 1)
+            .set(reg::w18::Y_HOR_VIRSTRIDE, (cur.hor_stride / 16) as u32)
+            .set(reg::w19::UV_HOR_VIRSTRIDE, (cur.hor_stride / 16) as u32)
+            .set(
+                reg::w20::REG020_Y_VIRSTRIDE_Y_VIRSTRIDE,
+                ((cur.hor_stride * cur.ver_stride) / 16) as u32,
+            );
+        r.w[64] = 0; // rps_mode / frame_orslice / stream_mode
+        r.w[65] = poc as u32;
+
+        r.set(reg::w130::REG130_DECOUT_BASE, cur.nv12.fd() as u32)
+            .set(reg::w131::REG131_COLMV_CUR_BASE, cur.colmv.fd() as u32)
+            .set(reg::w161::REG161_PPS_HEAD_BASE, self.pkt.fd() as u32)
+            .set(reg::w163::REG163_RPS_BASE, self.rps.fd() as u32)
+            .set(reg::w197::REG197_CABACTBL_BASE, self.cabac.fd() as u32)
+            .set(reg::w180::REG180_SCANLIST_BASE, 0);
+
+        let mut nearest: Option<u32> = None;
+        let mut nearest_dist = i32::MAX;
+        for i in 0..16usize {
+            r.w[67 + i] = ref_pocs.get(i).copied().unwrap_or(0) as u32;
+            let flag = reg::Field {
+                word: 100 + i / 8,
+                lsb: (((i % 8) / 4) * 8 + (i % 4)) as u8,
+                width: 1,
+            };
+            match refs.get(i).copied().flatten() {
+                Some(f) => {
+                    r.set(flag, 1);
+                    r.w[164 + i] = f.nv12.fd() as u32;
+                    r.w[181 + i] = f.colmv.fd() as u32;
+                    let d = (ref_pocs.get(i).copied().unwrap_or(0) - poc).abs();
+                    if d < nearest_dist {
+                        nearest_dist = d;
+                        nearest = Some(f.nv12.fd() as u32);
+                    }
+                }
+                None => {
+                    r.set(flag, 0);
+                    r.w[164 + i] = cur.nv12.fd() as u32;
+                    r.w[181 + i] = cur.colmv.fd() as u32;
+                }
+            }
+        }
+        r.set(
+            reg::w132::REG132_ERROR_REF_BASE,
+            nearest.unwrap_or(cur.nv12.fd() as u32),
+        )
+        .set(reg::w128::REG128_RLC_BASE, 0)
+        .set(reg::w129::REG129_RLCWRITE_BASE, 0);
+        let _ = sh;
+    }
+
+    /// Decode one picture and wait for the hardware.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode(
+        &mut self,
+        sps: &Sps,
+        pps: &Pps,
+        sh: &SliceHeader,
+        poc: i32,
+        cur: &Frame,
+        refs: &[Option<&Frame>],
+        ref_pocs: &[i32],
+        stream: &DmaBuf,
+        stream_len: usize,
+        slice_count: u32,
+    ) -> io::Result<()> {
+        self.prepare_tables(sps, pps);
+        self.fill_regs(sps, sh, poc, cur, refs, ref_pocs, stream_len, slice_count);
+
+        let r = &mut self.regs;
+        r.set(reg::w128::REG128_RLC_BASE, stream.fd() as u32)
+            .set(reg::w129::REG129_RLCWRITE_BASE, stream.fd() as u32)
+            .set(reg::w132::REG132_ERROR_REF_BASE, cur.nv12.fd() as u32);
+        let rcb_fd = self.rcb.fd() as u32;
+        r.set(reg::w139::REG139_RCB_DBLK_BASE, rcb_fd)
+            .set(reg::w133::REG133_RCB_INTRA_BASE, rcb_fd)
+            .set(reg::w134::REG134_RCB_TRANSD_ROW_BASE, rcb_fd)
+            .set(reg::w136::REG136_RCB_STREAMD_ROW_BASE, rcb_fd)
+            .set(reg::w137::REG137_RCB_INTER_ROW_BASE, rcb_fd)
+            .set(reg::w140::REG140_RCB_SAO_BASE, rcb_fd)
+            .set(reg::w141::REG141_RCB_FBC_BASE, rcb_fd)
+            .set(reg::w135::REG135_RCB_TRANSD_COL_BASE, rcb_fd)
+            .set(reg::w138::REG138_RCB_INTER_COL_BASE, rcb_fd)
+            .set(reg::w142::REG142_RCB_FILTER_COL_BASE, rcb_fd);
+
+        let comm_gen: Vec<u32> = r.w[8..64].to_vec();
+        let comm_paras: Vec<u32> = r.w[64..128].to_vec();
+        let comm_addr: Vec<u32> = r.w[128..200].to_vec();
+        let highpoc: Vec<u32> = r.w[200..205].to_vec();
+        let statistic: Vec<u32> = r.w[256..276].to_vec();
+        let offs: Vec<RegOffsetInfo> = Vec::new();
+        let _ = offs;
+        let mut batch = crate::service::Batch::new();
+        batch
+            .reg_write(&comm_gen, 32)
+            .reg_write(&comm_paras, 256)
+            .reg_write(&comm_addr, 512)
+            .reg_write(&highpoc, 800)
+            .reg_write(&statistic, 1024);
+        self.svc.submit_batch(&mut batch)?;
+        self.svc.poll_hw_finish()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colmv_grows_with_resolution() {
+        assert!(colmv_size(1920, 1080) > colmv_size(1280, 720));
+    }
+
+    #[test]
+    fn pps_buffer_holds_64_copies() {
+        assert_eq!(PPS_BUF_SIZE, 64 * 112);
+    }
+}
