@@ -217,3 +217,26 @@ good and a bad stream, only bit 192 (lf_across_slices), bit 204 (lists_mod) and
 bit 205 (merge level) differ; forcing lists_modification to 0 in the packet does
 not fix the bad stream, so the PPS summary is not the whole story — the next
 suspect is a slice-header syntax element that only the default encoder emits.
+
+### PPS alignment, concrete evidence
+
+The good and bad PPS NALs differ by exactly one byte:
+
+```
+good (decodes, 49 dB): c1 73 c1 c4 89
+bad  (7.6 dB)        : c1 73 c1 89
+```
+
+The bad payload is 32 bits (31 usable after the stop bit) and underflows under
+every interpretation we tried, while the good payload has 8 extra bits. The
+only 8-bit group that can appear or disappear between these two streams is the
+deblocking pair `pps_beta_offset_div2` + `pps_tc_offset_div2`, which is present
+only when `deblocking_filter_control_present_flag == 1` and the filter is not
+disabled. That means our PPS parser is misaligned by the time it reaches the
+deblocking flags: it reports `db_control = 0` for the good stream even though
+the bit budget only closes if that group is present.
+
+Next: walk the PPS syntax against both payloads bit by bit, find the field
+where our reader diverges (candidates: the sign-data-hiding/cabac pair order,
+`diff_cu_qp_delta_depth`, or the entropy-coding-sync substream flag), fix the
+alignment, and re-check that the good stream still lands on the stop bit.
