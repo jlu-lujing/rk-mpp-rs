@@ -204,10 +204,10 @@ pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
         if payload_start >= end {
             continue;
         }
-        let mut payload_end = end;
-        while payload_end > payload_start && data[payload_end - 1] == 0 {
-            payload_end -= 1;
-        }
+        // Keep trailing_zero_8bits: they are part of the NAL for the
+        // hardware parser (MPP's packets include them), and trimming them
+        // truncates the last slice of an access unit.
+        let payload_end = end;
         let header = data[payload_start];
         let body = &data[payload_start + 1..payload_end];
         out.push(NalUnit {
