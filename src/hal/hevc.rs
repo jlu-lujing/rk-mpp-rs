@@ -355,9 +355,11 @@ impl HevcHw {
                     }
                 }
                 None => {
+                    // MPP points unused slots at the current picture (its
+                    // valid_ref fallback) instead of leaving address 0.
                     r.set(flag, 0);
-                    r.w[164 + i] = 0;
-                    r.w[181 + i] = 0;
+                    r.w[164 + i] = cur.nv12.fd() as u32;
+                    r.w[181 + i] = cur.colmv.fd() as u32;
                 }
             }
         }
