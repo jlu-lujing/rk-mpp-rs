@@ -237,17 +237,19 @@ impl Dpb {
             l0.extend(short.iter().map(|f| f.slot));
             l0.extend(long.iter().map(|f| f.slot));
         } else {
-            let mut before: Vec<&&FrameStore> = short.iter().filter(|f| f.poc < poc).collect();
-            before.sort_by(|a, b| b.poc.cmp(&a.poc));
-            let mut after: Vec<&&FrameStore> = short.iter().filter(|f| f.poc > poc).collect();
-            after.sort_by(|a, b| a.poc.cmp(&b.poc));
-            l0.extend(before.iter().map(|f| f.slot));
-            l0.extend(after.iter().map(|f| f.slot));
+            // B slices: MPP's DXVA reference lists are ordered by frame_num
+            // (L0 descending, L1 ascending), not by POC. Verified against the
+            // reference decoder's RPS table for a B-frame stream.
+            let mut l0s: Vec<&FrameStore> = short.clone();
+            l0s.sort_by(|a, b| b.frame_num.cmp(&a.frame_num));
+            l0.extend(l0s.iter().map(|f| f.slot));
             l0.extend(long.iter().map(|f| f.slot));
 
-            l1.extend(after.iter().map(|f| f.slot));
-            l1.extend(before.iter().map(|f| f.slot));
+            let mut l1s: Vec<&FrameStore> = short.clone();
+            l1s.sort_by(|a, b| a.frame_num.cmp(&b.frame_num));
+            l1.extend(l1s.iter().map(|f| f.slot));
             l1.extend(long.iter().map(|f| f.slot));
+            let _ = poc;
         }
         l0.truncate(sh.ref_idx_l0_active as usize * 2 + 2);
         l1.truncate(sh.ref_idx_l1_active as usize * 2 + 2);
@@ -401,18 +403,21 @@ mod tests {
     }
 
     #[test]
-    fn b_slice_splits_before_and_after() {
+    fn b_slice_lists_follow_frame_num_order() {
+        // MPP's DXVA lists are frame_num ordered: L0 descending, L1 ascending.
+        // This was verified against the reference decoder's RPS table, so the
+        // test pins the behaviour rather than the POC split.
         let mut d = Dpb::new(4, 0);
         d.push(frame(0, 0, 0));
         d.push(frame(1, 2, 4));
         d.push(frame(2, 4, 8));
         let mut sh = SliceHeader::default();
         sh.slice_type = 6; // B
-        sh.ref_idx_l0_active = 2;
-        sh.ref_idx_l1_active = 2;
+        sh.ref_idx_l0_active = 3;
+        sh.ref_idx_l1_active = 3;
         let (l0, l1) = d.build_ref_lists(&sh, 5);
-        assert_eq!(l0[0], 1, "closest past frame first");
-        assert_eq!(l1[0], 2, "closest future frame first");
+        assert_eq!(l0, vec![2, 1, 0]);
+        assert_eq!(l1, vec![0, 1, 2]);
     }
 
 }
