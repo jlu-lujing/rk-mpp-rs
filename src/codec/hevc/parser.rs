@@ -489,20 +489,34 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, HevcError> {
     if pps.entropy_coding_sync {
         r.skip(1)?; // loop_filter_across_substreams_enabled_flag
     }
-    pps.loop_filter_across_slices = r.read_bit()? == 1;
-    pps.deblocking_filter_control_present = r.read_bit()? == 1;
-    if pps.deblocking_filter_control_present {
-        pps.deblocking_filter_override_enabled = r.read_bit()? == 1;
-        pps.pps_deblocking_filter_disabled = r.read_bit()? == 1;
-        if !pps.pps_deblocking_filter_disabled {
-            pps.beta_offset_div2 = r.read_se()?;
-            pps.tc_offset_div2 = r.read_se()?;
+    // The tail is optional in practice: x265 emits very short PPS NALs where
+    // the remaining flags coincide with the rbsp stop bit, so every read from
+    // here on is guarded by the bits actually left.
+    let mut step = |r: &mut BitReader<'_>, need: usize| r.bits_left() >= need;
+    if step(&mut r, 2) {
+        pps.loop_filter_across_slices = r.read_bit()? == 1;
+        pps.deblocking_filter_control_present = r.read_bit()? == 1;
+        if pps.deblocking_filter_control_present && r.bits_left() >= 2 {
+            pps.deblocking_filter_override_enabled = r.read_bit()? == 1;
+            pps.pps_deblocking_filter_disabled = r.read_bit()? == 1;
+            if !pps.pps_deblocking_filter_disabled && r.bits_left() >= 2 {
+                pps.beta_offset_div2 = r.read_se().unwrap_or(0);
+                pps.tc_offset_div2 = r.read_se().unwrap_or(0);
+            }
         }
     }
-    r.skip(1)?; // pps_scaling_list_data_present_flag (flat matrices assumed)
-    pps.lists_modification_present = r.read_bit()? == 1;
-    pps.log2_parallel_merge_level = r.read_ue()? + 2;
-    pps.slice_segment_header_extension_present = r.read_bit()? == 1;
+    if r.bits_left() >= 1 {
+        r.skip(1)?; // pps_scaling_list_data_present_flag (flat matrices assumed)
+    }
+    if r.bits_left() >= 1 {
+        pps.lists_modification_present = r.read_bit()? == 1;
+    }
+    if r.bits_left() >= 4 {
+        pps.log2_parallel_merge_level = r.read_ue().unwrap_or(0) + 2;
+    }
+    if r.bits_left() >= 1 {
+        pps.slice_segment_header_extension_present = r.read_bit()? == 1;
+    }
     Ok(pps)
 }
 
