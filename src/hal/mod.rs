@@ -4,3 +4,4 @@
 //! official MPP (vdpu1/vdpu2/rkvdec/av1d/venc/vepu) are the roadmap.
 
 pub mod jpegd;
+pub mod vdpu34x_regs;

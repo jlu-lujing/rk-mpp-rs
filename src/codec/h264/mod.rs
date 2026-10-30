@@ -6,6 +6,7 @@
 //! `rkvenc`/`rkvdec` lives under `hal/`.
 
 pub mod dpb;
+pub mod hw;
 pub mod parser;
 pub mod regs;
 
