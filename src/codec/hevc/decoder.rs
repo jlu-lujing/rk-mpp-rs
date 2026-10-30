@@ -163,6 +163,7 @@ impl Decoder {
                 &stream,
                 raw_len,
                 slice_count,
+                first.unit_type,
             )
             .map_err(|e| e.to_string())?;
 

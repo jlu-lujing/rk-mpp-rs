@@ -224,7 +224,9 @@ impl HevcHw {
         let pkt = DmaBuf::alloc("system", PPS_BUF_SIZE + 128, false)?;
         let rps = DmaBuf::alloc("system", hw::RPS_TABLE_SIZE + 128, false)?;
         let mut cabac = DmaBuf::alloc("system", CABAC_TABLE.len(), false)?;
-        cabac.as_mut_slice().copy_from_slice(CABAC_TABLE);
+        // The dma-buf rounds the mapping up to a page; copy into the prefix.
+        let n = cabac.as_mut_slice().len().min(CABAC_TABLE.len());
+        cabac.as_mut_slice()[..n].copy_from_slice(&CABAC_TABLE[..n]);
         let rcb = DmaBuf::alloc("system", 1 << 20, false)?;
         let mut hw = HevcHw {
             svc,
@@ -289,6 +291,7 @@ impl HevcHw {
         ref_pocs: &[i32],
         stream_len: usize,
         slice_count: u32,
+        nal_type: u8,
     ) {
         // HEVC pads the bitstream length to 16 bytes plus 64 and always keeps
         // wr_ddr_align_en except for tiles.
@@ -346,8 +349,14 @@ impl HevcHw {
             nearest.unwrap_or(cur.nv12.fd() as u32),
         )
         .set(reg::w128::REG128_RLC_BASE, 0)
-        .set(reg::w129::REG129_RLCWRITE_BASE, 0);
-        let _ = sh;
+        .set(reg::w129::REG129_RLCWRITE_BASE, 0)
+        .set(reg::w13::TIMEOUT_MODE, 1)
+        .set(reg::w11::BUF_EMPTY_EN, 1);
+        // IRAP (IDR_W_RADL / IDR_N_LP) tells the decoder to reset its state.
+        let idr = sh.slice_type == 2
+            && matches!(nal_type, 19 | 20);
+        r.set(reg::w13::CUR_PIC_IS_IDR, idr as u32);
+        let _ = nal_type;
     }
 
     /// Decode one picture and wait for the hardware.
@@ -364,6 +373,7 @@ impl HevcHw {
         stream: &DmaBuf,
         stream_len: usize,
         slice_count: u32,
+        nal_type: u8,
     ) -> io::Result<()> {
         self.prepare_tables(sps, pps);
         let ctu_size = 1usize << (sps.log2_min_cb + sps.log2_diff_max_min_cb);
@@ -380,7 +390,7 @@ impl HevcHw {
             self.rcb = DmaBuf::alloc("system", align(total, 4096), false)?;
         }
         self.rcb_info = rcb;
-        self.fill_regs(sps, pps, sh, poc, cur, refs, ref_pocs, stream_len, slice_count);
+        self.fill_regs(sps, pps, sh, poc, cur, refs, ref_pocs, stream_len, slice_count, nal_type);
 
         let r = &mut self.regs;
         r.set(reg::w128::REG128_RLC_BASE, stream.fd() as u32)
