@@ -18,6 +18,13 @@ const CABAC_TABLE: &[u8; 27456] = include_bytes!("../../assets/hevc_cabac_table.
 
 pub const PPS_PACKET_COPIES: usize = 64;
 pub const PPS_BUF_SIZE: usize = PPS_PACKET_COPIES * hw::PPS_PACKET_SIZE;
+/// MPP keeps cabac/SPS-PPS/RPS in ONE buffer and addresses them through the
+/// register offset table; the hardware appears to rely on that layout.
+const CABAC_OFFSET: usize = 0;
+const CABAC_ALIGNED: usize = 28672; // align(27456, 4096)
+const SPSPPS_OFFSET: usize = CABAC_ALIGNED;
+const RPS_OFFSET: usize = SPSPPS_OFFSET + PPS_BUF_SIZE + 128;
+const BUFS_SIZE: usize = RPS_OFFSET + hw::RPS_TABLE_SIZE + 128;
 
 /// One decoded picture: NV12 planes plus its colmv buffer.
 pub struct Frame {
@@ -211,9 +218,7 @@ impl RcbInfo {
 
 pub struct HevcHw {
     svc: MppService,
-    pkt: DmaBuf,
-    rps: DmaBuf,
-    cabac: DmaBuf,
+    bufs: DmaBuf,
     rcb: DmaBuf,
     rcb_info: RcbInfo,
     pub regs: reg::Regs,
@@ -222,18 +227,14 @@ pub struct HevcHw {
 impl HevcHw {
     pub fn open() -> io::Result<HevcHw> {
         let svc = MppService::open(Client::RkvDec as u32)?;
-        let pkt = DmaBuf::alloc("system", PPS_BUF_SIZE + 128, false)?;
-        let rps = DmaBuf::alloc("system", hw::RPS_TABLE_SIZE + 128, false)?;
-        let mut cabac = DmaBuf::alloc("system", CABAC_TABLE.len(), false)?;
-        // The dma-buf rounds the mapping up to a page; copy into the prefix.
-        let n = cabac.as_mut_slice().len().min(CABAC_TABLE.len());
-        cabac.as_mut_slice()[..n].copy_from_slice(&CABAC_TABLE[..n]);
+        let mut bufs = DmaBuf::alloc("system", BUFS_SIZE, false)?;
+        let n = bufs.as_mut_slice().len().min(CABAC_TABLE.len());
+        bufs.as_mut_slice()[CABAC_OFFSET..CABAC_OFFSET + n]
+            .copy_from_slice(&CABAC_TABLE[..n]);
         let rcb = DmaBuf::alloc("system", 1 << 20, false)?;
         let mut hw = HevcHw {
             svc,
-            pkt,
-            rps,
-            cabac,
+            bufs,
             rcb,
             rcb_info: RcbInfo::default(),
             regs: reg::Regs::new(),
@@ -269,14 +270,14 @@ impl HevcHw {
 
     fn prepare_tables(&mut self, sps: &Sps, pps: &Pps) {
         let pkt = hw::build_pps_packet(sps, pps);
-        let buf = self.pkt.as_mut_slice();
+        let buf = self.bufs.as_mut_slice();
         for i in 0..PPS_PACKET_COPIES {
-            let off = i * hw::PPS_PACKET_SIZE;
+            let off = SPSPPS_OFFSET + i * hw::PPS_PACKET_SIZE;
             buf[off..off + hw::PPS_PACKET_SIZE].copy_from_slice(&pkt);
         }
         let rps = hw::build_sps_rps(&[], &[]);
-        let n = rps.len().min(self.rps.len());
-        self.rps.as_mut_slice()[..n].copy_from_slice(&rps[..n]);
+        let n = rps.len().min(hw::RPS_TABLE_SIZE);
+        buf[RPS_OFFSET..RPS_OFFSET + n].copy_from_slice(&rps[..n]);
     }
 
     /// Fill the register file for one picture.
@@ -313,9 +314,9 @@ impl HevcHw {
 
         r.set(reg::w130::REG130_DECOUT_BASE, cur.nv12.fd() as u32)
             .set(reg::w131::REG131_COLMV_CUR_BASE, cur.colmv.fd() as u32)
-            .set(reg::w161::REG161_PPS_HEAD_BASE, self.pkt.fd() as u32)
-            .set(reg::w163::REG163_RPS_BASE, self.rps.fd() as u32)
-            .set(reg::w197::REG197_CABACTBL_BASE, self.cabac.fd() as u32)
+            .set(reg::w161::REG161_PPS_HEAD_BASE, self.bufs.fd() as u32)
+            .set(reg::w163::REG163_RPS_BASE, self.bufs.fd() as u32)
+            .set(reg::w197::REG197_CABACTBL_BASE, self.bufs.fd() as u32)
             .set(reg::w180::REG180_SCANLIST_BASE, 0);
 
         let mut nearest: Option<u32> = None;
@@ -414,7 +415,17 @@ impl HevcHw {
         let comm_addr: Vec<u32> = r.w[128..200].to_vec();
         let highpoc: Vec<u32> = r.w[200..205].to_vec();
         let statistic: Vec<u32> = r.w[256..276].to_vec();
-        let offs = self.rcb_info.offsets();
+        let mut offs = self.rcb_info.offsets();
+        // cabac sits at offset 0 of the shared buffer, the SPS/PPS packet and
+        // the RPS follow at their layout offsets.
+        offs.push(RegOffsetInfo {
+            reg_idx: 161,
+            offset: SPSPPS_OFFSET as u32,
+        });
+        offs.push(RegOffsetInfo {
+            reg_idx: 163,
+            offset: RPS_OFFSET as u32,
+        });
         let mut batch = crate::service::Batch::new();
         batch
             .reg_write(&comm_gen, 32)
@@ -425,6 +436,18 @@ impl HevcHw {
             .reg_offsets(&offs);
         self.svc.submit_batch(&mut batch)?;
         self.svc.poll_hw_finish()?;
+        if std::env::var("RFI_HEVC_STATUS").is_ok() {
+            let mut back = vec![0u32; 276];
+            let _ = self.svc.call(
+                crate::service::MPP_CMD_SET_REG_READ,
+                back.as_mut_ptr() as u64,
+                (back.len() * 4) as u32,
+            );
+            eprintln!(
+                "STATUS reg1={:08x} reg45={:08x} reg76={:08x}",
+                back[1], back[45], back[76]
+            );
+        }
         Ok(())
     }
 }
