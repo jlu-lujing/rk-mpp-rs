@@ -81,7 +81,7 @@ impl Decoder {
         let first = slices[0];
         // The slice header needs the PPS id, which is parsed from the header
         // itself; HEVC puts it after the two IRAP flags.
-        let pid = slice_pps_id(&first.rbsp).map_err(|e| e.to_string())?;
+        let pid = slice_pps_id(&first.rbsp, first.unit_type).map_err(|e| e.to_string())?;
         let pps = self
             .pps
             .get(pid as usize)
@@ -215,16 +215,14 @@ impl Decoder {
 }
 
 /// Read only `slice_pic_parameter_set_id` from a slice header.
-pub fn slice_pps_id(rbsp: &[u8]) -> Result<u32, parser::HevcError> {
+pub fn slice_pps_id(rbsp: &[u8], nal_type: u8) -> Result<u32, parser::HevcError> {
     use crate::codec::h264::parser::BitReader;
     let mut r = BitReader::new(rbsp);
-    let first = r.read_bit()?;
-    // No way to know the NAL type here; the caller only uses this for the
-    // PPS index, and IRAP pictures carry the extra flag.
-    // Try both shapes and accept the first that yields a known PPS.
-    let _ = first;
-    // first_slice(1) + no_output(1) + ue
-    let _ = r.read_bit()?;
+    let _first_slice = r.read_bit()?;
+    // IRAP pictures carry no_output_of_prior_pics_flag before the PPS id.
+    if (16..=23).contains(&nal_type) {
+        let _ = r.read_bit()?;
+    }
     r.read_ue().map_err(|_| parser::HevcError::Truncated)
 }
 

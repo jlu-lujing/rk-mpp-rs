@@ -354,8 +354,8 @@ impl HevcHw {
                 }
                 None => {
                     r.set(flag, 0);
-                    r.w[164 + i] = cur.nv12.fd() as u32;
-                    r.w[181 + i] = cur.colmv.fd() as u32;
+                    r.w[164 + i] = 0;
+                    r.w[181 + i] = 0;
                 }
             }
         }

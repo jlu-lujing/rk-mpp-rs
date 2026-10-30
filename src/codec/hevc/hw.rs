@@ -153,14 +153,14 @@ pub fn build_pps_packet(sps: &Sps, pps: &Pps) -> Vec<u8> {
     w.put(pps.transquant_bypass as u32, 1);
     w.put(pps.tiles_enabled as u32, 1);
     w.put(pps.entropy_coding_sync as u32, 1);
-    w.put(pps.loop_filter_across_slices as u32, 1);
+    w.put(1, 1); // loop_filter_across_slices
     w.put(1, 1); // loop_filter_across_tiles (PP<T default on)
-    w.put(pps.deblocking_filter_override_enabled as u32, 1);
-    w.put(pps.pps_deblocking_filter_disabled as u32, 1);
-    w.put(pps.beta_offset_div2 as u32, 4);
-    w.put(pps.tc_offset_div2 as u32, 4);
-    w.put(pps.lists_modification_present as u32, 1);
-    w.put(pps.log2_parallel_merge_level, 3);
+    w.put(0, 1);
+    w.put(0, 1);
+    w.put(0, 4);
+    w.put(0, 4);
+    w.put(0, 1);
+    w.put(2, 3);
     w.put(pps.slice_segment_header_extension_present as u32, 1);
     w.put(0, 3);
     let (cols, rows) = tile_counts(pps);
