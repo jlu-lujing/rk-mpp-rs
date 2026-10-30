@@ -285,6 +285,15 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, HevcError> {
     r.read_ue()?; // log2_diff_max_min_luma_transform_block_size
     r.read_ue()?; // max_transform_hierarchy_depth_inter
     r.read_ue()?; // max_transform_hierarchy_depth_intra
+    // scaling_list_enabled_flag and its data block sit between the transform
+    // hierarchy depths and amp_enabled_flag (H.265 7.3.2.2).
+    let scaling_list_enabled = r.read_bit()? == 1;
+    if scaling_list_enabled {
+        let present = r.read_bit()? == 1;
+        if present {
+            return Err(HevcError::Unsupported("sps_scaling_list_data"));
+        }
+    }
     sps.amp_enabled = r.read_bit()? == 1;
     sps.sao_enabled = r.read_bit()? == 1;
     sps.pcm_enabled = r.read_bit()? == 1;
@@ -470,6 +479,204 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, HevcError> {
     Ok(pps)
 }
 
+/// One short-term reference picture set (H.265 7.3.7).
+#[derive(Debug, Clone, Default)]
+pub struct ShortTermRps {
+    /// Delta POCs of the pictures before the current one, most recent first.
+    pub s0: Vec<i32>,
+    pub used_s0: Vec<bool>,
+    /// Delta POCs after the current one, nearest first.
+    pub s1: Vec<i32>,
+    pub used_s1: Vec<bool>,
+}
+
+impl ShortTermRps {
+    pub fn num_delta_pocs(&self) -> u32 {
+        (self.s0.len() + self.s1.len()) as u32
+    }
+}
+
+/// Parse a short-term RPS. `sets` holds the already parsed SPS sets (used by
+/// the inter-set prediction branch); `idx` is the set index being parsed.
+pub fn parse_short_term_rps(
+    r: &mut BitReader<'_>,
+    idx: u32,
+    sets: &[ShortTermRps],
+) -> Result<ShortTermRps, HevcError> {
+    let predicted = if idx != 0 { r.read_bit()? == 1 } else { false };
+    if predicted {
+        if sets.is_empty() {
+            return Err(HevcError::BadValue);
+        }
+        // delta_idx_minus1 defaults to 0 (the previous set).
+        let delta_idx_minus1 = 0;
+        let ref_idx = (idx as i32 - delta_idx_minus1 - 1).max(0) as usize;
+        let ref_set = sets.get(ref_idx).ok_or(HevcError::BadValue)?;
+        let delta_rps_sign = r.read_bit()?;
+        let abs_delta_rps_minus1 = r.read_ue()? as i32;
+        let delta_rps = (1 - 2 * delta_rps_sign as i32) * (abs_delta_rps_minus1 + 1);
+
+        let n = ref_set.num_delta_pocs() as usize;
+        let mut used = vec![false; n + 1];
+        let mut use_delta = vec![true; n + 1];
+        for j in 0..=n {
+            used[j] = r.read_bit()? == 1;
+            if !used[j] {
+                use_delta[j] = r.read_bit()? == 1;
+            }
+        }
+
+        // Derive the set (H.265 7.4.8).
+        let mut entry: Vec<(i32, bool)> = Vec::new();
+        let refs: Vec<i32> = ref_set
+            .s0
+            .iter()
+            .copied()
+            .chain(ref_set.s1.iter().copied())
+            .collect();
+        let ref_used: Vec<bool> = ref_set
+            .used_s0
+            .iter()
+            .copied()
+            .chain(ref_set.used_s1.iter().copied())
+            .collect();
+        for (j, &d) in refs.iter().enumerate() {
+            let cand = d + delta_rps;
+            if cand < 0 && use_delta[j] {
+                entry.push((cand, used[j] || ref_used[j]));
+            }
+        }
+        if use_delta[n] && delta_rps < 0 {
+            entry.push((delta_rps, used[n]));
+        }
+        for (j, &d) in refs.iter().enumerate() {
+            let cand = d + delta_rps;
+            if cand > 0 && use_delta[j] {
+                entry.push((cand, used[j] || ref_used[j]));
+            }
+        }
+        if use_delta[n] && delta_rps > 0 {
+            entry.push((delta_rps, used[n]));
+        }
+
+        // Split into s0 (negative, descending magnitude) and s1 (positive).
+        let mut neg: Vec<(i32, bool)> = entry.iter().copied().filter(|(d, _)| *d < 0).collect();
+        neg.sort_by(|a, b| b.0.cmp(&a.0)); // -1, -2, ...
+        let mut pos: Vec<(i32, bool)> = entry.iter().copied().filter(|(d, _)| *d > 0).collect();
+        pos.sort_by(|a, b| a.0.cmp(&b.0)); // 1, 2, ...
+        return Ok(ShortTermRps {
+            s0: neg.iter().map(|(d, _)| *d).collect(),
+            used_s0: neg.iter().map(|(_, u)| *u).collect(),
+            s1: pos.iter().map(|(d, _)| *d).collect(),
+            used_s1: pos.iter().map(|(_, u)| *u).collect(),
+        });
+    }
+
+    let num_negative = r.read_ue()?;
+    let num_positive = r.read_ue()?;
+    if num_negative > 16 || num_positive > 16 {
+        return Err(HevcError::Unsupported("ref pic set too large"));
+    }
+    let mut cur = 0i32;
+    let mut s0 = Vec::with_capacity(num_negative as usize);
+    let mut used_s0 = Vec::with_capacity(num_negative as usize);
+    for _ in 0..num_negative {
+        cur -= r.read_ue()? as i32 + 1;
+        s0.push(cur);
+        used_s0.push(r.read_bit()? == 1);
+    }
+    let mut cur = 0i32;
+    let mut s1 = Vec::with_capacity(num_positive as usize);
+    let mut used_s1 = Vec::with_capacity(num_positive as usize);
+    for _ in 0..num_positive {
+        cur += r.read_ue()? as i32 + 1;
+        s1.push(cur);
+        used_s1.push(r.read_bit()? == 1);
+    }
+    Ok(ShortTermRps {
+        s0,
+        used_s0,
+        s1,
+        used_s1,
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SliceHeader {
+    pub first_slice: bool,
+    pub no_output_of_prior_pics: bool,
+    pub pps_id: u32,
+    pub dependent: bool,
+    pub segment_address: u32,
+    pub slice_type: u32,
+    pub poc_lsb: u32,
+    pub short_term_ref_pic_set_sps_flag: bool,
+    pub short_term_ref_pic_set_idx: u32,
+    pub rps: ShortTermRps,
+    pub temporal_mvp: bool,
+    pub sao_luma: bool,
+    pub sao_chroma: bool,
+}
+
+pub fn parse_slice_header(
+    rbsp: &[u8],
+    sps: &Sps,
+    pps: &Pps,
+    nal_type: u8,
+) -> Result<SliceHeader, HevcError> {
+    let mut r = BitReader::new(rbsp);
+    let mut sh = SliceHeader::default();
+    sh.first_slice = r.read_bit()? == 1;
+    let irap = (16..=23).contains(&nal_type);
+    if irap {
+        sh.no_output_of_prior_pics = r.read_bit()? == 1;
+    }
+    sh.pps_id = r.read_ue()?;
+    if !sh.first_slice {
+        if pps.dependent_slice_segments {
+            sh.dependent = r.read_bit()? == 1;
+        }
+        // slice_segment_address uses ceil(log2(PicSizeInCtbsY)) bits; the
+        // caller that needs it can recompute it from the SPS CTB size.
+        let ctb = 3 + 0; // filled by the caller when needed
+        let _ = ctb;
+        return Err(HevcError::Unsupported("non-first slice segment"));
+    }
+    for _ in 0..pps.num_extra_slice_header_bits {
+        r.skip(1)?;
+    }
+    sh.slice_type = r.read_ue()?;
+    if pps.output_flag_present {
+        r.skip(1)?;
+    }
+    if sps.separate_colour_plane {
+        r.skip(2)?;
+    }
+    if nal_type != NAL_IDR_W_RADL && nal_type != NAL_IDR_N_LP {
+        sh.poc_lsb = r.read_bits(sps.log2_max_pic_order_cnt_lsb)?;
+        sh.short_term_ref_pic_set_sps_flag = r.read_bit()? == 1;
+        if !sh.short_term_ref_pic_set_sps_flag {
+            sh.rps = parse_short_term_rps(&mut r, sps.num_short_term_ref_pic_sets, &[])?;
+        } else if sps.num_short_term_ref_pic_sets > 1 {
+            let bits = 32 - sps.num_short_term_ref_pic_sets.leading_zeros();
+            sh.short_term_ref_pic_set_idx = r.read_bits(bits)?;
+        }
+        if sps.long_term_ref_pics_present {
+            return Err(HevcError::Unsupported("long-term ref pics"));
+        }
+        if sps.temporal_mvp_enabled {
+            sh.temporal_mvp = r.read_bit()? == 1;
+        }
+    }
+    if sps.sao_enabled {
+        sh.sao_luma = r.read_bit()? == 1;
+        if sps.chroma_format_idc != 0 {
+            sh.sao_chroma = r.read_bit()? == 1;
+        }
+    }
+    Ok(sh)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,6 +780,7 @@ mod tests {
             .ue(3) // log2_diff_max_min_transform
             .ue(0) // max_transform_hierarchy_depth_inter
             .ue(0) // max_transform_hierarchy_depth_intra
+            .put(0, 1) // scaling_list_enabled_flag
             .put(0, 1) // amp_enabled
             .put(1, 1) // sao_enabled
             .put(0, 1) // pcm_enabled
@@ -602,6 +810,7 @@ mod tests {
             .ue(0).ue(0).ue(0)
             .put(0, 1).ue(0).ue(0).ue(0)
             .ue(0).ue(0).ue(0).ue(0).ue(0).ue(0)
+            .put(0, 1) // scaling_list_enabled
             .put(0, 1).put(0, 1).put(0, 1)
             .ue(0).put(0, 1).put(0, 1).put(0, 1);
         let sps = parse_sps(&w.finish()).unwrap();
@@ -645,6 +854,95 @@ mod tests {
         assert!(pps.lists_modification_present);
         assert_eq!(pps.log2_parallel_merge_level, 2);
         assert!(!pps.tiles_enabled);
+    }
+
+    fn sps_struct() -> Sps {
+        Sps {
+            sps_id: 0,
+            chroma_format_idc: 1,
+            width: 1280,
+            height: 720,
+            bit_depth_luma: 8,
+            bit_depth_chroma: 8,
+            log2_max_pic_order_cnt_lsb: 8,
+            num_short_term_ref_pic_sets: 0,
+            sao_enabled: true,
+            temporal_mvp_enabled: true,
+            ..Default::default()
+        }
+    }
+
+    fn pps_struct() -> Pps {
+        Pps {
+            pps_id: 0,
+            sps_id: 0,
+            num_extra_slice_header_bits: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn parses_idr_slice_header() {
+        let mut w = BitWriter::new();
+        w.put(1, 1) // first_slice_segment_in_pic_flag
+            .put(0, 1) // no_output_of_prior_pics (IRAP)
+            .ue(0) // pps id
+            .ue(2) // slice_type = I
+            .put(1, 1) // slice_sao_luma
+            .put(1, 1); // slice_sao_chroma
+        let sh = parse_slice_header(&w.finish(), &sps_struct(), &pps_struct(), NAL_IDR_W_RADL)
+            .unwrap();
+        assert!(sh.first_slice);
+        assert!(!sh.no_output_of_prior_pics);
+        assert_eq!(sh.slice_type, 2);
+        assert!(sh.sao_luma && sh.sao_chroma);
+        assert_eq!(sh.poc_lsb, 0);
+    }
+
+    #[test]
+    fn parses_p_slice_with_inline_rps() {
+        let mut w = BitWriter::new();
+        w.put(1, 1).ue(0) // first_slice, pps id (non-IRAP: no no_output flag)
+            .ue(1) // slice_type = P
+            .put(42, 8) // poc_lsb
+            .put(0, 1) // short_term_ref_pic_set_sps_flag = 0 -> inline
+            .ue(1).ue(0) // num_negative, num_positive
+            .ue(0).put(1, 1) // delta_poc_s0_minus1=0, used
+            .put(1, 1) // slice_temporal_mvp_enabled_flag
+            .put(0, 1).put(0, 1); // sao luma/chroma
+        let sh = parse_slice_header(&w.finish(), &sps_struct(), &pps_struct(), NAL_TRAIL_R)
+            .unwrap();
+        assert_eq!(sh.slice_type, 1);
+        assert_eq!(sh.poc_lsb, 42);
+        assert_eq!(sh.rps.s0, vec![-1]);
+        assert_eq!(sh.rps.used_s0, vec![true]);
+        assert!(sh.rps.s1.is_empty());
+        assert!(sh.temporal_mvp);
+        assert!(!sh.sao_luma);
+    }
+
+    #[test]
+    fn builds_predicted_rps() {
+        // Base set: one negative picture at -1, then a predicted set that
+        // shifts everything by -1 and adds the current reference.
+        let base = ShortTermRps {
+            s0: vec![-1],
+            used_s0: vec![true],
+            s1: vec![],
+            used_s1: vec![],
+        };
+        let mut w = BitWriter::new();
+        w.put(1, 1) // inter_ref_pic_set_prediction_flag
+            .put(0, 1) // delta_rps_sign
+            .ue(1) // abs_delta_rps_minus1 -> delta_rps = 2
+            .put(1, 1) // used_by_curr_pic_flag[0]
+            .put(1, 1); // used_by_curr_pic_flag[1]
+        let data = w.finish();
+        let mut r = BitReader::new(&data);
+        let rps = parse_short_term_rps(&mut r, 1, &[base]).unwrap();
+        // Base -1 shifted by +2 becomes +1; the new picture at +2 joins it.
+        assert_eq!(rps.s1, vec![1, 2]);
+        assert!(rps.s0.is_empty());
     }
 
     #[test]

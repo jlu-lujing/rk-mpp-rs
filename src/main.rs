@@ -413,6 +413,9 @@ fn main() {
         use rk_mpp_rs::codec::hevc;
         let nals = hevc::split_annex_b(&data);
         let mut vcl = 0usize;
+        let mut sps_v: Option<hevc::Sps> = None;
+        let mut pps_v: Option<hevc::Pps> = None;
+        let mut slices = 0usize;
         for n in &nals {
             match n.unit_type {
                 hevc::parser::NAL_VPS => {
@@ -427,6 +430,7 @@ fn main() {
                 }
                 hevc::parser::NAL_SPS => {
                     let s = hevc::parse_sps(&n.rbsp).expect("sps");
+                    sps_v = Some(s.clone());
                     println!(
                         "SPS id={} vps={} {}x{} chroma={} depth={} poc_lsb={} st_rps={} sao={} tmvp={}",
                         s.sps_id,
@@ -443,6 +447,7 @@ fn main() {
                 }
                 hevc::parser::NAL_PPS => {
                     let p = hevc::parse_pps(&n.rbsp).expect("pps");
+                    pps_v = Some(p.clone());
                     println!(
                         "PPS id={} sps={} init_qp={} weighted_pred={} tiles={} wpp={} lists_mod={}",
                         p.pps_id,
@@ -454,7 +459,33 @@ fn main() {
                         p.lists_modification_present
                     );
                 }
-                t if t <= 31 => vcl += 1,
+                t if t <= 31 => {
+                    vcl += 1;
+                    if let (Some(sps), Some(pps)) = (&sps_v, &pps_v) {
+                        match hevc::parse_slice_header(&n.rbsp, sps, pps, t) {
+                            Ok(sh) => {
+                                slices += 1;
+                                if slices <= 4 {
+                                    println!(
+                                        "  slice type={} poc_lsb={} sao={}/{} tmvp={} rps s0={:?} s1={:?}",
+                                        sh.slice_type,
+                                        sh.poc_lsb,
+                                        sh.sao_luma as u8,
+                                        sh.sao_chroma as u8,
+                                        sh.temporal_mvp as u8,
+                                        sh.rps.s0,
+                                        sh.rps.s1
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                if slices < 2 {
+                                    println!("  slice parse: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }

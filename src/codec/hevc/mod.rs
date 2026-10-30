@@ -7,5 +7,6 @@
 pub mod parser;
 
 pub use parser::{
-    parse_pps, parse_sps, parse_vps, split_annex_b, Pps, Sps, Vps,
+    parse_pps, parse_slice_header, parse_sps, parse_vps, split_annex_b, Pps, ShortTermRps,
+    SliceHeader, Sps, Vps,
 };
