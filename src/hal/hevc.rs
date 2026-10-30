@@ -23,7 +23,8 @@ pub const PPS_BUF_SIZE: usize = PPS_PACKET_COPIES * hw::PPS_PACKET_SIZE;
 const CABAC_OFFSET: usize = 0;
 const CABAC_ALIGNED: usize = 28672; // align(27456, 4096)
 const SPSPPS_OFFSET: usize = CABAC_ALIGNED;
-const RPS_OFFSET: usize = SPSPPS_OFFSET + PPS_BUF_SIZE + 128;
+// MPP aligns every region in the shared buffer to 4 KiB.
+const RPS_OFFSET: usize = (SPSPPS_OFFSET + PPS_BUF_SIZE + 4095) & !4095;
 const BUFS_SIZE: usize = RPS_OFFSET + hw::RPS_TABLE_SIZE + 128;
 
 /// One decoded picture: NV12 planes plus its colmv buffer.
@@ -226,7 +227,16 @@ pub struct HevcHw {
 
 impl HevcHw {
     pub fn open() -> io::Result<HevcHw> {
-        let svc = MppService::open(Client::RkvDec as u32)?;
+        // The board's hardware mask advertises a dedicated HEVC decode client
+        // (bit 8) next to rkvdec (bit 9); try it first, falling back to rkvdec.
+        let client = std::env::var("RFI_HEVC_CLIENT")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(Client::HevcDec as u32);
+        let svc = match MppService::open(client) {
+            Ok(s) => s,
+            Err(_) => MppService::open(Client::RkvDec as u32)?,
+        };
         let mut bufs = DmaBuf::alloc("system", BUFS_SIZE, false)?;
         let n = bufs.as_mut_slice().len().min(CABAC_TABLE.len());
         bufs.as_mut_slice()[CABAC_OFFSET..CABAC_OFFSET + n]
