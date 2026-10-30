@@ -115,7 +115,12 @@ impl Scaler {
         assert_eq!(dst.len(), self.dw * self.dh * 3);
         let g = self.geometry(sw, sh);
         self.build_map(sw, &g);
-        dst.fill(114);
+        // When the scaled image covers the whole destination every byte is
+        // written below, so the letterbox fill would be wasted work.
+        let covers_all = g.pad_left == 0 && g.pad_top == 0 && g.new_w == self.dw && g.new_h == self.dh;
+        if !covers_all {
+            dst.fill(114);
+        }
 
         let inv = 1.0f32 / g.scale;
         let dw3 = self.dw * 3;
