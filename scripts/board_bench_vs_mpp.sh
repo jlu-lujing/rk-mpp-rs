@@ -33,6 +33,9 @@ streams=(
   "/tmp/mp4_320x240_12_ip.m4v:mp4dec:4:320:240:0"
   "/tmp/mp4_320x240_12_ibpb.m4v:mp4dec:4:320:240:0"
   "/tmp/mp4_150x100_9_ip.m4v:mp4dec:4:150:100:0"
+  "/tmp/h263_cif_12_ip.263:h263dec:3:352:288:0"
+  "/tmp/h263_qcif_6_ip.263:h263dec:3:176:144:0"
+  "/tmp/h263_4cif_10_ip.263:h263dec:3:704:576:0"
 )
 
 median() {

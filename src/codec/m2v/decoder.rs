@@ -32,16 +32,16 @@ const STREAM_PADDING: usize = 128;
 /// Quantiser matrices arrive in zig-zag order and the hardware table is raster
 /// order, which is why every loaded matrix goes through this map.
 const ZIGZAG_TO_RASTER: [usize; 64] = [
-    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27,
-    20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58,
-    59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
 /// ISO/IEC 13818-2 default intra quantiser matrix, in raster order.
 const DEFAULT_INTRA_MATRIX: [u8; 64] = [
     8, 16, 19, 22, 26, 27, 29, 34, 16, 16, 22, 24, 27, 29, 34, 37, 19, 22, 26, 27, 29, 34, 34, 38,
-    22, 22, 26, 27, 29, 34, 37, 40, 22, 26, 27, 29, 32, 35, 40, 48, 26, 27, 29, 32, 35, 40, 48,
-    58, 26, 27, 29, 34, 38, 46, 56, 69, 27, 29, 35, 38, 46, 56, 69, 83,
+    22, 22, 26, 27, 29, 34, 37, 40, 22, 26, 27, 29, 32, 35, 40, 48, 26, 27, 29, 32, 35, 40, 48, 58,
+    26, 27, 29, 34, 38, 46, 56, 69, 27, 29, 35, 38, 46, 56, 69, 83,
 ];
 
 /// MPEG-2 falls back to a flat non-intra matrix.
@@ -61,7 +61,9 @@ fn dezigzag(source: &[u8; 64]) -> [u8; 64] {
 /// parser lands on the same byte by walking one access unit, and a slice that
 /// somehow precedes its picture header does not start the picture.
 fn slice_start_of(group: &[u8], units: &[Unit]) -> Option<usize> {
-    let header = units.iter().position(|unit| matches!(unit, Unit::Picture(_)))?;
+    let header = units
+        .iter()
+        .position(|unit| matches!(unit, Unit::Picture(_)))?;
     units.iter().skip(header + 1).find_map(|unit| match unit {
         // The payload points past the code byte, so the prefix is four back.
         Unit::Slice { data, .. } => {
@@ -238,9 +240,7 @@ impl Decoder {
 
     /// Hand the pictures still held by the reference rotation to the caller.
     pub fn flush(&mut self) -> Result<Vec<Picture>, String> {
-        let Decoder {
-            slots, dpb, ..
-        } = self;
+        let Decoder { slots, dpb, .. } = self;
         let buffers = dpb.flush(&mut |_| ());
         let _ = slots;
         buffers
@@ -406,9 +406,7 @@ impl Decoder {
             slot.temporal_reference = picture.temporal_reference;
         }
 
-        let Decoder {
-            slots, dpb, ..
-        } = self;
+        let Decoder { slots, dpb, .. } = self;
         let displayed = dpb.update(
             dpb::completes_picture(structure, top_field_first),
             &mut |_| (),
@@ -468,13 +466,19 @@ impl Decoder {
             .len()
             .checked_add(STREAM_PADDING)
             .ok_or("MPEG-2 picture is too large")?;
-        if self.stream.as_ref().is_none_or(|buffer| buffer.len() < needed) {
+        if self
+            .stream
+            .as_ref()
+            .is_none_or(|buffer| buffer.len() < needed)
+        {
             self.stream = None;
-            self.stream = Some(
-                DmaBuf::alloc("system", needed, false).map_err(|error| error.to_string())?,
-            );
+            self.stream =
+                Some(DmaBuf::alloc("system", needed, false).map_err(|error| error.to_string())?);
         }
-        let buffer = self.stream.as_mut().expect("stream buffer was just created");
+        let buffer = self
+            .stream
+            .as_mut()
+            .expect("stream buffer was just created");
         let fd = buffer.fd() as u32;
         buffer
             .sync_write_begin()
@@ -485,9 +489,7 @@ impl Decoder {
             let padding_end = (group.len() + STREAM_PADDING).min(window.len());
             window[group.len()..padding_end].fill(0);
         }
-        buffer
-            .sync_write_end()
-            .map_err(|error| error.to_string())?;
+        buffer.sync_write_end().map_err(|error| error.to_string())?;
         self.stream_fd = fd;
         Ok(fd)
     }

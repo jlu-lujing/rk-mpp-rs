@@ -364,7 +364,11 @@ impl Default for Vol {
 
 impl Vol {
     /// `mpg4d_parse_vol_header`.
-    fn parse(r: &mut Reader<'_>, state: &Vol, estimation: &mut Estimation) -> Result<Self, Mpg4Error> {
+    fn parse(
+        r: &mut Reader<'_>,
+        state: &Vol,
+        estimation: &mut Estimation,
+    ) -> Result<Self, Mpg4Error> {
         let mut vol = state.clone();
         r.skip(1)?; // random_accessible_vol
         let vo_type = r.bits(8)?; // video_object_type_indication
@@ -643,8 +647,10 @@ pub fn parse(data: &[u8]) -> Result<Vec<Item>, Mpg4Error> {
                 items.push(Item::Vol(vol.clone()));
             }
             CODE_USER_DATA => {
-                state.custom_version =
-                    parse_user_data(&mut Reader::new(&data[start + 4..next]), state.custom_version);
+                state.custom_version = parse_user_data(
+                    &mut Reader::new(&data[start + 4..next]),
+                    state.custom_version,
+                );
             }
             CODE_VOS..=CODE_VOS_LAST | CODE_VISUAL_OBJ | CODE_GOP => {
                 // time_code, closed_gov, broken_link: no register value needs them.
@@ -688,7 +694,11 @@ fn parse_user_data(r: &mut Reader<'_>, mut custom_version: u32) -> u32 {
         return custom_version;
     }
     let mut j = 4;
-    custom_version = if text.get(j).copied().unwrap_or(0) <= b'4' { 4 } else { 5 };
+    custom_version = if text.get(j).copied().unwrap_or(0) <= b'4' {
+        4
+    } else {
+        5
+    };
     while text.get(j).copied().map_or(false, |c| c.is_ascii_digit()) {
         j += 1;
     }
@@ -724,8 +734,8 @@ fn parse_vop(
         state.last_non_b_time = state.time;
         (state.time, 0, state.time_pp)
     } else {
-        state.time =
-            (state.last_time_base + time_incr) * i64::from(vol.time_inc_resolution) + time_increment;
+        state.time = (state.last_time_base + time_incr) * i64::from(vol.time_inc_resolution)
+            + time_increment;
         let time_bp = state.time_pp - (state.last_non_b_time - state.time);
         (state.time, time_bp, state.time_pp)
     };

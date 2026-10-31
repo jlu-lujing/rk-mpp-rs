@@ -18,9 +18,9 @@ use crate::service::dma_heap::DmaBuf;
 use crate::service::{Client, MppService, RegOffsetInfo};
 
 pub use crate::hal::vdpu2::{
-    frame_layout, Frame, IRQ_FAILURE, REG_BUS, REG_CUR_PIC, REG_DEC_MODE, REG_DIRECT_MV, REG_ENDIAN,
-    REG_FILTER, REG_IRQ, REG_MV_ACC, REG_PIC_CTRL, REG_PIC_SIZE, REG_QP_TABLE, REG_REF0, REG_REF1, REG_REF2,
-    REG_REF3, REG_START_MB, REG_STREAM_LEN, REG_VLC_BASE,
+    frame_layout, Frame, IRQ_FAILURE, REG_BUS, REG_CUR_PIC, REG_DEC_MODE, REG_DIRECT_MV,
+    REG_ENDIAN, REG_FILTER, REG_IRQ, REG_MV_ACC, REG_PIC_CTRL, REG_PIC_SIZE, REG_QP_TABLE,
+    REG_REF0, REG_REF1, REG_REF2, REG_REF3, REG_START_MB, REG_STREAM_LEN, REG_VLC_BASE,
 };
 
 /// Words the MPEG-4 path touches that MPEG-2 leaves alone.
@@ -100,13 +100,9 @@ pub struct PictureJob {
 /// `MPP_DIV`: integer division that leaves the numerator alone when the
 /// denominator is zero.
 fn div(num: i64, den: i64) -> u32 {
-    if den == 0 {
-        num
-    } else {
-        num / den
-    }
-    .try_into()
-    .unwrap_or(u32::MAX)
+    if den == 0 { num } else { num / den }
+        .try_into()
+        .unwrap_or(u32::MAX)
 }
 
 /// The three `trb_per_trd_*` ratios of a B picture, as `(d0, dm1, d1)`.
@@ -436,13 +432,19 @@ mod tests {
         assert_eq!(regs[REG_MV_ACC], 0x0000_8800, "an I picture shifts by one");
 
         let regs = build_registers(&job(VOP_P, 55, 2548, [1, 0]));
-        assert_eq!(regs[REG_PIC_CTRL], 0x0000_4431, "pic_type_sel0 and dmmv_wr_en");
+        assert_eq!(
+            regs[REG_PIC_CTRL], 0x0000_4431,
+            "pic_type_sel0 and dmmv_wr_en"
+        );
         assert_eq!(regs[REG_STREAM_LEN], 0x0c00_09f4);
         assert_eq!(regs[REG_TIME_INCR], 0xde00_001e, "start word 55");
         assert_eq!(regs[REG_MV_ACC], 0x0000_8800);
 
         let regs = build_registers(&job(VOP_B, 57, 2021, [1, 1]));
-        assert_eq!(regs[REG_PIC_CTRL], 0x0000_c031, "both sel bits, no dmmv write");
+        assert_eq!(
+            regs[REG_PIC_CTRL], 0x0000_c031,
+            "both sel bits, no dmmv write"
+        );
         assert_eq!(regs[REG_TIME_INCR], 0xe600_001e, "start word 57");
     }
 

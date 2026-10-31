@@ -5,6 +5,7 @@
 //! official MPP (H.264/H.265/VP8/VP9/AV1/MPEG2/MPEG4/AVS) are the roadmap.
 
 pub mod av1;
+pub mod h263;
 pub mod h264;
 pub mod hevc;
 pub mod jpeg;

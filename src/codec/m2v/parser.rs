@@ -316,7 +316,10 @@ impl PictureHeader {
     pub fn f_code(&self) -> [[u32; 2]; 2] {
         [
             [u32::from(self.full_pel_forward_vector), self.forward_f_code],
-            [u32::from(self.full_pel_backward_vector), self.backward_f_code],
+            [
+                u32::from(self.full_pel_backward_vector),
+                self.backward_f_code,
+            ],
         ]
     }
 
@@ -357,10 +360,7 @@ pub struct PictureCodingExtension {
 
 impl PictureCodingExtension {
     pub fn read(r: &mut Reader<'_>) -> Result<Self, M2vError> {
-        let f_code = [
-            [r.bits(4)?, r.bits(4)?],
-            [r.bits(4)?, r.bits(4)?],
-        ];
+        let f_code = [[r.bits(4)?, r.bits(4)?], [r.bits(4)?, r.bits(4)?]];
         let intra_dc_precision = r.bits(2)?;
         let picture_structure = r.bits(2)?;
         let top_field_first = r.flag()?;
@@ -471,7 +471,10 @@ pub enum Unit<'a> {
     },
     UserData(&'a [u8]),
     /// GOP headers and anything the hardware path does not read.
-    Other { code: u8, data: &'a [u8] },
+    Other {
+        code: u8,
+        data: &'a [u8],
+    },
 }
 
 /// Split the stream on `00 00 01` start codes and decode every header.
@@ -489,38 +492,39 @@ pub fn parse_units(data: &[u8]) -> Result<Vec<Unit<'_>>, M2vError> {
 /// damaged stream it choked on.
 pub fn parse_unit(code: u8, payload: &[u8]) -> Result<Unit<'_>, M2vError> {
     let unit = match code {
-            CODE_SEQUENCE => Unit::SequenceHeader(SequenceHeader::parse(payload)?),
-            CODE_PICTURE => Unit::Picture(PictureHeader::parse(payload)?),
-            CODE_USER_DATA => Unit::UserData(payload),
-            CODE_EXTENSION | CODE_EXTENSION_ALT => {
-                // `extension_start_code_identifier` is four bits, so the body
-                // is not byte aligned and must continue in the same reader.
-                let mut r = Reader::new(payload);
-                let id = r.bits(4)?;
-                match id {
-                    EXT_SEQUENCE => Unit::SequenceExtension(SequenceExtension::read(&mut r)?),
-                    EXT_SEQUENCE_DISPLAY => {
-                        Unit::SequenceDisplayExtension(SequenceDisplayExtension::read(&mut r)?)
-                    }
-                    EXT_QUANT_MATRIX => {
-                        Unit::QuantMatrixExtension(QuantMatrixExtension::read(&mut r)?)
-                    }
-                    EXT_PICTURE_CODING => {
-                        Unit::PictureCodingExtension(PictureCodingExtension::read(&mut r)?)
-                    }
-                    // Picture display, copyright and the scalable extensions do
-                    // not feed the register file.
-                    _ => Unit::Other {
-                        code,
-                        data: payload,
-                    },
+        CODE_SEQUENCE => Unit::SequenceHeader(SequenceHeader::parse(payload)?),
+        CODE_PICTURE => Unit::Picture(PictureHeader::parse(payload)?),
+        CODE_USER_DATA => Unit::UserData(payload),
+        CODE_EXTENSION | CODE_EXTENSION_ALT => {
+            // `extension_start_code_identifier` is four bits, so the body
+            // is not byte aligned and must continue in the same reader.
+            let mut r = Reader::new(payload);
+            let id = r.bits(4)?;
+            match id {
+                EXT_SEQUENCE => Unit::SequenceExtension(SequenceExtension::read(&mut r)?),
+                EXT_SEQUENCE_DISPLAY => {
+                    Unit::SequenceDisplayExtension(SequenceDisplayExtension::read(&mut r)?)
                 }
+                EXT_QUANT_MATRIX => Unit::QuantMatrixExtension(QuantMatrixExtension::read(&mut r)?),
+                EXT_PICTURE_CODING => {
+                    Unit::PictureCodingExtension(PictureCodingExtension::read(&mut r)?)
+                }
+                // Picture display, copyright and the scalable extensions do
+                // not feed the register file.
+                _ => Unit::Other {
+                    code,
+                    data: payload,
+                },
             }
-            c if (CODE_SLICE_MIN..=CODE_SLICE_MAX).contains(&c) => Unit::Slice {
-                number: u32::from(c),
-                data: payload,
-            },
-            code => Unit::Other { code, data: payload },
+        }
+        c if (CODE_SLICE_MIN..=CODE_SLICE_MAX).contains(&c) => Unit::Slice {
+            number: u32::from(c),
+            data: payload,
+        },
+        code => Unit::Other {
+            code,
+            data: payload,
+        },
     };
     Ok(unit)
 }
@@ -747,7 +751,10 @@ mod tests {
     fn truncated_stream_reports_error_not_panic() {
         for cut in [1usize, 5, 9, 13, 20, 33] {
             let result = parse_units(&TINY[..cut]);
-            assert!(result.is_ok() || result.unwrap_err() == M2vError::Truncated, "cut {cut}");
+            assert!(
+                result.is_ok() || result.unwrap_err() == M2vError::Truncated,
+                "cut {cut}"
+            );
         }
     }
 }

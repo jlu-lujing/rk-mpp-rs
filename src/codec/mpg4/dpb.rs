@@ -152,15 +152,22 @@ mod tests {
         // picture sequence. B pictures never become references, so every B after
         // the first reuses the same scratch buffer.
         let mut dpb = Dpb::new();
-        let taken: Vec<usize> = [(VOP_I, 0usize), (VOP_P, 1), (VOP_B, 2), (VOP_B, 2), (VOP_I, 2), (VOP_P, 0)]
-            .iter()
-            .map(|(coding, expected)| {
-                let buffer = (0..3).find(|b| !dpb.is_live(*b)).expect("a free buffer");
-                assert_eq!(buffer, *expected);
-                dpb.update(*coding, buffer);
-                buffer
-            })
-            .collect();
+        let taken: Vec<usize> = [
+            (VOP_I, 0usize),
+            (VOP_P, 1),
+            (VOP_B, 2),
+            (VOP_B, 2),
+            (VOP_I, 2),
+            (VOP_P, 0),
+        ]
+        .iter()
+        .map(|(coding, expected)| {
+            let buffer = (0..3).find(|b| !dpb.is_live(*b)).expect("a free buffer");
+            assert_eq!(buffer, *expected);
+            dpb.update(*coding, buffer);
+            buffer
+        })
+        .collect();
         assert_eq!(taken, vec![0, 1, 2, 2, 2, 0]);
         assert_eq!(heads(&dpb), (Some(0), Some(2)));
     }
@@ -174,7 +181,11 @@ mod tests {
         dpb.update(VOP_P, 1);
         assert_eq!(dpb.prev_pic_type(), VOP_P, "the head holds the P picture");
         dpb.update(VOP_B, 2);
-        assert_eq!(dpb.prev_pic_type(), VOP_P, "a B picture leaves the heads alone");
+        assert_eq!(
+            dpb.prev_pic_type(),
+            VOP_P,
+            "a B picture leaves the heads alone"
+        );
     }
 
     #[test]

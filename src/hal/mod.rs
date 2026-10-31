@@ -4,6 +4,7 @@
 //! official MPP (vdpu1/vdpu2/rkvdec/av1d/venc/vepu) are the roadmap.
 
 pub mod av1d;
+pub mod h263d;
 pub mod h264d;
 pub mod h264e;
 mod h264e_vepu580_template;
@@ -13,6 +14,6 @@ pub mod jpege;
 pub mod jpege_tables;
 pub mod m2vd;
 pub mod mpg4d;
-pub mod vdpu34x_regs;
 pub mod vdpu2;
+pub mod vdpu34x_regs;
 pub mod vp9d;

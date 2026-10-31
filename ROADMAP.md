@@ -34,7 +34,7 @@ multi-core, secure mode).
 | M3 | H.265 decode: syntax (VPS/SPS/PPS, RPS, scaling lists, tiles, WPP) + rkvdec HAL | 12k | **Main/Main10/scaling-list/long-term hardware path bit-exact; t6 rkvdec rejects 4:2:2/4:4:4; SCC pending** |
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
-| M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2 and MPEG-4 decode done (syntax, shared vdpu2 register file, three-buffer DPB, `rk-mpp-rs m2vdec` / `mp4dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB. Field-coded PAFF unverified. H.263/VP8/AVS todo** |
+| M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4 and H.263 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB and all three H.263 frame sizes. Field-coded PAFF unverified. VP8/AVS todo** |
 | M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | todo |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline and parameterized H.264 Baseline IDR done; H.264 inter/SEI/RC and H.265 pending** |
 | M9 | Post-processor: vdpu-pp deinterlace/scale/format, RGA interop | 8k | todo |
@@ -377,7 +377,49 @@ multi-core, secure mode).
       Shared with C and still open: the split ends an access unit at any
       `00 00 01`, so a stream that uses resync markers (GOB headers) breaks there
       and here. Every fixture here sets `resync_marker_disable=1`.
-- [ ] H.263, VP8, AVS+, AVS2
+- [x] H.263 picture syntax (`src/codec/h263/parser.rs`): the access-unit rule
+      `mpp_h263_parser_split` implements and the picture header of
+      `h263_parse_picture_header`, field for field. A picture starts where a
+      rolling 32-bit byte window reads sixteen zeros, a one bit and a five-bit
+      GOB number of zero (`00 00 80` to `00 00 83`), which is why the C masks are
+      `0x00FFFF80` and `0x7C` and not the whole low byte: the two bits under the
+      GOB number are the top of `MQQUANT`, so a mask that clears them loses
+      pictures whose quantiser is 16 or more. Each splitter call re-enters with
+      the window at all ones, which makes the end of one picture the start of the
+      next. There is no width or height in the header at all - `source_format`
+      picks SQCIF, QCIF, CIF, 4CIF or 16CIF - so custom source formats, the
+      extended PTY and the UMV / advanced-prediction / PB-frame bits of the
+      PTYPE tail are refused exactly where C refuses them, and pictures ahead of
+      the first I picture are dropped by the `found_i_vop` gate rather than
+      reported as an error.
+- [x] H.263 decode on vdpu2 (client 1): `src/hal/h263d.rs` fills the MPEG-2
+      register window - `hal_h263d_vdpu2_reg.h` differs from
+      `hal_m2vd_vdpu2_reg.h` only in field names - with decode mode 2,
+      `sw52.sw_apf_threshold` in the same bit `sw52` slot MPEG-4 calls
+      `adv_pref_thrd`, `sw51.sw_init_qp` at the picture's own quantiser, the
+      `sw59`/`sw153` taps at -1, 3, -6 and 20, and `sw136` at half-pel forward
+      resolution with only `sw_prev_pic_type` varying. What the format leaves at
+      zero matters as much: no quantiser table behind `sw61` and no direct
+      motion-vector buffer behind `sw62`, because there are no custom matrices
+      and no B pictures, so `sw134`/`sw135` stay unwritten while `sw131` and
+      `sw148` both take the single forward reference. `sw120`'s macroblock
+      remainders are written for every picture rather than only for a DivX build,
+      and `sw122.sw_vop_time_incr` is the constant 30000 that
+      `h263_fill_picture_parameters` writes rather than anything from the stream.
+      `src/codec/h263/dpb.rs` is the one-head rotation of
+      `mpp_h263_parser_update_dpb`: a picture is displayed as it is decoded, so
+      two frame buffers alternate in the order they were decoded and the
+      end-of-stream flush has nothing left to release.
+      `rk-mpp-rs h263dec <in.263> <out.yuv>` is the CLI path.
+      On t6 `h263_cif_12_ip.263` (I plus 11 P), `h263_qcif_6_ip.263` and
+      `h263_4cif_10_ip.263` are byte-exact against `mpi_dec_test -t 3` converted
+      from NV12 to planar, and `RFI_H263_REG_DUMP=1` appends the submitted image
+      in the text `hal_h263d_debug=1` prints; diffed that way on the CIF stream
+      all twelve jobs agree on every word but the four that carry DMA-BUF handles
+      (`sw63`, `sw64`, `sw131`, `sw148`). GOB start codes with a non-zero number
+      never end a picture here, in C or in Rust, so a stream that uses them for
+      resynchronisation is a shared open case rather than a difference.
+- [ ] VP8, AVS+, AVS2
 
 ### Encoders
 - [x] H.264 Baseline IDR (rkv-enc/VEPU580): SPS/PPS writer, Annex-B
@@ -433,7 +475,7 @@ multi-core, secure mode).
 
 ## Verification
 
-- Tests: `cargo test --all-targets` (289 unit + 88 integration, eleven ignored
+- Tests: `cargo test --all-targets` (307 unit + 88 integration, eleven ignored
   board-only tests: parsers, AV1 OBU/frame-header/CDF/PicParams snapshots,
   global-motion reconstruction, tile ranges and packet assembly, POC types
   0/1/2, DPB/MMCO/RPS, registers,
@@ -484,6 +526,13 @@ multi-core, secure mode).
   to planar. The IPBB row is the one that earns its place: it is the only fixture
   here that exercises both reference heads, the B picture time ratios and the
   output order the C rotation produces.
+- Board H.263 regression: 3/3 fixtures byte-exact
+  (`scripts/board_regress_h263.sh`). QCIF, CIF and 4CIF are locked against
+  `mpi_dec_test -t 3` converted from NV12 to planar. Those three are the whole
+  size matrix rather than a sample of it: the short video header names no other
+  resolution. The C decoder runs a picture or two again after the `-n` cap
+  without writing them out, so the compare checks the output length before it
+  compares bytes.
 - Decode throughput versus the source-built C MPP, from
   `scripts/board_bench_vs_mpp.sh`: five interleaved samples per binary on the
   same stream, medians. Rust covers submit + poll + DPB + NV12-to-planar
@@ -492,39 +541,35 @@ multi-core, secure mode).
 
   | stream | pictures | C MPP | this crate | delta |
   | --- | ---: | ---: | ---: | ---: |
-  | `test720.264` (H.264 720p) | 30 | 168 fps | 251 fps | +50 % |
-  | `test_hard.264` (H.264 1080p) | 90 | 109 fps | 223 fps | +104 % |
-  | `t720.hevc` (H.265 720p) | 10 | 109 fps | 241 fps | +122 % |
-  | `hevc_multigop_120.hevc` (H.265 720p) | 120 | 249 fps | 529 fps | +113 % |
-  | `hevc_main10_256.hevc` (H.265 Main10) | 30 | 162 fps | 1293 fps | +697 % |
-  | `vp90_720.ivf` (VP9 720p) | 30 | 263 fps | 1003 fps | +281 % |
-  | `p0_320x240_30.ivf` (VP9 Profile 0) | 30 | 492 fps | 1765 fps | +259 % |
-  | `av1_320x240_10.ivf` (AV1 Main 8-bit) | 10 | 500 fps | 1351 fps | +170 % |
-  | `m2v_320x240_12.m2v` (MPEG-2 320x240) | 10 | 625 fps | 1282 fps | +105 % |
-  | `m2v_320x240_ilaced.m2v` (MPEG-2 interlaced) | 6 | 381 fps | 1500 fps | +425 % |
-  | `m2v_64x64_3.m2v` (MPEG-2 64x64) | 3 | 750 fps | 3333 fps | +344 % |
-  | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1348 fps | +158 % |
-  | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 600 fps | 1579 fps | +163 % |
-  | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 643 fps | 3913 fps | +509 % |
+  | `test720.264` (H.264 720p) | 30 | 177 fps | 248 fps | +40 % |
+  | `test_hard.264` (H.264 1080p) | 90 | 111 fps | 220 fps | +99 % |
+  | `t720.hevc` (H.265 720p) | 10 | 109 fps | 233 fps | +115 % |
+  | `hevc_multigop_120.hevc` (H.265 720p) | 120 | 243 fps | 552 fps | +127 % |
+  | `hevc_main10_256.hevc` (H.265 Main10) | 30 | 157 fps | 1316 fps | +738 % |
+  | `vp90_720.ivf` (VP9 720p) | 30 | 319 fps | 645 fps | +102 % |
+  | `p0_320x240_30.ivf` (VP9 Profile 0) | 30 | 500 fps | 3409 fps | +582 % |
+  | `av1_320x240_10.ivf` (AV1 Main 8-bit) | 10 | 526 fps | 800 fps | +52 % |
+  | `m2v_320x240_12.m2v` (MPEG-2 320x240) | 10 | 476 fps | 1250 fps | +163 % |
+  | `m2v_320x240_ilaced.m2v` (MPEG-2 interlaced) | 6 | 400 fps | 1154 fps | +285 % |
+  | `m2v_64x64_3.m2v` (MPEG-2 64x64) | 3 | 750 fps | 3000 fps | +300 % |
+  | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
+  | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
+  | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |
+  | `h263_cif_12_ip.263` (H.263 CIF) | 12 | 400 fps | 1081 fps | +170 % |
+  | `h263_qcif_6_ip.263` (H.263 QCIF) | 6 | 857 fps | 2222 fps | +159 % |
+  | `h263_4cif_10_ip.263` (H.263 4CIF) | 10 | 119 fps | 373 fps | +213 % |
 
-  Every decoder we ship now beats the C library on its own stream, which is what
-  the performance target asks for. The rows to quote are the 30, 90 and 120
-  picture streams: the two small-picture rows (320x256 Main10, 320x240 VP9) swing
-  by a factor of two between runs because they are dominated by fixed per-run
-  overhead, and `hevc_multigop_120` measured 405 fps on a five-sample pass
-  against 542 fps on a seven-sample pass. Non-interleaved single runs are not
-  evidence at all: one lone `mpi_dec_test` pass over `test720.264` printed
-  1037 fps where the interleaved median is 166 fps.
-
-  Every row above is from the single pass that landed with MPEG-4, so the rows
-  are comparable with each other. The same script a few minutes earlier put
-  `hevc_multigop_120` at 261 fps where this table records 529 fps, and repeated
-  by hand the same stream measured 218, 221 and 227 ms with one outlier at
-  459 ms: the pass that produced the low number had been running long enough to
-  load the board, and the sample order inside it explains the rest. Re-run the
-  whole script from a cold board before quoting a row. All of the MPEG-2 and
-  MPEG-4 fixtures are 3 to 12 pictures, so their margins say more about per-run
-  overhead than about steady-state throughput on a stream long enough to matter.
+  Every decoder we ship beats the C library on its own stream, which is what the
+  performance target asks for. Every row is one five-sample interleaved pass -
+  the pass that landed with H.263 - so the rows are comparable with each other
+  and with nothing else; re-run the script from a cold board before quoting one.
+  The rows to trust are the 30, 90 and 120 picture streams. Under a dozen
+  pictures the C side reports whole milliseconds, so a row like QCIF's is really
+  "7 ms against 2.7 ms" and can move by tens of percentage points between passes:
+  `hevc_multigop_120` has been recorded at 243, 261, 529 and 552 fps across
+  passes of the same script. Non-interleaved single runs are not evidence at all:
+  one lone `mpi_dec_test` pass over `test720.264` printed 1037 fps where the
+  interleaved median is 166 fps.
 - Frame readback rule: the decoder output mapping is uncached, so a plane is
   read exactly once and eight bytes per load. `codec::yuv::nv12_to_planar` is
   the shared implementation behind H.264, H.265, VP9 and AV1. The per-sample
@@ -565,10 +610,10 @@ multi-core, secure mode).
   regression in either the 8-bit NV12 or 10-bit packed output path fails with
   an explicit hash mismatch.
 - `rk-mpp-rs m2v <file.m2v>` prints the MPEG-2 header chain,
-  `rk-mpp-rs m2vdec <in.m2v> <out.yuv>` and `rk-mpp-rs mp4dec <in.m4v> <out.yuv>`
-  decode MPEG-2 and MPEG-4 on vdpu2, and `rk-mpp-rs av1dec <in.ivf> <out.yuv>`
-  gives AV1 the same CLI path the other decoders use, so
-  `scripts/board_bench_vs_mpp.sh` can measure them.
+  `rk-mpp-rs m2vdec <in.m2v> <out.yuv>`, `rk-mpp-rs mp4dec <in.m4v> <out.yuv>` and
+  `rk-mpp-rs h263dec <in.263> <out.yuv>` decode MPEG-2, MPEG-4 and H.263 on vdpu2,
+  and `rk-mpp-rs av1dec <in.ivf> <out.yuv>` gives AV1 the same CLI path the other
+  decoders use, so `scripts/board_bench_vs_mpp.sh` can measure them.
 - Real streams: `rk-mpp-rs h264 <file.264>` prints SPS/PPS/slice fields; validated
   against x264 output (720p main with B-frames, 1080p baseline).
 - Bit-exactness target for every decoder: the software reference in

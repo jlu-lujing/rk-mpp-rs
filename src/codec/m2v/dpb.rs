@@ -114,11 +114,7 @@ impl Dpb {
     /// sw148, sw134, sw135. A B picture reads forward from `ref1` and backward
     /// from `ref0`; every other picture reads forward from `ref0` and points
     /// the backward pair at itself, which is what the C HAL does.
-    pub fn references(
-        &self,
-        picture_structure: u32,
-        top_field_first: bool,
-    ) -> [Option<usize>; 4] {
+    pub fn references(&self, picture_structure: u32, top_field_first: bool) -> [Option<usize>; 4] {
         let forward = self.ref1.buffer;
         let backward = self.ref0.buffer;
         let current = self.cur.buffer;
@@ -171,11 +167,7 @@ impl Dpb {
     /// `m2v_update_ref_frame` for one completed picture, returning the buffers
     /// that the display queue takes in order. `release` returns a buffer to the
     /// pool; a displayed buffer leaves the decoder, everything else stays.
-    pub fn update(
-        &mut self,
-        dominant: bool,
-        release: &mut dyn FnMut(usize),
-    ) -> Vec<usize> {
+    pub fn update(&mut self, dominant: bool, release: &mut dyn FnMut(usize)) -> Vec<usize> {
         let mut output = Vec::new();
         if !dominant {
             return output;
@@ -238,7 +230,7 @@ impl Dpb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::m2v::parser::{PIC_P, PIC_B};
+    use crate::codec::m2v::parser::{PIC_B, PIC_P};
 
     /// `(coding type, picture structure, top_field_first)` for the first GOP of
     /// `tests/data/m2v_320x240_12.m2v`, which `ffprobe` names IPBPB.
@@ -262,11 +254,7 @@ mod tests {
         /// Hand out a free buffer that no reference picture is reading, which is
         /// the rule `Decoder::reserve_buffer` applies.
         fn take(&mut self, dpb: &Dpb) -> usize {
-            if let Some(position) = self
-                .free
-                .iter()
-                .rposition(|buffer| !dpb.is_live(*buffer))
-            {
+            if let Some(position) = self.free.iter().rposition(|buffer| !dpb.is_live(*buffer)) {
                 return self.free.remove(position);
             }
             let buffer = self.allocated;
@@ -324,12 +312,18 @@ mod tests {
         assert_eq!(references[0][0], references[0][2]);
         // The first P reads the I picture in the forward direction only.
         assert_eq!(references[1][0], references[0][0], "P forward reference");
-        assert_eq!(references[1][2], references[1][3], "unused pair is the current picture");
+        assert_eq!(
+            references[1][2], references[1][3],
+            "unused pair is the current picture"
+        );
         // The first B reads the I picture forward and the P picture backward.
         assert_eq!(references[2][0], references[0][0], "B forward reference");
         assert_eq!(references[2][1], references[2][0], "forward pair repeats");
         assert_eq!(references[2][3], references[2][2], "backward pair repeats");
-        assert_ne!(references[2][0], references[2][2], "B reads two different pictures");
+        assert_ne!(
+            references[2][0], references[2][2],
+            "B reads two different pictures"
+        );
     }
 
     #[test]
@@ -356,7 +350,10 @@ mod tests {
             dpb.update(completes_picture(structure, top_field_first), &mut release);
         }
         assert_eq!(fields[0], fields[1], "both fields write one frame buffer");
-        assert_ne!(fields[0], fields[2], "the next picture takes another buffer");
+        assert_ne!(
+            fields[0], fields[2],
+            "the next picture takes another buffer"
+        );
     }
 
     #[test]
@@ -372,7 +369,10 @@ mod tests {
         let mut dpb = Dpb::new();
         let mut pool = Pool::default();
         dpb.allocate(PIC_I, pool.take(&dpb));
-        assert!(!dpb.inherits_reference_errors(), "intra pictures stand alone");
+        assert!(
+            !dpb.inherits_reference_errors(),
+            "intra pictures stand alone"
+        );
         let mut release = |buffer: usize| pool.give(buffer);
         dpb.update(true, &mut release);
 

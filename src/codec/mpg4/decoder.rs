@@ -104,7 +104,11 @@ impl Decoder {
             .collect()
     }
 
-    fn decode_picture(&mut self, picture: &parser::Picture, data: &[u8]) -> Result<Vec<Picture>, String> {
+    fn decode_picture(
+        &mut self,
+        picture: &parser::Picture,
+        data: &[u8],
+    ) -> Result<Vec<Picture>, String> {
         let vol = &picture.vol;
         if !self.dpb.accepts_picture(picture.vop.coding_type) {
             return Err(format!(
@@ -121,8 +125,11 @@ impl Decoder {
             .fd();
         let refs = {
             let slots = &self.slots;
-            self.dpb
-                .reference_words(picture.vop.coding_type, |buffer| slots[buffer].as_ref().map_or(0, |slot| slot.frame.fd()), current_fd)
+            self.dpb.reference_words(
+                picture.vop.coding_type,
+                |buffer| slots[buffer].as_ref().map_or(0, |slot| slot.frame.fd()),
+                current_fd,
+            )
         };
 
         let au = &data[picture.au.0..picture.au.1];
@@ -233,13 +240,19 @@ impl Decoder {
     /// zeroed, which is what the C HAL does before every job.
     fn load_stream(&mut self, au: &[u8]) -> Result<u32, String> {
         let needed = au.len() + STREAM_PADDING;
-        if self.stream.as_ref().is_none_or(|buffer| buffer.len() < needed) {
+        if self
+            .stream
+            .as_ref()
+            .is_none_or(|buffer| buffer.len() < needed)
+        {
             self.stream = None;
-            self.stream = Some(
-                DmaBuf::alloc("system", needed, false).map_err(|error| error.to_string())?,
-            );
+            self.stream =
+                Some(DmaBuf::alloc("system", needed, false).map_err(|error| error.to_string())?);
         }
-        let buffer = self.stream.as_mut().expect("stream buffer was just created");
+        let buffer = self
+            .stream
+            .as_mut()
+            .expect("stream buffer was just created");
         let fd = buffer.fd() as u32;
         buffer
             .sync_write_begin()
@@ -250,9 +263,7 @@ impl Decoder {
             let padding_end = (au.len() + STREAM_PADDING).min(window.len());
             window[au.len()..padding_end].fill(0);
         }
-        buffer
-            .sync_write_end()
-            .map_err(|error| error.to_string())?;
+        buffer.sync_write_end().map_err(|error| error.to_string())?;
         Ok(fd)
     }
 }
@@ -365,9 +376,18 @@ mod tests {
         assert_eq!(
             coding,
             [
-                parser::VOP_I, parser::VOP_P, parser::VOP_B, parser::VOP_B, parser::VOP_I,
-                parser::VOP_B, parser::VOP_B, parser::VOP_P, parser::VOP_B, parser::VOP_B,
-                parser::VOP_I, parser::VOP_B
+                parser::VOP_I,
+                parser::VOP_P,
+                parser::VOP_B,
+                parser::VOP_B,
+                parser::VOP_I,
+                parser::VOP_B,
+                parser::VOP_B,
+                parser::VOP_P,
+                parser::VOP_B,
+                parser::VOP_B,
+                parser::VOP_I,
+                parser::VOP_B
             ]
         );
         let lengths: Vec<u32> = rows.iter().map(|row| row.2).collect();
@@ -383,15 +403,7 @@ mod tests {
             .collect();
         assert_eq!(
             ratios,
-            [
-                (1, 3),
-                (2, 3),
-                (1, 3),
-                (2, 3),
-                (1, 3),
-                (2, 3),
-                (1, 2)
-            ],
+            [(1, 3), (2, 3), (1, 3), (2, 3), (1, 3), (2, 3), (1, 2)],
             "time_bp and time_pp as the C register file reports them"
         );
         assert_eq!(rows[1].4, 2, "the opening P picture reads fcode 2");
