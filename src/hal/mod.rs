@@ -12,6 +12,7 @@ pub mod jpegd;
 pub mod jpege;
 pub mod jpege_tables;
 pub mod m2vd;
+pub mod mpg4d;
 pub mod vdpu34x_regs;
 pub mod vdpu2;
 pub mod vp9d;

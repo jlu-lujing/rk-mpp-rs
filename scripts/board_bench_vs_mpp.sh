@@ -30,6 +30,9 @@ streams=(
   "/tmp/m2v_320x240_12.m2v:m2vdec:2:320:240:0"
   "/tmp/m2v_320x240_ilaced.m2v:m2vdec:2:320:240:0"
   "/tmp/m2v_64x64_3.m2v:m2vdec:2:64:64:0"
+  "/tmp/mp4_320x240_12_ip.m4v:mp4dec:4:320:240:0"
+  "/tmp/mp4_320x240_12_ibpb.m4v:mp4dec:4:320:240:0"
+  "/tmp/mp4_150x100_9_ip.m4v:mp4dec:4:150:100:0"
 )
 
 median() {

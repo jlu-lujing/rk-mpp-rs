@@ -1371,6 +1371,75 @@ fn main() {
         }
         return;
     }
+    if args.len() > 1 && args[1] == "mp4dec" {
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/mp4.yuv");
+        if src.is_empty() {
+            eprintln!("usage: rk-mpp-rs mp4dec <in.m4v> <out.yuv>");
+            std::process::exit(1);
+        }
+        let data = match std::fs::read(src) {
+            Ok(data) => data,
+            Err(error) => {
+                eprintln!("{src}: {error}");
+                std::process::exit(1);
+            }
+        };
+        let mut decoder = match rk_mpp_rs::codec::mpg4::decoder::Decoder::new() {
+            Ok(decoder) => decoder,
+            Err(error) => {
+                eprintln!("open vdpu2 failed: {error}");
+                std::process::exit(1);
+            }
+        };
+        use std::io::Write;
+        let mut output = std::io::BufWriter::new(match std::fs::File::create(dst) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("{dst}: {error}");
+                std::process::exit(1);
+            }
+        });
+        let started = Instant::now();
+        let pictures = match decoder.decode(&data) {
+            Ok(pictures) => pictures,
+            Err(error) => {
+                eprintln!("{src}: {error}");
+                std::process::exit(1);
+            }
+        };
+        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let mut failed = false;
+        let mut shown = 0usize;
+        for picture in &pictures {
+            if picture.err_info != 0 {
+                failed = true;
+                eprintln!(
+                    "picture {} failed with err={:#x} irq={:#x}",
+                    shown + 1,
+                    picture.err_info,
+                    decoder.last_irq
+                );
+            }
+            output.write_all(&picture.yuv).expect("write MPEG-4 frame");
+            shown += 1;
+            if std::env::var_os("RFI_MP4_TRACE").is_some() {
+                println!(
+                    "  picture {shown}: {}x{} err={:#x} irq={:#010x}",
+                    picture.width, picture.height, picture.err_info, decoder.last_irq,
+                );
+            }
+        }
+        output.flush().ok();
+        println!(
+            "decoded {shown} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps)",
+            shown as f64 / (decode_ms / 1000.0).max(f64::EPSILON)
+        );
+        if failed {
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "m2v" {
         // MPEG-2 header dump: no hardware needed, same role as `h264`/`hevc`.
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
