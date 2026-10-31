@@ -15,6 +15,9 @@ pub const YUV_OUT_FMT_2_RGB888: u32 = 1;
 pub const YUV_OUT_FMT_2_NV12: u32 = 3;
 pub const YUV_OUT_FMT_NO_TRANS: u32 = 0;
 pub const SCALEDOWN_DISABLE: u32 = 0;
+pub const SCALEDOWN_HALF: u32 = 1;
+pub const SCALEDOWN_QUARTER: u32 = 2;
+pub const SCALEDOWN_ONE_EIGHTH: u32 = 3;
 pub const OUTPUT_RASTER: u32 = 0;
 pub const BIT_DEPTH_8: u32 = 0;
 pub const TBL_ENTRY_1: u32 = 1;
@@ -88,6 +91,49 @@ impl JpegMode {
     }
 }
 
+/// Hardware IDCT downscale factor.
+///
+/// The value programmed in `SCALEDOWN_MODE` is the base-2 log of the
+/// reduction, not the divisor itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JpegDownscale {
+    #[default]
+    Disabled,
+    Half,
+    Quarter,
+    Eighth,
+}
+
+impl JpegDownscale {
+    pub const fn factor(self) -> usize {
+        match self {
+            Self::Disabled => 1,
+            Self::Half => 2,
+            Self::Quarter => 4,
+            Self::Eighth => 8,
+        }
+    }
+
+    pub const fn mode(self) -> u32 {
+        match self {
+            Self::Disabled => SCALEDOWN_DISABLE,
+            Self::Half => SCALEDOWN_HALF,
+            Self::Quarter => SCALEDOWN_QUARTER,
+            Self::Eighth => SCALEDOWN_ONE_EIGHTH,
+        }
+    }
+
+    pub const fn from_factor(factor: usize) -> Option<Self> {
+        match factor {
+            1 => Some(Self::Disabled),
+            2 => Some(Self::Half),
+            4 => Some(Self::Quarter),
+            8 => Some(Self::Eighth),
+            _ => None,
+        }
+    }
+}
+
 pub struct Job<'a> {
     pub info: &'a JpegInfo,
     /// ION/dma-buf fd of the 1280-byte table buffer.
@@ -99,6 +145,8 @@ pub struct Job<'a> {
     pub output_fd: i32,
     /// Ask the post-processor for RGB888 instead of NV12.
     pub rgb: bool,
+    /// Hardware IDCT reduction, applied before post-processing.
+    pub downscale: JpegDownscale,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,6 +159,90 @@ pub struct Geometry {
     pub stride_bytes: usize,
     /// Real frame size in bytes.
     pub frame_size: usize,
+    pub downscale: JpegDownscale,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Layout {
+    mode: JpegMode,
+    geometry: Geometry,
+    fill_bottom: bool,
+    fill_right: bool,
+}
+
+fn layout(info: &JpegInfo, rgb: bool, downscale: JpegDownscale) -> Result<Layout, &'static str> {
+    if info.width == 0 || info.height == 0 {
+        return Err("JPEG dimensions must be non-zero");
+    }
+    let mode = JpegMode::from_info(info).ok_or("unsupported component sampling")?;
+    let fill_right = match mode {
+        JpegMode::Yuv444 | JpegMode::Yuv440 | JpegMode::Yuv400 => {
+            (info.width & 0xf) != 0 && (info.width & 0xf) <= 8
+        }
+        _ => false,
+    };
+    let fill_bottom = !rgb
+        || match mode {
+            JpegMode::Yuv444 | JpegMode::Yuv422 | JpegMode::Yuv411 | JpegMode::Yuv400 => {
+                (info.height & 0xf) != 0 && (info.height & 0xf) <= 8
+            }
+            _ => false,
+        };
+
+    // Match jpegd_gen_regs() exactly: align the source extent first, then
+    // shift for hardware downscale, then re-align RGB/NV12 row width.
+    let mut out_width = align(info.width, ALIGN16) >> downscale.mode();
+    out_width = align(out_width, ALIGN16);
+    let mut out_height = if fill_bottom {
+        align(info.height, ALIGN16)
+    } else {
+        align(info.height, 8)
+    };
+    out_height >>= downscale.mode();
+
+    let y_hor_stride = if rgb {
+        (out_width >> 4) * 3
+    } else {
+        out_width >> 4
+    };
+    let y_virstride = y_hor_stride
+        .checked_mul(out_height)
+        .ok_or("JPEG output geometry overflow")?;
+    let frame_size = if rgb {
+        y_virstride
+            .checked_mul(16)
+            .ok_or("JPEG output geometry overflow")?
+    } else {
+        y_virstride
+            .checked_mul(24)
+            .ok_or("JPEG output geometry overflow")?
+    };
+
+    Ok(Layout {
+        mode,
+        fill_bottom,
+        fill_right,
+        geometry: Geometry {
+            out_width,
+            out_height,
+            stride: y_hor_stride,
+            stride_bytes: y_hor_stride * 16,
+            frame_size,
+            downscale,
+        },
+    })
+}
+
+/// Calculate the hardware output buffer geometry without programming registers.
+///
+/// Call this before allocating the output DMA buffer so a scaled job only
+/// reserves the reduced frame.
+pub fn geometry(
+    info: &JpegInfo,
+    rgb: bool,
+    downscale: JpegDownscale,
+) -> Result<Geometry, &'static str> {
+    Ok(layout(info, rgb, downscale)?.geometry)
 }
 
 /// Build the 42-word command register file and report the output geometry.
@@ -119,7 +251,9 @@ pub fn build(job: &Job) -> Result<(Regs, Geometry), &'static str> {
     if info.progressive {
         return Err("progressive JPEG is not supported by the hardware decoder");
     }
-    let mode = JpegMode::from_info(info).ok_or("unsupported component sampling")?;
+    let layout = layout(info, job.rgb, job.downscale)?;
+    let mode = layout.mode;
+    let geom = layout.geometry;
     let nb_components = info.components.len() as u32;
 
     // Number of quant tables defined in the file and the Huffman table bitmask,
@@ -143,12 +277,20 @@ pub fn build(job: &Job) -> Result<(Regs, Geometry), &'static str> {
 
     // reg4: picture format
     let qtables_sel = if nb_components > 1 {
-        if qtbl_entry > 1 { TBL_ENTRY_3 } else { TBL_ENTRY_2 }
+        if qtbl_entry > 1 {
+            TBL_ENTRY_3
+        } else {
+            TBL_ENTRY_2
+        }
     } else {
         TBL_ENTRY_1
     };
     let htables_sel = if nb_components > 1 {
-        if htbl_entry > 0x0f { TBL_ENTRY_3 } else { TBL_ENTRY_2 }
+        if htbl_entry > 0x0f {
+            TBL_ENTRY_3
+        } else {
+            TBL_ENTRY_2
+        }
     } else {
         TBL_ENTRY_1
     };
@@ -162,47 +304,26 @@ pub fn build(job: &Job) -> Result<(Regs, Geometry), &'static str> {
     r.set(JPEG_MODE, mode.hw_value());
 
     // reg2: output format (RGB888, full range, raster) + fill bits
-    let fill_right = match mode {
-        JpegMode::Yuv444 | JpegMode::Yuv440 | JpegMode::Yuv400 => {
-            (info.width & 0xf) != 0 && (info.width & 0xf) <= 8
-        }
-        _ => false,
-    };
-    let fill_bottom = match mode {
-        JpegMode::Yuv444 | JpegMode::Yuv422 | JpegMode::Yuv411 | JpegMode::Yuv400 => {
-            (info.height & 0xf) != 0 && (info.height & 0xf) <= 8
-        }
-        _ => false,
-    };
-    r.set(SCALEDOWN_MODE, SCALEDOWN_DISABLE);
+    r.set(SCALEDOWN_MODE, job.downscale.mode());
     r.set(DEC_OUT_SEQUENCE, OUTPUT_RASTER);
     r.set(
         YUV_OUT_FORMAT,
-        if job.rgb { YUV_OUT_FMT_2_RGB888 } else { YUV_OUT_FMT_2_NV12 },
+        if job.rgb {
+            YUV_OUT_FMT_2_RGB888
+        } else {
+            YUV_OUT_FMT_2_NV12
+        },
     );
     r.set(YUV2RGB_RANGE, 1); // full range, JPEG
-    r.set(FILL_DOWN_E, fill_bottom as u32);
-    r.set(FILL_RIGHT_E, fill_right as u32);
+    r.set(FILL_DOWN_E, layout.fill_bottom as u32);
+    r.set(FILL_RIGHT_E, layout.fill_right as u32);
 
-    // Geometry
-    let mut out_width = align(info.width, ALIGN16);
-    let mut out_height = if fill_bottom {
-        align(info.height, 16)
-    } else {
-        align(info.height, 8)
-    };
-    out_width = align(out_width, ALIGN16);
-    out_height = align(out_height, 8);
-    let y_hor_stride = if job.rgb {
-        (out_width >> 4) * 3 // RGB888: 3 bytes per pixel
-    } else {
-        out_width >> 4 // NV12: one byte per pixel
-    };
+    let y_hor_stride = geom.stride;
     let uv_hor_stride = if job.rgb { 0u32 } else { y_hor_stride as u32 };
     let y_virstride = if job.rgb {
-        y_hor_stride * out_height
+        y_hor_stride * geom.out_height
     } else {
-        y_hor_stride * out_height * 3 / 2
+        y_hor_stride * geom.out_height
     };
 
     r.set(Y_HOR_VIRSTRIDE, (y_hor_stride & 0xffff) as u32);
@@ -210,7 +331,14 @@ pub fn build(job: &Job) -> Result<(Regs, Geometry), &'static str> {
     r.set(Y_VIRSTRIDE, y_virstride as u32);
     r.set(Y_HOR_VIRSTRIDE_H, ((y_hor_stride >> 16) & 1) as u32);
 
-    r.set(QTBL_LEN, if nb_components > 0 { qtables_sel * 8 - 1 } else { 0 });
+    r.set(
+        QTBL_LEN,
+        if nb_components > 0 {
+            qtables_sel * 8 - 1
+        } else {
+            0
+        },
+    );
     r.set(HTBL_VALUE_LEN, htables_sel * 12 - 1); // 8-bit precision
     r.set(
         HTBL_MINCODE_LEN,
@@ -260,13 +388,6 @@ pub fn build(job: &Job) -> Result<(Regs, Geometry), &'static str> {
     r.set(RD_LATENCY_ID, 0xa);
 
     // Stride registers are counted in 16-byte units.
-    let geom = Geometry {
-        out_width,
-        out_height,
-        stride: y_hor_stride,
-        stride_bytes: y_hor_stride * 16,
-        frame_size: y_virstride * 16,
-    };
     Ok((r, geom))
 }
 
@@ -301,6 +422,7 @@ mod tests {
             stream_len: data.len(),
             output_fd: 11,
             rgb: true,
+            downscale: JpegDownscale::Disabled,
         })
         .unwrap();
 
@@ -325,6 +447,7 @@ mod tests {
             stream_len: data.len(),
             output_fd: 11,
             rgb: false,
+            downscale: JpegDownscale::Disabled,
         })
         .unwrap();
         assert_eq!(rn.get(YUV_OUT_FORMAT), YUV_OUT_FMT_2_NV12);
@@ -336,13 +459,128 @@ mod tests {
 
         // buffer registers carry fd in the low 10 bits and the offset above
         assert_eq!(r.words[9], 7);
-        assert_eq!(r.words[10], (tables::RKD_HUFFMAN_MINCODE_TBL_OFFSET as u32) << 10 | 7);
-        assert_eq!(r.words[11], (tables::RKD_HUFFMAN_VALUE_TBL_OFFSET as u32) << 10 | 7);
+        assert_eq!(
+            r.words[10],
+            (tables::RKD_HUFFMAN_MINCODE_TBL_OFFSET as u32) << 10 | 7
+        );
+        assert_eq!(
+            r.words[11],
+            (tables::RKD_HUFFMAN_VALUE_TBL_OFFSET as u32) << 10 | 7
+        );
         assert_eq!(r.words[13], 11);
         assert_eq!(r.words[12] & 0x3ff, 9);
         assert_eq!(r.words[12] >> 10, ((info.entropy_start / 16) * 16) as u32);
 
-        assert_eq!(r.get(STREAM_LEN), ((data.len() - (info.entropy_start / 16) * 16 + 15) / 16 - 1) as u32);
+        assert_eq!(
+            r.get(STREAM_LEN),
+            ((data.len() - (info.entropy_start / 16) * 16 + 15) / 16 - 1) as u32
+        );
         assert_eq!(r.get(STRM_START_BYTE), (info.entropy_start % 16) as u32);
+    }
+
+    fn test_info(width: usize, height: usize) -> JpegInfo {
+        let component = crate::codec::jpeg::parser::Component {
+            id: 1,
+            h: 2,
+            v: 2,
+            tq: 0,
+            td: 0,
+            ta: 0,
+        };
+        JpegInfo {
+            width,
+            height,
+            components: vec![
+                component,
+                crate::codec::jpeg::parser::Component {
+                    id: 2,
+                    h: 1,
+                    v: 1,
+                    ..component
+                },
+                crate::codec::jpeg::parser::Component {
+                    id: 3,
+                    h: 1,
+                    v: 1,
+                    ..component
+                },
+            ],
+            quant: [None, None, None, None],
+            dc: [None, None, None, None],
+            ac: [None, None, None, None],
+            restart_interval: 0,
+            progressive: false,
+            entropy_start: 0,
+            entropy_end: 1024,
+        }
+    }
+
+    #[test]
+    fn downscale_register_values_are_log2_factors() {
+        assert_eq!(JpegDownscale::Disabled.factor(), 1);
+        assert_eq!(JpegDownscale::Half.factor(), 2);
+        assert_eq!(JpegDownscale::Quarter.factor(), 4);
+        assert_eq!(JpegDownscale::Eighth.factor(), 8);
+        assert_eq!(JpegDownscale::Disabled.mode(), SCALEDOWN_DISABLE);
+        assert_eq!(JpegDownscale::Half.mode(), SCALEDOWN_HALF);
+        assert_eq!(JpegDownscale::Quarter.mode(), SCALEDOWN_QUARTER);
+        assert_eq!(JpegDownscale::Eighth.mode(), SCALEDOWN_ONE_EIGHTH);
+        assert_eq!(JpegDownscale::from_factor(4), Some(JpegDownscale::Quarter));
+        assert_eq!(JpegDownscale::from_factor(3), None);
+    }
+
+    #[test]
+    fn downscale_geometry_matches_rgb_and_nv12_layouts() {
+        let info = test_info(640, 640);
+        let full = geometry(&info, true, JpegDownscale::Disabled).unwrap();
+        let half = geometry(&info, true, JpegDownscale::Half).unwrap();
+        let quarter = geometry(&info, true, JpegDownscale::Quarter).unwrap();
+        let eighth = geometry(&info, true, JpegDownscale::Eighth).unwrap();
+
+        assert_eq!((full.out_width, full.out_height), (640, 640));
+        assert_eq!((half.out_width, half.out_height), (320, 320));
+        assert_eq!((quarter.out_width, quarter.out_height), (160, 160));
+        assert_eq!((eighth.out_width, eighth.out_height), (80, 80));
+        assert_eq!(full.frame_size, 640 * 640 * 3);
+        assert_eq!(half.frame_size, 320 * 320 * 3);
+        assert_eq!(quarter.frame_size, 160 * 160 * 3);
+        assert_eq!(eighth.frame_size, 80 * 80 * 3);
+
+        let nv12_half = geometry(&info, false, JpegDownscale::Half).unwrap();
+        assert_eq!(nv12_half.stride_bytes, 320);
+        assert_eq!(nv12_half.frame_size, 320 * 320 * 3 / 2);
+
+        let (regs, built) = build(&Job {
+            info: &info,
+            table_fd: 7,
+            stream_fd: 9,
+            stream_len: 1024,
+            output_fd: 11,
+            rgb: true,
+            downscale: JpegDownscale::Quarter,
+        })
+        .unwrap();
+        assert_eq!(regs.get(SCALEDOWN_MODE), SCALEDOWN_QUARTER);
+        assert_eq!(built.frame_size, quarter.frame_size);
+    }
+
+    #[test]
+    fn scaled_geometry_uses_c_alignment_order() {
+        // 321 -> align 336 -> half 168 -> align 176. Height is aligned before
+        // the shift and is deliberately not aligned again afterwards.
+        let info = test_info(321, 241);
+        let half = geometry(&info, true, JpegDownscale::Half).unwrap();
+        assert_eq!((half.out_width, half.out_height), (176, 124));
+        assert_eq!(half.stride_bytes, 176 * 3);
+        assert_eq!(half.frame_size, 176 * 124 * 3);
+    }
+
+    #[test]
+    fn nv12_forces_fill_down_before_downscale() {
+        let info = test_info(640, 241);
+        let rgb = geometry(&info, true, JpegDownscale::Half).unwrap();
+        let nv12 = geometry(&info, false, JpegDownscale::Half).unwrap();
+        assert_eq!(rgb.out_height, 124);
+        assert_eq!(nv12.out_height, 128);
     }
 }

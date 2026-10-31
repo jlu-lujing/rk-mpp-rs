@@ -27,8 +27,10 @@ const DMA_HEAP_IOCTL_ALLOC: c_ulong = iowr(
 );
 
 /// DMA_BUF_IOCTL_SYNC, `_IOW('b', 0, struct dma_buf_sync)`
-const DMA_BUF_IOCTL_SYNC: c_ulong = (1u32 << 30 | (16u32 << 16) | (('b' as u32) << 8)) as c_ulong;
+const DMA_BUF_IOCTL_SYNC: c_ulong =
+    (1u32 << 30 | (std::mem::size_of::<u64>() as u32) << 16 | (('b' as u32) << 8)) as c_ulong;
 const DMA_BUF_SYNC_READ: u64 = 1 << 0;
+const DMA_BUF_SYNC_WRITE: u64 = 1 << 1;
 const DMA_BUF_SYNC_START: u64 = 0 << 2;
 const DMA_BUF_SYNC_END: u64 = 1 << 2;
 
@@ -73,12 +75,19 @@ impl DmaBuf {
             unsafe { libc::close(data.fd as c_int) };
             return Err(io::Error::last_os_error());
         }
-        let _ = cached;
-        Ok(DmaBuf {
+        let buf = DmaBuf {
             fd: data.fd as c_int,
             len: data.len as usize,
             ptr: ptr as *mut u8,
-        })
+        };
+        // dma-heap does not promise zero-filled memory. The hardware tables
+        // are fixed-size and only partially rewritten for each frame, so
+        // stale contents from a previous allocation can change decode output.
+        buf.sync_write_begin()?;
+        unsafe { std::ptr::write_bytes(ptr, 0, data.len as usize) };
+        buf.sync_write_end()?;
+        let _ = cached;
+        Ok(buf)
     }
 
     pub fn fd(&self) -> c_int {
@@ -107,6 +116,16 @@ impl DmaBuf {
         self.sync(DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)
     }
 
+    /// Tell the kernel the CPU is about to write this buffer.
+    pub fn sync_write_begin(&self) -> io::Result<()> {
+        self.sync(DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE)
+    }
+
+    /// Flush CPU writes before handing the buffer to a DMA device.
+    pub fn sync_write_end(&self) -> io::Result<()> {
+        self.sync(DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE)
+    }
+
     fn sync(&self, flags: u64) -> io::Result<()> {
         #[repr(C)]
         struct Sync {
@@ -128,5 +147,16 @@ impl Drop for DmaBuf {
             libc::munmap(self.ptr as *mut c_void, self.len);
             libc::close(self.fd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DMA_BUF_IOCTL_SYNC;
+
+    #[test]
+    fn sync_ioctl_encodes_dma_buf_sync_size() {
+        // _IOW('b', 0, struct dma_buf_sync) on a 64-bit target.
+        assert_eq!(DMA_BUF_IOCTL_SYNC, 0x40086200);
     }
 }

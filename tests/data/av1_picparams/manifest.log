@@ -1,0 +1,16 @@
+0 order_hint=0 q=96 primary=7 refresh=255 slot=0 frame=0
+1 order_hint=8 q=93 primary=7 refresh=2 slot=1 frame=1
+2 order_hint=4 q=101 primary=7 refresh=4 slot=2 frame=1
+3 order_hint=2 q=115 primary=4 refresh=8 slot=3 frame=1
+4 order_hint=1 q=120 primary=7 refresh=16 slot=4 frame=1
+5 order_hint=3 q=120 primary=1 refresh=32 slot=5 frame=1
+6 order_hint=6 q=115 primary=2 refresh=64 slot=6 frame=1
+7 order_hint=5 q=120 primary=1 refresh=128 slot=7 frame=1
+8 order_hint=7 q=119 primary=1 refresh=16 slot=8 frame=1
+9 order_hint=8 q=120 primary=0 refresh=0 slot=4 frame=1
+10 order_hint=9 q=120 primary=4 refresh=8 slot=4 frame=1
+11 order_hint=0 q=96 primary=7 refresh=255 slot=3 frame=0
+12 order_hint=8 q=93 primary=7 refresh=2 slot=0 frame=1
+13 order_hint=4 q=101 primary=7 refresh=4 slot=1 frame=1
+14 order_hint=2 q=115 primary=4 refresh=8 slot=2 frame=1
+15 order_hint=1 q=120 primary=7 refresh=16 slot=4 frame=1

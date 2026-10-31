@@ -1,0 +1,45 @@
+--- a/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
++++ b/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
+@@ -461,10 +461,42 @@ static MPP_RET hal_vp9d_vdpu34x_gen_regs(void *hal, HalTaskInfo *task)
+ #if HW_PROB
+     hal_vp9d_prob_flag_delta(mpp_buffer_get_ptr(hw_ctx->probe_base), task->dec.syntax.data);
+     mpp_buffer_sync_end(hw_ctx->probe_base);
+     if (intraFlag) {
+         hal_vp9d_prob_default(mpp_buffer_get_ptr(hw_ctx->prob_default_base), task->dec.syntax.data);
+         mpp_buffer_sync_end(hw_ctx->prob_default_base);
+     }
++    {
++        const char *dump_dir = getenv("VP9_PROB_DUMP");
++        if (dump_dir) {
++            static RK_S32 dump_index;
++            char path[256];
++            FILE *fp;
++            RK_U8 probe_copy[304 * 8];
++
++            snprintf(path, sizeof(path), "%s/update_%02d.bin", dump_dir, dump_index);
++            fp = fopen(path, "wb");
++            if (fp) {
++                fwrite(mpp_buffer_get_ptr(hw_ctx->probe_base), 1, PROB_SIZE, fp);
++                fclose(fp);
++            }
++            if (intraFlag) {
++                snprintf(path, sizeof(path), "%s/default_%02d.bin", dump_dir, dump_index);
++                fp = fopen(path, "wb");
++                if (fp) {
++                    fwrite(mpp_buffer_get_ptr(hw_ctx->prob_default_base), 1, PROB_SIZE, fp);
++                    fclose(fp);
++                }
++            }
++            hal_vp9d_output_probe(probe_copy, task->dec.syntax.data);
++            snprintf(path, sizeof(path), "%s/probe_%02d.bin", dump_dir, dump_index);
++            fp = fopen(path, "wb");
++            if (fp) {
++                fwrite(probe_copy, 1, sizeof(probe_copy), fp);
++                fclose(fp);
++            }
++            dump_index++;
++        }
++    }
+ 
+     /* config reg103 */
+     vp9_hw_regs->comm_paras.reg103.prob_update_en   = 1;

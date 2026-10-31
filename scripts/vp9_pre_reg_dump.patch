@@ -1,0 +1,92 @@
+--- a/mpp/codec/dec/vp9/vp9d_parser.c
++++ b/mpp/codec/dec/vp9/vp9d_parser.c
+@@
+-#include <stdlib.h>
++#include <stdio.h>
++#include <stdlib.h>
+--- a/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
++++ b/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
+@@
+     mpp_assert(hw_regs);
+ 
++    {
++        const char *dump_dir = getenv("VP9_REG_PRE_DUMP");
++
++        if (dump_dir) {
++            static RK_U32 frame_index;
++            char path[256];
++            FILE *fp;
++            RK_U32 *words;
++            RK_U32 i;
++
++            snprintf(path, sizeof(path), "%s/reg_%02u.txt",
++                     dump_dir, frame_index);
++            fp = fopen(path, "wb");
++            if (fp) {
++                words = (RK_U32 *)&hw_regs->comm_gen;
++                for (i = 0; i < sizeof(hw_regs->comm_gen) / 4; i++)
++                    fprintf(fp, "%03u: %08x\n", i + 8, words[i]);
++                words = (RK_U32 *)&hw_regs->comm_paras;
++                for (i = 0; i < sizeof(hw_regs->comm_paras) / 4; i++)
++                    fprintf(fp, "%03u: %08x\n", i + 64, words[i]);
++                words = (RK_U32 *)&hw_regs->comm_addr;
++                for (i = 0; i < sizeof(hw_regs->comm_addr) / 4; i++)
++                    fprintf(fp, "%03u: %08x\n", i + 128, words[i]);
++                words = (RK_U32 *)&hw_regs->statistic;
++                for (i = 0; i < sizeof(hw_regs->statistic) / 4; i++)
++                    fprintf(fp, "%03u: %08x\n", i + 256, words[i]);
++                fclose(fp);
++            }
++
++            snprintf(path, sizeof(path), "%s/probe_%02u.bin",
++                     dump_dir, frame_index);
++            fp = fopen(path, "wb");
++            if (fp) {
++                fwrite(mpp_buffer_get_ptr(hw_ctx->probe_base), 1,
++                       PROB_SIZE, fp);
++                fclose(fp);
++            }
++
++            snprintf(path, sizeof(path), "%s/default_%02u.bin",
++                     dump_dir, frame_index);
++            fp = fopen(path, "wb");
++            if (fp) {
++                fwrite(mpp_buffer_get_ptr(hw_ctx->prob_default_base), 1,
++                       PROB_SIZE, fp);
++                fclose(fp);
++            }
++            frame_index++;
++        }
++    }
++
+ 
+ #if VP9_DUMP
+     {
+--- a/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
++++ b/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
+@@
+     hal_vp9d_rcb_info_update(hal, vp9_hw_regs, pic_param);
+     {
+         MppBuffer rcb_buf = NULL;
+ 
+         rcb_buf = (p_hal->fast_mode != 0) ? hw_ctx->g_buf[task->dec.reg_index].rcb_buf : hw_ctx->rcb_buf;
+         vdpu34x_setup_rcb(&vp9_hw_regs->comm_addr, cfg->dev, rcb_buf, hw_ctx->rcb_info);
+     }
+     vdpu34x_setup_statistic(&vp9_hw_regs->comm_gen, &vp9_hw_regs->statistic);
++
++    if (getenv("VP9_PARAMS_PRE_DUMP")) {
++        static RK_U32 frame_index;
++        char path[256];
++
++        snprintf(path, sizeof(path), "%s/picparams_%02u.bin",
++                 getenv("VP9_PARAMS_PRE_DUMP"), frame_index);
++        FILE *fp = fopen(path, "wb");
++        if (fp) {
++            fwrite(pic_param, 1, sizeof(*pic_param), fp);
++            fclose(fp);
++        }
++        frame_index++;
++    }
+ 
+     // whether need update counts
+     if (pic_param->refresh_frame_context && !pic_param->parallelmode) {

@@ -7,7 +7,7 @@
 //! `hal/rkdec/h264d/hal_h264d_rkv_reg.c`; this module reproduces it from our
 //! own parsed structures.
 
-use super::dpb::FrameStore;
+use super::dpb::{FrameStore, RefListEntry};
 use super::parser::{Pps, SliceHeader, Sps};
 
 /// Bit packer matching MPP's `mpp_put_bits`: **LSB-first** inside a stream of
@@ -33,7 +33,11 @@ impl BitWriter {
         if n == 0 {
             return;
         }
-        let mask = if n >= 32 { u32::MAX as u64 } else { (1u64 << n) - 1 };
+        let mask = if n >= 32 {
+            u32::MAX as u64
+        } else {
+            (1u64 << n) - 1
+        };
         let v = (val as u64) & mask;
         let idx = self.words.len() - 1;
         self.words[idx] |= v << self.bitpos;
@@ -95,7 +99,10 @@ impl BitWriter {
         } else {
             self.words.len()
         };
-        self.words[..n].iter().flat_map(|w| w.to_le_bytes()).collect()
+        self.words[..n]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect()
     }
 
     /// Trim to `n` bytes (the tables are fixed-size on the hardware side).
@@ -112,7 +119,12 @@ impl BitWriter {
 /// 128-bit aligned, dimensions are 12-bit MB counts, the PPS part ends with a
 /// zero scan-list address (the scan list has its own register), and the DPB
 /// flags share one 32-bit word.
-pub fn build_sps_pps(sps: &Sps, pps: &Pps, dpb_slots: &[Option<&FrameStore>]) -> Vec<u8> {
+pub fn build_sps_pps(
+    sps: &Sps,
+    pps: &Pps,
+    dpb_slots: &[Option<&FrameStore>],
+    sh: &SliceHeader,
+) -> Vec<u8> {
     let mut w = BitWriter::new();
     // SPS
     w.put_ones(13); // sps_id(4) | profile_idc(8) | constraint_set3(1)
@@ -124,11 +136,14 @@ pub fn build_sps_pps(sps: &Sps, pps: &Pps, dpb_slots: &[Option<&FrameStore>]) ->
     w.put(sps.max_num_ref_frames, 5);
     w.put(sps.poc_type, 2);
     w.put(sps.log2_max_poc_lsb.saturating_sub(4), 4);
-    w.put(0, 1); // delta_pic_order_always_zero_flag
+    w.put(sps.delta_pic_order_always_zero as u32, 1);
     w.put((sps.width + 15) / 16, 12);
-    w.put((sps.height + 15) / 16, 12);
+    w.put(sps.height_map_units, 12);
     w.put(sps.frame_mbs_only as u32, 1);
-    w.put(0, 1); // MbaffFrameFlag
+    // MBFF: a coded frame (not a field) of a stream that allows adaptive
+    // frame/field coding. Field pictures never set it.
+    let mbaff = !sps.frame_mbs_only && sps.mb_adaptive_frame_field && !sh.field_pic;
+    w.put(mbaff as u32, 1);
     w.put(sps.direct_8x8_inference as u32, 1);
     // MVC extension: disabled
     w.put(1, 1); // mvc_extension_enable
@@ -190,6 +205,24 @@ pub fn build_rps(
     dpb_slots: &[Option<&FrameStore>],
     lists: [&[u8]; 3],
 ) -> Vec<u8> {
+    let entries: [Vec<RefListEntry>; 3] = std::array::from_fn(|i| {
+        lists[i]
+            .iter()
+            .map(|&slot| RefListEntry {
+                slot,
+                bottom: false,
+            })
+            .collect()
+    });
+    build_rps_entries(sps, sh, dpb_slots, [&entries[0], &entries[1], &entries[2]])
+}
+
+pub fn build_rps_entries(
+    sps: &Sps,
+    sh: &SliceHeader,
+    dpb_slots: &[Option<&FrameStore>],
+    lists: [&[RefListEntry]; 3],
+) -> Vec<u8> {
     let mut w = BitWriter::new();
     w.align(128);
     let max_frame_num = 1u32 << sps.log2_max_frame_num;
@@ -197,7 +230,7 @@ pub fn build_rps(
         let f = dpb_slots.get(i).copied().flatten();
         let wrap = match f {
             None => 0u32,
-            Some(f) if f.long_term => f.frame_num,
+            Some(f) if f.long_term => f.long_term_frame_idx,
             Some(f) => {
                 if f.frame_num > sh.frame_num {
                     f.frame_num.wrapping_sub(max_frame_num)
@@ -209,17 +242,11 @@ pub fn build_rps(
         w.put(wrap & 0xffff, 16);
     }
     w.put(0, 16); // NULL flags
-    let mut layer = 0u32;
-    for i in 0..16 {
-        if dpb_slots.get(i).copied().flatten().is_some() {
-            layer |= 1 << i;
-        }
-    }
-    w.put(layer, 16);
+    w.put(0, 16); // non-MVC ref layer ids
     for list in lists.iter() {
         for i in 0..32 {
             let v = match list.get(i) {
-                Some(&idx) => (idx as u32 & 0x1f) | (1 << 4),
+                Some(entry) => (entry.slot as u32 & 0x1f) | (1 << 4) | ((entry.bottom as u32) << 5),
                 None => 0,
             };
             w.put(v, 7);
@@ -230,7 +257,10 @@ pub fn build_rps(
 }
 
 /// Scan list block: 6 × 4x4 lists then 2 × 8x8 lists, 8 bits per entry.
-pub fn build_scanlist(scaling_4x4: Option<&[[u8; 16]; 6]>, scaling_8x8: Option<&[[u8; 64]; 2]>) -> Vec<u8> {
+pub fn build_scanlist(
+    scaling_4x4: Option<&[[u8; 16]; 6]>,
+    scaling_8x8: Option<&[[u8; 64]; 2]>,
+) -> Vec<u8> {
     let mut w = BitWriter::new();
     if let Some(l4) = scaling_4x4 {
         for list in l4 {
@@ -267,6 +297,9 @@ mod tests {
             max_num_ref_frames: 4,
             width: 1280,
             height: 720,
+            coded_width: 1280,
+            coded_height: 720,
+            height_map_units: 45,
             frame_mbs_only: true,
             direct_8x8_inference: true,
             ..Default::default()
@@ -310,7 +343,7 @@ mod tests {
     fn sps_pps_block_has_expected_size() {
         let sps = sps();
         let pps = pps();
-        let block = build_sps_pps(&sps, &pps, &[]);
+        let block = build_sps_pps(&sps, &pps, &[], &SliceHeader::default());
         assert_eq!(block.len(), 48, "VDPU34X_SPSPPS_UNIT_SIZE");
         assert_eq!(block.len() % 8, 0, "64-bit aligned");
     }
@@ -318,7 +351,7 @@ mod tests {
     #[test]
     fn sps_block_encodes_dimensions() {
         let sps = sps();
-        let block = build_sps_pps(&sps, &pps(), &[]);
+        let block = build_sps_pps(&sps, &pps(), &[], &SliceHeader::default());
         // 13+2+3+3+1+4+5+2+4+1 = 38 bits before the 12-bit width field,
         // stored LSB-first.
         let mut v = 0u32;
@@ -327,6 +360,26 @@ mod tests {
             v |= (((block[bit / 8] >> (bit % 8)) & 1) as u32) << i;
         }
         assert_eq!(v, 80);
+    }
+
+    #[test]
+    fn sps_block_encodes_map_units_for_mbaff() {
+        let mut sps = sps();
+        sps.frame_mbs_only = false;
+        sps.mb_adaptive_frame_field = true;
+        sps.width = 1280;
+        sps.height = 720;
+        sps.coded_width = 1280;
+        sps.coded_height = 736;
+        sps.height_map_units = 23;
+        let block = build_sps_pps(&sps, &pps(), &[], &SliceHeader::default());
+
+        let mut height = 0u32;
+        for i in 0..12 {
+            let bit = 50 + i;
+            height |= (((block[bit / 8] >> (bit % 8)) & 1) as u32) << i;
+        }
+        assert_eq!(height, 23);
     }
 
     #[test]
@@ -340,17 +393,138 @@ mod tests {
         let f0 = FrameStore {
             frame_num: 0,
             poc: 0,
+            top_poc: 0,
+            bottom_poc: 0,
             long_term: false,
             long_term_frame_idx: 0,
             slot: 0,
             buf: 0,
             referenced: true,
+            colmv_valid: true,
+            field_coded: false,
+            top_present: true,
+            bottom_present: true,
+            top_used: true,
+            bottom_used: true,
+            error: 0,
         };
         let slots = [Some(&f0), None, None, None];
         let block = build_rps(&sps, &sh, &slots, [&[0u8], &[], &[]]);
         assert_eq!(&block[..2], &[0, 0], "frame_num_wrap of slot 0");
         assert_eq!(block.len() % 16, 0, "128-bit aligned");
         assert!(block.len() <= 384, "VDPU34X_RPS_SIZE");
+    }
+
+    #[test]
+    fn rps_uses_long_term_frame_idx_in_frame_num_list() {
+        let f0 = FrameStore {
+            frame_num: 9,
+            poc: 9,
+            top_poc: 9,
+            bottom_poc: 9,
+            long_term: true,
+            long_term_frame_idx: 5,
+            slot: 0,
+            buf: 0,
+            referenced: true,
+            colmv_valid: true,
+            field_coded: false,
+            top_present: true,
+            bottom_present: true,
+            top_used: true,
+            bottom_used: true,
+            error: 0,
+        };
+        let block = build_rps(
+            &sps(),
+            &SliceHeader {
+                frame_num: 12,
+                slice_type: 5,
+                ..Default::default()
+            },
+            &[Some(&f0)],
+            [&[0], &[], &[]],
+        );
+
+        assert_eq!(
+            &block[..2],
+            &[5, 0],
+            "long-term FrameNumList entries use long_term_frame_idx, not frame_num"
+        );
+    }
+
+    #[test]
+    fn rps_encodes_the_bottom_field_selector() {
+        let f0 = FrameStore {
+            frame_num: 0,
+            poc: 0,
+            top_poc: 0,
+            bottom_poc: 1,
+            long_term: false,
+            long_term_frame_idx: 0,
+            slot: 0,
+            buf: 0,
+            referenced: true,
+            colmv_valid: true,
+            field_coded: false,
+            top_present: true,
+            bottom_present: true,
+            top_used: true,
+            bottom_used: true,
+            error: 0,
+        };
+        let list = [RefListEntry {
+            slot: 0,
+            bottom: true,
+        }];
+        let block = build_rps_entries(
+            &sps(),
+            &SliceHeader {
+                frame_num: 1,
+                slice_type: 5,
+                ..Default::default()
+            },
+            &[Some(&f0)],
+            [&list[..], &[], &[]],
+        );
+
+        // FrameNumList(256) + NULL(16) + layer ids(16) = 288 bits.
+        // The first list entry occupies bits 288..294; bottom is bit 5.
+        assert_eq!(block[36] & 0x20, 0x20);
+    }
+
+    #[test]
+    fn non_mvc_rps_has_no_reference_layer_bits() {
+        let f0 = FrameStore {
+            frame_num: 0,
+            poc: 0,
+            top_poc: 0,
+            bottom_poc: 0,
+            long_term: false,
+            long_term_frame_idx: 0,
+            slot: 0,
+            buf: 0,
+            referenced: true,
+            colmv_valid: true,
+            field_coded: false,
+            top_present: true,
+            bottom_present: true,
+            top_used: true,
+            bottom_used: true,
+            error: 0,
+        };
+        let block = build_rps(
+            &sps(),
+            &SliceHeader {
+                frame_num: 6,
+                slice_type: 0,
+                ..Default::default()
+            },
+            &[Some(&f0)],
+            [&[0], &[], &[]],
+        );
+
+        assert_eq!(&block[34..36], &[0, 0], "MPP's non-MVC layer word");
     }
 
     #[test]
@@ -369,6 +543,9 @@ mod tests {
             max_num_ref_frames: 4,
             width: 1280,
             height: 720,
+            coded_width: 1280,
+            coded_height: 720,
+            height_map_units: 45,
             frame_mbs_only: true,
             direct_8x8_inference: true,
             ..Default::default()
@@ -388,7 +565,7 @@ mod tests {
             deblocking_filter_control: true,
             ..Default::default()
         };
-        let got = build_sps_pps(&sps, &pps, &[]);
+        let got = build_sps_pps(&sps, &pps, &[], &SliceHeader::default());
         let want: [u8; 48] = [
             0xff, 0x3f, 0x00, 0x10, 0x04, 0x14, 0xb4, 0x40, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -405,5 +582,22 @@ mod tests {
     #[test]
     fn scanlist_is_empty_without_matrices() {
         assert!(build_scanlist(None, None).is_empty());
+    }
+
+    #[test]
+    fn mbaff_flag_follows_the_slice_kind() {
+        let mut sps = sps();
+        sps.frame_mbs_only = false;
+        sps.mb_adaptive_frame_field = true;
+        // Bit layout before the flag: 13+2+3+3+1+4+5+2+4+1 = 38 header bits,
+        // 12 width + 12 height, then frame_mbs_only at bit 62 and MBFF at 63.
+        const MBAFF_BIT: usize = 63;
+        let mut sh = SliceHeader::default();
+        assert!(!sh.field_pic);
+        let block = build_sps_pps(&sps, &pps(), &[], &sh);
+        assert_eq!((block[MBAFF_BIT / 8] >> (MBAFF_BIT % 8)) & 1, 1);
+        sh.field_pic = true;
+        let block = build_sps_pps(&sps, &pps(), &[], &sh);
+        assert_eq!((block[MBAFF_BIT / 8] >> (MBAFF_BIT % 8)) & 1, 0);
     }
 }

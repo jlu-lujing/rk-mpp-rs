@@ -1,0 +1,38 @@
+--- a/mpp/hal/rkdec/vp9d/hal_vp9d_com.c
++++ b/mpp/hal/rkdec/vp9d/hal_vp9d_com.c
+@@ -1747,6 +1747,9 @@ MPP_RET hal_vp9d_prob_flag_delta(void *buf, void *dxva)
+         //sb info  5 x 128 bit
+         for (i = 0; i < PARTITION_CONTEXTS; i++) //kf_partition_prob
+             for (j = 0; j < PARTITION_TYPES - 1; j++)
+                 mpp_put_bits(&bp, partition_delta[i][j], 8); //48
++        if (getenv("VP9_BIT_TRACE"))
++            mpp_log("DELTA_PARTITION word=%d bit=%d", bp.index, bp.bitpos);
+ 
+         for (i = 0; i < PREDICTION_PROBS; i++) //Segment_id_pred_prob //3
+             mpp_put_bits(&bp, pic_param->stVP9Segments.pred_probs[i], 8);
+@@ -1754,6 +1757,9 @@ MPP_RET hal_vp9d_prob_flag_delta(void *buf, void *dxva)
+         for (i = 0; i < SEG_TREE_PROBS; i++) //Segment_id_probs
+             mpp_put_bits(&bp, pic_param->stVP9Segments.tree_probs[i], 8); //7
+ 
++        if (getenv("VP9_BIT_TRACE"))
++            mpp_log("DELTA_SEG tree word=%d bit=%d", bp.index, bp.bitpos);
+         for (i = 0; i < SKIP_CONTEXTS; i++) //Skip_flag_probs //3
+             mpp_put_bits(&bp, prob_delta->skip[i], 8);
+ 
+@@ -1777,6 +1783,9 @@ MPP_RET hal_vp9d_prob_flag_delta(void *buf, void *dxva)
+         for (i = 0; i < INTRA_INTER_CONTEXTS; i++) //Tx_size_probs //4
+             mpp_put_bits(&bp, prob_delta->intra[i], 8);
+ 
++        if (getenv("VP9_BIT_TRACE"))
++            mpp_log("DELTA_SB_END word=%d bit=%d", bp.index, bp.bitpos);
+         mpp_put_bits(&bp, 0, 24); //reserve
+ 
+         //intra_y_mode & inter_block info   6 x 128 bit
+@@ -1797,6 +1806,9 @@ MPP_RET hal_vp9d_prob_flag_delta(void *buf, void *dxva)
+         for (i = 0; i < SWITCHABLE_FILTER_CONTEXTS; i++) //comp ref bit
+             for (j = 0; j < SWITCHABLE_FILTERS - 1; j++)
+                 mpp_put_bits(&bp, prob_delta->filter[i][j], 8);
++        if (getenv("VP9_BIT_TRACE"))
++            mpp_log("DELTA_INTER_HEADER word=%d bit=%d", bp.index, bp.bitpos);
+         for (i = 0; i < 11; i++)
+             mpp_put_bits(&bp, 0, 8);//reserve

@@ -30,7 +30,11 @@ impl Regs {
 
     #[inline]
     pub fn set(&mut self, f: Field, v: u32) -> &mut Self {
-        let mask = if f.width >= 32 { u32::MAX } else { (1u32 << f.width) - 1 };
+        let mask = if f.width >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << f.width) - 1
+        };
         let shift = f.lsb as u32;
         self.w[f.word] = (self.w[f.word] & !(mask << shift)) | ((v & mask) << shift);
         self
@@ -38,7 +42,11 @@ impl Regs {
 
     #[inline]
     pub fn get(&self, f: Field) -> u32 {
-        let mask = if f.width >= 32 { u32::MAX } else { (1u32 << f.width) - 1 };
+        let mask = if f.width >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << f.width) - 1
+        };
         (self.w[f.word] >> f.lsb) & mask
     }
 }
@@ -47,128 +55,400 @@ impl Regs {
 pub mod sw00 {
     use super::Field;
     pub const WORD: usize = 0;
-    pub const MINOR_VER: Field = Field { word: WORD, lsb: 0, width: 8 };
-    pub const LEVEL: Field = Field { word: WORD, lsb: 8, width: 1 };
-    pub const DEC_SUPPORT: Field = Field { word: WORD, lsb: 9, width: 3 };
-    pub const PROFILE: Field = Field { word: WORD, lsb: 12, width: 1 };
-    pub const RESERVE0: Field = Field { word: WORD, lsb: 13, width: 1 };
-    pub const CODEC_FLAG: Field = Field { word: WORD, lsb: 14, width: 1 };
-    pub const RESERVE1: Field = Field { word: WORD, lsb: 15, width: 1 };
-    pub const PROD_NUM: Field = Field { word: WORD, lsb: 16, width: 16 };
+    pub const MINOR_VER: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 8,
+    };
+    pub const LEVEL: Field = Field {
+        word: WORD,
+        lsb: 8,
+        width: 1,
+    };
+    pub const DEC_SUPPORT: Field = Field {
+        word: WORD,
+        lsb: 9,
+        width: 3,
+    };
+    pub const PROFILE: Field = Field {
+        word: WORD,
+        lsb: 12,
+        width: 1,
+    };
+    pub const RESERVE0: Field = Field {
+        word: WORD,
+        lsb: 13,
+        width: 1,
+    };
+    pub const CODEC_FLAG: Field = Field {
+        word: WORD,
+        lsb: 14,
+        width: 1,
+    };
+    pub const RESERVE1: Field = Field {
+        word: WORD,
+        lsb: 15,
+        width: 1,
+    };
+    pub const PROD_NUM: Field = Field {
+        word: WORD,
+        lsb: 16,
+        width: 16,
+    };
 }
 
 /// `sw01` (word 1)
 pub mod sw01 {
     use super::Field;
     pub const WORD: usize = 1;
-    pub const DEC_E: Field = Field { word: WORD, lsb: 0, width: 1 };
-    pub const DEC_CLKGATE_E: Field = Field { word: WORD, lsb: 1, width: 1 };
-    pub const RESERVE0: Field = Field { word: WORD, lsb: 2, width: 1 };
-    pub const TIMEOUT_MODE: Field = Field { word: WORD, lsb: 3, width: 1 };
-    pub const DEC_IRQ_DIS: Field = Field { word: WORD, lsb: 4, width: 1 };
-    pub const DEC_TIMEOUT_E: Field = Field { word: WORD, lsb: 5, width: 1 };
-    pub const BUF_EMPTY_EN: Field = Field { word: WORD, lsb: 6, width: 1 };
-    pub const STMERROR_WAITDECFIFO_EMPTY: Field = Field { word: WORD, lsb: 7, width: 1 };
-    pub const DEC_IRQ: Field = Field { word: WORD, lsb: 8, width: 1 };
-    pub const DEC_IRQ_RAW: Field = Field { word: WORD, lsb: 9, width: 1 };
-    pub const RESERVE2: Field = Field { word: WORD, lsb: 10, width: 2 };
-    pub const DEC_RDY_STA: Field = Field { word: WORD, lsb: 12, width: 1 };
-    pub const DEC_BUS_STA: Field = Field { word: WORD, lsb: 13, width: 1 };
-    pub const DEC_ERROR_STA: Field = Field { word: WORD, lsb: 14, width: 1 };
-    pub const DEC_TIMEOUT_STA: Field = Field { word: WORD, lsb: 15, width: 1 };
-    pub const DEC_EMPTY_STA: Field = Field { word: WORD, lsb: 16, width: 1 };
-    pub const COLMV_REF_ERROR_STA: Field = Field { word: WORD, lsb: 17, width: 1 };
-    pub const CABU_END_STA: Field = Field { word: WORD, lsb: 18, width: 1 };
-    pub const H264ORVP9_ERROR_MODE: Field = Field { word: WORD, lsb: 19, width: 1 };
-    pub const SOFTRST_EN_P: Field = Field { word: WORD, lsb: 20, width: 1 };
-    pub const FORCE_SOFTRESET_VALID: Field = Field { word: WORD, lsb: 21, width: 1 };
-    pub const SOFTRESET_RDY: Field = Field { word: WORD, lsb: 22, width: 1 };
-    pub const RESERVE1: Field = Field { word: WORD, lsb: 23, width: 9 };
+    pub const DEC_E: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 1,
+    };
+    pub const DEC_CLKGATE_E: Field = Field {
+        word: WORD,
+        lsb: 1,
+        width: 1,
+    };
+    pub const RESERVE0: Field = Field {
+        word: WORD,
+        lsb: 2,
+        width: 1,
+    };
+    pub const TIMEOUT_MODE: Field = Field {
+        word: WORD,
+        lsb: 3,
+        width: 1,
+    };
+    pub const DEC_IRQ_DIS: Field = Field {
+        word: WORD,
+        lsb: 4,
+        width: 1,
+    };
+    pub const DEC_TIMEOUT_E: Field = Field {
+        word: WORD,
+        lsb: 5,
+        width: 1,
+    };
+    pub const BUF_EMPTY_EN: Field = Field {
+        word: WORD,
+        lsb: 6,
+        width: 1,
+    };
+    pub const STMERROR_WAITDECFIFO_EMPTY: Field = Field {
+        word: WORD,
+        lsb: 7,
+        width: 1,
+    };
+    pub const DEC_IRQ: Field = Field {
+        word: WORD,
+        lsb: 8,
+        width: 1,
+    };
+    pub const DEC_IRQ_RAW: Field = Field {
+        word: WORD,
+        lsb: 9,
+        width: 1,
+    };
+    pub const RESERVE2: Field = Field {
+        word: WORD,
+        lsb: 10,
+        width: 2,
+    };
+    pub const DEC_RDY_STA: Field = Field {
+        word: WORD,
+        lsb: 12,
+        width: 1,
+    };
+    pub const DEC_BUS_STA: Field = Field {
+        word: WORD,
+        lsb: 13,
+        width: 1,
+    };
+    pub const DEC_ERROR_STA: Field = Field {
+        word: WORD,
+        lsb: 14,
+        width: 1,
+    };
+    pub const DEC_TIMEOUT_STA: Field = Field {
+        word: WORD,
+        lsb: 15,
+        width: 1,
+    };
+    pub const DEC_EMPTY_STA: Field = Field {
+        word: WORD,
+        lsb: 16,
+        width: 1,
+    };
+    pub const COLMV_REF_ERROR_STA: Field = Field {
+        word: WORD,
+        lsb: 17,
+        width: 1,
+    };
+    pub const CABU_END_STA: Field = Field {
+        word: WORD,
+        lsb: 18,
+        width: 1,
+    };
+    pub const H264ORVP9_ERROR_MODE: Field = Field {
+        word: WORD,
+        lsb: 19,
+        width: 1,
+    };
+    pub const SOFTRST_EN_P: Field = Field {
+        word: WORD,
+        lsb: 20,
+        width: 1,
+    };
+    pub const FORCE_SOFTRESET_VALID: Field = Field {
+        word: WORD,
+        lsb: 21,
+        width: 1,
+    };
+    pub const SOFTRESET_RDY: Field = Field {
+        word: WORD,
+        lsb: 22,
+        width: 1,
+    };
+    pub const RESERVE1: Field = Field {
+        word: WORD,
+        lsb: 23,
+        width: 9,
+    };
 }
 
 /// `sw02` (word 2)
 pub mod sw02 {
     use super::Field;
     pub const WORD: usize = 2;
-    pub const IN_ENDIAN: Field = Field { word: WORD, lsb: 0, width: 1 };
-    pub const IN_SWAP32_E: Field = Field { word: WORD, lsb: 1, width: 1 };
-    pub const IN_SWAP64_E: Field = Field { word: WORD, lsb: 2, width: 1 };
-    pub const STR_ENDIAN: Field = Field { word: WORD, lsb: 3, width: 1 };
-    pub const STR_SWAP32_E: Field = Field { word: WORD, lsb: 4, width: 1 };
-    pub const STR_SWAP64_E: Field = Field { word: WORD, lsb: 5, width: 1 };
-    pub const OUT_ENDIAN: Field = Field { word: WORD, lsb: 6, width: 1 };
-    pub const OUT_SWAP32_E: Field = Field { word: WORD, lsb: 7, width: 1 };
-    pub const OUT_CBCR_SWAP: Field = Field { word: WORD, lsb: 8, width: 1 };
-    pub const RESERVE0: Field = Field { word: WORD, lsb: 9, width: 1 };
-    pub const RLC_MODE_DIRECT_WRITE: Field = Field { word: WORD, lsb: 10, width: 1 };
-    pub const RLC_MODE: Field = Field { word: WORD, lsb: 11, width: 1 };
-    pub const STRM_START_BIT: Field = Field { word: WORD, lsb: 12, width: 7 };
-    pub const RESERVE1: Field = Field { word: WORD, lsb: 19, width: 1 };
-    pub const DEC_MODE: Field = Field { word: WORD, lsb: 20, width: 2 };
-    pub const RESERVE2: Field = Field { word: WORD, lsb: 22, width: 2 };
-    pub const RPS_MODE: Field = Field { word: WORD, lsb: 24, width: 1 };
-    pub const STREAM_MODE: Field = Field { word: WORD, lsb: 25, width: 1 };
-    pub const STREAM_LASTPACKET: Field = Field { word: WORD, lsb: 26, width: 1 };
-    pub const FIRSTSLICE_FLAG: Field = Field { word: WORD, lsb: 27, width: 1 };
-    pub const FRAME_ORSLICE: Field = Field { word: WORD, lsb: 28, width: 1 };
-    pub const BUSPR_SLOT_DISABLE: Field = Field { word: WORD, lsb: 29, width: 1 };
-    pub const REVERSE3: Field = Field { word: WORD, lsb: 30, width: 2 };
+    pub const IN_ENDIAN: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 1,
+    };
+    pub const IN_SWAP32_E: Field = Field {
+        word: WORD,
+        lsb: 1,
+        width: 1,
+    };
+    pub const IN_SWAP64_E: Field = Field {
+        word: WORD,
+        lsb: 2,
+        width: 1,
+    };
+    pub const STR_ENDIAN: Field = Field {
+        word: WORD,
+        lsb: 3,
+        width: 1,
+    };
+    pub const STR_SWAP32_E: Field = Field {
+        word: WORD,
+        lsb: 4,
+        width: 1,
+    };
+    pub const STR_SWAP64_E: Field = Field {
+        word: WORD,
+        lsb: 5,
+        width: 1,
+    };
+    pub const OUT_ENDIAN: Field = Field {
+        word: WORD,
+        lsb: 6,
+        width: 1,
+    };
+    pub const OUT_SWAP32_E: Field = Field {
+        word: WORD,
+        lsb: 7,
+        width: 1,
+    };
+    pub const OUT_CBCR_SWAP: Field = Field {
+        word: WORD,
+        lsb: 8,
+        width: 1,
+    };
+    pub const RESERVE0: Field = Field {
+        word: WORD,
+        lsb: 9,
+        width: 1,
+    };
+    pub const RLC_MODE_DIRECT_WRITE: Field = Field {
+        word: WORD,
+        lsb: 10,
+        width: 1,
+    };
+    pub const RLC_MODE: Field = Field {
+        word: WORD,
+        lsb: 11,
+        width: 1,
+    };
+    pub const STRM_START_BIT: Field = Field {
+        word: WORD,
+        lsb: 12,
+        width: 7,
+    };
+    pub const RESERVE1: Field = Field {
+        word: WORD,
+        lsb: 19,
+        width: 1,
+    };
+    pub const DEC_MODE: Field = Field {
+        word: WORD,
+        lsb: 20,
+        width: 2,
+    };
+    pub const RESERVE2: Field = Field {
+        word: WORD,
+        lsb: 22,
+        width: 2,
+    };
+    pub const RPS_MODE: Field = Field {
+        word: WORD,
+        lsb: 24,
+        width: 1,
+    };
+    pub const STREAM_MODE: Field = Field {
+        word: WORD,
+        lsb: 25,
+        width: 1,
+    };
+    pub const STREAM_LASTPACKET: Field = Field {
+        word: WORD,
+        lsb: 26,
+        width: 1,
+    };
+    pub const FIRSTSLICE_FLAG: Field = Field {
+        word: WORD,
+        lsb: 27,
+        width: 1,
+    };
+    pub const FRAME_ORSLICE: Field = Field {
+        word: WORD,
+        lsb: 28,
+        width: 1,
+    };
+    pub const BUSPR_SLOT_DISABLE: Field = Field {
+        word: WORD,
+        lsb: 29,
+        width: 1,
+    };
+    pub const REVERSE3: Field = Field {
+        word: WORD,
+        lsb: 30,
+        width: 2,
+    };
 }
 
 /// `sw03` (word 3)
 pub mod sw03 {
     use super::Field;
     pub const WORD: usize = 3;
-    pub const Y_HOR_VIRSTRIDE: Field = Field { word: WORD, lsb: 0, width: 9 };
-    pub const RESERVE: Field = Field { word: WORD, lsb: 9, width: 2 };
-    pub const SLICE_NUM_HIGHBIT: Field = Field { word: WORD, lsb: 11, width: 1 };
-    pub const UV_HOR_VIRSTRIDE: Field = Field { word: WORD, lsb: 12, width: 9 };
-    pub const SLICE_NUM_LOWBITS: Field = Field { word: WORD, lsb: 21, width: 11 };
+    pub const Y_HOR_VIRSTRIDE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 9,
+    };
+    pub const RESERVE: Field = Field {
+        word: WORD,
+        lsb: 9,
+        width: 2,
+    };
+    pub const SLICE_NUM_HIGHBIT: Field = Field {
+        word: WORD,
+        lsb: 11,
+        width: 1,
+    };
+    pub const UV_HOR_VIRSTRIDE: Field = Field {
+        word: WORD,
+        lsb: 12,
+        width: 9,
+    };
+    pub const SLICE_NUM_LOWBITS: Field = Field {
+        word: WORD,
+        lsb: 21,
+        width: 11,
+    };
 }
 
 /// `sw04` (word 4)
 pub mod sw04 {
     use super::Field;
     pub const WORD: usize = 4;
-    pub const STRM_RLC_BASE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const STRM_RLC_BASE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw05` (word 5)
 pub mod sw05 {
     use super::Field;
     pub const WORD: usize = 5;
-    pub const STREAM_LEN: Field = Field { word: WORD, lsb: 0, width: 27 };
-    pub const REVERSE0: Field = Field { word: WORD, lsb: 27, width: 5 };
+    pub const STREAM_LEN: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 27,
+    };
+    pub const REVERSE0: Field = Field {
+        word: WORD,
+        lsb: 27,
+        width: 5,
+    };
 }
 
 /// `sw06` (word 6)
 pub mod sw06 {
     use super::Field;
     pub const WORD: usize = 6;
-    pub const CABACTBL_BASE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const CABACTBL_BASE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw07` (word 7)
 pub mod sw07 {
     use super::Field;
     pub const WORD: usize = 7;
-    pub const DECOUT_BASE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const DECOUT_BASE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw08` (word 8)
 pub mod sw08 {
     use super::Field;
     pub const WORD: usize = 8;
-    pub const Y_VIRSTRIDE: Field = Field { word: WORD, lsb: 0, width: 20 };
-    pub const REVERSE0: Field = Field { word: WORD, lsb: 20, width: 12 };
+    pub const Y_VIRSTRIDE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 20,
+    };
+    pub const REVERSE0: Field = Field {
+        word: WORD,
+        lsb: 20,
+        width: 12,
+    };
 }
 
 /// `sw09` (word 9)
 pub mod sw09 {
     use super::Field;
     pub const WORD: usize = 9;
-    pub const YUV_VIRSTRIDE: Field = Field { word: WORD, lsb: 0, width: 21 };
-    pub const REVERSE0: Field = Field { word: WORD, lsb: 21, width: 11 };
+    pub const YUV_VIRSTRIDE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 21,
+    };
+    pub const REVERSE0: Field = Field {
+        word: WORD,
+        lsb: 21,
+        width: 11,
+    };
 }
 
 /// `sw10_24[15]` (words 10..24)
@@ -184,7 +464,11 @@ pub mod sw10_24 {
     pub const REF0_14_BASE: (u8, u8) = (0, 32);
     #[inline]
     pub fn ref0_14_base(i: usize) -> Field {
-        Field { word: word(i), lsb: 0, width: 32 }
+        Field {
+            word: word(i),
+            lsb: 0,
+            width: 32,
+        }
     }
 }
 
@@ -201,7 +485,11 @@ pub mod sw25_39 {
     pub const REF0_14_POC: (u8, u8) = (0, 32);
     #[inline]
     pub fn ref0_14_poc(i: usize) -> Field {
-        Field { word: word(i), lsb: 0, width: 32 }
+        Field {
+            word: word(i),
+            lsb: 0,
+            width: 32,
+        }
     }
 }
 
@@ -209,73 +497,149 @@ pub mod sw25_39 {
 pub mod sw40 {
     use super::Field;
     pub const WORD: usize = 40;
-    pub const CUR_POC: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const CUR_POC: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw41` (word 41)
 pub mod sw41 {
     use super::Field;
     pub const WORD: usize = 41;
-    pub const RLCWRITE_BASE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const RLCWRITE_BASE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw42` (word 42)
 pub mod sw42 {
     use super::Field;
     pub const WORD: usize = 42;
-    pub const PPS_BASE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const PPS_BASE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw43` (word 43)
 pub mod sw43 {
     use super::Field;
     pub const WORD: usize = 43;
-    pub const RPS_BASE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const RPS_BASE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw44` (word 44)
 pub mod sw44 {
     use super::Field;
     pub const WORD: usize = 44;
-    pub const STRMD_ERROR_E: Field = Field { word: WORD, lsb: 0, width: 28 };
-    pub const RESERVE: Field = Field { word: WORD, lsb: 28, width: 4 };
+    pub const STRMD_ERROR_E: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 28,
+    };
+    pub const RESERVE: Field = Field {
+        word: WORD,
+        lsb: 28,
+        width: 4,
+    };
 }
 
 /// `sw45` (word 45)
 pub mod sw45 {
     use super::Field;
     pub const WORD: usize = 45;
-    pub const STRMD_ERROR_STATUS: Field = Field { word: WORD, lsb: 0, width: 28 };
-    pub const COLMV_ERROR_REF_PICIDX: Field = Field { word: WORD, lsb: 28, width: 4 };
+    pub const STRMD_ERROR_STATUS: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 28,
+    };
+    pub const COLMV_ERROR_REF_PICIDX: Field = Field {
+        word: WORD,
+        lsb: 28,
+        width: 4,
+    };
 }
 
 /// `sw46` (word 46)
 pub mod sw46 {
     use super::Field;
     pub const WORD: usize = 46;
-    pub const STRMD_ERROR_CTU_XOFFSET: Field = Field { word: WORD, lsb: 0, width: 8 };
-    pub const STRMD_ERROR_CTU_YOFFSET: Field = Field { word: WORD, lsb: 8, width: 8 };
-    pub const STREAMFIFO_SPACE2FULL: Field = Field { word: WORD, lsb: 16, width: 7 };
-    pub const RESERVE0: Field = Field { word: WORD, lsb: 23, width: 1 };
-    pub const VP9_ERROR_CTU0_EN: Field = Field { word: WORD, lsb: 24, width: 1 };
-    pub const REVERSE1: Field = Field { word: WORD, lsb: 25, width: 7 };
+    pub const STRMD_ERROR_CTU_XOFFSET: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 8,
+    };
+    pub const STRMD_ERROR_CTU_YOFFSET: Field = Field {
+        word: WORD,
+        lsb: 8,
+        width: 8,
+    };
+    pub const STREAMFIFO_SPACE2FULL: Field = Field {
+        word: WORD,
+        lsb: 16,
+        width: 7,
+    };
+    pub const RESERVE0: Field = Field {
+        word: WORD,
+        lsb: 23,
+        width: 1,
+    };
+    pub const VP9_ERROR_CTU0_EN: Field = Field {
+        word: WORD,
+        lsb: 24,
+        width: 1,
+    };
+    pub const REVERSE1: Field = Field {
+        word: WORD,
+        lsb: 25,
+        width: 7,
+    };
 }
 
 /// `sw47` (word 47)
 pub mod sw47 {
     use super::Field;
     pub const WORD: usize = 47;
-    pub const SAOWR_XOFFET: Field = Field { word: WORD, lsb: 0, width: 9 };
-    pub const RESERVE0: Field = Field { word: WORD, lsb: 9, width: 7 };
-    pub const SAOWR_YOFFSET: Field = Field { word: WORD, lsb: 16, width: 10 };
-    pub const REVERSE1: Field = Field { word: WORD, lsb: 26, width: 6 };
+    pub const SAOWR_XOFFET: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 9,
+    };
+    pub const RESERVE0: Field = Field {
+        word: WORD,
+        lsb: 9,
+        width: 7,
+    };
+    pub const SAOWR_YOFFSET: Field = Field {
+        word: WORD,
+        lsb: 16,
+        width: 10,
+    };
+    pub const REVERSE1: Field = Field {
+        word: WORD,
+        lsb: 26,
+        width: 6,
+    };
 }
 
 /// `sw48` (word 48)
 pub mod sw48 {
     use super::Field;
     pub const WORD: usize = 48;
-    pub const REF15_BASE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const REF15_BASE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw49_63[15]` (words 49..63)
@@ -291,7 +655,11 @@ pub mod sw49_63 {
     pub const REF15_29_POC: (u8, u8) = (0, 32);
     #[inline]
     pub fn ref15_29_poc(i: usize) -> Field {
-        Field { word: word(i), lsb: 0, width: 32 }
+        Field {
+            word: word(i),
+            lsb: 0,
+            width: 32,
+        }
     }
 }
 
@@ -299,116 +667,244 @@ pub mod sw49_63 {
 pub mod sw64 {
     use super::Field;
     pub const WORD: usize = 64;
-    pub const PERFORMANCE_CYCLE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const PERFORMANCE_CYCLE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw65` (word 65)
 pub mod sw65 {
     use super::Field;
     pub const WORD: usize = 65;
-    pub const AXI_DDR_RDATA: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const AXI_DDR_RDATA: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw66` (word 66)
 pub mod sw66 {
     use super::Field;
     pub const WORD: usize = 66;
-    pub const AXI_DDR_RDATA: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const AXI_DDR_RDATA: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw67` (word 67)
 pub mod sw67 {
     use super::Field;
     pub const WORD: usize = 67;
-    pub const BUSIFD_RESETN: Field = Field { word: WORD, lsb: 0, width: 1 };
-    pub const CABAC_RESETN: Field = Field { word: WORD, lsb: 1, width: 1 };
-    pub const DEC_CTRL_RESETN: Field = Field { word: WORD, lsb: 2, width: 1 };
-    pub const TRANSD_RESETN: Field = Field { word: WORD, lsb: 3, width: 1 };
-    pub const INTRA_RESETN: Field = Field { word: WORD, lsb: 4, width: 1 };
-    pub const INTER_RESETN: Field = Field { word: WORD, lsb: 5, width: 1 };
-    pub const RECON_RESETN: Field = Field { word: WORD, lsb: 6, width: 1 };
-    pub const FILER_RESETN: Field = Field { word: WORD, lsb: 7, width: 1 };
-    pub const REVERSE0: Field = Field { word: WORD, lsb: 8, width: 24 };
+    pub const BUSIFD_RESETN: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 1,
+    };
+    pub const CABAC_RESETN: Field = Field {
+        word: WORD,
+        lsb: 1,
+        width: 1,
+    };
+    pub const DEC_CTRL_RESETN: Field = Field {
+        word: WORD,
+        lsb: 2,
+        width: 1,
+    };
+    pub const TRANSD_RESETN: Field = Field {
+        word: WORD,
+        lsb: 3,
+        width: 1,
+    };
+    pub const INTRA_RESETN: Field = Field {
+        word: WORD,
+        lsb: 4,
+        width: 1,
+    };
+    pub const INTER_RESETN: Field = Field {
+        word: WORD,
+        lsb: 5,
+        width: 1,
+    };
+    pub const RECON_RESETN: Field = Field {
+        word: WORD,
+        lsb: 6,
+        width: 1,
+    };
+    pub const FILER_RESETN: Field = Field {
+        word: WORD,
+        lsb: 7,
+        width: 1,
+    };
+    pub const REVERSE0: Field = Field {
+        word: WORD,
+        lsb: 8,
+        width: 24,
+    };
 }
 
 /// `sw68` (word 68)
 pub mod sw68 {
     use super::Field;
     pub const WORD: usize = 68;
-    pub const PERF_CNT0_SEL: Field = Field { word: WORD, lsb: 0, width: 6 };
-    pub const RESERVE0: Field = Field { word: WORD, lsb: 6, width: 2 };
-    pub const PERF_CNT1_SEL: Field = Field { word: WORD, lsb: 8, width: 6 };
-    pub const RESERVE1: Field = Field { word: WORD, lsb: 14, width: 2 };
-    pub const PERF_CNT2_SEL: Field = Field { word: WORD, lsb: 16, width: 6 };
-    pub const REVERSE1: Field = Field { word: WORD, lsb: 22, width: 10 };
+    pub const PERF_CNT0_SEL: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 6,
+    };
+    pub const RESERVE0: Field = Field {
+        word: WORD,
+        lsb: 6,
+        width: 2,
+    };
+    pub const PERF_CNT1_SEL: Field = Field {
+        word: WORD,
+        lsb: 8,
+        width: 6,
+    };
+    pub const RESERVE1: Field = Field {
+        word: WORD,
+        lsb: 14,
+        width: 2,
+    };
+    pub const PERF_CNT2_SEL: Field = Field {
+        word: WORD,
+        lsb: 16,
+        width: 6,
+    };
+    pub const REVERSE1: Field = Field {
+        word: WORD,
+        lsb: 22,
+        width: 10,
+    };
 }
 
 /// `sw69` (word 69)
 pub mod sw69 {
     use super::Field;
     pub const WORD: usize = 69;
-    pub const PERF_CNT0: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const PERF_CNT0: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw70` (word 70)
 pub mod sw70 {
     use super::Field;
     pub const WORD: usize = 70;
-    pub const PERF_CNT1: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const PERF_CNT1: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw71` (word 71)
 pub mod sw71 {
     use super::Field;
     pub const WORD: usize = 71;
-    pub const PERF_CNT2: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const PERF_CNT2: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw72` (word 72)
 pub mod sw72 {
     use super::Field;
     pub const WORD: usize = 72;
-    pub const REF30_POC: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const REF30_POC: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw73` (word 73)
 pub mod sw73 {
     use super::Field;
     pub const WORD: usize = 73;
-    pub const REF31_POC: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const REF31_POC: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw74` (word 74)
 pub mod sw74 {
     use super::Field;
     pub const WORD: usize = 74;
-    pub const CUR_POC1: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const CUR_POC1: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw75` (word 75)
 pub mod sw75 {
     use super::Field;
     pub const WORD: usize = 75;
-    pub const ERRORINFO_BASE: Field = Field { word: WORD, lsb: 0, width: 32 };
+    pub const ERRORINFO_BASE: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 32,
+    };
 }
 
 /// `sw76` (word 76)
 pub mod sw76 {
     use super::Field;
     pub const WORD: usize = 76;
-    pub const SLICEDEC_NUM: Field = Field { word: WORD, lsb: 0, width: 14 };
-    pub const RESERVE0: Field = Field { word: WORD, lsb: 14, width: 1 };
-    pub const STRMD_DETECT_ERROR_FLAG: Field = Field { word: WORD, lsb: 15, width: 1 };
-    pub const ERROR_PACKET_NUM: Field = Field { word: WORD, lsb: 16, width: 14 };
-    pub const REVERSE1: Field = Field { word: WORD, lsb: 30, width: 2 };
+    pub const SLICEDEC_NUM: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 14,
+    };
+    pub const RESERVE0: Field = Field {
+        word: WORD,
+        lsb: 14,
+        width: 1,
+    };
+    pub const STRMD_DETECT_ERROR_FLAG: Field = Field {
+        word: WORD,
+        lsb: 15,
+        width: 1,
+    };
+    pub const ERROR_PACKET_NUM: Field = Field {
+        word: WORD,
+        lsb: 16,
+        width: 14,
+    };
+    pub const REVERSE1: Field = Field {
+        word: WORD,
+        lsb: 30,
+        width: 2,
+    };
 }
 
 /// `sw77` (word 77)
 pub mod sw77 {
     use super::Field;
     pub const WORD: usize = 77;
-    pub const ERROR_EN_HIGHBITS: Field = Field { word: WORD, lsb: 0, width: 30 };
-    pub const RESERVE: Field = Field { word: WORD, lsb: 30, width: 2 };
+    pub const ERROR_EN_HIGHBITS: Field = Field {
+        word: WORD,
+        lsb: 0,
+        width: 30,
+    };
+    pub const RESERVE: Field = Field {
+        word: WORD,
+        lsb: 30,
+        width: 2,
+    };
 }
 
 #[cfg(test)]

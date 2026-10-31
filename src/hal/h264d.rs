@@ -8,12 +8,14 @@
 use std::io;
 
 use crate::codec::h264::cabac_table::RKV_CABAC_TABLE;
-use crate::codec::h264::dpb::FrameStore;
+use crate::codec::h264::dpb::{FrameStore, PictureOrderCount, RefListEntry, ReferenceFlags};
 use crate::codec::h264::hw;
 use crate::codec::h264::parser::{Pps, SliceHeader, Sps};
 use crate::hal::vdpu34x_regs as reg;
 use crate::service::dma_heap::DmaBuf;
-use crate::service::{Batch, Client, MppService, RegOffsetInfo};
+use crate::service::{
+    Batch, Client, MppService, RcbInfo as RcbConfig, RegOffsetInfo, MPP_CMD_SET_RCB_INFO,
+};
 
 pub const CABAC_SIZE: usize = 928 * 4 + 128;
 pub const SPSPPS_UNIT: usize = 48;
@@ -21,6 +23,9 @@ pub const SPSPPS_SIZE: usize = 256 * SPSPPS_UNIT + 128;
 pub const RPS_SIZE: usize = 384;
 pub const SCLST_SIZE: usize = 6 * 16 + 2 * 64 + 128;
 pub const ERROR_INFO_SIZE: usize = 256 * 144 * 4;
+const REG_READBACK_WORDS: usize = 278;
+
+static CMV_DUMP_INDEX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// One decoded picture: NV12 planes plus its colmv buffer.
 pub struct Frame {
@@ -33,12 +38,12 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn alloc(width: usize, height: usize) -> io::Result<Frame> {
+    pub fn alloc(width: usize, height: usize, frame_mbs_only: bool) -> io::Result<Frame> {
         let hor_stride = align(width, 16);
         let ver_stride = align(height, 16);
         let y_size = hor_stride * ver_stride;
         let nv12 = DmaBuf::alloc("system", y_size * 3 / 2, false)?;
-        let colmv = DmaBuf::alloc("system", colmv_size(width, height, true), false)?;
+        let colmv = DmaBuf::alloc("system", colmv_size(width, height, frame_mbs_only), false)?;
         Ok(Frame {
             nv12,
             colmv,
@@ -82,7 +87,13 @@ pub fn colmv_size(width: usize, height: usize, compress: bool) -> usize {
     }
 }
 
+const RCB_ALIGNMENT: usize = 64;
+const RCB_REGION_COUNT: usize = 10;
+
 /// RCB regions, in the order MPP concatenates them.
+///
+/// MPP computes the fixed vdpu34x offsets before refining each region for the
+/// current picture. The refined sizes must not be used to repack the regions.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RcbInfo {
     pub dblk: usize,
@@ -95,70 +106,105 @@ pub struct RcbInfo {
     pub transd_col: usize,
     pub inter_col: usize,
     pub filt_col: usize,
+    offsets: [u32; RCB_REGION_COUNT],
+    allocation_size: usize,
 }
 
 fn rcb_bytes(bits: usize) -> usize {
-    align((bits + 7) / 8, 256)
+    align((bits + 7) / 8, RCB_ALIGNMENT)
+}
+
+fn rcb_aligned_size(size: usize) -> usize {
+    align(size, RCB_ALIGNMENT)
 }
 
 impl RcbInfo {
     /// `h264d_refine_rcb_size` + `vdpu34x_get_rcb_buf_size`.
-    pub fn compute(width: usize, height: usize, bit_depth: usize) -> RcbInfo {
+    pub fn compute(width: usize, height: usize, bit_depth: usize, mbaff: bool) -> RcbInfo {
         let w = align(width, 16);
         let h = align(height, 16);
+        let layout_w = align(width, 64);
+        let layout_h = align(height, 64);
+        let common_sizes = [
+            rcb_aligned_size(layout_w * 22),
+            rcb_aligned_size(layout_w * 6),
+            rcb_aligned_size(layout_w),
+            rcb_aligned_size(layout_w * 3),
+            rcb_aligned_size(layout_w * 6),
+            rcb_aligned_size(layout_w * 6),
+            rcb_aligned_size(layout_w * 11),
+            rcb_aligned_size(layout_h),
+            rcb_aligned_size(layout_h * 3),
+            rcb_aligned_size(layout_h * 67),
+        ];
+        let mut offsets = [0u32; RCB_REGION_COUNT];
+        let mut allocation_size = 0usize;
+        for (offset, size) in offsets.iter_mut().zip(common_sizes) {
+            *offset = allocation_size as u32;
+            allocation_size += size;
+        }
         RcbInfo {
-            dblk: rcb_bytes(w * (2 + 6 * bit_depth)),
+            dblk: rcb_bytes(w * (2 + if mbaff { 12 } else { 6 } * bit_depth)),
             intra: rcb_bytes(w * 44),
-            transd_row: rcb_bytes(if w > 8192 { ((w - 8192 + 3) / 4) * 2 } else { 0 }),
-            strmd_row: rcb_bytes(if w > 4096 { ((w + 15) / 16) * 154 } else { 0 }),
+            transd_row: rcb_bytes(if w > 8192 {
+                ((w - 8192 + 3) / 4) * 2
+            } else {
+                0
+            }),
+            strmd_row: rcb_bytes(if w > 4096 {
+                ((w + 15) / 16) * 154 * if mbaff { 2 } else { 1 }
+            } else {
+                0
+            }),
             inter_row: rcb_bytes(w * 42),
             sao: 0,
             fbc: 0,
-            transd_col: rcb_bytes(if h > 8192 { ((h - 8192 + 3) / 4) * 2 } else { 0 }),
+            transd_col: rcb_bytes(if h > 8192 {
+                ((h - 8192 + 3) / 4) * 2
+            } else {
+                0
+            }),
             inter_col: 0,
             filt_col: 0,
+            offsets,
+            allocation_size,
         }
     }
 
     pub fn total(&self) -> usize {
-        self.dblk
-            + self.intra
-            + self.transd_row
-            + self.strmd_row
-            + self.inter_row
-            + self.sao
-            + self.fbc
-            + self.transd_col
-            + self.inter_col
-            + self.filt_col
+        self.allocation_size
     }
 
     /// (register index, byte offset) pairs the hardware expects.
     pub fn offsets(&self) -> Vec<RegOffsetInfo> {
-        let order = [
+        [139u32, 133, 134, 136, 137, 140, 141, 135, 138, 142]
+            .iter()
+            .zip(self.offsets)
+            .map(|(&reg_idx, offset)| RegOffsetInfo { reg_idx, offset })
+            .collect()
+    }
+
+    fn hardware_sizes(&self) -> Vec<RcbConfig> {
+        // Mirrors the RV3588 order in vdpu34x_set_rcbinfo. MPP deliberately
+        // omits INTER_ROW because putting it in SRAM conflicts with DDR.
+        [
             (139u32, self.dblk),
             (133, self.intra),
-            (134, self.transd_row),
-            (136, self.strmd_row),
-            (137, self.inter_row),
             (140, self.sao),
             (141, self.fbc),
-            (135, self.transd_col),
+            (134, self.transd_row),
+            (136, self.strmd_row),
             (138, self.inter_col),
             (142, self.filt_col),
-        ];
-        let mut off = 0u32;
-        order
-            .iter()
-            .map(|&(idx, size)| {
-                let info = RegOffsetInfo {
-                    reg_idx: idx,
-                    offset: off,
-                };
-                off += size as u32;
-                info
-            })
-            .collect()
+            (135, self.transd_col),
+        ]
+        .into_iter()
+        .filter(|(_, size)| *size > 0)
+        .map(|(reg_idx, size)| RcbConfig {
+            reg_idx,
+            size: size as u32,
+        })
+        .collect()
     }
 }
 
@@ -171,14 +217,17 @@ pub struct H264d {
     errinfo: DmaBuf,
     rcb: DmaBuf,
     rcb_info: RcbInfo,
+    rcb_info_supported: bool,
     pub regs: reg::Regs,
-    /// (reg001, reg045, reg076) read back after the last poll.
+    /// (reg224, reg226, reg227) read back after the last poll.
     pub last_status: (u32, u32, u32),
+    pub last_hardware_error: bool,
 }
 
 impl H264d {
     pub fn open() -> io::Result<H264d> {
         let svc = MppService::open(Client::RkvDec as u32)?;
+        let rcb_info_supported = svc.cmd_supported(MPP_CMD_SET_RCB_INFO);
         let cabac = DmaBuf::alloc("system", CABAC_SIZE, false)?;
         let spspps = DmaBuf::alloc("system", SPSPPS_SIZE, false)?;
         let rps = DmaBuf::alloc("system", RPS_SIZE, false)?;
@@ -194,14 +243,18 @@ impl H264d {
             errinfo,
             rcb,
             rcb_info: RcbInfo::default(),
+            rcb_info_supported,
             regs: reg::Regs::new(),
             last_status: (0, 0, 0),
+            last_hardware_error: false,
         };
+        hw.cabac.sync_write_begin()?;
         hw.cabac
             .as_mut_slice()
             .iter_mut()
             .zip(RKV_CABAC_TABLE.iter().flat_map(|v| v.to_le_bytes()))
             .for_each(|(d, s)| *d = s);
+        hw.cabac.sync_write_end()?;
         hw.init_common();
         Ok(hw)
     }
@@ -251,11 +304,14 @@ impl H264d {
     pub fn fill_regs(
         &mut self,
         sps: &Sps,
+        pps: &Pps,
         sh: &SliceHeader,
-        poc: i32,
+        order: PictureOrderCount,
         cur: &Frame,
         refs: &[Option<&Frame>],
         ref_pocs: &[i32],
+        ref_flags: &[Option<ReferenceFlags>],
+        ref_frame_nums: &[u32],
         stream_len: usize,
         idr: bool,
     ) {
@@ -269,8 +325,7 @@ impl H264d {
                 reg::w20::REG020_Y_VIRSTRIDE_Y_VIRSTRIDE,
                 ((cur.hor_stride * cur.ver_stride) / 16) as u32,
             );
-        r.w[65] = poc as u32;
-        r.w[66] = 0;
+        write_current_picture_poc(r, sh, order);
         r.set(reg::w130::REG130_DECOUT_BASE, cur.nv12.fd() as u32)
             .set(reg::w131::REG131_COLMV_CUR_BASE, cur.colmv.fd() as u32)
             .set(reg::w128::REG128_RLC_BASE, 0)
@@ -283,40 +338,32 @@ impl H264d {
         // The C HAL addresses these through SET_REF_INFO macros with literal
         // register indices (reg99..reg102), so take the words from there
         // rather than from declaration order.
-        let flag_fields: Vec<reg::Field> = (0..16)
-            .map(|i| reg::Field {
-                word: 99 + i / 4,
-                lsb: ((i % 4) * 8) as u8,
-                width: 1,
-            })
-            .collect();
-        let mut nearest: Option<u32> = None;
+        let present = std::array::from_fn(|i| refs.get(i).copied().flatten().is_some());
+        let resolved = resolve_reference_slots(&present);
+        write_reference_poc_high_bits(r, &resolved, sh);
         for i in 0..16usize {
-            let f = refs.get(i).copied().flatten();
-            // MPP points missing reference slots at the current picture rather
-            // than leaving address 0 in the register.
-            let fd = f.map(|f| f.nv12.fd() as u32).unwrap_or(0);
-            // Progressive frame: not a field picture, both fields used, and the
-            // reference's colmv is valid — that is what MPP's
-            // RefPicFiledFlags / UsedForReferenceFlags / RefPicColmvUsedFlags
-            // hold for frame-coded streams.
-            let present = f.is_some() as u32;
-            r.set(flag_fields[i], present)
-                .set(reg::Field { lsb: flag_fields[i].lsb + 1, ..flag_fields[i] }, present)
-                .set(reg::Field { lsb: flag_fields[i].lsb + 2, ..flag_fields[i] }, present)
-                .set(reg::Field { lsb: flag_fields[i].lsb + 3, ..flag_fields[i] }, present);
-            r.w[164 + i] = fd;
-            r.w[181 + i] = f.map(|f| f.colmv.fd() as u32).unwrap_or(0);
-            if f.is_some() && nearest.is_none() {
-                nearest = Some(fd);
+            if let Some(flags) = ref_flags.get(i).copied().flatten() {
+                write_reference_fields(r, i, flags);
             }
+            let fallback = if resolved[i] == 16 {
+                cur
+            } else {
+                refs[resolved[i]].expect("resolved reference slot")
+            };
+            r.w[164 + i] = fallback.nv12.fd() as u32;
+            r.w[181 + i] = fallback.colmv.fd() as u32;
         }
-        r.set(
-            reg::w132::REG132_ERROR_REF_BASE,
-            nearest.unwrap_or(cur.nv12.fd() as u32),
-        );
+        let error_ref_index = select_error_reference(ref_frame_nums, sh.frame_num)
+            .filter(|&i| refs.get(i).copied().flatten().is_some());
+        let error_ref = error_ref_index
+            .and_then(|i| refs.get(i).copied().flatten())
+            .unwrap_or(cur);
+        r.set(reg::w132::REG132_ERROR_REF_BASE, error_ref.nv12.fd() as u32)
+            .set(
+                reg::w21::ERROR_INTRA_MODE,
+                error_intra_mode(error_ref_index.is_some(), pps.weighted_pred),
+            );
         let _ = sps;
-        let _ = sh;
     }
 
     fn prepare_tables(
@@ -325,22 +372,39 @@ impl H264d {
         pps: &Pps,
         sh: &SliceHeader,
         dpb: &[Option<&FrameStore>],
-        lists: [&[u8]; 3],
+        lists: [&[RefListEntry]; 3],
     ) -> io::Result<()> {
-        let unit = hw::build_sps_pps(sps, pps, dpb);
+        let unit = hw::build_sps_pps(sps, pps, dpb, sh);
+        self.spspps.sync_write_begin()?;
         let buf = self.spspps.as_mut_slice();
         for i in 0..256 {
             let off = i * SPSPPS_UNIT;
             let n = unit.len().min(SPSPPS_UNIT);
             buf[off..off + n].copy_from_slice(&unit[..n]);
         }
-        let rps = hw::build_rps(sps, sh, dpb, lists);
+        self.spspps.sync_write_end()?;
+        if std::env::var("RFI_SPSPPS_DUMP").is_ok() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/our_spspps.bin")
+            {
+                let _ = writeln!(f, "TASK {}", sh.frame_num);
+                let _ = f.write_all(&self.spspps.as_slice()[..SPSPPS_UNIT]);
+            }
+        }
+        let rps = hw::build_rps_entries(sps, sh, dpb, lists);
         let n = rps.len().min(RPS_SIZE);
+        self.rps.sync_write_begin()?;
         self.rps.as_mut_slice()[..n].copy_from_slice(&rps[..n]);
+        self.rps.sync_write_end()?;
         let scan = hw::build_scanlist(None, None);
         let n = scan.len().min(SCLST_SIZE);
         if n > 0 {
+            self.sclst.sync_write_begin()?;
             self.sclst.as_mut_slice()[..n].copy_from_slice(&scan[..n]);
+            self.sclst.sync_write_end()?;
         }
         Ok(())
     }
@@ -352,11 +416,14 @@ impl H264d {
         sps: &Sps,
         pps: &Pps,
         sh: &SliceHeader,
+        order: PictureOrderCount,
         dpb: &[Option<&FrameStore>],
-        lists: [&[u8]; 3],
+        lists: [&[RefListEntry]; 3],
         cur: &Frame,
         refs: &[Option<&Frame>],
         ref_pocs: &[i32],
+        ref_flags: &[Option<ReferenceFlags>],
+        ref_frame_nums: &[u32],
         stream: &DmaBuf,
         stream_len: usize,
         idr: bool,
@@ -365,15 +432,39 @@ impl H264d {
             eprintln!("SUBMIT len={} idr={} fn={}", stream_len, idr, sh.frame_num);
         }
         self.prepare_tables(sps, pps, sh, dpb, lists)?;
+        if std::env::var("RFI_TABLE_DUMP").is_ok() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/our_tables.bin")
+            {
+                let _ = writeln!(f, "TASK {}", order.top as u32);
+                let _ = f.write_all(&self.rps.as_slice()[..RPS_SIZE]);
+            }
+        }
 
-        let info = RcbInfo::compute(cur.width, cur.height, sps.bit_depth_luma as usize);
+        let mbaff = !sps.frame_mbs_only && sps.mb_adaptive_frame_field && !sh.field_pic;
+        let info = RcbInfo::compute(cur.width, cur.height, sps.bit_depth_luma as usize, mbaff);
         let total = info.total().max(4096);
         if total > self.rcb.len() {
             self.rcb = DmaBuf::alloc("system", align(total, 4096), false)?;
         }
         self.rcb_info = info;
 
-        self.fill_regs(sps, sh, 0, cur, refs, ref_pocs, stream_len, idr);
+        self.fill_regs(
+            sps,
+            pps,
+            sh,
+            order,
+            cur,
+            refs,
+            ref_pocs,
+            ref_flags,
+            ref_frame_nums,
+            stream_len,
+            idr,
+        );
 
         let r = &mut self.regs;
         r.set(reg::w128::REG128_RLC_BASE, stream.fd() as u32)
@@ -381,8 +472,7 @@ impl H264d {
             .set(reg::w161::REG161_PPS_HEAD_BASE, self.spspps.fd() as u32)
             .set(reg::w163::REG163_RPS_BASE, self.rps.fd() as u32)
             .set(reg::w180::REG180_SCANLIST_BASE, self.sclst.fd() as u32)
-            .set(reg::w12::SCANLIST_ADDR_VALID_EN, 1)
-            .set(reg::w132::REG132_ERROR_REF_BASE, cur.nv12.fd() as u32);
+            .set(reg::w12::SCANLIST_ADDR_VALID_EN, 1);
         let rcb_fd = self.rcb.fd() as u32;
         r.set(reg::w139::REG139_RCB_DBLK_BASE, rcb_fd)
             .set(reg::w133::REG133_RCB_INTRA_BASE, rcb_fd)
@@ -402,8 +492,14 @@ impl H264d {
         let highpoc: Vec<u32> = r.w[200..205].to_vec();
         let statistic: Vec<u32> = r.w[256..276].to_vec();
         if std::env::var("RFI_REG_DUMP").is_ok() {
+            use std::fs::OpenOptions;
             use std::io::Write;
-            if let Ok(mut f) = std::fs::File::create("/tmp/our_regs.txt") {
+            if let Ok(mut f) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/our_regs.txt")
+            {
+                let _ = writeln!(f, "FRAME {}", order.frame as u32);
                 for i in 8..284 {
                     let v = if i < r.w.len() { r.w[i] } else { 0 };
                     let _ = writeln!(f, "{:08x}", v);
@@ -411,17 +507,133 @@ impl H264d {
             }
         }
         let offs = self.rcb_info.offsets();
+        let mut readback = [0u32; REG_READBACK_WORDS];
         let mut batch = Batch::new();
+        let rcb_configs = self.rcb_info.hardware_sizes();
         batch
             .reg_write(&comm_gen, 32)
             .reg_write(&comm_paras, 256)
             .reg_write(&comm_addr, 512)
             .reg_write(&highpoc, 800)
             .reg_write(&statistic, 1024)
-            .reg_offsets(&offs);
+            .reg_read(&mut readback, 0);
+        batch.reg_offsets(&offs);
+        if self.rcb_info_supported && !rcb_configs.is_empty() {
+            batch.rcb_info(&rcb_configs);
+        }
         self.svc.submit_batch(&mut batch)?;
         self.svc.poll_hw_finish()?;
+        self.last_status = (readback[224], readback[226], readback[227]);
+        self.last_hardware_error =
+            hardware_status_error(readback[224], readback[225], readback[226], readback[227]);
+        if std::env::var_os("RFI_COLMV_DUMP").is_some() {
+            use std::io::Write;
+
+            let task = CMV_DUMP_INDEX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = format!("/tmp/rust_cmv_{task:02}.bin");
+            let _ = cur.colmv.sync_read_begin();
+            if let Ok(mut file) = std::fs::File::create(path) {
+                let _ = file.write_all(cur.colmv.as_slice());
+            }
+            let _ = cur.colmv.sync_read_end();
+        }
         Ok(())
+    }
+}
+
+fn hardware_status_error(common: u32, stream_detect: u32, stream: u32, colmv: u32) -> bool {
+    common & (1 << 4) != 0
+        || common & (1 << 2) == 0
+        || common & (1 << 6) != 0
+        || stream_detect & (1 << 1) != 0
+        || stream & ((1 << 28) - 1) != 0
+        || colmv & 0xf != 0
+}
+
+fn write_current_poc(r: &mut reg::Regs, top: i32, bottom: i32) {
+    r.w[65] = top as u32;
+    r.w[66] = bottom as u32;
+}
+
+fn write_current_picture_poc(r: &mut reg::Regs, sh: &SliceHeader, order: PictureOrderCount) {
+    let (top, bottom) = order.hardware_fields(sh);
+    write_current_poc(r, top, bottom);
+    r.w[204] = u32::from(sh.field_pic && sh.bottom_field);
+}
+
+fn write_reference_fields(r: &mut reg::Regs, index: usize, flags: ReferenceFlags) {
+    let field = reg::Field {
+        word: 99 + index / 4,
+        lsb: ((index % 4) * 8) as u8,
+        width: 1,
+    };
+    r.set(field, flags.field_coded as u32)
+        .set(
+            reg::Field {
+                lsb: field.lsb + 1,
+                ..field
+            },
+            flags.top_used as u32,
+        )
+        .set(
+            reg::Field {
+                lsb: field.lsb + 2,
+                ..field
+            },
+            flags.bottom_used as u32,
+        )
+        .set(
+            reg::Field {
+                lsb: field.lsb + 3,
+                ..field
+            },
+            flags.colmv_valid as u32,
+        );
+}
+
+fn resolve_reference_slots(present: &[bool; 16]) -> [usize; 16] {
+    let mut nearest = 16;
+    std::array::from_fn(|i| {
+        if present[i] {
+            nearest = i;
+        }
+        nearest
+    })
+}
+
+fn write_reference_high_pocs(r: &mut reg::Regs, resolved: &[usize; 16]) {
+    write_reference_poc_high_bits(r, resolved, &SliceHeader::default());
+}
+
+fn write_reference_poc_high_bits(r: &mut reg::Regs, resolved: &[usize; 16], sh: &SliceHeader) {
+    r.w[200..204].fill(0);
+    for (index, &fallback) in resolved.iter().enumerate() {
+        if sh.field_pic {
+            // For field pictures the nibble selects the top (0) or bottom (1)
+            // POC slot rather than carrying an overflow bit.
+            r.w[200 + index / 4] |= 1 << (8 * (index % 4) + 4);
+        } else if fallback == 16 {
+            // MPP substitutes the current picture for a missing reference and
+            // encodes its POC high bit as 3 for both fields.
+            r.w[200 + index / 4] |= 0x33 << (8 * (index % 4));
+        }
+    }
+}
+
+fn select_error_reference(frame_nums: &[u32], current: u32) -> Option<usize> {
+    frame_nums
+        .iter()
+        .enumerate()
+        .filter(|(_, frame_num)| **frame_num != 0 && **frame_num < current)
+        .min_by_key(|(_, frame_num)| **frame_num)
+        .map(|(i, _)| i)
+}
+
+fn error_intra_mode(has_error_reference: bool, weighted_pred: bool) -> u32 {
+    if has_error_reference && !weighted_pred {
+        0
+    } else {
+        1
     }
 }
 
@@ -430,9 +642,129 @@ mod tests {
     use super::*;
 
     #[test]
+    fn current_poc_is_written_to_top_and_bottom_fields() {
+        let mut regs = reg::Regs::new();
+        write_current_poc(&mut regs, 37, 35);
+        assert_eq!(regs.w[65], 37);
+        assert_eq!(regs.w[66], 35);
+    }
+
+    #[test]
+    fn field_picture_writes_only_its_coded_field_poc() {
+        let mut regs = reg::Regs::new();
+        let sh = SliceHeader {
+            field_pic: true,
+            bottom_field: true,
+            ..Default::default()
+        };
+        let order = PictureOrderCount {
+            top: 37,
+            bottom: 39,
+            frame: 39,
+        };
+
+        write_current_picture_poc(&mut regs, &sh, order);
+
+        assert_eq!((regs.w[65], regs.w[66]), (0, 39));
+    }
+
+    #[test]
+    fn bottom_field_sets_current_poc_high_bit() {
+        let mut regs = reg::Regs::new();
+        let sh = SliceHeader {
+            field_pic: true,
+            bottom_field: true,
+            ..Default::default()
+        };
+
+        write_current_picture_poc(
+            &mut regs,
+            &sh,
+            PictureOrderCount {
+                top: 37,
+                bottom: 39,
+                frame: 39,
+            },
+        );
+
+        assert_eq!(regs.w[204], 1);
+    }
+
+    #[test]
+    fn reference_fields_encode_top_only_state() {
+        let mut regs = reg::Regs::new();
+        write_reference_fields(
+            &mut regs,
+            0,
+            ReferenceFlags {
+                field_coded: true,
+                top_used: true,
+                bottom_used: false,
+                colmv_valid: true,
+            },
+        );
+
+        assert_eq!(regs.w[99] & 0xf, 0b1011);
+    }
+
+    #[test]
+    fn missing_reference_slots_fall_back_to_current_or_nearest() {
+        let mut present = [false; 16];
+        present[3] = true;
+        present[7] = true;
+
+        let resolved = resolve_reference_slots(&present);
+
+        assert_eq!(&resolved[..3], &[16, 16, 16]);
+        assert_eq!(&resolved[3..7], &[3, 3, 3, 3]);
+        assert_eq!(&resolved[7..], &[7; 9]);
+    }
+
+    #[test]
+    fn missing_reference_slots_use_the_current_picture_poc_high_bit() {
+        let mut regs = reg::Regs::new();
+        let resolved = [16; 16];
+
+        write_reference_high_pocs(&mut regs, &resolved);
+
+        assert_eq!(&regs.w[200..204], &[0x3333_3333; 4]);
+        assert_eq!(regs.w[204], 0);
+    }
+
+    #[test]
+    fn field_references_tag_top_and_bottom_poc_slots() {
+        let mut regs = reg::Regs::new();
+        let sh = SliceHeader {
+            field_pic: true,
+            ..Default::default()
+        };
+
+        write_reference_poc_high_bits(&mut regs, &[16; 16], &sh);
+
+        assert_eq!(&regs.w[200..204], &[0x1010_1010; 4]);
+    }
+
+    #[test]
+    fn error_reference_uses_oldest_nonzero_frame_before_current() {
+        let mut frame_nums = [0u32; 16];
+        frame_nums[0] = 2;
+        frame_nums[1] = 1;
+        frame_nums[2] = 4;
+
+        assert_eq!(select_error_reference(&frame_nums, 4), Some(1));
+        assert_eq!(select_error_reference(&frame_nums, 1), None);
+        assert_eq!(select_error_reference(&frame_nums, 0), None);
+    }
+
+    #[test]
+    fn error_intra_mode_is_disabled_for_an_unweighted_older_reference() {
+        assert_eq!(error_intra_mode(true, false), 0);
+    }
+
+    #[test]
     fn rcb_sizes_follow_the_formula() {
-        let info = RcbInfo::compute(1920, 1080, 8);
-        assert_eq!(info.dblk, align((1920 * (2 + 6 * 8) + 7) / 8, 256));
+        let info = RcbInfo::compute(1920, 1080, 8, false);
+        assert_eq!(info.dblk, rcb_bytes(1920 * (2 + 6 * 8)));
         assert_eq!(info.intra, rcb_bytes(1920 * 44));
         assert_eq!(info.inter_row, rcb_bytes(1920 * 42));
         assert_eq!(info.strmd_row, 0, "only above 4096 wide");
@@ -440,34 +772,47 @@ mod tests {
     }
 
     #[test]
-    fn rcb_offsets_are_contiguous() {
-        let info = RcbInfo::compute(1920, 1080, 8);
+    fn rcb_offsets_use_the_fixed_aligned_layout() {
+        let info = RcbInfo::compute(1920, 1080, 8, false);
         let offs = info.offsets();
         assert_eq!(offs.len(), 10);
         assert_eq!((offs[0].reg_idx, offs[9].reg_idx), (139, 142));
-        let sizes = [
-            info.dblk,
-            info.intra,
-            info.transd_row,
-            info.strmd_row,
-            info.inter_row,
-            info.sao,
-            info.fbc,
-            info.transd_col,
-            info.inter_col,
-            info.filt_col,
-        ];
-        let mut expect = 0u32;
-        for (o, size) in offs.iter().zip(sizes) {
-            assert_eq!(o.offset, expect, "reg {} offset", o.reg_idx);
-            expect += size as u32;
-        }
-        assert_eq!(expect as usize, info.total());
+        assert_eq!(
+            offs.iter().map(|info| info.offset).collect::<Vec<_>>(),
+            [0, 42240, 53760, 55680, 61440, 72960, 84480, 105600, 106688, 109952]
+        );
+        assert_eq!(info.total(), 182848);
+        assert_ne!(
+            info.dblk, 42240,
+            "refined size must not define the RCB layout"
+        );
+    }
+
+    #[test]
+    fn rcb_sram_config_uses_mpp_priority_order() {
+        let info = RcbInfo::compute(1920, 1080, 8, false);
+        let regs: Vec<u32> = info
+            .hardware_sizes()
+            .into_iter()
+            .map(|cfg| cfg.reg_idx)
+            .collect();
+        assert_eq!(regs, [139, 133]);
     }
 
     #[test]
     fn colmv_grows_with_resolution() {
         assert!(colmv_size(1920, 1080, true) > colmv_size(1280, 720, true));
         assert!(colmv_size(1920, 1080, false) >= colmv_size(1920, 1080, true));
+    }
+
+    #[test]
+    fn hardware_status_matches_vdpu34x_error_checks() {
+        assert!(!hardware_status_error(1 << 2, 0, 0, 0));
+        assert!(hardware_status_error(0, 0, 0, 0));
+        assert!(hardware_status_error((1 << 2) | (1 << 4), 0, 0, 0));
+        assert!(hardware_status_error((1 << 2) | (1 << 6), 0, 0, 0));
+        assert!(hardware_status_error(1 << 2, 1 << 1, 0, 0));
+        assert!(hardware_status_error(1 << 2, 0, 1, 0));
+        assert!(hardware_status_error(1 << 2, 0, 0, 1));
     }
 }

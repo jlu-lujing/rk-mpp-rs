@@ -1,0 +1,49 @@
+use std::process::{Command, Output};
+
+fn run_invalid_decode(command: &str) -> Output {
+    let input = std::env::temp_dir().join(format!(
+        "rk-mpp-rs-invalid-{command}-{}.bitstream",
+        std::process::id()
+    ));
+    let output = std::env::temp_dir().join(format!(
+        "rk-mpp-rs-invalid-{command}-{}.yuv",
+        std::process::id()
+    ));
+    std::fs::write(
+        &input,
+        [
+            0x00, 0x00, 0x01, 0x42, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ],
+    )
+    .unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_rk-mpp-rs"))
+        .arg(command)
+        .arg(&input)
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+    result
+}
+
+fn assert_failed(result: Output) {
+    assert!(
+        !result.status.success(),
+        "decode failure was reported as success: stdout={} stderr={}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn hevc_decode_failure_returns_nonzero() {
+    assert_failed(run_invalid_decode("hevcdec"));
+}
+
+#[test]
+fn h264_decode_failure_returns_nonzero() {
+    assert_failed(run_invalid_decode("h264dec"));
+}

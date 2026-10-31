@@ -132,7 +132,9 @@ pub struct Regs {
 
 impl Default for Regs {
     fn default() -> Self {
-        Regs { words: [0; JPEGD_REG_NUM] }
+        Regs {
+            words: [0; JPEGD_REG_NUM],
+        }
     }
 }
 
@@ -140,13 +142,21 @@ impl Regs {
     pub fn set(&mut self, f: Field, v: u32) {
         let (r, hi, lo) = f;
         let width = hi - lo + 1;
-        let mask = if width >= 32 { u32::MAX } else { ((1u32 << width) - 1) << lo };
+        let mask = if width >= 32 {
+            u32::MAX
+        } else {
+            ((1u32 << width) - 1) << lo
+        };
         self.words[r] = (self.words[r] & !mask) | ((v << lo) & mask);
     }
     pub fn get(&self, f: Field) -> u32 {
         let (r, hi, lo) = f;
         let width = hi - lo + 1;
-        let mask = if width >= 32 { u32::MAX } else { (1u32 << width) - 1 };
+        let mask = if width >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << width) - 1
+        };
         (self.words[r] >> lo) & mask
     }
 }

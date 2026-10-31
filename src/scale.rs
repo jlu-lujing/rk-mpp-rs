@@ -117,7 +117,8 @@ impl Scaler {
         self.build_map(sw, &g);
         // When the scaled image covers the whole destination every byte is
         // written below, so the letterbox fill would be wasted work.
-        let covers_all = g.pad_left == 0 && g.pad_top == 0 && g.new_w == self.dw && g.new_h == self.dh;
+        let covers_all =
+            g.pad_left == 0 && g.pad_top == 0 && g.new_w == self.dw && g.new_h == self.dh;
         if !covers_all {
             dst.fill(114);
         }
@@ -140,7 +141,8 @@ impl Scaler {
             let iwy = 256 - wy;
             let r0 = &src[y0 * src_stride..y0 * src_stride + sw * 3];
             let r1 = &src[y1 * src_stride..y1 * src_stride + sw * 3];
-            let out_row = &mut dst[((g.pad_top as usize + y) * self.dw + g.pad_left as usize) * 3..];
+            let out_row =
+                &mut dst[((g.pad_top as usize + y) * self.dw + g.pad_left as usize) * 3..];
             let out = &mut out_row[..g.new_w * 3];
 
             /* Integer-aligned cases (e.g. 1920x1080 -> 640 at exactly 1/3)
@@ -251,7 +253,8 @@ mod tests {
                 let sx = 3 * x + 1;
                 for c in 0..3 {
                     let want = src[(sy * sw + sx) * 3 + c];
-                    let got = dst[((g.pad_top as usize + y) * 10 + g.pad_left as usize + x) * 3 + c];
+                    let got =
+                        dst[((g.pad_top as usize + y) * 10 + g.pad_left as usize + x) * 3 + c];
                     assert_eq!(want, got, "at ({x},{y}) c{c}");
                 }
             }

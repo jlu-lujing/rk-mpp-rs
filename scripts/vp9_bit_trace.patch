@@ -1,0 +1,32 @@
+--- a/mpp/hal/rkdec/vp9d/hal_vp9d_com.c
++++ b/mpp/hal/rkdec/vp9d/hal_vp9d_com.c
+@@ -1726,6 +1726,10 @@ MPP_RET hal_vp9d_prob_flag_delta(void *buf, void *dxva)
+         for (i = 0; i < 8; i++) {
+             mpp_put_bits(&bp, 0, 16);//reserve
+         }
++        if (getenv("VP9_BIT_TRACE")) {
++            mpp_log("FLAG_END word=%d bit=%d", bp.index, bp.bitpos);
++        }
+         //sb info  5 x 128 bit
+         for (i = 0; i < PARTITION_CONTEXTS; i++) //kf_partition_prob
+             for (j = 0; j < PARTITION_TYPES - 1; j++)
+@@ -1808,6 +1812,9 @@ MPP_RET hal_vp9d_prob_flag_delta(void *buf, void *dxva)
+         for (i = 0; i < 11; i++)
+             mpp_put_bits(&bp, 0, 8);//reserve
+ 
++        if (getenv("VP9_BIT_TRACE")) {
++            mpp_log("DELTA_HEADER_END word=%d bit=%d", bp.index, bp.bitpos);
++        }
+         //intra coeff related prob   64 x 128 bit
+         for (i = 0; i < 4; i++)
+             for (j = 0; j < 2; j++) {
+@@ -1842,6 +1849,10 @@ MPP_RET hal_vp9d_prob_flag_delta(void *buf, void *dxva)
+                 }
+             }
+ 
++        if (getenv("VP9_BIT_TRACE")) {
++            mpp_log("DELTA_COEF_END word=%d bit=%d", bp.index, bp.bitpos);
++        }
+         //intra uv mode 6 x 128
+         for (i = 0; i < 3; i++) //intra_uv_mode
+             for (j = 0; j < INTRA_MODES - 1; j++)

@@ -1,0 +1,27 @@
+--- a/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
++++ b/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
+@@ -465,6 +465,24 @@
+         hal_vp9d_prob_default(mpp_buffer_get_ptr(hw_ctx->prob_default_base), task->dec.syntax.data);
+         mpp_buffer_sync_end(hw_ctx->prob_default_base);
+     }
++    if (getenv("VP9_DEFAULT_ALL_DUMP")) {
++        static RK_U32 dump_index;
++        char path[256];
++        FILE *fp;
++
++        hal_vp9d_prob_default(mpp_buffer_get_ptr(hw_ctx->prob_default_base),
++                              task->dec.syntax.data);
++        mpp_buffer_sync_end(hw_ctx->prob_default_base);
++        snprintf(path, sizeof(path), "%s/default_all_%02d.bin",
++                 getenv("VP9_DEFAULT_ALL_DUMP"), dump_index);
++        fp = fopen(path, "wb");
++        if (fp) {
++            fwrite(mpp_buffer_get_ptr(hw_ctx->prob_default_base), 1,
++                   PROB_SIZE, fp);
++            fclose(fp);
++        }
++        dump_index++;
++    }
+ 
+     /* config reg103 */
+     vp9_hw_regs->comm_paras.reg103.prob_update_en   = 1;

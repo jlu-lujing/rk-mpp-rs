@@ -32,6 +32,12 @@ pub const MPP_CMD_QUERY_CMD_SUPPORT: u32 = 2;
 pub const MPP_CMD_INIT_CLIENT_TYPE: u32 = 0x100;
 pub const MPP_CMD_SET_REG_WRITE: u32 = 0x200;
 
+const MPP_CMD_QUERY_BASE: u32 = 0;
+const MPP_CMD_INIT_BASE: u32 = 0x100;
+const MPP_CMD_SEND_BASE: u32 = 0x200;
+const MPP_CMD_POLL_BASE: u32 = 0x300;
+const MPP_CMD_CONTROL_BASE: u32 = 0x400;
+
 pub const MPP_CMD_INIT_DRIVER_DATA: u32 = 0x101;
 pub const MPP_CMD_INIT_TRANS_TABLE: u32 = 0x102;
 pub const MPP_CMD_SET_REG_READ: u32 = 0x201;
@@ -80,7 +86,11 @@ impl MppService {
             return Err(io::Error::last_os_error());
         }
         let svc = MppService { fd, client_type };
-        svc.call(MPP_CMD_INIT_CLIENT_TYPE, &client_type as *const u32 as u64, 4)?;
+        svc.call(
+            MPP_CMD_INIT_CLIENT_TYPE,
+            &client_type as *const u32 as u64,
+            4,
+        )?;
         Ok(svc)
     }
 
@@ -123,32 +133,15 @@ impl MppService {
 
     /// Poll until the job finishes.
     pub fn poll_hw_finish(&self) -> io::Result<()> {
-        #[repr(C)]
-        struct SliceInfo {
-            val: u32,
-            last: u32,
-        }
-        #[repr(C)]
-        struct PollCfg {
-            poll_type: i32,
-            poll_ret: i32,
-            count_max: i32,
-            count_ret: i32,
-            slice_info: [SliceInfo; 1],
-        }
-        let mut cfg = PollCfg {
-            poll_type: 0,
-            poll_ret: 0,
-            count_max: 1,
-            count_ret: 0,
-            slice_info: [SliceInfo { val: 0, last: 1 }],
-        };
+        // Linux mpp_service uses the no-payload form of POLL_HW_FINISH when
+        // HW_IRQ is unavailable.  The driver writes all queued SET_REG_READ
+        // destinations before this ioctl returns.
         let mut req = MppReqV1 {
             cmd: MPP_CMD_POLL_HW_FINISH,
             flag: MPP_FLAGS_LAST_MSG | MPP_FLAGS_REG_OFFSET_ALONE,
-            size: std::mem::size_of::<PollCfg>() as u32,
+            size: 0,
             offset: 0,
-            data_ptr: &mut cfg as *mut PollCfg as u64,
+            data_ptr: 0,
         };
         let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
         if r < 0 {
@@ -167,11 +160,7 @@ impl MppService {
     /// Hardware id of our client block, as reported by the driver.
     pub fn hw_id(&self) -> io::Result<u32> {
         let mut id = 0u32;
-        self.call(
-            MPP_CMD_QUERY_HW_ID,
-            &mut id as *mut u32 as u64,
-            4,
-        )?;
+        self.call(MPP_CMD_QUERY_HW_ID, &mut id as *mut u32 as u64, 4)?;
         Ok(id)
     }
 }
@@ -233,7 +222,7 @@ impl Client {
 
 /// (register index, byte offset) for the address-offset command.
 #[repr(C)]
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegOffsetInfo {
     pub reg_idx: u32,
     pub offset: u32,
@@ -253,9 +242,10 @@ pub struct RcbInfo {
 pub struct DevInfoCfg {
     pub type_: u32,
     pub flag: u32,
-    pub size: u32,
     pub data: u64,
 }
+
+const _: () = assert!(std::mem::size_of::<DevInfoCfg>() == 16);
 
 #[repr(C)]
 #[derive(Default, Debug, Clone, Copy)]
@@ -272,7 +262,9 @@ pub struct Batch {
 
 impl Batch {
     pub fn new() -> Self {
-        Batch { reqs: Vec::with_capacity(8) }
+        Batch {
+            reqs: Vec::with_capacity(8),
+        }
     }
 
     pub fn clear(&mut self) {
@@ -284,12 +276,24 @@ impl Batch {
     }
 
     pub fn push(&mut self, cmd: u32, flag: u32, size: u32, offset: u32, data: u64) {
-        self.reqs.push(MppReqV1 { cmd, flag, size, offset, data_ptr: data });
+        self.reqs.push(MppReqV1 {
+            cmd,
+            flag,
+            size,
+            offset,
+            data_ptr: data,
+        });
     }
 
     /// The buffers referenced here must outlive `MppService::submit_batch`.
     pub fn reg_write(&mut self, regs: &[u32], offset: u32) -> &mut Self {
-        self.push(MPP_CMD_SET_REG_WRITE, 0, (regs.len() * 4) as u32, offset, regs.as_ptr() as u64);
+        self.push(
+            MPP_CMD_SET_REG_WRITE,
+            0,
+            (regs.len() * 4) as u32,
+            offset,
+            regs.as_ptr() as u64,
+        );
         self
     }
 
@@ -353,7 +357,11 @@ impl MppService {
             }
         }
         let r = unsafe {
-            libc::ioctl(self.fd, MPP_IOC_CFG_V1, batch.reqs.as_mut_ptr() as *mut MppReqV1)
+            libc::ioctl(
+                self.fd,
+                MPP_IOC_CFG_V1,
+                batch.reqs.as_mut_ptr() as *mut MppReqV1,
+            )
         };
         if r < 0 {
             Err(io::Error::last_os_error())
@@ -364,8 +372,23 @@ impl MppService {
 
     /// Is this command implemented by the running kernel?
     pub fn cmd_supported(&self, cmd: u32) -> bool {
-        let mut v = cmd;
-        self.call(MPP_CMD_QUERY_CMD_SUPPORT, &mut v as *mut u32 as u64, 4).is_ok()
+        let mut caps = [0u32; 5];
+        for (cap, base) in caps.iter_mut().zip([
+            MPP_CMD_QUERY_BASE,
+            MPP_CMD_INIT_BASE,
+            MPP_CMD_SEND_BASE,
+            MPP_CMD_POLL_BASE,
+            MPP_CMD_CONTROL_BASE,
+        ]) {
+            *cap = base;
+            if self
+                .call(MPP_CMD_QUERY_CMD_SUPPORT, cap as *mut u32 as u64, 4)
+                .is_err()
+            {
+                return false;
+            }
+        }
+        command_supported(cmd, &caps)
     }
 
     pub fn reset_session(&self) -> io::Result<()> {
@@ -381,7 +404,8 @@ impl MppService {
 
     pub fn release_fd(&self, fd: c_int) -> io::Result<()> {
         let mut v = fd as u32;
-        self.call(MPP_CMD_RELEASE_FD, &mut v as *mut u32 as u64, 4).map(|_| ())
+        self.call(MPP_CMD_RELEASE_FD, &mut v as *mut u32 as u64, 4)
+            .map(|_| ())
     }
 
     /// Non-blocking poll with a slice table.
@@ -425,5 +449,27 @@ impl MppService {
         }
         let _ = &mut c;
         Ok(())
+    }
+}
+
+fn command_supported(cmd: u32, caps: &[u32; 5]) -> bool {
+    cmd < caps[0]
+        || (MPP_CMD_INIT_BASE..caps[1]).contains(&cmd)
+        || (MPP_CMD_SEND_BASE..caps[2]).contains(&cmd)
+        || (MPP_CMD_POLL_BASE..caps[3]).contains(&cmd)
+        || (MPP_CMD_CONTROL_BASE..caps[4]).contains(&cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_capabilities_exclude_unimplemented_rcb_info() {
+        let caps = [0x3, 0x103, 0x203, 0x302, 0x404];
+
+        assert!(command_supported(MPP_CMD_SET_REG_ADDR_OFFSET, &caps));
+        assert!(!command_supported(MPP_CMD_SET_RCB_INFO, &caps));
+        assert!(command_supported(MPP_CMD_POLL_HW_FINISH, &caps));
     }
 }

@@ -1,0 +1,60 @@
+--- a/mpp/codec/dec/av1/av1d_parser.c
++++ b/mpp/codec/dec/av1/av1d_parser.c
+@@ -5,6 +5,7 @@
+ 
+ #define MODULE_TAG "av1d_parser"
+ 
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -17,6 +18,8 @@
+ 
+ #include "mpp_bitread.h"
+ #include "mpp_packet_impl.h"
++
++static RK_U32 picparams_dump_index;
+ 
+ #include "av1d_parser.h"
+ #include "mpp_dec_cb_param.h"
+@@ -1292,6 +1295,40 @@
+             RK_U32 j;
+ 
+             av1d_parser2_syntax(ctx);
++            {
++                const char *dump_dir = getenv("AV1_PICPARAMS_DUMP_DIR");
++
++                if (dump_dir) {
++                    char path[4096];
++                    char manifest[4096];
++                    FILE *file;
++
++                    snprintf(path, sizeof(path), "%s/picparams_%03u.bin",
++                             dump_dir, picparams_dump_index);
++                    file = fopen(path, "wb");
++                    if (file) {
++                        fwrite(&ctx->pic_params, 1, sizeof(ctx->pic_params), file);
++                        fclose(file);
++                    }
++                    snprintf(path, sizeof(path), "%s/manifest.log", dump_dir);
++                    file = fopen(path, "a");
++                    if (file) {
++                        snprintf(manifest, sizeof(manifest),
++                                 "%u order_hint=%u q=%u primary=%u refresh=%u "
++                                 "slot=%u frame=%u\n",
++                                 picparams_dump_index,
++                                 ctx->pic_params.order_hint,
++                                 ctx->pic_params.quantization.base_qindex,
++                                 ctx->pic_params.primary_ref_frame,
++                                 ctx->pic_params.refresh_frame_flags,
++                                 ctx->pic_params.CurrPicTextureIndex,
++                                 ctx->pic_params.format.frame_type);
++                        fwrite(manifest, 1, strlen(manifest), file);
++                        fclose(file);
++                    }
++                    picparams_dump_index++;
++                }
++            }
+             task->syntax.data = (void*)&ctx->pic_params;
+             task->syntax.number = 1;
+             task->valid = 1;

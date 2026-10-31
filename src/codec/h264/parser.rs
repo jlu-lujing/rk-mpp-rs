@@ -233,11 +233,25 @@ pub struct Sps {
     pub log2_max_frame_num: u32,
     pub poc_type: u32,
     pub log2_max_poc_lsb: u32,
+    pub delta_pic_order_always_zero: bool,
+    pub offset_for_non_ref_pic: i32,
+    pub offset_for_top_to_bottom_field: i32,
+    pub offset_for_ref_frame: Vec<i32>,
     pub max_num_ref_frames: u32,
+    /// Cropped display dimensions.
     pub width: u32,
     pub height: u32,
+    /// Dimensions before frame cropping. Interlaced 720p is coded as 736
+    /// lines, but displayed as 720 lines.
+    pub coded_width: u32,
+    pub coded_height: u32,
+    /// `pic_height_in_map_units_minus1 + 1`, the height field written to the
+    /// hardware SPS/PPS table. For an MBAFF frame this is half the coded MB
+    /// height.
+    pub height_map_units: u32,
     pub frame_mbs_only: bool,
     pub mb_adaptive_frame_field: bool,
+    pub gaps_in_frame_num_allowed: bool,
     pub direct_8x8_inference: bool,
     pub frame_crop: Option<(u32, u32, u32, u32)>,
     pub vui_timing: Option<(u32, u32)>,
@@ -293,29 +307,34 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, SpsError> {
     if sps.poc_type == 0 {
         sps.log2_max_poc_lsb = r.read_ue()? + 4;
     } else if sps.poc_type == 1 {
-        r.skip(1)?; // delta_pic_order_always_zero
-        let _ = r.read_se()?;
-        let _ = r.read_se()?;
+        sps.delta_pic_order_always_zero = r.read_bit()? == 1;
+        sps.offset_for_non_ref_pic = r.read_se()?;
+        sps.offset_for_top_to_bottom_field = r.read_se()?;
         let n = r.read_ue()?;
         if n > 255 {
             return Err(SpsError::Unsupported("num_ref_frames_in_poc_cycle"));
         }
         for _ in 0..n {
-            let _ = r.read_se()?;
+            sps.offset_for_ref_frame.push(r.read_se()?);
         }
+    } else if sps.poc_type > 2 {
+        return Err(SpsError::Unsupported("pic_order_cnt_type"));
     }
     sps.max_num_ref_frames = r.read_ue()?;
-    r.skip(1)?; // gaps_in_frame_num_value_allowed_flag
+    sps.gaps_in_frame_num_allowed = r.read_bit()? == 1;
     let width_mbs = r.read_ue()? + 1;
     let height_map_units = r.read_ue()? + 1;
     sps.frame_mbs_only = r.read_bit()? == 1;
     if !sps.frame_mbs_only {
-        r.skip(1)?; // mb_adaptive_frame_field_flag
+        sps.mb_adaptive_frame_field = r.read_bit()? == 1;
     }
     sps.direct_8x8_inference = r.read_bit()? == 1;
 
     let mut w = width_mbs * 16;
     let mut h = height_map_units * 16 * if sps.frame_mbs_only { 1 } else { 2 };
+    sps.coded_width = w;
+    sps.coded_height = h;
+    sps.height_map_units = height_map_units;
 
     if r.read_bit()? == 1 {
         let l = r.read_ue()?;
@@ -521,11 +540,7 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, SpsError> {
     Ok(pps)
 }
 
-fn read_weight_table(
-    r: &mut BitReader<'_>,
-    refs: u32,
-    chroma: bool,
-) -> Result<(), SpsError> {
+fn read_weight_table(r: &mut BitReader<'_>, refs: u32, chroma: bool) -> Result<(), SpsError> {
     if refs > 32 {
         return Err(SpsError::Unsupported("weight table refs"));
     }
@@ -562,10 +577,11 @@ pub enum RefMod {
 /// Decoded reference picture marking operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mmco {
-    /// Mark as unused for short-term reference.
-    UnmarkShort,
-    /// Mark as unused for long-term reference.
-    UnmarkLong,
+    /// Mark the short-term picture `difference_of_pic_nums_minus1` before
+    /// the current picture as unused.
+    UnmarkShort(u32),
+    /// Mark the long-term picture with the given `long_term_pic_num` as unused.
+    UnmarkLong(u32),
     /// Mark a short-term picture as long-term with frame_num delta.
     MakeLong { delta: u32, idx: u32 },
     /// Limit the long-term index range.
@@ -599,12 +615,15 @@ pub struct SliceHeader {
     pub first_mb: u32,
     pub slice_type: u32,
     pub pps_id: u32,
+    pub nal_ref_idc: u8,
     pub frame_num: u32,
     pub field_pic: bool,
     pub bottom_field: bool,
     pub idr_pic_id: Option<u32>,
     pub poc_lsb: Option<u32>,
     pub delta_poc_bottom: Option<i32>,
+    /// `delta_pic_order_cnt[0]` and `[1]` for POC type 1.
+    pub delta_poc: [Option<i32>; 2],
     pub redundant_pic_cnt: Option<u32>,
     pub direct_spatial: bool,
     pub ref_idx_l0_active: u32,
@@ -613,6 +632,9 @@ pub struct SliceHeader {
     pub mod_l1: Vec<RefMod>,
     pub weights: Option<Weights>,
     pub mmco: Vec<Mmco>,
+    /// `adaptive_ref_pic_buffering_mode`: the current picture's marking is
+    /// specified by MMCO operations rather than the sliding window.
+    pub adaptive_ref_pic_buffering: bool,
     pub no_output_of_prior_pics: bool,
     pub long_term_reference: bool,
     pub cabac_init_idc: Option<u32>,
@@ -656,6 +678,7 @@ pub fn parse_slice_header(
 ) -> Result<SliceHeader, SpsError> {
     let mut r = BitReader::new(rbsp);
     let mut sh = SliceHeader::default();
+    sh.nal_ref_idc = ref_idc;
     sh.first_mb = r.read_ue()?;
     sh.slice_type = r.read_ue()?;
     sh.pps_id = r.read_ue()?;
@@ -677,8 +700,11 @@ pub fn parse_slice_header(
         if pps.bottom_field_pic_order && !sh.field_pic {
             sh.delta_poc_bottom = Some(r.read_se()?);
         }
-    } else if sps.poc_type == 1 && !pps.bottom_field_pic_order && !sh.field_pic {
-        let _ = r.read_se()?; // delta_pic_order_cnt[0]
+    } else if sps.poc_type == 1 && !sps.delta_pic_order_always_zero {
+        sh.delta_poc[0] = Some(r.read_se()?);
+        if pps.bottom_field_pic_order && !sh.field_pic {
+            sh.delta_poc[1] = Some(r.read_se()?);
+        }
     }
     if pps.redundant_pic_cnt {
         sh.redundant_pic_cnt = Some(r.read_ue()?);
@@ -702,7 +728,7 @@ pub fn parse_slice_header(
         return Err(SpsError::Unsupported("num_ref_idx_active"));
     }
 
-    let mut read_mods = |r: &mut BitReader<'_>| -> Result<Vec<RefMod>, SpsError> {
+    let read_mods = |r: &mut BitReader<'_>| -> Result<Vec<RefMod>, SpsError> {
         let mut out = Vec::new();
         if r.read_bit()? == 0 {
             return Ok(out);
@@ -758,20 +784,15 @@ pub fn parse_slice_header(
             sh.no_output_of_prior_pics = r.read_bit()? == 1;
             sh.long_term_reference = r.read_bit()? == 1;
         } else if r.read_bit()? == 1 {
+            sh.adaptive_ref_pic_buffering = true;
             loop {
                 let op = r.read_ue()?;
                 if op == 0 {
                     break;
                 }
                 let mmco = match op {
-                    1 => {
-                        let _ = r.read_ue()?; // difference_of_pic_nums_minus1
-                        Mmco::UnmarkShort
-                    }
-                    2 => {
-                        let _ = r.read_ue()?; // long_term_pic_num
-                        Mmco::UnmarkLong
-                    }
+                    1 => Mmco::UnmarkShort(r.read_ue()?),
+                    2 => Mmco::UnmarkLong(r.read_ue()?),
                     3 => Mmco::MakeLong {
                         delta: r.read_ue()?,
                         idx: r.read_ue()?,
@@ -867,7 +888,11 @@ mod tests {
             self.put(v + 1, n + 1)
         }
         fn se(&mut self, v: i32) -> &mut Self {
-            let k = if v <= 0 { (-v as u32) * 2 } else { (v as u32) * 2 - 1 };
+            let k = if v <= 0 {
+                (-v as u32) * 2
+            } else {
+                (v as u32) * 2 - 1
+            };
             self.ue(k)
         }
         fn finish(&mut self) -> Vec<u8> {
@@ -915,21 +940,118 @@ mod tests {
         assert_eq!(sps.max_num_ref_frames, 2);
         assert_eq!(sps.log2_max_frame_num, 4);
         assert!(sps.frame_mbs_only);
+        assert!(!sps.gaps_in_frame_num_allowed);
     }
 
     #[test]
     fn parses_cropped_sps() {
         let mut w = BitWriter::new();
-        w.put(66, 8).put(0, 8).put(30, 8)
-            .ue(0).ue(0).ue(0).ue(0).ue(1).put(0, 1)
-            .ue(120 - 1).ue(68 - 1) // 1920x1088 padded
-            .put(1, 1).put(1, 1)
+        w.put(66, 8)
+            .put(0, 8)
+            .put(30, 8)
+            .ue(0)
+            .ue(0)
+            .ue(0)
+            .ue(0)
+            .ue(1)
+            .put(0, 1)
+            .ue(120 - 1)
+            .ue(68 - 1) // 1920x1088 padded
+            .put(1, 1)
+            .put(1, 1)
             .put(1, 1) // cropping present
-            .ue(0).ue(0).ue(0).ue(4) // crop 4 rows from the bottom
+            .ue(0)
+            .ue(0)
+            .ue(0)
+            .ue(4) // crop 4 rows from the bottom
             .put(0, 1);
         let sps = parse_sps(&w.finish()).unwrap();
         assert_eq!((sps.width, sps.height), (1920, 1080));
         assert_eq!(sps.frame_crop, Some((0, 0, 0, 4)));
+    }
+
+    #[test]
+    fn parses_mbaff_sps_geometry_and_flags() {
+        let mut w = BitWriter::new();
+        w.put(77, 8)
+            .put(0, 8)
+            .put(32, 8)
+            .ue(0)
+            .ue(0)
+            .ue(0)
+            .ue(0)
+            .ue(4)
+            .put(0, 1)
+            .ue(80 - 1)
+            .ue(23 - 1)
+            .put(0, 1) // frame_mbs_only
+            .put(1, 1) // mb_adaptive_frame_field
+            .put(1, 1) // direct_8x8
+            .put(1, 1) // cropping present: 736 -> 720 lines
+            .ue(0)
+            .ue(0)
+            .ue(0)
+            .ue(4)
+            .put(0, 1); // no VUI
+
+        let sps = parse_sps(&w.finish()).unwrap();
+
+        assert!(!sps.frame_mbs_only);
+        assert!(sps.mb_adaptive_frame_field);
+        assert_eq!(sps.height_map_units, 23);
+        assert_eq!((sps.coded_width, sps.coded_height), (1280, 736));
+        assert_eq!((sps.width, sps.height), (1280, 720));
+    }
+
+    #[test]
+    fn parses_poc_type1_cycle_and_slice_deltas() {
+        let mut sps_bits = BitWriter::new();
+        sps_bits
+            .put(66, 8)
+            .put(0, 8)
+            .put(30, 8)
+            .ue(0)
+            .ue(0)
+            .ue(1)
+            .put(0, 1)
+            .se(-1)
+            .se(2)
+            .ue(2)
+            .se(1)
+            .se(3)
+            .ue(2)
+            .put(0, 1)
+            .ue(39)
+            .ue(22)
+            .put(1, 1)
+            .put(1, 1)
+            .put(0, 1)
+            .put(0, 1);
+        let sps = parse_sps(&sps_bits.finish()).unwrap();
+        assert_eq!(sps.poc_type, 1);
+        assert!(!sps.delta_pic_order_always_zero);
+        assert_eq!(sps.offset_for_non_ref_pic, -1);
+        assert_eq!(sps.offset_for_top_to_bottom_field, 2);
+        assert_eq!(sps.offset_for_ref_frame, [1, 3]);
+
+        let pps = Pps {
+            bottom_field_pic_order: true,
+            ..Default::default()
+        };
+        let mut slice_bits = BitWriter::new();
+        slice_bits
+            .ue(0)
+            .ue(2)
+            .ue(0)
+            .put(1, sps.log2_max_frame_num)
+            .se(2)
+            .se(-1)
+            .put(0, 1)
+            .se(0);
+        let sh = parse_slice_header(&slice_bits.finish(), &sps, &pps, NAL_SLICE, 1).unwrap();
+
+        assert_eq!(sh.nal_ref_idc, 1);
+        assert_eq!(sh.delta_poc, [Some(2), Some(-1)]);
     }
 
     #[test]
@@ -940,7 +1062,15 @@ mod tests {
     #[test]
     fn exp_golomb_roundtrip() {
         let mut w = BitWriter::new();
-        w.ue(0).ue(1).ue(7).ue(255).se(0).se(1).se(-1).se(42).se(-42);
+        w.ue(0)
+            .ue(1)
+            .ue(7)
+            .ue(255)
+            .se(0)
+            .se(1)
+            .se(-1)
+            .se(42)
+            .se(-42);
         let data = w.finish();
         let mut r = BitReader::new(&data);
         assert_eq!(r.read_ue().unwrap(), 0);
@@ -981,14 +1111,18 @@ mod tests {
     #[test]
     fn parses_pps() {
         let mut w = BitWriter::new();
-        w.ue(0).ue(0) // pps_id, sps_id
+        w.ue(0)
+            .ue(0) // pps_id, sps_id
             .put(0, 1) // entropy (CAVLC)
             .put(0, 1) // bottom_field_pic_order
             .ue(0) // num_slice_groups - 1
-            .ue(0).ue(0) // num_ref_idx
+            .ue(0)
+            .ue(0) // num_ref_idx
             .put(0, 1) // weighted_pred
             .put(0, 2) // weighted_bipred_idc
-            .se(0).se(0).se(0)
+            .se(0)
+            .se(0)
+            .se(0)
             .put(1, 1) // deblocking
             .put(0, 1)
             .put(0, 1);
@@ -1003,14 +1137,21 @@ mod tests {
     fn parses_idr_slice_header() {
         let sps = parse_sps(&baseline_sps(40, 23)).unwrap();
         let mut w = BitWriter::new();
-        w.ue(0).ue(0)
+        w.ue(0)
+            .ue(0)
             .put(0, 1) // entropy
             .put(0, 1) // bottom field
             .ue(0) // slice groups - 1
-            .ue(0).ue(0)
-            .put(0, 1).put(0, 2)
-            .se(0).se(0).se(0)
-            .put(1, 1).put(0, 1).put(0, 1);
+            .ue(0)
+            .ue(0)
+            .put(0, 1)
+            .put(0, 2)
+            .se(0)
+            .se(0)
+            .se(0)
+            .put(1, 1)
+            .put(0, 1)
+            .put(0, 1);
         let pps = parse_pps(&w.finish()).unwrap();
 
         let mut s = BitWriter::new();
@@ -1034,7 +1175,6 @@ mod tests {
         assert_eq!(sh.deblocking_disable_idc, 0);
     }
 }
-
 
 #[cfg(test)]
 mod real_bitstream_tests {
@@ -1082,14 +1222,20 @@ mod real_bitstream_tests {
         assert_eq!(sh.ref_idx_l0_active, 4, "override flag bumps the count");
         assert_eq!(
             sh.mod_l0,
-            vec![RefMod::Sub(1), RefMod::Sub(15), RefMod::Add(0), RefMod::Sub(2), RefMod::End]
+            vec![
+                RefMod::Sub(1),
+                RefMod::Sub(15),
+                RefMod::Add(0),
+                RefMod::Sub(2),
+                RefMod::End
+            ]
         );
         let w = sh.weights.as_ref().unwrap();
         assert_eq!(w.l0.len(), 4);
         assert!(w.l0[1].luma_flag);
         assert_eq!(w.l0[1].delta_luma_weight, 1);
         assert_eq!(w.l0[1].luma_offset, -1);
-        assert_eq!(sh.mmco, vec![Mmco::UnmarkShort]);
+        assert_eq!(sh.mmco, vec![Mmco::UnmarkShort(3)]);
         assert_eq!(sh.cabac_init_idc, Some(0));
         assert!(sh.data_offset_bits > 0);
     }

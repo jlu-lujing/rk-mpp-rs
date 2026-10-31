@@ -68,8 +68,8 @@ pub fn inverse(coeffs: &[i32], size: usize) -> Vec<i32> {
             }
             // First pass shift: log2(size) + 6 bits of growth
             let shift = if size == 4 { 0 } else { 6 };
-            tmp[i * size + j] = ((acc + if shift > 0 { 1 << (shift - 1) } else { 0 }) >> shift)
-                as i32;
+            tmp[i * size + j] =
+                ((acc + if shift > 0 { 1 << (shift - 1) } else { 0 }) >> shift) as i32;
         }
     }
     let mut out = vec![0i32; size * size];
@@ -81,8 +81,7 @@ pub fn inverse(coeffs: &[i32], size: usize) -> Vec<i32> {
                 acc += tmp[i * size + k] as i64 * t[k][j] as i64;
             }
             let shift = if size == 4 { 6 } else { 12 };
-            out[i * size + j] =
-                ((acc + (1 << (shift - 1))) >> shift) as i32;
+            out[i * size + j] = ((acc + (1 << (shift - 1))) >> shift) as i32;
         }
     }
     out

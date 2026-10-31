@@ -1,0 +1,27 @@
+--- a/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
++++ b/mpp/hal/rkdec/vp9d/hal_vp9d_vdpu34x.c
+@@ -1091,3 +1091,24 @@
+     if (ret)
+         mpp_err_f("poll cmd failed %d\n", ret);
+ 
++    if (getenv("VP9_HW_CONTEXT_DUMP")) {
++        static RK_U32 dump_index;
++        DXVA_PicParams_VP9 *pic_param =
++            (DXVA_PicParams_VP9 *)task->dec.syntax.data;
++        MppBuffer prob =
++            hw_ctx->prob_loop_base[pic_param->frame_context_idx];
++        char path[256];
++        FILE *fp;
++
++        mpp_buffer_sync_begin(prob);
++        snprintf(path, sizeof(path), "%s/hw_context_%02d.bin",
++                 getenv("VP9_HW_CONTEXT_DUMP"), dump_index);
++        fp = fopen(path, "wb");
++        if (fp) {
++            fwrite(mpp_buffer_get_ptr(prob), 1, PROB_SIZE, fp);
++            fclose(fp);
++        }
++        mpp_buffer_sync_end(prob);
++        dump_index++;
++    }
++

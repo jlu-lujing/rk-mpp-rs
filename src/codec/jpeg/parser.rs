@@ -85,7 +85,10 @@ pub struct JpegInfo {
 impl JpegInfo {
     /// Sampling factors of the luma component, e.g. (2, 2) for 4:2:0.
     pub fn luma_sampling(&self) -> (u8, u8) {
-        self.components.first().map(|c| (c.h, c.v)).unwrap_or((1, 1))
+        self.components
+            .first()
+            .map(|c| (c.h, c.v))
+            .unwrap_or((1, 1))
     }
 
     pub fn is_420(&self) -> bool {
@@ -356,7 +359,11 @@ mod tests {
         let info = parse(&data).unwrap();
         assert_eq!((info.width, info.height), (640, 640));
         assert_eq!(info.components.len(), 3);
-        assert!(info.is_420(), "bus.jpg should be 4:2:0, sampling {:?}", info.luma_sampling());
+        assert!(
+            info.is_420(),
+            "bus.jpg should be 4:2:0, sampling {:?}",
+            info.luma_sampling()
+        );
         assert!(info.quant[0].is_some());
         assert!(info.ac[0].as_ref().unwrap().symbol_count() > 0);
         assert!(info.entropy_start < info.entropy_end);
@@ -365,10 +372,15 @@ mod tests {
 
     #[test]
     fn parses_coco_444() {
-        let Ok(data) = std::fs::read(COCO) else { return };
+        let Ok(data) = std::fs::read(COCO) else {
+            return;
+        };
         let info = parse(&data).unwrap();
         assert_eq!((info.width, info.height), (640, 436));
         assert!(info.is_444(), "sampling {:?}", info.luma_sampling());
-        assert_eq!(info.entropy_end, data.len().saturating_sub(2).min(info.entropy_end));
+        assert_eq!(
+            info.entropy_end,
+            data.len().saturating_sub(2).min(info.entropy_end)
+        );
     }
 }

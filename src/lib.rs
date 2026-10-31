@@ -3,10 +3,9 @@
 //! The C API at the bottom is what `rknn-fastinfer` links against; the modules
 //! are usable directly from Rust.
 
-
 pub mod codec;
-pub mod reference;
 pub mod hal;
+pub mod reference;
 pub mod scale;
 pub mod service;
 
@@ -44,13 +43,13 @@ impl Decoder {
         let mut table =
             DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false).map_err(|e| e.to_string())?;
         table.as_mut_slice()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
-        let mut stream =
-            DmaBuf::alloc("system", data.len(), false).map_err(|e| e.to_string())?;
+        let mut stream = DmaBuf::alloc("system", data.len(), false).map_err(|e| e.to_string())?;
         stream.as_mut_slice()[..data.len()].copy_from_slice(&data);
 
-        let aw = (info.width + 15) / 16 * 16;
-        let ah = (info.height + 15) / 8 * 8;
-        let output = DmaBuf::alloc("system", aw * ah * 3, false).map_err(|e| e.to_string())?;
+        let output_geometry = decode::geometry(&info, true, decode::JpegDownscale::Disabled)
+            .map_err(|e| e.to_string())?;
+        let output = DmaBuf::alloc("system", output_geometry.frame_size, false)
+            .map_err(|e| e.to_string())?;
 
         let (regs, geom) = decode::build(&decode::Job {
             info: &info,
@@ -59,6 +58,7 @@ impl Decoder {
             stream_len: data.len(),
             output_fd: output.fd(),
             rgb: true,
+            downscale: decode::JpegDownscale::Disabled,
         })
         .map_err(|e| e.to_string())?;
 
@@ -86,16 +86,20 @@ impl Decoder {
         self.svc
             .poll_hw_finish()
             .map_err(|e| format!("poll: {e}"))?;
-        let _ = self.output.sync_read_begin();
-        let g = self.scaler.letterbox_strided(
+        self.output
+            .sync_read_begin()
+            .map_err(|e| format!("dma-buf read sync: {e}"))?;
+        let geometry = self.scaler.letterbox_strided(
             self.output.as_slice(),
             self.geom.stride_bytes,
             self.geom.out_width,
             self.geom.out_height,
             dst,
         );
-        let _ = self.output.sync_read_end();
-        Ok((g.pad_left, g.pad_top, g.scale))
+        self.output
+            .sync_read_end()
+            .map_err(|e| format!("dma-buf read sync end: {e}"))?;
+        Ok((geometry.pad_left, geometry.pad_top, geometry.scale))
     }
 
     pub fn src_size(&self) -> (usize, usize) {
