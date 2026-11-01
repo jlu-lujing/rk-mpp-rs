@@ -4,6 +4,7 @@
 //! describing a command, a size and a user pointer. Definitions are ported from
 //! rockchip-linux/mpp: `osal/inc/mpp_service.h`, `osal/inc/mpp_dev_defs.h`.
 
+pub mod buffer_pool;
 pub mod dma_heap;
 pub mod task_queue;
 
