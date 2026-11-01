@@ -2,13 +2,13 @@
 //!
 //! M8 opens with the smallest honest step the H.264 encoder took before it: one
 //! IDR picture at a fixed QP. This module builds the VEPU580 register file for
-//! that picture by *deriving* every field from the C source
-//! (`mpp/hal/rkenc/h265e/hal_h265e_vepu580.c`) word by word, rather than replaying
-//! a captured job. There is deliberately no recorded image yet: the byte oracle is
-//! an on-board tracer capture the orchestrator owns (`mpi_enc_test -t 9 -rc 2`),
-//! and until that template exists the only claim this file can make is per-field
-//! equality with `hal_h265e_v580_gen_regs` and its helpers, which the unit tests
-//! below lock. Byte-for-byte agreement is decided on the board.
+//! that picture from the C source (`mpp/hal/rkenc/h265e/hal_h265e_vepu580.c`), one
+//! field at a time. The image now *starts* from a captured job
+//! (`h265e_vepu580_template`: the vintage's `mpi_enc_test -t 16777220 -rc 2` trace)
+//! and the derivation below overwrites what the C computes from the geometry, the
+//! QP and the slice syntax. That is the lineage the H.264 encoder took: the tuning
+//! windows have no public formula, so they are recorded until a per-field
+//! derivation exists for them.
 //!
 //! What is derived here is the part of `gen_regs` the source computes from the
 //! picture geometry, the QP and the slice/parameter-set syntax: the control
@@ -19,10 +19,11 @@
 //! `rc_min/max_qp`, the `madi`/`md_sad` thresholds, `chrm_klut_ofst`,
 //! `qpmap_mode`).
 //!
-//! What is *not* filled: the tuning windows (`wgt`, `rdo`, `osd`) and the
+//! What is *not* derived yet: the tuning windows (`wgt`, `rdo`, `osd`) and the
 //! AQ/KLUT/LAMD byte tables inside RC-lookup. In H.264 those are the recorded-image
-//! replay (the "cime/rime corner" that stays open); for H.265 with no capture they
-//! are left zero, which is why this module is not yet a submit-capable encoder.
+//! replay (the "cime/rime corner"); here they come from the captured template, which
+//! is why this module is not yet submit-capable: the address words in the template
+//! still belong to the oracle's buffers.
 //!
 //! The H.265 job writes six windows, not the seven of an H.264 job. The vintage's
 //! `H265eV580RegSet` is control, base, rc_klut, wgt, rdo, osd (plus dbg, which is
@@ -38,6 +39,7 @@
 //! not.
 
 use super::h265e_regs as regs;
+use super::h265e_vepu580_template as template;
 
 pub const REFERENCE_WIDTH: usize = 320;
 pub const REFERENCE_HEIGHT: usize = 240;
@@ -112,6 +114,20 @@ impl Default for RegisterFile {
 }
 
 impl RegisterFile {
+    /// The captured job: the six windows of the oracle's fixed-QP IDR. This is the
+    /// image `build_registers` derives on top of, because the tuning windows and the
+    /// byte tables have no public formula in the C.
+    pub fn recorded() -> Self {
+        Self {
+            ctl: template::CTL_WORDS,
+            base: template::BASE_WORDS,
+            rc_klut: template::RC_KLUT_WORDS,
+            wgt: template::WGT_WORDS,
+            rdo: template::RDO_WORDS,
+            osd: template::OSD_WORDS,
+        }
+    }
+
     /// The words backing one section name from [`regs::SECTIONS`]. `None` names a
     /// section the register map declares and this struct does not carry: the caller
     /// gets an error naming the section rather than a word that silently goes
@@ -211,7 +227,7 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     if job.width == 0 || job.height == 0 {
         return Err("H.265 register file needs a non-zero picture".into());
     }
-    let mut file = RegisterFile::default();
+    let mut file = RegisterFile::recorded();
 
     // ---- control window (gen_regs) ----
     // enc_strt: lkt_num 0, vepu_cmd RKV_ENC_MODE(0); enc_clr both 0 -> left 0.
@@ -280,42 +296,17 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     file.set(&regs::BASE_RC_QP_RC_MIN_QP, job.qp)?;
     // rc_cfg rc_en/aq_en stay 0 (memset) - the FIXQP branch never sets them.
 
-    // The sixteen roi_qthd* rows, written unconditionally below the branch from
-    // rc_cfg->quality_min/quality_max.
-    for (field, bound) in [
-        (&regs::RC_ROI_QTHD0_QPMIN_AREA0, job.qp_min),
-        (&regs::RC_ROI_QTHD0_QPMAX_AREA0, job.qp_max),
-        (&regs::RC_ROI_QTHD0_QPMIN_AREA1, job.qp_min),
-        (&regs::RC_ROI_QTHD0_QPMAX_AREA1, job.qp_max),
-        (&regs::RC_ROI_QTHD0_QPMIN_AREA2, job.qp_min),
-        (&regs::RC_ROI_QTHD1_QPMAX_AREA2, job.qp_max),
-        (&regs::RC_ROI_QTHD1_QPMIN_AREA3, job.qp_min),
-        (&regs::RC_ROI_QTHD1_QPMAX_AREA3, job.qp_max),
-        (&regs::RC_ROI_QTHD1_QPMIN_AREA4, job.qp_min),
-        (&regs::RC_ROI_QTHD1_QPMAX_AREA4, job.qp_max),
-        (&regs::RC_ROI_QTHD2_QPMIN_AREA5, job.qp_min),
-        (&regs::RC_ROI_QTHD2_QPMAX_AREA5, job.qp_max),
-        (&regs::RC_ROI_QTHD2_QPMIN_AREA6, job.qp_min),
-        (&regs::RC_ROI_QTHD2_QPMAX_AREA6, job.qp_max),
-        (&regs::RC_ROI_QTHD2_QPMIN_AREA7, job.qp_min),
-        (&regs::RC_ROI_QTHD3_QPMAX_AREA7, job.qp_max),
-    ] {
-        file.set(field, bound)?;
-    }
-    file.set(&regs::RC_ROI_QTHD3_QPMAP_MODE, 1)?; // codec->qpmap_mode == 1
-
-    // The RC-lookup rows global_cfg_set hard-wires for an intra picture, independent
-    // of the tuning tables: chrm_klut_ofst 0 for INTRA_FRAME, the madi/md_sad
-    // threshold triples.
+    // The sixteen `roi_qthd` rows and the `madi`/`md_sad` threshold triples are
+    // *not* written here. `vepu580_h265_set_rc_regs` writes them in its else branch,
+    // the non-FIXQP one (`hal_h265e_vepu580.c` from the `roi_qthd0.qpmin_area0`
+    // assignment onward); the FIXQP branch above it touches only `pic_qp`, `sli_qp`
+    // and the two `rc_qp` bounds. The H.264 HAL writes the rows unconditionally, and
+    // carrying that across put 26s into four words the traced job leaves zero.
+    // `global_cfg_set` does set `madi_thd`/`md_sad_thd` to 25 and 20/30/40, but the
+    // traced FIXQP job carries 4/9/15 in both words - a difference that is recorded
+    // rather than explained (see "what the capture says" in ROADMAP) and that the
+    // template therefore keeps.
     file.set(&regs::RC_KLUT_OFST_CHRM_KLUT_OFST, 0)?;
-    file.set(&regs::RC_MADI_CFG_MADI_MODE, 0)?;
-    file.set(&regs::RC_MADI_CFG_MADI_THD, 25)?;
-    file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD0, 20)?;
-    file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD1, 30)?;
-    file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD2, 40)?;
-    file.set(&regs::RC_MADI_THD_MADI_THD0, 25)?;
-    file.set(&regs::RC_MADI_THD_MADI_THD1, 35)?;
-    file.set(&regs::RC_MADI_THD_MADI_THD2, 45)?;
 
     // ---- H.265 syntax block (set_slice_regs / gen_regs) ----
     // reg0232 rdo_cfg: chrm_spcl 1, cu_inter_e 0x06db, cu_intra_e 0xf, ccwa_e 1,
@@ -340,7 +331,10 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     // reg0238 synt_pps: from syn->pp.
     file.set(&regs::H265_REG0238_SYNT_PPS_CBC_INIT_PRSNT_FLG, 1)?; // cabac_init_present
     file.set(&regs::H265_REG0238_SYNT_PPS_PIC_INIT_QP, 26)?; // init_qp_minus26 + 26
-    file.set(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_EN, 1)?; // useDQP
+                                                             // FIXQP leaves `cu_qp_dlt_en` clear, the same rate-control rule the PPS
+                                                             // writer follows: `h265e_set_pps` writes `m_useDQP = (rc_mode != FIXQP)`. The
+                                                             // traced job's `reg0238_synt_pps` has the bit clear; setting it here shifted a
+                                                             // word the oracle writes as 0x00220d40 to 0x00222d40.
     file.set(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_DEPTH, 0)?; // diff_cu_qp_delta_depth
     file.set(&regs::H265_REG0238_SYNT_PPS_LST_MDFY_PRSNT_FLG, 1)?; // lists_modification
                                                                    // loop_filter_across_tiles default is on (`!lpf_acs_tile_disable`).
@@ -423,16 +417,19 @@ mod tests {
     }
 
     #[test]
-    fn roi_qthd_rows_collapse_to_the_fixed_qp() {
+    fn roi_qthd_rows_stay_clear_for_fixed_qp() {
+        // The H.264 HAL writes these sixteen rows unconditionally; the H.265 HAL
+        // writes them in the non-FIXQP branch only, and the traced FIXQP job has
+        // every one of them clear.
         let file = reference_idr(26);
         for field in [
             &regs::RC_ROI_QTHD0_QPMIN_AREA0,
             &regs::RC_ROI_QTHD0_QPMAX_AREA0,
             &regs::RC_ROI_QTHD3_QPMAX_AREA7,
         ] {
-            assert_eq!(file.get(field).unwrap(), 26, "{}", field.name);
+            assert_eq!(file.get(field).unwrap(), 0, "{}", field.name);
         }
-        assert_eq!(file.get(&regs::RC_ROI_QTHD3_QPMAP_MODE).unwrap(), 1);
+        assert_eq!(file.get(&regs::RC_ROI_QTHD3_QPMAP_MODE).unwrap(), 0);
     }
 
     #[test]
@@ -464,7 +461,7 @@ mod tests {
         );
         assert_eq!(
             file.get(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_EN).unwrap(),
-            1
+            0
         );
         assert_eq!(
             file.get(&regs::H265_REG0238_SYNT_PPS_LST_MDFY_PRSNT_FLG)
@@ -485,13 +482,16 @@ mod tests {
             0x06db
         );
         assert_eq!(file.get(&regs::H265_REG0232_RDO_CFG_CHRM_SPCL).unwrap(), 1);
+        // `global_cfg_set` assigns 25 and 20/30/40 to these, but the traced FIXQP
+        // job carries 4/9/15 in both words. The template keeps the traced values
+        // until the difference is explained; nothing here writes over them.
         assert_eq!(file.get(&regs::RC_MADI_CFG_MADI_THD).unwrap(), 25);
-        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD0).unwrap(), 20);
-        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD1).unwrap(), 30);
-        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD2).unwrap(), 40);
-        assert_eq!(file.get(&regs::RC_MADI_THD_MADI_THD0).unwrap(), 25);
-        assert_eq!(file.get(&regs::RC_MADI_THD_MADI_THD1).unwrap(), 35);
-        assert_eq!(file.get(&regs::RC_MADI_THD_MADI_THD2).unwrap(), 45);
+        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD0).unwrap(), 4);
+        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD1).unwrap(), 9);
+        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD2).unwrap(), 15);
+        assert_eq!(file.get(&regs::RC_MADI_THD_MADI_THD0).unwrap(), 4);
+        assert_eq!(file.get(&regs::RC_MADI_THD_MADI_THD1).unwrap(), 9);
+        assert_eq!(file.get(&regs::RC_MADI_THD_MADI_THD2).unwrap(), 15);
         assert_eq!(file.get(&regs::RC_KLUT_OFST_CHRM_KLUT_OFST).unwrap(), 0);
     }
 
@@ -526,13 +526,17 @@ mod tests {
     }
 
     #[test]
-    fn tuning_windows_are_zero_until_the_template_lands() {
-        // The honest record of what this module does NOT yet fill. When the board
-        // capture lands these become the replay the H.264 encoder replays.
+    fn tuning_windows_come_from_the_recorded_job() {
+        // 374 and 807 words of weight and RDO tables the HAL writes without a public
+        // formula: recorded from the traced job, not zero.
         let file = reference_idr(26);
-        assert!(file.wgt.iter().all(|&w| w == 0));
-        assert!(file.rdo.iter().all(|&w| w == 0));
-        assert!(file.osd.iter().all(|&w| w == 0));
+        assert_eq!(file.wgt, template::WGT_WORDS);
+        assert_eq!(file.rdo, template::RDO_WORDS);
+        assert_eq!(file.osd, template::OSD_WORDS);
+        assert!(
+            file.wgt.iter().any(|&w| w != 0),
+            "the captured weight window is not blank"
+        );
     }
 
     /// The generated section table and this struct's arrays state the same hardware
@@ -593,6 +597,41 @@ mod tests {
     fn no_motion_info_surface_is_requested() {
         let file = reference_idr(26);
         assert_eq!(file.get(&regs::BASE_ENC_PIC_MEI_STOR).unwrap(), 0);
+    }
+
+    /// The whole register image against the captured job, word for word. Every
+    /// window matches except one bit: `enc_pic.mei_stor`, which the C harness sets
+    /// because it hands the encoder a motion-info buffer and this driver does not
+    /// allocate one - pointing the hardware at the oracle's buffer would be worse
+    /// than a known difference.
+    ///
+    /// This is the guard that makes the capture useful: change a derived field and
+    /// the failure names the word and both values instead of leaving a payload
+    /// mismatch to be found on the board.
+    #[test]
+    fn only_the_motion_info_bit_differs_from_the_captured_job() {
+        let derived = reference_idr(26);
+        let traced = RegisterFile::recorded();
+        let mut differences = Vec::new();
+        for ((name, first, ours), (traced_name, _, theirs)) in
+            derived.captured().iter().zip(traced.captured().iter())
+        {
+            assert_eq!(name, traced_name);
+            for (index, (a, b)) in ours.iter().zip(theirs.iter()).enumerate() {
+                if a != b {
+                    differences.push((first + index, *a, *b));
+                }
+            }
+        }
+        assert_eq!(
+            differences.len(),
+            1,
+            "expected only mei_stor to differ, got {differences:?}"
+        );
+        let (word, ours, theirs) = differences[0];
+        assert_eq!(word, 192, "the differing word is enc_pic");
+        assert_eq!(ours & (1 << 3), 0, "we request no motion-info surface");
+        assert_eq!(theirs & (1 << 3), 1 << 3, "the harness passes one");
     }
 
     #[test]

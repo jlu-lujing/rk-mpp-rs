@@ -757,8 +757,33 @@ in what order the evidence gets produced.
        `tests/data/h265e_c_fixqp_qp26_{320x240,640x480,1280x720}.265` (860, 1618 and
        3585 bytes) and `parameter_sets_match_the_recorded_c_streams` compares the
        prefix on the host, so this gate no longer needs the board to stay honest.
-- [ ] H.265 (rkvenc): the IDR payload, tiles/WPP/SAO, rate control and P
-      pictures - all of which depend on the board capture named above.
+       **The register job is captured, and the derived image matches it to one
+       bit.** The same `mpi_enc_test` line under `/tmp/mpp_trace.so` writes six
+       windows of 24, 94, 57, 374, 807 and 288 words - the six of
+       `H265eV580RegSet`, with no SCL - which confirms the section table
+       independently of the header. `tools/gen_h265e_vepu580_template.py` turns the
+       trace into `src/hal/h265e_vepu580_template.rs`, and `hal::h265e` now starts
+       from that template and derives on top of it, the lineage H.264 used.
+       `tools/h265e_trace_diff.py` diffs the two by named field: **1026** differing
+       words from the zero-filled starting point, **8** once the template lands, and
+       **1** today - `enc_pic.mei_stor`, word 192 bit 3, because the C harness
+       hands the encoder a motion-info buffer and this driver has none to point at.
+       CTL, BASE, RC_KLUT, WGT, RDO and OSD are otherwise word-for-word equal, and
+       `only_the_motion_info_bit_differs_from_the_captured_job` holds that line so a
+       changed field fails with the word and both values.
+       The capture corrected three H.264 habits carried across: the sixteen
+       `roi_qthd` rows and the `madi`/`md_sad` threshold triples belong to the
+       non-FIXQP branch of `vepu580_h265_set_rc_regs`, `synt_pps.cu_qp_dlt_en`
+       follows the same `rc_mode != FIXQP` rule as the PPS writer, and the rows
+       carry no picture QP in a fixed-QP job. The `madi`/`md_sad` words keep the
+       traced 4/9/15 although `global_cfg_set` assigns 25 and 20/30/40; the
+       assignment is recorded as unexplained rather than overwritten.
+       Still missing for an IDR payload: a submit path that owns its buffers (the
+       template's address words are the oracle's) and the motion-info surface if the
+       image is to equal the capture outright.
+- [ ] H.265 (rkvenc): the IDR payload (submit path and buffer addresses),
+      tiles/WPP/SAO, rate control and P pictures. The register image is captured and
+      matches the oracle to one bit; no IDR has been submitted yet.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,

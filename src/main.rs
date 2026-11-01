@@ -1111,6 +1111,49 @@ fn main() {
         }
         return;
     }
+    if args.len() > 1 && args[1] == "h265-regs" {
+        let width = args.get(2).and_then(|s| s.parse::<usize>().ok());
+        let height = args.get(3).and_then(|s| s.parse::<usize>().ok());
+        let (Some(width), Some(height)) = (width, height) else {
+            eprintln!("usage: rk-mpp-rs h265-regs <width> <height> [qp]");
+            std::process::exit(2);
+        };
+        let qp = args
+            .get(4)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(26);
+        let job = h265e::IdrJob {
+            width,
+            height,
+            qp,
+            qp_min: qp,
+            qp_max: qp,
+            input_fd: -1,
+            output_fd: -1,
+            current_fd: -1,
+            current_thumb_fd: -1,
+            reference_fd: -1,
+            reference_thumb_fd: -1,
+        };
+        match h265e::build_registers(&job) {
+            Ok(registers) => {
+                // One header line per section - `name first_word count` - then the
+                // words, eight per line. `tools/h265e_trace_diff.py` reads this.
+                for (name, first, words) in registers.captured() {
+                    println!("{name} {first} {}", words.len());
+                    for row in words.chunks(8) {
+                        let hex: Vec<String> = row.iter().map(|w| format!("{w:08x}")).collect();
+                        println!("{}", hex.join(" "));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("H.265 register image failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "jpeg-enc" {
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
