@@ -23,6 +23,7 @@ fn encode_h264(
     width: usize,
     height: usize,
     qp_init: u8,
+    quality_auto: bool,
     profile: &str,
     frames: usize,
     gop: u32,
@@ -37,6 +38,7 @@ fn encode_h264(
         std::io::BufReader::new(std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?);
     let mut config = h264_syntax::EncoderConfig::new(width, height);
     config.qp_init = qp_init;
+    config.quality_auto = quality_auto;
     config.gop = gop.max(1);
     // Same mapping `mpi_enc_test` uses: CABAC from Main upwards, transform-8x8
     // only at High.
@@ -512,12 +514,20 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
-        // an existing invocation keeps producing the same bytes.
-        let qp_init = args.get(6).and_then(|s| s.parse::<u8>().ok()).unwrap_or(26);
+        // an existing invocation keeps producing the same bytes. `auto` (or `-1`)
+        // hands the first picture's QP to the rate control instead, the way a
+        // caller who never set `rc:qp_init` leaves it in MPP.
+        let (qp_init, quality_auto) = match args.get(6).map(String::as_str) {
+            Some("auto") | Some("-1") => (26, true),
+            _ => (
+                args.get(6).and_then(|s| s.parse::<u8>().ok()).unwrap_or(26),
+                false,
+            ),
+        };
         let profile = args.get(7).map(String::as_str).unwrap_or("baseline");
         let frames = args
             .get(8)
@@ -550,12 +560,28 @@ fn main() {
             }
         });
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max]");
             std::process::exit(2);
         }
-        match encode_h264(src, dst, width, height, qp_init, profile, frames, gop, bps) {
+        let qp_desc = if quality_auto {
+            "auto".to_string()
+        } else {
+            qp_init.to_string()
+        };
+        match encode_h264(
+            src,
+            dst,
+            width,
+            height,
+            qp_init,
+            quality_auto,
+            profile,
+            frames,
+            gop,
+            bps,
+        ) {
             Ok((bytes, header_bytes, payload_bytes, ms)) => println!(
-                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_init} gop {gop}, {ms:.3} ms"
+                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_desc} gop {gop}, {ms:.3} ms"
             ),
             Err(e) => {
                 eprintln!("H.264 encode failed: {e}");

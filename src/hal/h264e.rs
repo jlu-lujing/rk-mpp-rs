@@ -1447,10 +1447,18 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
         min_i_bit_prop: 10,
         max_i_bit_prop: 30,
         stats_time: 3,
-        quality_init: i32::from(config.qp_init),
+        // A caller that never set an initial quality says so with
+        // `quality_auto`, and `rc_model_v2_hal_start` derives the first QP from
+        // the bit budget; anything at or below zero reaches the same branch.
+        quality_init: if config.quality_auto {
+            -1
+        } else {
+            i32::from(config.qp_init)
+        },
         quality_min: 8,
         quality_max: 48,
         i_quality_delta: 2,
+        total_mb: (config.coded_width() / 16) as i32 * (config.coded_height() / 16) as i32,
         mode: match config.rc_mode {
             RcMode::Vbr => rc_model::Mode::Vbr,
             RcMode::Avbr => rc_model::Mode::Avbr,

@@ -63,6 +63,11 @@ pub struct EncoderConfig {
     pub fps_num: u32,
     pub fps_den: u32,
     pub vui: bool,
+    /// The caller left the initial quality unset - `rc:qp_init <= 0` in MPP's own
+    /// terms. Under rate control the first intra picture's QP is then derived from
+    /// its bit budget (`cal_first_i_start_qp`); under fixed QP the reference forces
+    /// 26 and logs about it, which is what `qp_init` already carries in that case.
+    pub quality_auto: bool,
 }
 
 /// The bit rate target a caller that says nothing gets.
@@ -119,6 +124,7 @@ impl EncoderConfig {
             fps_num: 30,
             fps_den: 1,
             vui: true,
+            quality_auto: false,
         }
     }
 

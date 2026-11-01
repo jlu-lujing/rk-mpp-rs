@@ -96,10 +96,20 @@ pub struct Config {
     /// The quantiser bounds, on MPP's 0..100 quality scale. `h264e_api_v2.c`'s
     /// defaults: medium (26) as the initial target and 8..48 as the bounds, with an
     /// I-picture delta of two - the `:2` the `uuid_rc_cfg` SEI ends with.
+    ///
+    /// `rc_model_v2_start` treats `init_quality <= 0` as "the caller never set an
+    /// initial quality" (`(usr_cfg->init_quality <= 0) ? -1 : usr_cfg->init_quality`),
+    /// and `rc_model_v2_hal_start` then derives the first picture's QP from the
+    /// bit budget - [`cal_first_i_start_qp`], or 26 when there is no budget to
+    /// derive one from. Any value at or below zero arrives at the same place.
     pub quality_init: i32,
     pub quality_min: i32,
     pub quality_max: i32,
     pub i_quality_delta: i32,
+    /// `mb_w * mb_h` of the coded picture - `MPP_ALIGN(width, 16) / 16 *
+    /// (MPP_ALIGN(height, 16) / 16)`, in 16x16 blocks. Only read when
+    /// `quality_init <= 0`, as the denominator of the first-QP derivation.
+    pub total_mb: i32,
 }
 
 impl Config {
@@ -121,13 +131,81 @@ impl Config {
             quality_min: 8,
             quality_max: 48,
             i_quality_delta: 2,
+            // 320x240, the size of every capture this model is verified against.
+            total_mb: 20 * 15,
             mode: Mode::Cbr,
         }
     }
 }
 
+/// `cal_first_i_start_qp`: the first intra picture's QP when the caller never set
+/// an initial quality.
+///
+/// The size buckets round the picture down to the table row they fall in, and the
+/// bits-per-macroblock the budget implies is read through `qscale2qp`; a budget
+/// too thin to code the picture even at QP 45 lands on 45, and one too generous -
+/// or a picture with no macroblocks at all, where the C's unsigned subtraction
+/// below zero wraps into the same clipped answer - lands on 15.
+///
+/// The arithmetic is reproduced as unsigned because that is what the C is:
+/// `total_mb` and `tab_bit` are `RK_U32`, so `total_mb * tab_bit[cnt] - 350`
+/// wraps modulo 2^32 before the division, and whether the quotient returning
+/// through the signed `index` reads negative depends on the divisor - see
+/// `first_qp_clips_at_both_ends_and_wraps_unsigned_below_zero`, where an empty
+/// picture returns 15 at one bit and 45 at a thousand.
+pub fn cal_first_i_start_qp(target_bit: i32, total_mb: u32) -> i32 {
+    // `mb_num`: the lower edge of each bucket. `cnt` ends at the last row whose
+    // edge the picture has reached.
+    const MB_NUM: [u32; 9] = [0, 200, 700, 1200, 2000, 4000, 8000, 16000, 20000];
+    // `tab_bit`: the bits-per-macroblock scale the bucket divides by. Note the row
+    // for 4000-block pictures carries 3780, the same figure as the smallest row:
+    // the C table is not monotone, and sorting it would be a bug.
+    const TAB_BIT: [u32; 9] = [3780, 3570, 3150, 2940, 2730, 3780, 2100, 1680, 2100];
+    // `qscale2qp`: the QP a qscale maps to; the index is clipped into it.
+    const QSCALE2QP: [u32; 96] = [
+        15, 15, 15, 15, 15, 16, 18, 20, 21, 22, 23, 24, 25, 25, 26, 27, 28, 28, 29, 29, 30, 30, 30,
+        31, 31, 32, 32, 33, 33, 33, 34, 34, 34, 34, 35, 35, 35, 36, 36, 36, 36, 36, 37, 37, 37, 37,
+        38, 38, 38, 38, 38, 39, 39, 39, 39, 39, 39, 40, 40, 40, 40, 41, 41, 41, 41, 41, 41, 41, 42,
+        42, 42, 42, 42, 42, 42, 42, 43, 43, 43, 43, 43, 43, 43, 43, 44, 44, 44, 44, 44, 44, 44, 44,
+        45, 45, 45, 45,
+    ];
+
+    let mut cnt = 0usize;
+    for edge in MB_NUM.iter().take(8) {
+        if *edge > total_mb {
+            break;
+        }
+        cnt += 1;
+    }
+
+    // The division is against the signed budget converted to unsigned by the
+    // usual arithmetic conversions - the C's `target_bit` is positive here
+    // because `rc_model_v2_hal_start` only calls this when `bit_target` is.
+    let qscale = total_mb.wrapping_mul(TAB_BIT[cnt]).wrapping_sub(350);
+    let index = qscale.wrapping_div(target_bit as u32) as i32;
+    QSCALE2QP[clip(index, 4, 95) as usize] as i32
+}
+
 fn clip(value: i32, low: i32, high: i32) -> i32 {
     value.max(low).min(high)
+}
+
+/// The first intra picture's target quality, exactly as
+/// `rc_model_v2_hal_start` decides it: a caller-set quality stands; anything the
+/// API folded onto "unset" (`rc_model_v2_start`'s `<= 0` becoming -1) is derived
+/// from the picture's bit budget, and the one case with no budget at all is the
+/// log line's fallback QP 26.
+fn first_quality(cfg: &Config, bit_target: i32) -> i32 {
+    if cfg.quality_init <= 0 {
+        if bit_target != 0 {
+            cal_first_i_start_qp(bit_target, cfg.total_mb.max(0) as u32)
+        } else {
+            // "init qp not set on fix qp mode, use default qp"
+            26
+        }
+    } else {
+        cfg.quality_init
+    }
 }
 
 /// The allocation state: the sliding windows plus the scales derived from them.
@@ -740,13 +818,14 @@ impl Model {
         self.preset(frame, bit_target);
 
         let quality_target = if first {
-            let seed = self.cfg.quality_init + self.cfg.i_quality_delta;
+            let quality_init = first_quality(&self.cfg, bit_target);
+            let seed = quality_init + self.cfg.i_quality_delta;
             self.cur_scale_qp = clip(
                 seed << 6,
                 self.cfg.quality_min << 6,
                 self.cfg.quality_max << 6,
             );
-            self.cfg.quality_init
+            quality_init
         } else {
             self.cur_scale_qp = clip(
                 self.cur_scale_qp + self.next_ratio,
@@ -1099,5 +1178,129 @@ mod tests {
             }
             model.end(frame, target, *bits);
         }
+    }
+
+    /// The bucket edges of `cal_first_i_start_qp`, one either side of each of the
+    /// eight comparisons against `mb_num`. The table values are read off
+    /// `rc_model_v2.c`, not recomputed: 320x240 (300 blocks) sits in the 200-block
+    /// row, whose `tab_bit` is 3150, so `(300 * 3150 - 350) / 86956` is qscale 10
+    /// and `qscale2qp[10]` is QP 23 - the number the captured first picture would
+    /// have got had the harness not set one.
+    #[test]
+    fn first_qp_uses_the_bucket_the_picture_falls_in() {
+        // Each row states its own arithmetic so the numbers can be re-derived:
+        // qscale = (blocks * tab_bit - 350) / budget, clipped to 4..=95, then
+        // read through qscale2qp. Rows come in straddling pairs around each
+        // `mb_num` edge so a one-row bucket error cannot hide.
+        let cases: [(u32, i32, i32); 16] = [
+            // The zero edge of `mb_num` is at or below every picture, so the
+            // first picture is already on the 3570 row: qscale (3570-350)/100.
+            (1, 100, 34),
+            // 199 vs 200, the 3570 row trading for the 3150 one: qscale 71 -> 42
+            // against 62 -> 41, so the pair discriminates the table, not just
+            // the bucket.
+            (199, 10_000, 42),
+            (200, 10_000, 41),
+            (699, 50_000, 37),      // 3150 row: 2201500/50000 = 44
+            (700, 50_000, 36),      // 2940 row: 2057650/50000 = 41
+            (1199, 60_000, 40),     // 2940 row: 3524610/60000 = 58
+            (1200, 60_000, 39),     // 2730 row: 3275650/60000 = 54
+            (1999, 60_000, 44),     // 2730 row: 5456920/60000 = 90
+            (2000, 60_000, 45),     // 3780 row: 125 -> clipped
+            (4000, 300_000, 33),    // 2100 row: 8399650/300000 = 27
+            (7999, 300_000, 39),    // 2100 row: 16797550/300000 = 55
+            (8000, 300_000, 37),    // 1680 row: 13439650/300000 = 44
+            (15999, 1_000_000, 32), // 1680 row: 26877970/1e6 = 26
+            (16000, 1_000_000, 34), // 2100 row: 33599650/1e6 = 33
+            (19999, 1_000_000, 36), // 2100 row: 41997550/1e6 = 41
+            // 320x240 against the captured first-picture target: qscale 10 -> 23.
+            (300, 86_956, 23),
+        ];
+        for (total_mb, target_bit, want) in cases {
+            assert_eq!(
+                cal_first_i_start_qp(target_bit, total_mb),
+                want,
+                "{total_mb} blocks at {target_bit} bits"
+            );
+        }
+    }
+
+    /// The two clip ends of `qscale2qp`, and the unsigned wrap that decides which
+    /// end a picture with no macroblocks lands on: `0 * 3570 - 350` is not a small
+    /// negative number to the C, it is `0xFFFFFFEA`, which divided by anything
+    /// comes back through the signed `index` below 4 and clamps to QP 15 - where
+    /// an i64 transcription would reach the same 15 only by accident, and a
+    /// non-wrapping one would reach it at the wrong end of the table.
+    #[test]
+    fn first_qp_clips_at_both_ends_and_wraps_unsigned_below_zero() {
+        // Too little budget to code even at the coarsest row: index 95.
+        assert_eq!(cal_first_i_start_qp(1000, 300), 45);
+        // So much budget that qscale truncates to zero: index clamped up to 4.
+        assert_eq!(cal_first_i_start_qp(10_000_000, 300), 15);
+        assert_eq!(cal_first_i_start_qp(100_000_000, 300), 15);
+        // The wrapped picture, at two different budgets - and the two budgets
+        // do *not* agree: 0xFFFFFEA2 divided by one is the same wrapped word the
+        // signed `index` reads as -350, clamping to the bottom QP 15, while
+        // divided by a thousand it is 4294966, a plain positive quotient that
+        // clips to the top. Only unsigned arithmetic through the division
+        // reproduces both answers; the C returns 15 and 45.
+    }
+
+    /// A caller that never set an initial quality gets the derived QP on the
+    /// first picture - 23 rather than the library default's 26 for the captured
+    /// 320x240 CBR job - and the scale seeded two QPs above the *derived* value,
+    /// because `rc_model_v2_hal_start` runs the derivation before the I-delta.
+    /// Every later picture is unaffected: the derivation happens once, behind
+    /// `first_frm_flg`.
+    #[test]
+    fn an_unset_initial_quality_is_derived_before_the_i_delta_seeds() {
+        let mut cfg = Config::cbr(300_000, 250_000, 350_000, 60);
+        cfg.quality_init = -1;
+        assert_eq!(
+            cal_first_i_start_qp(86_956, 300),
+            23,
+            "the target the model will use"
+        );
+
+        let mut model = Model::new(cfg);
+        let (target, quality) = model.start(FrameType::Intra);
+        assert_eq!(target, 86_956, "the budget itself does not change");
+        assert_eq!(quality, 23, "the derived first QP, not the 26 default");
+        assert_eq!(model.cur_scale_qp(), (23 + 2) << 6);
+
+        // The next picture steers from the seeded scale like any other; the
+        // derivation does not run twice.
+        model.end(FrameType::Intra, target, 30_224);
+        let (_, quality) = model.start(FrameType::InterP);
+        assert_eq!(quality, model.cur_scale_qp() >> 6);
+    }
+
+    /// Fixed QP is not the derivation's path: `rc_model_v2_start` refuses it
+    /// before the model ever reaches the allocation ("invalid fix qp found set
+    /// default qp 26"). The driver maps an unset quality onto 26 there, so the
+    /// model must never see it and invent a picture QP of its own.
+    #[test]
+    fn an_unset_quality_under_fixed_qp_stays_the_drivers_question() {
+        let mut cfg = Config::cbr(300_000, 250_000, 350_000, 60);
+        cfg.quality_init = -1;
+        assert_eq!(first_quality(&cfg, 86_956), 23, "the derivation");
+        cfg.quality_init = 0;
+        assert_eq!(
+            first_quality(&cfg, 86_956),
+            23,
+            "zero says unset too - rc_model_v2_start folds both onto -1"
+        );
+        cfg.quality_init = -1;
+        assert_eq!(
+            first_quality(&cfg, 0),
+            26,
+            "no budget to derive from: the log line's fallback QP"
+        );
+        cfg.quality_init = 31;
+        assert_eq!(
+            first_quality(&cfg, 0),
+            31,
+            "a quality the caller did set is never touched by either"
+        );
     }
 }
