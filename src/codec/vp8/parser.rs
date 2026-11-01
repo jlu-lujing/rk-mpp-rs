@@ -75,6 +75,24 @@ impl fmt::Display for Vp8Error {
     }
 }
 
+impl Vp8Error {
+    /// Whether the *stream* policy may skip this packet and try the next one.
+    ///
+    /// Every syntax error the VP8 front end raises is decided while reading one
+    /// picture's own packet: the reference parses each task from its frame tag,
+    /// and its parser state survives a failed task the same way ours does
+    /// (`found_key_frame` only ever becomes true, the probability state is
+    /// re-seeded by the next key frame). A packet we could not parse therefore
+    /// says nothing about the following one, so both error kinds are
+    /// per-packet failures, and only a container error or a broken hardware
+    /// job stops the stream. That is the whole policy, documented here because
+    /// `Decoder::decode_stream` implements exactly it and nothing else may
+    /// invent a different one.
+    pub fn recoverable(&self) -> bool {
+        true
+    }
+}
+
 impl std::error::Error for Vp8Error {}
 
 /// `vpBoolCoder_t`, including both refill paths.
@@ -495,24 +513,41 @@ impl Parser {
         let mut dct_partition_offsets = [0u32; MAX_DCT_PARTITIONS];
         {
             let mut base_offset = frame_tag_size + offset_to_dct_parts;
-            base_offset += 3 * ((1 << log2_dct_partitions) - 1);
-            let mut stream = &data[frame_tag_size as usize..];
-            stream = &stream[(offset_to_dct_parts as usize + if key_frame { 7 } else { 0 })..];
+            let size_fields = (1u32 << log2_dct_partitions) - 1;
+            base_offset += 3 * size_fields;
+            // A damaged packet can claim a DCT-partition table past its own
+            // end. With more than one partition C dereferences three bytes
+            // outside the copy of the packet before checking anything; the
+            // deterministic version is a stream error at the same point. With
+            // a single partition there is no table to read and C only applies
+            // its final length check, which is reproduced below.
+            let partition_area_start = frame_tag_size as usize
+                + offset_to_dct_parts as usize
+                + if key_frame { 7 } else { 0 };
+            let mut stream = data.get(partition_area_start..);
+            if size_fields > 0 && stream.is_none() {
+                return Err(Vp8Error::Truncated);
+            }
             let mut offset = 0u32;
-            for slot in dct_partition_offsets
-                .iter_mut()
-                .take((1 << log2_dct_partitions) - 1)
-            {
+            for slot in dct_partition_offsets.iter_mut().take(size_fields as usize) {
                 *slot = base_offset + offset;
-                let Some(part) = stream.get(..3) else {
+                let Some(rest) = stream else {
+                    return Err(Vp8Error::Truncated);
+                };
+                let Some(part) = rest.get(..3) else {
                     return Err(Vp8Error::Truncated);
                 };
                 offset +=
                     u32::from(part[0]) | (u32::from(part[1]) << 8) | (u32::from(part[2]) << 16);
-                stream = &stream[3..];
+                stream = rest.get(3..);
             }
-            let last = (1 << log2_dct_partitions) - 1;
+            let last = size_fields as usize;
             dct_partition_offsets[last] = base_offset + offset;
+            // `vp8hwdSetPartitionOffsets` returns MPP_ERR_STREAM unless the
+            // last partition still starts inside the packet.
+            if dct_partition_offsets[last] >= data.len() as u32 {
+                return Err(Vp8Error::Truncated);
+            }
         }
 
         self.width = width;

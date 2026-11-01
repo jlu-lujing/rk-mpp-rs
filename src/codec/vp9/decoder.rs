@@ -8,6 +8,44 @@ use crate::service::dma_heap::DmaBuf;
 use super::capability;
 use super::parser::{self, FrameKind, Header, Parser};
 
+/// Why one picture failed, typed so the stream policy can act on it. The
+/// policy itself is identical to the VP8 one and documented there: syntax
+/// failures drop their packet, hardware failures stop the stream.
+#[derive(Debug)]
+pub enum PacketError {
+    Syntax(parser::Vp9Error),
+    Hardware(std::io::Error),
+    Capability(String),
+    Internal(String),
+}
+
+impl std::fmt::Display for PacketError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PacketError::Syntax(error) => write!(f, "{error}"),
+            PacketError::Hardware(error) => write!(f, "hardware: {error}"),
+            PacketError::Capability(what) => write!(f, "capability: {what}"),
+            PacketError::Internal(what) => write!(f, "internal: {what}"),
+        }
+    }
+}
+
+/// One packet dropped by the stream policy, with the reason.
+#[derive(Debug)]
+pub struct DroppedPacket {
+    pub packet: usize,
+    pub reason: String,
+}
+
+/// The result of running the stream policy over a whole container; see the
+/// VP8 decoder for the policy text.
+#[derive(Debug, Default)]
+pub struct StreamOutcome {
+    pub pictures: Vec<Picture>,
+    pub dropped: Vec<DroppedPacket>,
+    pub stopped_early: bool,
+}
+
 pub const FRAME_ERR_DEC_INVALID: u32 = 0x10;
 pub const FRAME_ERR_DEC_HW_ERR: u32 = 0x100;
 
@@ -19,6 +57,7 @@ struct Reference {
 }
 
 /// One displayed VP9 picture.
+#[derive(Debug)]
 pub struct Picture {
     pub width: usize,
     pub height: usize,
@@ -35,6 +74,10 @@ pub struct Decoder {
     frames: Vec<Option<Frame>>,
     reference_map: [Option<Reference>; 8],
     next_poc: u32,
+    /// Packets ahead of the first key frame, dropped the way the C parser's
+    /// "no found key frame" path drops them, rather than failed the way the
+    /// pre-policy Rust code did.
+    pub dropped_before_key_frame: usize,
 }
 
 impl Decoder {
@@ -45,6 +88,7 @@ impl Decoder {
             frames: Vec::new(),
             reference_map: [None; 8],
             next_poc: 1,
+            dropped_before_key_frame: 0,
         })
     }
 
@@ -54,7 +98,50 @@ impl Decoder {
 
     /// Decode one VP9 packet. A superframe can display more than one picture.
     pub fn decode_packet(&mut self, packet: &[u8]) -> Result<Vec<Picture>, String> {
-        let frames = parser::split_superframe(packet).map_err(|error| error.to_string())?;
+        self.decode_packet_checked(packet)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Decode a whole IVF file under the same damage policy the VP8 decoder
+    /// documents: refused packets are recorded and skipped, hardware failures
+    /// stop the run, and the shape of the outcome is what the tests lock.
+    pub fn decode_stream(&mut self, data: &[u8]) -> StreamOutcome {
+        let mut outcome = StreamOutcome::default();
+        let ivf = match parser::parse_ivf(data) {
+            Ok(ivf) => ivf,
+            Err(error) => {
+                outcome.dropped.push(DroppedPacket {
+                    packet: usize::MAX,
+                    reason: format!("container: {error}"),
+                });
+                outcome.stopped_early = true;
+                return outcome;
+            }
+        };
+        for (index, frame) in ivf.frames.iter().enumerate() {
+            match self.decode_packet_checked(frame.data) {
+                Ok(pictures) => outcome.pictures.extend(pictures),
+                Err(PacketError::Syntax(error)) if error.recoverable() => {
+                    outcome.dropped.push(DroppedPacket {
+                        packet: index,
+                        reason: error.to_string(),
+                    });
+                }
+                Err(error) => {
+                    outcome.dropped.push(DroppedPacket {
+                        packet: index,
+                        reason: error.to_string(),
+                    });
+                    outcome.stopped_early = true;
+                    break;
+                }
+            }
+        }
+        outcome
+    }
+
+    fn decode_packet_checked(&mut self, packet: &[u8]) -> Result<Vec<Picture>, PacketError> {
+        let frames = parser::split_superframe(packet).map_err(PacketError::Syntax)?;
         let mut output = Vec::new();
         for frame in frames {
             if let Some(picture) = self.decode_frame(frame)? {
@@ -64,11 +151,17 @@ impl Decoder {
         Ok(output)
     }
 
-    fn decode_frame(&mut self, packet: &[u8]) -> Result<Option<Picture>, String> {
-        let parsed = self
-            .parser
-            .parse_frame(packet)
-            .map_err(|error| error.to_string())?;
+    fn decode_frame(&mut self, packet: &[u8]) -> Result<Option<Picture>, PacketError> {
+        let parsed = match self.parser.parse_frame(packet) {
+            Ok(parsed) => parsed,
+            // An inter frame before any key frame is the C decoder's "no found
+            // key frame" drop, not a damaged packet.
+            Err(parser::Vp9Error::MissingReference(0xff)) => {
+                self.dropped_before_key_frame += 1;
+                return Ok(None);
+            }
+            Err(error) => return Err(PacketError::Syntax(error)),
+        };
         if matches!(parsed.header.frame_kind, FrameKind::ShowExisting) {
             if std::env::var_os("RFI_VP9_TRACE").is_some() {
                 eprintln!(
@@ -81,8 +174,9 @@ impl Decoder {
         let compressed = parsed
             .compressed_header
             .as_ref()
-            .ok_or("missing VP9 compressed header")?;
-        capability::check(&parsed.header).map_err(|error| error.to_string())?;
+            .ok_or_else(|| PacketError::Internal("missing VP9 compressed header".into()))?;
+        capability::check(&parsed.header)
+            .map_err(|error| PacketError::Capability(error.to_string()))?;
         let poc = self.next_poc;
         if std::env::var_os("RFI_VP9_CONTEXT_DUMP").is_some() {
             let path = format!("/tmp/rk_mpp_rs_vp9_context_{poc:04}.bin");
@@ -129,17 +223,20 @@ impl Decoder {
             );
         }
 
-        let frame_index = self.allocate_frame(&parsed.header)?;
+        let frame_index = self
+            .allocate_frame(&parsed.header)
+            .map_err(PacketError::Hardware)?;
         let references = hardware_references(&parsed.header, &self.reference_map, &self.frames);
         let current = self.frames[frame_index]
             .as_ref()
-            .ok_or("VP9 frame allocation failed")?;
+            .ok_or_else(|| PacketError::Internal("VP9 frame allocation failed".into()))?;
 
         let padded_len = ((packet.len() + 15) & !15) + 0x80;
-        let mut stream = DmaBuf::alloc("system", padded_len, false).map_err(|e| e.to_string())?;
-        stream.sync_write_begin().map_err(|e| e.to_string())?;
+        let mut stream =
+            DmaBuf::alloc("system", padded_len, false).map_err(PacketError::Hardware)?;
+        stream.sync_write_begin().map_err(PacketError::Hardware)?;
         stream.as_mut_slice()[..packet.len()].copy_from_slice(packet);
-        stream.sync_write_end().map_err(|e| e.to_string())?;
+        stream.sync_write_end().map_err(PacketError::Hardware)?;
 
         if std::env::var_os("RFI_VP9_STREAM_DUMP").is_some() {
             let _ = std::fs::write(format!("/tmp/rk_mpp_rs_vp9_{poc:04}.vp9"), packet);
@@ -154,7 +251,7 @@ impl Decoder {
                 &stream,
                 packet.len(),
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(PacketError::Hardware)?;
 
         let err_info = frame_error(
             reference_error(&parsed.header, &self.reference_map),
@@ -174,7 +271,7 @@ impl Decoder {
         }
         let frame = self.frames[frame_index]
             .as_ref()
-            .ok_or("VP9 output frame disappeared")?;
+            .ok_or_else(|| PacketError::Internal("VP9 output frame disappeared".into()))?;
         Ok(Some(Picture {
             width: frame.width,
             height: frame.height,
@@ -188,18 +285,21 @@ impl Decoder {
         }))
     }
 
-    fn show_existing(&self, header: &Header) -> Result<Picture, String> {
-        let map_index = header
-            .frame_to_show_map_idx
-            .ok_or("show-existing frame has no reference-map index")?;
-        let reference = self.reference_map[map_index as usize]
-            .ok_or_else(|| format!("show-existing reference slot {map_index} is empty"))?;
+    fn show_existing(&self, header: &Header) -> Result<Picture, PacketError> {
+        let map_index = header.frame_to_show_map_idx.ok_or_else(|| {
+            PacketError::Internal("show-existing frame has no reference-map index".into())
+        })?;
+        let reference = self.reference_map[map_index as usize].ok_or_else(|| {
+            PacketError::Internal(format!("show-existing reference slot {map_index} is empty"))
+        })?;
         let frame = self
             .frames
             .get(reference.frame)
             .and_then(Option::as_ref)
             .ok_or_else(|| {
-                format!("show-existing reference slot {map_index} points to a released frame")
+                PacketError::Internal(format!(
+                    "show-existing reference slot {map_index} points to a released frame"
+                ))
             })?;
         Ok(Picture {
             width: frame.width,
@@ -214,7 +314,7 @@ impl Decoder {
         })
     }
 
-    fn allocate_frame(&mut self, header: &Header) -> Result<usize, String> {
+    fn allocate_frame(&mut self, header: &Header) -> Result<usize, std::io::Error> {
         let live: Vec<usize> = self
             .reference_map
             .iter()
@@ -238,8 +338,7 @@ impl Decoder {
                 header.width as usize,
                 header.height as usize,
                 header.bit_depth as u32,
-            )
-            .map_err(|error| error.to_string())?;
+            )?;
             if let Some(index) = self.frames.iter().position(Option::is_none) {
                 self.frames[index] = Some(frame);
                 index
