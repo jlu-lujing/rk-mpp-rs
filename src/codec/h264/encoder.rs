@@ -266,8 +266,15 @@ pub fn build_pps(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
     w.put_ue(0); // num_ref_idx_l1_default_active_minus1
     w.put_bits(0, 1); // weighted_pred_flag
     w.put_bits(0, 2); // weighted_bipred_idc
-    w.put_se(i32::from(config.qp_init) - 26);
-    w.put_se(i32::from(config.qp_init) - 26);
+                      // Not `config.qp_init`. `h264e_pps_init` sets `pic_init_qp = 26` and
+                      // `pic_init_qs = pic_init_qp` unconditionally, and nothing in either the 2024-04
+                      // vintage or master writes the requested QP there - the QP reaches the encode as
+                      // `enc_pic.pic_qp`, and the hardware emits `slice_qp_delta` as the difference
+                      // against this PPS value. Putting qp_init in both places applies it twice: on the
+                      // board that made a PPS of 6 bytes where the reference writes 4, and a slice the
+                      // decoder would resolve eight QP steps away from the reference's.
+    w.put_se(0); // pic_init_qp_minus26
+    w.put_se(0); // pic_init_qs_minus26
     w.put_se(i32::from(config.chroma_qp_index_offset));
     w.put_bits(1, 1); // deblocking_filter_control_present_flag
     w.put_bits(0, 1); // constrained_intra_pred_flag
@@ -414,6 +421,23 @@ mod tests {
         0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x01, 0xe4, 0x78, 0x44, 0x23, 0x50, 0x00, 0x00,
         0x00, 0x01, 0x68, 0xce, 0x31, 0xb2,
     ];
+
+    /// The PPS never carries the requested QP. `h264e_pps_init` pins
+    /// `pic_init_qp` at 26 and the hardware derives `slice_qp_delta` from that, so
+    /// writing qp_init here would apply it twice. On the board this showed up as a
+    /// 6-byte PPS against the reference's 4 at every QP but 26.
+    #[test]
+    fn pps_qp_fields_ignore_qp_init() {
+        for qp in [0u8, 10, 18, 26, 32, 42, 51] {
+            let mut config = EncoderConfig::new(320, 240);
+            config.qp_init = qp;
+            assert_eq!(
+                build_pps(&config).unwrap(),
+                build_pps(&EncoderConfig::new(320, 240)).unwrap(),
+                "PPS must not move with QP {qp}"
+            );
+        }
+    }
 
     #[test]
     fn board_default_headers_are_byte_exact() {

@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **started: the register field map is generated from MPP's structs and the QP words are computed rather than replayed; blocked on an encoder oracle of the right vintage, see the notes below** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **fixed-QP IDR is byte-identical to the C encoder across four sizes and six QPs against a vintage-matched reference; P slices, CBR/VBR, SEI and ROI remain** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 IDR is a size-parameterised replay of a recorded VEPU580 register image (see the encoder note below), so rate control, profile, level, GOP and P slices are all still frozen; H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -565,21 +565,35 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       sixteen ROI area thresholds - instead of replaying it. A test encodes the
       field set at QP 0, 12, 20, 33, 45 and 51 and asserts that exactly six register
       words move, so a QP write cannot bleed into a neighbour.
-- [ ] QP other than 26 has no byte-exact reference, and that is now the encoder's
-      blocking problem rather than a missing feature. `mpi_enc_test` from
-      `/tmp/mpp-develop` is a master build, and pinned to the same configuration
-      with a cfg file - Constrained Baseline, CAVLC, no transform-8x8, level 3.0,
-      GOP 1, QP fixed on all five `rc` and `h264` QP keys - it writes **463 bytes**
-      for the probe frame where the captured job from the installed t6 library
-      writes **861**. Both sides were confirmed to be the same profile by parsing
-      the C stream's SPS, which first read as High/CABAC until `cabac_en`,
-      `profile` and `level` were pinned. So the two encoders disagree at the
-      configuration both are supposed to share, and no QP row can be judged until a
-      reference encoder of the captured vintage exists.
-      `scripts/board_h264_qp_vs_mpp.sh` runs the matrix and calls QP 26 the control
-      row explicitly; it fails today, and the note it prints says why. Encoding at
-      another QP is refused by `verified_on_board` at hardware open, not by the
-      register generator, so the generator stays testable at every QP.
+- [x] **Fixed-QP encoding is byte-identical to the C encoder.** The reference is
+      MPP built from source at the vintage of the library installed on t6, with
+      `tools/patches/mpi_enc_test-constrained-baseline.patch` applied - the stock
+      harness hard-codes High profile with CABAC and transform-8x8 in that vintage
+      *and* in master, and applies them after `-cfg`, so `cabac_en` in a cfg file
+      does nothing. QP 10, 18, 26, 32, 42 and 51 on the reference size and sizes
+      64x64, 320x240, 640x480 and 1280x720 at QP 18/26/42: **SPS, PPS and IDR
+      identical in every case** (`scripts/board_h264_qp_vs_mpp.sh`, which skips the
+      harness's own SEI NAL units). Two real bugs came out of getting there:
+      - The PPS carried the requested QP. `h264e_pps_init` pins `pic_init_qp` at 26
+        and the hardware derives `slice_qp_delta` against it, so writing qp_init
+        into the PPS applied it twice: 6 bytes where the reference writes 4, at
+        every QP but 26. `pps_qp_fields_ignore_qp_init` now holds the line.
+      - The recorded image had been captured from a harness that requested motion
+        derivation info, so `enc_pic.mei_stor` was set and `sw171` held that run's
+        MD buffer fd. Submitting either as-is points the hardware at a dma-buf
+        nobody owns; the builder clears the enable and the address. The job now
+        completes again after having hung with `int_sta = 0`.
+      `mpi_enc_test` also needs both dimensions to be multiples of 16: it seeks raw
+      NV12 by width and ignores `-hstride`, so a stride-packed 322x242 frame shears
+      into 9053 bytes of garbage where the packed version costs 1159. 1920x1080 is
+      in that class too, because 1080 rounds up to 1088. Sizes that are not
+      macroblock multiples stay under decode-and-PSNR coverage in
+      `tests/h264_encoder_hw.rs`, where they pass.
+- [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
+      `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
+      `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
+      fixed-QP path leaves at zero, so it is the next thing to generate. It needs
+      MPP's rate-control loop (`mpp/codec/rc/`) behind it, not just the registers.
 - [ ] rkvenc supports one live session per process here. The two ignored encoder
       tests pass serially and disagree with the goldens when cargo runs them as two
       threads, which is `setup_ext_line_bufs` programming a shared system-controller

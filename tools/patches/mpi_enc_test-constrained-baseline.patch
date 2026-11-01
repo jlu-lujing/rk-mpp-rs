@@ -1,0 +1,27 @@
+Reference harness patch, not crate code.
+
+`mpi_enc_test` hard-codes High profile with CABAC and transform-8x8 for H.264 in
+both the 2024-04 vintage and current master, and it applies those after any
+`-cfg` file, so the cfg keys for `cabac_en` / `profile` have no effect. The
+Constrained Baseline job this crate replays - profile_idc 66, level_idc 30,
+CAVLC, no transform-8x8 - therefore cannot be requested from the stock harness.
+
+Patching the four lines gives a C encoder that writes the same SPS. What is NOT
+steered by the patch is the payload: whether the hardware-coded IDR slice comes
+out byte-identical is the actual measurement, and the register diff from
+tools/vepu580_trace_diff.py shows any remaining configuration difference instead
+of hiding it.
+
+--- a/test/mpi_enc_test.c
++++ b/test/mpi_enc_test.c
+@@
+-        mpp_enc_cfg_set_s32(cfg, "h264:profile", 100);
++        mpp_enc_cfg_set_s32(cfg, "h264:profile", 66);
+@@
+-        mpp_enc_cfg_set_s32(cfg, "h264:level", 40);
+-        mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 1);
++        mpp_enc_cfg_set_s32(cfg, "h264:level", 30);
++        mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 0);
+         mpp_enc_cfg_set_s32(cfg, "h264:cabac_idc", 0);
+-        mpp_enc_cfg_set_s32(cfg, "h264:trans8x8", 1);
++        mpp_enc_cfg_set_s32(cfg, "h264:trans8x8", 0);

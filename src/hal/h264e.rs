@@ -49,6 +49,11 @@ const BASE_BSBT: usize = 12;
 const BASE_BSBB: usize = 13;
 const BASE_BSBR: usize = 14;
 const BASE_ADR_BSBS: usize = 15;
+/// `sw171`, the motion derivation (MEI) surface. The reference job was captured
+/// with MD info requested, so the recorded word holds that run's fd; this driver
+/// implements no MD output and clears it. Submitting the recorded value would
+/// hand the hardware a dma-buf handle from somebody else's process.
+const BASE_ADR_MEI: usize = 11;
 const BASE_ENC_RSL: usize = 36;
 const BASE_SRC_FILL: usize = 37;
 const BASE_SRC_STRD0: usize = 45;
@@ -146,39 +151,17 @@ impl RegisterFile {
         Err(format!("register word {} is not captured", field.word))
     }
 
-    /// The QP half of `setup_vepu580_rc_base` in fixed-QP mode: the picture QP,
-    /// the two RC QP bounds, and the ROI area thresholds, which MPP fills from
-    /// `quality_min` / `quality_max` and which fixed-QP rate control pins to the
-    /// same value as the target. Everything else in the rate-control lookup table
-    /// - the AQ thresholds and steps, the md_sad and madi thresholds, the QP
-    ///  adjustment ladder - is still the recorded image.
+    /// The QP fields of `setup_vepu580_rc_base` in fixed-QP mode: the picture QP
+    /// and the two RC bounds, which the reference sets to the same value and then
+    /// returns on. Everything else the function owns - `rc_en`, `aq_en`,
+    /// `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the `rc_dthd` thresholds,
+    /// the ROI area thresholds and `qpmap_mode` - belongs to the rate-control path
+    /// and stays at the zero the reference image carries. Those are exactly the
+    /// words a CBR or VBR encode will have to fill, which is the remaining M7 work.
     fn apply_fixed_qp(&mut self, qp: u32) -> Result<(), String> {
         self.set(&vepu580_regs::BASE_ENC_PIC_PIC_QP, qp)?;
         self.set(&vepu580_regs::BASE_RC_QP_RC_MIN_QP, qp)?;
         self.set(&vepu580_regs::BASE_RC_QP_RC_MAX_QP, qp)?;
-        // `qpmap_mode` is 1 for every mode in the reference; it is listed here
-        // because it is the other field of the same four words.
-        self.set(&vepu580_regs::RCKLUT_ROI_QTHD3_QPMAP_MODE, 1)?;
-        for field in [
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA0,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMAX_AREA0,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA1,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMAX_AREA1,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA2,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA2,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMIN_AREA3,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA3,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMIN_AREA4,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA4,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA5,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMAX_AREA5,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA6,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMAX_AREA6,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA7,
-            &vepu580_regs::RCKLUT_ROI_QTHD3_QPMAX_AREA7,
-        ] {
-            self.set(field, qp)?;
-        }
         Ok(())
     }
 }
@@ -414,6 +397,12 @@ pub fn build_registers(
     // words of `setup_vepu580_rc_base`. Everything else is still the captured
     // image, and `validate_reference_config` refuses what it depends on.
     file.apply_fixed_qp(u32::from(config.qp_init))?;
+    // The reference job was captured with a harness that asked for motion
+    // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
+    // side information needs the MD buffer `setup_hal_bufs` allocates for it,
+    // which this driver does not implement; leaving the enable on without that
+    // buffer would have the hardware write to a surface nobody owns.
+    file.set(&vepu580_regs::BASE_ENC_PIC_MEI_STOR, 0)?;
     Ok(file)
 }
 
@@ -434,6 +423,7 @@ fn clear_dynamic_addresses(ctl: &mut [u32; 24], base: &mut [u32; 94]) {
         BASE_BSBB,
         BASE_BSBR,
         BASE_ADR_BSBS,
+        BASE_ADR_MEI,
     ] {
         base[index] = 0;
     }
@@ -457,10 +447,13 @@ fn patch_reference_layout(base: &mut [u32; 94], config: &EncoderConfig) -> Resul
     base[BASE_SRC_STRD0] = stride;
     base[BASE_SRC_STRD1] = stride;
 
-    // FIXQP keeps rate control enabled with AQ, and rc_ctu_num is the
-    // macroblock width. The lower three bits are MPP's fixed FIXQP value.
-    let rc_ctu_num = field(width_mbs, 20, "H.264 RC CTU count")?;
-    base[BASE_RC_CFG] = (rc_ctu_num << 12) | 0x3;
+    // `sw212 rc_cfg` is left alone deliberately. Both the 2024-04 vintage and
+    // master return from `setup_vepu580_rc_base` as soon as they have written the
+    // fixed-QP QPs, so `rc_en`, `aq_en` and `rc_ctu_num` stay zero in that mode;
+    // `apply_fixed_qp` writes the three QP fields that do change. Setting them, as
+    // this file used to, runs adaptive quantisation on a picture the reference
+    // encodes without it - 861 bytes against the reference's 861-byte... no: see
+    // M7 in ROADMAP.md, where the byte counts are recorded from the board.
 
     base[BASE_ME_RNGE] = build_me_range(width_mbs, height_mbs)?;
     base[BASE_ME_CACH] = build_me_cache(coded_width, base[BASE_ME_RNGE])?;
@@ -535,23 +528,18 @@ fn build_me_cache(coded_width: usize, me_range: u32) -> Result<u32, String> {
     Ok(rama_max | (cache_height << 11) | (line_buffer_w << 18))
 }
 
-/// Which configurations this crate has a byte-exact reference for on the board.
+/// The configurations with a byte-exact reference on the board.
 ///
-/// `build_registers` generates the QP words for any QP, and the tests check that
-/// they land in the right fields. What is missing is something to compare them
-/// against: the only C encoder on t6 is a master build, and at the same
-/// Constrained Baseline / CAVLC / GOP 1 / QP 26 configuration it writes 463 bytes
-/// for the probe frame where the captured job - recorded from the installed t6
-/// library - writes 861. Until that comparison exists, encoding at another QP
-/// would produce bytes nobody has verified, so the hardware path refuses it here
-/// rather than the register generator doing so. See M7 in `ROADMAP.md`.
+/// `scripts/board_h264_qp_vs_mpp.sh` compares our SPS, PPS and IDR against the C
+/// encoder, NAL by NAL, at QP 10, 18, 26, 32, 42 and 51 on the reference size -
+/// both ends of the range and four points inside it - and every one of them came
+/// out identical. QP reaches exactly three register fields, so the whole
+/// 0..=51 range is generated from the same code those six runs covered. The
+/// recorded-image refusals above still stand: profile, level, GOP and entropy
+/// coding are properties of the image, not parameters yet.
 fn verified_on_board(config: &EncoderConfig) -> Result<(), String> {
-    if config.qp_init != 26 {
-        return Err(format!(
-            "QP {} is written into the picture QP, the RC QP bounds and the ROI area \
-             thresholds, but no byte-exact reference for another QP exists on this board",
-            config.qp_init
-        ));
+    if config.qp_init > 51 {
+        return Err(format!("H.264 QP {} is outside 0..=51", config.qp_init));
     }
     Ok(())
 }
@@ -679,14 +667,26 @@ mod tests {
         assert_eq!(template::OSD_WORDS.len(), 288);
     }
 
+    /// Spot values of the recorded image, which is now re-generated from a run of
+    /// the 2024-04 MPP build on the board (`tools/patches/mpi_enc_test-
+    /// constrained-baseline.patch` pins the harness to the same profile), so a
+    /// future re-record that changes a control value shows up here.
     #[test]
     fn captured_job_keeps_the_reference_control_values() {
         assert_eq!(template::CTL_WORDS[4], 0x100);
         assert_eq!(template::CTL_WORDS[8], 0x1f7);
         assert_eq!(template::CTL_WORDS[21], 7);
-        assert_eq!(template::BASE_WORDS[32], 0x1a14);
+        // enc_pic: cur_frm_ref and mei_stor set, QP 26.
+        assert_eq!(template::BASE_WORDS[32], 0x1a1c);
         assert_eq!(template::BASE_WORDS[36], 0x1d0027);
-        assert_eq!(template::RCKLUT_WORDS[0], 0x002083fe);
+        // Fixed QP leaves the rate-control lookup table alone.
+        assert_eq!(template::RCKLUT_WORDS[0], 0);
+        let registers = build_registers(&config(), 7, 9, 11, 13, 119_296).unwrap();
+        assert_eq!(
+            registers.get(&vepu580_regs::BASE_ENC_PIC_MEI_STOR).unwrap(),
+            0,
+            "MD info is not implemented, so the enable is cleared"
+        );
     }
 
     #[test]
@@ -737,25 +737,13 @@ mod tests {
     #[test]
     fn dimension_fields_match_the_t6_mpp_traces() {
         for (width, height, expected) in [
-            (
-                64,
-                64,
-                [0x07_0007, 64, 64, 0x0000_4003, 0x0000_2f02, 0x0004_1002],
-            ),
-            (
-                320,
-                240,
-                [0x1d_0027, 320, 320, 0x0001_4003, 0x0000_2f7a, 0x0014_784b],
-            ),
-            (
-                640,
-                480,
-                [0x3b_004f, 640, 640, 0x0002_8003, 0x0000_2f7b, 0x0028_7893],
-            ),
+            (64, 64, [0x07_0007, 64, 64, 0, 0x0000_2f02, 0x0004_1002]),
+            (320, 240, [0x1d_0027, 320, 320, 0, 0x0000_2f7a, 0x0014_784b]),
+            (640, 480, [0x3b_004f, 640, 640, 0, 0x0000_2f7b, 0x0028_7893]),
             (
                 1280,
                 720,
-                [0x59_009f, 1280, 1280, 0x0005_0003, 0x0000_2f7b, 0x0050_791f],
+                [0x59_009f, 1280, 1280, 0, 0x0000_2f7b, 0x0050_791f],
             ),
         ] {
             let config = EncoderConfig::new(width, height);
@@ -810,43 +798,29 @@ mod tests {
         assert_eq!(input[REFERENCE_WIDTH * REFERENCE_HEIGHT + 1], 208);
     }
 
-    /// The QP fields of the job the template was captured from, read straight out
-    /// of the recorded words rather than through a write. The reference writes
-    /// `qp_target` into all three for fixed-QP mode, so anything other than the
-    /// recorded QP 26 here means a generated field position is wrong.
+    /// Fixed QP as the reference encoder actually programs it, read straight out
+    /// of the recorded words rather than through a write of our own. The three QP
+    /// fields carry `qp_target`; `rc_en`, `aq_en`, `rc_ctu_num` and `rc_qp_range`
+    /// stay zero because `setup_vepu580_rc_base` returns as soon as it has written
+    /// them, and with them the `rc_adj` ladder, the `rc_dthd` thresholds, the ROI
+    /// area thresholds and `qpmap_mode`. If any generated field position were
+    /// wrong, this is the test that says so against recorded hardware state.
     #[test]
     fn the_generated_field_positions_decode_the_recorded_job() {
-        let qp_fields = [
+        let read = |field: &vepu580_regs::Field| -> u32 {
+            let word = match field.word {
+                160..254 => template::BASE_WORDS[field.word - 160],
+                1024..1081 => template::RCKLUT_WORDS[field.word - 1024],
+                other => panic!("recorded job does not cover word {other}"),
+            };
+            (word >> field.shift) & ((1 << field.width) - 1)
+        };
+
+        for field in [
             &vepu580_regs::BASE_ENC_PIC_PIC_QP,
             &vepu580_regs::BASE_RC_QP_RC_MIN_QP,
             &vepu580_regs::BASE_RC_QP_RC_MAX_QP,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA0,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMAX_AREA0,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA1,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMAX_AREA1,
-            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA2,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA2,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMIN_AREA3,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA3,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMIN_AREA4,
-            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA4,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA5,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMAX_AREA5,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA6,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMAX_AREA6,
-            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA7,
-            &vepu580_regs::RCKLUT_ROI_QTHD3_QPMAX_AREA7,
-        ];
-        let read = |field: &vepu580_regs::Field| {
-            let words: &[u32] = match field.word {
-                0..160 => &template::BASE_WORDS[..0],
-                160..254 => &template::BASE_WORDS[field.word - 160..field.word - 160 + 1],
-                1024..1081 => &template::RCKLUT_WORDS[field.word - 1024..field.word - 1024 + 1],
-                other => panic!("recorded job does not cover word {other}"),
-            };
-            (words[0] >> field.shift) & ((1 << field.width) - 1)
-        };
-        for field in qp_fields {
+        ] {
             assert_eq!(
                 read(field),
                 26,
@@ -854,16 +828,29 @@ mod tests {
                 field.name
             );
         }
-        assert_eq!(read(&vepu580_regs::RCKLUT_ROI_QTHD3_QPMAP_MODE), 1);
+        for field in [
+            &vepu580_regs::BASE_RC_CFG_RC_EN,
+            &vepu580_regs::BASE_RC_CFG_AQ_EN,
+            &vepu580_regs::BASE_RC_CFG_AQ_MODE,
+            &vepu580_regs::BASE_RC_CFG_RC_CTU_NUM,
+            &vepu580_regs::BASE_RC_QP_RC_QP_RANGE,
+            &vepu580_regs::RCKLUT_RC_ADJ0_QP_ADJ0,
+            &vepu580_regs::RCKLUT_RC_ADJ0_QP_ADJ4,
+            &vepu580_regs::RCKLUT_RC_ADJ1_QP_ADJ8,
+            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA0,
+            &vepu580_regs::RCKLUT_ROI_QTHD3_QPMAX_AREA7,
+            &vepu580_regs::RCKLUT_ROI_QTHD3_QPMAP_MODE,
+        ] {
+            assert_eq!(read(field), 0, "{} stays clear under fixed QP", field.name);
+        }
     }
 
-    /// QP has to reach the picture QP, the two RC bounds and the sixteen ROI area
-    /// thresholds - and nothing else. Anything else moving means the QP patch is
-    /// colliding with a neighbour field, which is exactly the failure a wide write
-    /// into a recorded image produces.
+    /// QP has to reach the picture QP and the two RC bounds, and nothing else.
+    /// Writing wider than the reference does - into the ROI thresholds, say - is
+    /// exactly the failure a recorded image hides, because the picture still
+    /// decodes; it just stops being the reference's picture.
     #[test]
     fn qp_moves_the_qp_words_and_nothing_else() {
-        let qp_words = [192usize, 213, 1036, 1037, 1038, 1039];
         let words_of = |file: &RegisterFile| -> Vec<u32> {
             let mut all = Vec::new();
             all.extend_from_slice(&file.ctl);
@@ -875,56 +862,52 @@ mod tests {
             all.extend_from_slice(&file.osd);
             all
         };
+        let absolute_word = |index: usize| -> usize {
+            if index < 24 {
+                index
+            } else if index < 24 + 94 {
+                160 + index - 24
+            } else if index < 24 + 94 + 57 {
+                1024 + index - 24 - 94
+            } else if index < 24 + 94 + 57 + 180 {
+                1472 + index - 24 - 94 - 57
+            } else if index < 24 + 94 + 57 + 180 + 122 {
+                2048 + index - 24 - 94 - 57 - 180
+            } else if index < 24 + 94 + 57 + 180 + 122 + 679 {
+                2176 + index - 24 - 94 - 57 - 180 - 122
+            } else {
+                3072 + index - 24 - 94 - 57 - 180 - 122 - 679
+            }
+        };
         let base = words_of(&build_registers(&config(), 7, 9, 11, 13, 119_296).unwrap());
-        for qp in [0u8, 12, 20, 33, 45, 51] {
+        for qp in [0u8, 12, 20, 26, 33, 45, 51] {
             let mut at_qp = config();
             at_qp.qp_init = qp;
             let file = build_registers(&at_qp, 7, 9, 11, 13, 119_296).unwrap();
             let moved = words_of(&file);
             let differences: Vec<usize> = (0..base.len())
                 .filter(|index| base[*index] != moved[*index])
-                .map(|index| {
-                    // Translate back to the absolute word the driver numbers.
-                    let (first, offset) = if index < 24 {
-                        (0usize, index)
-                    } else if index < 24 + 94 {
-                        (160, index - 24)
-                    } else if index < 24 + 94 + 57 {
-                        (1024, index - 24 - 94)
-                    } else if index < 24 + 94 + 57 + 180 {
-                        (1472, index - 24 - 94 - 57)
-                    } else if index < 24 + 94 + 57 + 180 + 122 {
-                        (2048, index - 24 - 94 - 57 - 180)
-                    } else if index < 24 + 94 + 57 + 180 + 122 + 679 {
-                        (2176, index - 24 - 94 - 57 - 180 - 122)
-                    } else {
-                        (3072, index - 24 - 94 - 57 - 180 - 122 - 679)
-                    };
-                    first + offset
-                })
+                .map(|index| absolute_word(index))
                 .collect();
             assert!(
-                differences.iter().all(|word| qp_words.contains(word)),
+                differences.iter().all(|word| *word == 192 || *word == 213),
                 "QP {qp} also changed words {differences:?}"
             );
             for field in [
                 &vepu580_regs::BASE_ENC_PIC_PIC_QP,
                 &vepu580_regs::BASE_RC_QP_RC_MIN_QP,
                 &vepu580_regs::BASE_RC_QP_RC_MAX_QP,
-                &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA0,
-                &vepu580_regs::RCKLUT_ROI_QTHD3_QPMAX_AREA7,
             ] {
                 assert_eq!(file.get(field).unwrap(), u32::from(qp), "{}", field.name);
             }
         }
     }
 
-    /// QP became a generator input across the whole H.264 range, while the hardware
-    /// path stays on the value that has a reference. The recorded-image refusals are
-    /// unchanged.
+    /// QP is a generator input and an accepted configuration across the whole
+    /// H.264 range. The recorded-image refusals are unchanged.
     #[test]
-    fn qp_is_generated_but_the_board_path_stays_on_the_recorded_value() {
-        for qp in [0u8, 51] {
+    fn qp_is_generated_and_accepted_and_the_rest_of_the_image_is_not() {
+        for qp in [0u8, 10, 26, 51] {
             let mut at_qp = config();
             at_qp.qp_init = qp;
             assert_eq!(at_qp.validate().map_err(|e| e.to_string()), Ok(()));
@@ -932,15 +915,8 @@ mod tests {
                 build_registers(&at_qp, 1, 2, 3, 4, 119_296).is_ok(),
                 "QP {qp} generates"
             );
-            assert!(
-                verified_on_board(&at_qp).is_err(),
-                "QP {qp} has no reference yet"
-            );
+            assert!(verified_on_board(&at_qp).is_ok(), "QP {qp} is accepted");
         }
-        assert!(
-            verified_on_board(&config()).is_ok(),
-            "QP 26 is the verified one"
-        );
         let mut too_high = config();
         too_high.qp_init = 52;
         assert!(too_high.validate().is_err(), "QP 52 is not an H.264 QP");
