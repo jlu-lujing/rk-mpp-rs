@@ -564,7 +564,7 @@ in what order the evidence gets produced.
       including non-16-aligned crops. Every SPS/PPS/IDR NAL is byte-identical
       to a freshly generated C MPP golden, deterministic across repeated runs,
       and independently decodes with at least 45 dB plane PSNR
-- [ ] H.264 (rkvenc): GDR/intra refresh, slice split and
+- [ ] H.264 (rkvenc): slice split and
       widths above 4096 (fixed QP and CBR/VBR/AVBR are done, below; the QP map,
       ROI, deblock fine tuning, the unset-quality start QP and the scene detector
       are done too, each in its own entry below). P pictures, the DPB, the SEI
