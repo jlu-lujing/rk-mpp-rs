@@ -1,9 +1,9 @@
 # rk-mpp-rs 交接文档
 
 写给下一个接手实现的模型/人。目标是 `refs/mpp` → `rk-mpp-rs` 的完整 Rust 重写：
-功能对齐、性能不劣于 C、每次验证通过就提交。**当前 goal 状态：paused。**
+功能对齐、性能不劣于 C、每次验证通过就提交。
 
-本文以仓库现状为准（`e5e9a7f` 之后的两份文档提交：`9ce86cb` 本文、`README.md`/`ROADMAP.md` 于同一轮更新；工作树干净）。`README.md` 是最新状态速览，`ROADMAP.md` 是逐项证据台账（权威），
+本文以仓库现状为准（`d0e6947`；工作树干净）。`README.md` 是最新状态速览，`ROADMAP.md` 是逐项证据台账（权威），
 本文是"从哪继续、怎么不被坑"的操作手册。
 
 ---
@@ -12,7 +12,7 @@
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 512 passed, 20 board-only ignored
+cargo test --all-targets      # 593 passed, 23 board-only ignored
 cargo fmt --check
 git log --oneline -10
 grep -c '^- \[x\]' ROADMAP.md  # 已完成条目数
@@ -32,11 +32,13 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-整体完成度约五成半。解码侧基本收口；H.264 编码新增 level、deblock、ROI/QP map、
-auto-QP 起始 QP、场景检测（全部板上逐字节）；JPEG 编码新增 restart/90°/270°/RGB；
-framework 落了异步任务队列 + 引用计数缓冲池（板上验证）。
-**新发现的开放项**：P 帧在 320x240 以上不逐字节（寄存器图逐字相同，差异在 DMA 内容侧，
-见 ROADMAP "P pictures diverge from the reference beyond 320x240"）——建议优先处理。
+整体完成度约六成。解码侧基本收口；H.264 编码的 level、deblock、ROI/QP map、
+auto-QP 起始 QP、场景检测、GDR、slice split、>4096 扩展行与 P 帧全部板上逐字节；
+JPEG 编码有 restart/90°/270°/RGB；framework 有异步任务队列 + 引用计数缓冲池。
+**当前主攻 H.265 编码**：固定 QP 的 VPS/SPS/PPS 已 3/3 板上逐字节，寄存器作业已抓取，
+推导图与 C 的六段作业只差 `enc_pic.mei_stor` 一位（见 ROADMAP 的 H.265 条目）。
+下一步是让 H.265 有自己拥有缓冲的提交路径；H.264 那条线剩下的是逐 slice 输出路径
+（`slen_fifo`/low-delay 包）与 >4096 宽度下的 P 格。
 
 ---
 
@@ -224,10 +226,19 @@ H.264/VEPU580 编码已做到：
 
 ### 5.4 H.265 编码（M8，12k）
 
-完全未开始。路径：`mpp/hal/rkenc/h265e/hal_h265e_vepu580.c` + `h265e_api.c`。
-建议沿用 H.264 的方法：先用 2024-04 的 C 编一条固定 QP 流，抓 ioctl job，
-用 `tools/gen_vepu580_regs.py` 生成/扩展字段映射，再做逐字节比对。
-`CIME_MULTI`/`RIME_MULTI` 两个常量已在 `src/hal/h264e.rs` 里留了但未接。
+已走到"寄存器图对上了，还没有把作业发下去"这一步：
+
+- 参数集：`codec::h265::encoder` 的 VPS/SPS/PPS 对 320x240、640x480、1280x720
+  **板上逐字节**（`scripts/board_h265_qp_vs_mpp.sh` 3/3），C 的流存在
+  `tests/data/h265e_c_fixqp_qp26_*.265`，宿主测试 `parameter_sets_match_the_recorded_c_streams`
+  常驻复验。两个坑别再踩：`-t` 的 HEVC 值是十进制 `16777220`（`-t 9` 是 VP8），
+  NAL 第二字节是 `nuh_layer_id` 不是类型位，载荷要插防竞争字节。
+- 寄存器图：`hal::h265e` 从 `h265e_vepu580_template.rs`（2024-04 C 的 320x240
+  FIXQP26 单 IDR trace）出发，再按几何/QP/语法推导。`tools/h265e_trace_diff.py`
+  逐字段比对，现在只剩 `enc_pic.mei_stor` 一位不同——C 的 harness 传了 motion-info
+  缓冲，我们没申请。别把模板里的地址字当真：它们属于 oracle 的缓冲区。
+- 下一步：给 H.265 一条拥有自己 dma-heap 缓冲（含 motion-info）的提交路径，发出第一张
+  IDR，与 `tests/data` 的 C 流逐 NAL 比；之后才是 tiles/WPP/SAO、码率控制和 P 帧。
 
 ### 5.5 M9 后处理（IEP）
 
