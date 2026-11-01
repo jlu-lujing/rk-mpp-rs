@@ -62,6 +62,10 @@ const BASE_RC_CFG: usize = 52;
 const BASE_ME_RNGE: usize = 60;
 const BASE_ME_CACH: usize = 62;
 
+/// `meiw_addr`, the surface the encoder writes per-macroblock motion derivation
+/// info to when `enc_pic.mei_stor` is set.
+const BASE_MEIW: usize = 11;
+
 const REG_SRC_1_OFFSET: u32 = 161;
 const REG_SRC_2_OFFSET: u32 = 162;
 const REG_BSBT_END: u32 = 172;
@@ -185,6 +189,8 @@ pub struct Job<'a> {
     /// slot, or this one for an IDR, where there is nothing to read.
     pub reference_fd: i32,
     pub reference_thumb_fd: i32,
+    /// The motion derivation info surface, `meiw_addr`.
+    pub md_fd: i32,
     pub state: FrameState,
     pub output_capacity: usize,
 }
@@ -318,6 +324,7 @@ pub struct Vepu580H264 {
     output: DmaBuf,
     started: bool,
     recons: [Recon; 2],
+    md_info: DmaBuf,
     state: FrameState,
     slot: usize,
 }
@@ -344,6 +351,8 @@ impl Vepu580H264 {
                 Recon::alloc(pixel_size, thumb_size)?,
                 Recon::alloc(pixel_size, thumb_size)?,
             ],
+            md_info: DmaBuf::alloc("system", mdinfo_size(&config)?, false)
+                .map_err(|e| format!("allocate H.264 motion info: {e}"))?,
             state: FrameState::default(),
             slot: 0,
             config,
@@ -395,6 +404,7 @@ impl Vepu580H264 {
             output_fd: self.output.fd(),
             current_fd: self.recons[self.slot].pixel.fd(),
             current_thumb_fd: self.recons[self.slot].thumb.fd(),
+            md_fd: self.md_info.fd(),
             reference_fd: self.recons[reference_slot].pixel.fd(),
             reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
             state,
@@ -503,6 +513,10 @@ fn dump_job_registers(job: &Job<'_>, file: &RegisterFile) {
         ("ctl", CTL_OFFSET, file.ctl.as_slice()),
         ("base", BASE_OFFSET, file.base.as_slice()),
         ("rc_klut", RCKLUT_OFFSET, file.rc_klut.as_slice()),
+        ("param", PARAM_OFFSET, file.param.as_slice()),
+        ("rdo", RDO_OFFSET, file.rdo.as_slice()),
+        ("scl", SCL_OFFSET, file.scl.as_slice()),
+        ("osd", OSD_OFFSET, file.osd.as_slice()),
     ] {
         let _ = name;
         text.push_str(&format!(
@@ -631,6 +645,7 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     base[BASE_BSBB] = output;
     base[BASE_BSBR] = output;
     base[BASE_ADR_BSBS] = output;
+    base[BASE_MEIW] = job.md_fd as u32;
     patch_reference_layout(&mut base, config)?;
 
     let luma_bytes = config.coded_width() * config.coded_height();
@@ -686,14 +701,12 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     // buffer would have the hardware write to a surface nobody owns. That is not a
     // guess: with the enable set and `meiw_addr` at zero the encoder returns
     // `int_sta = 0x100` instead of encoding.
-    // The reference job was captured with a harness that requested motion
-    // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
-    // side information needs the MD buffer `setup_hal_bufs` allocates for it,
-    // which this driver does not implement; leaving the enable on without that
-    // buffer would have the hardware write to a surface nobody owns. That is not a
-    // guess: with the enable set and `meiw_addr` at zero the encoder returns
-    // `int_sta = 0x100` instead of encoding.
-    file.set(&vepu580_regs::BASE_ENC_PIC_MEI_STOR, 0)?;
+    // The reference harness passes a motion info buffer for every picture, so
+    // `setup_vepu580_start` leaves `mei_stor` set for I and P alike. Matching
+    // it is what `md_info` is for: with the enable set and `meiw_addr` at zero
+    // the encoder answers `int_sta = 0x100` instead of encoding - which is what
+    // the attempt to clear this bit turned out to be measuring.
+    file.set(&vepu580_regs::BASE_ENC_PIC_MEI_STOR, 1)?;
     Ok(file)
 }
 
@@ -1000,6 +1013,20 @@ fn reconstruction_sizes(config: &EncoderConfig) -> Result<(usize, usize), String
     Ok((header + body, thumb))
 }
 
+/// The motion derivation info buffer, `mdinfo_size` of the C test path: one
+/// 16-byte record per 64x16 macroblock block of the coded size. The reference
+/// harness passes this for every picture, and `setup_vepu580_recn_refr`'s
+/// sibling sets `mei_stor` from its presence - with the enable set and no
+/// surface behind it the encoder returns `int_sta = 0x100` instead of encoding.
+fn mdinfo_size(config: &EncoderConfig) -> Result<usize, String> {
+    let blocks_x = align(config.coded_width(), 64) / 64;
+    let blocks_y = align(config.coded_height(), 16) / 16;
+    blocks_x
+        .checked_mul(blocks_y)
+        .and_then(|v| v.checked_mul(16))
+        .ok_or_else(|| "H.264 motion info size overflow".into())
+}
+
 fn input_size(config: &EncoderConfig) -> Result<usize, String> {
     config
         .coded_width()
@@ -1079,6 +1106,7 @@ mod tests {
             current_thumb_fd: 13,
             reference_fd: 11,
             reference_thumb_fd: 13,
+            md_fd: 15,
             state,
             output_capacity: 119_296,
         }
@@ -1124,9 +1152,10 @@ mod tests {
         let registers = registers_at(&config(), FrameState::default());
         assert_eq!(
             registers.get(&vepu580_regs::BASE_ENC_PIC_MEI_STOR).unwrap(),
-            0,
-            "MD info is not implemented, so the enable is cleared"
+            1,
+            "the enable is legal only because md_fd points at a real surface"
         );
+        assert_eq!(registers.base[BASE_MEIW], 15, "meiw_addr carries the md fd");
     }
 
     #[test]

@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **fixed-QP IDR byte-identical in all 24 cells of four sizes x three profiles x QP {18,26}; multi-frame encoding works (GOP walk, reference double buffer, P pictures decode at 52 dB) and the P payload is one register bit from byte-exact; CBR/VBR, SEI and ROI remain** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **multi-frame encoding works (GOP walk, reference double buffer, MD info, P pictures decode at 52 dB); a P job now matches the reference word for word except six section-3 words owned by the finetune module; CBR/VBR, SEI, ROI and finetune remain** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 IDR is a size-parameterised replay of a recorded VEPU580 register image (see the encoder note below), so rate control, profile, level, GOP and P slices are all still frozen; H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -641,9 +641,36 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       `build_registers` still generates longer GOPs and
       `p_picture_changes_only_the_fields_the_reference_does` pins every field the
       reference touches, so the difference cannot silently widen.
-      **Next step:** allocate the MD-info buffer per picture as the framework does,
-      point `meiw_addr` at it, set the bit - then lift the GOP restriction on the
-      strength of the same byte-for-byte test.
+      **Correcting the attribution above, because the follow-up measurement
+      contradicted it.** `mei_stor` is *not* what separated the P payload: the
+      reference sets that bit for **every** picture - the captured IDR has it set
+      too, and our IDR has been byte-identical to C this whole time with the bit
+      clear - so the bit does not move the coded bits, and clearing it was not why
+      the P picture differed. What the bit did establish is a hard requirement
+      rather than a nicety: enable set and `meiw_addr` at zero gives
+      `int_sta = 0x100`, so the MD buffer had to exist before the bit could be
+      raised honestly. It exists now (`mdinfo_size`: 16 bytes per 64x16 block of
+      the coded size), `meiw_addr` points at it and `mei_stor` matches the
+      reference - and the IDR matrix came through unchanged, the same fact from the
+      other side.
+
+      With the job dump extended to all seven register sections, the P job's
+      remaining distance to the captured reference P job is **six words, all in
+      section 3**: `RDO_QUANT.quant_f_bias_I` (sw1484), `ATR_THD0` and `ATR_THD1`
+      (sw1488, sw1489) and the `Lvl16/17/18_ATR_WGT` weights (sw1492..1494). CTL,
+      BASE, RCKLUT, RDO, SCL and OSD match word for word. Those six are exactly the
+      writes of the finetune module, `mpp/hal/rkenc/h264e/
+      hal_h264e_vepu580_tune.c`, which re-patches the quant bias and the ATR tables
+      from statistics gathered on the preceding frame
+      (`..._tune_stat_update` feeding `..._tune_reg_patch`). Nor is it a harness
+      option that happens to be on: running the reference with
+      `-atr_i 0 -atr_p 0 -atf 0 -atl 0 -dbe 0 -dbs 0` produced a byte-identical
+      stream to the default run, so those tables move on the module's own per-frame
+      state, not on any flag.
+      **Next step, named by that evidence:** the finetune path - the STATUS-window
+      statistics `stat_update` consumes, then the quant-bias and ATR patch itself.
+      That, not `mei_stor`, is what stands between P pictures and byte-exactness;
+      the GOP gate stays until it lands.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
