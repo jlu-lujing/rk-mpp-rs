@@ -5,6 +5,7 @@ use std::io;
 use crate::hal::vp9d::{Frame, Vp9d};
 use crate::service::dma_heap::DmaBuf;
 
+use super::capability;
 use super::parser::{self, FrameKind, Header, Parser};
 
 pub const FRAME_ERR_DEC_INVALID: u32 = 0x10;
@@ -81,6 +82,7 @@ impl Decoder {
             .compressed_header
             .as_ref()
             .ok_or("missing VP9 compressed header")?;
+        capability::check(&parsed.header).map_err(|error| error.to_string())?;
         let poc = self.next_poc;
         if std::env::var_os("RFI_VP9_CONTEXT_DUMP").is_some() {
             let path = format!("/tmp/rk_mpp_rs_vp9_context_{poc:04}.bin");
