@@ -566,6 +566,17 @@ pub struct PoolRef<'a, B> {
     idx: usize,
 }
 
+impl<B: PoolBuffer> PoolRef<'_, B> {
+    /// The underlying block, e.g. to issue `DMA_BUF_SYNC` ioctls with its
+    /// own fd-based helpers while the view pins it live.
+    pub fn buffer(&self) -> &B {
+        match &self.core.slots[self.idx] {
+            Occupancy::Live { buf, .. } => buf,
+            _ => unreachable!("slot live while guard alive"),
+        }
+    }
+}
+
 impl<B: PoolBuffer> Deref for PoolRef<'_, B> {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
