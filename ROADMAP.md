@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **todo - and note that what it builds on is a bootstrap, not a generator** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **started: the register field map is generated from MPP's structs and the QP words are computed rather than replayed; blocked on an encoder oracle of the right vintage, see the notes below** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 IDR is a size-parameterised replay of a recorded VEPU580 register image (see the encoder note below), so rate control, profile, level, GOP and P slices are all still frozen; H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -548,6 +548,43 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       `mpp/hal/rkenc/h264e/hal_h264e_vepu580.c`, none of which is ported. M7 is
       gated on replacing the template with that generator, not on adding features
       on top of a fixture.
+- [x] VEPU580 register field map generated from the C struct definitions
+      (`tools/gen_vepu580_regs.py` to `src/hal/vepu580_regs.rs`): the absolute word,
+      bit position and width of every named field in `Vepu580CtlCommon`,
+      `Vepu580BaseCommon` and `Vepu580RcKlut`. The header annotates each member with
+      its register number (`/* 0x00000300 reg192 */`), so a word comes from that
+      annotation rather than from counting fields, and a group whose declared bits do
+      not fill a word is a hard error at generation time. `RegisterFile::set` /
+      `get` take these fields.
+      The layout is checked against reality rather than against itself: reading the
+      captured job through the generated fields yields 26 in `enc_pic.pic_qp`,
+      `rc_qp.rc_min_qp` and `rc_qp.rc_max_qp`, which is exactly what
+      `setup_vepu580_rc_base` writes for a fixed-QP capture.
+- [x] First parameterized block of the encoder: `apply_fixed_qp` regenerates the QP
+      half of `setup_vepu580_rc_base` - the picture QP, the two RC bounds and the
+      sixteen ROI area thresholds - instead of replaying it. A test encodes the
+      field set at QP 0, 12, 20, 33, 45 and 51 and asserts that exactly six register
+      words move, so a QP write cannot bleed into a neighbour.
+- [ ] QP other than 26 has no byte-exact reference, and that is now the encoder's
+      blocking problem rather than a missing feature. `mpi_enc_test` from
+      `/tmp/mpp-develop` is a master build, and pinned to the same configuration
+      with a cfg file - Constrained Baseline, CAVLC, no transform-8x8, level 3.0,
+      GOP 1, QP fixed on all five `rc` and `h264` QP keys - it writes **463 bytes**
+      for the probe frame where the captured job from the installed t6 library
+      writes **861**. Both sides were confirmed to be the same profile by parsing
+      the C stream's SPS, which first read as High/CABAC until `cabac_en`,
+      `profile` and `level` were pinned. So the two encoders disagree at the
+      configuration both are supposed to share, and no QP row can be judged until a
+      reference encoder of the captured vintage exists.
+      `scripts/board_h264_qp_vs_mpp.sh` runs the matrix and calls QP 26 the control
+      row explicitly; it fails today, and the note it prints says why. Encoding at
+      another QP is refused by `verified_on_board` at hardware open, not by the
+      register generator, so the generator stays testable at every QP.
+- [ ] rkvenc supports one live session per process here. The two ignored encoder
+      tests pass serially and disagree with the goldens when cargo runs them as two
+      threads, which is `setup_ext_line_bufs` programming a shared system-controller
+      line-buffer configuration for both sessions. Relevant to M10's multi-instance
+      work.
 - [ ] JPEG encoder (vepu): RGB input, 90/270-degree rotation, restart markers,
       low-delay slices and multi-core partitioning
 

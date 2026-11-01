@@ -1,3 +1,10 @@
+// These two tests must run one at a time (`-- --ignored --test-threads=1`).
+// Running them as two threads in one process makes the second one disagree with
+// the goldens: `setup_ext_line_bufs` in the C HAL programs the external line
+// buffer through system controller registers that are shared by everything on the
+// encoder block, so two live sessions on this kernel overwrite each other's
+// configuration. Single encodes, from separate processes, are unaffected.
+
 use rk_mpp_rs::codec::h264::encoder::EncoderConfig;
 use rk_mpp_rs::codec::h264::split_annex_b;
 use rk_mpp_rs::hal::h264e::{probe_nv12, Vepu580H264, REFERENCE_HEIGHT, REFERENCE_WIDTH};

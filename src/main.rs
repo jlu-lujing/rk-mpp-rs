@@ -22,9 +22,11 @@ fn encode_h264(
     out_path: &str,
     width: usize,
     height: usize,
+    qp_init: u8,
 ) -> Result<(usize, usize, usize, f64), String> {
     let input = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let config = h264_syntax::EncoderConfig::new(width, height);
+    let mut config = h264_syntax::EncoderConfig::new(width, height);
+    config.qp_init = qp_init;
     let mut encoder = h264e::Vepu580H264::open(config)?;
     let started = Instant::now();
     let encoded = encoder.encode_idr(&input)?;
@@ -432,16 +434,19 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height>");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp]");
             std::process::exit(2);
         };
+        // QP defaults to the value the recorded VEPU580 register image carries, so
+        // an existing invocation keeps producing the same bytes.
+        let qp_init = args.get(6).and_then(|s| s.parse::<u8>().ok()).unwrap_or(26);
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height>");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp]");
             std::process::exit(2);
         }
-        match encode_h264(src, dst, width, height) {
+        match encode_h264(src, dst, width, height, qp_init) {
             Ok((bytes, header_bytes, payload_bytes, ms)) => println!(
-                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height}, {ms:.3} ms"
+                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} qp {qp_init}, {ms:.3} ms"
             ),
             Err(e) => {
                 eprintln!("H.264 encode failed: {e}");
@@ -1785,6 +1790,29 @@ fn main() {
             nals.len(),
             data.len()
         );
+        return;
+    }
+    if args.len() > 1 && args[1] == "probe-frame" {
+        // Write the synthetic NV12 frame the encoder tests encode, so that
+        // `mpi_enc_test` can be pointed at byte-identical input.
+        let dst = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let width = args.get(3).and_then(|s| s.parse::<usize>().ok());
+        let height = args.get(4).and_then(|s| s.parse::<usize>().ok());
+        let (Some(width), Some(height)) = (width, height) else {
+            eprintln!("usage: rk-mpp-rs probe-frame <out.nv12> <width> <height>");
+            std::process::exit(2);
+        };
+        if dst.is_empty() {
+            eprintln!("usage: rk-mpp-rs probe-frame <out.nv12> <width> <height>");
+            std::process::exit(2);
+        }
+        match std::fs::write(dst, rk_mpp_rs::hal::h264e::probe_nv12(width, height)) {
+            Ok(()) => println!("wrote {width}x{height} probe frame to {dst}"),
+            Err(error) => {
+                eprintln!("{dst}: {error}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
     if args.len() > 1 && args[1] == "bench-scale" {
