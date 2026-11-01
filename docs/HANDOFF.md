@@ -308,7 +308,7 @@ ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_syslog
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 441 通过；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 585 通过（23 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

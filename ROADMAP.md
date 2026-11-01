@@ -59,10 +59,10 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; GDR/intra refresh, slice split and the >4096 CIME lines remain (ROI/QP map, deblock, the start-QP derivation and scene detection are done)** |
-| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode pending** |
-| M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
-| M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 only (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR has a divergence found by its board script and is being closed, slice split rests on host evidence only, and the >4096 CIME lines are wired but undriven. P pictures beyond 320x240 still diverge from the reference - open, and it bounds every byte-exact claim above** |
+| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode started - VPS/SPS/PPS written and parsed back, and a derived (not replayed) IDR register image, 23 host tests, one ignored board test; not submit-capable until a reference H.265 job is captured** |
+| M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here - its deinterlace HAL, session and CLI have landed on host field evidence, with no recorded board run, and scale/crop are untouched. See the note below** |
+| M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
@@ -614,7 +614,51 @@ in what order the evidence gets produced.
        testsrc to testsrc2 mid-clip, eight fixed-QP frames: the whole stream
        byte-identical to the reference through the cut. IPC scene mode is not
        exposed on the CLI; only the default mode is wired and compared.
-- [ ] H.265 (rkvenc): same plus tiles/WPP, SAO
+ - [ ] **GDR / intra refresh derives from the reference's own arithmetic - host
+       evidence so far.** `apply_gdr` carries the refresh length derivation (rows
+       per frame, capped by the coded height), the row bands that slide with a
+       two-line overlap, the column bands that span the height, the `roi_*` block
+       records the encoder reads back, the search-axis clamp a refresh frame
+       applies, and the reference's own deferral of the window past the first
+       `igop`. Five host tests (`gdr_*`) pin those five behaviours.
+       `scripts/board_h264_gdr_vs_mpp.sh` is the board comparison, and it has run: it
+       found the reference re-prefixing SPS, PPS and a recovery-point SEI at each
+       sweep-opening intra refresh where this driver repeated nothing, on the reading
+       that `hdr_status` never re-arms. That cell is being closed as this entry is
+       written - an uncommitted change in the tree, not a commit. Until that fix and a
+       board re-run land, GDR stays open here: divergence found, not byte-exact.
+       board re-run land in a commit.
+ - [x] **Slice split writes the combinations the C HAL writes - host evidence.**
+       `apply_split` covers the supported modes with each mode's field combination
+       asserted against `hal_h264e_vepu580.c`, arguments bounded by the fields that
+       carry them, and `split_none` checked to move nothing beyond the recorded
+       image. Three host tests. The board comparison
+       (`scripts/board_h264_slice_vs_mpp.sh`) exists but no result of it is written
+       down here, so multi-slice output carries no byte-exactness claim either way.
+ - [ ] **Widths above 4096: the extension lines are wired, not yet driven.** The
+       offsets and the RCB that `setup_ext_line_bufs` programs are derived and
+       asserted (`ext_line_registers_offsets_and_rcb_are_wired`), and the
+       `validate_reference_config` refusal is gone. `scripts/board_h264_wide_vs_mpp.sh`
+       exists to prove it on a picture wider than 4096 and has no recorded run, so
+       the claim stops at "the code path exists", not "4K encodes".
+ - [x] **H.265 encode started: parameter sets, and a register image derived
+       rather than replayed.** `codec::h265::encoder` writes the VPS/SPS/PPS of a
+       fixed-QP IDR and feeds each NAL back through the independent
+       `codec::hevc::parser` (13 host tests) - that parse-back is the byte-comparable
+       gate M8 needs. `hal::h265e` derives the CTL, geometry and RC-lookup windows
+       word by word from `hal_h265e_v580_gen_regs`, `set_pp_regs`, `set_rc_regs` and
+       `set_slice_regs` through the generated `h265e_regs` map, with ten host tests
+       on the fields the C source fixes (320x240 geometry, the FIXQP quad, the
+       sixteen `roi_qthd` rows, the IDR syntax block). The param/wgt, rdo and scl
+       tuning windows and the AQ/KLUT/LAMD byte tables are left at zero and asserted
+       so - **a derivation and a test bed, not a submit-capable encoder**, because
+       there is no captured reference H.265 job to compare the tuning against.
+       `tools/h265e_probe.c`, `scripts/board_h265_qp_vs_mpp.sh` and
+       `scripts/h265_hdr_cmp.py` are the harness, `h265-enc` writes the parameter
+       sets from the CLI, and `board_parameter_sets_match_the_c_encoder` sits
+       `#[ignore]`d until the board run is recorded.
+- [ ] H.265 (rkvenc): the IDR payload, tiles/WPP/SAO, rate control and P
+      pictures - all of which depend on the board capture named above.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,
@@ -1142,8 +1186,19 @@ in what order the evidence gets produced.
 
 ### Post-processing
 - [x] RGB888 letterbox scaler (own, faster than RGA for our sizes)
-- [ ] IEP (`mpp/vproc/iep/iep.c`, `iep2/iep2.c`, client 28): deinterlace, YUV
-      scale, crop. This is the M9 engine that exists on this board.
+- [x] **IEP2 deinterlace is ported and submits - host field evidence.**
+      `src/hal/iep.rs` derives the IEP2 register set for an I5O2 field-to-frame job
+      from `mpp/vproc/iep/iep2/`, and `src/service/iep_session.rs` owns the client
+      28 session (announce, submit, poll). Eighteen host tests cover the register
+      layout, the geometry and the address-offset list. Two `#[ignore]`d board
+      assertions exist - that client 28 binds and answers `POLL_HW_FINISH`, and that
+      one I5O2 job returns two frames of the input size
+      (`tests/iep_deinterlace_hw.rs`) - and `scripts/board_iep_dei_vs_mpp.sh` is the
+      byte comparison against the C `iep2_test`. **Neither has a recorded run**, so
+      the claim stops at "derives and would submit"; nothing here is byte-exact yet.
+- [ ] IEP (`mpp/vproc/iep/iep.c`, `iep2/iep2.c`, client 28): YUV scale and crop,
+      and the recorded board run of the deinterlace path above. This is the M9
+      engine that exists on this board.
 - [ ] VDPP (`mpp/vproc/vdpp/vdpp2.c`, client 29): scale, rotate, NV12 to RGB,
       sharpen, histogram. **Absent on t6** - the kernel refuses the client - so
       this cannot be ported or verified here at all.

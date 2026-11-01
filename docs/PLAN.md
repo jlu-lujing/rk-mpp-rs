@@ -6,7 +6,8 @@
 > 什么算做完"。
 >
 > 基线：`6029ebe`（2026-11-01）。441 测试通过（353 单元 + 88 集成，11 个板级 ignore），
-> ROADMAP 49 项已勾 / 17 项未勾。码率控制固定 QP / CBR / VBR / AVBR **全部逐 NAL 相同**；
+> ROADMAP 74 项已勾 / 21 项未勾。码率控制固定 QP / CBR / VBR / AVBR 全部逐 NAL 相同，
+> 但「逐 NAL 相同」对 P 帧目前只在 320x240 成立（更大尺寸在分歧，W1-19 是 P1 阻断项）。
 > 板上 oracle 与语料已固化到 `~/rk-mpp-oracles`（`scripts/setup_board_refs.sh`）。
 
 ---
@@ -156,35 +157,44 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ### 5.2 场景检测器（2–4 天）
 
-- [ ] W1-4 用 `hal_h264e` 的调试开关（需先确认 env 名）或寄存器捕获，构造硬切序列
+- [x] W1-4 用 `hal_h264e` 的调试开关（需先确认 env 名）或寄存器捕获，构造硬切序列
       观察 `vepu580_h264e_tune_stat_update` 触发条件（连续三帧大运动）。
-- [ ] W1-5 移植 detector：读 `madi/madp/md_sad_b16num*/madi_b16num*`，切换
+- [x] W1-5 移植 detector：读 `madi/madp/md_sad_b16num*/madi_b16num*`，切换
       quant bias 与 ATR 权重行；`scene_motion_flag` 进入状态机。
-- [ ] W1-6 硬切 fixture 上逐字节；当前所有 fixture 都不触发，必须新造。
+- [x] W1-6 硬切 fixture 上逐字节：`scripts/board_h264_scene_vs_mpp.sh`（testsrc→testsrc2
+      八帧固定 QP）整流逐字节相同。见 ROADMAP 场景检测器条目。
 
 ### 5.3 编码器其余参数化（5–7 天）
 
-- [ ] W1-7 level 参数化：`level_idc` 生成 SPS/PPS/`rect_size/mv_limit`，并逐级验证
+- [x] W1-7 level 参数化：`level_idc` 生成 SPS/PPS/`rect_size/mv_limit`，并逐级验证
       （至少 3.1/4.0/5.1）。
 - [ ] W1-8 `calc_cime_parameter` + `cime_multi`/`rime_multi` 生成（当前仍在用录制字）。
 - [ ] W1-9 `setup_vepu580_me` 全量参数化（`mei_stor`、search range、colmv）
-- [ ] W1-10 宽度 > 4096（CIME extension lines、行缓冲尺寸、`setup_ext_line_bufs`）
-- [ ] W1-11 `cal_first_i_start_qp`（调用方不给初始 quality 时）
+- [~] W1-10 宽度 > 4096 —— 偏移与 RCB 已推导并有宿主单测，`board_h264_wide_vs_mpp.sh`
+      尚无记录运行。
+- [x] W1-11 `cal_first_i_start_qp` —— 板级 5/5 格逐字节（含 QP 轨迹）。
 
 ### 5.4 编码特性（6–10 天）
 
-- [ ] W1-12 QP map / ROI（`roi_qthd*`、`aq_step`、区域阈值）
-- [ ] W1-13 GDR / intra refresh（`INTRA_RFH_FRAME`、`i_refresh_bit` 窗口、refresh 行）
-- [ ] W1-14 deblock 细调（`-dbe/-dbs` 对应字段）
-- [ ] W1-15 slice split（多 slice、`first_mb_in_slice`、行边界）
+- [x] W1-12 QP map / ROI —— 走 `Vepu580RoiH264BsCfg`/`RoiQpCfg` 块记录，不是 `roi_qthd*`
+      那八行；板级 2/2 格逐字节。
+- [ ] W1-13 GDR / intra refresh —— 推导 + 5 条宿主单测已落地；板级脚本跑过并**发现分歧**
+      （sweep 处参考会重发 SPS/PPS/recovery-point SEI），正在闭合，未算逐字节。
+- [x] W1-14 deblock 细调 —— 含「参考不写 beta」这个 quirk；板级三格逐字节。
+- [~] W1-15 slice split —— 3 条宿主单测；`board_h264_slice_vs_mpp.sh` 结果未记录。
 - [ ] W1-16 hier QP / SMART_P（`hier_qp_cfg`、`vgop`、`vi_bit` 窗口）
 - [ ] W1-17 重编码与多 pass：`check_re_enc`、`reenc_calc_*_ratio`、super frame、
       `-n` 超发时的 drop/pskip 策略；补"同帧重编"路径
 - [ ] W1-18 与 `mpi_enc_test` 的配置对齐（其 CBR 首帧 QP=23 vs 库默认 26），
       搞清楚它额外设了什么；能对齐则加一格对照
 
+- [ ] **W1-19（P1 阻断）P 帧在 640x480 / 1280x720 与参考分歧**：同 AU 的 IDR 逐字节相同、
+      寄存器七段除 14 个地址字外全同，但我们的 P 花更多位（1280x720：1900 vs 1371 字节，
+      解码一致到 66 dB）→ 分歧在送进硬件的数据（源拷贝 / 参考帧 / ME 中间量）。
+      闭合之前，「编码逐字节」这句话只能说到 320x240。
+
 验收：每条特性都要有 C 侧同参数流，逐 NAL 相同；`board_regress_all.sh` 全绿；
-吞吐不劣化（QCIF–1080p 各取一条）。
+吞吐不劣化（QCIF–1080p 各取一条）。**没有板级记录的条目不得写成「已逐字节验证」。**
 
 ---
 
@@ -197,7 +207,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W2-1 用 2024-04 C 编 H.265 固定 QP 流（多尺寸多 QP 多 profile），抓
       `hal_h265e_vepu580.c` 的 ioctl job；用 `tools/gen_vepu580_regs.py` 扩展字段映射
       （H265 专用结构），产出 `src/hal/h265e_regs.rs`。
-- [ ] W2-2 SPS/PPS/VPS 生成（含 tiles/WPP/SAO、RPS、profile/level）
+- [~] W2-2 SPS/PPS/VPS 生成 —— 仅固定 QP IDR 的三个参数集，用独立 HEVC 解析器回读
+      （13 条宿主单测）；tiles/WPP/SAO、RPS、profile/level 变化未做。
 - [ ] W2-3 CTU/CU 编码参数、MVP、SAO 表：照 C 生成，逐字段
 - [ ] W2-4 参考帧与 DPB：与 H.264 共用 `FrameState` 思路，H.265 有 RPS
 - [ ] W2-5 固定 QP 的 I + P 帧逐 NAL 相同（先 320x240，再 640x480/720p）
@@ -227,7 +238,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 8. W4 后处理（L，约 8–12 天）
 
-- [ ] W4-1 IEP（client 28）：去隔行、YUV 缩放、裁剪；按 `vproc/iep` 与 `iep2` 实现
+- [~] W4-1 IEP（client 28）：去隔行 HAL + session + CLI 已落地（18 条宿主字段单测 +
+      2 条 `#[ignore]` 板级断言），板级无记录运行；YUV 缩放与裁剪未做。
 - [ ] W4-2 IEP 与解码器联动（NV12 直通、零拷贝）
 - [ ] W4-3 8/10-bit 互转（打包/planar、位深扩展）
 - [ ] W4-4 HDR tone mapping（若硬件块支持；先 probe）
@@ -243,10 +255,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 按依赖顺序：
 
-- [ ] W5-1 任务队列与状态机：`QUEUE/START/POLL/FLUSH/RESET`，与 C 语义一致
-- [ ] W5-2 异步提交 + 完成回调（回调在 poll 线程触发，不阻塞提交）
+- [x] W5-1 任务队列与状态机：`QUEUE/START/POLL/FLUSH/RESET`，与 C 语义一致
+- [x] W5-2 异步提交 + 完成回调（18 条宿主单测；`SessionGate` 正面处理每进程单会话限制）
 - [ ] W5-3 dma-fence in/out：`MPP_CMD_SET_FENCE`、fence 数组、poll 集成
-- [ ] W5-4 缓冲池：import/export（fd ↔ iova）、引用计数、DPB 释放时机
+- [~] W5-4 缓冲池：引用计数与 in-flight 状态机已落地（9 宿主 + 2 板级 ignore）；
+      fd↔iova import/export 与 DPB 释放时机接入未做。
 - [ ] W5-5 多实例：解决 rkvenc `setup_ext_line_bufs` 的共享行缓冲（每进程单会话限制）
 - [ ] W5-6 多核 CCU：分发与回退（若该 SoC 无 CCU，则只做单核路径并记录）
 - [ ] W5-7 secure/TA：能力探测；无 TA 时明确拒绝（决策 D3）
