@@ -199,6 +199,9 @@ pub struct Job<'a> {
     pub output_capacity: usize,
     /// What rate control decided for this picture, or `None` under fixed QP.
     pub rc: Option<RateControl>,
+    /// The scene-motion state as it stands before this picture - the register
+    /// patch reads it, the next status update moves it.
+    pub tune: &'a SceneTune,
 }
 
 /// What rate control decided about one picture.
@@ -512,6 +515,8 @@ pub struct Vepu580H264 {
     slot: usize,
     /// The rate-control model, present only in CBR mode.
     rc: Option<rc_model::Model>,
+    /// The scene-motion detector, updated from every picture's STATUS window.
+    tune: SceneTune,
 }
 
 impl Vepu580H264 {
@@ -540,6 +545,7 @@ impl Vepu580H264 {
                 .map_err(|e| format!("allocate H.264 motion info: {e}"))?,
             state: FrameState::default(),
             slot: 0,
+            tune: SceneTune::new(false),
             rc: match config.rc_mode {
                 RcMode::FixedQp => None,
                 RcMode::Cbr | RcMode::Vbr | RcMode::Avbr => {
@@ -666,6 +672,7 @@ impl Vepu580H264 {
             state,
             output_capacity: logical_output_size(&self.config)?,
             rc,
+            tune: &self.tune,
         };
         let registers = build_registers(&job)?;
         dump_job_registers(&job, &registers);
@@ -735,8 +742,15 @@ impl Vepu580H264 {
         annex_b.extend_from_slice(&headers);
         annex_b.extend_from_slice(&payload);
         let statistics = Statistics::from_words(&status);
-        dump_statistics(&job.state, &status);
-        if let (Some(model), Some(rc)) = (self.rc.as_mut(), job.rc) {
+        dump_statistics(&state, &status);
+        // Copy the rate-control decision out before the update below so the job
+        // - which borrows the tune state - stops borrowing it.
+        let job_rc = job.rc;
+        drop(job);
+        // `vepu580_h264e_tune_stat_update` runs at the end of the reference's
+        // get-statistics pass, on the finished picture's STATUS window.
+        self.tune.update(&statistics);
+        if let (Some(model), Some(rc)) = (self.rc.as_mut(), job_rc) {
             let frame = if state.is_idr {
                 rc_model::FrameType::Intra
             } else {
@@ -842,13 +856,227 @@ const ATR_WEIGHTS: [[u32; 9]; 4] = [
 const CIME_MULTI: [[u32; 4]; 4] = [[4, 8, 24, 24], [4, 7, 20, 20], [4, 7, 20, 20], [4, 4, 4, 4]];
 const RIME_MULTI: [[u32; 3]; 4] = [[4, 32, 128], [4, 16, 64], [4, 16, 64], [4, 4, 4]];
 
+/// The tune state of a session that has seen nothing, shared by the register
+/// builders in the test modules: every byte-verified capture is such a session.
+#[cfg(test)]
+fn quiet_tune() -> &'static SceneTune {
+    static TUNE: std::sync::OnceLock<SceneTune> = std::sync::OnceLock::new();
+    TUNE.get_or_init(|| SceneTune::new(false))
+}
+
 /// `scene_motion_flag` for a session that has not detected a scene change:
 /// `ap_motion_flag * 2 + curr_scene_motion_flag`, where `ap_motion_flag` is the
 /// scene mode (1 for the default, 0 for IPC) and the current-motion flag is the
-/// detector's output. The detector - `vepu580_h264e_tune_stat_update`, which
-/// reads the block statistics out of the STATUS window - is not ported yet, so
-/// this is the flag's initial value, 0, and the tables are the no-change rows.
+/// detector's output. [`SceneTune`] runs the detector; until it raises the
+/// current flag this is the value the recorded C images carry, and the register
+/// patch stays on the rows the template was captured with.
 pub const SCENE_MOTION_FLAG_DEFAULT: usize = 2;
+
+/// Window lengths of `vepu580_tune.h`; the comment in `hal_h264e_vepu580_tune.c`
+/// says `FRAME_CONTENT_ANALYSIS_NUM >= 5`, `MD_WIN_LEN >= 3` and
+/// `MD_SHOW_LEN == 4`, and the reference build ships 5/5/4.
+const MD_WIN_LEN: usize = 5;
+const MD_FLAG_MATRIX_LEN: usize = 4;
+const SCENE_FLAG_MATRIX_LEN: usize = 5;
+
+/// `MotionLevel` of `vepu580_tune.h`.
+const MOTION_STILL: i32 = 0;
+const MOTION_LEVEL_MOTION: i32 = 1;
+const MOTION_LEVEL_BIG: i32 = 2;
+const MOTION_LEVEL_UNKNOWN: i32 = 3;
+
+/// `mb_avg_madp_thd`: the per-mean-madp gates, three rows for the default scene
+/// mode and the same three again for IPC. The rows are identical in pairs, but
+/// the base index moves between the modes, so they stay spelled out.
+const MB_AVG_MADP_THD: [i32; 6] = [192, 128, 64, 192, 128, 64];
+
+/// `ctu_madp_cnt_thd` of `common/vepu580_tune.c`, the eight per-row count
+/// thresholds the motion level is decided against.
+const CTU_MADP_CNT_THD: [[i32; 8]; 6] = [
+    [50, 100, 130, 50, 100, 550, 500, 550],
+    [100, 150, 200, 80, 120, 500, 450, 550],
+    [150, 200, 250, 100, 150, 450, 400, 450],
+    [50, 100, 130, 50, 100, 550, 500, 550],
+    [100, 150, 200, 80, 120, 500, 450, 550],
+    [150, 200, 250, 100, 150, 450, 400, 450],
+];
+
+/// `madp_num_map`: how the four `md_sad_b16num` histograms are folded into the
+/// five count windows the level rules read. Row 4 - the all-ones row - is the
+/// "anything at all happened" test the level decision gates on.
+const MADP_NUM_MAP: [[i32; 4]; 5] = [
+    [0, 0, 0, 1],
+    [0, 0, 1, 0],
+    [0, 0, 1, 1],
+    [1, 0, 0, 0],
+    [1, 1, 1, 1],
+];
+
+/// `intra_atf_wgt` and `skip_atf_wgt` of `hal_h264e_vepu580_tune.c`, re-written
+/// by the register patch on the `scene_motion_flag` row. Row 2 - the default
+/// scene mode without a detected change - is what every captured image carries;
+/// the skip row is all sixteens in all four rows.
+const INTRA_ATF_WEIGHTS: [[u32; 12]; 4] = [
+    [24, 22, 21, 22, 21, 20, 20, 19, 18, 16, 16, 16],
+    [16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16],
+    [22, 21, 20, 21, 20, 19, 20, 19, 18, 16, 16, 16],
+    [16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16],
+];
+const SKIP_ATF_WEIGHTS: [[u32; 13]; 4] = [[16; 13], [16; 13], [16; 13], [16; 13]];
+
+/// `HalH264eVepu580Tune` of `hal_h264e_vepu580_tune.c`: the per-session state of
+/// `vepu580_h264e_tune_stat_update`, fed by the STATUS window of each finished
+/// picture and read by the register patch of the next one.
+///
+/// The rule the state machine implements: per picture, fold the `md_sad_b16num`
+/// histograms into five count windows, compare the mean inter difference
+/// against a row of `mb_avg_madp_thd` and the windows against scaled row
+/// thresholds to get a motion level, score a sliding window of the last five
+/// levels, and raise the current-motion flag when a majority of the last four
+/// scored pictures flagged large motion. Three consecutive large-motion pictures
+/// (`md_flag_matrix[0..3]` all set) pin the flag at 1 outright - that is the
+/// "hard cut has happened" case the HANDOFF describes.
+///
+/// The `txtr_madi` array of the C exists but is never written or read there; it
+/// is left out rather than carried as decoration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneTune {
+    /// `scene_mode == MPP_ENC_SCENE_MODE_IPC`, which flips `ap_motion_flag`
+    /// from the default scene mode's 1 to 0.
+    ipc_scene_mode: bool,
+    curr_scene_motion_flag: i32,
+    ap_motion_flag: i32,
+    md_madp: [i32; MD_WIN_LEN],
+    md_flag_matrix: [i32; MD_FLAG_MATRIX_LEN],
+    scene_motion_flag_matrix: [i32; SCENE_FLAG_MATRIX_LEN],
+    pre_madp: [i32; 2],
+    pre_madi: [i32; 2],
+}
+
+impl SceneTune {
+    pub fn new(ipc_scene_mode: bool) -> SceneTune {
+        SceneTune {
+            ipc_scene_mode,
+            curr_scene_motion_flag: 0,
+            ap_motion_flag: if ipc_scene_mode { 0 } else { 1 },
+            md_madp: [0; MD_WIN_LEN],
+            md_flag_matrix: [0; MD_FLAG_MATRIX_LEN],
+            scene_motion_flag_matrix: [0; SCENE_FLAG_MATRIX_LEN],
+            // -1 until the first picture, exactly as `tune_init` leaves them.
+            pre_madp: [-1, -1],
+            pre_madi: [-1, -1],
+        }
+    }
+
+    /// `curr_scene_motion_flag`, as the register patch reads it.
+    pub fn curr_scene_motion_flag(&self) -> i32 {
+        self.curr_scene_motion_flag
+    }
+
+    /// `scene_motion_flag = ap_motion_flag * 2 + curr_scene_motion_flag`, the
+    /// row selector for the weight and multiplier tables.
+    pub fn scene_motion_flag(&self) -> usize {
+        (self.ap_motion_flag * 2 + self.curr_scene_motion_flag) as usize
+    }
+
+    /// `vepu580_h264e_tune_stat_update`, driven by the STATUS window the
+    /// finished picture wrote. The statistics arrive exactly as the C reads them
+    /// out of `regs->reg_st` - same fields, same divisors, same zero guards.
+    pub fn update(&mut self, stats: &Statistics) {
+        self.ap_motion_flag = if self.ipc_scene_mode { 0 } else { 1 };
+        let mut cnt = [0i64; 5];
+        for (i, window) in MADP_NUM_MAP.iter().enumerate() {
+            for (k, weight) in window.iter().enumerate() {
+                cnt[i] += i64::from(stats.md_sad_b16num[k]) * i64::from(*weight);
+            }
+        }
+
+        self.pre_madi[0] = if stats.num_b16 == 0 {
+            0
+        } else {
+            (stats.madi / stats.num_b16) as i32
+        };
+        self.pre_madp[0] = if stats.num_ctu == 0 {
+            0
+        } else {
+            (stats.madp / stats.num_ctu) as i32
+        };
+
+        let mut mb_num: i64 = stats.madi_b16num.iter().map(|v| i64::from(*v)).sum();
+        if mb_num == 0 {
+            mb_num = 1;
+        }
+        let mvbit = if self.ap_motion_flag != 0 { 15 } else { 10 };
+
+        let mut madp = MOTION_STILL;
+        if cnt[4] != 0 {
+            let mut base = (self.ap_motion_flag * 3) as usize;
+            for _ in 0..3 {
+                if self.pre_madp[0] >= MB_AVG_MADP_THD[base] {
+                    let thd = CTU_MADP_CNT_THD[base];
+                    let scaled = |i: usize| (mb_num * i64::from(thd[i])) >> mvbit;
+                    if cnt[0] > scaled(0) || cnt[1] > scaled(1) || cnt[2] > scaled(2) {
+                        madp = MOTION_LEVEL_BIG;
+                    } else if ((cnt[0] > scaled(3) || cnt[1] > scaled(4)) && cnt[3] < scaled(5))
+                        || cnt[3] < scaled(6)
+                    {
+                        // The C nests the third `cnt[3] <` rule in an `else if`
+                        // of its own; collapsing it into the second rule's
+                        // `||` as written here keeps the semantics only because
+                        // the second rule's conclusion is the same - both
+                        // branches mean large motion.
+                        madp = MOTION_LEVEL_BIG;
+                    } else if cnt[3] < scaled(7) {
+                        madp = MOTION_LEVEL_MOTION;
+                    }
+                    break;
+                }
+                base += 1;
+            }
+        } else {
+            madp = MOTION_LEVEL_UNKNOWN;
+        }
+
+        let mut score_t = ((MD_WIN_LEN as i32 - 2) * 6 + 2 * 8 + 2 * 11 + 2 * 13) / 2;
+        let mut n_score = if madp != MOTION_LEVEL_UNKNOWN {
+            madp * 13 + self.md_madp[0] * 11 + self.md_madp[1] * 8
+        } else {
+            score_t -= 13;
+            self.md_madp[0] * 11 + self.md_madp[1] * 8
+        };
+        n_score += self.md_madp[2..].iter().map(|v| v * 6).sum::<i32>();
+        let md_flag = if n_score >= score_t { 1 } else { 0 };
+
+        self.curr_scene_motion_flag = 0;
+        if self.md_flag_matrix[0] != 0 && self.md_flag_matrix[1] != 0 && self.md_flag_matrix[2] != 0
+        {
+            self.curr_scene_motion_flag = 1;
+        } else if (self.md_flag_matrix[0] != 0 && self.md_flag_matrix[1] != 0)
+            || (self.md_flag_matrix[1] != 0
+                && self.md_flag_matrix[2] != 0
+                && self.md_flag_matrix[3] != 0)
+        {
+            self.curr_scene_motion_flag = md_flag;
+        }
+
+        if madp != MOTION_LEVEL_UNKNOWN {
+            for j in (0..MD_WIN_LEN - 1).rev() {
+                self.md_madp[j + 1] = self.md_madp[j];
+            }
+            self.md_madp[0] = madp;
+        }
+        for j in (0..MD_FLAG_MATRIX_LEN - 1).rev() {
+            self.md_flag_matrix[j + 1] = self.md_flag_matrix[j];
+        }
+        self.md_flag_matrix[0] = md_flag;
+        for j in (0..SCENE_FLAG_MATRIX_LEN - 1).rev() {
+            self.scene_motion_flag_matrix[j + 1] = self.scene_motion_flag_matrix[j];
+        }
+        self.scene_motion_flag_matrix[0] = self.curr_scene_motion_flag;
+        self.pre_madi[1] = self.pre_madi[0];
+        self.pre_madp[1] = self.pre_madp[0];
+    }
+}
 
 /// The STATUS window (`Vepu580Status_t`), read back after every job.
 ///
@@ -1164,20 +1392,98 @@ impl RegisterFile {
     }
 
     /// `vepu580_h264e_tune_reg_patch`, the pass that runs last and re-writes the
-    /// inter ATR weights and the search multipliers from the scene tables. The
-    /// current-motion branch is unreachable while the detector is missing, so it
-    /// is not silently dropped - it is here, keyed on a flag that stays 0.
+    /// inter ATR weights and the search multipliers from the `scene_motion_flag`
+    /// row, plus the harder intra cost thresholds, the 341 quant bias and the
+    /// flattened search limits whenever the detector has flagged a scene change.
+    ///
+    /// While the flag is at its no-change default the recorded image already
+    /// carries every row this pass would write - the capture *is* a run through
+    /// this patch - so those writes are kept out of the quiet path and pinned by
+    /// `tune_default_rows_match_the_captured_image` instead of being repeated
+    /// from the tables. The moment the detector moves, the writes happen.
     fn apply_tune(&mut self, job: &Job<'_>) -> Result<(), String> {
+        let tune = job.tune;
+        let curr = tune.curr_scene_motion_flag() != 0;
+        let flag = tune.scene_motion_flag();
         if !job.state.is_idr {
-            self.set_atr_weights(&ATR_WEIGHTS[SCENE_MOTION_FLAG_DEFAULT])?;
+            // `src = (curr || SMTRC) ? &klut_weight[0] : &klut_weight[4]`; this
+            // driver never runs SMTRC, so only the current-motion flag moves it.
+            // `apply_picture` picked offset four, the no-change row.
+            if curr {
+                let first = vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word;
+                for index in 0..CHROMA_KLUT_WORDS {
+                    let word = self.rc_klut_word_mut(first + index)?;
+                    *word = CHROMA_KLUT_WEIGHT[index];
+                }
+            }
+            self.set_atr_weights(&ATR_WEIGHTS[flag])?;
         }
-        // The search multipliers the reference re-writes in the same pass
-        // (`cime_multi`, `rime_multi`) are deliberately not reproduced field by
-        // field: that part of section 3 moved between the 2024-04 build this crate
-        // is verified against and current master, and the captured image already
-        // ends up carrying the rows the reference writes there, so those words
-        // match today. Rewriting them from a guessed layout would trade a real
-        // match for a cosmetic one in the port's shape.
+        if curr {
+            self.set_param(
+                &vepu580_regs::S3_LVL16_INTRA_UL_CST_THD_LVL16_INTRA_UL_CST_THLD,
+                2501,
+            )?;
+            self.set_param(&vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_P, 341)?;
+            self.set(&vepu580_regs::H264_IPRD_CSTS_VTHD_Y, 0)?;
+            self.set(&vepu580_regs::H264_IPRD_CSTS_VTHD_C, 0)?;
+            self.set(&vepu580_regs::RCKLUT_KLUT_OFST_CHRM_KLUT_OFST, 0)?;
+            self.set(&vepu580_regs::H264_RDO_CFG_ATF_INTRA_E, 0)?;
+            self.set(&vepu580_regs::RDO_RDO_SQI_CFG_ATF_PSKIP_EN, 0)?;
+            self.set_param(&vepu580_regs::S3_ATR_THD1_ATR_THDQP, 51)?;
+            self.set_param(&vepu580_regs::S3_CIME_SQI_CFG_CIME_PMV_SET_ZERO, 0)?;
+            self.set_param(&vepu580_regs::S3_RIME_SQI_THD_CIME_SAD_TH0, 0)?;
+            self.set_param(&vepu580_regs::S3_FME_SQI_THD0_CIME_SAD_PU16_TH, 0)?;
+            self.set_param(&vepu580_regs::S3_FME_SQI_THD1_MOVE_LAMBDA, 8)?;
+        }
+        if flag != SCENE_MOTION_FLAG_DEFAULT {
+            // The rows the patch re-writes on every picture. With a detected
+            // change the recorded image is the wrong row, so they get written
+            // from the tables; the quiet case is covered by the test above.
+            let intra_fields = [
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT00,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT01,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT02,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT10,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT11,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT12,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT20,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT21,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT22,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT30,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT31,
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT32,
+            ];
+            for (field, value) in intra_fields.iter().zip(INTRA_ATF_WEIGHTS[flag]) {
+                self.set(field, value)?;
+            }
+            let skip_fields = [
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT00,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT10,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT11,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT12,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT20,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT21,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT22,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT30,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT31,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT32,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT40,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT41,
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT42,
+            ];
+            for (field, value) in skip_fields.iter().zip(SKIP_ATF_WEIGHTS[flag]) {
+                self.set(field, value)?;
+            }
+            let cime = &CIME_MULTI[flag];
+            self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI0, cime[0])?;
+            self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI1, cime[1])?;
+            self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI1_CIME_MULTI2, cime[2])?;
+            self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI1_CIME_MULTI3, cime[3])?;
+            let rime = &RIME_MULTI[flag];
+            self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI0, rime[0])?;
+            self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI1, rime[1])?;
+            self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI2, rime[2])?;
+        }
         Ok(())
     }
     /// The nine Lvl16 / Lvl8 / Lvl4 ATR weight fields, in declaration order.
@@ -1628,6 +1934,7 @@ mod tests {
     /// A job on stand-in fds, which the register builder only copies around.
     fn job(config: &EncoderConfig, state: FrameState) -> Job<'_> {
         Job {
+            tune: quiet_tune(),
             config,
             input_fd: 7,
             output_fd: 9,
@@ -1826,6 +2133,7 @@ mod tests {
             poc: 2,
         };
         let p = build_registers(&Job {
+            tune: quiet_tune(),
             reference_fd: 21,
             reference_thumb_fd: 22,
             ..job(&config, p_state)
@@ -2254,6 +2562,237 @@ mod tests {
             );
         }
     }
+
+    /// The rows `vepu580_h264e_tune_reg_patch` writes on every picture - the
+    /// ATR weights, the search multipliers and the two ATF weight sets - match
+    /// the captured image while the detector is silent. That agreement is what
+    /// lets the quiet path skip those writes; this test is the guard for the
+    /// day it stops being true, and it also pins the positions of the fields
+    /// the generator only learned to reach with the `Vepu580WgtCommon` pass:
+    /// the CIME/RIME words of the captured job carry exactly the row the
+    /// 2024-04 build computed for a no-change default-scene session.
+    #[test]
+    fn tune_default_rows_match_the_captured_image() {
+        let p = registers_at(&config(), FrameState::default().next(60));
+        for (field, want) in [
+            (
+                &vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI0,
+                CIME_MULTI[2][0],
+            ),
+            (
+                &vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI1,
+                CIME_MULTI[2][1],
+            ),
+            (
+                &vepu580_regs::S3_CIME_SQI_MULTI1_CIME_MULTI2,
+                CIME_MULTI[2][2],
+            ),
+            (
+                &vepu580_regs::S3_CIME_SQI_MULTI1_CIME_MULTI3,
+                CIME_MULTI[2][3],
+            ),
+            (
+                &vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI0,
+                RIME_MULTI[2][0],
+            ),
+            (
+                &vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI1,
+                RIME_MULTI[2][1],
+            ),
+            (
+                &vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI2,
+                RIME_MULTI[2][2],
+            ),
+            (
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT00,
+                INTRA_ATF_WEIGHTS[2][0],
+            ),
+            (
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT21,
+                INTRA_ATF_WEIGHTS[2][7],
+            ),
+            (
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT32,
+                INTRA_ATF_WEIGHTS[2][11],
+            ),
+            (
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT00,
+                SKIP_ATF_WEIGHTS[2][0],
+            ),
+            (
+                &vepu580_regs::S3_LVL16_ATR_WGT_LVL16_ATR_WGT0,
+                ATR_WEIGHTS[2][0],
+            ),
+            (
+                &vepu580_regs::S3_LVL4_ATR_WGT_LVL4_ATR_WGT2,
+                ATR_WEIGHTS[2][8],
+            ),
+        ] {
+            assert_eq!(
+                p.get(field).unwrap(),
+                want,
+                "{} carries the row the C build wrote",
+                field.name
+            );
+        }
+    }
+
+    /// The C's own STATUS fixture - a still sequence, IDR then a repeated P -
+    /// keeps the detector exactly where the port pinned it before it existed:
+    /// no motion level above still, no scene flag, and the next picture's
+    /// registers word-for-word what a quiet session would build.
+    #[test]
+    fn the_c_status_fixture_keeps_the_detector_quiet() {
+        let text = std::fs::read_to_string("tests/data/vepu580_status_c_fixqp_2f.txt")
+            .expect("C STATUS capture");
+        let seen: Vec<Statistics> = text
+            .lines()
+            .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+            .map(|line| {
+                Statistics::from_words(
+                    &line
+                        .split_whitespace()
+                        .map(|w| u32::from_str_radix(w, 16).unwrap())
+                        .collect::<Vec<u32>>(),
+                )
+            })
+            .collect();
+
+        let mut tune = SceneTune::new(false);
+        for stats in &seen {
+            tune.update(stats);
+            assert_eq!(tune.curr_scene_motion_flag(), 0, "a still fixture");
+        }
+        assert_eq!(tune.scene_motion_flag(), SCENE_MOTION_FLAG_DEFAULT);
+
+        let state = FrameState::default().next(60);
+        let with_fixture_state = build_registers(&Job {
+            tune: &tune,
+            ..job(&config(), state)
+        })
+        .unwrap();
+        let quiet = registers_at(&config(), state);
+        for (ours, theirs, name) in [
+            (
+                with_fixture_state.base.as_slice(),
+                quiet.base.as_slice(),
+                "base",
+            ),
+            (
+                with_fixture_state.rc_klut.as_slice(),
+                quiet.rc_klut.as_slice(),
+                "rc_klut",
+            ),
+            (
+                with_fixture_state.param.as_slice(),
+                quiet.param.as_slice(),
+                "param",
+            ),
+            (
+                with_fixture_state.rdo.as_slice(),
+                quiet.rdo.as_slice(),
+                "rdo",
+            ),
+        ] {
+            assert_eq!(ours, theirs, "{name} moved on a still sequence");
+        }
+    }
+
+    /// Four pictures of large motion, one per `update`, against the detector's
+    /// own rules: the score `2*13 = 26` clears nothing on the first picture,
+    /// `26 + 2*11 = 48` clears the 41-point threshold on the second, and the
+    /// flag rises only once two *scored* pictures already sit in the matrix -
+    /// which, the matrix being pushed after the check, is the fourth picture.
+    /// That trajectory, not the end state, is what pins the window arithmetic;
+    /// the register patch that follows has to move every table to the row
+    /// `ap * 2 + 1 = 3` and run the current-motion branch.
+    #[test]
+    fn three_consecutive_large_motion_pictures_switch_the_scene_mode() {
+        // Statistics chosen against the rules at the default scene mode:
+        // mean madp 200 clears the 192 gate, 100 counted blocks and one block
+        // in the top `md_sad` histogram exceed `100 * 50 >> 15` = 0.
+        let big = Statistics {
+            bitstream_bytes: 1000,
+            num_b16: 300,
+            madi: 600,
+            madp: 200,
+            num_ctu: 1,
+            md_sad_b16num: [0, 0, 0, 1],
+            madi_b16num: [100, 0, 0, 0],
+            qp_sum: 7800,
+        };
+
+        let mut tune = SceneTune::new(false);
+        let flags: Vec<i32> = (0..4)
+            .map(|_| {
+                tune.update(&big);
+                tune.curr_scene_motion_flag()
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            vec![0, 0, 0, 1],
+            "the flag rises on the fourth picture"
+        );
+        assert_eq!(tune.scene_motion_flag(), 3);
+
+        let state = FrameState::default().next(60);
+        let p = build_registers(&Job {
+            tune: &tune,
+            ..job(&config(), state)
+        })
+        .unwrap();
+        for (field, want) in [
+            (
+                &vepu580_regs::S3_LVL16_INTRA_UL_CST_THD_LVL16_INTRA_UL_CST_THLD,
+                2501,
+            ),
+            (&vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_P, 341),
+            (&vepu580_regs::H264_IPRD_CSTS_VTHD_Y, 0),
+            (&vepu580_regs::H264_IPRD_CSTS_VTHD_C, 0),
+            (&vepu580_regs::RCKLUT_KLUT_OFST_CHRM_KLUT_OFST, 0),
+            (&vepu580_regs::H264_RDO_CFG_ATF_INTRA_E, 0),
+            (&vepu580_regs::RDO_RDO_SQI_CFG_ATF_PSKIP_EN, 0),
+            (&vepu580_regs::S3_ATR_THD1_ATR_THDQP, 51),
+            (&vepu580_regs::S3_CIME_SQI_CFG_CIME_PMV_SET_ZERO, 0),
+            (&vepu580_regs::S3_RIME_SQI_THD_CIME_SAD_TH0, 0),
+            (&vepu580_regs::S3_FME_SQI_THD0_CIME_SAD_PU16_TH, 0),
+            (&vepu580_regs::S3_FME_SQI_THD1_MOVE_LAMBDA, 8),
+        ] {
+            assert_eq!(
+                p.get(field).unwrap(),
+                want,
+                "{} after the switch",
+                field.name
+            );
+        }
+        // The tables moved to row 3: uniform 20s for ATR, 4s for the searches.
+        assert_eq!(
+            p.get(&vepu580_regs::S3_LVL16_ATR_WGT_LVL16_ATR_WGT0)
+                .unwrap(),
+            ATR_WEIGHTS[3][0]
+        );
+        assert_eq!(
+            p.get(&vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI1)
+                .unwrap(),
+            CIME_MULTI[3][1]
+        );
+        assert_eq!(
+            p.get(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI2).unwrap(),
+            RIME_MULTI[3][2]
+        );
+        assert_eq!(
+            p.get(&vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT00)
+                .unwrap(),
+            INTRA_ATF_WEIGHTS[3][0]
+        );
+        // The inter chroma KLUT was pulled back to the table's first row.
+        assert_eq!(
+            p.rc_klut[vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word - 1024],
+            CHROMA_KLUT_WEIGHT[0],
+            "the current-motion row of the chroma weights"
+        );
+    }
 }
 
 /// The string MPP would fill with its own `git log` line. Ours says what it is:
@@ -2372,6 +2911,7 @@ mod rate_control_registers {
                 FrameState::default().next(config.gop)
             },
             output_capacity: logical_output_size(&config).unwrap(),
+            tune: quiet_tune(),
         })
         .unwrap();
         file.apply_rate_control(&config, is_idr, &rate).unwrap();
@@ -2449,6 +2989,7 @@ mod rate_control_registers {
             rc: None,
             state: FrameState::default(),
             output_capacity: logical_output_size(&config).unwrap(),
+            tune: quiet_tune(),
         })
         .unwrap();
         let rate = RateControl {
