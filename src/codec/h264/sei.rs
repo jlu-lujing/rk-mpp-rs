@@ -163,6 +163,12 @@ impl RcCfgLine {
         }
     }
 
+    /// The same rendering under another mode's name.
+    pub fn with_mode(mut self, mode_name: &'static str) -> Self {
+        self.mode_name = mode_name;
+        self
+    }
+
     /// The fixed-QP rendering: every quality bound collapses onto `init_quality`
     /// and the I/QP delta is zero, as the reference's own output shows for
     /// `-rc 2 -qc 26:...`.

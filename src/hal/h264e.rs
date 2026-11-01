@@ -514,7 +514,7 @@ impl Vepu580H264 {
             slot: 0,
             rc: match config.rc_mode {
                 RcMode::FixedQp => None,
-                RcMode::Cbr => Some(rc_model::Model::new(rc_model_config(&config)?)),
+                RcMode::Cbr | RcMode::Vbr => Some(rc_model::Model::new(rc_model_config(&config)?)),
             },
             config,
         })
@@ -546,12 +546,19 @@ impl Vepu580H264 {
                 self.config.bps_max,
                 i64::from(self.config.gop),
             ),
-            RcMode::Cbr => sei::RcCfgLine::cbr(
+            // VBR renders the same line with a different mode name: the bit rate,
+            // bounds and quality band are the library's own defaults in both.
+            RcMode::Cbr | RcMode::Vbr => sei::RcCfgLine::cbr(
                 self.config.bps_target,
                 self.config.bps_min,
                 self.config.bps_max,
                 i64::from(self.config.gop),
-            ),
+            )
+            .with_mode(if self.config.rc_mode == RcMode::Vbr {
+                "vbr"
+            } else {
+                "cbr"
+            }),
         };
         out.extend(sei::user_data(
             &sei::UUID_RC_CFG,
@@ -1425,6 +1432,10 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
         quality_min: 8,
         quality_max: 48,
         i_quality_delta: 2,
+        mode: match config.rc_mode {
+            RcMode::Vbr => rc_model::Mode::Vbr,
+            _ => rc_model::Mode::Cbr,
+        },
     })
 }
 

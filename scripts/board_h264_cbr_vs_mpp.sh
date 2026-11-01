@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CBR: our encoder against the reference library, NAL by NAL.
+# CBR and VBR: our encoder against the reference library, NAL by NAL.
 #
 # The reference is driven through `tools/rc_probe.c` rather than `mpi_enc_test`,
 # because both sides then configure the same three things - CBR, the bit rate and
@@ -43,21 +43,26 @@ scp -q tools/rc_probe.c t6:/tmp/ 2>/dev/null
 ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
 
-ssh t6 "cc -O2 -w -I$mpp_ref/inc /tmp/rc_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/rc_probe &&
-        sudo rm -f /tmp/cbr_ours.264 /tmp/cbr_c.264 &&
-        cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture /tmp/cbr_ours.264 \
-          $SIZE 26 baseline $FRAMES 60 $BPS_TARGET:$BPS_MIN:$BPS_MAX >/dev/null &&
-        sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/rc_probe $fixture /tmp/cbr_c.264 \
-          $SIZE $FRAMES $BPS_TARGET $BPS_MIN $BPS_MAX >/dev/null 2>&1 &&
-        sudo chmod 644 /tmp/cbr_ours.264 /tmp/cbr_c.264"
+ssh t6 "cc -O2 -w -I$mpp_ref/inc /tmp/rc_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/rc_probe" || true
 
-if ssh t6 "test -s /tmp/cbr_ours.264 && test -s /tmp/cbr_c.264"; then :; else
-  printf 'FAIL CBR (one side produced no stream)\n'; exit 1
-fi
-
-scp -q t6:/tmp/cbr_ours.264 t6:/tmp/cbr_c.264 /tmp/ 2>/dev/null
-if python3 scripts/compare_streams.py /tmp/cbr_c.264 /tmp/cbr_ours.264; then
-  printf 'PASS CBR (%s, %d frames, %s:%s:%s)\n' "$SIZE" "$FRAMES" "$BPS_TARGET" "$BPS_MIN" "$BPS_MAX"
-else
-  printf 'FAIL CBR (bitstreams differ)\n'; exit 1
-fi
+fail=0
+for entry in cbr:1 vbr:0; do
+  mode="${entry%%:*}"; probe_mode="${entry##*:}"
+  ssh t6 "sudo rm -f /tmp/rc_ours_$mode.264 /tmp/rc_c_$mode.264 &&
+          cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture /tmp/rc_ours_$mode.264 \
+            $SIZE 26 baseline $FRAMES 60 $mode:$BPS_TARGET:$BPS_MIN:$BPS_MAX >/dev/null &&
+          sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/rc_probe $fixture /tmp/rc_c_$mode.264 \
+            $SIZE $FRAMES $BPS_TARGET $BPS_MIN $BPS_MAX $probe_mode >/dev/null 2>&1 &&
+          sudo chmod 644 /tmp/rc_ours_$mode.264 /tmp/rc_c_$mode.264"
+  if ! ssh t6 "test -s /tmp/rc_ours_$mode.264 && test -s /tmp/rc_c_$mode.264"; then
+    printf 'FAIL %s (one side produced no stream)\n' "$mode"; fail=1; continue
+  fi
+  scp -q t6:"/tmp/rc_ours_$mode.264" t6:"/tmp/rc_c_$mode.264" /tmp/ 2>/dev/null
+  if python3 scripts/compare_streams.py "/tmp/rc_c_$mode.264" "/tmp/rc_ours_$mode.264"; then
+    printf 'PASS %s (%s, %d frames, %s:%s:%s)\n' "$mode" "$SIZE" "$FRAMES" \
+      "$BPS_TARGET" "$BPS_MIN" "$BPS_MAX"
+  else
+    printf 'FAIL %s (bitstreams differ)\n' "$mode"; fail=1
+  fi
+done
+exit "$fail"

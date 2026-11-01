@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR rate control is ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL; VBR/AVBR, scene detection, ROI/GDR and slice split remain** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR *and* VBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; AVBR, scene detection, ROI/GDR and slice split remain** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for rate control, level and the CIME/RIME corner of section 3 (see the encoder notes below); H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -921,6 +921,20 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       26. That harness difference is recorded as an open question, not papered
       over: the same six-frame stream from `mpi_enc_test` is a different stream,
       and matching it needs its exact configuration enumerated.
+- [x] **VBR, verified the same way.** `calc_vbr_ratio` is three terms rather than
+      four - no buffer water level, because VBR is allowed to spend what it saved -
+      with the bit-error weight at 32 instead of 52, the logarithm table indexed by
+      `bps_max`, and the instantaneous term counted only while the rate is above the
+      target or falling with the target still ahead. Two rules decide the whole
+      mode and both are in `vbr_budgets_from_the_max_and_steers_to_the_target`: the
+      GOP budget comes from `bps_max` (60 frames of 350 kbps is 700,000 bits, so the
+      first picture is aimed at 101,449 where CBR's target budget gives 86,956) while
+      the controller steers towards `bps_target`. `board_h264_cbr_vs_mpp.sh` now runs
+      both modes and passes both: ten NAL units identical each, six frames.
+      AVBR is the remaining member of the family. It differs by weighting motion
+      statistics - `moving_ratio_calc` reads `pre_i_bit`, `pre_i_mean_qp`, `pre_p_bit`
+      and the `madi`/`madp` windows, and its own `min_still_percent` - and none of
+      those windows is fed yet.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the

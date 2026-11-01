@@ -54,6 +54,7 @@ int main(int argc, char **argv)
     int bps_target = argc > 6 ? atoi(argv[6]) : 300000;
     int bps_min = argc > 7 ? atoi(argv[7]) : 250000;
     int bps_max = argc > 8 ? atoi(argv[8]) : 350000;
+    int mode = argc > 9 ? atoi(argv[9]) : 1; /* 0: VBR, 1: CBR */
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
@@ -97,7 +98,8 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:mode", MPP_ENC_RC_MODE_CBR));
+    CHECK(mpp_enc_cfg_set_s32(
+        cfg, "rc:mode", mode ? MPP_ENC_RC_MODE_CBR : MPP_ENC_RC_MODE_VBR));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_target", bps_target));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_max", bps_max));

@@ -47,6 +47,14 @@ pub enum FrameType {
     InterP,
 }
 
+/// `RC_CBR` and `RC_VBR` of `rc_model_v2.c`. `RC_AVBR`, which weighs motion
+/// statistics through `moving_ratio_calc`, is not ported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Cbr,
+    Vbr,
+}
+
 /// The configuration the model is initialised with, in MPP's own units: quality on
 /// the 0..100 scale, bit rate in bits per second, `igop` in frames.
 #[derive(Debug, Clone)]
@@ -66,6 +74,8 @@ pub struct Config {
     pub max_i_bit_prop: i32,
     /// `usr_cfg.stats_time`, `set_rc_cfg`'s `rc->stats_time ? : 3` clipped to 1..60.
     pub stats_time: i32,
+    /// Which controller runs.
+    pub mode: Mode,
     /// The quantiser bounds, on MPP's 0..100 quality scale. `h264e_api_v2.c`'s
     /// defaults: medium (26) as the initial target and 8..48 as the bounds, with an
     /// I-picture delta of two - the `:2` the `uuid_rc_cfg` SEI ends with.
@@ -94,6 +104,7 @@ impl Config {
             quality_min: 8,
             quality_max: 48,
             i_quality_delta: 2,
+            mode: Mode::Cbr,
         }
     }
 }
@@ -156,13 +167,20 @@ impl Model {
             "the all-intra and infinite GOP forms are not ported"
         );
 
-        // CBR aims at `bps_target`; every other mode aims at `bps_max`.
+        // The GOP budget comes from `bps_target` on CBR and from `bps_max` on VBR;
+        // `target_bps` - what the controllers steer towards - is `bps_target` either
+        // way, which is the distinction `bits_model_init` makes between its local
+        // `target_bps` and `ctx->target_bps`.
+        let budget_bps = match cfg.mode {
+            Mode::Cbr => cfg.bps_target,
+            Mode::Vbr => cfg.bps_max,
+        };
         let target_bps = cfg.bps_target;
         let fps = (cfg.fps_num / cfg.fps_den).max(1);
         let gop_total_bits =
-            (cfg.igop as i64 * target_bps as i64 * cfg.fps_den as i64) / cfg.fps_num as i64;
-        let bit_per_frame = target_bps * cfg.fps_den / cfg.fps_num;
-        let watl_thrd = 3 * target_bps;
+            (cfg.igop as i64 * budget_bps as i64 * cfg.fps_den as i64) / cfg.fps_num as i64;
+        let bit_per_frame = budget_bps * cfg.fps_den / cfg.fps_num;
+        let watl_thrd = 3 * budget_bps;
         let stat_watl = watl_thrd >> 3;
 
         let mut out = Model {
@@ -386,6 +404,51 @@ impl Model {
         bit_target
     }
 
+    /// `calc_vbr_ratio`: the VBR controller's three terms.
+    ///
+    /// It shares the allocation and the QP bookkeeping with CBR and differs in what
+    /// it measures against: the bit-error term weights undershoot at 32 rather than
+    /// 52, the logarithm table is indexed by `bps_max` rather than `bps_target`, the
+    /// instantaneous-rate term only counts while the rate is above the target or
+    /// while it is falling with the target still ahead, and the buffer water level
+    /// is not a term at all - VBR is allowed to spend what it has saved.
+    pub fn calc_vbr_ratio(&mut self, frame: FrameType) -> i32 {
+        let bit_target = self.alloc(frame);
+        let bps_change = self.target_bps;
+        let max_bps = self.cfg.bps_max;
+
+        let mut bit_diff_ratio = if self.pre_target_bits > self.pre_real_bits {
+            32 * (self.pre_real_bits - self.pre_target_bits) / self.pre_target_bits
+        } else {
+            64 * (self.pre_real_bits - self.pre_target_bits) / self.pre_target_bits
+        };
+
+        let idx1 = clip(self.ins_bps / (max_bps >> 5), 0, 63) as usize;
+        let idx2 = clip(self.last_inst_bps / (max_bps >> 5), 0, 63) as usize;
+        let mut ins_ratio = TAB_LNX[idx1] - TAB_LNX[idx2];
+        if self.ins_bps > bps_change && self.ins_bps > self.last_inst_bps {
+            ins_ratio *= 6;
+        } else if self.ins_bps <= self.last_inst_bps && bps_change > self.last_inst_bps {
+            ins_ratio *= 3;
+        } else {
+            ins_ratio = 0;
+        }
+
+        bit_diff_ratio = clip(bit_diff_ratio, -128, 256);
+        ins_ratio = clip(ins_ratio, -128, 256);
+        let bps_ratio = clip(3 * (self.ins_bps - bps_change) / (max_bps >> 4), -16, 32);
+
+        // Past an I/P ratio of 640 the intra share is large enough that both ratio
+        // terms are damped rather than trusted.
+        if self.i_scale > 640 {
+            bit_diff_ratio = clip(bit_diff_ratio, -16, 32);
+            ins_ratio = clip(ins_ratio, -16, 32);
+        }
+
+        self.next_ratio = bit_diff_ratio + ins_ratio + bps_ratio;
+        bit_target
+    }
+
     /// `rc_model_v2_start` plus `rc_model_v2_hal_start` for CBR: this picture's bit
     /// target and the QP it will be coded at.
     ///
@@ -399,7 +462,11 @@ impl Model {
         let (bit_target, first) = if self.first {
             (self.alloc(frame), true)
         } else {
-            (self.calc_cbr_ratio(frame), false)
+            let target = match self.cfg.mode {
+                Mode::Cbr => self.calc_cbr_ratio(frame),
+                Mode::Vbr => self.calc_vbr_ratio(frame),
+            };
+            (target, false)
         };
         self.preset(frame, bit_target);
 
@@ -646,6 +713,36 @@ mod tests {
             assert_eq!(seen, expect.to_vec(), "run {name}");
         }
     }
+    /// VBR budgets from `bps_max` and steers towards `bps_target`. Both halves are
+    /// visible in the reference's own printout (`mode vbr bps [250000:300000:350000]`,
+    /// `total_bits 112000000`): a port that budgets from the target produces a first
+    /// picture aimed at 86,956 instead of 101,449 and is wrong from picture zero.
+    #[test]
+    fn vbr_budgets_from_the_max_and_steers_to_the_target() {
+        let mut cfg = Config::cbr(300_000, 250_000, 350_000, 60);
+        cfg.mode = Mode::Vbr;
+        let mut model = Model::new(cfg);
+
+        assert_eq!(
+            model.gop_total_bits(),
+            700_000,
+            "60 frames of 350 kbps / 30"
+        );
+        assert_eq!(model.bit_per_frame(), 11_666, "bps_max / fps");
+        let (target, quality) = model.start(FrameType::Intra);
+        assert_eq!(target, 101_449);
+        assert_eq!(quality, 26);
+        model.end(FrameType::Intra, target, 30_224);
+
+        // 32 rather than 52 weights the undershoot, and the table is read against
+        // `bps_max`, so the next target follows the C's 10,697 rather than the CBR
+        // controller's 9,134 for the same coded size.
+        let (target, quality) = model.start(FrameType::InterP);
+        assert_eq!(target, 10_697);
+        assert_eq!(quality, 27);
+        assert_eq!(model.next_ratio(), -15);
+    }
+
     /// The quantiser controller, picture by picture, against the reference's own
     /// printout (`tests/data/rc_model_v2_c_cbr_qp.txt`, captured with
     /// `rc_debug=0xf0`). Four numbers per picture are compared, and they are the

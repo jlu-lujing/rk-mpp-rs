@@ -26,7 +26,7 @@ fn encode_h264(
     profile: &str,
     frames: usize,
     gop: u32,
-    bps: Option<(i64, i64, i64)>,
+    bps: Option<(h264_syntax::RcMode, i64, i64, i64)>,
 ) -> Result<(usize, usize, usize, f64), String> {
     // The frames are read one at a time. slurping the file was fine while the
     // encoder only ever produced a single IDR, but with a GOP it charges the
@@ -58,10 +58,10 @@ fn encode_h264(
         }
     }
     match bps {
-        Some((target, min, max)) => {
+        Some((mode, target, min, max)) => {
             // `-bps`, like `mpi_enc_test`, is a request for rate control rather than
             // a label on a fixed-QP stream: the mode changes with it.
-            config.rc_mode = h264_syntax::RcMode::Cbr;
+            config.rc_mode = mode;
             config.bps_target = target;
             config.bps_min = min;
             config.bps_max = max;
@@ -512,7 +512,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [bps:cbr]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [cbr:|vbr:target:min:max]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -531,18 +531,25 @@ fn main() {
         // to be able to give both sides the same numbers - and a reason "absent"
         // has to stay absent rather than arrive as zeroes, because what the
         // harness does when the option is missing is itself a rule under test.
+        // `[cbr:|vbr:]target:min:max`. A bare triple is CBR, which is what the
+        // scripts written before VBR existed pass.
         let bps = args.get(10).map(|text| {
+            let (mode, text) = match text.split_once(':') {
+                Some(("cbr", rest)) => (h264_syntax::RcMode::Cbr, rest),
+                Some(("vbr", rest)) => (h264_syntax::RcMode::Vbr, rest),
+                _ => (h264_syntax::RcMode::Cbr, text.as_str()),
+            };
             let parts: Vec<i64> = text.split(':').filter_map(|s| s.parse().ok()).collect();
             match parts.as_slice() {
-                [target, min, max] => (*target, *min, *max),
+                [target, min, max] => (mode, *target, *min, *max),
                 _ => {
-                    eprintln!("bad bit rate triple; expected target:min:max");
+                    eprintln!("bad bit rate; expected [cbr:|vbr:]target:min:max");
                     std::process::exit(2);
                 }
             }
         });
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [bps:cbr]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [cbr:|vbr:target:min:max]");
             std::process::exit(2);
         }
         match encode_h264(src, dst, width, height, qp_init, profile, frames, gop, bps) {

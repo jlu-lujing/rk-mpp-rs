@@ -90,6 +90,7 @@ pub fn default_bps_target(width: usize, height: usize, fps: u32) -> i64 {
 pub enum RcMode {
     FixedQp,
     Cbr,
+    Vbr,
 }
 
 impl EncoderConfig {
