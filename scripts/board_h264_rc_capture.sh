@@ -12,7 +12,8 @@
 # thing), and the CBR bitstream is byte-identical across runs - md5 of the six
 # frames at 320x240 / 300 kbps is c34eba92a3196865d04ac23253b2f7af.
 #
-# REFRESH=1 rewrites tests/data/vepu580_rc_c_move6_cbr.txt with the current output.
+# REFRESH=1 rewrites the two fixtures under tests/data with the current output:
+# the report, and the two jobs as register words.
 #
 # Usage: scripts/board_h264_rc_capture.sh
 set -uo pipefail
@@ -22,6 +23,7 @@ mpp_bin="$mpp_ref/build/test/mpi_enc_test"
 mpp_lib="$mpp_ref/build/mpp"
 fixture=/tmp/rk-mpp-rs-move-320x240.nv12
 out=tests/data/vepu580_rc_c_move6_cbr.txt
+regs=tests/data/vepu580_rc_c_move6_cbr_regs.txt
 
 if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f /tmp/mpp_trace.so"; then
   printf 'SKIP rate-control capture (reference build or ioctl tracer missing)\n'
@@ -58,7 +60,24 @@ report() { python3 tools/rc_trace_report.py "/tmp/rc_$1.log" "${@:2}"; }
 } > /tmp/rc_report.txt
 
 cat /tmp/rc_report.txt
+
+# The same two jobs as raw register words. The report says which fields move; the
+# words are what the register-level port is checked against, word for word.
+{
+  printf '# The C encoder'\''s two CBR jobs as register words: the intra job and the\n'
+  printf '# next P job, in window order, addresses included (those differ per\n'
+  printf '# process). The I job is the fixed-QP job plus the thirty rate-control\n'
+  printf '# fields, so rebuilding those fields has to reproduce these words.\n'
+  printf '# Regenerate with: REFRESH=1 scripts/board_h264_rc_capture.sh\n\n'
+  for job in 0 1; do
+    printf 'job %s\n' "$job"
+    python3 tools/rc_trace_report.py /tmp/rc_cbr.log --dump-job "$job"
+    printf '\n'
+  done
+} > /tmp/rc_regs.txt
+
 if [ "${REFRESH:-0}" = 1 ]; then
   cp /tmp/rc_report.txt "$out"
-  printf '\nwrote %s\n' "$out"
+  cp /tmp/rc_regs.txt "$regs"
+  printf '\nwrote %s and %s\n' "$out" "$regs"
 fi

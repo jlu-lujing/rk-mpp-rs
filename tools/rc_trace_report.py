@@ -15,6 +15,10 @@ By default only the fields that move between jobs are printed. Rate control is a
 state machine, and a fixed-QP job and a CBR job differ in a handful of words; a
 full dump of 151 words per job hides that. `--all` prints every non-zero field.
 
+`--dump-job N` prints job N's rate-control windows as raw words, which is the
+shape a golden fixture needs: the register half of rate control is verified by
+rebuilding those words and requiring they are identical.
+
 `--against` compares the first job of this trace with the first job of another,
 which is how a fixed-QP capture is turned into "these are the words the VBR path
 adds".
@@ -119,6 +123,11 @@ def main():
     ap.add_argument("log")
     ap.add_argument("--against", help="another trace to compare the first job with")
     ap.add_argument("--all", action="store_true", help="print every non-zero field")
+    ap.add_argument(
+        "--dump-job",
+        type=int,
+        help="print one job's rate-control windows as words, for a golden fixture",
+    )
     args = ap.parse_args()
 
     names = field_names()
@@ -141,6 +150,14 @@ def main():
         for key in keys:
             print(f"   {key:<40} {before.get(key)} -> {after.get(key)}")
         print()
+
+    if args.dump_job is not None:
+        job = jobs[args.dump_job]
+        for section in RC_SECTIONS:
+            words = job.get(section)
+            if words:
+                print(f"{section} " + " ".join(f"{w:08x}" for w in words))
+        return 0
 
     previous = {}
     for index, job in enumerate(jobs):
