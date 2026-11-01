@@ -6,7 +6,7 @@
 # emits and which the Rust codec::h265::encoder writer reproduces from
 # h265e_ps.c / h265e_header_gen.c. The IDR *payload* is NOT compared yet: the
 # VEPU580 H.265 register image in src/hal/h265e.rs derives only the geometry,
-# QP and syntax words and leaves the tuning windows (param/wgt, rdo, scl) at
+# QP and syntax words and leaves the tuning windows (wgt, rdo, osd) at
 # zero, so an IDR NAL from it is not yet byte-usable. That is the open item the
 # tracer capture below feeds - exactly how H.264's "cime/rime corner" stayed
 # behind a recorded template.

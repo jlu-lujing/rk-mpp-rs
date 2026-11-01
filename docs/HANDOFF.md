@@ -59,6 +59,14 @@ framework 落了异步任务队列 + 引用计数缓冲池（板上验证）。
 生成器：`tools/gen_h264_regs.py`、`gen_vdpu34x_regs.py`、`gen_vepu580_regs.py`
 （从 C 结构体定义生成寄存器字段名/位置，改 HAL 前先看它们能否直接给出字段）。
 
+`gen_vepu580_regs.py` 的 H.265 路线读两个 vintage：共享的 CTL/BASE/RC_KLUT 取自
+`refs/mpp`（master），H.265 专属的 WGT/RDO/OSD 取自 `rk-mpp-rs/refs/mpp-2024-04`
+（与板上 oracle 同源的 2024-04 副本，见该目录 README）。这种混用只在两边布局一致时成立，
+所以改完任一头部文件或生成器后要跑 `python3 tools/check_vepu580_vintage_drift.py`。
+两份寄存器映射（`vepu580_regs.rs`、`h265e_regs.rs`）都必须能从生成器 + `rustfmt`
+逐字节重现，H.265 那份额外加了 `windows_match_the_generated_section_table` 把
+`RegisterFile` 的数组长度钉在分区表上（H.265 是六段、无 SCL，与 H.264 不同）。
+
 ---
 
 ## 2. 验证文化（不可降级）

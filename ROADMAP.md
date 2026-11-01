@@ -692,7 +692,7 @@ in what order the evidence gets produced.
        word by word from `hal_h265e_v580_gen_regs`, `set_pp_regs`, `set_rc_regs` and
        `set_slice_regs` through the generated `h265e_regs` map, with ten host tests
        on the fields the C source fixes (320x240 geometry, the FIXQP quad, the
-       sixteen `roi_qthd` rows, the IDR syntax block). The param/wgt, rdo and scl
+       sixteen `roi_qthd` rows, the IDR syntax block). The wgt, rdo and osd
        tuning windows and the AQ/KLUT/LAMD byte tables are left at zero and asserted
        so - **a derivation and a test bed, not a submit-capable encoder**, because
        there is no captured reference H.265 job to compare the tuning against.
@@ -700,6 +700,33 @@ in what order the evidence gets produced.
        `scripts/h265_hdr_cmp.py` are the harness, `h265-enc` writes the parameter
        sets from the CLI, and `board_parameter_sets_match_the_c_encoder` sits
        `#[ignore]`d until the board run is recorded.
+       The H.265 job has six windows, not the seven of an H.264 job, and the map now
+       says so. The vintage's `H265eV580RegSet` is `reg_ctl`, `reg_base`,
+       `reg_rc_klut`, `reg_wgt`, `reg_rdo`, `reg_osd_cfg` (plus `reg_dbg`, which is
+       not part of a job): the scan/quant window at word 2176 that H.264 writes as
+       `scl` (679 words) has no H.265 member, and the window sharing H.264's `param`
+       offset at word 1472 is `hevc_vepu580_wgt` at 374 words. Carrying the H.264
+       lengths over left **247 of the 292 named `wgt` fields** - the intra and inter
+       weight tables from word 1652 upward - outside every section, and the first
+       write into `rdo` past word 2170 would have indexed off its 122-word array.
+       Two host tests stand between the regenerated map and a submit path:
+       `windows_match_the_generated_section_table` (names, first words, lengths, plus
+       a tiling check that keeps every written window below the STATUS word at 4096)
+       and `the_last_word_of_every_window_is_addressable` (write and read back the
+       last word of each window). Both were checked to fail rather than assumed:
+       narrowing `wgt` to the old 180 words turns them red on
+       `window wgt has the wrong length`.
+       Source of truth, since the two vintages disagree: `h265e_regs` is generated
+       from the vendored `refs/mpp-2024-04/rkenc/h265e/hal_h265e_vepu580_reg.h` and
+       not from `refs/mpp` (master), because every byte comparison on the board is
+       against the vintage. The vendored copy is md5
+       `c3ea6482ea1801226a61eb00c2278ae6`, which is the file
+       `~/rk-mpp-oracles/mpp-old/mpp/hal/rkenc/h265e/` holds on t6; the master copy
+       is 1381 lines against the vintage's 3340. Both register maps now regenerate
+       byte-identically, `rustfmt` included, from `tools/gen_vepu580_regs.py`, which
+       resolves its headers from its own location rather than the working directory
+       and no longer emits a second const when two struct views name the same
+       padding - the duplicate `CTL.reserved1_3` was the symptom.
 - [ ] H.265 (rkvenc): the IDR payload, tiles/WPP/SAO, rate control and P
       pictures - all of which depend on the board capture named above.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline

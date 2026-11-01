@@ -19,10 +19,20 @@
 //! `rc_min/max_qp`, the `madi`/`md_sad` thresholds, `chrm_klut_ofst`,
 //! `qpmap_mode`).
 //!
-//! What is *not* filled: the tuning windows (`param`/wgt, `rdo`, `scl`) and the
+//! What is *not* filled: the tuning windows (`wgt`, `rdo`, `osd`) and the
 //! AQ/KLUT/LAMD byte tables inside RC-lookup. In H.264 those are the recorded-image
 //! replay (the "cime/rime corner" that stays open); for H.265 with no capture they
 //! are left zero, which is why this module is not yet a submit-capable encoder.
+//!
+//! The H.265 job writes six windows, not the seven of an H.264 job. The vintage's
+//! `H265eV580RegSet` is control, base, rc_klut, wgt, rdo, osd (plus dbg, which is
+//! not part of a job): the scan/quant window at word 2176 - H.264's `scl`, 679
+//! words - has no H.265 member, and the weight window sharing H.264's `param`
+//! offset of word 1472 is `hevc_vepu580_wgt` at 374 words, not 180. Reusing the
+//! H.264 array sizes here fails silently: every `wgt` field past word 1652 landed
+//! outside its section, and the first write into `rdo` past word 122 indexed beyond
+//! its array. `windows_match_the_generated_section_table` and
+//! `the_last_word_of_every_window_is_addressable` pin the arrays to the table.
 //! The report is explicit that the IDR payload comparison is blocked on the
 //! template capture, while the VPS/SPS/PPS comparison (`codec::h265::encoder`) is
 //! not.
@@ -79,9 +89,12 @@ pub struct RegisterFile {
     pub ctl: [u32; 24],
     pub base: [u32; 94],
     pub rc_klut: [u32; 57],
-    pub param: [u32; 180],
-    pub rdo: [u32; 122],
-    pub scl: [u32; 679],
+    /// `hevc_vepu580_wgt` at word 1472. H.264 calls the window at the same offset
+    /// `param` and writes 180 words of it; the H.265 reg set carries 374.
+    pub wgt: [u32; 374],
+    /// `vepu580_rdo_cfg` at word 2048: the span H.264 splits into `rdo` (122 words)
+    /// and `scl` (679, starting at word 2176) with a six-word gap between them.
+    pub rdo: [u32; 807],
     pub osd: [u32; 288],
 }
 
@@ -91,29 +104,69 @@ impl Default for RegisterFile {
             ctl: [0; 24],
             base: [0; 94],
             rc_klut: [0; 57],
-            param: [0; 180],
-            rdo: [0; 122],
-            scl: [0; 679],
+            wgt: [0; 374],
+            rdo: [0; 807],
             osd: [0; 288],
         }
     }
 }
 
 impl RegisterFile {
+    /// The words backing one section name from [`regs::SECTIONS`]. `None` names a
+    /// section the register map declares and this struct does not carry: the caller
+    /// gets an error naming the section rather than a word that silently goes
+    /// unwritten.
+    fn window(&self, name: &str) -> Option<&[u32]> {
+        match name {
+            "ctl" => Some(&self.ctl),
+            "base" => Some(&self.base),
+            "rc_klut" => Some(&self.rc_klut),
+            "wgt" => Some(&self.wgt),
+            "rdo" => Some(&self.rdo),
+            "osd" => Some(&self.osd),
+            _ => None,
+        }
+    }
+
+    fn window_mut(&mut self, name: &str) -> Option<&mut [u32]> {
+        match name {
+            "ctl" => Some(&mut self.ctl),
+            "base" => Some(&mut self.base),
+            "rc_klut" => Some(&mut self.rc_klut),
+            "wgt" => Some(&mut self.wgt),
+            "rdo" => Some(&mut self.rdo),
+            "osd" => Some(&mut self.osd),
+            _ => None,
+        }
+    }
+
+    /// The captured windows in `MPP_CMD_SET_REG_WRITE` order: section name, first
+    /// absolute word, words. This is what a submit path flattens into the register
+    /// batch, and what the section-table test below checks against the map.
+    pub fn captured(&self) -> Vec<(&'static str, usize, &[u32])> {
+        regs::SECTIONS
+            .iter()
+            .map(|(name, first, _)| {
+                (
+                    *name,
+                    *first,
+                    self.window(*name)
+                        .unwrap_or_else(|| panic!("RegisterFile is missing section {name}")),
+                )
+            })
+            .collect()
+    }
+
     fn word_mut(&mut self, word: usize) -> Result<&mut u32, String> {
         for (name, first, count) in regs::SECTIONS {
             if word >= first && word < first + count {
                 let index = word - first;
-                return Ok(match name {
-                    "ctl" => &mut self.ctl[index],
-                    "base" => &mut self.base[index],
-                    "rc_klut" => &mut self.rc_klut[index],
-                    "param" => &mut self.param[index],
-                    "rdo" => &mut self.rdo[index],
-                    "scl" => &mut self.scl[index],
-                    "osd" => &mut self.osd[index],
-                    other => unreachable!("section {other} is not in RegisterFile"),
-                });
+                return self
+                    .window_mut(name)
+                    .map(|words| &mut words[index])
+                    .ok_or_else(|| {
+                        format!("section {name} is in the register map but not in RegisterFile")
+                    });
             }
         }
         Err(format!("register word {word} is outside every section"))
@@ -133,17 +186,11 @@ impl RegisterFile {
     }
 
     pub fn get(&self, field: &regs::Field) -> Result<u32, String> {
-        let sections: [&[u32]; 7] = [
-            &self.ctl,
-            &self.base,
-            &self.rc_klut,
-            &self.param,
-            &self.rdo,
-            &self.scl,
-            &self.osd,
-        ];
-        for ((_, first, count), words) in regs::SECTIONS.iter().zip(sections) {
-            if field.word >= *first && field.word < *first + *count {
+        for (name, first, count) in regs::SECTIONS {
+            if field.word >= first && field.word < first + count {
+                let words = self.window(name).ok_or_else(|| {
+                    format!("section {name} is in the register map but not in RegisterFile")
+                })?;
                 return Ok((words[field.word - first] >> field.shift) & ((1 << field.width) - 1));
             }
         }
@@ -472,9 +519,8 @@ mod tests {
         // rc_klut words. The point of the assertion is not an exact count but that
         // nothing outside those windows moves.
         assert!(changed > 0 && changed <= 20);
-        assert_eq!(a.param, b.param);
+        assert_eq!(a.wgt, b.wgt);
         assert_eq!(a.rdo, b.rdo);
-        assert_eq!(a.scl, b.scl);
         assert_eq!(a.osd, b.osd);
         assert_eq!(a.ctl, b.ctl);
     }
@@ -484,9 +530,63 @@ mod tests {
         // The honest record of what this module does NOT yet fill. When the board
         // capture lands these become the replay the H.264 encoder replays.
         let file = reference_idr(26);
-        assert!(file.param.iter().all(|&w| w == 0));
+        assert!(file.wgt.iter().all(|&w| w == 0));
         assert!(file.rdo.iter().all(|&w| w == 0));
-        assert!(file.scl.iter().all(|&w| w == 0));
+        assert!(file.osd.iter().all(|&w| w == 0));
+    }
+
+    /// The generated section table and this struct's arrays state the same hardware
+    /// fact twice, and pulling them apart does not fail to compile - the map says
+    /// where a word lives, the array says how far it may be indexed. Regenerating
+    /// `h265e_regs` from a header whose windows differ from these lengths therefore
+    /// surfaces only as a panic on the first write into the narrow window. This test
+    /// is the compile error that is missing.
+    #[test]
+    fn windows_match_the_generated_section_table() {
+        let file = RegisterFile::default();
+        let captured = file.captured();
+        assert_eq!(captured.len(), regs::SECTIONS.len());
+        for ((name, first, count), (cap_name, cap_first, words)) in
+            regs::SECTIONS.iter().zip(captured.iter())
+        {
+            assert_eq!(*name, *cap_name);
+            assert_eq!(*first, *cap_first);
+            assert_eq!(*count, words.len(), "window {name} has the wrong length");
+        }
+
+        // The windows tile upward without touching each other and stay clear of word
+        // 4096, where STATUS begins and the hardware writes back.
+        let mut next = 0usize;
+        for (_, first, count) in regs::SECTIONS {
+            assert!(
+                first >= next,
+                "section starting at word {first} overlaps its predecessor"
+            );
+            next = first + count;
+        }
+        assert!(next <= 4096, "the written windows reach word {next}");
+    }
+
+    /// The bug this locks out: the map declared `wgt` at 374 words and `rdo` at 807
+    /// while the arrays inherited from the H.264 register file held 180 and 122, so
+    /// the upper half of both windows was unreachable - `wgt` words past 1652 fell
+    /// outside every section and `rdo` indices past 122 ran off their array. Writing
+    /// and reading the *last* word of each window is the cheapest check that the
+    /// arrays are at least as wide as the map claims.
+    #[test]
+    fn the_last_word_of_every_window_is_addressable() {
+        let mut file = RegisterFile::default();
+        for (name, first, count) in regs::SECTIONS {
+            let probe = regs::Field {
+                word: first + count - 1,
+                shift: 0,
+                width: 1,
+                name: "probe",
+            };
+            file.set(&probe, 1)
+                .unwrap_or_else(|e| panic!("last word of window {name}: {e}"));
+            assert_eq!(file.get(&probe).unwrap(), 1, "window {name}");
+        }
     }
 
     #[test]

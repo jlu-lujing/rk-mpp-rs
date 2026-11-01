@@ -29,9 +29,23 @@ import re
 import sys
 from pathlib import Path
 
-COMMON = Path("refs/mpp/mpp/hal/rkenc/common/vepu580_common.h")
-H264E = Path("refs/mpp/mpp/hal/rkenc/h264e/hal_h264e_vepu580_reg.h")
-H265E = Path("refs/mpp/mpp/hal/rkenc/h265e/hal_h265e_vepu580_reg.h")
+# The register headers are not inside this crate: `refs/mpp` is the master
+# checkout the whole project reads, and the vendored vintage sits under this
+# crate's own `refs/`. Resolving both from this file rather than from the working
+# directory keeps the documented `python3 tools/gen_vepu580_regs.py --hevc >
+# src/hal/h265e_regs.rs` working from the crate root, where it used to die on a
+# FileNotFoundError for the common header.
+ROOT = Path(__file__).resolve().parents[2]  # the workspace holding refs/mpp
+CRATE = Path(__file__).resolve().parents[1]  # this crate
+
+COMMON = ROOT / "refs/mpp/mpp/hal/rkenc/common/vepu580_common.h"
+H264E = ROOT / "refs/mpp/mpp/hal/rkenc/h264e/hal_h264e_vepu580_reg.h"
+# The H.265 view is read from the 2024-04 vintage vendored under refs/ rather
+# than from `refs/mpp` (master): the two copies of `hal_h265e_vepu580_reg.h`
+# differ in roughly two thousand lines, and every byte comparison on the board
+# is against the vintage. Master stays the source for the H.264 path, where the
+# known drift is documented and the affected words are left to the capture.
+H265E = CRATE / "refs/mpp-2024-04/rkenc/h265e/hal_h265e_vepu580_reg.h"
 
 # (header, struct name, section prefix, first absolute word, words in our register
 # file). The first word and length match VEPU580_*_OFFSET and the sections
@@ -68,12 +82,21 @@ STRUCTS = [
 # syntax block from `reg0221_me_cfg` onwards) without colliding with the common
 # fields. The `RC` prefix names the shared RC lookup table. h265e.rs reads the
 # QP/ROI rows through RC and the syntax registers through H265.
+# The H.265 job writes six windows, not seven: the trace of a fixed-QP IDR on t6
+# shows CTL 24, BASE 94, RC_KLUT 57, WGT 374 at word 1472, RDO 807 at word 2048
+# and OSD 288 at word 3072 - and no SCL write at all. The sizes are the
+# `H265eV580RegSet` struct list in the vintage header; the word counts of the
+# H.264 map (180 / 122 / 679) were wrong here, and any field past the first 180
+# words of the weight window would have landed outside its section.
 STRUCTS_H265 = [
     (COMMON, "Vepu580CtlCommon", "CTL", 0, 24),
     (H265E, "HevcVepu580ControlCfg", "CTL", 0, 24),
     (COMMON, "Vepu580BaseCommon", "BASE", 160, 94),
     (H265E, "HevcVepu580Base", "H265", 160, 94),
     (COMMON, "Vepu580RcKlut", "RC", 1024, 57),
+    (H265E, "HevcVepu580Wgt", "WGT", 1472, 374),
+    (H265E, "Vepu580RdoCfg", "RDO", 2048, 807),
+    (H265E, "Vepu580OsdCfg", "OSD", 3072, 288),
 ]
 
 REG_COMMENT = re.compile(r"reg(\d+)")
@@ -148,11 +171,51 @@ def members(body: str, first_word: int):
         position += 1
 
 
+# Section lists per mode, in write order. H.265 has no scan/quant (SCL) window:
+# the vintage's job writes six sections, verified against the ioctl trace.
+SECTIONS_H264 = [
+    ("ctl", 0, 24),
+    ("base", 160, 94),
+    ("rc_klut", 1024, 57),
+    ("param", 1472, 180),
+    ("rdo", 2048, 122),
+    ("scl", 2176, 679),
+    ("osd", 3072, 288),
+]
+SECTIONS_H265 = [
+    ("ctl", 0, 24),
+    ("base", 160, 94),
+    ("rc_klut", 1024, 57),
+    ("wgt", 1472, 374),
+    ("rdo", 2048, 807),
+    ("osd", 3072, 288),
+]
+
+SECTIONS = SECTIONS_H264  # replaced by main() for the --hevc run
+SECTIONS_LIT = ""
+# The section table states a fact about a job, and the two jobs earn it differently:
+# the H.264 order is what the template extractor reads out of an ioctl trace, the
+# H.265 order is the list of written members in `H265eV580RegSet`.
+SECTIONS_NOTE = {
+    False: "/// the order `tools/gen_h264e_vepu580_template.py` extracts them.",
+    True: "/// the order of `H265eV580RegSet`'s written members (H.265 has no SCL).",
+}
+
+
+def section_literal(sections) -> str:
+    rows = ", ".join('("%s", %d, %d)' % (n, w, c) for n, w, c in sections)
+    return "[" + rows + "]"
+
+
 def main() -> int:
+    global SECTIONS, SECTIONS_LIT
     hevc = "--hevc" in sys.argv[1:]
+    SECTIONS = SECTIONS_H265 if hevc else SECTIONS_H264
+    SECTIONS_LIT = section_literal(SECTIONS)
     if hevc:
         source_comment = (
-            "// refs/mpp/mpp/hal/rkenc/h265e/hal_h265e_vepu580_reg.h and\n"
+            "// refs/mpp-2024-04/rkenc/h265e/hal_h265e_vepu580_reg.h (the vendored\n"
+            "// copy of the vintage the board oracle builds from) and\n"
             "// refs/mpp/mpp/hal/rkenc/common/vepu580_common.h. Do not edit by hand."
         )
     else:
@@ -200,19 +263,12 @@ def main() -> int:
         "}",
         "",
         "/// The sections of our `RegisterFile`: first absolute word and word count, in",
-        "/// the order `tools/gen_h264e_vepu580_template.py` extracts them.",
-        "pub const SECTIONS: [(&str, usize, usize); 7] = [",
-        '    ("ctl", 0, 24),',
-        '    ("base", 160, 94),',
-        '    ("rc_klut", 1024, 57),',
-        '    ("param", 1472, 180),',
-        '    ("rdo", 2048, 122),',
-        '    ("scl", 2176, 679),',
-        '    ("osd", 3072, 288),',
-        "];",
+        SECTIONS_NOTE[hevc],
+        f"pub const SECTIONS: [(&str, usize, usize); {len(SECTIONS)}] = {SECTIONS_LIT};",
         "",
     ]
     emitted = 0
+    seen: set[str] = set()
     structs = STRUCTS_H265 if hevc else STRUCTS
     for header, struct, prefix, first_word, words in structs:
         out.append(f"// {struct} ({header.name}) at absolute word {first_word}.")
@@ -224,8 +280,17 @@ def main() -> int:
                 )
             if fields and fields[0][0] == "@array":
                 _, array_words, elem_bytes, count = fields[0]
+                const = f"{prefix}_{group.upper()}"
+                if const in seen:
+                    # Two struct views of one window (the shared `Vepu580CtlCommon`
+                    # and the codec's own `HevcVepu580ControlCfg`) describe the same
+                    # padding, and a gap is named after its word position, so both
+                    # views propose one const for it. The first already stated the
+                    # fact; the second would be a duplicate definition.
+                    continue
+                seen.add(const)
                 out.append(
-                    f"pub const {prefix}_{group.upper()}: Array = Array {{ word: {word}, "
+                    f"pub const {const}: Array = Array {{ word: {word}, "
                     f"count: {count}, elem_bytes: {elem_bytes}, words: {array_words}, "
                     f"name: \"{prefix}.{group}\" }};"
                 )
@@ -247,6 +312,9 @@ def main() -> int:
                     shift += bits
                     continue
                 const = f"{prefix}_{group}_{name}".upper()
+                if const in seen:
+                    continue
+                seen.add(const)
                 out.append(
                     f"pub const {const}: Field = Field {{ word: {word}, shift: {shift}, "
                     f"width: {bits}, name: \"{prefix}.{group}.{name}\" }};"
