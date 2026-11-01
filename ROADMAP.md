@@ -843,16 +843,26 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       is `ctu_ebit` 4637 - and the test reads 4637 out of
       `tests/data/vepu580_rc_c_move6_cbr_regs.txt` rather than being told it, so the
       allocation and the capture cannot drift apart.
-      What is open is the feedback input, and it is a number rather than a hunch.
-      With the coded size taken from the STATUS window (4378 bytes for the IDR, so
-      35024 bits) the model puts the first P picture's target at 9090 bits, which
-      would be `ctu_ebit` 484; the capture has 476 for that job and 484 for the one
-      after it. Reproducing 476 needs `bit_real` near 54300 bits, so
-      `task->hw_length` of `hal_h264e_vepu580.c:2440` - which is what MPP multiplies
-      by eight and feeds back - is not the STATUS bitstream length this driver
-      reads. Measuring which length it is is the next step, and the QP controller
-      cannot be checked before it, because every one of its four terms is a function
-      of the same feedback.
+      Fed the reference's own coded sizes (`bs_lgth_l32` from the STATUS window,
+      times eight - `hal_h264e_vepu580.c:2389` and `:2440` settle that
+      `bit_real = hw_length * 8` and `hw_length` is exactly that word, accumulated
+      per segment), the model reproduces four of the six captured `ctu_ebit` values
+      exactly and the whole trajectory from the third picture on: 4637, then the
+      decay 465, 449, 425, which happens because every P picture codes under its
+      share and `i_scale` rises as `p_sumbits` falls. Pictures 1 and 2 are
+      **swapped** - the reference promised 476 then 484 where we promise 484 then
+      476 - and that shape is what makes it worth chasing: a mis-scaled or
+      mis-unit-ed feedback would move every later picture, so whatever it is
+      touches the first P pair and nothing after it.
+      `the_trajectory_matches_the_capture_except_for_one_swapped_pair` pins our
+      six numbers so the discrepancy cannot be papered over, and the next
+      measurement is a longer capture - twenty frames say whether the swap is a
+      start-up artefact or has a period.
+      The same read settled the quantiser controller's inputs, which were the next
+      unknown: `quality_real = qp_sum / mbs` (one QP per 16x16 block over the coded
+      size, which is why fixed QP 26 at 320x240 reads back 7800), `madi` divided by
+      `num_b16`, and `madp` divided by `num_ctu` - with a zero denominator taking
+      the whole term to zero rather than being skipped.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
