@@ -37,7 +37,7 @@
 | VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；边界矩阵已对 C 判决（scripts/board_vp9_matrix.sh），剩 720p 分割色度 213 字节与 rkvdec 损坏流整体中止两处有名差异 |
 | AV1 解码（av1d） | Main 8/10-bit、film grain 逐字节；更宽 conformance 未完 |
 | MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 全部逐字节；VP8 profile 1/3（板验，语料仅 p0 故派生流）；损坏/截断流与 C 的行为表 4/6 SAME（scripts/board_vp_corrupt_vs_mpp.sh）；AVS+/AVS2 未做 |
-| H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落），slice split 只有宿主单测，>4096 已接线未上板。P 帧另有 11 个尺寸的逐字节扫描（`scripts/board_h264_p_size_probe.sh`，含 FBC 阈值两侧） |
+| H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落），slice split **板上 4/4 逐字节**（BY_CTU 96/8/150 与 BY_BYTE 256；8 块那格 38 个 slice 越过 32 项 slice FIFO，同时钉住 `slc_done_en`），>4096 的 CIME 扩展行 **板上 2/2 逐字节**（4160x64、4608x256）。P 帧另有 11 个尺寸的逐字节扫描（`scripts/board_h264_p_size_probe.sh`，含 FBC 阈值两侧）。编码侧剩下的是**逐 slice 输出路径**（`slen_fifo` / low-delay slice 包）与 >4096 宽度下的 P 格 |
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices / 多核分带见 docs/jpege-slices-multicore.md |
 | H.265 编码 | 未开始 |
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP 未移植，VDPP 该板不存在 |
@@ -140,7 +140,7 @@ tests/data/       C 侧真实输出构成的 golden / fixture
   根因是 FBC 体偏移写死 8192，而 `align(w·h/64, 8K)` 在编码面积超过 524288 像素后是 16384，
   参考面因此被从错误位置读取；IDR 不读参考，所以完全无感。现在 P 的证明在
   `scripts/board_h264_p_size_probe.sh`（11 个尺寸，阈值两侧各有格子），它应当并进矩阵，而不是与矩阵平行存在。
-- 证据分级：**slice split、>4096、H.265 编码**目前只有宿主级字段/单测证据——板级脚本
+- 证据分级：**H.265 编码**目前只有宿主级字段/单测证据——板级脚本
   已就位，但结果没有写进台账，所以不按"已逐字节验证"记账。一条特性从"代码写完"到
   "已验证"之间隔着的正是这一次板级运行。
 - IEP2 去隔行**已跑通硬件**：720x480 一个 I5O2 作业，两边都出 2 帧、尺寸相同（session、

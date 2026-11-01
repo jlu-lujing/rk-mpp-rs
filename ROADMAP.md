@@ -59,7 +59,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 only (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split rests on host evidence only, and the >4096 CIME lines are wired but undriven. P pictures beyond 320x240 still diverge from the reference - open, and it bounds every byte-exact claim above** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 only (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split is byte-identical over four cells (BY_CTU at 96/8/150 blocks and BY_BYTE at 256, the 8-block cell putting 38 slices past the 32-entry FIFO) and the >4096 CIME extension lines over two (4160x64, 4608x256). P pictures match at eleven sizes spanning the FBC-header threshold - the divergence past 640x480 was the constant FBC body offset, since fixed. What is left: the per-slice output path (`slen_fifo`, low-delay slice packets) and P cells above 4096 width** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode started - VPS/SPS/PPS written and parsed back, and a derived (not replayed) IDR register image, 23 host tests, one ignored board test; not submit-capable until a reference H.265 job is captured** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here - its deinterlace HAL, session and CLI have landed on host field evidence, with no recorded board run, and scale/crop are untouched. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
@@ -564,12 +564,19 @@ in what order the evidence gets produced.
       including non-16-aligned crops. Every SPS/PPS/IDR NAL is byte-identical
       to a freshly generated C MPP golden, deterministic across repeated runs,
       and independently decodes with at least 45 dB plane PSNR
-- [ ] H.264 (rkvenc): slice split and
-      widths above 4096 (fixed QP and CBR/VBR/AVBR are done, below; the QP map,
-      ROI, deblock fine tuning, the unset-quality start QP and the scene detector
-      are done too, each in its own entry below). P pictures, the DPB, the SEI
-      NAL units and the Baseline/Main/High profiles are done, each in its own entry
-      below; the >4096-pixel CIME lines are an open item
+- [ ] H.264 (rkvenc): what is left is the per-slice *output* path and a few
+      geometries. `MPP_ENC_SPLIT_OUT_LOWDELAY`, `slen_fifo` and
+      poll-with-slice-info are not in the driver, so slice splitting is proved as
+      contiguous-in-buffer coding only and no caller gets one packet per slice
+      yet; the rate-control loop beyond fixed QP and the three modes is ported and
+      byte-exact but `roi`-weighted QP per region and the QP *map* input path are
+      proved only at the table level; P pictures are byte-matched at eleven sizes
+      across the FBC header threshold but not above 4096 width, where the cells
+      are IDR-only. Everything else in the encoder - fixed QP and CBR/VBR/AVBR,
+      the QP map and ROI tables, deblock, the unset-quality start QP, the scene
+      detector, GDR, slice split, the >4096 CIME extension lines, P pictures, the
+      DPB, the SEI NAL units and Baseline/Main/High - is each in its own entry
+      below with its board cells recorded.
 - [x] **The QP map and ROI reach the encoder through the reference's own DMA
       tables, not the `roi_qthd` rows.** The develop source settles a misreading:
       `setup_vepu580_rc_base` writes the picture-wide `qp_min`/`qp_max` into all
@@ -642,19 +649,41 @@ in what order the evidence gets produced.
        inside the file - comparing whole files: 4/4 identical, 35 NAL units each.
        The six fixed-QP GOP cells and the cbr / vbr / avbr cells were re-run after
        the change and stay byte-identical.
- - [x] **Slice split writes the combinations the C HAL writes - host evidence.**
+ - [x] **Slice split is byte-identical to the reference, four cells.**
        `apply_split` covers the supported modes with each mode's field combination
        asserted against `hal_h264e_vepu580.c`, arguments bounded by the fields that
        carry them, and `split_none` checked to move nothing beyond the recorded
-       image. Three host tests. The board comparison
-       (`scripts/board_h264_slice_vs_mpp.sh`) exists but no result of it is written
-       down here, so multi-slice output carries no byte-exactness claim either way.
- - [ ] **Widths above 4096: the extension lines are wired, not yet driven.** The
-       offsets and the RCB that `setup_ext_line_bufs` programs are derived and
-       asserted (`ext_line_registers_offsets_and_rcb_are_wired`), and the
-       `validate_reference_config` refusal is gone. `scripts/board_h264_wide_vs_mpp.sh`
-       exists to prove it on a picture wider than 4096 and has no recorded run, so
-       the claim stops at "the code path exists", not "4K encodes".
+       image. Three host tests, and the board cell now run:
+       `scripts/board_h264_slice_vs_mpp.sh` compares the whole picture file -
+       slices arrive contiguously because `split_out = 0` keeps `slen_fifo` down
+       and the normal `enc_done` poll in place - for BY_CTU at 96, 8 and 150
+       blocks a slice and BY_BYTE capped at 256: **4/4 byte-identical**, 28, 232,
+       16 and 38 NAL units respectively. The 8-blocks cell puts 38 slices across a
+       320x240 picture, past the 32-entry slice FIFO, so it also pins the
+       `slc_done_en` decision - had the interrupt arming been wrong the encoder
+       would not have finished the picture at all, let alone matched it.
+       What remains unported is the *output* half: `MPP_ENC_SPLIT_OUT_LOWDELAY`,
+       `slen_fifo` and poll-with-slice-info are not in the driver, so a caller
+       wanting one packet per slice does not have it yet (see the open item under
+       the encoder checklist).
+ - [x] **Widths above 4096 encode byte-identically - the CIME extension lines
+       work.** The path is `setup_hal_bufs` plus `setup_vepu580_ext_line_buf`:
+       once the width aligned to 64 clears 4096 the encoder allocates
+       `(aligned_w - 3072) / 64 * 480` bytes, points `ebuft_addr` (reg182) and
+       `ebufb_addr` (reg183) at it, adds the buffer size to reg182's multi-offset
+       entry so the second half reaches `ebufb`, and states both halves' sizes to
+       the device through the two `RCB_INFO` calls. The crate used to refuse the
+       geometry outright.
+       `scripts/board_h264_wide_vs_mpp.sh` on 4160x64 and 4608x256: **2/2
+       byte-identical**, five NAL units each, with the SPS carrying the level the
+       size forces (3.0 and 3.2) on both sides.
+       The first run of these two cells failed, and the reason was the harness,
+       not the driver: `h264e_probe` hard-codes an intra GOP of 60 while the
+       crate's CLI defaults to 1, and the script passed neither - so the rc-cfg
+       SEI came out `-g:60` against `-g:1`, one character apart, while the SPS,
+       the PPS and the 8099-byte IDR were already identical. Both sides now state
+       the GOP explicitly. A cell that fails for the wrong reason is still worth
+       recording, because the wrong reason is what the next person would hit.
  - [x] **H.265 encode started: parameter sets, and a register image derived
        rather than replayed.** `codec::h265::encoder` writes the VPS/SPS/PPS of a
        fixed-QP IDR and feeds each NAL back through the independent

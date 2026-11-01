@@ -9,15 +9,22 @@
 # the halves' sizes through the two RCB_INFO calls. The crate used to reject
 # this geometry outright; the cells here are the reason for taking it back.
 #
-# The pictures are single IDR encodes. P pictures are deliberately out of scope
-# - the crate does not yet byte-match P above 320x240 on ANY width (see the
-# ROADMAP entry "P pictures diverge from the reference beyond 320x240", a
-# DMA-content issue unrelated to the extension lines), and a wide-P cell would
-# measure that gap instead of this one.
+# The pictures are single IDR encodes. The former reason for keeping P out of
+# scope - "P does not byte-match above 320x240 at any width" - is closed: that
+# gap was the constant FBC body offset (see the ROADMAP entry of that name), not
+# anything about width, and P now matches at eleven sizes across the FBC header
+# threshold. A wide-P cell is therefore a cell that could be added rather than
+# one that would measure an unrelated gap; these cells stay IDR-only because
+# that is what the extension-line path is.
 #
 # The SPS level bumps itself on both sides for the coded size (level 3.0 at
 # 4160x64, 3.2 at 4608x256), which is also under test through the derivation
 # the level-matrix run already covers.
+#
+# Both sides are given an explicit intra GOP of 60: `h264e_probe` hard-codes 60
+# and the crate's CLI defaults to 1, so omitting the argument does not leave the
+# two sides equivalent - it leaves a one-character difference in the rc-cfg SEI's
+# `-g:` field and a cell that fails for the wrong reason. Pass it on both sides.
 #
 # Usage: scripts/board_h264_wide_vs_mpp.sh
 set -uo pipefail
@@ -53,7 +60,7 @@ run_cell() {
       -frames:v $FRAMES -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
   ssh t6 "sudo rm -f /tmp/wide_ours_$name.264 /tmp/wide_c_$name.264 &&
           cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
-            /tmp/wide_ours_$name.264 $width $height 26 baseline $FRAMES >/dev/null &&
+            /tmp/wide_ours_$name.264 $width $height 26 baseline $FRAMES 60 >/dev/null &&
           sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/h264e_probe $fixture \
             /tmp/wide_c_$name.264 $width $height $FRAMES 0 26 ${bps}:1500000:2500000 >/dev/null 2>&1 &&
           sudo chmod 644 /tmp/wide_ours_$name.264 /tmp/wide_c_$name.264"
