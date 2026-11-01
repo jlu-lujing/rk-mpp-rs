@@ -1,0 +1,115 @@
+# What the C encoder's rate control writes for the same six frames it
+# encodes at fixed QP, captured on t6 with tools/mpp_ioctl_trace.c.
+# Regenerate with: REFRESH=1 scripts/board_h264_rc_capture.sh
+# The CBR stream those jobs produced is 6283 bytes, md5
+# c34eba92a3196865d04ac23253b2f7af, and both it and this report repeat
+# byte for byte across runs.
+
+6 encoder jobs in rc_cbr.log
+first job differs from rc_fix.log in 30 named fields:
+   BASE.enc_pic.pic_qp                      26 -> 23
+   BASE.rc_cfg.aq_en                        0 -> 1
+   BASE.rc_cfg.rc_ctu_num                   0 -> 20
+   BASE.rc_cfg.rc_en                        0 -> 1
+   BASE.rc_qp.rc_max_qp                     26 -> 51
+   BASE.rc_qp.rc_min_qp                     26 -> 10
+   BASE.rc_qp.rc_qp_range                   0 -> 2
+   BASE.rc_tgt.ctu_ebit                     0 -> 4637
+   RCKLUT.rc_adj0.qp_adj0                   0 -> 30
+   RCKLUT.rc_adj0.qp_adj1                   0 -> 31
+   RCKLUT.rc_adj0.qp_adj3                   0 -> 1
+   RCKLUT.rc_adj0.qp_adj4                   0 -> 2
+   RCKLUT.rc_adj1.qp_adj8                   0 -> 1
+   RCKLUT.roi_qthd0.qpmax_area0             0 -> 51
+   RCKLUT.roi_qthd0.qpmax_area1             0 -> 51
+   RCKLUT.roi_qthd0.qpmin_area0             0 -> 10
+   RCKLUT.roi_qthd0.qpmin_area1             0 -> 10
+   RCKLUT.roi_qthd0.qpmin_area2             0 -> 10
+   RCKLUT.roi_qthd1.qpmax_area2             0 -> 51
+   RCKLUT.roi_qthd1.qpmax_area3             0 -> 51
+   RCKLUT.roi_qthd1.qpmax_area4             0 -> 51
+   RCKLUT.roi_qthd1.qpmin_area3             0 -> 10
+   RCKLUT.roi_qthd1.qpmin_area4             0 -> 10
+   RCKLUT.roi_qthd2.qpmax_area5             0 -> 51
+   RCKLUT.roi_qthd2.qpmax_area6             0 -> 51
+   RCKLUT.roi_qthd2.qpmin_area5             0 -> 10
+   RCKLUT.roi_qthd2.qpmin_area6             0 -> 10
+   RCKLUT.roi_qthd2.qpmin_area7             0 -> 10
+   RCKLUT.roi_qthd3.qpmap_mode              0 -> 1
+   RCKLUT.roi_qthd3.qpmax_area7             0 -> 51
+
+job  0 bits=4378      qp_sum=6394    num_ctu=0     mean_qp=-
+job  1 bits=329       qp_sum=6767    num_ctu=75    mean_qp=22.56
+      BASE.enc_pic.pic_qp                      23 -> 24
+      BASE.rc_tgt.ctu_ebit                     4637 -> 484
+      H264.me_cfg.pmv_mdst_h                   0 -> 5
+      H264.me_cfg.pmv_mdst_v                   0 -> 5
+      H264.synt_nal.nal_ref_idc                3 -> 2
+      H264.synt_nal.nal_unit_type              5 -> 1
+      H264.synt_sli0.frm_num                   0 -> 1
+      H264.synt_sli0.sli_type                  2 -> 0
+      H264.synt_sli1.idr_pid                   0 -> 65535
+      H264.synt_sli1.poc_lsb                   0 -> 2
+      RCKLUT.klut_ofst.chrm_klut_ofst          0 -> 3
+      RCKLUT.klut_wgt0.chrm_klut_wgt0          16 -> 64
+      RCKLUT.klut_wgt0.chrm_klut_wgt1_l9       20 -> 80
+      RCKLUT.klut_wgt1.chrm_klut_wgt2          25 -> 101
+      RCKLUT.klut_wgt10.chrm_klut_wgt15        512 -> 2048
+      RCKLUT.klut_wgt10.chrm_klut_wgt16_l9     133 -> 20
+      RCKLUT.klut_wgt11.chrm_klut_wgt16_h9     1 -> 5
+      RCKLUT.klut_wgt11.chrm_klut_wgt17        812 -> 3250
+      RCKLUT.klut_wgt12.chrm_klut_wgt18        1024 -> 4096
+      RCKLUT.klut_wgt12.chrm_klut_wgt19_l9     266 -> 40
+      RCKLUT.klut_wgt13.chrm_klut_wgt19_h9     2 -> 10
+      RCKLUT.klut_wgt13.chrm_klut_wgt20        1625 -> 6501
+      RCKLUT.klut_wgt14.chrm_klut_wgt21        2048 -> 8192
+      RCKLUT.klut_wgt14.chrm_klut_wgt22_l9     20 -> 81
+      RCKLUT.klut_wgt15.chrm_klut_wgt22_h9     5 -> 20
+      RCKLUT.klut_wgt15.chrm_klut_wgt23        3250 -> 13003
+      RCKLUT.klut_wgt16.chrm_klut_wgt24        4096 -> 16384
+      RCKLUT.klut_wgt16.chrm_klut_wgt25_l9     40 -> 162
+      RCKLUT.klut_wgt17.chrm_klut_wgt25_h9     10 -> 40
+      RCKLUT.klut_wgt17.chrm_klut_wgt26        6501 -> 26007
+      RCKLUT.klut_wgt18.chrm_klut_wgt27        8192 -> 32768
+      RCKLUT.klut_wgt18.chrm_klut_wgt28_l9     81 -> 325
+      RCKLUT.klut_wgt19.chrm_klut_wgt28_h9     20 -> 80
+      RCKLUT.klut_wgt19.chrm_klut_wgt29        13003 -> 52015
+      RCKLUT.klut_wgt2.chrm_klut_wgt3          32 -> 128
+      RCKLUT.klut_wgt2.chrm_klut_wgt4_l9       40 -> 161
+      RCKLUT.klut_wgt20.chrm_klut_wgt30        16384 -> 65535
+      RCKLUT.klut_wgt20.chrm_klut_wgt31_l9     162 -> 138
+      RCKLUT.klut_wgt21.chrm_klut_wgt31_h9     40 -> 161
+      RCKLUT.klut_wgt21.chrm_klut_wgt32        26007 -> 104030
+      RCKLUT.klut_wgt22.chrm_klut_wgt33        32768 -> 131070
+      RCKLUT.klut_wgt22.chrm_klut_wgt34_l9     325 -> 277
+      RCKLUT.klut_wgt23.chrm_klut_wgt34_h9     80 -> 322
+      RCKLUT.klut_wgt3.chrm_klut_wgt5          50 -> 203
+      RCKLUT.klut_wgt4.chrm_klut_wgt6          64 -> 256
+      RCKLUT.klut_wgt4.chrm_klut_wgt7_l9       80 -> 322
+      RCKLUT.klut_wgt5.chrm_klut_wgt8          101 -> 406
+      RCKLUT.klut_wgt6.chrm_klut_wgt10_l9      161 -> 133
+      RCKLUT.klut_wgt6.chrm_klut_wgt9          128 -> 512
+      RCKLUT.klut_wgt7.chrm_klut_wgt10_h9      0 -> 1
+      RCKLUT.klut_wgt7.chrm_klut_wgt11         203 -> 812
+      RCKLUT.klut_wgt8.chrm_klut_wgt12         256 -> 1024
+      RCKLUT.klut_wgt8.chrm_klut_wgt13_l9      322 -> 266
+      RCKLUT.klut_wgt9.chrm_klut_wgt13_h9      0 -> 2
+      RCKLUT.klut_wgt9.chrm_klut_wgt14         406 -> 1625
+job  2 bits=286       qp_sum=6791    num_ctu=75    mean_qp=22.64
+      BASE.rc_tgt.ctu_ebit                     484 -> 476
+      H264.synt_sli0.frm_num                   1 -> 2
+      H264.synt_sli1.poc_lsb                   2 -> 4
+job  3 bits=320       qp_sum=6491    num_ctu=75    mean_qp=21.64
+      BASE.enc_pic.pic_qp                      24 -> 23
+      BASE.rc_tgt.ctu_ebit                     476 -> 465
+      H264.synt_sli0.frm_num                   2 -> 3
+      H264.synt_sli1.poc_lsb                   4 -> 6
+job  4 bits=322       qp_sum=6526    num_ctu=75    mean_qp=21.75
+      BASE.rc_tgt.ctu_ebit                     465 -> 449
+      H264.synt_sli0.frm_num                   3 -> 4
+      H264.synt_sli1.poc_lsb                   6 -> 8
+job  5 bits=406       qp_sum=6265    num_ctu=75    mean_qp=20.88
+      BASE.enc_pic.pic_qp                      23 -> 22
+      BASE.rc_tgt.ctu_ebit                     449 -> 425
+      H264.synt_sli0.frm_num                   4 -> 5
+      H264.synt_sli1.poc_lsb                   8 -> 10

@@ -779,6 +779,36 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       afterwards, and `sum_with_ratio` walks the array from index zero with geometric
       weights that overflow on a long window. The `swr=96343577,...` row at 64 slots
       is that overflow; it has to stay.
+- [x] **The rate-control target is recorded, and it is reproducible.**
+      `scripts/board_h264_rc_capture.sh` encodes the same six moving frames at
+      fixed QP and at CBR 300 kbps with the ioctl tracer, and
+      `tools/rc_trace_report.py` reduces the trace to the question: the named fields
+      that differ between the two first jobs, then per job the fields that move plus
+      what the hardware measured. `tests/data/vepu580_rc_c_move6_cbr.txt` is that
+      report. Six frames at CBR produce six jobs - no re-encode - and the resulting
+      stream is 6283 bytes with md5 `c34eba92a3196865d04ac23253b2f7af`, repeating
+      byte for byte across runs, so it can serve as the byte oracle the way the
+      fixed-QP streams do.
+      What CBR adds to a job is 30 named fields, every one in BASE or RCKLUT, and
+      all of them are what `setup_vepu580_rc_base` writes: `rc_en`, `aq_en`,
+      `rc_ctu_num` = `mb_w`, `rc_qp_range`, `rc_min_qp` 10 and `rc_max_qp` 51, the
+      `qp_adj` ladder (-2, -1, 0, 1, 2 and a lone 1, which is why the 5-bit fields
+      read 30 and 31), the `qpmin_area` / `qpmax_area` rows over the same bounds,
+      and `qpmap_mode` 1. Two of the thirty are the model's answer rather than
+      configuration: `enc_pic.pic_qp` and `rc_tgt.ctu_ebit`. Across the six frames
+      `ctu_ebit` walks 4637, 476, 484, 465, 449, 425 while `pic_qp` moves only once,
+      23 to 22 - so `rc_model_v2.c` reduces, per picture, to a bit target and a QP.
+      That also calibrates the statistics: at 320x240 the I job reports
+      `ctu_ebit` 4637, which through `mb_target_bits_mul_16 = (bit_target << 4) /
+      (mb_w * mb_h)` says the picture was aimed at roughly 87 kbit where the plain
+      frame average is 10 kbit - the intra picture is being handed something like
+      nine frames' worth of bits, which is what `calc_next_i_ratio` is for.
+      One measurement correction that came out of the same table: `qp_sum` counts one
+      QP per 16x16 block, four of which sit inside each block `num_ctu` counts.
+      Fixed QP 26 reads back 7800 against `num_ctu` 75, and dividing by the second
+      number instead of the first gives 104, which is not a QP. The divisor is now
+      derived from that reading rather than assumed, and the report prints 26.00 for
+      the fixed-QP run, which is the check that it is right.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
@@ -796,20 +826,21 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       this crate's boundary too: the unset-`-bps` derivation described above, and
       the per-mode bounds (`bps * 17 / 16` with `bps * 15 / 16` on CBR, the same
       top with `bps / 16` on VBR and AVBR, nothing on fixed QP).
-      Two more facts were measured before writing any of it, because both change
-      what has to be built. `-rc 1` is CBR and `-rc 2` is the fixed QP the matrix
-      uses, and outside fixed QP the harness' `-qc` bounds do not reach the
-      encoder: a CBR run with `-qc 10:20:10:20:10` writes
-      `default:cbr-b:300000[250000:350000]-g:60-q:26:[8:48]:[8:48]:2`, the
-      library's own medium quality with 8..48 bounds and an I delta of two. And
-      those six frames cost twelve encoder jobs - every picture went through
-      `check_re_enc` and encoded twice - so rate control is not reachable by
-      generating registers alone, the submit path has to be able to run a picture
-      again.
-      The model is not the last word in the register file either: `check_re_enc`
-      can raise the QP and ask for the *same* picture again, which the current
-      single-shot submit path has no way to express, so rate control also pulls in
-      the re-encode loop.
+      Two facts about the reference were measured first, because both change what
+      has to be built. `-rc 1` is CBR and `-rc 2` is the fixed QP the matrix uses.
+      And a claim made one commit ago here - that six CBR frames cost twelve encoder
+      jobs, so every picture went through `check_re_enc` and the submit path has to
+      re-run pictures - is **wrong and withdrawn**: the ioctl tracer prints every
+      register window twice, once under its `before cmd=200` line and once on its
+      own, and counting `write words=` lines doubles everything. Counting the
+      `before` lines at offset 0 gives six jobs for six frames, at `-rc 1` with and
+      without `-qc` bounds, so re-encode was never observed here. Whether
+      `check_re_enc` fires for a stream that overshoots is still unmeasured; what is
+      settled is that it did not fire in the runs used as the rate-control oracle.
+      `check_re_enc` can still raise the QP and ask for the *same* picture again,
+      which the single-shot submit path has no way to express; it did not fire in
+      these runs, but nothing here says it will not fire on a stream that
+      overshoots, so the re-encode loop stays on the list.
 - [ ] rkvenc supports one live session per process here. The two ignored encoder
       tests pass serially and disagree with the goldens when cargo runs them as two
       threads, which is `setup_ext_line_bufs` programming a shared system-controller
