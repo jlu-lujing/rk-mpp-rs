@@ -59,7 +59,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; scene detection, ROI/GDR and slice split remain** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; GDR/intra refresh, slice split and the >4096 CIME lines remain (ROI/QP map, deblock, the start-QP derivation and scene detection are done)** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -527,10 +527,56 @@ in what order the evidence gets produced.
       including non-16-aligned crops. Every SPS/PPS/IDR NAL is byte-identical
       to a freshly generated C MPP golden, deterministic across repeated runs,
       and independently decodes with at least 45 dB plane PSNR
-- [ ] H.264 (rkvenc): QP map, ROI, GDR, deblock fine tuning, slice split and
-      widths above 4096 (fixed QP and CBR/VBR/AVBR are done, below). P pictures, the DPB, the SEI
+- [ ] H.264 (rkvenc): GDR/intra refresh, slice split and
+      widths above 4096 (fixed QP and CBR/VBR/AVBR are done, below; the QP map,
+      ROI, deblock fine tuning, the unset-quality start QP and the scene detector
+      are done too, each in its own entry below). P pictures, the DPB, the SEI
       NAL units and the Baseline/Main/High profiles are done, each in its own entry
-      below; the scene detector and the >4096-pixel CIME lines are the open items
+      below; the >4096-pixel CIME lines are an open item
+- [x] **The QP map and ROI reach the encoder through the reference's own DMA
+      tables, not the `roi_qthd` rows.** The develop source settles a misreading:
+      `setup_vepu580_rc_base` writes the picture-wide `qp_min`/`qp_max` into all
+      eight `roi_qthd*` rows unconditionally - per-ROI QP never touches them. The
+      real path is `Vepu580RoiH264BsCfg` (u64 per MB, force-intra bit 61, qp-adjust
+      enable bit 62) plus `Vepu580RoiQpCfg` (u16 per MB, 7-bit signed adjustment,
+      absolute-mode bit 15), both addressed from the base registers with C's
+      enable-check. Regions map to blocks rounding *up* (like the 54x path's
+      `set_one_roi`), stride padded to four, later regions winning, and the
+      `qp_adj_en = !!qp_adj` rule. `scripts/board_h264_roi_vs_mpp.sh` runs the
+      region list through the reference's own `mpp_enc_roi_utils.c` on both a
+      fixed-QP and a CBR cell: byte-identical access units, 2/2.
+ - [x] **Deblock fine tuning, with the beta quirk preserved.** The three
+       `MppEncH264Cfg` fields reach `synt_sli2` through exactly the two writes
+       `setup_vepu580_codec` performs: `dis_dblk_idc` truncated to two bits and
+       `sli_alph_ofst` as a four-bit two's complement. VEPU580's HAL never writes
+       `sli_beta_ofst` - the field exists in the register header and no statement
+       touches it - so beta configures but stays 0 in the image, and a test locks
+       that in (beta 5 with the register still zero) because byte-exactness means
+       dropping beta the way the reference does. `scripts/board_h264_deblock_vs_mpp.sh`:
+       default / alpha -3 / disable cells, byte-identical.
+ - [x] **`cal_first_i_start_qp`: the first picture of a caller who set no
+       quality.** Ported at `rc_model_v2.c:1554` with the C semantics kept, the
+       unsigned ones included (the empty-picture branch returns 15 at target 1 and
+       45 at target 1000 - i64 intermediates get that wrong). Wired through
+       `quality_auto` end to end: CLI `qp auto`/`-1`, and the `uuid_rc_cfg` SEI
+       prints the caller's `-1` sentinel, not the derived QP - `update_rc_cfg_log`
+       prints what was configured. `scripts/board_h264_deblock_vs_mpp.sh` cbr and
+       vbr cells run the whole QP trajectory from picture zero (the first
+       picture's 23 against the library default 26 at 320x240/300k): both
+       byte-identical, 5/5 cells with the deblock ones.
+ - [x] **The scene detector `vepu580_h264e_tune_stat_update` is ported.** The
+       score-window state machine over the STATUS histograms (five-window `madp`
+       fold, three-row threshold with `mvbit` 15, 41-point sliding score, the
+       majority rule over the flag matrix) drives `apply_tune`: the eleven
+       current-motion writes, the P-frame chroma-KLUT row switch, and the
+       ATR/CIME/RIME/intra/skip tables moving along the `ap*2+curr` row. The
+       default rows cross-check against the 2024-04 capture - which also caught a
+       stale note: the CIME {4,7,20,20} and RIME {4,16,64} words were *not* moved
+       by section 3 after all, the newly regenerated `Vepu580WgtCommon` fields read
+       back exactly the captured row. `scripts/board_h264_scene_vs_mpp.sh` cuts
+       testsrc to testsrc2 mid-clip, eight fixed-QP frames: the whole stream
+       byte-identical to the reference through the cut. IPC scene mode is not
+       exposed on the CLI; only the default mode is wired and compared.
 - [ ] H.265 (rkvenc): same plus tiles/WPP, SAO
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor

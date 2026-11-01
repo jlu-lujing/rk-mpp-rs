@@ -37,8 +37,8 @@ if ! ssh t6 "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockch
 fi
 
 scp -q tools/h264e_probe.c t6:/tmp/ 2>/dev/null
-ssh t6 "cc -O2 -w -I$mpp_ref/inc /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
-        cc -O2 -w -I$mpp_ref/inc /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
+ssh t6 "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
+        cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
 
 # The cut at frame FRAMES/2 is the point the detector should start reacting;
 # both halves are 16-multiple 320x240 NV12 from the same generator family.
@@ -53,7 +53,7 @@ ssh t6 "sudo rm -f /tmp/scene_ours.264 /tmp/scene_c.264 &&
         cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
           /tmp/scene_ours.264 $SIZE 26 baseline $FRAMES 60 >/dev/null &&
         sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/h264e_probe $fixture \
-          /tmp/scene_c.264 320 240 $FRAMES 0 26 >/dev/null 2>&1 &&
+          /tmp/scene_c.264 320 240 $FRAMES 0 26 288000:1500000:2500000 >/dev/null 2>&1 &&
         sudo chmod 644 /tmp/scene_ours.264 /tmp/scene_c.264"
 
 fail=0

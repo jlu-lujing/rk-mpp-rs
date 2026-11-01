@@ -797,74 +797,78 @@ fn main() {
         // to be able to give both sides the same numbers - and a reason "absent"
         // has to stay absent rather than arrive as zeroes, because what the
         // harness does when the option is missing is itself a rule under test.
-        // `[cbr:|vbr:]target:min:max`. A bare triple is CBR, which is what the
-        // scripts written before VBR existed pass.
-        let bps = args.get(10).map(|text| {
-            let (mode, text) = match text.split_once(':') {
-                Some(("cbr", rest)) => (h264_syntax::RcMode::Cbr, rest),
-                Some(("vbr", rest)) => (h264_syntax::RcMode::Vbr, rest),
-                Some(("avbr", rest)) => (h264_syntax::RcMode::Avbr, rest),
-                _ => (h264_syntax::RcMode::Cbr, text.as_str()),
-            };
-            let parts: Vec<i64> = text.split(':').filter_map(|s| s.parse().ok()).collect();
-            match parts.as_slice() {
-                [target, min, max] => (mode, *target, *min, *max),
-                _ => {
-                    eprintln!("bad bit rate; expected [cbr:|vbr:]target:min:max");
-                    std::process::exit(2);
-                }
-            }
-        });
-        // `dblk:disable:alpha:beta`, the three `MppEncH264Cfg` deblocking fields.
-        // The reference range-checks none of them and VEPU580's register fields
-        // are two and four bits wide, so the truncation the bitfield assignment
-        // performs is reproduced, not policed.
-        let deblock = args.get(11).map(|text| {
-            let parts: Vec<&str> = match text.strip_prefix("dblk:") {
-                Some(rest) => rest.split(':').collect(),
-                None => Vec::new(),
-            };
-            match parts.as_slice() {
-                [disable, alpha, beta] => {
-                    match (
-                        disable.parse::<u32>(),
-                        alpha.parse::<i32>(),
-                        beta.parse::<i32>(),
-                    ) {
-                        (Ok(disable), Ok(alpha), Ok(beta)) => (disable, alpha, beta),
-                        _ => {
-                            eprintln!("bad dblk; expected dblk:disable:alpha:beta");
-                            std::process::exit(2);
+        // Everything past the positional slots is a prefixed option, dispatched
+        // by prefix rather than by position, so a `dblk:` never lands in the bit
+        // rate's slot when no rate control was asked for. A bare `target:min:max`
+        // in the slot the scripts written before VBR existed use is still CBR.
+        let mut bps: Option<(h264_syntax::RcMode, i64, i64, i64)> = None;
+        let mut deblock: Option<(u32, i32, i32)> = None;
+        // The `RoiRegionCfg` list `mpi_enc_test` adds per frame, in the same
+        // add order.
+        let mut rois: Vec<h264_syntax::RoiRegion> = Vec::new();
+        for text in args.iter().skip(10) {
+            if let Some(rest) = text.strip_prefix("dblk:") {
+                // `dblk:disable:alpha:beta`, the three `MppEncH264Cfg` deblocking
+                // fields. The reference range-checks none of them and VEPU580's
+                // register fields are two and four bits wide, so the truncation
+                // the bitfield assignment performs is reproduced, not policed.
+                let parts: Vec<&str> = rest.split(':').collect();
+                match parts.as_slice() {
+                    [disable, alpha, beta] => {
+                        match (
+                            disable.parse::<u32>(),
+                            alpha.parse::<i32>(),
+                            beta.parse::<i32>(),
+                        ) {
+                            (Ok(disable), Ok(alpha), Ok(beta)) => {
+                                deblock = Some((disable, alpha, beta))
+                            }
+                            _ => {
+                                eprintln!("bad dblk; expected dblk:disable:alpha:beta");
+                                std::process::exit(2);
+                            }
                         }
                     }
+                    _ => {
+                        eprintln!("bad dblk; expected dblk:disable:alpha:beta");
+                        std::process::exit(2);
+                    }
                 }
-                _ => {
-                    eprintln!("bad dblk; expected dblk:disable:alpha:beta");
-                    std::process::exit(2);
+            } else if let Some(rest) = text.strip_prefix("roi:") {
+                let parts: Vec<i64> = rest.split(':').filter_map(|s| s.parse().ok()).collect();
+                match parts.as_slice() {
+                    [x, y, w, h, intra, qp_abs, qp] => rois.push(h264_syntax::RoiRegion {
+                        x: *x as i32,
+                        y: *y as i32,
+                        w: *w as i32,
+                        h: *h as i32,
+                        force_intra: *intra != 0,
+                        qp_absolute: *qp_abs != 0,
+                        qp_val: *qp as i32,
+                    }),
+                    _ => {
+                        eprintln!("bad roi; expected roi:x:y:w:h:intra:abs:qp");
+                        std::process::exit(2);
+                    }
                 }
-            }
-        });
-        // `roi:x:y:w:h:intra:abs:qp`, repeatable - the `RoiRegionCfg` list
-        // `mpi_enc_test` adds per frame, in the same add order.
-        let mut rois: Vec<h264_syntax::RoiRegion> = Vec::new();
-        for text in args.iter().skip(12) {
-            let Some(rest) = text.strip_prefix("roi:") else {
-                continue;
-            };
-            let parts: Vec<i64> = rest.split(':').filter_map(|s| s.parse().ok()).collect();
-            match parts.as_slice() {
-                [x, y, w, h, intra, qp_abs, qp] => rois.push(h264_syntax::RoiRegion {
-                    x: *x as i32,
-                    y: *y as i32,
-                    w: *w as i32,
-                    h: *h as i32,
-                    force_intra: *intra != 0,
-                    qp_absolute: *qp_abs != 0,
-                    qp_val: *qp as i32,
-                }),
-                _ => {
-                    eprintln!("bad roi; expected roi:x:y:w:h:intra:abs:qp");
-                    std::process::exit(2);
+            } else {
+                let (mode, text) = match text.split_once(':') {
+                    Some(("cbr", rest)) => (h264_syntax::RcMode::Cbr, rest),
+                    Some(("vbr", rest)) => (h264_syntax::RcMode::Vbr, rest),
+                    Some(("avbr", rest)) => (h264_syntax::RcMode::Avbr, rest),
+                    _ => (h264_syntax::RcMode::Cbr, text.as_str()),
+                };
+                let parts: Vec<i64> = text.split(':').filter_map(|s| s.parse().ok()).collect();
+                match parts.as_slice() {
+                    [target, min, max] => bps = Some((mode, *target, *min, *max)),
+                    _ => {
+                        eprintln!(
+                            "unknown option {text}; expected \
+                             [cbr:|vbr:|avbr:]target:min:max, dblk:disable:alpha:beta \
+                             or roi:x:y:w:h:intra:abs:qp"
+                        );
+                        std::process::exit(2);
+                    }
                 }
             }
         }

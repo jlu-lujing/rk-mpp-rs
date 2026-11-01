@@ -46,9 +46,9 @@ fi
 # The probe is linked against the reference tree's own ROI helper; on mpp-old
 # that file exists next to the same header.
 scp -q tools/h264e_probe.c t6:/tmp/ 2>/dev/null
-ssh t6 "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils $mpp_ref/utils/mpp_enc_roi_utils.c \
+ssh t6 "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
-        cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils $mpp_ref/utils/mpp_enc_roi_utils.c \
+        cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
 
 ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \

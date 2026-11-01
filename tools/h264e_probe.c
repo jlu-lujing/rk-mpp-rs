@@ -121,6 +121,7 @@ int main(int argc, char **argv)
     FILE *output = NULL;
     MPP_RET ret = MPP_NOK;
     int i, arg;
+    int tried_qp_ip = 0;
 
     /* Optional `bps:min:max` or bare bps, then the optional dblk and roi
      * option groups in any order after it. */
@@ -133,8 +134,8 @@ int main(int argc, char **argv)
             return 2;
         }
         if (parts == 1) {
-            bps_min = bps_target * 5 / 4;
-            bps_max = bps_target * 3 / 4;
+            bps_min = bps_target * 15 / 16;
+            bps_max = bps_target * 17 / 16;
         }
         arg++;
     }
@@ -202,6 +203,18 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_target", bps_target));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_max", bps_max));
+    if (mode == 0) {
+        /* `mpi_enc_test -rc 2 -qc q:q:q:q:q` - the fixed-QP harness the crate's
+         * matrix is built on - collapses every bound onto the QP and leaves the
+         * I/P delta at the zero its config struct started from. The library's
+         * own defaults are 8..48 and 2, so without this the fixed-QP cell would
+         * compare our collapsed line against the default one. */
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_min", qp));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max", qp));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", qp));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", qp));
+        CHECK(set_s32_any(cfg, &tried_qp_ip, "rc:qp_ip", 0));
+    }
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 60));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", 30));

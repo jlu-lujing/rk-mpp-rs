@@ -612,7 +612,7 @@ impl Vepu580H264 {
             &sei::UUID_VERSION,
             version_info(&self.config).as_bytes(),
         ));
-        let line = match self.config.rc_mode {
+        let mut line = match self.config.rc_mode {
             RcMode::FixedQp => sei::RcCfgLine::fixqp(
                 i32::from(self.config.qp_init),
                 self.config.bps_target,
@@ -634,6 +634,13 @@ impl Vepu580H264 {
                 _ => "cbr",
             }),
         };
+        // A caller who left the initial quality unset hands the reference a -1
+        // sentinel (`rc:qp_init = -1`), and `update_rc_cfg_log` prints what the
+        // caller set, not what the bit budget derived - `cal_first_i_start_qp`
+        // only ever moves the encoder, never this line.
+        if self.config.quality_auto {
+            line.init_quality = -1;
+        }
         out.extend(sei::user_data(
             &sei::UUID_RC_CFG,
             sei::rc_cfg_line(&line).as_bytes(),

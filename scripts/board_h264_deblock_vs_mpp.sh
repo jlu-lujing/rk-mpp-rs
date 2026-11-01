@@ -37,8 +37,8 @@ fi
 # The probe links the reference's own ROI helper only for symbol availability;
 # these cells do not use it. Build once, tolerate either library SONAME.
 scp -q tools/h264e_probe.c t6:/tmp/ 2>/dev/null
-ssh t6 "cc -O2 -w -I$mpp_ref/inc /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
-        cc -O2 -w -I$mpp_ref/inc /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
+ssh t6 "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
+        cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
 
 ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
@@ -66,11 +66,11 @@ run_cell() {
 # Fixed QP 26, single IDR, GOP 1: the slice header is the only thing these
 # cells can move, which is exactly the register pair under test.
 # `0 0 0` is the all-zeros control the existing matrix covers.
-run_cell fixqp_dblk_default "26 baseline 1 1" \
+run_cell fixqp_dblk_default "26 baseline 1 60" \
   "1 0 26 288000:1500000:2500000 dblk 0 0 0"
-run_cell fixqp_dblk_alpha   "26 baseline 1 1 dblk:1:-3:4" \
+run_cell fixqp_dblk_alpha   "26 baseline 1 60 dblk:1:-3:4" \
   "1 0 26 288000:1500000:2500000 dblk 1 -3 4"
-run_cell fixqp_dblk_disable "26 baseline 1 1 dblk:2:2:5" \
+run_cell fixqp_dblk_disable "26 baseline 1 60 dblk:2:2:5" \
   "1 0 26 288000:1500000:2500000 dblk 2 2 5"
 
 # The unset initial quality, on CBR: `auto` on our side, qp -1 on the probe's.
@@ -80,6 +80,6 @@ run_cell fixqp_dblk_disable "26 baseline 1 1 dblk:2:2:5" \
 run_cell cbr_auto_qp  "auto baseline $FRAMES 60 cbr:$BPS" \
   "$FRAMES 1 -1 $BPS"
 run_cell vbr_auto_qp  "auto baseline $FRAMES 60 vbr:$BPS" \
-  "$FRAMES 3 -1 $BPS"
+  "$FRAMES 2 -1 $BPS"
 
 exit "$fail"
