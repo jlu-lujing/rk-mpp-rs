@@ -855,9 +855,14 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       mis-unit-ed feedback would move every later picture, so whatever it is
       touches the first P pair and nothing after it.
       `the_trajectory_matches_the_capture_except_for_one_swapped_pair` pins our
-      six numbers so the discrepancy cannot be papered over, and the next
-      measurement is a longer capture - twenty frames say whether the swap is a
-      start-up artefact or has a period.
+      six numbers so the discrepancy cannot be papered over. The instrument for the
+      remaining pair is `rc_dbg_rc`, which prints `i_sumbits`, `p_sumbits` and
+      `i_scale` per picture - it needs the reference rebuilt without `NDEBUG`, which
+      the board already does in minutes, and then the divergence names itself
+      instead of being inferred from the register value it lands in. Two candidate
+      explanations are already excluded: the IDR's whole access unit is 4600 bytes
+      against the 4378 `bs_lgth_l32` reports, and neither number reaches the ~6790
+      bytes the first P target would need, so it is not the header prefix either.
       The same read settled the quantiser controller's inputs, which were the next
       unknown: `quality_real = qp_sum / mbs` (one QP per 16x16 block over the coded
       size, which is why fixed QP 26 at 320x240 reads back 7800), `madi` divided by
