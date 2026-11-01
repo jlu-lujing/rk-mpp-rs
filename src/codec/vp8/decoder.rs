@@ -27,6 +27,48 @@ use crate::service::dma_heap::DmaBuf;
 pub const FRAME_ERR_DEC_INVALID: u32 = 0x10;
 pub const FRAME_ERR_DEC_HW_ERR: u32 = 0x100;
 
+/// Why one packet failed, typed so the stream policy can act on it.
+#[derive(Debug)]
+pub enum PacketError {
+    /// The syntax refused this packet; see [`super::parser::Vp8Error::recoverable`].
+    Syntax(parser::Vp8Error),
+    /// DMA allocation or the hardware job itself failed; the machine's state
+    /// after this is unknown, so no policy continues past it.
+    Hardware(std::io::Error),
+    /// Bookkeeping that should never fail on well-formed input.
+    Internal(String),
+}
+
+impl std::fmt::Display for PacketError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PacketError::Syntax(error) => write!(f, "{error}"),
+            PacketError::Hardware(error) => write!(f, "hardware: {error}"),
+            PacketError::Internal(what) => write!(f, "internal: {what}"),
+        }
+    }
+}
+
+/// One packet dropped by the stream policy, with the reason.
+#[derive(Debug)]
+pub struct DroppedPacket {
+    pub packet: usize,
+    pub reason: String,
+}
+
+/// The result of running the stream policy over a whole container.
+#[derive(Debug, Default)]
+pub struct StreamOutcome {
+    /// Display pictures produced before and after any dropped packet.
+    pub pictures: Vec<Picture>,
+    /// Packets the policy skipped; their count is the decoder's part of the
+    /// C-vs-Rust damage comparison the board script makes.
+    pub dropped: Vec<DroppedPacket>,
+    /// Something stopped the run early: a broken container, or a hardware
+    /// failure the policy refuses to decode past.
+    pub stopped_early: bool,
+}
+
 /// Zeroed bytes kept behind each packet. The C decoder copies the packet into a
 /// buffer of its own and the variable length decoder reads past the end of the
 /// picture, so the tail has to be readable.
@@ -39,6 +81,7 @@ struct Slot {
 }
 
 /// One displayed picture in tightly packed planar YUV 4:2:0.
+#[derive(Debug)]
 pub struct Picture {
     pub width: usize,
     pub height: usize,
@@ -84,31 +127,86 @@ impl Decoder {
         Ok(output)
     }
 
+    /// Decode a whole IVF file under the damage policy documented on
+    /// [`super::parser::Vp8Error::recoverable`]: a packet the syntax refuses is
+    /// recorded and skipped, every picture around it still decodes, and only a
+    /// broken container or a failing hardware job stops the run. The
+    /// deterministic shape of this outcome - not any particular C harness's
+    /// reaction to the same damage - is what the unit tests lock.
+    pub fn decode_stream(&mut self, data: &[u8]) -> StreamOutcome {
+        let mut outcome = StreamOutcome::default();
+        let frames = match parser::parse_ivf(data) {
+            Ok(frames) => frames,
+            Err(error) => {
+                outcome.dropped.push(DroppedPacket {
+                    packet: usize::MAX,
+                    reason: format!("container: {error}"),
+                });
+                outcome.stopped_early = true;
+                return outcome;
+            }
+        };
+        for (index, frame) in frames.iter().enumerate() {
+            match self.decode_packet_checked(frame.data) {
+                Ok(pictures) => outcome.pictures.extend(pictures),
+                // The syntax refused one packet and says nothing about the next:
+                // record it, keep going, exactly as documented on `recoverable`.
+                Err(PacketError::Syntax(error)) if error.recoverable() => {
+                    outcome.dropped.push(DroppedPacket {
+                        packet: index,
+                        reason: error.to_string(),
+                    });
+                }
+                // A hardware failure or an impossible bookkeeping state leaves
+                // the machine's next state unknown; do not submit another job.
+                Err(error) => {
+                    outcome.dropped.push(DroppedPacket {
+                        packet: index,
+                        reason: error.to_string(),
+                    });
+                    outcome.stopped_early = true;
+                    break;
+                }
+            }
+        }
+        for slot in self.dpb.flush() {
+            self.slots[slot] = None;
+        }
+        outcome
+    }
+
     /// Decode one coded picture, which may produce no display picture at all
     /// when the frame tag says it is a hidden reference frame.
     pub fn decode_packet(&mut self, packet: &[u8]) -> Result<Vec<Picture>, String> {
+        self.decode_packet_checked(packet)
+            .map_err(|error| error.to_string())
+    }
+
+    fn decode_packet_checked(&mut self, packet: &[u8]) -> Result<Vec<Picture>, PacketError> {
         let Some(picture) = self
             .parser
             .parse_picture(packet)
-            .map_err(|error| error.to_string())?
+            .map_err(PacketError::Syntax)?
         else {
             self.dropped_before_key_frame += 1;
             return Ok(Vec::new());
         };
 
-        let coded_width = usize::try_from((picture.width + 15) & !15).unwrap_or(0);
-        let coded_height = usize::try_from((picture.height + 15) & !15).unwrap_or(0);
+        let coded_width = usize::try_from((picture.width + 15) & !15)
+            .map_err(|_| PacketError::Internal("coded width".into()))?;
+        let coded_height = usize::try_from((picture.height + 15) & !15)
+            .map_err(|_| PacketError::Internal("coded height".into()))?;
         let slot = self
             .dpb
             .allocate(picture.show_frame)
-            .map_err(|error| error.to_string())?;
+            .map_err(PacketError::Internal)?;
         let current_fd = {
             if self.slots.len() == slot {
                 self.slots.push(None);
             }
             if self.slots[slot].is_none() {
                 let frame = crate::hal::vdpu2::Frame::alloc(coded_width, coded_height)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(PacketError::Hardware)?;
                 self.slots[slot] = Some(Slot {
                     frame,
                     hardware_error: false,
@@ -116,7 +214,7 @@ impl Decoder {
             }
             self.slots[slot]
                 .as_ref()
-                .ok_or("VP8 frame buffer disappeared")?
+                .ok_or_else(|| PacketError::Internal("VP8 frame buffer disappeared".into()))?
                 .frame
                 .fd()
         };
@@ -179,7 +277,7 @@ impl Decoder {
             seg_map_fd: self.hw.seg_map_fd(),
         };
 
-        let irq = self.hw.decode(&job).map_err(|error| error.to_string())?;
+        let irq = self.hw.decode(&job).map_err(PacketError::Hardware)?;
         self.last_irq = irq;
         if let Some(slot_state) = self.slots[slot].as_mut() {
             slot_state.hardware_error = irq & IRQ_FAILURE != 0;
@@ -198,12 +296,14 @@ impl Decoder {
 
     /// Copy one displayed picture out of its DMA mapping. The frame buffer stays
     /// in the pool while any reference buffer still names it.
-    fn take_picture(&self, slot: usize, picture: &Syntax) -> Result<Picture, String> {
-        let slot_state = self.slots[slot]
-            .as_ref()
-            .ok_or("VP8 display picture has no frame buffer")?;
-        let width = usize::try_from(picture.width).map_err(|_| "picture width")?;
-        let height = usize::try_from(picture.height).map_err(|_| "picture height")?;
+    fn take_picture(&self, slot: usize, picture: &Syntax) -> Result<Picture, PacketError> {
+        let slot_state = self.slots[slot].as_ref().ok_or_else(|| {
+            PacketError::Internal("VP8 display picture has no frame buffer".into())
+        })?;
+        let width = usize::try_from(picture.width)
+            .map_err(|_| PacketError::Internal("picture width".into()))?;
+        let height = usize::try_from(picture.height)
+            .map_err(|_| PacketError::Internal("picture height".into()))?;
         let _ = slot_state.frame.texture.sync_read_begin();
         let yuv = nv12_to_planar(
             slot_state.frame.y_plane(),
@@ -223,7 +323,7 @@ impl Decoder {
 
     /// Copy one packet into DMA memory and return its fd, reusing and growing the
     /// buffer across pictures and zeroing everything past the packet.
-    fn load_stream(&mut self, packet: &[u8]) -> Result<u32, String> {
+    fn load_stream(&mut self, packet: &[u8]) -> Result<u32, PacketError> {
         let needed = packet.len() + STREAM_PADDING;
         if self
             .stream
@@ -232,23 +332,21 @@ impl Decoder {
         {
             self.stream = None;
             self.stream =
-                Some(DmaBuf::alloc("system", needed, false).map_err(|error| error.to_string())?);
+                Some(DmaBuf::alloc("system", needed, false).map_err(PacketError::Hardware)?);
         }
         let buffer = self
             .stream
             .as_mut()
             .expect("stream buffer was just created");
         let fd = buffer.fd() as u32;
-        buffer
-            .sync_write_begin()
-            .map_err(|error| error.to_string())?;
+        buffer.sync_write_begin().map_err(PacketError::Hardware)?;
         {
             let window = buffer.as_mut_slice();
             window[..packet.len()].copy_from_slice(packet);
             let padding_end = (packet.len() + STREAM_PADDING).min(window.len());
             window[packet.len()..padding_end].fill(0);
         }
-        buffer.sync_write_end().map_err(|error| error.to_string())?;
+        buffer.sync_write_end().map_err(PacketError::Hardware)?;
         Ok(fd)
     }
 }

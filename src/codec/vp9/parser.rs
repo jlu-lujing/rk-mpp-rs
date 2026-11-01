@@ -57,6 +57,19 @@ impl fmt::Display for Vp9Error {
 
 impl std::error::Error for Vp9Error {}
 
+impl Vp9Error {
+    /// Whether the *stream policy* may skip this packet and try the next one,
+    /// the sibling of `Vp8Error::recoverable` and the same rule: every error
+    /// below is decided inside one picture's own bits, the parser state after
+    /// it is still the state the reference's parser would have, so the packet
+    /// says nothing about its successors. `BadIvf` is the exception - the
+    /// container is not a packet, and `Decoder::decode_stream` stops on a
+    /// broken container without asking this function.
+    pub fn recoverable(&self) -> bool {
+        !matches!(self, Vp9Error::BadIvf)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
     Profile0,
