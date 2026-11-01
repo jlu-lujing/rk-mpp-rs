@@ -177,34 +177,53 @@ impl RcbInfo {
 
     /// (register index, byte offset) pairs the hardware expects.
     pub fn offsets(&self) -> Vec<RegOffsetInfo> {
-        [139u32, 133, 134, 136, 137, 140, 141, 135, 138, 142]
-            .iter()
-            .zip(self.offsets)
-            .map(|(&reg_idx, offset)| RegOffsetInfo { reg_idx, offset })
-            .collect()
+        let mut out = Vec::with_capacity(10);
+        self.write_offsets(&mut out);
+        out
     }
 
+    /// Same entries as [`Self::offsets`], appended into a caller-owned
+    /// buffer so the decode path does not allocate per frame.
+    pub fn write_offsets(&self, out: &mut Vec<RegOffsetInfo>) {
+        out.extend(
+            [139u32, 133, 134, 136, 137, 140, 141, 135, 138, 142]
+                .iter()
+                .zip(self.offsets)
+                .map(|(&reg_idx, offset)| RegOffsetInfo { reg_idx, offset }),
+        );
+    }
+
+    #[cfg(test)]
     fn hardware_sizes(&self) -> Vec<RcbConfig> {
+        let mut out = Vec::new();
+        self.write_hardware_sizes(&mut out);
+        out
+    }
+
+    /// Same entries as [`Self::hardware_sizes`], appended into a
+    /// caller-owned buffer so the decode path does not allocate per frame.
+    fn write_hardware_sizes(&self, out: &mut Vec<RcbConfig>) {
         // Mirrors the RV3588 order in vdpu34x_set_rcbinfo. MPP deliberately
         // omits INTER_ROW because putting it in SRAM conflicts with DDR.
-        [
-            (139u32, self.dblk),
-            (133, self.intra),
-            (140, self.sao),
-            (141, self.fbc),
-            (134, self.transd_row),
-            (136, self.strmd_row),
-            (138, self.inter_col),
-            (142, self.filt_col),
-            (135, self.transd_col),
-        ]
-        .into_iter()
-        .filter(|(_, size)| *size > 0)
-        .map(|(reg_idx, size)| RcbConfig {
-            reg_idx,
-            size: size as u32,
-        })
-        .collect()
+        out.extend(
+            [
+                (139u32, self.dblk),
+                (133, self.intra),
+                (140, self.sao),
+                (141, self.fbc),
+                (134, self.transd_row),
+                (136, self.strmd_row),
+                (138, self.inter_col),
+                (142, self.filt_col),
+                (135, self.transd_col),
+            ]
+            .into_iter()
+            .filter(|(_, size)| *size > 0)
+            .map(|(reg_idx, size)| RcbConfig {
+                reg_idx,
+                size: size as u32,
+            }),
+        );
     }
 }
 
@@ -222,6 +241,11 @@ pub struct H264d {
     /// (reg224, reg226, reg227) read back after the last poll.
     pub last_status: (u32, u32, u32),
     pub last_hardware_error: bool,
+    /// Reused across frames: the ioctl needs owned scratch but not fresh
+    /// allocations, and the entries are rebuilt in full every job.
+    offsets_scratch: Vec<RegOffsetInfo>,
+    rcb_scratch: Vec<RcbConfig>,
+    batch: Batch,
 }
 
 impl H264d {
@@ -247,6 +271,9 @@ impl H264d {
             regs: reg::Regs::new(),
             last_status: (0, 0, 0),
             last_hardware_error: false,
+            offsets_scratch: Vec::with_capacity(10),
+            rcb_scratch: Vec::with_capacity(9),
+            batch: Batch::new(),
         };
         hw.cabac.sync_write_begin()?;
         hw.cabac
@@ -486,11 +513,8 @@ impl H264d {
             .set(reg::w142::REG142_RCB_FILTER_COL_BASE, rcb_fd);
 
         // MPP writes four sections and never the interrupt-status words.
-        let comm_gen: Vec<u32> = r.w[8..64].to_vec();
-        let comm_paras: Vec<u32> = r.w[64..128].to_vec();
-        let comm_addr: Vec<u32> = r.w[128..200].to_vec();
-        let highpoc: Vec<u32> = r.w[200..205].to_vec();
-        let statistic: Vec<u32> = r.w[256..276].to_vec();
+        // They are contiguous in the register file, so the batch points
+        // straight into it: same bytes, no per-frame copies.
         if std::env::var("RFI_REG_DUMP").is_ok() {
             use std::fs::OpenOptions;
             use std::io::Write;
@@ -506,22 +530,24 @@ impl H264d {
                 }
             }
         }
-        let offs = self.rcb_info.offsets();
+        self.offsets_scratch.clear();
+        self.rcb_info.write_offsets(&mut self.offsets_scratch);
+        self.rcb_scratch.clear();
+        self.rcb_info.write_hardware_sizes(&mut self.rcb_scratch);
         let mut readback = [0u32; REG_READBACK_WORDS];
-        let mut batch = Batch::new();
-        let rcb_configs = self.rcb_info.hardware_sizes();
-        batch
-            .reg_write(&comm_gen, 32)
-            .reg_write(&comm_paras, 256)
-            .reg_write(&comm_addr, 512)
-            .reg_write(&highpoc, 800)
-            .reg_write(&statistic, 1024)
+        self.batch.clear();
+        self.batch
+            .reg_write(&r.w[8..64], 32)
+            .reg_write(&r.w[64..128], 256)
+            .reg_write(&r.w[128..200], 512)
+            .reg_write(&r.w[200..205], 800)
+            .reg_write(&r.w[256..276], 1024)
             .reg_read(&mut readback, 0);
-        batch.reg_offsets(&offs);
-        if self.rcb_info_supported && !rcb_configs.is_empty() {
-            batch.rcb_info(&rcb_configs);
+        self.batch.reg_offsets(&self.offsets_scratch);
+        if self.rcb_info_supported && !self.rcb_scratch.is_empty() {
+            self.batch.rcb_info(&self.rcb_scratch);
         }
-        self.svc.submit_batch(&mut batch)?;
+        self.svc.submit_batch(&mut self.batch)?;
         self.svc.poll_hw_finish()?;
         self.last_status = (readback[224], readback[226], readback[227]);
         self.last_hardware_error =
@@ -814,5 +840,40 @@ mod tests {
         assert!(hardware_status_error(1 << 2, 1 << 1, 0, 0));
         assert!(hardware_status_error(1 << 2, 0, 1, 0));
         assert!(hardware_status_error(1 << 2, 0, 0, 1));
+    }
+
+    /// The reused-scratch writers must reproduce the original allocating
+    /// lists exactly, for resolutions where the width-dependent zero-size
+    /// regions change which entries survive the filter.
+    #[test]
+    fn rcb_scratch_lists_match_the_original_allocating_lists() {
+        for (width, height, depth, mbaff) in [
+            (1920usize, 1080usize, 8usize, false),
+            (320, 240, 8, false),
+            (4096, 2304, 8, true),
+        ] {
+            let info = RcbInfo::compute(width, height, depth, mbaff);
+
+            let expected = info.offsets();
+            let mut got = vec![RegOffsetInfo {
+                reg_idx: 0,
+                offset: u32::MAX,
+            }];
+            got.clear();
+            info.write_offsets(&mut got);
+            assert_eq!(got, expected, "{width}x{height} offsets");
+
+            let expected = info.hardware_sizes();
+            let mut got = vec![RcbConfig {
+                reg_idx: 0,
+                size: u32::MAX,
+            }];
+            got.clear();
+            info.write_hardware_sizes(&mut got);
+            assert_eq!(got.len(), expected.len(), "{width}x{height} sizes");
+            for (got, want) in got.iter().zip(&expected) {
+                assert_eq!((got.reg_idx, got.size), (want.reg_idx, want.size));
+            }
+        }
     }
 }
