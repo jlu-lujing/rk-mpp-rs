@@ -111,7 +111,12 @@ H.264/VEPU580 编码已做到：
     构建在 `/tmp/mpp-old/build`。SONAME 为 `librockchip_mpp.so.1`。
   - `/tmp/mpp-develop`（master）＝解码器基准。
   - `/tmp/mpp_trace.so`＝ioctl tracer（由 `tools/mpp_ioctl_trace.c` 构建）。
-  - ⚠️ 全在 `/tmp`，板子重启即失；重建方式见 `scripts/board_h264_qp_vs_mpp.sh` 头部注释。
+  - ⚠️ 它们是 `/tmp` 里的**工作副本**；权威副本在 `~/rk-mpp-oracles`
+    （`mpp-old` 66M、`mpp-develop` 54M、`mpp_trace.so`、`corpus/` 438 个流与参考输出）。
+    实测 t6 的 `/tmp` 不是 tmpfs（根是 overlay，`upperdir=/data/root`），
+    但 `systemd-tmpfiles-clean.timer` 在跑且策略含 `D /tmp 1777 root root -`，
+    所以它是会被清的位置。`scripts/setup_board_refs.sh` 先检查后回填，
+    三样都缺时会 clone `80957d266` / master 并用 cmake 重建。
 - 同步/构建（脚本里都在用）：
   ```bash
   COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
@@ -255,6 +260,13 @@ buffer 池引用计数 → 多核 → secure（secure 需设备支持，可能�
 11. 复杂嵌套 heredoc 反复出问题：写成 `/tmp/x.py` 再 `python3 /tmp/x.py`。
 12. 改 Rust 文件若用脚本切片，**先用 git diff 对 HEAD 校验测试模块完整**。
 13. 编码器每进程单会话；两个 rkvenc 测试并行会互相干扰（GOP 金样会错）。
+14. **残留的编码进程会占住硬件**：板上曾挂着一个 7.5 小时前的 `mpi_enc_test`，
+    现象是脚本"卡住不报错"而不是失败。跑编码套件（或编排脚本）前先
+    `ssh t6 'ps -eo pid,etime,comm | grep mpi_'` 看一眼，有残留 `sudo kill -9`；
+    杀掉本地 ssh 会话并不会终止远端仍在跑的测试进程。
+15. 编排脚本里调 `ssh` 要给子任务 `< /dev/null`：`ssh` 不带 `-n` 会继承 stdin，
+    当外层标准输入是管道/文件时会永久阻塞（`board_regress_all.sh` 就这么卡过一次）。
+    另外 macOS 自带 bash 3.2 + `set -u`：`SKIP` 这类可选变量必须显式 `SKIP="${SKIP:-}"`。
 14. 固定 QP 的 24 格矩阵与 6 格 GOP 是**常回归门**，任何碰编码器的改动都要重跑。
 
 ---
@@ -287,8 +299,9 @@ ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_syslog
 
 1. `cargo test --all-targets` 必须 441 通过；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
-3. 跑一次 `ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh` 确认板子与参考构建仍可用；
-   若 `/tmp/mpp-old` 消失，先按脚本头注释重建（这一步最贵，先确认）。
+3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
+   `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。
+   之后跑 `ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh` 确认真实判据仍可用。
 4. 再跑 `./scripts/board_h264_cbr_vs_mpp.sh`，确认 CBR/VBR 基线仍全过。
 5. 之后按第 5 节顺序推进；每完成一个小项：更新 `ROADMAP.md` → `cargo fmt` →
    全量测试 → 板级证据 → 提交（提交信息写清证据与已知边界）。

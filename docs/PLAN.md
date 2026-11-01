@@ -115,15 +115,20 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 任务：
 
-- [ ] W0-1 把 `/tmp/mpp-old`（`80957d266`）与 `/tmp/mpp-develop` 的**源码快照 +
-      构建脚本**固化到 `scripts/setup_board_refs.sh`（幂等：存在即跳过），
-      并在 `~/rk-mpp-oracles/` 下留一份，不依赖 `/tmp`。
-- [ ] W0-2 把 `tools/mpp_ioctl_trace.c` 的构建纳入同脚本，输出 `~/rk-mpp-oracles/mpp_trace.so`。
-- [ ] W0-3 新增 `scripts/board_regress_all.sh`：依次跑固定 QP 24 格、GOP 6 格、
-      CBR/VBR、STATUS 对比、解码 7 套回归，输出一份 PASS/FAIL 汇总；
-      作为"改完必跑"的单一入口。
-- [ ] W0-4 fixture 管理：`tests/data/` 每个 fixture 写来源头（板子、命令、日期、
-      md5）；新增 `scripts/refresh_fixtures.sh`（需要板子，显式 `--yes`）。
+- [x] W0-1 `/tmp/mpp-old`（`80957d266`）与 `/tmp/mpp-develop` 已固化到
+      `~/rk-mpp-oracles`（66M / 54M），`scripts/setup_board_refs.sh` 先检查后回填，
+      两边都缺才 clone + cmake 重建。实测更正：t6 的 `/tmp` **不是 tmpfs**
+      （根为 overlay，`upperdir=/data/root`），但 `D /tmp 1777 root root -`
+      与 `systemd-tmpfiles-clean.timer` 说明它是会被清的位置——原文"重启即失"的
+      机理判断是错的，风险结论不变。
+- [x] W0-2 `mpp_trace.so` 同样存进 oracle home，缺失时由脚本从
+      `tools/mpp_ioctl_trace.c` 重建。恢复路径已验证：把 tracer 改名后跑脚本，
+      它报 `miss` 并回填。
+- [x] W0-3 `scripts/board_regress_all.sh`：按依赖顺序跑 oracle 检查 + 六套解码回归 +
+      固定 QP（默认 GOP 6 格，`FULL_QP=1` 跑 24 格）+ CBR/VBR + STATUS，
+      统一 PASS/FAIL 汇总与退出码；`SKIP=` 可跳单套。
+- [~] W0-4 fixture 管理：**板上语料与参考输出**已入 `corpus/`（438 个文件、1.3G 含 oracle）；
+      `tests/data/` 的来源头与 `refresh_fixtures.sh` 仍待做。
 - [ ] W0-5 抖动检查：对每个逐字节测试跑两次，确认 C 侧输出确定（已有先例：
       CBR 流 md5 稳定；tracer 日志因指针不同而不稳定 → 只比报表）。
 - [ ] W0-6 板子信息采集脚本：内核版本、mask、各 client 绑定结果，写入
@@ -357,7 +362,7 @@ W5 可以与 W1/W2 并行（不同人/不同上下文），但 W7 必须等 W5�
 
 | # | 风险 | 影响 | 缓解 |
 |---|---|---|---|
-| R1 | 板上 `/tmp` oracle 丢失 | 全部编码证据失效 | W0 优先持久化；脚本幂等重建 |
+| R1 | 板上 `/tmp` oracle 丢失 | 全部编码证据失效 | **已处置（W0-1/2）**：权威副本在 `~/rk-mpp-oracles`，`setup_board_refs.sh` 检查并回填；实测 `/tmp` 非 tmpfs 但受 tmpfiles 清理 |
 | R2 | 硬件/固件行为漂移（换板/升级） | 金样失效 | 记录内核/固件版本；能力探测脚本；金样带 hash 与来源 |
 | R3 | H.265 编码规模被低估 | 主线延期 | 先做固定 QP 的 I 帧最小闭环，再逐特性；用寄存器 diff 驱动 |
 | R4 | framework 无 C 侧语义文档 | 行为偏差 | 以 `mpi_*_test` 行为为 oracle；写对照测试 |

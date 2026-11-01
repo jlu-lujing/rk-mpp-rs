@@ -125,8 +125,12 @@ tests/data/       C 侧真实输出构成的 golden / fixture
 
 ## 已知限制
 
-- 板上参考实现与 tracer 放在 `/tmp`（`/tmp/mpp-old`、`/tmp/mpp-develop`、
-  `/tmp/mpp_trace.so`），重启即失，重建步骤见 HANDOFF。
+- 板上的 C 参考实现与 tracer 是工作副本（`/tmp/mpp-old`、`/tmp/mpp-develop`、
+  `/tmp/mpp_trace.so`）。t6 的 `/tmp` 实测**不是 tmpfs**（根是 overlay，
+  `upperdir=/data/root`），但它归 `systemd-tmpfiles` 管（`D /tmp 1777 root root -`
+  且清理 timer 在跑），属于会被清的位置。权威副本已放在板上的
+  `~/rk-mpp-oracles`（含编解码 oracle、tracer 与 438 个流/参考输出），
+  `scripts/setup_board_refs.sh` 幂等检测并回填（已用"把 tracer 藏起来再跑一次"验证过恢复路径）。
 - rkvenc 每进程只支持一个活会话，多实例需先解决（framework 部分）。
 - AVS+/AVS2 无 conformance 流/硬件支持，未实现；损坏码流一致性只测了退出码。
 - 只验证 RK3588；其他 SoC、其他内核/固件版本的行为未测（见上文"验证范围"）。
