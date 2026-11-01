@@ -1,0 +1,31 @@
+# rc_model_v2's own state, printed by the reference library (rc_debug=0x40
+# mpp_syslog_perror=1) over two CBR runs on t6 at 320x240, 30 fps, GOP 60,
+# -bps 300000:250000:350000. Regenerate with:
+#   tools/rc_probe.c            # the direct-API caller
+#   mpi_enc_test from /tmp/mpp-old
+# Only the alloc/update lines are kept; the coded sizes below are the STATUS
+# bitstream lengths of the same runs, which is what the model is fed back.
+
+# run A: /tmp/rc_probe /tmp/rk-mpp-rs-move-320x240.nv12 ... 6 frames
+# coded bits: 30224 1728 2096 2216 2616 2416
+frm_init       p_sumbits 43475 i_sumbits 173900
+alloc   pic0   i_scale 160  total_bits 96000000
+preset  pic0   i_sumbits 173906 p_sumbits 43475 i_scale 160
+update  pic0   i_sumbits 117174 p_sumbits 43475 i_scale 107
+alloc   pic1   i_scale 107  total_bits 9600000
+alloc   pic2   i_scale 128  total_bits 9600000
+alloc   pic3   i_scale 156  total_bits 9600000
+alloc   pic4   i_scale 200  total_bits 9600000
+alloc   pic5   i_scale 270  total_bits 9600000
+
+# run B: mpi_enc_test -i /tmp/rk-mpp-rs-move-320x240.nv12 -n 6 -rc 1
+# coded bits: 35024 2632 2288 2560 2576 3248
+frm_init       p_sumbits 43475 i_sumbits 173900
+alloc   pic0   i_scale 160  total_bits 96000000
+preset  pic0   i_sumbits 173906 p_sumbits 43475 i_scale 160
+update  pic0   i_sumbits 121974 p_sumbits 43475 i_scale 112
+alloc   pic1   i_scale 112  total_bits 9600000
+alloc   pic2   i_scale 130  total_bits 9600000
+alloc   pic3   i_scale 157  total_bits 9600000
+alloc   pic4   i_scale 196  total_bits 9600000
+alloc   pic5   i_scale 260  total_bits 9600000

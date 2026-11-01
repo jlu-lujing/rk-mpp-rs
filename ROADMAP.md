@@ -855,14 +855,29 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       mis-unit-ed feedback would move every later picture, so whatever it is
       touches the first P pair and nothing after it.
       `the_trajectory_matches_the_capture_except_for_one_swapped_pair` pins our
-      six numbers so the discrepancy cannot be papered over. The instrument for the
-      remaining pair is `rc_dbg_rc`, which prints `i_sumbits`, `p_sumbits` and
-      `i_scale` per picture - it needs the reference rebuilt without `NDEBUG`, which
-      the board already does in minutes, and then the divergence names itself
-      instead of being inferred from the register value it lands in. Two candidate
-      explanations are already excluded: the IDR's whole access unit is 4600 bytes
-      against the 4378 `bs_lgth_l32` reports, and neither number reaches the ~6790
-      bytes the first P target would need, so it is not the header prefix either.
+      six numbers so the discrepancy cannot be papered over.
+
+      **It is now resolved, and it was never the port's.** The instrument turned out
+      to be sitting in plain sight: `rc_model_v2.c` prints `i_sumbits`, `p_sumbits`
+      and `i_scale` at every update and allocation under `rc_debug`, and
+      `mpp_env_get_u32` passes its name straight to `getenv` - the variable is
+      literally `rc_debug=0x40`, not `MPP_RC_DEBUG`, and the log goes to syslog
+      unless `mpp_syslog_perror=1` asks for stderr too. That last detail is also
+      the standing answer to this repo's old puzzlement that `mpi_enc_test` "prints
+      nothing at all": the library does talk, it talks to syslog. `tools/rc_probe.c`
+      drives the encoder through the API for the same reason - to have a caller that
+      keeps its own stdout open while the library's state scrolls past it.
+
+      Replaying the two runs' own coded sizes, this port reproduces the reference's
+      `i_scale` at every picture of both: 160, 107, 128, 156, 200, 270 for the
+      direct-API run and 160, 112, 130, 157, 196, 260 for the `mpi_enc_test` one
+      (`tests/data/rc_model_v2_c_state.txt`, `the_model_matches_the_reference_model_s_own_state`).
+      Run B is the capture whose traced registers read 476 then 484 for the first
+      two P pictures - but the reference's own model says 112 then 130 for those
+      pictures, i.e. 484 then 476, which is what this port computes. The
+      transposition is in how traced register windows line up with jobs, not in the
+      allocation. The direct-API run, where the pairing is unambiguous, matches our
+      six `ctu_ebit` values exactly: 4637, 487, 477, 465, 447, 421.
       The same read settled the quantiser controller's inputs, which were the next
       unknown: `quality_real = qp_sum / mbs` (one QP per 16x16 block over the coded
       size, which is why fixed QP 26 at 320x240 reads back 7800), `madi` divided by

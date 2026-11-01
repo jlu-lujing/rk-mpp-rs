@@ -462,46 +462,52 @@ mod tests {
         assert_eq!(under.next_i_ratio(), 0);
     }
 
-    /// What the model actually produces against what the reference wrote, over the
-    /// captured six frames, with the reference's own coded sizes fed back in. Four
-    /// of the six targets are the same number, and the trajectory from the third
-    /// picture on is exact - including the decay, which happens because every P
-    /// picture codes under its share and `i_scale` rises as `p_sumbits` falls.
+    /// The model's state against the reference model's *own* printout.
     ///
-    /// Pictures 1 and 2 are swapped: the reference promised 476 then 484, we
-    /// promise 484 then 476, and both then follow the same path. A mis-scaled
-    /// feedback would move every later picture, so the cause is something that
-    /// touches the first P pair only, and it is still open. This test pins our
-    /// behaviour exactly so that the day the swap is explained, the number that
-    /// changes is the one under test.
+    /// `rc_debug=0x40` makes `rc_model_v2.c` print `i_sumbits`, `p_sumbits` and
+    /// `i_scale` at every `bits_model_update` and `bits_model_alloc`; those lines
+    /// for two CBR runs are in `tests/data/rc_model_v2_c_state.txt`, together with
+    /// the coded sizes each run fed back. Replaying the same sizes here reproduces
+    /// the reference's `i_scale` at every picture of both runs, which is a
+    /// stronger statement than matching the `ctu_ebit` register it eventually
+    /// produces: the scale is the state the whole allocation is computed from.
+    ///
+    /// It also settles the swapped pair. Run B is the `mpi_enc_test` capture whose
+    /// traced registers read 476 then 484 for the first two P pictures; the
+    /// reference's own model says 112 then 130 for those two pictures, which is
+    /// 484 then 476 - what this port computes. The transposition is in how the
+    /// traced register windows line up with the jobs, not in the model.
     #[test]
-    fn the_trajectory_matches_the_capture_except_for_one_swapped_pair() {
-        // The C encoder's own per-picture sizes, in bytes, from its STATUS reads.
-        let coded: [usize; 6] = [4378, 329, 286, 320, 322, 406];
-        let ours: Vec<i32> = {
+    fn the_model_matches_the_reference_model_s_own_state() {
+        let runs = [
+            ("A", [30_224, 1_728, 2_096, 2_216, 2_616, 2_416]),
+            ("B", [35_024, 2_632, 2_288, 2_560, 2_576, 3_248]),
+        ];
+        let want = [
+            [160, 107, 128, 156, 200, 270],
+            [160, 112, 130, 157, 196, 260],
+        ];
+        for ((name, coded), expect) in runs.into_iter().zip(want) {
             let mut model = cbr();
-            coded
+            let seen: Vec<i32> = coded
                 .iter()
                 .enumerate()
-                .map(|(i, bytes)| {
+                .map(|(i, bits)| {
                     let frame = if i == 0 {
                         FrameType::Intra
                     } else {
                         FrameType::InterP
                     };
+                    // `alloc` recomputes `i_scale` on entry, which is the value
+                    // the reference prints there - so read it after the call.
                     let target = model.alloc(frame);
+                    let scale = model.scales().0;
                     model.preset(frame, target);
-                    model.end(frame, target, (bytes * 8) as i32);
-                    (target << 4) / 300
+                    model.end(frame, target, *bits);
+                    scale
                 })
-                .collect()
-        };
-        let reference = [4637, 476, 484, 465, 449, 425];
-        assert_eq!(ours, [4637, 484, 476, 465, 449, 425]);
-        assert_eq!(
-            vec![ours[0], ours[3], ours[4], ours[5]],
-            vec![reference[0], reference[3], reference[4], reference[5]],
-            "the first picture and the whole tail are the reference's numbers"
-        );
+                .collect();
+            assert_eq!(seen, expect.to_vec(), "run {name}");
+        }
     }
 }
