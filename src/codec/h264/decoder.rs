@@ -52,6 +52,9 @@ pub struct Decoder {
     coded_height: usize,
     frame_mbs_only: bool,
     pending_top: Option<PendingTopField>,
+    /// Slice payload and staging buffer, reused and grown across pictures.
+    payload: Vec<u8>,
+    stream: Option<DmaBuf>,
     // Keep the interleaved chroma of every picture, for the debug dump only.
     capture_raw_uv: bool,
 }
@@ -69,6 +72,8 @@ impl Decoder {
             coded_height: 0,
             frame_mbs_only: true,
             pending_top: None,
+            payload: Vec::new(),
+            stream: None,
             capture_raw_uv: std::env::var("RFI_DUMP_UV").is_ok(),
         })
     }
@@ -212,24 +217,10 @@ impl Decoder {
         // 5. submit. MPP feeds the slice NALs *with* their start codes
         // (verified against the reference decoder: the first bytes it hands to
         // the hardware are `00 00 01 65 ...`), parameter sets excluded.
-        let mut payload: Vec<u8> = Vec::with_capacity(aub.len());
-        for n in nals.iter().filter(|n| n.is_vcl()) {
-            // MPP hands the hardware a normalised 3-byte start code (a 4-byte
-            // code loses its first byte) and pads the end with three zero
-            // bytes; verified byte-for-byte against its packet dump.
-            let code_len =
-                if aub.len() >= n.offset + 4 && aub[n.offset..n.offset + 4] == [0, 0, 0, 1] {
-                    4
-                } else {
-                    3
-                };
-            let start = n.offset + (code_len - 3);
-            let end = (n.offset + n.len).min(aub.len());
-            payload.extend_from_slice(&aub[start..end]);
-        }
-        payload.extend_from_slice(&[0, 0, 0]);
-        pad_h264_payload(&mut payload);
-        if payload.is_empty() {
+        self.payload.clear();
+        build_slice_payload(aub, &nals, &mut self.payload);
+        let payload_len = self.payload.len();
+        if payload_len == 0 {
             return Ok(None);
         }
         if std::env::var("RFI_STREAM_DUMP").is_ok() {
@@ -239,15 +230,11 @@ impl Decoder {
                 .append(true)
                 .open("/tmp/our_streams.bin")
             {
-                let _ = writeln!(f, "TASK {} {}", order.top, payload.len());
-                let _ = f.write_all(&payload);
+                let _ = writeln!(f, "TASK {} {}", order.top, payload_len);
+                let _ = f.write_all(&self.payload);
             }
         }
-        let mut stream =
-            DmaBuf::alloc("system", payload.len().max(64), false).map_err(|e| e.to_string())?;
-        stream.sync_write_begin().map_err(|e| e.to_string())?;
-        stream.as_mut_slice()[..payload.len()].copy_from_slice(&payload);
-        stream.sync_write_end().map_err(|e| e.to_string())?;
+        load_stream_payload(&mut self.stream, &self.payload).map_err(|e| e.to_string())?;
 
         let table_list = |list: &[RefListEntry]| {
             list.iter()
@@ -322,8 +309,8 @@ impl Decoder {
                 &ref_pocs,
                 &ref_flags,
                 &ref_frame_nums,
-                &stream,
-                payload.len(),
+                self.stream.as_ref().expect("stream was just loaded"),
+                payload_len,
                 idr,
             )?;
             Ok(self.hw.last_hardware_error)
@@ -493,8 +480,51 @@ impl Decoder {
     }
 }
 
+/// Copy the assembled payload into the staging buffer, reusing and growing
+/// it across pictures the way the VP8 decoder's stream buffer does. Zeroing
+/// everything past the payload keeps the bytes the hardware reads identical
+/// to the fresh zeroed allocation this path used per picture.
+fn load_stream_payload(stream: &mut Option<DmaBuf>, payload: &[u8]) -> io::Result<()> {
+    let needed = payload.len().max(64);
+    if stream.as_ref().is_none_or(|buffer| buffer.len() < needed) {
+        *stream = None;
+        *stream = Some(DmaBuf::alloc("system", needed, false)?);
+    }
+    let buffer = stream.as_mut().expect("stream was just created");
+    buffer.sync_write_begin()?;
+    {
+        let window = buffer.as_mut_slice();
+        window[..payload.len()].copy_from_slice(payload);
+        let padding_end = needed.min(window.len());
+        window[payload.len()..padding_end].fill(0);
+    }
+    buffer.sync_write_end()
+}
+
 fn pad_h264_payload(payload: &mut Vec<u8>) {
     payload.resize((payload.len() + 7) & !7, 0);
+}
+
+/// Assemble the access unit's VCL slices into the payload MPP hands to the
+/// hardware. Appended into caller-owned scratch; the entry sequence is the
+/// original per-frame build, byte for byte.
+fn build_slice_payload(aub: &[u8], nals: &[parser::NalUnit], payload: &mut Vec<u8>) {
+    payload.reserve(aub.len());
+    for n in nals.iter().filter(|n| n.is_vcl()) {
+        // MPP hands the hardware a normalised 3-byte start code (a 4-byte
+        // code loses its first byte) and pads the end with three zero
+        // bytes; verified byte-for-byte against its packet dump.
+        let code_len = if aub.len() >= n.offset + 4 && aub[n.offset..n.offset + 4] == [0, 0, 0, 1] {
+            4
+        } else {
+            3
+        };
+        let start = n.offset + (code_len - 3);
+        let end = (n.offset + n.len).min(aub.len());
+        payload.extend_from_slice(&aub[start..end]);
+    }
+    payload.extend_from_slice(&[0, 0, 0]);
+    pad_h264_payload(payload);
 }
 
 fn current_reference_state(field_pic: bool, bottom_field: bool) -> ReferenceFlags {
@@ -620,12 +650,12 @@ fn first_mb_zero(rbsp: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        complementary_fields, current_reference_state, finish_hardware_job, frame_error,
-        hardware_rps_lists, pad_h264_payload, picture_is_output, sort_pictures_by_poc,
+        build_slice_payload, complementary_fields, current_reference_state, finish_hardware_job,
+        frame_error, hardware_rps_lists, pad_h264_payload, picture_is_output, sort_pictures_by_poc,
         split_access_units, Picture, FRAME_ERR_DEC_HW_ERR, FRAME_ERR_DEC_INVALID,
     };
     use crate::codec::h264::dpb::{RefListEntry, ReferenceFlags};
-    use crate::codec::h264::parser::SliceHeader;
+    use crate::codec::h264::parser::{split_annex_b, SliceHeader};
 
     fn picture(poc: i32, idr: bool) -> Picture {
         Picture {
@@ -774,6 +804,51 @@ mod tests {
         pad_h264_payload(&mut payload);
         assert_eq!(payload.len(), 200);
         assert_eq!(&payload[197..], &[0, 0, 0]);
+    }
+
+    /// The reused-scratch payload builder must emit exactly the bytes the
+    /// original per-frame inline build emitted: VCL NALs only, 4-byte start
+    /// codes normalised to 3, the three-zero tail and the 8-byte pad.
+    #[test]
+    fn slice_payload_matches_the_original_inline_build() {
+        // SPS (non-VCL), an IDR slice behind a 4-byte start code, and a
+        // non-IDR slice behind a 3-byte start code.
+        let aub: Vec<u8> = [
+            0u8, 0, 0, 1, 0x67, 0xaa, 0xbb, // SPS, must not reach hardware
+            0, 0, 0, 1, 0x65, 0x88, 0x99, // IDR with a 4-byte start code
+            0, 0, 1, 0x41, 0x8a, 0xb0, 0xc1, 0xd2, // non-IDR, 3-byte code
+        ]
+        .to_vec();
+        let nals = split_annex_b(&aub);
+
+        // The original sequence, spelled out exactly as the pre-optimisation
+        // decode_access_unit() built it into a fresh Vec.
+        let mut expected: Vec<u8> = Vec::with_capacity(aub.len());
+        for n in nals.iter().filter(|n| n.is_vcl()) {
+            let code_len =
+                if aub.len() >= n.offset + 4 && aub[n.offset..n.offset + 4] == [0, 0, 0, 1] {
+                    4
+                } else {
+                    3
+                };
+            let start = n.offset + (code_len - 3);
+            let end = (n.offset + n.len).min(aub.len());
+            expected.extend_from_slice(&aub[start..end]);
+        }
+        expected.extend_from_slice(&[0, 0, 0]);
+        pad_h264_payload(&mut expected);
+
+        let mut got = vec![0u8]; // dirty scratch: reserve-extend must not mix
+                                 // in the old contents; the caller clears first
+        got.clear();
+        build_slice_payload(&aub, &nals, &mut got);
+        assert_eq!(got, expected);
+        assert_eq!(&got[..4], &[0, 0, 1, 0x65], "the 4-byte code is normalised");
+        assert_eq!(
+            got.iter().filter(|b| **b == 0x67).count(),
+            0,
+            "the SPS never reaches the hardware"
+        );
     }
 
     #[test]

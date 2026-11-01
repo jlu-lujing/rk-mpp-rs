@@ -73,6 +73,9 @@ pub struct Decoder {
     hw: Vp9d,
     frames: Vec<Option<Frame>>,
     reference_map: [Option<Reference>; 8],
+    /// Packet staging buffer, reused and grown across pictures the way the
+    /// VP8 decoder's stream buffer is.
+    stream: Option<DmaBuf>,
     next_poc: u32,
     /// Packets ahead of the first key frame, dropped the way the C parser's
     /// "no found key frame" path drops them, rather than failed the way the
@@ -87,6 +90,7 @@ impl Decoder {
             hw: Vp9d::open()?,
             frames: Vec::new(),
             reference_map: [None; 8],
+            stream: None,
             next_poc: 1,
             dropped_before_key_frame: 0,
         })
@@ -229,17 +233,13 @@ impl Decoder {
         let frame_index = self
             .allocate_frame(&parsed.header)
             .map_err(PacketError::Hardware)?;
+        self.load_stream(packet).map_err(PacketError::Hardware)?;
         let references = hardware_references(&parsed.header, &self.reference_map, &self.frames);
         let current = self.frames[frame_index]
             .as_ref()
             .ok_or_else(|| PacketError::Internal("VP9 frame allocation failed".into()))?;
 
-        let padded_len = ((packet.len() + 15) & !15) + 0x80;
-        let mut stream =
-            DmaBuf::alloc("system", padded_len, false).map_err(PacketError::Hardware)?;
-        stream.sync_write_begin().map_err(PacketError::Hardware)?;
-        stream.as_mut_slice()[..packet.len()].copy_from_slice(packet);
-        stream.sync_write_end().map_err(PacketError::Hardware)?;
+        let stream = self.stream.as_ref().expect("stream was just loaded");
 
         if std::env::var_os("RFI_VP9_STREAM_DUMP").is_some() {
             let _ = std::fs::write(format!("/tmp/rk_mpp_rs_vp9_{poc:04}.vp9"), packet);
@@ -251,7 +251,7 @@ impl Decoder {
                 poc,
                 current,
                 &references,
-                &stream,
+                stream,
                 packet.len(),
             )
             .map_err(PacketError::Hardware)?;
@@ -317,17 +317,41 @@ impl Decoder {
         })
     }
 
+    /// Copy one packet into the staging buffer, reusing and growing it
+    /// across pictures. Zeroing everything past the packet keeps the bytes
+    /// the hardware sees identical to a fresh zeroed allocation.
+    fn load_stream(&mut self, packet: &[u8]) -> Result<(), std::io::Error> {
+        let padded_len = ((packet.len() + 15) & !15) + 0x80;
+        if self
+            .stream
+            .as_ref()
+            .is_none_or(|buffer| buffer.len() < padded_len)
+        {
+            self.stream = None;
+            self.stream = Some(DmaBuf::alloc("system", padded_len, false)?);
+        }
+        let buffer = self.stream.as_mut().expect("stream was just created");
+        buffer.sync_write_begin()?;
+        {
+            let window = buffer.as_mut_slice();
+            window[..packet.len()].copy_from_slice(packet);
+            let padding_end = padded_len.min(window.len());
+            window[packet.len()..padding_end].fill(0);
+        }
+        buffer.sync_write_end()
+    }
+
     fn allocate_frame(&mut self, header: &Header) -> Result<usize, std::io::Error> {
-        let live: Vec<usize> = self
-            .reference_map
-            .iter()
-            .flatten()
-            .map(|reference| reference.frame)
-            .collect();
+        let mut live = [usize::MAX; 8];
+        let mut live_count = 0usize;
+        for reference in self.reference_map.iter().flatten() {
+            live[live_count] = reference.frame;
+            live_count += 1;
+        }
         let hardware_live_colmv = self.hw.colmv_liveness_fds();
         let reusable = self.frames.iter().enumerate().find_map(|(index, frame)| {
             let frame = frame.as_ref()?;
-            (!live.contains(&index)
+            (!live[..live_count].contains(&index)
                 && !hardware_live_colmv.contains(&Some(frame.colmv.fd() as u32))
                 && frame.width == header.width as usize
                 && frame.height == header.height as usize
