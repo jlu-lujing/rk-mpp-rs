@@ -233,3 +233,13 @@ fn board_gop_matches_the_c_encoder() {
         .expect("run scripts/board_h265_gop_vs_mpp.sh");
     assert!(status.success(), "H.265 board GOP compare failed");
 }
+
+/// The CBR path with the C's own per-picture decisions.
+#[test]
+#[ignore = "board-only: needs t6, the MPP reference and /dev/mpp_service"]
+fn board_cbr_path_matches_the_c_encoder() {
+    let status = std::process::Command::new("scripts/board_h265_cbr_vs_mpp.sh")
+        .status()
+        .expect("run scripts/board_h265_cbr_vs_mpp.sh");
+    assert!(status.success(), "H.265 board CBR compare failed");
+}

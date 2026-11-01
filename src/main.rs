@@ -191,6 +191,7 @@ fn encode_h265_headers(
         qp_min: qp,
         qp_max: qp,
         picture: h265e::Picture::Idr,
+        long_term: false,
         rc: None,
         input_fd: -1,
         output_fd: -1,
@@ -1157,6 +1158,7 @@ fn main() {
             qp_min: qp,
             qp_max: qp,
             picture,
+            long_term: false,
             rc,
             input_fd: -1,
             output_fd: -1,
@@ -1282,6 +1284,100 @@ fn main() {
             ),
             Err(e) => {
                 eprintln!("H.265 GOP encode failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if args.len() > 1 && args[1] == "h265-gop-rc" {
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
+        let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
+        let usage = "usage: rk-mpp-rs h265-gop-rc <in.nv12> <out.265> <w> <h> <qp:bits,...> [min_qp] [max_qp]";
+        let (Some(width), Some(height)) = (width, height) else {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        };
+        let spec = args.get(6).map(|s| s.as_str()).unwrap_or("");
+        let steps: Vec<(u32, i32)> = spec
+            .split(',')
+            .filter_map(|item| {
+                let (q, b) = item.split_once(':')?;
+                Some((q.parse().ok()?, b.parse().ok()?))
+            })
+            .collect();
+        if src.is_empty() || dst.is_empty() || steps.is_empty() {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        }
+        let min_qp = args
+            .get(7)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(10);
+        let max_qp = args
+            .get(8)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(51);
+        let input = match std::fs::read(src) {
+            Ok(input) => input,
+            Err(e) => {
+                eprintln!("{src}: {e}");
+                std::process::exit(1);
+            }
+        };
+        let frame_size = width * height * 3 / 2;
+        if input.len() < frame_size * steps.len() {
+            eprintln!(
+                "{src}: {} frames of {width}x{height} need {} bytes, file has {}",
+                steps.len(),
+                frame_size * steps.len(),
+                input.len()
+            );
+            std::process::exit(1);
+        }
+        let bps: Option<(i64, i64, i64)> = args.get(9).and_then(|spec| {
+            let f: Vec<i64> = spec.split(':').filter_map(|v| v.parse().ok()).collect();
+            if f.len() == 3 {
+                Some((f[0], f[1], f[2]))
+            } else {
+                None
+            }
+        });
+        let result =
+            h265e_session::Vepu580H265::open_gop(width, height, max_qp).and_then(|mut encoder| {
+                if let Some((target, min, max)) = bps {
+                    encoder.set_rate_control_sei(h265e_session::RcSei {
+                        target,
+                        min,
+                        max,
+                        init_quality: args
+                            .get(10)
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .unwrap_or(steps[0].0 as i32),
+                        qp_min: min_qp,
+                        qp_max: max_qp,
+                    });
+                }
+                let mut out = Vec::new();
+                for (index, (qp, bits)) in steps.iter().enumerate() {
+                    let frame = &input[index * frame_size..(index + 1) * frame_size];
+                    out.extend_from_slice(
+                        &encoder.encode_frame_with_rc(frame, *bits, *qp, min_qp, max_qp)?,
+                    );
+                }
+                Ok(out)
+            });
+        match result.and_then(|stream| {
+            std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
+            Ok(stream.len())
+        }) {
+            Ok(bytes) => println!(
+                "h265-gop-rc {src} -> {dst}: {bytes} bytes, {} decided pictures",
+                steps.len()
+            ),
+            Err(e) => {
+                eprintln!("H.265 RC GOP encode failed: {e}");
                 std::process::exit(1);
             }
         }

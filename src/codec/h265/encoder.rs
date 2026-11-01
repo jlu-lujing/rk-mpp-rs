@@ -299,16 +299,23 @@ pub fn build_headers(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
 /// then the two prefix SEIs (version and rate-control line). This is the software
 /// half of the packet; the hardware writes the slice NAL.
 pub fn build_prefix(config: &EncoderConfig, qp: u32, igop: u32) -> Result<Vec<u8>, Error> {
+    // The harness's default target rate, which the SEI prints: 30 fps at
+    // `w * h * 30 / 8` bits per second. Its min/max stay at the harness values.
+    let bps = sei::default_bps_target(config.width, config.height, 30);
+    build_prefix_line(config, &sei::RcCfgLine::fixed_qp(qp, igop, bps))
+}
+
+/// The prefix with a caller-chosen rate-control line and PPS variant. `config`'s
+/// `rc_mode` picks the PPS bytes (`cu_qp_delta_enabled` follows it), `line` is the
+/// `uuid_rc_cfg` text.
+pub fn build_prefix_line(config: &EncoderConfig, line: &sei::RcCfgLine) -> Result<Vec<u8>, Error> {
     let mut out = build_headers(config)?;
     out.extend(sei::user_data_unregistered(
         &sei::VERSION_UUID,
         sei::VERSION_TEXT.as_bytes(),
     ));
-    // The harness's default target rate, which the SEI prints: 30 fps at
-    // `w * h * 30 / 8` bits per second. Its min/max stay at the harness values.
-    let bps = sei::default_bps_target(config.width, config.height, 30);
-    let line = sei::rc_cfg_line(&sei::RcCfgLine::fixed_qp(qp, igop, bps));
-    out.extend(sei::user_data_unregistered(&sei::RC_UUID, line.as_bytes()));
+    let text = sei::rc_cfg_line(line);
+    out.extend(sei::user_data_unregistered(&sei::RC_UUID, text.as_bytes()));
     Ok(out)
 }
 

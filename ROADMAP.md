@@ -829,18 +829,30 @@ in what order the evidence gets produced.
        `the_rate_control_image_matches_the_traced_cbr_job`: `rc_cfg = 0x5007`,
        `rc_qp = 0x2b320000`, `ctu_ebit = 464`, and the threshold words
        `-90/-45/+45/+90` then five `0x7fffffff`.
-- [ ] H.265 (rkvenc): the rate-control loop on top of that register half - wiring
-      `rc_model::Model` into `h265e_session` so CBR/VBR/AVBR track per-picture QP,
-      plus tiles/WPP/SAO, B frames, multiple references and per-slice output. One
-      open number before the loop can be called byte-exact: the C's first-picture
-      QP is **29** under `mpi_enc_test` at 320x240, 640x480 and at 100 kbps as well
-      as 2 Mbps - it does not move with size or rate - while
-      `cal_first_i_start_qp` with the 16x16 macroblock count the H.264 path uses
-      gives **23**, and the library-API probe (`tools/h265e_probe.c`, CBR mode)
-      gives **21** for the same bit target. A `total_mb` of 500 reproduces 29, but
-      that is a fit, not a rule; the three callers differ in what they feed the
-      model, and the H.265 entry point has to be found before the loop can claim
-      byte-exactness.
+ - [x] **H.265 CBR: the encoding path is byte-identical, with the C's decisions.**
+       `h265-gop-rc` takes a per-picture `qp:bits` list, and
+       `scripts/board_h265_cbr_vs_mpp.sh` feeds it the two decisions the C made on
+       the same input (IDR 26 with 86955 bits, P 25 with 582 bits): the 1169-byte
+       stream - CBR PPS (`cu_qp_delta` on), the `cbr` SEI line, the IDR and the P
+       NAL - is **byte-identical** to `mpi_enc_test -rc 1 -qc 26:10:51:10:51`.
+       Two things had to move for that: the RC prefix needs `build_prefix_line`
+       (mode-dependent PPS + SEI), and the GOP's long-term register state
+       (`rdo_cfg.ltm_idx0l0`, `lt_ref_pic_prsnt`, `num_lt_ref_pic`) belongs to
+       *every* picture of the sequence, the opening IDR included, not only to P.
+       An earlier note in this file claimed the C's first QP was 29 and did not move
+       with size or rate; that was a decode error on this author's side (the field is
+       not at bit 0 of `enc_pic`). With `-qc 26` the IDR is QP 26; with the default
+       `-qc` the harness leaves `init_quality` at -1 and takes a derivation path the
+       H.264-style `cal_first_i_start_qp` does not reproduce.
+- [ ] H.265 (rkvenc): the rate-control *decision* loop on top of that path - wiring
+      `rc_model::Model` into `h265e_session` so CBR/VBR/AVBR pick the per-picture QP
+      themselves, plus tiles/WPP/SAO, B frames, multiple references and per-slice
+      output. On the 320x240 CBR cell the first decision already matches
+      (`86956` bits / QP 26), but the next one does not: the model says
+      `9302` bits / QP 27 where the C's register says `582` / 25. The bits differ by
+      the measured-state update (`rc_model_v2_hal_start` / `end` with the STATUS
+      quality, MADI and MADP), which the H.265 STATUS window has not been ported
+      yet.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,

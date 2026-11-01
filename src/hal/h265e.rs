@@ -101,6 +101,9 @@ pub struct IdrJob {
     pub qp_min: u32,
     pub qp_max: u32,
     pub picture: Picture,
+    /// The GOP configuration carries long-term references, which the HAL states on
+    /// every picture of the sequence - the opening IDR included.
+    pub long_term: bool,
     /// Rate control for this picture, `None` for fixed QP.
     pub rc: Option<RateControl>,
     pub input_fd: i32,
@@ -122,6 +125,7 @@ impl IdrJob {
             qp_min: qp,
             qp_max: qp,
             picture: Picture::Idr,
+            long_term: false,
             rc: None,
             input_fd: -1,
             output_fd: -1,
@@ -578,6 +582,14 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
 
     // reg0252 tile_cfg: tiles off (auto_tile default 0). Left 0.
 
+    // The GOP's long-term reference state is part of every picture, not just the
+    // P; the traced CBR IDR carries it too.
+    if job.long_term {
+        file.set(&regs::H265_REG0232_RDO_CFG_LTM_IDX0L0, 1)?;
+        file.set(&regs::H265_REG0237_SYNT_SPS_LT_REF_PIC_PRSNT, 1)?;
+        file.set(&regs::H265_REG0237_SYNT_SPS_NUM_LT_REF_PIC, 1)?;
+    }
+
     // ---- picture type: set_slice_regs / set_ref_regs ----
     // The traced P job settles every one of these bits: `sli_type` 1, NAL 1
     // (TRAIL_R), POC 1, the reference rebuilt as an LT entry with
@@ -586,10 +598,7 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         file.set(&regs::CTL_DTRNS_CFG_DSPR_OTSD, 1)?;
         // `tot_poc_num` is 1 for every traced P picture, not the running count.
         file.set(&regs::H265_REG0192_ENC_PIC_NUM_PIC_TOT_CUR, 1)?;
-        file.set(&regs::H265_REG0232_RDO_CFG_LTM_IDX0L0, 1)?;
         file.set(&regs::H265_REG0236_SYNT_NAL_NAL_UNIT_TYPE, 1)?;
-        file.set(&regs::H265_REG0237_SYNT_SPS_LT_REF_PIC_PRSNT, 1)?;
-        file.set(&regs::H265_REG0237_SYNT_SPS_NUM_LT_REF_PIC, 1)?;
         file.set(&regs::H265_REG0239_SYNT_SLI0_NUM_REFIDX_ACT_OVRD, 0)?;
         file.set(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE, 1)?;
         file.set(&regs::H265_REG0241_SYNT_SLI2_SLI_POC_LSB, poc_lsb)?;

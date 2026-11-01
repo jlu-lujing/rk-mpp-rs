@@ -15,7 +15,7 @@
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
-use super::h265e::{build_registers, IdrJob, Picture};
+use super::h265e::{build_registers, IdrJob, Picture, RateControl};
 use super::h265e_regs as regs;
 
 const CTL_OFFSET: u32 = 0;
@@ -55,7 +55,20 @@ impl Surface {
     }
 }
 
+/// The values the CBR SEI line prints, and the PPS quality band.
+#[derive(Clone, Copy, Debug)]
+pub struct RcSei {
+    pub target: i64,
+    pub min: i64,
+    pub max: i64,
+    pub init_quality: i32,
+    pub qp_min: u32,
+    pub qp_max: u32,
+}
+
 pub struct Vepu580H265 {
+    /// Present when the session runs rate control.
+    rc_sei: Option<RcSei>,
     service: MppService,
     width: usize,
     height: usize,
@@ -108,6 +121,7 @@ impl Vepu580H265 {
             height,
             qp,
             long_term,
+            rc_sei: None,
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
             output: DmaBuf::alloc("system", output_size, false)
@@ -130,7 +144,55 @@ impl Vepu580H265 {
             let poc = self.frames;
             (Picture::P { poc_lsb: poc }, false)
         };
-        let stream = self.encode_picture(nv12, picture, prefix)?;
+        let stream = self.encode_picture_rc(nv12, picture, prefix, None)?;
+        self.slot = 1 - self.slot;
+        self.frames += 1;
+        Ok(stream)
+    }
+
+    fn encode_picture(
+        &mut self,
+        nv12: &[u8],
+        picture: Picture,
+        with_prefix: bool,
+    ) -> Result<Vec<u8>, String> {
+        self.encode_picture_rc(nv12, picture, with_prefix, None)
+    }
+
+    /// One picture with an explicit rate-control decision: the same job the model
+    /// would produce, but decided by the caller. This is how the RC *path* is
+    /// checked against a traced C stream before the model's own QP choice is.
+    pub fn set_rate_control_sei(&mut self, sei: RcSei) {
+        self.rc_sei = Some(sei);
+    }
+
+    pub fn encode_frame_with_rc(
+        &mut self,
+        nv12: &[u8],
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<Vec<u8>, String> {
+        let (picture, prefix) = if self.frames == 0 {
+            (Picture::Idr, true)
+        } else {
+            (
+                Picture::P {
+                    poc_lsb: self.frames,
+                },
+                false,
+            )
+        };
+        let rc = RateControl {
+            bit_target,
+            qp_target,
+            qp_min,
+            qp_max,
+            qp_delta_row: 2,
+            qp_delta_row_i: 2,
+        };
+        let stream = self.encode_picture_rc(nv12, picture, prefix, Some(rc))?;
         self.slot = 1 - self.slot;
         self.frames += 1;
         Ok(stream)
@@ -144,11 +206,12 @@ impl Vepu580H265 {
         Ok(stream)
     }
 
-    fn encode_picture(
+    fn encode_picture_rc(
         &mut self,
         nv12: &[u8],
         picture: Picture,
         with_prefix: bool,
+        rc: Option<RateControl>,
     ) -> Result<Vec<u8>, String> {
         // dma-heap rounds the allocation up to a page, so the usable picture is
         // the logical size, not `self.input.len()`.
@@ -189,7 +252,8 @@ impl Vepu580H265 {
             qp_min: self.qp,
             qp_max: self.qp,
             picture,
-            rc: None,
+            long_term: self.long_term,
+            rc,
             input_fd: self.input.fd(),
             output_fd: self.output.fd(),
             current_fd: current.pixel.fd(),
@@ -309,8 +373,28 @@ impl Vepu580H265 {
         }
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.long_term_refs = self.long_term;
-        let mut stream = crate::codec::h265::encoder::build_prefix(&config, self.qp, DEFAULT_IGOP)
-            .map_err(|e| format!("H.265 prefix: {e:?}"))?;
+        let mut stream = if let Some(sei) = self.rc_sei {
+            config.rc_mode = crate::codec::h265::encoder::RateControl::Cbr;
+            let line = crate::codec::h265::sei::RcCfgLine {
+                model_name: "default",
+                mode_name: "cbr",
+                bps_target: sei.target,
+                bps_min: sei.min,
+                bps_max: sei.max,
+                igop: DEFAULT_IGOP as i64,
+                init_quality: sei.init_quality,
+                min_quality: sei.qp_min as i32,
+                max_quality: sei.qp_max as i32,
+                min_i_quality: sei.qp_min as i32,
+                max_i_quality: sei.qp_max as i32,
+                i_quality_delta: 2,
+            };
+            crate::codec::h265::encoder::build_prefix_line(&config, &line)
+                .map_err(|e| format!("H.265 prefix: {e:?}"))?
+        } else {
+            crate::codec::h265::encoder::build_prefix(&config, self.qp, DEFAULT_IGOP)
+                .map_err(|e| format!("H.265 prefix: {e:?}"))?
+        };
         stream.extend_from_slice(&slice);
         Ok(stream)
     }
