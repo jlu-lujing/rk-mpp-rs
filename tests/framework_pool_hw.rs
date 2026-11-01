@@ -39,11 +39,16 @@ fn pool_feeds_queue_workers_under_concurrency() {
     let pool = BufferPool::new(8);
     let queue = TaskQueue::new(4);
     let mut ids = Vec::new();
+    // A finished-but-untaken job pins its slot (the queue mirrors C's output
+    // port nobody dequeues), so submitting all 32 up front would wedge the
+    // queue after four completions. Take the first two back every two
+    // submissions - the stream drains as it fills.
+    let mut inflight = Vec::new();
     for _ in 0..32 {
         let pool = pool.clone();
         ids.push(
             queue
-                .submit(
+                .submit_blocking(
                     move || {
                         let size = 1 << 16;
                         let h = match pool.acquire(size) {
@@ -61,10 +66,22 @@ fn pool_feeds_queue_workers_under_concurrency() {
                         }
                     },
                     |_, _| {},
+                    PollTimeout::Ms(8000),
                 )
                 .unwrap(),
         );
+        if ids.len() == 2 {
+            inflight.append(&mut ids);
+        }
+        while inflight.len() > 2 {
+            let id = inflight.remove(0);
+            assert_eq!(
+                queue.wait(id, PollTimeout::Ms(8000)),
+                Some(TaskOutcome::Done)
+            );
+        }
     }
+    ids.append(&mut inflight);
     for id in ids {
         assert_eq!(
             queue.wait(id, PollTimeout::Ms(8000)),

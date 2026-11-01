@@ -88,7 +88,7 @@ fi
 #    One decode is already byte-checked against the golden md5 below when
 #    ASYNC_MD5_GOLDEN is supplied by the orchestrator; otherwise compare
 #    two consecutive sync decodes for stability.
-sync_md5_b=$(ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs decode $fixture $sync_out && md5sum $sync_out" | cut -d' ' -f1)
+sync_md5_b=$(ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs decode $fixture $sync_out >/dev/null && md5sum $sync_out" | cut -d' ' -f1)
 if [ "$sync_md5_b" = "$sync_md5" ]; then
   echo "PASS sync decode repeatable: $sync_md5"
 else

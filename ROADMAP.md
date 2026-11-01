@@ -1127,15 +1127,50 @@ pipeline uses.
 
 ### Framework
 - [x] synchronous submit + poll
-- [ ] async task queue with completion callbacks
-- [ ] dma-fence in/out, buffer import/export
-- [ ] multi-core (CCU) distribution
-- [ ] secure/TA mode
-- [ ] frame buffer pool with reference counting (DPB)
+- [x] **Asynchronous task queue with completion callbacks**
+      (`src/service/task_queue.rs`), beside the synchronous path with it
+      untouched. A pure `Scheduler` state machine (`admit` -> queued -> running
+      -> finished -> taken, free order of completion, monotonic ids against ABA,
+      capacity pinned by finished-but-untaken jobs exactly as a C output port
+      nobody dequeues) plus the threaded `TaskQueue`: FIFO dispatch, callback +
+      `wait` + best-effort bounded event channel delivery, cancellation of
+      queued jobs and a flag-only cancel of running ones (a poll timeout never
+      stops the hardware in C either), `PollTimeout` confined to the
+      `MppPollType` domain (-1 / 0 / 1..8000). Multi-session is prepared for:
+      each job carries its own session fd (`new(n)` = n concurrent sessions),
+      and a `SessionGate` serialises rkvenc to one live session until the
+      shared line-buffer question is solved - the gate keeps concurrency 1,
+      which a unit test asserts. `scripts/board_framework_async_vs_sync.sh`
+      decodes a photograph six times through the queue and against the sync
+      path: identical md5s, six callbacks, pool reuse under cap, sync path
+      unchanged (all PASS), plus an ignored hardware test locking the same
+      shape.
+ - [ ] dma-fence in/out, buffer import/export - surveyed, not implementable on
+       this vintage: `refs/mpp` has no fence surface at all (the command table
+       ends at 0x404, `MppReqV1`/kmpp/vcodec_service carry no fence fields, the
+       only grep hit is a typo for "reference"). The intended shape is written
+       up in `docs/framework-m10.md`: in-fence as a poll(fd) prelude inside the
+       job closure, out-fence handed to the completion path, pending a kernel
+       protocol that exists.
+ - [ ] multi-core (CCU) distribution - a service-level `SET_SESSION_FD` question,
+       parked behind the queue work that is now in.
+ - [ ] secure/TA mode - only `MPP_FLAGS_SECURE_MODE` is surfaced; no TA on this
+       board to verify against (decision D3).
+ - [x] **Reference-counted frame buffer pool** (`src/service/buffer_pool.rs`)
+       over the real dma-heap backend. `acquire` / `release` / `try_clone` model
+       `mpp_buffer_get` / `unref` / `ref` with an `Empty / Cached / Live{refs}`
+       state machine; the deliberate deviations from C are enforced instead of
+       asserted - double release and use-after-release are errors, a partially
+       released block is never handed out, over-capacity acquires fail the way
+       `limit_config` returns NULL (with Block/Ms wait variants on top), best-fit
+       reuse replaces exact-size buckets. Two ignored hardware tests run against
+       `/dev/dma_heap/system`: reuse returns the same dma-buf across
+       release/re-acquire and refuses to recycle an in-flight one; a concurrent
+       32-job stream drains through the pool within its cap (`ok` on t6).
 
 ## Verification
 
-- Tests: `cargo test --all-targets` (353 unit + 88 integration, eleven ignored
+- Tests: `cargo test --all-targets` (512 passed across all targets, twenty ignored
   board-only tests: parsers, AV1 OBU/frame-header/CDF/PicParams snapshots,
   global-motion reconstruction, tile ranges and packet assembly, POC types
   0/1/2, DPB/MMCO/RPS, registers,
