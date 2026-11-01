@@ -73,6 +73,17 @@ const FBC_HEADER_SIZE: usize = 8192;
 const STATUS_WORDS: usize = 180;
 const HW_ERROR_MASK: u32 = 0x3f0;
 
+/// One encoded picture. `headers` is non-empty only when the picture is an IDR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedFrame {
+    pub annex_b: Vec<u8>,
+    pub payload: Vec<u8>,
+    pub headers: Vec<u8>,
+    pub is_idr: bool,
+    pub frame_num: u32,
+    pub poc: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedIdr {
     /// Complete Annex-B access unit: SPS, PPS and the hardware IDR.
@@ -80,6 +91,102 @@ pub struct EncodedIdr {
     /// Hardware-produced NAL, including its start code.
     pub payload: Vec<u8>,
     pub headers: Vec<u8>,
+}
+
+/// One reconstruction slot. VEPU580 writes the FBC-compressed reconstruction and
+/// its thumb CMO surface here, and reads the *previous* slot's surfaces back as
+/// the reference of a P picture - `setup_vepu580_recn_refr` takes both from
+/// `ctx->hw_recn`, indexed by `frms->curr_idx` and `frms->refr_idx`.
+pub struct Recon {
+    pub pixel: DmaBuf,
+    pub thumb: DmaBuf,
+}
+
+impl Recon {
+    pub fn alloc(pixel_size: usize, thumb_size: usize) -> Result<Self, String> {
+        Ok(Self {
+            pixel: DmaBuf::alloc("system", pixel_size, false)
+                .map_err(|e| format!("allocate H.264 reconstruction: {e}"))?,
+            thumb: DmaBuf::alloc("system", thumb_size, false)
+                .map_err(|e| format!("allocate H.264 thumb: {e}"))?,
+        })
+    }
+}
+
+/// Where the encoder is inside the GOP, and what the slice header therefore says.
+///
+/// `poc` follows PocType 20 with no reordering, which is the only case this
+/// encoder reaches while B frames are unsupported: the standard's recurrence
+/// `poc = prev_poc + 2 * (frame_num - prev_frame_num)` reduced to +2 per picture,
+/// reset at an IDR. `h264e_dpb` does the same (`frame_num = 0` on IDR, otherwise
+/// the running count) and the C encoder's second picture in a GOP carries
+/// `frame_num = 1, poc_lsb = 2`, which is what these numbers have to reproduce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameState {
+    /// Pictures encoded by this session so far.
+    pub index: usize,
+    pub is_idr: bool,
+    pub frame_num: u32,
+    pub idr_pic_id: u32,
+    pub poc: i32,
+}
+
+impl Default for FrameState {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            is_idr: true,
+            frame_num: 0,
+            idr_pic_id: 0,
+            poc: 0,
+        }
+    }
+}
+
+impl FrameState {
+    /// The state of the next picture. `gop` is the IDR interval: picture 0 and
+    /// every `gop`-th picture after it opens a new GOP with an IDR.
+    pub fn next(&self, gop: u32) -> FrameState {
+        let gop = gop.max(1) as usize;
+        let index = self.index + 1;
+        let is_idr = index % gop == 0;
+        if is_idr {
+            return FrameState {
+                index,
+                is_idr: true,
+                frame_num: 0,
+                // `h264e_slice_init` alternates idr_pic_id across IDR pictures, and
+                // a P picture carries the id of the IDR that opened its GOP.
+                idr_pic_id: (self.idr_pic_id + 1) & 1,
+                poc: 0,
+            };
+        }
+        let frame_num = if is_idr { 0 } else { self.frame_num + 1 };
+        FrameState {
+            index,
+            is_idr: false,
+            frame_num,
+            idr_pic_id: self.idr_pic_id,
+            poc: self.poc + 2 * (frame_num - self.frame_num) as i32,
+        }
+    }
+}
+
+/// One encode job: the picture, the buffers it moves between, and where it sits
+/// in the GOP.
+pub struct Job<'a> {
+    pub config: &'a EncoderConfig,
+    pub input_fd: i32,
+    pub output_fd: i32,
+    /// The reconstruction surface this picture is written to, and its thumb.
+    pub current_fd: i32,
+    pub current_thumb_fd: i32,
+    /// The reconstruction surface to read the reference from - the previous
+    /// slot, or this one for an IDR, where there is nothing to read.
+    pub reference_fd: i32,
+    pub reference_thumb_fd: i32,
+    pub state: FrameState,
+    pub output_capacity: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -209,9 +316,10 @@ pub struct Vepu580H264 {
     config: EncoderConfig,
     input: DmaBuf,
     output: DmaBuf,
-    reconstruction: DmaBuf,
-    thumb: DmaBuf,
-    encoded: bool,
+    started: bool,
+    recons: [Recon; 2],
+    state: FrameState,
+    slot: usize,
 }
 
 impl Vepu580H264 {
@@ -227,16 +335,18 @@ impl Vepu580H264 {
         Ok(Self {
             svc: MppService::open(Client::RkvEnc as u32)
                 .map_err(|e| format!("open rkv encoder: {e}"))?,
+            started: false,
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.264 input: {e}"))?,
             output: DmaBuf::alloc("system", output_size, false)
                 .map_err(|e| format!("allocate H.264 output: {e}"))?,
-            reconstruction: DmaBuf::alloc("system", pixel_size, false)
-                .map_err(|e| format!("allocate H.264 reconstruction: {e}"))?,
-            thumb: DmaBuf::alloc("system", thumb_size, false)
-                .map_err(|e| format!("allocate H.264 thumb: {e}"))?,
+            recons: [
+                Recon::alloc(pixel_size, thumb_size)?,
+                Recon::alloc(pixel_size, thumb_size)?,
+            ],
+            state: FrameState::default(),
+            slot: 0,
             config,
-            encoded: false,
         })
     }
 
@@ -248,10 +358,16 @@ impl Vepu580H264 {
         encoder::build_headers(&self.config).map_err(|e| e.to_string())
     }
 
-    pub fn encode_idr(&mut self, nv12: &[u8]) -> Result<EncodedIdr, String> {
-        if self.encoded {
-            return Err("the current VEPU580 bootstrap path supports one IDR per encoder".into());
+    /// Encode one picture, continuing the GOP: the first call of a session is an
+    /// IDR and every `gop`-th picture after it opens a new one.
+    pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
+        if self.state.index != 0 || self.started {
+            self.state = self.state.next(self.config.gop);
+            self.slot = self.state.index % 2;
+        } else {
+            self.started = true;
         }
+        let state = self.state;
         let expected = input_size(&self.config)?;
         if nv12.len() < expected {
             return Err(format!(
@@ -268,14 +384,24 @@ impl Vepu580H264 {
             .sync_write_end()
             .map_err(|e| format!("H.264 input flush: {e}"))?;
 
-        let registers = build_registers(
-            &self.config,
-            self.input.fd(),
-            self.output.fd(),
-            self.reconstruction.fd(),
-            self.thumb.fd(),
-            logical_output_size(&self.config)?,
-        )?;
+        let reference_slot = if state.is_idr {
+            self.slot
+        } else {
+            1 - self.slot
+        };
+        let job = Job {
+            config: &self.config,
+            input_fd: self.input.fd(),
+            output_fd: self.output.fd(),
+            current_fd: self.recons[self.slot].pixel.fd(),
+            current_thumb_fd: self.recons[self.slot].thumb.fd(),
+            reference_fd: self.recons[reference_slot].pixel.fd(),
+            reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
+            state,
+            output_capacity: logical_output_size(&self.config)?,
+        };
+        let registers = build_registers(&job)?;
+        dump_job_registers(&job, &registers);
 
         // The SOC returns the number of encoded bytes in STATUS[0]. Reading it
         // back is mandatory: ioctl and poll completion alone do not prove that
@@ -325,35 +451,147 @@ impl Vepu580H264 {
             .sync_read_begin()
             .map_err(|e| format!("H.264 output invalidate: {e}"))?;
         let payload = self.output.as_slice()[..payload_len].to_vec();
-        let nal_validation = validate_nal_bytes(&payload);
+        let nal_validation = validate_nal_bytes(&payload, if state.is_idr { 5 } else { 1 });
         self.output
             .sync_read_end()
             .map_err(|e| format!("H.264 output sync end: {e}"))?;
         nal_validation?;
 
-        let headers = self.headers()?;
+        // SPS and PPS precede an IDR only; a P picture rides on the parameters it
+        // already established, which is what `mpi_enc_test` streams too.
+        let headers = if state.is_idr {
+            self.headers()?
+        } else {
+            Vec::new()
+        };
         let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
         annex_b.extend_from_slice(&headers);
         annex_b.extend_from_slice(&payload);
-        self.encoded = true;
-        Ok(EncodedIdr {
+        Ok(EncodedFrame {
             annex_b,
             payload,
             headers,
+            is_idr: state.is_idr,
+            frame_num: state.frame_num,
+            poc: state.poc,
+        })
+    }
+
+    /// Encode a single IDR and return it with its parameter sets.
+    pub fn encode_idr(&mut self, nv12: &[u8]) -> Result<EncodedIdr, String> {
+        let frame = self.encode_frame(nv12)?;
+        Ok(EncodedIdr {
+            annex_b: frame.annex_b,
+            payload: frame.payload,
+            headers: frame.headers,
         })
     }
 }
 
-pub fn build_registers(
-    config: &EncoderConfig,
-    input_fd: i32,
-    output_fd: i32,
-    reconstruction_fd: i32,
-    thumb_fd: i32,
-    output_capacity: usize,
-) -> Result<RegisterFile, String> {
+/// Write one job's register image to `RKMPP_REG_DUMP` in the same text layout
+/// `tools/mpp_ioctl_trace.c` prints for the C encoder, so
+/// `tools/vepu580_trace_diff.py` compares a Rust job against a captured C job
+/// word for word instead of against the recorded template. One line per section,
+/// no addresses hidden: two runs of the same session differ in dma-buf fds, and
+/// the diff reports those as what they are.
+fn dump_job_registers(job: &Job<'_>, file: &RegisterFile) {
+    let Some(path) = std::env::var_os("RKMPP_REG_DUMP") else {
+        return;
+    };
+    let mut text = String::new();
+    for (name, offset, words) in [
+        ("ctl", CTL_OFFSET, file.ctl.as_slice()),
+        ("base", BASE_OFFSET, file.base.as_slice()),
+        ("rc_klut", RCKLUT_OFFSET, file.rc_klut.as_slice()),
+    ] {
+        let _ = name;
+        text.push_str(&format!(
+            "mpp_trace before cmd=200 flag=00 size={} offset={} job={}\n",
+            words.len() * 4,
+            offset,
+            job.state.index
+        ));
+        text.push_str("mpp_trace write words=");
+        for word in words {
+            text.push_str(&format!(" {word:08x}"));
+        }
+        text.push('\n');
+    }
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(text.as_bytes());
+    }
+}
+
+/// The chroma KLUT weights of `hal_h264e_vepu580.c`. An I picture loads the
+/// table from word 0 and a P picture from word 4, 24 words each.
+const CHROMA_KLUT_WEIGHT: [u32; 30] = [
+    0x0a00_0010,
+    0x0006_4000,
+    0x1400_0020,
+    0x000c_8000,
+    0x2800_0040,
+    0x0019_4000,
+    0x5080_0080,
+    0x0032_c000,
+    0xa100_0100,
+    0x0065_8000,
+    0x4280_0200,
+    0x00cb_0001,
+    0x8500_0400,
+    0x0196_4002,
+    0x0a00_0800,
+    0x032c_8005,
+    0x1400_1000,
+    0x0659_400a,
+    0x2880_2000,
+    0x0cb2_c014,
+    0x5100_4000,
+    0x1965_c028,
+    0xa280_8000,
+    0x32cb_c050,
+    0x4500_ffff,
+    0x6597_80a1,
+    0x8a81_fffe,
+    0xcc00_0142,
+    0xff83_ffff,
+    0x0000_01ff,
+];
+
+/// `h264_aq_tthd_default`, the same for both slice types.
+const AQ_THRESHOLD_DEFAULT: [u8; 16] = [0, 0, 0, 0, 3, 3, 5, 5, 8, 8, 8, 15, 15, 20, 25, 35];
+
+/// `h264_I_aq_step_default` and `h264_P_aq_step_default`, which differ in one
+/// entry - the six against the seven at index 14. That single byte is what the
+/// C encoder's P job changes in `aq_step`, and the only rate-control table the
+/// fixed-QP path still cares about.
+const AQ_STEP_I: [i8; 16] = [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 8];
+const AQ_STEP_P: [i8; 16] = [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 7, 8];
+
+/// Words of the chroma KLUT copied per picture (`CHROMA_KLUT_TAB_SIZE`).
+const CHROMA_KLUT_WORDS: usize = 24;
+
+pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
+    let config = job.config;
+    let input_fd = job.input_fd;
+    let output_fd = job.output_fd;
+    let output_capacity = job.output_capacity;
     validate_reference_config(config)?;
-    if input_fd < 0 || output_fd < 0 || reconstruction_fd < 0 || thumb_fd < 0 {
+    let reconstruction_fd = job.current_fd;
+    let thumb_fd = job.current_thumb_fd;
+    let reference_fd = job.reference_fd;
+    let reference_thumb_fd = job.reference_thumb_fd;
+    if input_fd < 0
+        || output_fd < 0
+        || reconstruction_fd < 0
+        || thumb_fd < 0
+        || reference_fd < 0
+        || reference_thumb_fd < 0
+    {
         return Err("H.264 register file received an invalid dma-buf fd".into());
     }
     let expected_min_output = input_size(config)? + REFERENCE_OUTPUT_MARGIN;
@@ -381,10 +619,14 @@ pub fn build_registers(
     base[BASE_ADR_SRC2] = input;
     base[BASE_RFPW_H] = recon;
     base[BASE_RFPW_B] = recon;
-    base[BASE_RFPR_H] = recon;
-    base[BASE_RFPR_B] = recon;
     base[BASE_DSPW] = thumb;
-    base[BASE_DSPR] = thumb;
+    // The reference surfaces are the *previous* slot, which for an IDR is this
+    // one - matching `setup_vepu580_recn_refr`, where an IDR leaves `rfpr_*` on
+    // whatever the buffer setup gave the first slot.
+    let reference = reference_fd as u32;
+    base[BASE_RFPR_H] = reference;
+    base[BASE_RFPR_B] = reference;
+    base[BASE_DSPR] = reference_thumb_fd as u32;
     base[BASE_BSBT] = output;
     base[BASE_BSBB] = output;
     base[BASE_BSBR] = output;
@@ -436,13 +678,134 @@ pub fn build_registers(
     // image, and `validate_reference_config` refuses what it depends on.
     file.apply_fixed_qp(u32::from(config.qp_init))?;
     file.apply_profile(config)?;
+    file.apply_picture(job)?;
     // The reference job was captured with a harness that asked for motion
     // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
     // side information needs the MD buffer `setup_hal_bufs` allocates for it,
     // which this driver does not implement; leaving the enable on without that
-    // buffer would have the hardware write to a surface nobody owns.
+    // buffer would have the hardware write to a surface nobody owns. That is not a
+    // guess: with the enable set and `meiw_addr` at zero the encoder returns
+    // `int_sta = 0x100` instead of encoding.
+    // The reference job was captured with a harness that requested motion
+    // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
+    // side information needs the MD buffer `setup_hal_bufs` allocates for it,
+    // which this driver does not implement; leaving the enable on without that
+    // buffer would have the hardware write to a surface nobody owns. That is not a
+    // guess: with the enable set and `meiw_addr` at zero the encoder returns
+    // `int_sta = 0x100` instead of encoding.
     file.set(&vepu580_regs::BASE_ENC_PIC_MEI_STOR, 0)?;
     Ok(file)
+}
+
+impl RegisterFile {
+    /// Mutable word of an absolute register index.
+    fn rc_klut_word_mut(&mut self, word: usize) -> Result<&mut u32, String> {
+        let index = word
+            .checked_sub(1024)
+            .ok_or_else(|| format!("word {word} is before the RC lookup table"))?;
+        self.rc_klut
+            .get_mut(index)
+            .ok_or_else(|| format!("word {word} is past the RC lookup table"))
+    }
+
+    /// Write a byte table such as `aq_step` the way the reference does, through a
+    /// byte pointer into the register array.
+    fn put_bytes(&mut self, array: &vepu580_regs::Array, bytes: &[u8]) -> Result<(), String> {
+        if bytes.len() != array.count * array.elem_bytes {
+            return Err(format!(
+                "{} takes {} bytes, got {}",
+                array.name,
+                array.count * array.elem_bytes,
+                bytes.len()
+            ));
+        }
+        for (index, byte) in bytes.iter().enumerate() {
+            let word = self.rc_klut_word_mut(array.word + index / 4)?;
+            let shift = (index % 4) * 8;
+            *word = (*word & !(0xffu32 << shift)) | (u32::from(*byte) << shift);
+        }
+        Ok(())
+    }
+
+    /// The fields of `setup_vepu580_codec` and `setup_vepu580_me` that say which
+    /// picture this is, rather than what the sequence looks like.
+    ///
+    /// `sli_type` is 2 for an I slice and 0 for a P slice in the hardware's own
+    /// encoding (`slice_type == H264_I_SLICE ? 2 : 0`). `idr_pid` is only written
+    /// by an IDR slice; the reference passes -1 for a P slice, which the field
+    /// width turns into all ones. `pmv_mdst_*` is the motion-vector co-located
+    /// distance: zero without a reference, five for a P picture.
+    fn apply_picture(&mut self, job: &Job<'_>) -> Result<(), String> {
+        let config = job.config;
+        let state = job.state;
+        let poc_lsb_bits = job.config.log2_max_poc_lsb_minus4 + 4;
+        self.set(
+            &vepu580_regs::H264_SYNT_SLI0_SLI_TYPE,
+            if state.is_idr { 2 } else { 0 },
+        )?;
+        self.set(&vepu580_regs::H264_SYNT_SLI0_FRM_NUM, state.frame_num)?;
+        self.set(
+            &vepu580_regs::H264_SYNT_SLI1_IDR_PID,
+            if state.is_idr {
+                state.idr_pic_id
+            } else {
+                // all ones in the field's own width
+                (1 << 16) - 1
+            },
+        )?;
+        self.set(
+            &vepu580_regs::H264_SYNT_SLI1_POC_LSB,
+            (state.poc as u32) & ((1 << poc_lsb_bits) - 1),
+        )?;
+        // `setup_vepu580_codec` takes the NAL header from the slice: an I slice
+        // is type 5 with nal_ref_idc 3, a P slice is type 1 with 2. Without this
+        // the hardware stamps every P picture as an IDR.
+        self.set(
+            &vepu580_regs::H264_SYNT_NAL_NAL_REF_IDC,
+            if state.is_idr { 3 } else { 2 },
+        )?;
+        self.set(
+            &vepu580_regs::H264_SYNT_NAL_NAL_UNIT_TYPE,
+            if state.is_idr { 5 } else { 1 },
+        )?;
+
+        // `setup_vepu580_rdo_pred` swaps the chroma KLUT between two thirds of the
+        // same table depending on the slice type, and moves the offset with it.
+        self.set(
+            &vepu580_regs::RCKLUT_KLUT_OFST_CHRM_KLUT_OFST,
+            if state.is_idr { 0 } else { 3 },
+        )?;
+        let klut_offset = if state.is_idr { 0 } else { 4 };
+        let first = vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word;
+        for index in 0..CHROMA_KLUT_WORDS {
+            let word = self.rc_klut_word_mut(first + index)?;
+            *word = CHROMA_KLUT_WEIGHT[klut_offset + index];
+        }
+
+        // The adaptive-quantisation tables: thresholds are common, the step table
+        // is per slice type, both written through a byte pointer as the reference
+        // does.
+        self.put_bytes(&vepu580_regs::RCKLUT_AQ_TTHD, &AQ_THRESHOLD_DEFAULT)?;
+        let step = if state.is_idr { &AQ_STEP_I } else { &AQ_STEP_P };
+        let step: Vec<u8> = step.iter().map(|v| (*v as u8) & 0x3f).collect();
+        self.put_bytes(&vepu580_regs::RCKLUT_AQ_STEP, &step)?;
+
+        let mdst = if state.is_idr { 0 } else { 5 };
+        self.set(&vepu580_regs::H264_ME_CFG_PMV_MDST_H, mdst)?;
+        self.set(&vepu580_regs::H264_ME_CFG_PMV_MDST_V, mdst)?;
+        // `setup_vepu580_me` bounds the motion-vector range by the level.
+        self.set(
+            &vepu580_regs::H264_ME_CFG_MV_LIMIT,
+            if config.level_idc > 20 {
+                2
+            } else if config.level_idc >= 11 {
+                1
+            } else {
+                0
+            },
+        )?;
+        Ok(())
+    }
 }
 
 fn clear_dynamic_addresses(ctl: &mut [u32; 24], base: &mut [u32; 94]) {
@@ -580,6 +943,14 @@ fn verified_on_board(config: &EncoderConfig) -> Result<(), String> {
     if config.qp_init > 51 {
         return Err(format!("H.264 QP {} is outside 0..=51", config.qp_init));
     }
+    if config.gop != 1 {
+        return Err(
+            "GOP > 1 encodes P pictures that decode but sit 5 bytes from the reference's; \
+             the last difference is `enc_pic.mei_stor`, which needs the MD-info buffer \
+             described in M7"
+                .into(),
+        );
+    }
     Ok(())
 }
 
@@ -599,10 +970,11 @@ fn validate_reference_config(config: &EncoderConfig) -> Result<(), String> {
     if config.qp_init > 51 {
         return Err(format!("H.264 QP {} is outside 0..=51", config.qp_init));
     }
-    if config.level_idc != 30 || config.gop != 1 {
+    if config.level_idc != 30 {
         return Err(
-            "the VEPU580 register image is still recorded at level 3.0 and GOP 1; those \
-             remain fixed"
+            "the VEPU580 register image is recorded at level 3.0; the fields the level does \
+             reach (rect_size, mv_limit) are derived, but the level has not been compared \
+             against the C encoder at any other value"
                 .into(),
         );
     }
@@ -642,17 +1014,22 @@ fn logical_output_size(config: &EncoderConfig) -> Result<usize, String> {
         .ok_or_else(|| "H.264 output size overflow".into())
 }
 
-fn validate_nal_bytes(data: &[u8]) -> Result<(), String> {
+/// The hardware writes the slice's own NAL header, so the payload has to open
+/// with an IDR for an IDR picture and a non-IDR slice otherwise. Checking for an
+/// IDR always would reject every P picture the encoder produces.
+fn validate_nal_bytes(data: &[u8], expected_type: u8) -> Result<(), String> {
     let valid = data
         .windows(4)
         .position(|window| window == [0, 0, 0, 1])
         .map(|offset| {
             data.get(offset + 4)
-                .is_some_and(|header| header & 0x1f == 5)
+                .is_some_and(|header| header & 0x1f == expected_type)
         })
         .unwrap_or(false);
     if !valid {
-        return Err("VEPU580 output does not contain an Annex-B IDR NAL".into());
+        return Err(format!(
+            "VEPU580 output does not open with an Annex-B NAL of type {expected_type}"
+        ));
     }
     Ok(())
 }
@@ -692,6 +1069,33 @@ mod tests {
         EncoderConfig::new(REFERENCE_WIDTH, REFERENCE_HEIGHT)
     }
 
+    /// A job on stand-in fds, which the register builder only copies around.
+    fn job(config: &EncoderConfig, state: FrameState) -> Job<'_> {
+        Job {
+            config,
+            input_fd: 7,
+            output_fd: 9,
+            current_fd: 11,
+            current_thumb_fd: 13,
+            reference_fd: 11,
+            reference_thumb_fd: 13,
+            state,
+            output_capacity: 119_296,
+        }
+    }
+
+    fn registers_at(config: &EncoderConfig, state: FrameState) -> RegisterFile {
+        build_registers(&job(config, state)).unwrap()
+    }
+
+    /// The same job at a chosen output capacity, for the capacity checks.
+    fn job_with_output(config: &EncoderConfig, capacity: usize) -> Job<'_> {
+        Job {
+            output_capacity: capacity,
+            ..job(config, FrameState::default())
+        }
+    }
+
     #[test]
     fn captured_job_has_the_c_struct_section_sizes() {
         assert_eq!(template::CTL_WORDS.len(), 24);
@@ -717,7 +1121,7 @@ mod tests {
         assert_eq!(template::BASE_WORDS[36], 0x1d0027);
         // Fixed QP leaves the rate-control lookup table alone.
         assert_eq!(template::RCKLUT_WORDS[0], 0);
-        let registers = build_registers(&config(), 7, 9, 11, 13, 119_296).unwrap();
+        let registers = registers_at(&config(), FrameState::default());
         assert_eq!(
             registers.get(&vepu580_regs::BASE_ENC_PIC_MEI_STOR).unwrap(),
             0,
@@ -727,7 +1131,7 @@ mod tests {
 
     #[test]
     fn dma_addresses_and_mpp_offsets_are_rebuilt() {
-        let registers = build_registers(&config(), 7, 9, 11, 13, 119_296).unwrap();
+        let registers = registers_at(&config(), FrameState::default());
         assert_eq!(&registers.base[..3], &[7, 7, 7]);
         assert_eq!(&registers.base[3..7], &[11, 11, 11, 11]);
         assert_eq!(&registers.base[9..11], &[13, 13]);
@@ -784,7 +1188,7 @@ mod tests {
         ] {
             let config = EncoderConfig::new(width, height);
             let output_size = logical_output_size(&config).unwrap();
-            let registers = build_registers(&config, 1, 2, 3, 4, output_size).unwrap();
+            let registers = build_registers(&job_with_output(&config, output_size)).unwrap();
             assert_eq!(
                 [
                     registers.base[BASE_ENC_RSL],
@@ -810,16 +1214,141 @@ mod tests {
             EncoderConfig::new(16, 17),
             EncoderConfig::new(4098, 16),
         ] {
-            assert!(build_registers(
+            assert!(build_registers(&job_with_output(
                 &config,
-                1,
-                2,
-                3,
-                4,
                 config.coded_width() * config.coded_height() * 2
-            )
+            ))
             .is_err());
         }
+    }
+
+    /// The GOP walk the slice header has to report. PocType 20 without B frames
+    /// is a recurrence of +2 per picture, reset at an IDR, and idr_pic_id
+    /// alternates across IDR pictures - the same numbers `h264e_dpb` and
+    /// `h264e_slice_init` produce, and the same ones the C encoder's second
+    /// picture carried (`frame_num = 1`, `poc_lsb = 2`).
+    #[test]
+    fn frame_state_walks_the_gop() {
+        let gop = 3;
+        let mut state = FrameState::default();
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            seen.push((state.is_idr, state.frame_num, state.poc, state.idr_pic_id));
+            state = state.next(gop);
+        }
+        assert_eq!(
+            seen,
+            vec![
+                (true, 0, 0, 0),  // IDR
+                (false, 1, 2, 0), // P
+                (false, 2, 4, 0), // P
+                (true, 0, 0, 1),  // IDR, idr_pic_id alternates
+                (false, 1, 2, 1),
+                (false, 2, 4, 1),
+                (true, 0, 0, 0),
+            ]
+        );
+    }
+
+    /// What a P picture may change, and nothing else. The set is the one the C
+    /// encoder's own P job touches - slice header, NAL header, the co-located
+    /// motion distance, the reference surfaces, and the two tables
+    /// `setup_vepu580_rdo_pred` swaps by slice type - each verified by value below.
+    #[test]
+    fn p_picture_changes_only_the_fields_the_reference_does() {
+        let mut config = config();
+        config.gop = 4;
+        let idr = registers_at(&config, FrameState::default());
+        let p_state = FrameState {
+            index: 1,
+            is_idr: false,
+            frame_num: 1,
+            idr_pic_id: 0,
+            poc: 2,
+        };
+        let p = build_registers(&Job {
+            reference_fd: 21,
+            reference_thumb_fd: 22,
+            ..job(&config, p_state)
+        })
+        .unwrap();
+
+        let image = |f: &RegisterFile| -> Vec<(usize, u32)> {
+            let mut all = Vec::new();
+            all.extend(f.ctl.iter().enumerate().map(|(i, w)| (i, *w)));
+            all.extend(f.base.iter().enumerate().map(|(i, w)| (160 + i, *w)));
+            all.extend(f.rc_klut.iter().enumerate().map(|(i, w)| (1024 + i, *w)));
+            all
+        };
+        let allowed: Vec<usize> = (165..=170)
+            .chain([221, 236, 239, 240])
+            .chain(1045..=1048) // aq_step, four words
+            .chain(1056..=1080) // klut_ofst and the 24 weight words
+            .collect();
+        let changed: Vec<usize> = image(&idr)
+            .into_iter()
+            .zip(image(&p))
+            .filter(|((_, a), (_, b))| a != b)
+            .map(|((word, _), _)| word)
+            .collect();
+        assert!(
+            changed.iter().all(|word| allowed.contains(word)),
+            "P picture changed unaccounted words: {:?}",
+            changed
+                .iter()
+                .filter(|w| !allowed.contains(w))
+                .collect::<Vec<_>>()
+        );
+        for required in [221, 236, 239, 240, 1056] {
+            assert!(
+                changed.contains(&required),
+                "word {required} did not change"
+            );
+        }
+
+        // Values, straight from the reference's rules.
+        assert_eq!(p.get(&vepu580_regs::H264_SYNT_SLI0_SLI_TYPE).unwrap(), 0);
+        assert_eq!(p.get(&vepu580_regs::H264_SYNT_SLI0_FRM_NUM).unwrap(), 1);
+        assert_eq!(p.get(&vepu580_regs::H264_SYNT_SLI1_POC_LSB).unwrap(), 2);
+        assert_eq!(p.get(&vepu580_regs::H264_ME_CFG_PMV_MDST_H).unwrap(), 5);
+        assert_eq!(p.get(&vepu580_regs::H264_ME_CFG_PMV_MDST_V).unwrap(), 5);
+        assert_eq!(p.get(&vepu580_regs::H264_SYNT_NAL_NAL_REF_IDC).unwrap(), 2);
+        assert_eq!(
+            p.get(&vepu580_regs::H264_SYNT_NAL_NAL_UNIT_TYPE).unwrap(),
+            1
+        );
+        assert_eq!(
+            p.get(&vepu580_regs::H264_SYNT_SLI1_IDR_PID).unwrap(),
+            (1 << vepu580_regs::H264_SYNT_SLI1_IDR_PID.width) - 1,
+            "a P slice passes -1 for idr_pic_id"
+        );
+        assert_eq!(
+            p.get(&vepu580_regs::RCKLUT_KLUT_OFST_CHRM_KLUT_OFST)
+                .unwrap(),
+            3
+        );
+        // The P picture's KLUT starts four words into the table.
+        assert_eq!(
+            p.rc_klut[vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word - 1024],
+            CHROMA_KLUT_WEIGHT[4]
+        );
+        // ... and the one differing aq_step entry is seven rather than six.
+        assert_eq!(AQ_STEP_I[14], 6);
+        assert_eq!(AQ_STEP_P[14], 7);
+        assert_eq!(
+            (p.rc_klut[1048 - 1024] >> ((14 % 4) * 8)) & 0xff,
+            7,
+            "aq_step entry 14"
+        );
+        // The IDR keeps its own values.
+        assert_eq!(
+            idr.get(&vepu580_regs::H264_SYNT_NAL_NAL_UNIT_TYPE).unwrap(),
+            5
+        );
+        assert_eq!(
+            idr.rc_klut[vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word - 1024],
+            CHROMA_KLUT_WEIGHT[0]
+        );
     }
 
     #[test]
@@ -915,11 +1444,11 @@ mod tests {
                 3072 + index - 24 - 94 - 57 - 180 - 122 - 679
             }
         };
-        let base = words_of(&build_registers(&config(), 7, 9, 11, 13, 119_296).unwrap());
+        let base = words_of(&registers_at(&config(), FrameState::default()));
         for qp in [0u8, 12, 20, 26, 33, 45, 51] {
             let mut at_qp = config();
             at_qp.qp_init = qp;
-            let file = build_registers(&at_qp, 7, 9, 11, 13, 119_296).unwrap();
+            let file = registers_at(&at_qp, FrameState::default());
             let moved = words_of(&file);
             let differences: Vec<usize> = (0..base.len())
                 .filter(|index| base[*index] != moved[*index])
@@ -948,7 +1477,7 @@ mod tests {
             at_qp.qp_init = qp;
             assert_eq!(at_qp.validate().map_err(|e| e.to_string()), Ok(()));
             assert!(
-                build_registers(&at_qp, 1, 2, 3, 4, 119_296).is_ok(),
+                build_registers(&job(&at_qp, FrameState::default())).is_ok(),
                 "QP {qp} generates"
             );
             assert!(verified_on_board(&at_qp).is_ok(), "QP {qp} is accepted");
@@ -964,19 +1493,31 @@ mod tests {
             cabac_baseline.validate().is_err(),
             "Baseline cannot use CABAC"
         );
-        assert!(build_registers(&cabac_baseline, 1, 2, 3, 4, 119_296).is_err());
+        assert!(build_registers(&job(&cabac_baseline, FrameState::default())).is_err());
 
-        // What is still frozen is the image's geometry of time and rate: GOP and level.
-        for (name, mut frozen) in [("gop", config()), ("level", config())] {
-            match name {
-                "gop" => frozen.gop = 30,
-                _ => frozen.level_idc = 40,
-            }
-            assert!(
-                build_registers(&frozen, 1, 2, 3, 4, 119_296).is_err(),
-                "{name} is not a parameter yet"
-            );
-        }
+        // GOP is a parameter now - a picture after the first is a P slice with the
+        // previous reconstruction as its reference. Level is the one property of the
+        // recorded image that is still not compared against the C encoder.
+        // A GOP of one keeps every picture an IDR, which is the configuration with
+        // a byte-exact reference. A longer GOP generates fine - see
+        // `p_picture_changes_only_the_fields_the_reference_does` - but the hardware
+        // path holds it back until the P payload matches.
+        let mut gop = config();
+        gop.gop = 30;
+        assert!(
+            build_registers(&job(&gop, FrameState::default())).is_ok(),
+            "a longer GOP generates"
+        );
+        assert!(
+            verified_on_board(&gop).is_err(),
+            "but a longer GOP has no byte-exact reference yet"
+        );
+        let mut level = config();
+        level.level_idc = 40;
+        assert!(
+            build_registers(&job(&level, FrameState::default())).is_err(),
+            "level has no reference at any other value yet"
+        );
     }
 
     /// Profile and entropy coding are generator inputs now, and the fields
@@ -990,7 +1531,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{}: {e}", field.name))
         };
 
-        let baseline = build_registers(&config(), 1, 2, 3, 4, 119_296).unwrap();
+        let baseline = registers_at(&config(), FrameState::default());
         assert_eq!(read(&baseline, &vepu580_regs::H264_SYNT_PPS_ETPY_MODE), 0);
         assert_eq!(read(&baseline, &vepu580_regs::H264_RDO_CFG_VLC_LMT), 1);
         assert_eq!(read(&baseline, &vepu580_regs::H264_RDO_CFG_RECT_SIZE), 1);
@@ -1002,7 +1543,7 @@ mod tests {
         let mut main = config();
         main.profile = encoder::PROFILE_MAIN;
         main.entropy_coding = true;
-        let main = build_registers(&main, 1, 2, 3, 4, 119_296).unwrap();
+        let main = registers_at(&main, FrameState::default());
         assert_eq!(read(&main, &vepu580_regs::H264_SYNT_PPS_ETPY_MODE), 1);
         assert_eq!(read(&main, &vepu580_regs::H264_RDO_CFG_VLC_LMT), 0);
         assert_eq!(read(&main, &vepu580_regs::H264_RDO_CFG_RECT_SIZE), 0);
@@ -1013,7 +1554,7 @@ mod tests {
         high.profile = encoder::PROFILE_HIGH;
         high.entropy_coding = true;
         high.transform_8x8 = true;
-        let high = build_registers(&high, 1, 2, 3, 4, 119_296).unwrap();
+        let high = registers_at(&high, FrameState::default());
         assert_eq!(read(&high, &vepu580_regs::H264_SYNT_PPS_TRNS_8X8), 1);
         assert_eq!(read(&high, &vepu580_regs::H264_SYNT_PPS_ETPY_MODE), 1);
     }

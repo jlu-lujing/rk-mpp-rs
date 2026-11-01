@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **fixed-QP IDR byte-identical to the C encoder in all 24 cells of four sizes x three profiles x QP {18,26}, plus six QPs at the reference size; P slices, CBR/VBR, SEI and ROI remain** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **fixed-QP IDR byte-identical in all 24 cells of four sizes x three profiles x QP {18,26}; multi-frame encoding works (GOP walk, reference double buffer, P pictures decode at 52 dB) and the P payload is one register bit from byte-exact; CBR/VBR, SEI and ROI remain** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 IDR is a size-parameterised replay of a recorded VEPU580 register image (see the encoder note below), so rate control, profile, level, GOP and P slices are all still frozen; H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -608,6 +608,42 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       To name those registers at all, `tools/gen_vepu580_regs.py` now parses
       `Vepu580BaseCfg` from the H.264 HAL header as well - reg221 onwards of the
       same BASE window, 83 more fields, with the 228 existing positions unchanged.
+- [x] **Multi-frame encoding: the GOP walk, the reference buffers and the
+      per-picture registers are in.** What a second picture needs, from
+      `setup_vepu580_recn_refr` and `setup_vepu580_codec`: two reconstruction slots
+      alternating as `curr_idx` / `refr_idx` (an IDR leaves the reference reads on
+      its own slot, since there is nothing to read); `synt_sli0.sli_type` 2 for I
+      and 0 for P with `frm_num`; `synt_sli1.idr_pid` -1 (all ones) for a P slice
+      and `poc_lsb` from the PocType-20 recurrence, +2 per picture, reset at an
+      IDR, with `idr_pic_id` alternating across IDR pictures; `synt_nal`
+      nal_unit_type 5 / 1 and nal_ref_idc 3 / 2, without which the hardware stamps
+      every P picture as an IDR; `me_cfg.pmv_mdst_h/_v` 5 instead of 0; and the two
+      tables `setup_vepu580_rdo_pred` swaps per slice type - the chroma KLUT
+      window moving from `h264e_klut_weight[0]` to `[4]` with `chrm_klut_ofst`
+      0 → 3, and `aq_step`, whose I and P tables **differ in a single entry**
+      (index 14: six against seven). `tools/gen_vepu580_regs.py` had to learn to
+      name register *arrays* to see that last one at all; `aq_tthd`, `aq_step` and
+      `rc_dthd_0_8` are now addressable, and `RKMPP_REG_DUMP` writes a Rust job in
+      the same text layout `tools/mpp_trace` captures from the C encoder, so a job
+      can be diffed against a captured job instead of against a recording.
+
+      Measured on t6 against a Baseline-pinned reference encoding the same two
+      frames: **the IDR is still byte-identical, and the whole register image
+      agrees except for dma-buf fds and one bit.** The P NAL is 63 bytes against
+      the reference's 58. The remaining bit is `enc_pic.mei_stor`: the reference
+      asks the encoder to store motion derivation info for P pictures and pays for
+      an MD buffer to put it in, which this driver does not allocate. Setting the
+      bit without that buffer is not an option and was tested - the encoder comes
+      back with `int_sta = 0x100` rather than a picture.
+      The P pictures this does produce are *valid*: FFmpeg decodes the IDR+P stream
+      as two pictures at PSNR y 52.05 / u 52.78 / v 55.96 dB. `verified_on_board`
+      keeps the hardware path at GOP 1 until the MD buffer closes that last bit;
+      `build_registers` still generates longer GOPs and
+      `p_picture_changes_only_the_fields_the_reference_does` pins every field the
+      reference touches, so the difference cannot silently widen.
+      **Next step:** allocate the MD-info buffer per picture as the framework does,
+      point `meiw_addr` at it, set the bit - then lift the GOP restriction on the
+      strength of the same byte-for-byte test.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the

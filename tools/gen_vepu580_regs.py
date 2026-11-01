@@ -38,7 +38,7 @@ STRUCTS = [
 
 REG_COMMENT = re.compile(r"reg(\d+)")
 FIELD = re.compile(r"RK_[US]\d+\s+(\w+)\s*:\s*(\d+)\s*;")
-ARRAY = re.compile(r"RK_U32\s+(\w+)\s*\[\s*(\d+)\s*\]\s*;")
+ARRAY = re.compile(r"(RK_U(?:8|16|32))\s+(\w+)\s*\[\s*(\d+)\s*\]\s*;")
 SCALAR = re.compile(r"RK_U32\s+(\w+)\s*;")
 
 
@@ -89,10 +89,18 @@ def members(body: str):
         array, scalar = ARRAY.match(line), SCALAR.match(line)
         if array or scalar:
             word = comment if comment is not None else index
-            name = (array or scalar).group(1)
-            count = int(array.group(2)) if array else 1
-            yield word, name, [("", 32)] * count, count
-            index, comment = word + count, None
+            if array:
+                elem_bytes = {"RK_U8": 1, "RK_U16": 2, "RK_U32": 4}[array.group(1)]
+                name, count = array.group(2), int(array.group(3))
+                words = (count * elem_bytes + 3) // 4
+                # Arrays get their own kind of record: a byte table such as
+                # `aq_tthd[16]` is written with a byte pointer in the reference
+                # and cannot be addressed as fields.
+                yield word, name, [("@array", words, elem_bytes, count)], words
+            else:
+                name = scalar.group(1)
+                yield word, name, [("", 32)] * 1, 1
+            index, comment = word + (words if array else 1), None
         position += 1
 
 
@@ -107,6 +115,22 @@ def main() -> int:
         "//! `word` is the absolute register word in the window the driver sees, so",
         "//! `RegisterFile` can find the section it belongs to. Widths and shifts come",
         "//! from the declaration order in MPP's own structs.",
+        "",
+        "/// A register array, addressed as whole words. The reference writes the",
+        "/// byte tables such as `aq_tthd` through a cast pointer, so they cannot be",
+        "/// addressed as bitfields; `RegisterFile::put_bytes` does the same.",
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
+        "pub struct Array {",
+        "    /// Absolute word of the array's first word.",
+        "    pub word: usize,",
+        "    /// Number of elements.",
+        "    pub count: usize,",
+        "    /// Size of one element in bytes.",
+        "    pub elem_bytes: usize,",
+        "    /// Words the array occupies.",
+        "    pub words: usize,",
+        "    pub name: &'static str,",
+        "}",
         "",
         "/// One named register field.",
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
@@ -143,6 +167,15 @@ def main() -> int:
                 raise SystemExit(
                     f"{struct}.{group}: word {word} is outside the captured section"
                 )
+            if fields and fields[0][0] == "@array":
+                _, array_words, elem_bytes, count = fields[0]
+                out.append(
+                    f"pub const {prefix}_{group.upper()}: Array = Array {{ word: {word}, "
+                    f"count: {count}, elem_bytes: {elem_bytes}, words: {array_words}, "
+                    f"name: \"{prefix}.{group}\" }};"
+                )
+                emitted += 1
+                continue
             named = [name for name, _ in fields if name]
             total = sum(bits for _, bits in fields)
             # An array or a scalar contributes whole words and has no bitfields;

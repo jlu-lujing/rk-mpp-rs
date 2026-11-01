@@ -8,6 +8,22 @@
 //! `RegisterFile` can find the section it belongs to. Widths and shifts come
 //! from the declaration order in MPP's own structs.
 
+/// A register array, addressed as whole words. The reference writes the
+/// byte tables such as `aq_tthd` through a cast pointer, so they cannot be
+/// addressed as bitfields; `RegisterFile::put_bytes` does the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Array {
+    /// Absolute word of the array's first word.
+    pub word: usize,
+    /// Number of elements.
+    pub count: usize,
+    /// Size of one element in bytes.
+    pub elem_bytes: usize,
+    /// Words the array occupies.
+    pub words: usize,
+    pub name: &'static str,
+}
+
 /// One named register field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Field {
@@ -88,6 +104,13 @@ pub const CTL_VERSION_IP_ID: Field = Field {
     width: 8,
     name: "CTL.version.ip_id",
 };
+pub const CTL_RESERVED1_3: Array = Array {
+    word: 1,
+    count: 3,
+    elem_bytes: 4,
+    words: 3,
+    name: "CTL.reserved1_3",
+};
 pub const CTL_ENC_STRT_LKT_NUM: Field = Field {
     word: 4,
     shift: 0,
@@ -111,6 +134,13 @@ pub const CTL_ENC_CLR_FORCE_CLR: Field = Field {
     shift: 1,
     width: 1,
     name: "CTL.enc_clr.force_clr",
+};
+pub const CTL_RESERVED6_7: Array = Array {
+    word: 6,
+    count: 2,
+    elem_bytes: 4,
+    words: 2,
+    name: "CTL.reserved6_7",
 };
 pub const CTL_INT_EN_ENC_DONE_EN: Field = Field {
     word: 8,
@@ -528,6 +558,13 @@ pub const CTL_FUNC_EN_SRAM_CKG_EN: Field = Field {
 };
 
 // Vepu580BaseCommon (vepu580_common.h) at absolute word 160.
+pub const BASE_RESERVED184_191: Array = Array {
+    word: 183,
+    count: 8,
+    elem_bytes: 4,
+    words: 8,
+    name: "BASE.reserved184_191",
+};
 pub const BASE_ENC_PIC_ENC_STND: Field = Field {
     word: 192,
     shift: 0,
@@ -617,6 +654,13 @@ pub const BASE_DUAL_CORE_DCHS_OFST: Field = Field {
     shift: 16,
     width: 11,
     name: "BASE.dual_core.dchs_ofst",
+};
+pub const BASE_RESERVED194_195: Array = Array {
+    word: 194,
+    count: 2,
+    elem_bytes: 4,
+    words: 2,
+    name: "BASE.reserved194_195",
 };
 pub const BASE_ENC_RSL_PIC_WD8_M1: Field = Field {
     word: 196,
@@ -791,6 +835,13 @@ pub const BASE_SRC_STRD1_SRC_STRD1: Field = Field {
     shift: 0,
     width: 16,
     name: "BASE.src_strd1.src_strd1",
+};
+pub const BASE_RESERVED207_211: Array = Array {
+    word: 207,
+    count: 5,
+    elem_bytes: 4,
+    words: 5,
+    name: "BASE.reserved207_211",
 };
 pub const BASE_RC_CFG_RC_EN: Field = Field {
     word: 212,
@@ -968,6 +1019,13 @@ pub const RCKLUT_RC_ADJ1_QP_ADJ8: Field = Field {
     width: 5,
     name: "RCKLUT.rc_adj1.qp_adj8",
 };
+pub const RCKLUT_RC_DTHD_0_8: Array = Array {
+    word: 1026,
+    count: 9,
+    elem_bytes: 4,
+    words: 9,
+    name: "RCKLUT.rc_dthd_0_8",
+};
 pub const RCKLUT_ROI_QTHD0_QPMIN_AREA0: Field = Field {
     word: 1036,
     shift: 0,
@@ -1082,6 +1140,27 @@ pub const RCKLUT_MADI_CFG_MADI_THD: Field = Field {
     width: 8,
     name: "RCKLUT.madi_cfg.madi_thd",
 };
+pub const RCKLUT_AQ_TTHD: Array = Array {
+    word: 1041,
+    count: 16,
+    elem_bytes: 1,
+    words: 4,
+    name: "RCKLUT.aq_tthd",
+};
+pub const RCKLUT_AQ_STEP: Array = Array {
+    word: 1045,
+    count: 16,
+    elem_bytes: 1,
+    words: 4,
+    name: "RCKLUT.aq_step",
+};
+pub const RCKLUT_RESERVED1049_1051: Array = Array {
+    word: 1049,
+    count: 3,
+    elem_bytes: 4,
+    words: 3,
+    name: "RCKLUT.reserved1049_1051",
+};
 pub const RCKLUT_MD_SAD_THD_MD_SAD_THD0: Field = Field {
     word: 1052,
     shift: 0,
@@ -1117,6 +1196,13 @@ pub const RCKLUT_MADI_THD_MADI_THD2: Field = Field {
     shift: 16,
     width: 8,
     name: "RCKLUT.madi_thd.madi_thd2",
+};
+pub const RCKLUT_RESERVED1054_1055: Array = Array {
+    word: 1054,
+    count: 2,
+    elem_bytes: 4,
+    words: 2,
+    name: "RCKLUT.reserved1054_1055",
 };
 pub const RCKLUT_KLUT_OFST_CHRM_KLUT_OFST: Field = Field {
     word: 1056,
@@ -1498,6 +1584,13 @@ pub const H264_GMV_GMV_Y: Field = Field {
     width: 13,
     name: "H264.gmv.gmv_y",
 };
+pub const H264_RESERVED225_227: Array = Array {
+    word: 225,
+    count: 3,
+    elem_bytes: 4,
+    words: 3,
+    name: "H264.reserved225_227",
+};
 pub const H264_ROI_EN_ROI_QP_EN: Field = Field {
     word: 228,
     shift: 0,
@@ -1515,6 +1608,13 @@ pub const H264_ROI_EN_ROI_MV_EN: Field = Field {
     shift: 2,
     width: 1,
     name: "H264.roi_en.roi_mv_en",
+};
+pub const H264_RESERVED229_231: Array = Array {
+    word: 229,
+    count: 3,
+    elem_bytes: 4,
+    words: 3,
+    name: "H264.reserved229_231",
 };
 pub const H264_RDO_CFG_RECT_SIZE: Field = Field {
     word: 232,
@@ -1587,6 +1687,13 @@ pub const H264_IPRD_CSTS_VTHD_C: Field = Field {
     shift: 16,
     width: 12,
     name: "H264.iprd_csts.vthd_c",
+};
+pub const H264_RESERVED234_235: Array = Array {
+    word: 234,
+    count: 2,
+    elem_bytes: 4,
+    words: 2,
+    name: "H264.reserved234_235",
 };
 pub const H264_SYNT_NAL_NAL_REF_IDC: Field = Field {
     word: 236,
@@ -1876,6 +1983,13 @@ pub const H264_SYNT_LONG_REFM1_DLT_POC_MSB_CYCL2: Field = Field {
     width: 16,
     name: "H264.synt_long_refm1.dlt_poc_msb_cycl2",
 };
+pub const H264_RESERVED248_251: Array = Array {
+    word: 248,
+    count: 4,
+    elem_bytes: 4,
+    words: 4,
+    name: "H264.reserved248_251",
+};
 pub const H264_SLI_CFG_MV_V_LMT_THD: Field = Field {
     word: 252,
     shift: 0,
@@ -1907,4 +2021,4 @@ pub const H264_TILE_POS_TILE_Y: Field = Field {
     name: "H264.tile_pos.tile_y",
 };
 
-// 311 fields in total.
+// 325 fields in total.

@@ -24,10 +24,13 @@ fn encode_h264(
     height: usize,
     qp_init: u8,
     profile: &str,
+    frames: usize,
+    gop: u32,
 ) -> Result<(usize, usize, usize, f64), String> {
     let input = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     let mut config = h264_syntax::EncoderConfig::new(width, height);
     config.qp_init = qp_init;
+    config.gop = gop.max(1);
     // Same mapping `mpi_enc_test` uses: CABAC from Main upwards, transform-8x8
     // only at High.
     match profile {
@@ -49,15 +52,22 @@ fn encode_h264(
     }
     let mut encoder = h264e::Vepu580H264::open(config)?;
     let started = Instant::now();
-    let encoded = encoder.encode_idr(&input)?;
+    // Repeated pictures, which is what the C harness does with a one-frame raw
+    // file too: every frame it wants and the file is short, it re-reads the same
+    // bytes. `frames` > 1 exercises the P path against that reference.
+    let per_frame = input.len() / frames.max(1);
+    let mut annex_b = Vec::new();
+    let mut headers = 0usize;
+    let mut payload = 0usize;
+    for _ in 0..frames.max(1) {
+        let encoded = encoder.encode_frame(&input[..per_frame])?;
+        headers += encoded.headers.len();
+        payload += encoded.payload.len();
+        annex_b.extend_from_slice(&encoded.annex_b);
+    }
     let elapsed = started.elapsed();
-    std::fs::write(out_path, &encoded.annex_b).map_err(|e| format!("{out_path}: {e}"))?;
-    Ok((
-        encoded.annex_b.len(),
-        encoded.headers.len(),
-        encoded.payload.len(),
-        us(elapsed) / 1000.0,
-    ))
+    std::fs::write(out_path, &annex_b).map_err(|e| format!("{out_path}: {e}"))?;
+    Ok((annex_b.len(), headers, payload, us(elapsed) / 1000.0))
 }
 
 fn encode_jpeg(
@@ -454,20 +464,27 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
         // an existing invocation keeps producing the same bytes.
         let qp_init = args.get(6).and_then(|s| s.parse::<u8>().ok()).unwrap_or(26);
         let profile = args.get(7).map(String::as_str).unwrap_or("baseline");
+        let frames = args
+            .get(8)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(1);
+        // GOP 1 keeps every picture an IDR, which is what the encoder did before
+        // it could encode anything else.
+        let gop = args.get(9).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop]");
             std::process::exit(2);
         }
-        match encode_h264(src, dst, width, height, qp_init, profile) {
+        match encode_h264(src, dst, width, height, qp_init, profile, frames, gop) {
             Ok((bytes, header_bytes, payload_bytes, ms)) => println!(
-                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_init}, {ms:.3} ms"
+                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_init} gop {gop}, {ms:.3} ms"
             ),
             Err(e) => {
                 eprintln!("H.264 encode failed: {e}");
