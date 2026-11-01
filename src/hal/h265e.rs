@@ -40,6 +40,7 @@
 
 use super::h265e_regs as regs;
 use super::h265e_vepu580_template as template;
+use crate::service::RegOffsetInfo;
 
 pub const REFERENCE_WIDTH: usize = 320;
 pub const REFERENCE_HEIGHT: usize = 240;
@@ -98,6 +99,10 @@ pub struct RegisterFile {
     /// and `scl` (679, starting at word 2176) with a six-word gap between them.
     pub rdo: [u32; 807],
     pub osd: [u32; 288],
+    /// The `MPP_DEV_REG_OFFSET` entries a submit batch carries: the chroma plane
+    /// offsets, the two FBC body offsets, the packet length and the output size.
+    /// Empty for a pure derivation; the session fills it.
+    pub offsets: Vec<RegOffsetInfo>,
 }
 
 impl Default for RegisterFile {
@@ -109,6 +114,7 @@ impl Default for RegisterFile {
             wgt: [0; 374],
             rdo: [0; 807],
             osd: [0; 288],
+            offsets: Vec::new(),
         }
     }
 }
@@ -125,6 +131,7 @@ impl RegisterFile {
             wgt: template::WGT_WORDS,
             rdo: template::RDO_WORDS,
             osd: template::OSD_WORDS,
+            offsets: Vec::new(),
         }
     }
 
@@ -289,6 +296,63 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     // src_proc: txa_en 1; mirr/rot 0; afbcd_en 0 (no FBC input).
     file.set(&regs::BASE_SRC_PROC_TXA_EN, 1)?;
 
+    // ---- source strides (set_pp_regs) ----
+    // `stridey`/`stridec` are the 16-aligned luma stride; a 4:2:0 semi-planar
+    // frame uses it for both. The template carries 320, which is why a 640-wide
+    // job encoded 6672 bytes against the oracle's 1618 before this landed.
+    let stride = (job.width + 15) & !15;
+    file.set(&regs::H265_REG0205_SRC_STRD0_SRC_STRD0, stride as u32)?;
+    file.set(&regs::H265_REG0206_SRC_STRD1_SRC_STRD1, stride as u32)?;
+
+    // ---- motion estimation (set_me_regs) ----
+    // CIME starts from an 11x7 CTU window, shrinks to the picture when the picture
+    // is small, then trims the search to a 4-pixel grid.
+    let mut merangx = (11 + 1) * 32;
+    let mut merangy = (7 + 1) * 32;
+    merangx = merangx.min(384);
+    merangy = merangy.min(320);
+    if job.width < (merangx + 60) as usize || job.width <= 352 {
+        if merangx > job.width as i32 {
+            merangx = job.width as i32;
+        }
+        merangx = merangx / 4 * 2;
+    }
+    if job.height < (merangy + 60) as usize || job.height <= 288 {
+        if merangy > job.height as i32 {
+            merangy = job.height as i32;
+        }
+        merangy = merangy / 4 * 2;
+    }
+    let (merange_x, merange_y) = (merangx / 2, merangy / 2);
+    let mxneg = ((-(merange_x << 2)) >> 2) / 4;
+    let myneg = ((-(merange_y << 2)) >> 2) / 4;
+    let mxpos = (((merange_x << 2) - 4) >> 2) / 4;
+    let mypos = (((merange_y << 2) - 4) >> 2) / 4;
+    let merangx = mxneg.abs().min(mxpos) * 4 * 2;
+    let merangy = myneg.abs().min(mypos) * 4 * 2;
+    let srch_h = (merangx / 32) as u32;
+    let srch_v = (merangy / 32) as u32;
+    file.set(&regs::H265_REG0220_ME_RNGE_CME_SRCH_H, srch_h)?;
+    file.set(&regs::H265_REG0220_ME_RNGE_CME_SRCH_V, srch_v)?;
+
+    // `cme_linebuf_w` is the CTU width of the picture; `cme_rama_h` narrows with
+    // wide pictures; `cme_rama_max` is the window the line buffer must hold.
+    let pic_wd64 = ((job.width + 63) / 64) as u32;
+    file.set(&regs::H265_REG0222_ME_CACH_CME_LINEBUF_W, pic_wd64)?;
+    let (rama_h, rama_max) = cime_ram(job.width, srch_h, srch_v);
+    file.set(&regs::H265_REG0222_ME_CACH_CME_RAMA_H, rama_h)?;
+    file.set(&regs::H265_REG0222_ME_CACH_CME_RAMA_MAX, rama_max)?;
+    // `cach_l2_tag` steps with the 64-aligned width: 0 to 512, 1 to 1024, 2 to
+    // 2048, 3 to 4096.
+    let l2_tag = match (job.width + 63) / 64 * 64 {
+        0..=512 => 0,
+        513..=1024 => 1,
+        1025..=2048 => 2,
+        2049..=4096 => 3,
+        _ => 0,
+    };
+    file.set(&regs::H265_REG0222_ME_CACH_CACH_L2_TAG, l2_tag)?;
+
     // ---- fixed-QP RC (set_rc_regs FIXQP branch) ----
     file.set(&regs::BASE_ENC_PIC_PIC_QP, job.qp)?;
     file.set(&regs::H265_REG0240_SYNT_SLI1_SLI_QP, job.qp)?;
@@ -367,6 +431,64 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
 fn ctu_num_log2(area: usize) -> u32 {
     assert!(area > 0);
     (usize::BITS - (area - 1).leading_zeros()) as u32
+}
+
+/// `vepu580_h265_set_me_ram` for the single-tile, zero-global-motion case an IDR
+/// takes: it grows the CIME line buffer until the window holds the search, then
+/// reports `(cme_rama_h, cme_rama_max)`.
+fn cime_ram(width: usize, srch_h: u32, srch_v: u32) -> (u32, u32) {
+    let pic_wd64 = ((width + 63) / 64) as i32;
+    let srch_w = (srch_h * 4) as i32;
+    let srch_h_px = (srch_v * 4) as i32;
+    let clip = |v: i32, lo: i32, hi: i32| v.clamp(lo, hi);
+    // gmv_x/gmv_y are 0 for an IDR.
+    let frm_sta = clip((0 - srch_w - 15) / 16, 0, pic_wd64 - 1);
+    let frm_end = clip(pic_wd64 - 1 + (srch_w + 15) / 16, 0, pic_wd64 - 1);
+    let linebuf_w = (frm_end - frm_sta + 1) * 64 / 64;
+    // The C takes the `if (delta < 0)` branch only when the global motion is
+    // negative relative to the search; an IDR's gmv is 0, so that is exactly
+    // `(0 - srch % align) < 0`.
+    let delta_w = -(srch_w % 16);
+    let base_w = if delta_w < 0 {
+        16 + delta_w % 16
+    } else {
+        delta_w % 16
+    };
+    let cur_srch_16_w = ((base_w + srch_w * 2 + 15) / 16 + 1).min(linebuf_w);
+    let delta_h = -(srch_h_px % 4);
+    let base_h = if delta_h < 0 {
+        4 + delta_h % 4
+    } else {
+        delta_h % 4
+    };
+    let cur_srch_4_h = (base_h + srch_h_px * 2 + 3) / 4 + 4;
+    let cur_srch_max = (cur_srch_4_h + 3) & !3;
+    let ctu_4_h = 4;
+    let cime_rama_max = 2464;
+    let mut cime_rama_h = ctu_4_h;
+    let mut ramb_h = cur_srch_4_h;
+    while cime_rama_h < cur_srch_max
+        && cime_rama_max > (cime_rama_h - ctu_4_h) * linebuf_w * 4 + ramb_h * 4 * cur_srch_16_w
+    {
+        cime_rama_h += ctu_4_h;
+        if ramb_h > 2 * ctu_4_h {
+            ramb_h -= ctu_4_h;
+        } else {
+            ramb_h = ctu_4_h;
+        }
+    }
+    if cur_srch_4_h == ctu_4_h {
+        cime_rama_h += ctu_4_h;
+        ramb_h = 0;
+    }
+    if cime_rama_max < (cime_rama_h - ctu_4_h) * linebuf_w * 4 + ramb_h * 4 * cur_srch_16_w {
+        cime_rama_h -= ctu_4_h;
+    }
+    let ram_col_h = (cime_rama_h - ctu_4_h) / ctu_4_h;
+    (
+        cime_rama_h as u32,
+        (ram_col_h * linebuf_w + cur_srch_16_w) as u32,
+    )
 }
 
 #[cfg(test)]

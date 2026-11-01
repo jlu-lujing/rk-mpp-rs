@@ -39,7 +39,7 @@
 | MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 全部逐字节；VP8 profile 1/3（板验，语料仅 p0 故派生流）；损坏/截断流与 C 的行为表 4/6 SAME（scripts/board_vp_corrupt_vs_mpp.sh）；AVS+/AVS2 未做 |
 | H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落），slice split **板上 4/4 逐字节**（BY_CTU 96/8/150 与 BY_BYTE 256；8 块那格 38 个 slice 越过 32 项 slice FIFO，同时钉住 `slc_done_en`），>4096 的 CIME 扩展行 **板上 2/2 逐字节**（4160x64、4608x256）。P 帧另有 11 个尺寸的逐字节扫描（`scripts/board_h264_p_size_probe.sh`，含 FBC 阈值两侧）。编码侧剩下的是**逐 slice 输出路径**（`slen_fifo` / low-delay slice 包）与 >4096 宽度下的 P 格 |
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices / 多核分带见 docs/jpege-slices-multicore.md |
-| H.265 编码 | 固定 QP 的 VPS/SPS/PPS 在 320x240、640x480、1280x720 **板上逐字节**通过（3/3）；寄存器作业已抓取，推导图与 C 的六段作业**只差 `mei_stor` 一位**；IDR 载荷待提交路径 |
+| H.265 编码 | 固定 QP **单 IDR 整条码流**在 320x240 / 640x480 / 1280x720 **板上逐字节**（860 / 1618 / 3585 字节，含 VPS/SPS/PPS 与两条 SEI）；P 帧、tiles/WPP/SAO、码率控制未做 |
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP 未移植，VDPP 该板不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 

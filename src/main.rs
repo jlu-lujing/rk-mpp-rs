@@ -6,6 +6,7 @@ use rk_mpp_rs::codec::jpeg::parser as jpeg;
 use rk_mpp_rs::codec::jpeg::tables;
 use rk_mpp_rs::hal::h264e;
 use rk_mpp_rs::hal::h265e;
+use rk_mpp_rs::hal::h265e_session;
 use rk_mpp_rs::hal::jpegd as decode;
 use rk_mpp_rs::hal::jpege;
 use rk_mpp_rs::scale;
@@ -1149,6 +1150,48 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("H.265 register image failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if args.len() > 1 && args[1] == "h265-idr" {
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
+        let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
+        let usage = "usage: rk-mpp-rs h265-idr <in.nv12> <out.265> <width> <height> [qp]";
+        let (Some(width), Some(height)) = (width, height) else {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        };
+        if src.is_empty() || dst.is_empty() {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        }
+        let qp = args
+            .get(6)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(26);
+        let input = std::fs::read(src).map_err(|e| format!("{src}: {e}"));
+        let input = match input {
+            Ok(input) => input,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        };
+        let result = h265e_session::Vepu580H265::open(width, height, qp)
+            .and_then(|mut encoder| encoder.encode_idr(&input));
+        match result.and_then(|stream| {
+            std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
+            Ok(stream.len())
+        }) {
+            Ok(bytes) => {
+                println!("h265-idr {src} -> {dst}: {bytes} bytes, {width}x{height} fixed qp {qp}")
+            }
+            Err(e) => {
+                eprintln!("H.265 IDR encode failed: {e}");
                 std::process::exit(1);
             }
         }

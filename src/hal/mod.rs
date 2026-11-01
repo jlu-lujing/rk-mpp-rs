@@ -10,6 +10,7 @@ pub mod h264e;
 mod h264e_vepu580_template;
 pub mod h265e;
 pub mod h265e_regs;
+pub mod h265e_session;
 pub mod h265e_vepu580_template;
 pub mod hevc;
 pub mod iep;

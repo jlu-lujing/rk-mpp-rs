@@ -781,9 +781,28 @@ in what order the evidence gets produced.
        Still missing for an IDR payload: a submit path that owns its buffers (the
        template's address words are the oracle's) and the motion-info surface if the
        image is to equal the capture outright.
-- [ ] H.265 (rkvenc): the IDR payload (submit path and buffer addresses),
-      tiles/WPP/SAO, rate control and P pictures. The register image is captured and
-      matches the oracle to one bit; no IDR has been submitted yet.
+       **The first submitted IDR is byte-identical at three sizes.**
+       `h265-idr` (`src/hal/h265e_session.rs`) owns every surface the job points at -
+       input, output, two FBC reconstructions with display and motion-vector thumbs,
+       and the motion-info buffer - patches the 160..175 address words, carries the
+       C's multi-offset table (161/162 chroma planes, 164/166 FBC bodies, 172 output
+       size, 175 packet length), submits the six windows and polls. The hardware's
+       slice NAL was already identical before this path existed; what was missing was
+       the software half, and `tests/data` settled it: `uuid_version` and
+       `uuid_rc_cfg` as two prefix SEIs, whose rc line prints `w*h*30/8` as the
+       target rate.
+       `scripts/board_h265_idr_vs_mpp.sh`: 320x240 (860 bytes), 640x480 (1618) and
+       1280x720 (3585) are **byte-identical to `mpi_enc_test`**, SEIs included.
+       `board_idr_matches_the_c_encoder` runs the same script as an ignored board
+       test.
+       Three fields had to leave the template for 640x480 to match: `src_strd0/1`
+       (the 16-aligned luma stride), `set_me_regs`' CIME search range, and
+       `set_me_ram`'s `cme_rama_h`/`cme_rama_max`/`cach_l2_tag`, whose C loop fills
+       the line buffer until the window holds the search. The 1280x720 cell then
+       needed no further change.
+- [ ] H.265 (rkvenc): P pictures, tiles/WPP/SAO and rate control (CBR/VBR/AVBR). The
+      fixed-QP IDR is byte-identical at three sizes; output is one NAL per picture
+      (no per-slice packets) and the session encodes a single picture.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,

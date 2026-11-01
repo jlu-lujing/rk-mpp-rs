@@ -237,8 +237,15 @@ H.264/VEPU580 编码已做到：
   FIXQP26 单 IDR trace）出发，再按几何/QP/语法推导。`tools/h265e_trace_diff.py`
   逐字段比对，现在只剩 `enc_pic.mei_stor` 一位不同——C 的 harness 传了 motion-info
   缓冲，我们没申请。别把模板里的地址字当真：它们属于 oracle 的缓冲区。
-- 下一步：给 H.265 一条拥有自己 dma-heap 缓冲（含 motion-info）的提交路径，发出第一张
-  IDR，与 `tests/data` 的 C 流逐 NAL 比；之后才是 tiles/WPP/SAO、码率控制和 P 帧。
+- 提交路径已落地：`h265-idr`（`src/hal/h265e_session.rs`）自己申请输入/输出/两块 FBC
+  重建面（含显示与 MV thumb）/motion-info，填 160..175 的地址字，带上 C 的
+  multi-offset 表（161/162 色度、164/166 FBC 体、172 输出容量、175 packet 长度），
+  提交六段寄存器并 poll，前缀由 `codec::h265::encoder::build_prefix` 拼出。
+  `scripts/board_h265_idr_vs_mpp.sh`：**320x240 / 640x480 / 1280x720 整条码流与 C
+  逐字节相同**（860 / 1618 / 3585 字节）。
+- 下一步：P 帧（DPB/参考面轮换）、tiles/WPP/SAO、码率控制（CBR/VBR/AVBR），以及逐 slice
+  输出（当前每个作业一个 NAL）。还有一条已知差异：推导图在非提交态刻意不开
+  `enc_pic.mei_stor`，会话里因为自己拥有 MD 缓冲才置 1。
 
 ### 5.5 M9 后处理（IEP）
 

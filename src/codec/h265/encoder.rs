@@ -31,6 +31,8 @@
 
 use std::fmt;
 
+use super::sei;
+
 pub const PROFILE_HEVC_MAIN: u8 = 1;
 
 /// VPS NAL unit type (`NAL_VPS`).
@@ -288,6 +290,23 @@ pub fn build_headers(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+/// The whole access-unit prefix MPP writes ahead of an H.265 IDR: VPS, SPS, PPS,
+/// then the two prefix SEIs (version and rate-control line). This is the software
+/// half of the packet; the hardware writes the slice NAL.
+pub fn build_prefix(config: &EncoderConfig, qp: u32, igop: u32) -> Result<Vec<u8>, Error> {
+    let mut out = build_headers(config)?;
+    out.extend(sei::user_data_unregistered(
+        &sei::VERSION_UUID,
+        sei::VERSION_TEXT.as_bytes(),
+    ));
+    // The harness's default target rate, which the SEI prints: 30 fps at
+    // `w * h * 30 / 8` bits per second. Its min/max stay at the harness values.
+    let bps = sei::default_bps_target(config.width, config.height, 30);
+    let line = sei::rc_cfg_line(&sei::RcCfgLine::fixed_qp(qp, igop, bps));
+    out.extend(sei::user_data_unregistered(&sei::RC_UUID, line.as_bytes()));
+    Ok(out)
+}
+
 /// `h265e_vps_write`.
 pub fn build_vps(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
     config.validate()?;
@@ -491,7 +510,7 @@ fn nal_header(unit_type: u8) -> [u8; 2] {
 
 /// Annex-B framing: a four-byte start code, the two-byte NAL header, then the RBSP
 /// with emulation-prevention bytes inserted.
-fn annex_b(unit_type: u8, rbsp: Vec<u8>) -> Vec<u8> {
+pub(crate) fn annex_b(unit_type: u8, rbsp: Vec<u8>) -> Vec<u8> {
     let escaped = escape_rbsp(&rbsp);
     let mut out = Vec::with_capacity(4 + 2 + escaped.len());
     out.extend_from_slice(&[0, 0, 0, 1]);

@@ -7,7 +7,9 @@
 //! (`tests/data/h265e_c_fixqp_qp26_*.265`); the board test that reproduces the
 //! same comparison live is ignored and runs via `scripts/board_h265_qp_vs_mpp.sh`.
 
-use rk_mpp_rs::codec::h265::encoder::{build_headers, build_pps, build_sps, EncoderConfig};
+use rk_mpp_rs::codec::h265::encoder::{
+    build_headers, build_pps, build_prefix, build_sps, EncoderConfig,
+};
 use rk_mpp_rs::codec::hevc::parser;
 use rk_mpp_rs::hal::h265e::{build_registers, IdrJob};
 use rk_mpp_rs::hal::h265e_regs;
@@ -118,6 +120,36 @@ fn parameter_sets_match_the_recorded_c_streams() {
     }
 }
 
+/// The full software prefix - parameter sets and both SEIs - against the oracle's
+/// access unit. The hardware's slice NAL is compared on the board
+/// (`scripts/board_h265_idr_vs_mpp.sh`), because only a submitted job produces it.
+#[test]
+fn prefix_matches_the_recorded_c_access_unit_prefix() {
+    for (w, h, file) in [
+        (320usize, 240usize, "h265e_c_fixqp_qp26_320x240.265"),
+        (640, 480, "h265e_c_fixqp_qp26_640x480.265"),
+        (1280, 720, "h265e_c_fixqp_qp26_1280x720.265"),
+    ] {
+        let path = format!("{}/tests/data/{file}", env!("CARGO_MANIFEST_DIR"));
+        let c = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let prefix = build_prefix(&EncoderConfig::new(w, h), 26, 60).unwrap();
+        assert!(
+            c.len() > prefix.len(),
+            "{file}: the reference is only {} bytes",
+            c.len()
+        );
+        assert_eq!(&c[..prefix.len()], &prefix[..], "{file}: prefix differs");
+        // The next NAL is the IDR (19).
+        let after = c[prefix.len()..].windows(4).position(|w| w == [0, 0, 0, 1]);
+        let header = after.map(|i| prefix.len() + i + 4).unwrap_or(prefix.len());
+        assert_eq!(
+            (c[header] >> 1) & 0x3f,
+            19,
+            "{file}: next NAL is not an IDR"
+        );
+    }
+}
+
 /// A small size matrix: the coded picture is padded to the 8-sized minimum CU and
 /// a conformance window carries the pad, which the parser resolves back to the
 /// visible size. Non-multiples of 16 (322x242) are covered here since the header
@@ -176,4 +208,16 @@ fn board_parameter_sets_match_the_c_encoder() {
         .status()
         .expect("run scripts/board_h265_qp_vs_mpp.sh");
     assert!(status.success(), "H.265 board parameter-set compare failed");
+}
+
+/// The submitted-IDR gate: runs `h265-idr` on the board against `mpi_enc_test` and
+/// compares whole streams - parameter sets, both SEIs and the hardware's slice NAL.
+#[test]
+#[ignore = "board-only: needs t6, the MPP reference and /dev/mpp_service"]
+fn board_idr_matches_the_c_encoder() {
+    let status = std::process::Command::new("scripts/board_h265_idr_vs_mpp.sh")
+        .env("ONLY", "320x240 640x480 1280x720")
+        .status()
+        .expect("run scripts/board_h265_idr_vs_mpp.sh");
+    assert!(status.success(), "H.265 board IDR compare failed");
 }
