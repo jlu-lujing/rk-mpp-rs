@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Where does the P picture stop matching the reference? A size sweep, not a guess.
+#
+# `board_h264_qp_vs_mpp.sh` proves the P path byte-exact at 320x240 and
+# `board_h264_level_vs_mpp.sh` found it diverging at 640x480 and 1280x720 (our P
+# spending more bits while the IDR in the same AU matches and the decoded
+# pictures agree to 66 dB). The job registers match word for word outside the
+# fourteen dynamic-address slots, so the difference is in what reaches the
+# hardware, and the only way to find out which geometry quantity drives it is to
+# find the threshold. Two shapes per axis: if only widths past some point fail it
+# is the horizontal ME/line-buffer configuration; if heights, the vertical one.
+#
+# Each cell encodes two identical still pictures (a P with a clean reference -
+# the least moving part that still exercises the reference read) at fixed QP 26,
+# baseline, GOP 60, and reports both sides' P sizes so the trend is visible even
+# where a cell fails.
+#
+# Usage: scripts/board_h264_p_size_probe.sh
+set -uo pipefail
+
+mpp_ref="${MPP_REF:-/tmp/mpp-old}"
+mpp_lib="$mpp_ref/build/mpp"
+
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
+  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
+ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+
+if ! ssh t6 "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
+  printf 'SKIP P-size probe (reference build missing at %s)\n' "$mpp_ref"; exit 0
+fi
+scp -q tools/h264e_probe.c t6:/tmp/ 2>/dev/null
+ssh t6 "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
+        /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
+        cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
+        /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
+
+fail=0
+for size in 320x240 384x288 448x352 512x384 576x416 640x480 640x256 320x512; do
+  w="${size%%x*}"; h="${size##*x}"
+  fixture=/tmp/rk-mpp-rs-psize-$size.nv12
+  # Two copies of one synthetic picture: a still clip with a well-defined reference.
+  ssh t6 "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame /tmp/psize-1f.nv12 $w $h >/dev/null \
+          && cp /tmp/psize-1f.nv12 $fixture && cat /tmp/psize-1f.nv12 >> $fixture"
+  ssh t6 "sudo rm -f /tmp/psize_ours.264 /tmp/psize_c.264 &&
+          cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
+            /tmp/psize_ours.264 $w $h 26 baseline 2 60 >/dev/null &&
+          sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/h264e_probe $fixture /tmp/psize_c.264 \
+            $w $h 2 0 26 gop 60 >/dev/null 2>&1 &&
+          sudo chmod 644 /tmp/psize_ours.264 /tmp/psize_c.264"
+  scp -q t6:/tmp/psize_ours.264 /tmp/ 2>/dev/null; scp -q t6:/tmp/psize_c.264 /tmp/ 2>/dev/null
+  sizes=$(python3 - "$w" "$h" <<'PY'
+import re, sys
+def p_sizes(path):
+    d = open(path, 'rb').read()
+    s = [m.start() for m in re.finditer(b"\x00\x00\x00\x01", d)] + [len(d)]
+    return [len(d[s[k]+4:s[k+1]]) for k in range(len(s)-1)
+            if d[s[k]+4:s[k+1]] and (d[s[k]+4] & 0x1f) == 1]
+c = p_sizes("/tmp/psize_c.264"); o = p_sizes("/tmp/psize_ours.264")
+same = c == o
+print(("P %s vs %s  %s" % (o, c, "SAME" if same else "DIFFER")).strip(), 0 if same else 1)
+PY
+)
+  verdict="${sizes##* }"
+  printf '%-9s %s\n' "$size" "${sizes% *}"
+  [ "$verdict" = "SAME" ] || fail=1
+done
+[ "$fail" = 0 ] && printf 'P path byte-identical at every size probed\n' || printf 'threshold evidence above\n'
+exit "$fail"

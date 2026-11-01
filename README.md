@@ -37,7 +37,7 @@
 | VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；边界矩阵已对 C 判决（scripts/board_vp9_matrix.sh），剩 720p 分割色度 213 字节与 rkvdec 损坏流整体中止两处有名差异 |
 | AV1 解码（av1d） | Main 8/10-bit、film grain 逐字节；更宽 conformance 未完 |
 | MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 全部逐字节；VP8 profile 1/3（板验，语料仅 p0 故派生流）；损坏/截断流与 C 的行为表 4/6 SAME（scripts/board_vp_corrupt_vs_mpp.sh）；AVS+/AVS2 未做 |
-| H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落），slice split 只有宿主单测，>4096 已接线未上板。**开放**：P 帧 >320x240 不逐字节（见 ROADMAP / PLAN W1-19） |
+| H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落），slice split 只有宿主单测，>4096 已接线未上板。**开放**：P 帧在 1280x720 不逐字节（≤640x480 连运动内容都逐字节；见 ROADMAP / PLAN W1-19） |
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices / 多核分带见 docs/jpege-slices-multicore.md |
 | H.265 编码 | 未开始 |
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP 未移植，VDPP 该板不存在 |

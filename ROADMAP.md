@@ -1150,22 +1150,37 @@ in what order the evidence gets produced.
        side is `mpi_enc_test` with the level patched into its source the way the
        profile is patched elsewhere, fixed QP 26. The raised level, not the request,
        is what `effective_level_idc` exports for the HAL.
- - [ ] **P pictures diverge from the reference beyond 320x240 - open, and newer
-       than it looks.** The 24-cell matrix compares single IDR pictures at four
-       sizes, and the byte-exact P runs so far were all 320x240, so this was not a
-       known gap. A level-matrix run over two moving frames found it: at 640x480
-       and 1280x720 our P NAL differs from the reference's (at 1280x720, 1900 bytes
-       against 1371), while the IDR in the same access unit is byte-identical and
-       the two decoders agree on the decoded picture to 66 dB - our P spends more
-       bits, not a different picture. The register images are the way to rule
-       things out and they are identical: our job captured through `RKMPP_REG_DUMP`
-       against the reference's ioctl trace, all seven sections, the fourteen
-       differing words being exactly the fourteen cleared dynamic-address slots
-       (which differ per process by design). So the divergence is in what reaches
-       the hardware through those addresses - the source copy, the reference
-       picture or the ME intermediate - not in what the register file says. The
-       level-matrix cells at 1280x720 therefore compare the IDR only, and
-       `board_h264_qp_vs_mpp.sh`'s P cells stay at 320x240 until this is closed.
+ - [ ] **P pictures diverge from the reference at 1280x720 - open, and narrower
+       than reported.** The 24-cell matrix compares single IDR pictures at four
+       sizes and every byte-exact P run was at 320x240, so this was not a known
+       gap when a level-matrix run reported it at both 640x480 and 1280x720.
+       `scripts/board_h264_p_size_probe.sh` sweeps the question now, and the
+       picture is narrower: **every size through 640x480 is byte-identical for P
+       pictures** (320x240, 384x288, 448x352, 512x384, 576x416, 640x480, 640x256,
+       320x512, each on a two-frame still), and 640x480 stays identical under a
+       global luma step and under moving testsrc as well - while 1280x720 diverges
+       **even when all four source frames are the same
+       picture**, ours writing a near-constant 219 bytes more per P (259 against
+       40 on a reference whose residual is nothing). With motion at 720p the
+       surplus is ~520 bytes on 1371 - 38 % more bits for a picture that decodes
+       to 66 dB of the reference's.
+
+       Ruled out by measurement, not by reading: the job's register image (seven
+       sections, matching outside the fourteen dynamic-address slots); the extended
+       line buffers, which exist only above 4096 coded pixels and so cannot be
+       involved at 1280; and the motion-derivation surface - zeroing it before
+       every submit leaves the deltas at 218/219/219 byte for byte, so MD info is
+       not read back as a predictor. The slice headers are identical to six bytes
+       (`41 e0 00 20 00 43`) and the bodies part at byte seven: a coding-decision
+       divergence, not framing, scaling with the picture rather than the content.
+
+       Standing suspect: what the encoder reads back through the reference address
+       word - an FBC reconstruction layout that only starts to differ past some
+       surface size. Confirming it needs a way to export the reconstruction surface
+       per picture from both drivers, which neither `RKMPP_REG_DUMP` nor the ioctl
+       tracer provides; that hook is the next piece of tooling. Until this closes,
+       `board_h264_qp_vs_mpp.sh`'s P cells stay at 320x240 and the level cells at
+       1280x720 compare the IDR only.
 - [ ] rkvenc supports one live session per process here. The two ignored encoder
       tests pass serially and disagree with the goldens when cargo runs them as two
       threads, which is `setup_ext_line_bufs` programming a shared system-controller
