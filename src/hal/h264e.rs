@@ -75,7 +75,6 @@ const REG_BSBS_START: u32 = 175;
 const REG_RFPW_B: u32 = 164;
 const REG_RFPR_B: u32 = 166;
 
-const FBC_HEADER_SIZE: usize = 8192;
 const STATUS_WORDS: usize = 180;
 const HW_ERROR_MASK: u32 = 0x3f0;
 
@@ -1486,13 +1485,14 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
             reg_idx: REG_BSBS_START,
             offset: 0,
         },
+        // The FBC body offset has to be the offset the surface was built with.
         RegOffsetInfo {
             reg_idx: REG_RFPW_B,
-            offset: FBC_HEADER_SIZE as u32,
+            offset: fbc_header_size(config)? as u32,
         },
         RegOffsetInfo {
             reg_idx: REG_RFPR_B,
-            offset: FBC_HEADER_SIZE as u32,
+            offset: fbc_header_size(config)? as u32,
         },
     ];
 
@@ -2368,16 +2368,32 @@ fn ext_line_buf_size(config: &EncoderConfig) -> usize {
     }
 }
 
-fn reconstruction_sizes(config: &EncoderConfig) -> Result<(usize, usize), String> {
+/// `pixel_buf_fbc_hdr_size` of `hal_h264e_vepu580_prepare`: the FBC header of a
+/// reconstruction surface occupies `align(aligned_w * aligned_h / 64, 8K)` bytes
+/// and the body starts behind it. The number is a function of the picture - it
+/// crosses from 8192 to 16384 anywhere the coded area passes 524288 pixels, so
+/// 1280x720 is the first size where it is not 8192 - which is why the allocation
+/// and the two `REG_RFP{W,R}_B` offsets have to come from this one function
+/// rather than from a constant. Feeding the hardware a body offset of 8192 over a
+/// surface whose body starts at 16384 leaves the reference picture read from the
+/// wrong place: every P picture then spends bits the reference does not, while the
+/// IDR in the same run stays byte-identical, because an IDR reads no reference.
+fn fbc_header_size(config: &EncoderConfig) -> Result<usize, String> {
     let aligned_w = align(config.width, 64);
     let aligned_h = align(config.height, 16) + 16;
-    let header = align(
+    Ok(align(
         aligned_w
             .checked_mul(aligned_h)
             .ok_or_else(|| "H.264 FBC header overflow".to_string())?
             / 64,
         8192,
-    );
+    ))
+}
+
+fn reconstruction_sizes(config: &EncoderConfig) -> Result<(usize, usize), String> {
+    let aligned_w = align(config.width, 64);
+    let aligned_h = align(config.height, 16) + 16;
+    let header = fbc_header_size(config)?;
     let body = aligned_w
         .checked_mul(aligned_h)
         .and_then(|v| v.checked_mul(3))
@@ -2575,6 +2591,47 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// `pixel_buf_fbc_hdr_size` grows with the picture and the two FBC body
+    /// offsets ride that same number. 640x480 is well past the sizes the P path
+    /// matched at and still lands in the first 8K row, 800x600 bigger still does
+    /// too, and 1280x720 is the first size across into the second - which is
+    /// precisely where the P pictures started to diverge. Telling the hardware the
+    /// body begins at 8192 over a surface whose body begins at 16384 leaves the
+    /// reference read from the wrong place, so every P spends bits the reference
+    /// does not while the IDR - which reads no reference - stays byte-identical.
+    /// That is how this hid behind a matrix of IDR pictures.
+    #[test]
+    fn the_fbc_body_offset_follows_the_surface_it_points_into() {
+        assert_eq!(
+            fbc_header_size(&EncoderConfig::new(320, 240)).unwrap(),
+            8_192
+        );
+        assert_eq!(
+            fbc_header_size(&EncoderConfig::new(640, 480)).unwrap(),
+            8_192
+        );
+        assert_eq!(
+            fbc_header_size(&EncoderConfig::new(800, 600)).unwrap(),
+            8_192
+        );
+        assert_eq!(
+            fbc_header_size(&EncoderConfig::new(1280, 720)).unwrap(),
+            16_384
+        );
+
+        let wide = EncoderConfig::new(1280, 720);
+        let capacity = logical_output_size(&wide).unwrap();
+        let file = build_registers(&job_with_output(&wide, capacity)).unwrap();
+        let offset_of = |idx: u32| {
+            file.offsets
+                .iter()
+                .find(|o| o.reg_idx == idx)
+                .map(|o| o.offset)
+        };
+        assert_eq!(offset_of(REG_RFPW_B), Some(16_384));
+        assert_eq!(offset_of(REG_RFPR_B), Some(16_384));
     }
 
     #[test]

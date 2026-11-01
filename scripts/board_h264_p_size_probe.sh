@@ -13,7 +13,11 @@
 # Each cell encodes two identical still pictures (a P with a clean reference -
 # the least moving part that still exercises the reference read) at fixed QP 26,
 # baseline, GOP 60, and reports both sides' P sizes so the trend is visible even
-# where a cell fails.
+# where a cell fails. It compares the P picture by size, deliberately: `h264e_probe`
+# is a driver of the library, not `mpi_enc_test`, and it carries no SEI NAL units,
+# so a whole-access-unit compare against it would fail on the NAL sequence for
+# every size and prove nothing. Byte-exact whole-stream proof at these sizes lives
+# in `board_h264_qp_vs_mpp.sh`.
 #
 # Usage: scripts/board_h264_p_size_probe.sh
 set -uo pipefail
@@ -35,7 +39,11 @@ ssh t6 "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/u
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
 
 fail=0
-for size in 320x240 384x288 448x352 512x384 576x416 640x480 640x256 320x512; do
+# 800x600 and 1024x768 sit either side of the FBC header's 8K step (524288 coded
+# pixels): the first still lands in the first row, the second crosses into the
+# second, so the pair keeps the bug on either side of a threshold nobody has to
+# re-derive. 1280x720 is where it was first seen.
+for size in 320x240 384x288 448x352 512x384 576x416 640x480 640x256 320x512 800x600 1024x768 1280x720; do
   w="${size%%x*}"; h="${size##*x}"
   fixture=/tmp/rk-mpp-rs-psize-$size.nv12
   # Two copies of one synthetic picture: a still clip with a well-defined reference.

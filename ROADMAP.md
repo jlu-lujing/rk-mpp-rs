@@ -1150,37 +1150,41 @@ in what order the evidence gets produced.
        side is `mpi_enc_test` with the level patched into its source the way the
        profile is patched elsewhere, fixed QP 26. The raised level, not the request,
        is what `effective_level_idc` exports for the HAL.
- - [ ] **P pictures diverge from the reference at 1280x720 - open, and narrower
-       than reported.** The 24-cell matrix compares single IDR pictures at four
-       sizes and every byte-exact P run was at 320x240, so this was not a known
-       gap when a level-matrix run reported it at both 640x480 and 1280x720.
-       `scripts/board_h264_p_size_probe.sh` sweeps the question now, and the
-       picture is narrower: **every size through 640x480 is byte-identical for P
-       pictures** (320x240, 384x288, 448x352, 512x384, 576x416, 640x480, 640x256,
-       320x512, each on a two-frame still), and 640x480 stays identical under a
-       global luma step and under moving testsrc as well - while 1280x720 diverges
-       **even when all four source frames are the same
-       picture**, ours writing a near-constant 219 bytes more per P (259 against
-       40 on a reference whose residual is nothing). With motion at 720p the
-       surplus is ~520 bytes on 1371 - 38 % more bits for a picture that decodes
-       to 66 dB of the reference's.
+ - [x] **The P divergence beyond 640x480 was a wrong FBC body offset - found,
+       fixed, and it was never about content.** `REG_RFPW_B` and `REG_RFPR_B`
+      （the two offsets the hardware adds to reach the FBC *body* of a
+       reconstruction surface) were a constant 8192. The surface does not start
+       its body at a constant: `pixel_buf_fbc_hdr_size` is
+       `align(aligned_w * aligned_h / 64, 8K)`, which stays 8192 while the coded
+       area is under 524288 pixels and becomes 16384 past it - so at 1280x720 the
+       driver told the hardware to read the reference from 8192 in a surface whose
+       body begins at 16384. An IDR reads no reference, which is why the 24-cell
+       matrix - every cell a single IDR picture - stayed green at 1280x720 for as
+       long as it has existed, and why the surplus looked content-independent:
+       it was a constant, and it was a *displacement*.
 
-       Ruled out by measurement, not by reading: the job's register image (seven
-       sections, matching outside the fourteen dynamic-address slots); the extended
-       line buffers, which exist only above 4096 coded pixels and so cannot be
-       involved at 1280; and the motion-derivation surface - zeroing it before
-       every submit leaves the deltas at 218/219/219 byte for byte, so MD info is
-       not read back as a predictor. The slice headers are identical to six bytes
-       (`41 e0 00 20 00 43`) and the bodies part at byte seven: a coding-decision
-       divergence, not framing, scaling with the picture rather than the content.
+       One function, `fbc_header_size`, now supplies both the allocation and the
+       two offsets, so the two cannot disagree by construction; the unit test walks
+       the threshold (8192 at 320x240, 640x480 and 800x600; 16384 at 1280x720) and
+       asserts the offsets in a generated 1280x720 job.
 
-       Standing suspect: what the encoder reads back through the reference address
-       word - an FBC reconstruction layout that only starts to differ past some
-       surface size. Confirming it needs a way to export the reconstruction surface
-       per picture from both drivers, which neither `RKMPP_REG_DUMP` nor the ioctl
-       tracer provides; that hook is the next piece of tooling. Until this closes,
-       `board_h264_qp_vs_mpp.sh`'s P cells stay at 320x240 and the level cells at
-       1280x720 compare the IDR only.
+       Measured on the board, `scripts/board_h264_p_size_probe.sh` - widened to
+       eleven sizes so the FBC step has a cell on each side: 320x240, 384x288,
+       448x352, 512x384, 576x416, 640x480, 640x256, 320x512, 800x600, 1024x768,
+       1280x720 - all eleven byte-identical, and 1024x768, which sits past the
+       step and should have failed before the fix, does agree now. The original
+       failing case - six frames of testsrc at 1280x720 - is byte-identical
+       picture by picture (1371, 1075, 1341, 1097, 1336 on both sides), and with
+       four identical frames, and with a per-frame luma step, every delta is zero.
+       The standing gates re-ran after the change: six GOP cells, the
+       cbr / vbr / avbr cells, four GDR cells and the 24-cell matrix.
+
+       The lesson is in how it hid: byte-identical IDR pictures are no evidence
+       about anything on the reference path. A matrix that varies size but only
+       ever encodes an IDR cannot see a reference-surface bug at all, and this one
+       has been green across four sizes including 1280x720. `board_h264_qp_vs_mpp.sh`
+       still keeps its P cells at 320x240; the size sweep is where P pictures are
+       now proved, and it should grow into the matrix rather than sit beside it.
 - [ ] rkvenc supports one live session per process here. The two ignored encoder
       tests pass serially and disagree with the goldens when cargo runs them as two
       threads, which is `setup_ext_line_bufs` programming a shared system-controller
