@@ -602,8 +602,15 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         file.set(&regs::H265_REG0239_SYNT_SLI0_NUM_REFIDX_ACT_OVRD, 0)?;
         file.set(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE, 1)?;
         file.set(&regs::H265_REG0241_SYNT_SLI2_SLI_POC_LSB, poc_lsb)?;
-        file.set(&regs::H265_REG0242_SYNT_REFM0_NUM_LT_PIC, 1)?;
-        file.set(&regs::H265_REG0243_SYNT_REFM1_USED_BY_LT_FLG0, 1)?;
+        // The reference marking follows the GOP configuration: a refresh/VI GOP
+        // points at the SPS long-term entry, a plain GOP at short-term reference 0.
+        if job.long_term {
+            file.set(&regs::H265_REG0242_SYNT_REFM0_NUM_LT_PIC, 1)?;
+            file.set(&regs::H265_REG0243_SYNT_REFM1_USED_BY_LT_FLG0, 1)?;
+        } else {
+            file.set(&regs::H265_REG0243_SYNT_REFM1_NUM_NEGATIVE_PICS, 1)?;
+            file.set(&regs::H265_REG0243_SYNT_REFM1_USED_BY_S0_FLG, 1)?;
+        }
         // From the third picture on the reference is the previous P, and the
         // traced job states the list explicitly: `ref_pic_lst_mdf_l0`,
         // `lst_entry_l0` and `num_negative_pics` all carry 1 where the first P
@@ -611,7 +618,9 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         if poc_lsb >= 2 {
             file.set(&regs::H265_REG0239_SYNT_SLI0_REF_PIC_LST_MDF_L0, 1)?;
             file.set(&regs::H265_REG0240_SYNT_SLI1_LST_ENTRY_L0, 1)?;
-            file.set(&regs::H265_REG0243_SYNT_REFM1_NUM_NEGATIVE_PICS, 1)?;
+            if job.long_term {
+                file.set(&regs::H265_REG0243_SYNT_REFM1_NUM_NEGATIVE_PICS, 1)?;
+            }
         }
         let start = IPRD_WGT_QP_WORD - 1472;
         file.wgt[start..start + MODB_LAMBDA.len()].copy_from_slice(&MODB_LAMBDA);

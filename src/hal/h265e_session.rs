@@ -116,7 +116,7 @@ impl Vepu580H265 {
         qp_min: u32,
         qp_max: u32,
     ) -> Result<Self, String> {
-        let mut session = Self::open_inner(width, height, qp_max, true)?;
+        let mut session = Self::open_inner(width, height, qp_max, false)?;
         let mb64 = ((width + 63) / 64) * ((height + 63) / 64);
         let mut config = rc_model::Config::cbr(bps_target, bps_min, bps_max, 60);
         config.quality_init = init_qp;

@@ -854,13 +854,23 @@ in what order the evidence gets produced.
        (`86956` bits / QP 26), the prefix and IDR NAL are byte-identical, and the P
        NAL is two bytes shorter. `H265_RC_DEBUG=1` prints each decision and its
        measurement.
-- [ ] H.265 (rkvenc): the CBR controller's second decision still differs. Our model
-      measures frame 0 as 6776 bits / quality 19 / madi 2 / madp 0 and chooses
-      `9320` bits / QP 27 for the next picture; the C's register carries `582` / 25.
-      The measured bits are within 24 of the C's slice (`6752`), so the gap is in
-      how the model folds that undershoot into the next budget - the VBV/`calc_ratio`
-      state - not in the STATUS translation. Also open: VBR/AVBR, tiles/WPP/SAO,
-      B frames, multiple references and per-slice output.
+ - [x] **The model-driven CBR loop is byte-identical on a plain GOP.** The `582` /
+       QP 25 target that did not fit `bits_model_alloc` was not a model error: with
+       the default `-g 60` the harness schedules the second picture as a
+       virtual-intra/refresh frame, which takes the refresh branch of the allocation.
+       With `-g 0:60:0` (no VI frames) the C's second register carries
+       `ctu_ebit = 7456`, i.e. 9320 bits / QP 27 - exactly what `rc_model::Model`
+       chooses. `h265-cbr` on that cell produces a **1163-byte stream byte-identical
+       to the C's**, both QPs chosen by the model. The same cell also settled the
+       reference marking: a plain GOP marks short-term reference 0
+       (`num_negative_pics` + `used_by_s0_flg`), while the VI/default GOP marks the
+       SPS long-term entry (`num_lt_pic` + `used_by_lt_flg0`), and the SPS grows the
+       LT entry only in the latter.
+       `scripts/board_h265_cbr_vs_mpp.sh` now runs both cells: the explicit-decision
+       one (1169 bytes) and the model-driven one (1163 bytes).
+- [ ] H.265 (rkvenc): the VI/refresh GOP schedule (`MppEncRefCfg`'s frame modes, which
+      decide when a picture takes the refresh allocation and the LT marking), VBR and
+      AVBR, tiles/WPP/SAO, B frames, multiple references and per-slice output.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,

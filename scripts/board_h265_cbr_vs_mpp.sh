@@ -60,3 +60,29 @@ else
     "$size" "$c_size" "$r_size" "${first:-length}"
   exit 1
 fi
+
+# ---- model-driven cell ------------------------------------------------------
+# The same input with a plain GOP (`-g 0:60:0`, no virtual-intra frames): now
+# `h265-cbr` lets `rc_model::Model` pick both QPs, and the C's ref config states
+# short-term reference 0 instead of the SPS long-term entry.
+model_c="/tmp/rk-mpp-rs-h265-cbr-${size}-model-c.265"
+model_r="/tmp/rk-mpp-rs-h265-cbr-${size}-model-r.265"
+ssh t6 "sudo rm -f $model_c $model_r"
+if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $seq -o $model_c \
+    -w $width -h $height -t $hevc_type -f 0 -n 2 -g 0:60:0 -rc 1 -bps $bps \
+    -qc 26:$qp_min:$qp_max:$qp_min:$qp_max -v q" >/dev/null 2>&1; then
+  printf 'FAIL %-12s model cell (reference encode failed)\n' "$size"; exit 1
+fi
+if ! ssh t6 "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs h265-cbr \
+    $seq $model_r $width $height 2 $bps 26 $qp_min $qp_max" >/tmp/h265-cbr-model-${size}.log 2>&1; then
+  printf 'FAIL %-12s model cell (our encode failed: %s)\n' "$size" "$(tail -1 /tmp/h265-cbr-model-${size}.log)"
+  exit 1
+fi
+m_size=$(ssh t6 "stat -c%s $model_c")
+if ssh t6 "cmp -s $model_c $model_r"; then
+  printf 'PASS %-12s model cell (%s bytes, the model picked both QPs)\n' "$size" "$m_size"
+else
+  first=$(ssh t6 "cmp -l $model_c $model_r 2>/dev/null | head -1")
+  printf 'FAIL %-12s model cell (C %s bytes, first difference: %s)\n' "$size" "$m_size" "${first:-length}"
+  exit 1
+fi
