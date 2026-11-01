@@ -7,6 +7,7 @@ use rk_mpp_rs::hal::h264e;
 use rk_mpp_rs::hal::jpegd as decode;
 use rk_mpp_rs::hal::jpege;
 use rk_mpp_rs::scale;
+use rk_mpp_rs::service::buffer_pool::BufferPool;
 use rk_mpp_rs::service::dma_heap;
 use rk_mpp_rs::service::MppService;
 
@@ -424,6 +425,220 @@ fn bench_decode(
     Ok((ms, geom.out_width, geom.out_height))
 }
 
+/// One synchronous full-size RGB JPEG decode, the same ioctl sequence the
+/// `decode` subcommand runs, returning the frame instead of writing it.
+/// The async demo runs this once as the oracle its pooled jobs must match.
+fn decode_job_sync(
+    data: &[u8],
+    info: &jpeg::JpegInfo,
+    downscale: decode::JpegDownscale,
+) -> Result<Vec<u8>, String> {
+    let tables = tables::Tables::build(info).map_err(|e| format!("{e:?}"))?;
+    let output_geometry = decode::geometry(info, true, downscale).map_err(|e| e.to_string())?;
+    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+    let mut table_buf = dma_heap::DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false)
+        .map_err(|e| e.to_string())?;
+    table_buf.as_mut_slice()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
+    let mut stream_buf =
+        dma_heap::DmaBuf::alloc("system", data.len(), false).map_err(|e| e.to_string())?;
+    stream_buf.as_mut_slice()[..data.len()].copy_from_slice(data);
+    let mut out_buf = dma_heap::DmaBuf::alloc("system", output_geometry.frame_size, false)
+        .map_err(|e| e.to_string())?;
+    let (regs, geom) = decode::build(&decode::Job {
+        info,
+        table_fd: table_buf.fd(),
+        stream_fd: stream_buf.fd(),
+        stream_len: data.len(),
+        output_fd: out_buf.fd(),
+        rgb: true,
+        downscale,
+    })
+    .map_err(|e| e.to_string())?;
+    svc.submit_regs(&regs.words)
+        .map_err(|e| format!("submit: {e}"))?;
+    svc.poll_hw_finish().map_err(|e| format!("poll: {e}"))?;
+    out_buf
+        .sync_read_begin()
+        .map_err(|e| format!("dma-buf read sync: {e}"))?;
+    let n = geom.frame_size.min(out_buf.len());
+    let frame = out_buf.as_slice()[..n].to_vec();
+    out_buf
+        .sync_read_end()
+        .map_err(|e| format!("dma-buf read sync end: {e}"))?;
+    Ok(frame)
+}
+
+/// The worker-side async job: the identical ioctl sequence, but every block
+/// comes from the refcounted pool and returns to it before the job ends.
+fn decode_job_pooled(
+    data: &[u8],
+    info: &jpeg::JpegInfo,
+    downscale: decode::JpegDownscale,
+    pool: &BufferPool<dma_heap::DmaBuf>,
+) -> Result<Vec<u8>, String> {
+    let tables = tables::Tables::build(info).map_err(|e| format!("{e:?}"))?;
+    let output_geometry = decode::geometry(info, true, downscale).map_err(|e| e.to_string())?;
+    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+    let table_h = pool
+        .acquire(tables::RKD_TABLE_SIZE)
+        .map_err(|e| format!("pool table: {e}"))?;
+    let stream_h = pool
+        .acquire(data.len().max(1))
+        .map_err(|e| format!("pool stream: {e}"))?;
+    let out_h = pool
+        .acquire(output_geometry.frame_size)
+        .map_err(|e| format!("pool output: {e}"))?;
+    pool.data_mut(table_h).unwrap()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
+    pool.data_mut(stream_h).unwrap()[..data.len()].copy_from_slice(data);
+    let (regs, geom) = decode::build(&decode::Job {
+        info,
+        table_fd: pool.fd(table_h).unwrap(),
+        stream_fd: pool.fd(stream_h).unwrap(),
+        stream_len: data.len(),
+        output_fd: pool.fd(out_h).unwrap(),
+        rgb: true,
+        downscale,
+    })
+    .map_err(|e| e.to_string())?;
+    svc.submit_regs(&regs.words)
+        .map_err(|e| format!("submit: {e}"))?;
+    svc.poll_hw_finish().map_err(|e| format!("poll: {e}"))?;
+    let frame = {
+        let view = pool.data(out_h).map_err(|e| format!("pool view: {e}"))?;
+        // The job's own thread invalidates its mapping before the read, the
+        // same DMA_BUF_SYNC contract the sync path obeys.
+        view.buffer()
+            .sync_read_begin()
+            .map_err(|e| format!("dma-buf read sync: {e}"))?;
+        let n = geom.frame_size.min(view.len());
+        let frame = view[..n].to_vec();
+        view.buffer()
+            .sync_read_end()
+            .map_err(|e| format!("dma-buf read sync end: {e}"))?;
+        frame
+    };
+    let _ = pool.release(table_h);
+    let _ = pool.release(stream_h);
+    let _ = pool.release(out_h);
+    Ok(frame)
+}
+
+/// Framework demo (M10): decode one JPEG `jobs` times through the async
+/// task queue + refcounted buffer pool and require every output to be
+/// byte-identical to the synchronous path. Prints a verdict per job plus a
+/// summary line; returns Err on any disagreement so the caller exits 1.
+fn async_demo(path: &str, jobs: usize, workers: usize, out_path: &str) -> Result<usize, String> {
+    use rk_mpp_rs::service::task_queue::{PollTimeout, TaskOutcome, TaskQueue};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let info = Arc::new(jpeg::parse(&data).map_err(|e| e.to_string())?);
+    let downscale = decode::JpegDownscale::Disabled;
+    let reference = decode_job_sync(&data, &info, downscale)?;
+    println!(
+        "async-demo: sync baseline {}x{} RGB {} bytes",
+        info.width,
+        info.height,
+        reference.len()
+    );
+
+    let pool = BufferPool::new(jobs + 4);
+    let queue = TaskQueue::new(workers);
+    let outputs: Arc<Mutex<Vec<(usize, Result<Vec<u8>, String>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let callbacks_done = Arc::new(AtomicUsize::new(0));
+    let mut ids = Vec::new();
+    let started = Instant::now();
+    for job_idx in 0..jobs {
+        let (data, info, pool, outputs, callbacks) = (
+            data.clone(),
+            Arc::clone(&info),
+            pool.clone(),
+            Arc::clone(&outputs),
+            Arc::clone(&callbacks_done),
+        );
+        let id = queue
+            .submit(
+                move || {
+                    let outcome = decode_job_pooled(&data, &info, downscale, &pool);
+                    outputs.lock().unwrap().push((job_idx, outcome));
+                    TaskOutcome::Done
+                },
+                move |_id, _outcome| {
+                    callbacks.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .map_err(|e| format!("submit {job_idx}: {e:?}"))?;
+        ids.push(id);
+    }
+    let mut failures = 0usize;
+    for (slot, id) in ids.iter().enumerate() {
+        match queue.wait(*id, PollTimeout::Ms(8000)) {
+            Some(TaskOutcome::Done) => {}
+            other => {
+                println!("job {slot}: task outcome {other:?}");
+                failures += 1;
+            }
+        }
+    }
+    let per_job_ms = us(started.elapsed()) / 1000.0 / jobs as f64;
+    let collected = std::mem::take(&mut *outputs.lock().unwrap());
+    if collected.len() != jobs {
+        println!(
+            "async-demo: only {} of {jobs} jobs reported",
+            collected.len()
+        );
+        failures += jobs - collected.len();
+    }
+    let mut identical = 0usize;
+    for (job_idx, outcome) in collected.iter() {
+        match outcome {
+            Ok(frame) if *frame == reference => {
+                identical += 1;
+                println!("job {job_idx}: identical to sync ({} bytes)", frame.len())
+            }
+            Ok(frame) => {
+                println!(
+                    "job {job_idx}: DIFFERS from sync ({} vs {} bytes)",
+                    frame.len(),
+                    reference.len()
+                );
+                failures += 1;
+            }
+            Err(e) => {
+                println!("job {job_idx}: failed: {e}");
+                failures += 1;
+            }
+        }
+    }
+    let stats = pool.stats();
+    println!(
+        "async-demo: {jobs} jobs, {workers} workers, {per_job_ms:.3} ms/job; \
+         identical={identical} callbacks={}",
+        callbacks_done.load(Ordering::SeqCst)
+    );
+    println!(
+        "async-demo: pool slots={} cached={} in_use={} allocations={}",
+        stats.slots, stats.cached, stats.in_use, stats.allocations
+    );
+    if !out_path.is_empty() {
+        // Job 0's frame on disk so an external md5 can check the whole
+        // async story against the `decode` subcommand's sync output.
+        for (job_idx, outcome) in collected.iter() {
+            if *job_idx == 0 {
+                if let Ok(frame) = outcome {
+                    std::fs::write(out_path, frame).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    if failures != 0 {
+        return Err(format!("{failures} jobs disagreed with the sync path"));
+    }
+    Ok(reference.len())
+}
+
 fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
     let src = std::fs::read(path).expect("read source");
     assert_eq!(src.len(), sw * sh * 3, "source size mismatch");
@@ -465,6 +680,20 @@ fn main() {
                 1000.0 / tot
             ),
             Err(e) => println!("pipeline failed: {e}"),
+        }
+        return;
+    }
+    if args.len() > 1 && args[1] == "async-demo" {
+        let path = args.get(2).map(|s| s.as_str()).unwrap_or("frame.jpg");
+        let jobs: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(6);
+        let workers: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(3);
+        let out = args.get(5).map(|s| s.as_str()).unwrap_or("");
+        match async_demo(path, jobs, workers, out) {
+            Ok(n) => println!("async-demo: PASS ({jobs} jobs x {n} bytes all match)"),
+            Err(e) => {
+                println!("async-demo: FAIL {e}");
+                std::process::exit(1);
+            }
         }
         return;
     }

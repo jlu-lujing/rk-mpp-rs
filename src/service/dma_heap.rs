@@ -40,6 +40,14 @@ pub struct DmaBuf {
     ptr: *mut u8,
 }
 
+// A dma-buf fd and its mapping have no thread affinity: ownership of the
+// whole buffer can move to another thread, and the `DMA_BUF_SYNC_*` ioctls
+// only require the fd. Exclusive access is still enforced by the borrow
+// checker (`as_mut_slice` takes `&mut self`), so the buffer is `Send` but
+// deliberately *not* `Sync`. This is what lets the framework hand pooled
+// buffers to task-queue worker threads.
+unsafe impl Send for DmaBuf {}
+
 impl DmaBuf {
     /// Allocate `len` bytes from a dma-heap and map them into our address space.
     pub fn alloc(heap: &str, len: usize, cached: bool) -> io::Result<Self> {
