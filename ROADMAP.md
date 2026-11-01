@@ -49,8 +49,8 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving) - with zero non-address register differences in all seven sections; scene detection, CBR/VBR, SEI and ROI remain** |
-| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 IDR is a size-parameterised replay of a recorded VEPU580 register image (see the encoder note below), so rate control, profile, level, GOP and P slices are all still frozen; H.265 encode pending** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections; rate control, scene detection and ROI remain** |
+| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for rate control, level and the CIME/RIME corner of section 3 (see the encoder notes below); H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
@@ -512,8 +512,10 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       including non-16-aligned crops. Every SPS/PPS/IDR NAL is byte-identical
       to a freshly generated C MPP golden, deterministic across repeated runs,
       and independently decodes with at least 45 dB plane PSNR
-- [ ] H.264 (rkvenc): P frames/DPB, SEI, CBR/VBR, QP map, ROI, GDR, deblock,
-      slice split, Main/High profiles and widths above 4096
+- [ ] H.264 (rkvenc): rate control beyond fixed QP, QP map, ROI, GDR, deblock
+      fine tuning, slice split and widths above 4096. P pictures, the DPB, the SEI
+      NAL units and the Baseline/Main/High profiles are done, each in its own entry
+      below; the scene detector and the >4096-pixel CIME lines are the open items
 - [ ] H.265 (rkvenc): same plus tiles/WPP, SAO
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
@@ -723,11 +725,64 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       tracer prints `words=<count>` before the values and the extractor parsed the
       count as data; the fixture's own header now records that, since the mistake
       was invisible everywhere else it could have been caught.
+- [x] **The two IDR user-data SEI NAL units belong to the access unit, not to
+      the harness.** Step 17 of `mpp/codec/mpp_enc_impl.cpp` fills them at the
+      default `MPP_ENC_SEI_MODE_ONE_SEQ`: a `uuid_version` NAL carrying the
+      library's build string and a `uuid_rc_cfg` NAL carrying a rendering of the
+      rate-control configuration (`update_rc_cfg_log`, `mpp_enc_impl.cpp:1375`).
+      The C harness therefore writes them into the very files the encoder matrix
+      is compared against, and skipping NAL type 6 - what the first comparison
+      script did - compared a stream MPP does not produce.
+      `src/codec/h264/sei.rs` frames them as `h264e_sei_to_packet` does (four-byte
+      start code, disposable NAL header, payload type and size in `0xff`
+      continuation form, the 16-byte UUID, the payload, `rbsp_trailing_bits`,
+      escaped on the way from RBSP to NAL) and renders the rc line field for
+      field. Five unit tests, of which two compare a whole NAL byte-for-byte with
+      one captured from the C encoder on t6 - at 320x240 and again at 64x64, plus
+      the `0xff`-continuation and emulation-prevention rules.
+      One thing is deliberately not imitated: a version SEI's payload is the
+      build identity of whichever encoder produced it, and MPP writes its own
+      `git log` line there. Ours says `rk-mpp-rs 0.1.0 VEPU580 H.264 qp N gop N`,
+      so that NAL is compared for framing - NAL header, payload type, the size in
+      continuation form, the UUID, the trailing byte, and that the size accounts
+      for exactly uuid + text + trailing - and not for text. Every other NAL in
+      the access unit, the rc-cfg SEI included, is byte-compared.
+      Both bugs this found were in the check rather than the driver. The NAL
+      header was composed as a bitwise or of the *values*, so `nal_ref_idc` 5
+      against `nal_unit_type` 6 produced a 7: an IDR slice header to any decoder
+      reading it. And the size self-consistency check ran over our stream while
+      being labelled the C one, so it could never fail on the side it claimed to
+      verify.
+      The bit rate numbers inside the rc-cfg SEI turned out not to be free of
+      rules either. `mpi_enc_test` derives an unset `-bps` as
+      `width * height / 8 * fps` and pushes it in every rate-control mode,
+      fixed QP included, so the reference line reads `b:15360` at 64x64 and
+      `b:288000` at 320x240; hard-coding one size's value passed at 320x240 and
+      failed at 64x64. `encoder::default_bps_target` reproduces the derivation,
+      and the bounds stay at `h264e_api_v2.c`'s "2Mbps +-25 %" - 1 500 000 to
+      2 500 000 - which is what MPP's SEI shows on a caller that never set them,
+      because the fixed-QP branch of the harness sets no bounds at all.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
       fixed-QP path leaves at zero, so it is the next thing to generate. It needs
       MPP's rate-control loop (`mpp/codec/rc/`) behind it, not just the registers.
+      Measured so far, so the size of it is known rather than guessed. The SEI's
+      own `default:` prefix names the implementation: `h264e_rc.c` registers
+      `default_h264e` as a `RcImplApi` over `rc_model_v2.c`, so the loop to port is
+      those 1733 lines plus the `MppDataV2` sliding-window helper
+      (`rc_base.h`, `rc_data*.cpp`) and the `rc.cpp` / `rc_impl.cpp` dispatch that
+      calls `start` / `end` / `hal_start` / `hal_end` around each job - about 2.9k
+      lines of the 2024-04 vintage, which is not the file in `refs/mpp`: the two
+      copies of `rc_model_v2.c` differ by 310 lines, so master is a guide and the
+      board's `/tmp/mpp-old` is the oracle. Two rules from the harness fall inside
+      this crate's boundary too: the unset-`-bps` derivation described above, and
+      the per-mode bounds (`bps * 17 / 16` with `bps * 15 / 16` on CBR, the same
+      top with `bps / 16` on VBR and AVBR, nothing on fixed QP).
+      The model is not the last word in the register file either: `check_re_enc`
+      can raise the QP and ask for the *same* picture again, which the current
+      single-shot submit path has no way to express, so rate control also pulls in
+      the re-encode loop.
 - [ ] rkvenc supports one live session per process here. The two ignored encoder
       tests pass serially and disagree with the goldens when cargo runs them as two
       threads, which is `setup_ext_line_bufs` programming a shared system-controller
@@ -768,7 +823,7 @@ pipeline uses.
 
 ## Verification
 
-- Tests: `cargo test --all-targets` (322 unit + 88 integration, eleven ignored
+- Tests: `cargo test --all-targets` (337 unit + 88 integration, eleven ignored
   board-only tests: parsers, AV1 OBU/frame-header/CDF/PicParams snapshots,
   global-motion reconstruction, tile ranges and packet assembly, POC types
   0/1/2, DPB/MMCO/RPS, registers,

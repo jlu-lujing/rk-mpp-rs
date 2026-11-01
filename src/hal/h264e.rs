@@ -16,6 +16,7 @@
 //! what the reference writes there for fixed QP.
 
 use crate::codec::h264::encoder::{self, EncoderConfig};
+use crate::codec::h264::sei;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
@@ -365,7 +366,36 @@ impl Vepu580H264 {
         &self.config
     }
 
+    /// The prefix an IDR carries: SPS, PPS, then the two user-data SEI NALUs.
+    ///
+    /// Step 17 of `mpp_enc_impl.cpp` puts `uuid_version` and then `uuid_rc_cfg`
+    /// ahead of every IDR when the SEI mode is `MPP_ENC_SEI_MODE_ONE_SEQ`, which
+    /// is what `mpp_enc_v2.cpp` initialises it to. Under fixed QP neither string
+    /// affects one coded bit, but both are in the access unit MPP produces, so
+    /// leaving them out would make this driver's output a different stream from
+    /// the one being compared against.
     pub fn headers(&self) -> Result<Vec<u8>, String> {
+        let mut out = self.parameter_sets()?;
+        out.extend(sei::user_data(
+            &sei::UUID_VERSION,
+            version_info(&self.config).as_bytes(),
+        ));
+        out.extend(sei::user_data(
+            &sei::UUID_RC_CFG,
+            sei::rc_cfg_line(&sei::RcCfgLine::fixqp(
+                i32::from(self.config.qp_init),
+                self.config.bps_target,
+                self.config.bps_min,
+                self.config.bps_max,
+                i64::from(self.config.gop),
+            ))
+            .as_bytes(),
+        ));
+        Ok(out)
+    }
+
+    /// The SPS and PPS for the current configuration.
+    fn parameter_sets(&self) -> Result<Vec<u8>, String> {
         encoder::build_headers(&self.config).map_err(|e| e.to_string())
     }
 
@@ -1843,4 +1873,17 @@ mod tests {
         assert_eq!(read(&high, &vepu580_regs::H264_SYNT_PPS_TRNS_8X8), 1);
         assert_eq!(read(&high, &vepu580_regs::H264_SYNT_PPS_ETPY_MODE), 1);
     }
+}
+
+/// The string MPP would fill with its own `git log` line. Ours says what it is:
+/// the framing, UUID, placement and count match MPP's, the content does not
+/// borrow another project's build identity.
+pub fn version_info(config: &EncoderConfig) -> String {
+    format!(
+        "{} {} VEPU580 H.264 qp {} gop {}",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        config.qp_init,
+        config.gop
+    )
 }

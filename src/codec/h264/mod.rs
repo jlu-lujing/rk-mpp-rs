@@ -12,6 +12,7 @@ pub mod encoder;
 pub mod hw;
 pub mod parser;
 pub mod regs;
+pub mod sei;
 
 pub use decoder::{sort_pictures_by_poc, Decoder, Picture};
 pub use dpb::{Dpb, FrameStore};

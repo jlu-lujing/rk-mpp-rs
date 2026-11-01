@@ -46,9 +46,38 @@ pub struct EncoderConfig {
     pub transform_8x8: bool,
     pub chroma_qp_index_offset: i8,
     pub second_chroma_qp_index_offset: i8,
+    /// Bit rate figures, carried into the `uuid_rc_cfg` SEI today and into the
+    /// rate-control registers once M7's RC model lands. MPP writes them into that
+    /// SEI whatever the mode, so they are carried from the start rather than
+    /// filled with an invented constant later.
+    ///
+    /// The three defaults are `h264e_api_v2.c`'s "2Mbps +-25 %": the H.264
+    /// encoder API initialises `bps_target` to 2 000 000 and derives the bounds
+    /// as `* 5 / 4` and `* 3 / 4`. They are the values a caller gets for not
+    /// asking, and they are what MPP's own SEI shows when the harness never set
+    /// bounds - which the fixed-QP comparison does.
+    pub bps_target: i64,
+    pub bps_min: i64,
+    pub bps_max: i64,
     pub fps_num: u32,
     pub fps_den: u32,
     pub vui: bool,
+}
+
+/// The bit rate target a caller that says nothing gets.
+///
+/// `mpi_enc_test` fills an unset `-bps` with
+/// `p->width * p->height / 8 * (fps_out_num / fps_out_den)` and pushes it into
+/// `rc:bps_target` for every rate-control mode, fixed QP included (`test/
+/// mpi_enc_test.c`). Fixed QP ignores the target for quantisation but still
+/// prints it into the `uuid_rc_cfg` SEI, so a stream compared against that
+/// harness has to carry the same derived number.
+///
+/// The division comes before the multiplication, as it does there: at 64x64/30
+/// that order yields 15360, and `(64 * 64 * 30) / 8` would yield the same only
+/// until a size where truncation differs.
+pub fn default_bps_target(width: usize, height: usize, fps: u32) -> i64 {
+    (width * height / 8 * usize::try_from(fps).unwrap()) as i64
 }
 
 impl EncoderConfig {
@@ -69,6 +98,9 @@ impl EncoderConfig {
             transform_8x8: false,
             chroma_qp_index_offset: -6,
             second_chroma_qp_index_offset: -6,
+            bps_target: 2_000_000,
+            bps_min: 1_500_000,
+            bps_max: 2_500_000,
             fps_num: 30,
             fps_den: 1,
             vui: true,

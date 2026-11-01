@@ -9,7 +9,8 @@
 # why they have to be source lines.
 #
 # `mpi_enc_test` also inserts user-data SEI NAL units of its own, which are not
-# encoder output, so the compare is per NAL unit and skips type 6.
+# encoder output. The compare covers the SEI NALUs too, as they are put
+# there by mpp_enc_impl.cpp itself; see compare_streams.py.
 #
 # Only sizes whose width and height are multiples of 16 are byte-compared.
 # `mpi_enc_test` seeks raw NV12 by width and ignores `-hstride`, so a
@@ -31,6 +32,10 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
   ssh t6 'tar -xf - -C ~/rk-mpp-rs'
 ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
+# No `-bps` on either side: the C harness derives a bit rate target from the
+# frame size when the option is absent, and that number is printed into the
+# uuid_rc_cfg SEI even under fixed QP, so letting both sides derive it tests the
+# derivation instead of papering over it with one size's value.
 # ONLY=sizes|gop runs one phase; the sizes phase rebuilds the reference harness
 # per profile and takes minutes, so the GOP phase can be checked alone.
 only="${ONLY:-all}"
@@ -64,37 +69,13 @@ configure_reference_profile() {
           make -C $mpp_ref/build -j8 mpi_enc_test" >/dev/null 2>&1
 }
 
-# compare NAL units, ignoring the harness' own SEI
+# Compare every NAL unit, SEI ones included. `mpi_enc_impl.cpp` step 17 puts a
+# uuid_version and a uuid_rc_cfg user-data SEI ahead of every IDR, so they are
+# part of the access unit; only the version SEI is compared as a frame, since its
+# payload is the build identity of whichever encoder ran.
 compare() {
-  python3 - "$1" "$2" <<'PY'
-import re, sys
-
-def nals(path):
-    data = open(path, 'rb').read()
-    pos = [m.start() for m in re.finditer(b'\x00\x00\x00\x01', data)] + [len(data)]
-    out = {}
-    for k in range(len(pos) - 1):
-        body = data[pos[k] + 4:pos[k + 1]]
-        if not body:
-            continue
-        unit = body[0] & 0x1f
-        if unit == 6:
-            continue
-        out.setdefault(unit, []).append(body)
-    return out
-
-c, r = nals('/tmp/' + sys.argv[1]), nals('/tmp/' + sys.argv[2])
-if set(c) != set(r):
-    print(f"    NAL types differ: C {sorted(c)} vs ours {sorted(r)}")
-    sys.exit(1)
-for unit in sorted(c):
-    for a, b in zip(c[unit], r[unit]):
-        if a != b:
-            first = next(i for i, (x, y) in enumerate(zip(a, b)) if x != y)
-            print(f"    NAL type {unit} differs at byte {first} ({len(a)} vs {len(b)})")
-            sys.exit(1)
-sys.exit(0)
-PY
+  scp -q scripts/compare_streams.py t6:/tmp/ 2>/dev/null
+  ssh t6 "python3 /tmp/compare_streams.py /tmp/$1 /tmp/$2"
 }
 
 if [ "$only" = all ] || [ "$only" = sizes ]; then
@@ -114,7 +95,7 @@ for size in 64x64 320x240 640x480 1280x720; do
           >/dev/null 2>&1; then
         printf 'FAIL %-34s (reference encode failed)\n' "$tag"; fail=1; continue
       fi
-      if ! ssh t6 "cd ~/rk-mpp-rs && timeout 120 sudo ./target/release/rk-mpp-rs h264-enc $frame $rust_out $width $height $qp $profile" \
+      if ! ssh t6 "cd ~/rk-mpp-rs && timeout 120 sudo ./target/release/rk-mpp-rs h264-enc $frame $rust_out $width $height $qp $profile 1 60" \
           >/dev/null 2>&1; then
         printf 'FAIL %-34s (our encode failed)\n' "$tag"; fail=1; continue
       fi
@@ -154,7 +135,7 @@ for fixture in "$still6 still" "$mv_fixture moving"; do
       printf 'FAIL %-12s %df (reference encode failed)\n' "$label" "$n"; fail=1; continue
     fi
     if ! ssh t6 "cd ~/rk-mpp-rs && timeout 180 sudo ./target/release/rk-mpp-rs \
-        h264-enc $src $rust_out 320 240 26 baseline $n 120" >/dev/null 2>&1; then
+        h264-enc $src $rust_out 320 240 26 baseline $n 60" >/dev/null 2>&1; then
       printf 'FAIL %-12s %df (our encode failed)\n' "$label" "$n"; fail=1; continue
     fi
     scp -q t6:"$c_out" t6:"$rust_out" /tmp/ 2>/dev/null
