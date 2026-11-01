@@ -87,6 +87,57 @@ pub struct EncoderConfig {
     /// `roi_qthd` rows stay the picture-wide bounds they are in every stream
     /// verified so far.
     pub rois: Vec<RoiRegion>,
+    /// GDR / progressive intra refresh, the three `MppEncRcCfg` fields
+    /// `refresh_en` / `refresh_mode` / `refresh_num`.
+    ///
+    /// With `gdr` on the reference does what `mpp_enc_refs.cpp` says: the IGOP
+    /// no longer forces an IDR (`cleanup_cpb` is skipped while `refresh_length`
+    /// is set), and instead the first `refresh_length` pictures of every IGOP
+    /// after the first code a sliding force-intra band, `refresh_num` macroblock
+    /// rows (`Row`) or columns (`Col`) tall, through the ROI base table. The
+    /// length itself is not caller data: `h264e_proc_cfg` derives it as
+    /// `(mb_lines + refresh_num - 1) / refresh_num` over the coded macroblock
+    /// lines along the refresh axis, capped at the GOP.
+    pub gdr: bool,
+    pub gdr_mode: GdrMode,
+    /// `refresh_num`: the rows or columns refreshed per picture. Zero with GDR
+    /// on would divide by zero inside `h264e_proc_cfg`, so it is refused here
+    /// rather than reproduced.
+    pub gdr_num: u32,
+    /// The slice-split pair of `MppEncSliceSplit`, mode and argument. The
+    /// argument is macroblocks per slice for `ByCtu` (`split_arg` in the
+    /// `sli_splt_cnum_m1` register minus one) and a target byte count for
+    /// `ByByte`. `split_out` stays zero - the reference's per-slice output path
+    /// is a poll-with-slice-info loop this synchronous driver does not run, and
+    /// with `split_out` at zero the hardware lays all slices of a picture down
+    /// contiguously in one bitstream buffer, which is what one submit and one
+    /// STATUS length already read back.
+    pub split_mode: SplitMode,
+    pub split_arg: u32,
+}
+
+/// `MppEncRcRefreshMode`, minus `BUTT`: the axis the GDR band advances along.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GdrMode {
+    /// `MPP_ENC_RC_INTRA_REFRESH_ROW`, refresh by macroblock rows.
+    #[default]
+    Row,
+    /// `MPP_ENC_RC_INTRA_REFRESH_COL`, refresh by macroblock columns.
+    Col,
+}
+
+/// `MppEncSplitMode`: what cuts the picture into more than one slice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SplitMode {
+    /// `MPP_ENC_SPLIT_NONE`, one slice per picture.
+    #[default]
+    None,
+    /// `MPP_ENC_SPLIT_BY_BYTE`, `sli_splt_mode = 0`, the `sli_splt_byte` cap.
+    ByByte,
+    /// `MPP_ENC_SPLIT_BY_CTU`, `sli_splt_mode = 1`, `sli_splt_cnum_m1` blocks
+    /// per slice. The name says CTU; the unit is a 16x16 macroblock, as
+    /// `setup_vepu580_split` divides `mb_w * mb_h` by the argument.
+    ByCtu,
 }
 
 /// The bit rate target a caller that says nothing gets.
@@ -176,6 +227,11 @@ impl EncoderConfig {
             deblock_offset_alpha: 0,
             deblock_offset_beta: 0,
             rois: Vec::new(),
+            gdr: false,
+            gdr_mode: GdrMode::Row,
+            gdr_num: 0,
+            split_mode: SplitMode::None,
+            split_arg: 0,
         }
     }
 
@@ -267,7 +323,50 @@ impl EncoderConfig {
                 )));
             }
         }
+        if self.gdr && self.gdr_num == 0 {
+            // `h264e_proc_cfg` divides `(mb_lines + refresh_num - 1)` by
+            // `refresh_num` the moment `refresh_en` is set; the reference would
+            // fault, this port says so instead.
+            return Err(Error("GDR needs a refresh count of at least one".into()));
+        }
+        match self.split_mode {
+            SplitMode::None => {}
+            SplitMode::ByByte if self.split_arg == 0 || self.split_arg > 0x000f_ffff => {
+                // `sli_splt_byte` is twenty bits wide and a zero cap with the
+                // splitter enabled is a request for a slice every byte.
+                return Err(Error(format!(
+                    "slice byte target {} is outside 1..=1048575",
+                    self.split_arg
+                )));
+            }
+            SplitMode::ByCtu if self.split_arg == 0 || self.split_arg > 0x0010_0000 => {
+                // The argument reaches `sli_splt_cnum_m1`, twenty bits, as
+                // `split_arg - 1`.
+                return Err(Error(format!(
+                    "slice macroblock count {} is outside 1..=1048576",
+                    self.split_arg
+                )));
+            }
+            _ => {}
+        }
         Ok(())
+    }
+
+    /// `h264e_proc_cfg`'s derivation of `refresh_length`, the number of
+    /// pictures one GDR sweep takes: the coded macroblock lines along the
+    /// refresh axis divided by the band size, rounded up, capped at the GOP.
+    /// Zero whenever GDR is off.
+    pub fn gdr_refresh_length(&self) -> usize {
+        if !self.gdr || self.gdr_num == 0 {
+            return 0;
+        }
+        let num = self.gdr_num as usize;
+        let lines = match self.gdr_mode {
+            GdrMode::Row => self.coded_height() / 16,
+            GdrMode::Col => self.coded_width() / 16,
+        };
+        let length = (lines + num - 1) / num;
+        length.min(self.gop.max(1) as usize)
     }
 
     pub fn coded_width(&self) -> usize {
