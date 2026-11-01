@@ -905,24 +905,25 @@ impl Vepu580H264 {
         // SPS and PPS precede an IDR only; a P picture rides on the parameters it
         // already established, which is what `mpi_enc_test` streams too.
         //
-        // The GDR exception follows `mpp_enc_proc_encode`: a recovery frame gets
-        // the header prefix and a recovery-point SEI - but only while
-        // `hdr_status` has not recorded a header yet, and nothing in the C clears
-        // that record between the opening IDR and a forced IDR or a reconfigure.
-        // In the steady state a GDR session therefore repeats no prefix at the
-        // sweep boundaries, and neither does this driver; the branch is live only
-        // for a session whose first header is still pending, which on a normal
-        // run the picture-zero IDR has already consumed.
+        // The GDR exception is measured, not inferred: `scripts/board_h264_gdr_vs_mpp.sh`
+        // shows the reference re-prefixing SPS, PPS and a recovery-point SEI (payload
+        // `06 02 24 40`, not the version or rc-cfg SEI) at every intra refresh - the
+        // IGOP boundary that opens the next sweep - while emitting no IDR there. A
+        // `hdr_status` that never re-armed between IGOPs would repeat nothing, which
+        // is what this driver did until that cell said otherwise.
+        let sweep_open = self.config.gdr
+            && self.config.gdr_refresh_length() > 0
+            && state.index > 0
+            && state.index % self.config.gop as usize == 0;
         let headers = if state.is_idr {
             self.hdr_added = true;
             self.headers()?
-        } else if self.config.gdr
-            && state.is_i_recovery
-            && !self.hdr_added
-            && self.config.gdr_refresh_length() > 0
-        {
+        } else if sweep_open {
             self.hdr_added = true;
-            let mut out = self.headers()?;
+            // The measured prefix at a sweep opening is the bare parameter sets
+            // plus the recovery-point SEI - the uuid_version and uuid_rc_cfg
+            // accompany the IDR only, once per session.
+            let mut out = self.parameter_sets()?;
             out.extend(sei::recovery_point(
                 (self.config.gdr_refresh_length() - 1) as u32,
             ));
@@ -2271,6 +2272,14 @@ fn roi_tables(config: &EncoderConfig) -> (Vec<u8>, Vec<u8>) {
 /// first, `refresh_idx * 16 * n - 32` with height `16 * n + 32` against the
 /// first band's `y = 0, h = 16 * n` - are overwritten with `force_intra` set.
 ///
+/// The origin is truncated to `RK_U16` before any arithmetic, because
+/// `MppEncROIRegion.x/.y` *are* `RK_U16`: at `refresh_num == 1` the second band's
+/// `16 * n - 32` is negative, C stores 0xFFF0, and the very same clamp that saves
+/// the bottom-overrun band then leaves an empty range - the picture gets no forced
+/// intra at all, which is what the `row_n1` cell shows byte for byte. Clamping the
+/// signed value instead (so -16 lands on row 0) writes two extra macroblock lines
+/// and costs 836 bytes of difference on that one picture.
+///
 /// `region->quality` and `qp_area_idx` of the C region are dropped along with
 /// the QP table the function never allocates: the refresh path enables
 /// `roi_en`, not `roi_qp_en`, so no QP surface is read and the band records'
@@ -2311,9 +2320,18 @@ fn gdr_base_table(config: &EncoderConfig, refresh_idx: u32) -> Vec<u8> {
         ),
     };
 
-    // `vepu580_h264_set_one_roi`'s block arithmetic: origin divided by 16 with
-    // C's truncation (so the negative `-32` origin lands on -2 and the clamp
-    // pulls it back to 0), extent rounded up, both ends clipped to the grid.
+    // The struct's own width first: whatever the arithmetic produced is stored in 16
+    // unsigned bits, so a negative origin becomes a large positive and the clip
+    // below empties the range instead of pulling it back to the origin.
+    let (region_x, region_y, region_w, region_h) = (
+        u16::try_from(region_x).unwrap_or(region_x as u16) as i32,
+        u16::try_from(region_y).unwrap_or(region_y as u16) as i32,
+        u16::try_from(region_w).unwrap_or(region_w as u16) as i32,
+        u16::try_from(region_h).unwrap_or(region_h as u16) as i32,
+    );
+
+    // `vepu580_h264_set_one_roi`'s block arithmetic: origin divided by 16 with C's
+    // truncation, extent rounded up, both ends clipped to the grid.
     let roi_width = (region_w + 15) / 16;
     let roi_height = (region_h + 15) / 16;
     let pos_x_init = region_x / 16;
@@ -3673,6 +3691,50 @@ mod tests {
         assert_eq!(record(&fourth, 3, 15), 1 << 62);
         assert_eq!(record(&fourth, 4, 0), (1 << 61) | (1 << 62));
         assert_eq!(record(&fourth, 4, 19), (1 << 61) | (1 << 62));
+    }
+
+    /// `refresh_num == 1` is the corner where `16 * n - 32` goes negative, and the
+    /// answer follows from `MppEncROIRegion.y` being `RK_U16`: C stores 0xFFF0, the
+    /// clip then empties the band, and the picture forces nothing. Clamping the
+    /// signed -16 up to row 0 instead forces two macroblock lines, which is the 836
+    /// bytes the `row_n1` board cell caught (1098 against the reference's 262).
+    #[test]
+    fn gdr_single_line_refresh_drops_the_wrapping_origin_band() {
+        let record = |table: &[u8], row: usize, col: usize| -> u64 {
+            let index = row * 20 + col;
+            u64::from_le_bytes(table[index * 8..index * 8 + 8].try_into().unwrap())
+        };
+        let band: u64 = (1 << 61) | (1 << 62);
+        let base: u64 = 1 << 62;
+
+        // Band 0: y = 0, h = 16 -> row 0 and nothing below it.
+        let rows = gdr_config(GdrMode::Row, 1, 60);
+        let first = gdr_base_table(&rows, 0);
+        assert_eq!(record(&first, 0, 0), band);
+        assert_eq!(record(&first, 0, 19), band);
+        assert_eq!(record(&first, 1, 0), base, "one line a picture");
+
+        // Band 1: y = 16 - 32 = -16 -> 0xFFF0 -> an empty range over the grid.
+        let second = gdr_base_table(&rows, 1);
+        for row in 0..5 {
+            for col in [0usize, 7, 19] {
+                assert_eq!(record(&second, row, col), base, "row {row} col {col}");
+            }
+        }
+
+        // Band 2: y = 32 - 32 = 0 -> a plain band, h = 48 -> rows 0..3.
+        let third = gdr_base_table(&rows, 2);
+        for row in 0..3 {
+            assert_eq!(record(&third, row, 12), band, "row {row}");
+        }
+        assert_eq!(record(&third, 3, 12), base);
+
+        // Column mode is the same rule sideways.
+        let cols = gdr_config(GdrMode::Col, 1, 60);
+        let second_col = gdr_base_table(&cols, 1);
+        for row in 0..5 {
+            assert_eq!(record(&second_col, row, 0), base, "col refresh, band 1");
+        }
     }
 
     /// Column refresh is the row rule turned on its side: the band spans the

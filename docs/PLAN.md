@@ -6,7 +6,7 @@
 > 什么算做完"。
 >
 > 基线：`6029ebe`（2026-11-01）。441 测试通过（353 单元 + 88 集成，11 个板级 ignore），
-> ROADMAP 74 项已勾 / 21 项未勾。码率控制固定 QP / CBR / VBR / AVBR 全部逐 NAL 相同，
+> ROADMAP 75 项已勾 / 20 项未勾。码率控制固定 QP / CBR / VBR / AVBR 全部逐 NAL 相同，
 > 但「逐 NAL 相同」对 P 帧目前只在 320x240 成立（更大尺寸在分歧，W1-19 是 P1 阻断项）。
 > 板上 oracle 与语料已固化到 `~/rk-mpp-oracles`（`scripts/setup_board_refs.sh`）。
 
@@ -178,8 +178,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 - [x] W1-12 QP map / ROI —— 走 `Vepu580RoiH264BsCfg`/`RoiQpCfg` 块记录，不是 `roi_qthd*`
       那八行；板级 2/2 格逐字节。
-- [ ] W1-13 GDR / intra refresh —— 推导 + 5 条宿主单测已落地；板级脚本跑过并**发现分歧**
-      （sweep 处参考会重发 SPS/PPS/recovery-point SEI），正在闭合，未算逐字节。
+- [x] W1-13 GDR / intra refresh —— 板级 4/4 逐字节（row-4 / col-4 / row-8 / row-1）。
+      两个只有上板才能定的行为：sweep 处参考重发 SPS/PPS + recovery-point SEI；
+      `refresh_num == 1` 时 band 起点经 `RK_U16` 截断为 0xFFF0 → 该帧不强制 intra。
 - [x] W1-14 deblock 细调 —— 含「参考不写 beta」这个 quirk；板级三格逐字节。
 - [~] W1-15 slice split —— 3 条宿主单测；`board_h264_slice_vs_mpp.sh` 结果未记录。
 - [ ] W1-16 hier QP / SMART_P（`hier_qp_cfg`、`vgop`、`vi_bit` 窗口）

@@ -59,7 +59,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 only (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR has a divergence found by its board script and is being closed, slice split rests on host evidence only, and the >4096 CIME lines are wired but undriven. P pictures beyond 320x240 still diverge from the reference - open, and it bounds every byte-exact claim above** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 only (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split rests on host evidence only, and the >4096 CIME lines are wired but undriven. P pictures beyond 320x240 still diverge from the reference - open, and it bounds every byte-exact claim above** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode started - VPS/SPS/PPS written and parsed back, and a derived (not replayed) IDR register image, 23 host tests, one ignored board test; not submit-capable until a reference H.265 job is captured** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here - its deinterlace HAL, session and CLI have landed on host field evidence, with no recorded board run, and scale/crop are untouched. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
@@ -614,20 +614,34 @@ in what order the evidence gets produced.
        testsrc to testsrc2 mid-clip, eight fixed-QP frames: the whole stream
        byte-identical to the reference through the cut. IPC scene mode is not
        exposed on the CLI; only the default mode is wired and compared.
- - [ ] **GDR / intra refresh derives from the reference's own arithmetic - host
-       evidence so far.** `apply_gdr` carries the refresh length derivation (rows
-       per frame, capped by the coded height), the row bands that slide with a
-       two-line overlap, the column bands that span the height, the `roi_*` block
-       records the encoder reads back, the search-axis clamp a refresh frame
-       applies, and the reference's own deferral of the window past the first
-       `igop`. Five host tests (`gdr_*`) pin those five behaviours.
-       `scripts/board_h264_gdr_vs_mpp.sh` is the board comparison, and it has run: it
-       found the reference re-prefixing SPS, PPS and a recovery-point SEI at each
-       sweep-opening intra refresh where this driver repeated nothing, on the reading
-       that `hdr_status` never re-arms. That cell is being closed as this entry is
-       written - an uncommitted change in the tree, not a commit. Until that fix and a
-       board re-run land, GDR stays open here: divergence found, not byte-exact.
-       board re-run land in a commit.
+ - [x] **GDR / progressive intra refresh is byte-identical to the reference, four
+       cells.** `apply_gdr` carries the refresh length derivation (rows per picture
+       over the coded grid, capped by the GOP), the bands sliding with the two-line
+       overlap, the column bands spanning the height, the `roi_*` block records the
+       encoder reads back, the search-axis clamp a refresh picture takes, and the
+       window's deferral past the first `igop`. Two behaviours only the board could
+       settle:
+
+       *the sweep opening.* The reference re-prefixes SPS, PPS and a
+       `recovery_point` SEI (payload `06 02 24 40`) at every IGOP boundary and
+       emits no IDR there - the reading that a `hdr_status` which never re-arms
+       repeats nothing is what this driver did until that cell said otherwise. The
+       uuid_version and uuid_rc_cfg SEIs still ride with the IDR only, once a
+       session.
+
+       *the `refresh_num == 1` corner.* `MppEncROIRegion.y` is a `RK_U16`, so the
+       second band's `16 * n - 32` is stored as 0xFFF0, not as -16; the clip
+       `vepu580_h264_set_one_roi` applies then leaves an empty range and the
+       picture forces no intra at all. Clamping the signed value to row 0 instead -
+       what this driver did - forces two extra macroblock lines and cost 836 bytes
+       on that one picture (1098 against the reference's 262). Being byte-exact
+       here meant reproducing a 16-bit truncation the C never intended.
+
+       `scripts/board_h264_gdr_vs_mpp.sh` covers row-4, col-4, row-8 and row-1 a
+       picture over 25 frames at a GOP of 12 - two sweeps and an IGOP boundary
+       inside the file - comparing whole files: 4/4 identical, 35 NAL units each.
+       The six fixed-QP GOP cells and the cbr / vbr / avbr cells were re-run after
+       the change and stay byte-identical.
  - [x] **Slice split writes the combinations the C HAL writes - host evidence.**
        `apply_split` covers the supported modes with each mode's field combination
        asserted against `hal_h264e_vepu580.c`, arguments bounded by the fields that
