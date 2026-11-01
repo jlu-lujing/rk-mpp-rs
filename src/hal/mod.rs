@@ -9,6 +9,7 @@ pub mod h264d;
 pub mod h264e;
 mod h264e_vepu580_template;
 pub mod hevc;
+pub mod iep;
 pub mod jpegd;
 pub mod jpege;
 pub mod jpege_tables;
