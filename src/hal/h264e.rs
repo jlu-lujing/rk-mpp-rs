@@ -541,6 +541,28 @@ fn dump_job_registers(job: &Job<'_>, file: &RegisterFile) {
     }
 }
 
+/// `atr_wgt` of `hal_h264e_vepu580_tune.c`: the inter ATR weights per
+/// `scene_motion_flag` row. Rows 0 and 2 are equal, which is why the same fixture
+/// cannot distinguish the two scene modes.
+const ATR_WEIGHTS: [[u32; 9]; 4] = [
+    [22, 19, 16, 22, 19, 18, 22, 19, 16],
+    [19, 19, 19, 19, 19, 19, 19, 19, 19],
+    [22, 19, 16, 22, 19, 18, 22, 19, 16],
+    [20, 20, 20, 20, 20, 20, 20, 20, 20],
+];
+
+/// `cime_multi` and `rime_multi` of the same file.
+const CIME_MULTI: [[u32; 4]; 4] = [[4, 8, 24, 24], [4, 7, 20, 20], [4, 7, 20, 20], [4, 4, 4, 4]];
+const RIME_MULTI: [[u32; 3]; 4] = [[4, 32, 128], [4, 16, 64], [4, 16, 64], [4, 4, 4]];
+
+/// `scene_motion_flag` for a session that has not detected a scene change:
+/// `ap_motion_flag * 2 + curr_scene_motion_flag`, where `ap_motion_flag` is the
+/// scene mode (1 for the default, 0 for IPC) and the current-motion flag is the
+/// detector's output. The detector - `vepu580_h264e_tune_stat_update`, which
+/// reads the block statistics out of the STATUS window - is not ported yet, so
+/// this is the flag's initial value, 0, and the tables are the no-change rows.
+pub const SCENE_MOTION_FLAG_DEFAULT: usize = 2;
+
 /// The chroma KLUT weights of `hal_h264e_vepu580.c`. An I picture loads the
 /// table from word 0 and a P picture from word 4, 24 words each.
 const CHROMA_KLUT_WEIGHT: [u32; 30] = [
@@ -707,10 +729,32 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     // the encoder answers `int_sta = 0x100` instead of encoding - which is what
     // the attempt to clear this bit turned out to be measuring.
     file.set(&vepu580_regs::BASE_ENC_PIC_MEI_STOR, 1)?;
+    file.apply_tune(job)?;
     Ok(file)
 }
 
 impl RegisterFile {
+    /// Write a field that lives in the section-3 tuning window.
+    fn set_param(&mut self, field: &vepu580_regs::Field, value: u32) -> Result<(), String> {
+        let index = field
+            .word
+            .checked_sub(1472)
+            .ok_or_else(|| format!("{} is before section 3", field.name))?;
+        let word = self
+            .param
+            .get_mut(index)
+            .ok_or_else(|| format!("{} is past the captured section 3", field.name))?;
+        let mask = (1u32 << field.width) - 1;
+        if value & !mask != 0 {
+            return Err(format!(
+                "{} takes {} bits, {value} does not fit",
+                field.name, field.width
+            ));
+        }
+        *word = (*word & !(mask << field.shift)) | (value << field.shift);
+        Ok(())
+    }
+
     /// Mutable word of an absolute register index.
     fn rc_klut_word_mut(&mut self, word: usize) -> Result<&mut u32, String> {
         let index = word
@@ -736,6 +780,42 @@ impl RegisterFile {
             let word = self.rc_klut_word_mut(array.word + index / 4)?;
             let shift = (index % 4) * 8;
             *word = (*word & !(0xffu32 << shift)) | (u32::from(*byte) << shift);
+        }
+        Ok(())
+    }
+
+    /// `vepu580_h264e_tune_reg_patch`, the pass that runs last and re-writes the
+    /// inter ATR weights and the search multipliers from the scene tables. The
+    /// current-motion branch is unreachable while the detector is missing, so it
+    /// is not silently dropped - it is here, keyed on a flag that stays 0.
+    fn apply_tune(&mut self, job: &Job<'_>) -> Result<(), String> {
+        if !job.state.is_idr {
+            self.set_atr_weights(&ATR_WEIGHTS[SCENE_MOTION_FLAG_DEFAULT])?;
+        }
+        // The search multipliers the reference re-writes in the same pass
+        // (`cime_multi`, `rime_multi`) are deliberately not reproduced field by
+        // field: that part of section 3 moved between the 2024-04 build this crate
+        // is verified against and current master, and the captured image already
+        // ends up carrying the rows the reference writes there, so those words
+        // match today. Rewriting them from a guessed layout would trade a real
+        // match for a cosmetic one in the port's shape.
+        Ok(())
+    }
+    /// The nine Lvl16 / Lvl8 / Lvl4 ATR weight fields, in declaration order.
+    fn set_atr_weights(&mut self, weights: &[u32; 9]) -> Result<(), String> {
+        let fields = [
+            &vepu580_regs::S3_LVL16_ATR_WGT_LVL16_ATR_WGT0,
+            &vepu580_regs::S3_LVL16_ATR_WGT_LVL16_ATR_WGT1,
+            &vepu580_regs::S3_LVL16_ATR_WGT_LVL16_ATR_WGT2,
+            &vepu580_regs::S3_LVL8_ATR_WGT_LVL8_ATR_WGT0,
+            &vepu580_regs::S3_LVL8_ATR_WGT_LVL8_ATR_WGT1,
+            &vepu580_regs::S3_LVL8_ATR_WGT_LVL8_ATR_WGT2,
+            &vepu580_regs::S3_LVL4_ATR_WGT_LVL4_ATR_WGT0,
+            &vepu580_regs::S3_LVL4_ATR_WGT_LVL4_ATR_WGT1,
+            &vepu580_regs::S3_LVL4_ATR_WGT_LVL4_ATR_WGT2,
+        ];
+        for (field, value) in fields.iter().zip(weights) {
+            self.set_param(field, *value)?;
         }
         Ok(())
     }
@@ -806,6 +886,30 @@ impl RegisterFile {
         let mdst = if state.is_idr { 0 } else { 5 };
         self.set(&vepu580_regs::H264_ME_CFG_PMV_MDST_H, mdst)?;
         self.set(&vepu580_regs::H264_ME_CFG_PMV_MDST_V, mdst)?;
+
+        // The quantisation bias and the ATR thresholds follow the slice type:
+        // `setup_vepu580_rdo_pred` writes one set for an I slice and another for
+        // inter, in the same pass. Taking them from the recorded image instead
+        // gives every P picture the I picture's thresholds, which is how this
+        // driver's P NAL came out five bytes long.
+        let quant_bias_i = if state.is_idr { 683 } else { 583 };
+        self.set_param(&vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_I, quant_bias_i)?;
+        self.set_param(&vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_P, 171)?;
+        let (thd0_0, thd0_1, thd1_2) = if state.is_idr {
+            (1, 4, 36)
+        } else {
+            (4, 16, 81)
+        };
+        self.set_param(&vepu580_regs::S3_ATR_THD0_ATR_THD0, thd0_0)?;
+        self.set_param(&vepu580_regs::S3_ATR_THD0_ATR_THD1, thd0_1)?;
+        self.set_param(&vepu580_regs::S3_ATR_THD1_ATR_THD2, thd1_2)?;
+        self.set_param(&vepu580_regs::S3_ATR_THD1_ATR_THDQP, 45)?;
+        let weights: [u32; 9] = if state.is_idr {
+            [16, 16, 16, 22, 21, 20, 20, 18, 16]
+        } else {
+            [25, 20, 16, 25, 20, 18, 25, 20, 16]
+        };
+        self.set_atr_weights(&weights)?;
         // `setup_vepu580_me` bounds the motion-vector range by the level.
         self.set(
             &vepu580_regs::H264_ME_CFG_MV_LIMIT,
@@ -956,14 +1060,14 @@ fn verified_on_board(config: &EncoderConfig) -> Result<(), String> {
     if config.qp_init > 51 {
         return Err(format!("H.264 QP {} is outside 0..=51", config.qp_init));
     }
-    if config.gop != 1 {
-        return Err(
-            "GOP > 1 encodes P pictures that decode but sit 5 bytes from the reference's; \
-             the last difference is `enc_pic.mei_stor`, which needs the MD-info buffer \
-             described in M7"
-                .into(),
-        );
-    }
+    // GOP > 1 is a verified configuration: a 1-IDR-plus-5-P encode is byte-identical
+    // to the C encoder on the board, on both a still and a moving fixture
+    // (`scripts/board_h264_qp_vs_mpp.sh`). What is *not* ported is the scene-change
+    // detector `vepu580_h264e_tune_stat_update`, which reads the block statistics
+    // out of the STATUS window and, once three consecutive pictures flag large
+    // motion, moves the ATR weights and the quant bias to another row of the same
+    // tables. `scene_motion_flag` is therefore pinned at its initial value; on a
+    // sequence that trips the detector the two encoders would part there.
     Ok(())
 }
 
@@ -1027,7 +1131,7 @@ fn mdinfo_size(config: &EncoderConfig) -> Result<usize, String> {
         .ok_or_else(|| "H.264 motion info size overflow".into())
 }
 
-fn input_size(config: &EncoderConfig) -> Result<usize, String> {
+pub fn input_size(config: &EncoderConfig) -> Result<usize, String> {
     config
         .coded_width()
         .checked_mul(config.coded_height())
@@ -1527,10 +1631,9 @@ mod tests {
         // GOP is a parameter now - a picture after the first is a P slice with the
         // previous reconstruction as its reference. Level is the one property of the
         // recorded image that is still not compared against the C encoder.
-        // A GOP of one keeps every picture an IDR, which is the configuration with
-        // a byte-exact reference. A longer GOP generates fine - see
-        // `p_picture_changes_only_the_fields_the_reference_does` - but the hardware
-        // path holds it back until the P payload matches.
+        // A longer GOP is no longer held back: its P pictures match the reference
+        // byte for byte. `p_picture_changes_only_the_fields_the_reference_does`
+        // pins which fields move between an I picture and an inter one.
         let mut gop = config();
         gop.gop = 30;
         assert!(
@@ -1538,8 +1641,8 @@ mod tests {
             "a longer GOP generates"
         );
         assert!(
-            verified_on_board(&gop).is_err(),
-            "but a longer GOP has no byte-exact reference yet"
+            verified_on_board(&gop).is_ok(),
+            "a longer GOP is byte-identical to the reference on the board"
         );
         let mut level = config();
         level.level_idc = 40;

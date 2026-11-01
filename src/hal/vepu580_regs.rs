@@ -2021,4 +2021,2181 @@ pub const H264_TILE_POS_TILE_Y: Field = Field {
     name: "H264.tile_pos.tile_y",
 };
 
-// 325 fields in total.
+// Vepu580Section3 (hal_h264e_vepu580_reg.h) at absolute word 1472.
+pub const S3_LVL32_INTRA_CST_THD0_LVL4_INTRA_CST_THD0: Field = Field {
+    word: 1472,
+    shift: 0,
+    width: 12,
+    name: "S3.lvl32_intra_CST_THD0.lvl4_intra_cst_thd0",
+};
+pub const S3_LVL32_INTRA_CST_THD0_RESERVE0: Field = Field {
+    word: 1472,
+    shift: 12,
+    width: 4,
+    name: "S3.lvl32_intra_CST_THD0.reserve0",
+};
+pub const S3_LVL32_INTRA_CST_THD0_LVL4_INTRA_CST_THD1: Field = Field {
+    word: 1472,
+    shift: 16,
+    width: 12,
+    name: "S3.lvl32_intra_CST_THD0.lvl4_intra_cst_thd1",
+};
+pub const S3_LVL32_INTRA_CST_THD0_RESERVE1: Field = Field {
+    word: 1472,
+    shift: 28,
+    width: 4,
+    name: "S3.lvl32_intra_CST_THD0.reserve1",
+};
+pub const S3_LVL32_INTRA_CST_THD1_LVL4_INTRA_CST_THD2: Field = Field {
+    word: 1473,
+    shift: 0,
+    width: 12,
+    name: "S3.lvl32_intra_CST_THD1.lvl4_intra_cst_thd2",
+};
+pub const S3_LVL32_INTRA_CST_THD1_RESERVE0: Field = Field {
+    word: 1473,
+    shift: 12,
+    width: 4,
+    name: "S3.lvl32_intra_CST_THD1.reserve0",
+};
+pub const S3_LVL32_INTRA_CST_THD1_LVL4_INTRA_CST_THD3: Field = Field {
+    word: 1473,
+    shift: 16,
+    width: 12,
+    name: "S3.lvl32_intra_CST_THD1.lvl4_intra_cst_thd3",
+};
+pub const S3_LVL32_INTRA_CST_THD1_RESERVE1: Field = Field {
+    word: 1473,
+    shift: 28,
+    width: 4,
+    name: "S3.lvl32_intra_CST_THD1.reserve1",
+};
+pub const S3_LVL16_INTRA_CST_THD0_LVL8_INTRA_CHRM_CST_THD0: Field = Field {
+    word: 1474,
+    shift: 0,
+    width: 12,
+    name: "S3.lvl16_intra_CST_THD0.lvl8_intra_chrm_cst_thd0",
+};
+pub const S3_LVL16_INTRA_CST_THD0_RESERVE0: Field = Field {
+    word: 1474,
+    shift: 12,
+    width: 4,
+    name: "S3.lvl16_intra_CST_THD0.reserve0",
+};
+pub const S3_LVL16_INTRA_CST_THD0_LVL8_INTRA_CHRM_CST_THD1: Field = Field {
+    word: 1474,
+    shift: 16,
+    width: 12,
+    name: "S3.lvl16_intra_CST_THD0.lvl8_intra_chrm_cst_thd1",
+};
+pub const S3_LVL16_INTRA_CST_THD0_RESERVE1: Field = Field {
+    word: 1474,
+    shift: 28,
+    width: 4,
+    name: "S3.lvl16_intra_CST_THD0.reserve1",
+};
+pub const S3_LVL16_INTRA_CST_THD1_LVL8_INTRA_CHRM_CST_THD2: Field = Field {
+    word: 1475,
+    shift: 0,
+    width: 12,
+    name: "S3.lvl16_intra_CST_THD1.lvl8_intra_chrm_cst_thd2",
+};
+pub const S3_LVL16_INTRA_CST_THD1_RESERVE0: Field = Field {
+    word: 1475,
+    shift: 12,
+    width: 4,
+    name: "S3.lvl16_intra_CST_THD1.reserve0",
+};
+pub const S3_LVL16_INTRA_CST_THD1_LVL8_INTRA_CHRM_CST_THD3: Field = Field {
+    word: 1475,
+    shift: 16,
+    width: 12,
+    name: "S3.lvl16_intra_CST_THD1.lvl8_intra_chrm_cst_thd3",
+};
+pub const S3_LVL16_INTRA_CST_THD1_RESERVE1: Field = Field {
+    word: 1475,
+    shift: 28,
+    width: 4,
+    name: "S3.lvl16_intra_CST_THD1.reserve1",
+};
+pub const S3_LVL8_INTRA_CST_THD0_LVL8_INTRA_CST_THD0: Field = Field {
+    word: 1476,
+    shift: 0,
+    width: 12,
+    name: "S3.lvl8_intra_CST_THD0.lvl8_intra_cst_thd0",
+};
+pub const S3_LVL8_INTRA_CST_THD0_RESERVE0: Field = Field {
+    word: 1476,
+    shift: 12,
+    width: 4,
+    name: "S3.lvl8_intra_CST_THD0.reserve0",
+};
+pub const S3_LVL8_INTRA_CST_THD0_LVL8_INTRA_CST_THD1: Field = Field {
+    word: 1476,
+    shift: 16,
+    width: 12,
+    name: "S3.lvl8_intra_CST_THD0.lvl8_intra_cst_thd1",
+};
+pub const S3_LVL8_INTRA_CST_THD0_RESERVE1: Field = Field {
+    word: 1476,
+    shift: 28,
+    width: 4,
+    name: "S3.lvl8_intra_CST_THD0.reserve1",
+};
+pub const S3_LVL8_INTRA_CST_THD1_LVL8_INTRA_CST_THD2: Field = Field {
+    word: 1477,
+    shift: 0,
+    width: 12,
+    name: "S3.lvl8_intra_CST_THD1.lvl8_intra_cst_thd2",
+};
+pub const S3_LVL8_INTRA_CST_THD1_RESERVE0: Field = Field {
+    word: 1477,
+    shift: 12,
+    width: 4,
+    name: "S3.lvl8_intra_CST_THD1.reserve0",
+};
+pub const S3_LVL8_INTRA_CST_THD1_LVL8_INTRA_CST_THD3: Field = Field {
+    word: 1477,
+    shift: 16,
+    width: 12,
+    name: "S3.lvl8_intra_CST_THD1.lvl8_intra_cst_thd3",
+};
+pub const S3_LVL8_INTRA_CST_THD1_RESERVE1: Field = Field {
+    word: 1477,
+    shift: 28,
+    width: 4,
+    name: "S3.lvl8_intra_CST_THD1.reserve1",
+};
+pub const S3_LVL16_INTRA_UL_CST_THD_LVL16_INTRA_UL_CST_THLD: Field = Field {
+    word: 1478,
+    shift: 0,
+    width: 12,
+    name: "S3.lvl16_intra_UL_CST_THD.lvl16_intra_ul_cst_thld",
+};
+pub const S3_LVL16_INTRA_UL_CST_THD_RESERVE0: Field = Field {
+    word: 1478,
+    shift: 12,
+    width: 20,
+    name: "S3.lvl16_intra_UL_CST_THD.reserve0",
+};
+pub const S3_LVL32_INTRA_CST_WGT0_LVL8_INTRA_CST_WGT0: Field = Field {
+    word: 1479,
+    shift: 0,
+    width: 8,
+    name: "S3.lvl32_intra_CST_WGT0.lvl8_intra_cst_wgt0",
+};
+pub const S3_LVL32_INTRA_CST_WGT0_LVL8_INTRA_CST_WGT1: Field = Field {
+    word: 1479,
+    shift: 8,
+    width: 8,
+    name: "S3.lvl32_intra_CST_WGT0.lvl8_intra_cst_wgt1",
+};
+pub const S3_LVL32_INTRA_CST_WGT0_LVL8_INTRA_CST_WGT2: Field = Field {
+    word: 1479,
+    shift: 16,
+    width: 8,
+    name: "S3.lvl32_intra_CST_WGT0.lvl8_intra_cst_wgt2",
+};
+pub const S3_LVL32_INTRA_CST_WGT0_LVL8_INTRA_CST_WGT3: Field = Field {
+    word: 1479,
+    shift: 24,
+    width: 8,
+    name: "S3.lvl32_intra_CST_WGT0.lvl8_intra_cst_wgt3",
+};
+pub const S3_LVL32_INTRA_CST_WGT1_LVL4_INTRA_CST_WGT0: Field = Field {
+    word: 1480,
+    shift: 0,
+    width: 8,
+    name: "S3.lvl32_intra_CST_WGT1.lvl4_intra_cst_wgt0",
+};
+pub const S3_LVL32_INTRA_CST_WGT1_LVL4_INTRA_CST_WGT1: Field = Field {
+    word: 1480,
+    shift: 8,
+    width: 8,
+    name: "S3.lvl32_intra_CST_WGT1.lvl4_intra_cst_wgt1",
+};
+pub const S3_LVL32_INTRA_CST_WGT1_LVL4_INTRA_CST_WGT2: Field = Field {
+    word: 1480,
+    shift: 16,
+    width: 8,
+    name: "S3.lvl32_intra_CST_WGT1.lvl4_intra_cst_wgt2",
+};
+pub const S3_LVL32_INTRA_CST_WGT1_LVL4_INTRA_CST_WGT3: Field = Field {
+    word: 1480,
+    shift: 24,
+    width: 8,
+    name: "S3.lvl32_intra_CST_WGT1.lvl4_intra_cst_wgt3",
+};
+pub const S3_LVL16_INTRA_CST_WGT0_LVL16_INTRA_CST_WGT0: Field = Field {
+    word: 1481,
+    shift: 0,
+    width: 8,
+    name: "S3.lvl16_intra_CST_WGT0.lvl16_intra_cst_wgt0",
+};
+pub const S3_LVL16_INTRA_CST_WGT0_LVL16_INTRA_CST_WGT1: Field = Field {
+    word: 1481,
+    shift: 8,
+    width: 8,
+    name: "S3.lvl16_intra_CST_WGT0.lvl16_intra_cst_wgt1",
+};
+pub const S3_LVL16_INTRA_CST_WGT0_LVL16_INTRA_CST_WGT2: Field = Field {
+    word: 1481,
+    shift: 16,
+    width: 8,
+    name: "S3.lvl16_intra_CST_WGT0.lvl16_intra_cst_wgt2",
+};
+pub const S3_LVL16_INTRA_CST_WGT0_LVL16_INTRA_CST_WGT3: Field = Field {
+    word: 1481,
+    shift: 24,
+    width: 8,
+    name: "S3.lvl16_intra_CST_WGT0.lvl16_intra_cst_wgt3",
+};
+pub const S3_LVL16_INTRA_CST_WGT1_LVL8_INTRA_CHRM_CST_WGT0: Field = Field {
+    word: 1482,
+    shift: 0,
+    width: 8,
+    name: "S3.lvl16_intra_CST_WGT1.lvl8_intra_chrm_cst_wgt0",
+};
+pub const S3_LVL16_INTRA_CST_WGT1_LVL8_INTRA_CHRM_CST_WGT1: Field = Field {
+    word: 1482,
+    shift: 8,
+    width: 8,
+    name: "S3.lvl16_intra_CST_WGT1.lvl8_intra_chrm_cst_wgt1",
+};
+pub const S3_LVL16_INTRA_CST_WGT1_LVL8_INTRA_CHRM_CST_WGT2: Field = Field {
+    word: 1482,
+    shift: 16,
+    width: 8,
+    name: "S3.lvl16_intra_CST_WGT1.lvl8_intra_chrm_cst_wgt2",
+};
+pub const S3_LVL16_INTRA_CST_WGT1_LVL8_INTRA_CHRM_CST_WGT3: Field = Field {
+    word: 1482,
+    shift: 24,
+    width: 8,
+    name: "S3.lvl16_intra_CST_WGT1.lvl8_intra_chrm_cst_wgt3",
+};
+pub const S3_RDO_QUANT_QUANT_F_BIAS_I: Field = Field {
+    word: 1484,
+    shift: 0,
+    width: 10,
+    name: "S3.RDO_QUANT.quant_f_bias_I",
+};
+pub const S3_RDO_QUANT_QUANT_F_BIAS_P: Field = Field {
+    word: 1484,
+    shift: 10,
+    width: 10,
+    name: "S3.RDO_QUANT.quant_f_bias_P",
+};
+pub const S3_RDO_QUANT_RESERVE: Field = Field {
+    word: 1484,
+    shift: 20,
+    width: 12,
+    name: "S3.RDO_QUANT.reserve",
+};
+pub const S3_RESERVED1485_1487: Array = Array {
+    word: 1485,
+    count: 3,
+    elem_bytes: 4,
+    words: 3,
+    name: "S3.reserved1485_1487",
+};
+pub const S3_ATR_THD0_ATR_THD0: Field = Field {
+    word: 1488,
+    shift: 0,
+    width: 12,
+    name: "S3.ATR_THD0.atr_thd0",
+};
+pub const S3_ATR_THD0_RESERVE0: Field = Field {
+    word: 1488,
+    shift: 12,
+    width: 4,
+    name: "S3.ATR_THD0.reserve0",
+};
+pub const S3_ATR_THD0_ATR_THD1: Field = Field {
+    word: 1488,
+    shift: 16,
+    width: 12,
+    name: "S3.ATR_THD0.atr_thd1",
+};
+pub const S3_ATR_THD0_RESERVE1: Field = Field {
+    word: 1488,
+    shift: 28,
+    width: 4,
+    name: "S3.ATR_THD0.reserve1",
+};
+pub const S3_ATR_THD1_ATR_THD2: Field = Field {
+    word: 1489,
+    shift: 0,
+    width: 12,
+    name: "S3.ATR_THD1.atr_thd2",
+};
+pub const S3_ATR_THD1_RESERVE0: Field = Field {
+    word: 1489,
+    shift: 12,
+    width: 4,
+    name: "S3.ATR_THD1.reserve0",
+};
+pub const S3_ATR_THD1_ATR_THDQP: Field = Field {
+    word: 1489,
+    shift: 16,
+    width: 6,
+    name: "S3.ATR_THD1.atr_thdqp",
+};
+pub const S3_ATR_THD1_RESERVE1: Field = Field {
+    word: 1489,
+    shift: 22,
+    width: 10,
+    name: "S3.ATR_THD1.reserve1",
+};
+pub const S3_ATR_THD10_ATR1_THD0: Field = Field {
+    word: 1490,
+    shift: 0,
+    width: 12,
+    name: "S3.ATR_THD10.atr1_thd0",
+};
+pub const S3_ATR_THD10_RESERVE0: Field = Field {
+    word: 1490,
+    shift: 12,
+    width: 4,
+    name: "S3.ATR_THD10.reserve0",
+};
+pub const S3_ATR_THD10_ATR1_THD1: Field = Field {
+    word: 1490,
+    shift: 16,
+    width: 12,
+    name: "S3.ATR_THD10.atr1_thd1",
+};
+pub const S3_ATR_THD10_RESERVE1: Field = Field {
+    word: 1490,
+    shift: 28,
+    width: 4,
+    name: "S3.ATR_THD10.reserve1",
+};
+pub const S3_ATR_THD11_ATR1_THD2: Field = Field {
+    word: 1491,
+    shift: 0,
+    width: 12,
+    name: "S3.ATR_THD11.atr1_thd2",
+};
+pub const S3_ATR_THD11_RESERVE1: Field = Field {
+    word: 1491,
+    shift: 12,
+    width: 20,
+    name: "S3.ATR_THD11.reserve1",
+};
+pub const S3_LVL16_ATR_WGT_LVL16_ATR_WGT0: Field = Field {
+    word: 1492,
+    shift: 0,
+    width: 8,
+    name: "S3.Lvl16_ATR_WGT.lvl16_atr_wgt0",
+};
+pub const S3_LVL16_ATR_WGT_LVL16_ATR_WGT1: Field = Field {
+    word: 1492,
+    shift: 8,
+    width: 8,
+    name: "S3.Lvl16_ATR_WGT.lvl16_atr_wgt1",
+};
+pub const S3_LVL16_ATR_WGT_LVL16_ATR_WGT2: Field = Field {
+    word: 1492,
+    shift: 16,
+    width: 8,
+    name: "S3.Lvl16_ATR_WGT.lvl16_atr_wgt2",
+};
+pub const S3_LVL8_ATR_WGT_LVL8_ATR_WGT0: Field = Field {
+    word: 1493,
+    shift: 0,
+    width: 8,
+    name: "S3.Lvl8_ATR_WGT.lvl8_atr_wgt0",
+};
+pub const S3_LVL8_ATR_WGT_LVL8_ATR_WGT1: Field = Field {
+    word: 1493,
+    shift: 8,
+    width: 8,
+    name: "S3.Lvl8_ATR_WGT.lvl8_atr_wgt1",
+};
+pub const S3_LVL8_ATR_WGT_LVL8_ATR_WGT2: Field = Field {
+    word: 1493,
+    shift: 16,
+    width: 8,
+    name: "S3.Lvl8_ATR_WGT.lvl8_atr_wgt2",
+};
+pub const S3_LVL4_ATR_WGT_LVL4_ATR_WGT0: Field = Field {
+    word: 1494,
+    shift: 0,
+    width: 8,
+    name: "S3.Lvl4_ATR_WGT.lvl4_atr_wgt0",
+};
+pub const S3_LVL4_ATR_WGT_LVL4_ATR_WGT1: Field = Field {
+    word: 1494,
+    shift: 8,
+    width: 8,
+    name: "S3.Lvl4_ATR_WGT.lvl4_atr_wgt1",
+};
+pub const S3_LVL4_ATR_WGT_LVL4_ATR_WGT2: Field = Field {
+    word: 1494,
+    shift: 16,
+    width: 8,
+    name: "S3.Lvl4_ATR_WGT.lvl4_atr_wgt2",
+};
+
+// Vepu580RdoCfg (hal_h264e_vepu580_reg.h) at absolute word 2048.
+pub const RDO_RDO_SQI_CFG_ATF_PSKIP_EN: Field = Field {
+    word: 2048,
+    shift: 0,
+    width: 1,
+    name: "RDO.rdo_sqi_cfg.atf_pskip_en",
+};
+pub const RDO_RDO_B64_INTER_CIME_THD0_CU64_RDO_INTER_CIME_THD0: Field = Field {
+    word: 2049,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_inter_cime_thd0.cu64_rdo_inter_cime_thd0",
+};
+pub const RDO_RDO_B64_INTER_CIME_THD0_CU64_RDO_INTER_CIME_THD1: Field = Field {
+    word: 2049,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_inter_cime_thd0.cu64_rdo_inter_cime_thd1",
+};
+pub const RDO_RDO_B64_INTER_CIME_THD1_CU64_RDO_INTER_CIME_THD2: Field = Field {
+    word: 2050,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_inter_cime_thd1.cu64_rdo_inter_cime_thd2",
+};
+pub const RDO_RDO_B64_INTER_VAR_THD0_CU64_RDO_INTER_VAR_THD00: Field = Field {
+    word: 2051,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_inter_var_thd0.cu64_rdo_inter_var_thd00",
+};
+pub const RDO_RDO_B64_INTER_VAR_THD0_CU64_RDO_INTER_VAR_THD01: Field = Field {
+    word: 2051,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_inter_var_thd0.cu64_rdo_inter_var_thd01",
+};
+pub const RDO_RDO_B64_INTER_VAR_THD1_CU64_RDO_INTER_VAR_THD10: Field = Field {
+    word: 2052,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_inter_var_thd1.cu64_rdo_inter_var_thd10",
+};
+pub const RDO_RDO_B64_INTER_VAR_THD1_CU64_RDO_INTER_VAR_THD11: Field = Field {
+    word: 2052,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_inter_var_thd1.cu64_rdo_inter_var_thd11",
+};
+pub const RDO_RDO_B64_INTER_VAR_THD2_CU64_RDO_INTER_VAR_THD20: Field = Field {
+    word: 2053,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_inter_var_thd2.cu64_rdo_inter_var_thd20",
+};
+pub const RDO_RDO_B64_INTER_VAR_THD2_CU64_RDO_INTER_VAR_THD21: Field = Field {
+    word: 2053,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_inter_var_thd2.cu64_rdo_inter_var_thd21",
+};
+pub const RDO_RDO_B64_INTER_VAR_THD3_CU64_RDO_INTER_VAR_THD30: Field = Field {
+    word: 2054,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_inter_var_thd3.cu64_rdo_inter_var_thd30",
+};
+pub const RDO_RDO_B64_INTER_VAR_THD3_CU64_RDO_INTER_VAR_THD31: Field = Field {
+    word: 2054,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_inter_var_thd3.cu64_rdo_inter_var_thd31",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT0_CU64_RDO_INTER_ATF_WGT00: Field = Field {
+    word: 2055,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt0.cu64_rdo_inter_atf_wgt00",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT0_CU64_RDO_INTER_ATF_WGT01: Field = Field {
+    word: 2055,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt0.cu64_rdo_inter_atf_wgt01",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT0_CU64_RDO_INTER_ATF_WGT02: Field = Field {
+    word: 2055,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt0.cu64_rdo_inter_atf_wgt02",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT1_CU64_RDO_INTER_ATF_WGT10: Field = Field {
+    word: 2056,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt1.cu64_rdo_inter_atf_wgt10",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT1_CU64_RDO_INTER_ATF_WGT11: Field = Field {
+    word: 2056,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt1.cu64_rdo_inter_atf_wgt11",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT1_CU64_RDO_INTER_ATF_WGT12: Field = Field {
+    word: 2056,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt1.cu64_rdo_inter_atf_wgt12",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT2_CU64_RDO_INTER_ATF_WGT20: Field = Field {
+    word: 2057,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt2.cu64_rdo_inter_atf_wgt20",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT2_CU64_RDO_INTER_ATF_WGT21: Field = Field {
+    word: 2057,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt2.cu64_rdo_inter_atf_wgt21",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT2_CU64_RDO_INTER_ATF_WGT22: Field = Field {
+    word: 2057,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt2.cu64_rdo_inter_atf_wgt22",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT3_CU64_RDO_INTER_ATF_WGT30: Field = Field {
+    word: 2058,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt3.cu64_rdo_inter_atf_wgt30",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT3_CU64_RDO_INTER_ATF_WGT31: Field = Field {
+    word: 2058,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt3.cu64_rdo_inter_atf_wgt31",
+};
+pub const RDO_RDO_B64_INTER_ATF_WGT3_CU64_RDO_INTER_ATF_WGT32: Field = Field {
+    word: 2058,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b64_inter_atf_wgt3.cu64_rdo_inter_atf_wgt32",
+};
+pub const RDO_RDO_B64_SKIP_CIME_THD0_CU64_RDO_SKIP_CIME_THD0: Field = Field {
+    word: 2059,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_skip_cime_thd0.cu64_rdo_skip_cime_thd0",
+};
+pub const RDO_RDO_B64_SKIP_CIME_THD0_CU64_RDO_SKIP_CIME_THD1: Field = Field {
+    word: 2059,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_skip_cime_thd0.cu64_rdo_skip_cime_thd1",
+};
+pub const RDO_RDO_B64_SKIP_CIME_THD1_CU64_RDO_SKIP_CIME_THD2: Field = Field {
+    word: 2060,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_skip_cime_thd1.cu64_rdo_skip_cime_thd2",
+};
+pub const RDO_RDO_B64_SKIP_CIME_THD1_CU64_RDO_SKIP_CIME_THD3: Field = Field {
+    word: 2060,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_skip_cime_thd1.cu64_rdo_skip_cime_thd3",
+};
+pub const RDO_RDO_B64_SKIP_VAR_THD0_CU64_RDO_SKIP_VAR_THD10: Field = Field {
+    word: 2061,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_skip_var_thd0.cu64_rdo_skip_var_thd10",
+};
+pub const RDO_RDO_B64_SKIP_VAR_THD0_CU64_RDO_SKIP_VAR_THD11: Field = Field {
+    word: 2061,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_skip_var_thd0.cu64_rdo_skip_var_thd11",
+};
+pub const RDO_RDO_B64_SKIP_VAR_THD1_CU64_RDO_SKIP_VAR_THD20: Field = Field {
+    word: 2062,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_skip_var_thd1.cu64_rdo_skip_var_thd20",
+};
+pub const RDO_RDO_B64_SKIP_VAR_THD1_CU64_RDO_SKIP_VAR_THD21: Field = Field {
+    word: 2062,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_skip_var_thd1.cu64_rdo_skip_var_thd21",
+};
+pub const RDO_RDO_B64_SKIP_VAR_THD2_CU64_RDO_SKIP_VAR_THD30: Field = Field {
+    word: 2063,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_skip_var_thd2.cu64_rdo_skip_var_thd30",
+};
+pub const RDO_RDO_B64_SKIP_VAR_THD2_CU64_RDO_SKIP_VAR_THD31: Field = Field {
+    word: 2063,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_skip_var_thd2.cu64_rdo_skip_var_thd31",
+};
+pub const RDO_RDO_B64_SKIP_VAR_THD3_CU64_RDO_SKIP_VAR_THD40: Field = Field {
+    word: 2064,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b64_skip_var_thd3.cu64_rdo_skip_var_thd40",
+};
+pub const RDO_RDO_B64_SKIP_VAR_THD3_CU64_RDO_SKIP_VAR_THD41: Field = Field {
+    word: 2064,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b64_skip_var_thd3.cu64_rdo_skip_var_thd41",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT0_CU64_RDO_SKIP_ATF_WGT00: Field = Field {
+    word: 2065,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt0.cu64_rdo_skip_atf_wgt00",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT0_CU64_RDO_SKIP_ATF_WGT10: Field = Field {
+    word: 2065,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt0.cu64_rdo_skip_atf_wgt10",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT0_CU64_RDO_SKIP_ATF_WGT11: Field = Field {
+    word: 2065,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt0.cu64_rdo_skip_atf_wgt11",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT0_CU64_RDO_SKIP_ATF_WGT12: Field = Field {
+    word: 2065,
+    shift: 24,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt0.cu64_rdo_skip_atf_wgt12",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT1_CU64_RDO_SKIP_ATF_WGT20: Field = Field {
+    word: 2066,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt1.cu64_rdo_skip_atf_wgt20",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT1_CU64_RDO_SKIP_ATF_WGT21: Field = Field {
+    word: 2066,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt1.cu64_rdo_skip_atf_wgt21",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT1_CU64_RDO_SKIP_ATF_WGT22: Field = Field {
+    word: 2066,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt1.cu64_rdo_skip_atf_wgt22",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT2_CU64_RDO_SKIP_ATF_WGT30: Field = Field {
+    word: 2067,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt2.cu64_rdo_skip_atf_wgt30",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT2_CU64_RDO_SKIP_ATF_WGT31: Field = Field {
+    word: 2067,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt2.cu64_rdo_skip_atf_wgt31",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT2_CU64_RDO_SKIP_ATF_WGT32: Field = Field {
+    word: 2067,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt2.cu64_rdo_skip_atf_wgt32",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT3_CU64_RDO_SKIP_ATF_WGT40: Field = Field {
+    word: 2068,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt3.cu64_rdo_skip_atf_wgt40",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT3_CU64_RDO_SKIP_ATF_WGT41: Field = Field {
+    word: 2068,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt3.cu64_rdo_skip_atf_wgt41",
+};
+pub const RDO_RDO_B64_SKIP_ATF_WGT3_CU64_RDO_SKIP_ATF_WGT42: Field = Field {
+    word: 2068,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b64_skip_atf_wgt3.cu64_rdo_skip_atf_wgt42",
+};
+pub const RDO_RDO_B32_INTRA_CIME_THD0_CU32_RDO_INTRA_CIME_THD0: Field = Field {
+    word: 2069,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_intra_cime_thd0.cu32_rdo_intra_cime_thd0",
+};
+pub const RDO_RDO_B32_INTRA_CIME_THD0_CU32_RDO_INTRA_CIME_THD1: Field = Field {
+    word: 2069,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_intra_cime_thd0.cu32_rdo_intra_cime_thd1",
+};
+pub const RDO_RDO_B32_INTRA_CIME_THD1_CU32_RDO_INTRA_CIME_THD2: Field = Field {
+    word: 2070,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_intra_cime_thd1.cu32_rdo_intra_cime_thd2",
+};
+pub const RDO_RDO_B32_INTRA_VAR_THD0_CU32_RDO_INTRA_VAR_THD00: Field = Field {
+    word: 2071,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_intra_var_thd0.cu32_rdo_intra_var_thd00",
+};
+pub const RDO_RDO_B32_INTRA_VAR_THD0_CU32_RDO_INTRA_VAR_THD01: Field = Field {
+    word: 2071,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_intra_var_thd0.cu32_rdo_intra_var_thd01",
+};
+pub const RDO_RDO_B32_INTRA_VAR_THD1_CU32_RDO_INTRA_VAR_THD10: Field = Field {
+    word: 2072,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_intra_var_thd1.cu32_rdo_intra_var_thd10",
+};
+pub const RDO_RDO_B32_INTRA_VAR_THD1_CU32_RDO_INTRA_VAR_THD11: Field = Field {
+    word: 2072,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_intra_var_thd1.cu32_rdo_intra_var_thd11",
+};
+pub const RDO_RDO_B32_INTRA_VAR_THD2_CU32_RDO_INTRA_VAR_THD20: Field = Field {
+    word: 2073,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_intra_var_thd2.cu32_rdo_intra_var_thd20",
+};
+pub const RDO_RDO_B32_INTRA_VAR_THD2_CU32_RDO_INTRA_VAR_THD21: Field = Field {
+    word: 2073,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_intra_var_thd2.cu32_rdo_intra_var_thd21",
+};
+pub const RDO_RDO_B32_INTRA_VAR_THD3_CU32_RDO_INTRA_VAR_THD30: Field = Field {
+    word: 2074,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_intra_var_thd3.cu32_rdo_intra_var_thd30",
+};
+pub const RDO_RDO_B32_INTRA_VAR_THD3_CU32_RDO_INTRA_VAR_THD31: Field = Field {
+    word: 2074,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_intra_var_thd3.cu32_rdo_intra_var_thd31",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT0_CU32_RDO_INTRA_ATF_WGT00: Field = Field {
+    word: 2075,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt0.cu32_rdo_intra_atf_wgt00",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT0_CU32_RDO_INTRA_ATF_WGT01: Field = Field {
+    word: 2075,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt0.cu32_rdo_intra_atf_wgt01",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT0_CU32_RDO_INTRA_ATF_WGT02: Field = Field {
+    word: 2075,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt0.cu32_rdo_intra_atf_wgt02",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT1_CU32_RDO_INTRA_ATF_WGT10: Field = Field {
+    word: 2076,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt1.cu32_rdo_intra_atf_wgt10",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT1_CU32_RDO_INTRA_ATF_WGT11: Field = Field {
+    word: 2076,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt1.cu32_rdo_intra_atf_wgt11",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT1_CU32_RDO_INTRA_ATF_WGT12: Field = Field {
+    word: 2076,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt1.cu32_rdo_intra_atf_wgt12",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT2_CU32_RDO_INTRA_ATF_WGT20: Field = Field {
+    word: 2077,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt2.cu32_rdo_intra_atf_wgt20",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT2_CU32_RDO_INTRA_ATF_WGT21: Field = Field {
+    word: 2077,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt2.cu32_rdo_intra_atf_wgt21",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT2_CU32_RDO_INTRA_ATF_WGT22: Field = Field {
+    word: 2077,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt2.cu32_rdo_intra_atf_wgt22",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT3_CU32_RDO_INTRA_ATF_WGT30: Field = Field {
+    word: 2078,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt3.cu32_rdo_intra_atf_wgt30",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT3_CU32_RDO_INTRA_ATF_WGT31: Field = Field {
+    word: 2078,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt3.cu32_rdo_intra_atf_wgt31",
+};
+pub const RDO_RDO_B32_INTRA_ATF_WGT3_CU32_RDO_INTRA_ATF_WGT32: Field = Field {
+    word: 2078,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_intra_atf_wgt3.cu32_rdo_intra_atf_wgt32",
+};
+pub const RDO_RDO_B32_INTER_CIME_THD0_CU32_RDO_INTER_CIME_THD0: Field = Field {
+    word: 2079,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_inter_cime_thd0.cu32_rdo_inter_cime_thd0",
+};
+pub const RDO_RDO_B32_INTER_CIME_THD0_CU32_RDO_INTER_CIME_THD1: Field = Field {
+    word: 2079,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_inter_cime_thd0.cu32_rdo_inter_cime_thd1",
+};
+pub const RDO_RDO_B32_INTER_CIME_THD1_CU32_RDO_INTER_CIME_THD2: Field = Field {
+    word: 2080,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_inter_cime_thd1.cu32_rdo_inter_cime_thd2",
+};
+pub const RDO_RDO_B32_INTER_VAR_THD0_CU32_RDO_INTER_VAR_THD00: Field = Field {
+    word: 2081,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_inter_var_thd0.cu32_rdo_inter_var_thd00",
+};
+pub const RDO_RDO_B32_INTER_VAR_THD0_CU32_RDO_INTER_VAR_THD01: Field = Field {
+    word: 2081,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_inter_var_thd0.cu32_rdo_inter_var_thd01",
+};
+pub const RDO_RDO_B32_INTER_VAR_THD1_CU32_RDO_INTER_VAR_THD10: Field = Field {
+    word: 2082,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_inter_var_thd1.cu32_rdo_inter_var_thd10",
+};
+pub const RDO_RDO_B32_INTER_VAR_THD1_CU32_RDO_INTER_VAR_THD11: Field = Field {
+    word: 2082,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_inter_var_thd1.cu32_rdo_inter_var_thd11",
+};
+pub const RDO_RDO_B32_INTER_VAR_THD2_CU32_RDO_INTER_VAR_THD20: Field = Field {
+    word: 2083,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_inter_var_thd2.cu32_rdo_inter_var_thd20",
+};
+pub const RDO_RDO_B32_INTER_VAR_THD2_CU32_RDO_INTER_VAR_THD21: Field = Field {
+    word: 2083,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_inter_var_thd2.cu32_rdo_inter_var_thd21",
+};
+pub const RDO_RDO_B32_INTER_VAR_THD3_CU32_RDO_INTER_VAR_THD30: Field = Field {
+    word: 2084,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_inter_var_thd3.cu32_rdo_inter_var_thd30",
+};
+pub const RDO_RDO_B32_INTER_VAR_THD3_CU32_RDO_INTER_VAR_THD31: Field = Field {
+    word: 2084,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_inter_var_thd3.cu32_rdo_inter_var_thd31",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT0_CU32_RDO_INTER_ATF_WGT00: Field = Field {
+    word: 2085,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt0.cu32_rdo_inter_atf_wgt00",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT0_CU32_RDO_INTER_ATF_WGT01: Field = Field {
+    word: 2085,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt0.cu32_rdo_inter_atf_wgt01",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT0_CU32_RDO_INTER_ATF_WGT02: Field = Field {
+    word: 2085,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt0.cu32_rdo_inter_atf_wgt02",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT1_CU32_RDO_INTER_ATF_WGT10: Field = Field {
+    word: 2086,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt1.cu32_rdo_inter_atf_wgt10",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT1_CU32_RDO_INTER_ATF_WGT11: Field = Field {
+    word: 2086,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt1.cu32_rdo_inter_atf_wgt11",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT1_CU32_RDO_INTER_ATF_WGT12: Field = Field {
+    word: 2086,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt1.cu32_rdo_inter_atf_wgt12",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT2_CU32_RDO_INTER_ATF_WGT20: Field = Field {
+    word: 2087,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt2.cu32_rdo_inter_atf_wgt20",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT2_CU32_RDO_INTER_ATF_WGT21: Field = Field {
+    word: 2087,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt2.cu32_rdo_inter_atf_wgt21",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT2_CU32_RDO_INTER_ATF_WGT22: Field = Field {
+    word: 2087,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt2.cu32_rdo_inter_atf_wgt22",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT3_CU32_RDO_INTER_ATF_WGT30: Field = Field {
+    word: 2088,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt3.cu32_rdo_inter_atf_wgt30",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT3_CU32_RDO_INTER_ATF_WGT31: Field = Field {
+    word: 2088,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt3.cu32_rdo_inter_atf_wgt31",
+};
+pub const RDO_RDO_B32_INTER_ATF_WGT3_CU32_RDO_INTER_ATF_WGT32: Field = Field {
+    word: 2088,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_inter_atf_wgt3.cu32_rdo_inter_atf_wgt32",
+};
+pub const RDO_RDO_B32_SKIP_CIME_THD0_CU32_RDO_SKIP_CIME_THD0: Field = Field {
+    word: 2089,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_skip_cime_thd0.cu32_rdo_skip_cime_thd0",
+};
+pub const RDO_RDO_B32_SKIP_CIME_THD0_CU32_RDO_SKIP_CIME_THD1: Field = Field {
+    word: 2089,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_skip_cime_thd0.cu32_rdo_skip_cime_thd1",
+};
+pub const RDO_RDO_B32_SKIP_CIME_THD1_CU32_RDO_SKIP_CIME_THD2: Field = Field {
+    word: 2090,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_skip_cime_thd1.cu32_rdo_skip_cime_thd2",
+};
+pub const RDO_RDO_B32_SKIP_CIME_THD1_CU32_RDO_SKIP_CIME_THD3: Field = Field {
+    word: 2090,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_skip_cime_thd1.cu32_rdo_skip_cime_thd3",
+};
+pub const RDO_RDO_B32_SSKIP_VAR_THD0_CU32_RDO_SKIP_VAR_THD10: Field = Field {
+    word: 2091,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_sskip_var_thd0.cu32_rdo_skip_var_thd10",
+};
+pub const RDO_RDO_B32_SSKIP_VAR_THD0_CU32_RDO_SKIP_VAR_THD11: Field = Field {
+    word: 2091,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_sskip_var_thd0.cu32_rdo_skip_var_thd11",
+};
+pub const RDO_RDO_B32_SSKIP_VAR_THD1_CU32_RDO_SKIP_VAR_THD20: Field = Field {
+    word: 2092,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_sskip_var_thd1.cu32_rdo_skip_var_thd20",
+};
+pub const RDO_RDO_B32_SSKIP_VAR_THD1_CU32_RDO_SKIP_VAR_THD21: Field = Field {
+    word: 2092,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_sskip_var_thd1.cu32_rdo_skip_var_thd21",
+};
+pub const RDO_RDO_B32_SSKIP_VAR_THD2_CU32_RDO_SKIP_VAR_THD30: Field = Field {
+    word: 2093,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_sskip_var_thd2.cu32_rdo_skip_var_thd30",
+};
+pub const RDO_RDO_B32_SSKIP_VAR_THD2_CU32_RDO_SKIP_VAR_THD31: Field = Field {
+    word: 2093,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_sskip_var_thd2.cu32_rdo_skip_var_thd31",
+};
+pub const RDO_RDO_B32_SSKIP_VAR_THD3_CU32_RDO_SKIP_VAR_THD40: Field = Field {
+    word: 2094,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b32_sskip_var_thd3.cu32_rdo_skip_var_thd40",
+};
+pub const RDO_RDO_B32_SSKIP_VAR_THD3_CU32_RDO_SKIP_VAR_THD41: Field = Field {
+    word: 2094,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b32_sskip_var_thd3.cu32_rdo_skip_var_thd41",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT0_CU32_RDO_SKIP_ATF_WGT00: Field = Field {
+    word: 2095,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt0.cu32_rdo_skip_atf_wgt00",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT0_CU32_RDO_SKIP_ATF_WGT10: Field = Field {
+    word: 2095,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt0.cu32_rdo_skip_atf_wgt10",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT0_CU32_RDO_SKIP_ATF_WGT11: Field = Field {
+    word: 2095,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt0.cu32_rdo_skip_atf_wgt11",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT0_CU32_RDO_SKIP_ATF_WGT12: Field = Field {
+    word: 2095,
+    shift: 24,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt0.cu32_rdo_skip_atf_wgt12",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT1_CU32_RDO_SKIP_ATF_WGT20: Field = Field {
+    word: 2096,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt1.cu32_rdo_skip_atf_wgt20",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT1_CU32_RDO_SKIP_ATF_WGT21: Field = Field {
+    word: 2096,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt1.cu32_rdo_skip_atf_wgt21",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT1_CU32_RDO_SKIP_ATF_WGT22: Field = Field {
+    word: 2096,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt1.cu32_rdo_skip_atf_wgt22",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT2_CU32_RDO_SKIP_ATF_WGT30: Field = Field {
+    word: 2097,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt2.cu32_rdo_skip_atf_wgt30",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT2_CU32_RDO_SKIP_ATF_WGT31: Field = Field {
+    word: 2097,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt2.cu32_rdo_skip_atf_wgt31",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT2_CU32_RDO_SKIP_ATF_WGT32: Field = Field {
+    word: 2097,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt2.cu32_rdo_skip_atf_wgt32",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT3_CU32_RDO_SKIP_ATF_WGT40: Field = Field {
+    word: 2098,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt3.cu32_rdo_skip_atf_wgt40",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT3_CU32_RDO_SKIP_ATF_WGT41: Field = Field {
+    word: 2098,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt3.cu32_rdo_skip_atf_wgt41",
+};
+pub const RDO_RDO_B32_SKIP_ATF_WGT3_CU32_RDO_SKIP_ATF_WGT42: Field = Field {
+    word: 2098,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b32_skip_atf_wgt3.cu32_rdo_skip_atf_wgt42",
+};
+pub const RDO_RDO_INTRA_CIME_THD0_ATF_RDO_INTRA_CIME_THD0: Field = Field {
+    word: 2099,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_intra_cime_thd0.atf_rdo_intra_cime_thd0",
+};
+pub const RDO_RDO_INTRA_CIME_THD0_ATF_RDO_INTRA_CIME_THD1: Field = Field {
+    word: 2099,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_intra_cime_thd0.atf_rdo_intra_cime_thd1",
+};
+pub const RDO_RDO_INTRA_CIME_THD1_ATF_RDO_INTRA_CIME_THD2: Field = Field {
+    word: 2100,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_intra_cime_thd1.atf_rdo_intra_cime_thd2",
+};
+pub const RDO_RDO_INTRA_VAR_THD0_ATF_RDO_INTRA_VAR_THD00: Field = Field {
+    word: 2101,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_intra_var_thd0.atf_rdo_intra_var_thd00",
+};
+pub const RDO_RDO_INTRA_VAR_THD0_ATF_RDO_INTRA_VAR_THD01: Field = Field {
+    word: 2101,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_intra_var_thd0.atf_rdo_intra_var_thd01",
+};
+pub const RDO_RDO_INTRA_VAR_THD1_ATF_RDO_INTRA_VAR_THD10: Field = Field {
+    word: 2102,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_intra_var_thd1.atf_rdo_intra_var_thd10",
+};
+pub const RDO_RDO_INTRA_VAR_THD1_ATF_RDO_INTRA_VAR_THD11: Field = Field {
+    word: 2102,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_intra_var_thd1.atf_rdo_intra_var_thd11",
+};
+pub const RDO_RDO_INTRA_VAR_THD2_ATF_RDO_INTRA_VAR_THD20: Field = Field {
+    word: 2103,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_intra_var_thd2.atf_rdo_intra_var_thd20",
+};
+pub const RDO_RDO_INTRA_VAR_THD2_ATF_RDO_INTRA_VAR_THD21: Field = Field {
+    word: 2103,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_intra_var_thd2.atf_rdo_intra_var_thd21",
+};
+pub const RDO_RDO_INTRA_VAR_THD3_ATF_RDO_INTRA_VAR_THD30: Field = Field {
+    word: 2104,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_intra_var_thd3.atf_rdo_intra_var_thd30",
+};
+pub const RDO_RDO_INTRA_VAR_THD3_ATF_RDO_INTRA_VAR_THD31: Field = Field {
+    word: 2104,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_intra_var_thd3.atf_rdo_intra_var_thd31",
+};
+pub const RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT00: Field = Field {
+    word: 2105,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt0.atf_rdo_intra_wgt00",
+};
+pub const RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT01: Field = Field {
+    word: 2105,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt0.atf_rdo_intra_wgt01",
+};
+pub const RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT02: Field = Field {
+    word: 2105,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt0.atf_rdo_intra_wgt02",
+};
+pub const RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT10: Field = Field {
+    word: 2106,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt1.atf_rdo_intra_wgt10",
+};
+pub const RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT11: Field = Field {
+    word: 2106,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt1.atf_rdo_intra_wgt11",
+};
+pub const RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT12: Field = Field {
+    word: 2106,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt1.atf_rdo_intra_wgt12",
+};
+pub const RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT20: Field = Field {
+    word: 2107,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt2.atf_rdo_intra_wgt20",
+};
+pub const RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT21: Field = Field {
+    word: 2107,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt2.atf_rdo_intra_wgt21",
+};
+pub const RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT22: Field = Field {
+    word: 2107,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt2.atf_rdo_intra_wgt22",
+};
+pub const RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT30: Field = Field {
+    word: 2108,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt3.atf_rdo_intra_wgt30",
+};
+pub const RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT31: Field = Field {
+    word: 2108,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt3.atf_rdo_intra_wgt31",
+};
+pub const RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT32: Field = Field {
+    word: 2108,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_intra_atf_wgt3.atf_rdo_intra_wgt32",
+};
+pub const RDO_RDO_B16_INTER_CIME_THD0_CU16_RDO_INTER_CIME_THD0: Field = Field {
+    word: 2109,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b16_inter_cime_thd0.cu16_rdo_inter_cime_thd0",
+};
+pub const RDO_RDO_B16_INTER_CIME_THD0_CU16_RDO_INTER_CIME_THD1: Field = Field {
+    word: 2109,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b16_inter_cime_thd0.cu16_rdo_inter_cime_thd1",
+};
+pub const RDO_RDO_B16_INTER_CIME_THD1_CU16_RDO_INTER_CIME_THD2: Field = Field {
+    word: 2110,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b16_inter_cime_thd1.cu16_rdo_inter_cime_thd2",
+};
+pub const RDO_RDO_B16_INTER_VAR_THD0_CU16_RDO_INTER_VAR_THD00: Field = Field {
+    word: 2111,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b16_inter_var_thd0.cu16_rdo_inter_var_thd00",
+};
+pub const RDO_RDO_B16_INTER_VAR_THD0_CU16_RDO_INTER_VAR_THD01: Field = Field {
+    word: 2111,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b16_inter_var_thd0.cu16_rdo_inter_var_thd01",
+};
+pub const RDO_RDO_B16_INTER_VAR_THD1_CU16_RDO_INTER_VAR_THD10: Field = Field {
+    word: 2112,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b16_inter_var_thd1.cu16_rdo_inter_var_thd10",
+};
+pub const RDO_RDO_B16_INTER_VAR_THD1_CU16_RDO_INTER_VAR_THD11: Field = Field {
+    word: 2112,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b16_inter_var_thd1.cu16_rdo_inter_var_thd11",
+};
+pub const RDO_RDO_B16_INTER_VAR_THD2_CU16_RDO_INTER_VAR_THD20: Field = Field {
+    word: 2113,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b16_inter_var_thd2.cu16_rdo_inter_var_thd20",
+};
+pub const RDO_RDO_B16_INTER_VAR_THD2_CU16_RDO_INTER_VAR_THD21: Field = Field {
+    word: 2113,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b16_inter_var_thd2.cu16_rdo_inter_var_thd21",
+};
+pub const RDO_RDO_B16_INTER_VAR_THD3_CU16_RDO_INTER_VAR_THD30: Field = Field {
+    word: 2114,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b16_inter_var_thd3.cu16_rdo_inter_var_thd30",
+};
+pub const RDO_RDO_B16_INTER_VAR_THD3_CU16_RDO_INTER_VAR_THD31: Field = Field {
+    word: 2114,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b16_inter_var_thd3.cu16_rdo_inter_var_thd31",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT0_CU16_RDO_INTER_ATF_WGT00: Field = Field {
+    word: 2115,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt0.cu16_rdo_inter_atf_wgt00",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT0_CU16_RDO_INTER_ATF_WGT01: Field = Field {
+    word: 2115,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt0.cu16_rdo_inter_atf_wgt01",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT0_CU16_RDO_INTER_ATF_WGT02: Field = Field {
+    word: 2115,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt0.cu16_rdo_inter_atf_wgt02",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT1_CU16_RDO_INTER_ATF_WGT10: Field = Field {
+    word: 2116,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt1.cu16_rdo_inter_atf_wgt10",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT1_CU16_RDO_INTER_ATF_WGT11: Field = Field {
+    word: 2116,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt1.cu16_rdo_inter_atf_wgt11",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT1_CU16_RDO_INTER_ATF_WGT12: Field = Field {
+    word: 2116,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt1.cu16_rdo_inter_atf_wgt12",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT2_CU16_RDO_INTER_ATF_WGT20: Field = Field {
+    word: 2117,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt2.cu16_rdo_inter_atf_wgt20",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT2_CU16_RDO_INTER_ATF_WGT21: Field = Field {
+    word: 2117,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt2.cu16_rdo_inter_atf_wgt21",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT2_CU16_RDO_INTER_ATF_WGT22: Field = Field {
+    word: 2117,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt2.cu16_rdo_inter_atf_wgt22",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT3_CU16_RDO_INTER_ATF_WGT30: Field = Field {
+    word: 2118,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt3.cu16_rdo_inter_atf_wgt30",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT3_CU16_RDO_INTER_ATF_WGT31: Field = Field {
+    word: 2118,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt3.cu16_rdo_inter_atf_wgt31",
+};
+pub const RDO_RDO_B16_INTER_ATF_WGT3_CU16_RDO_INTER_ATF_WGT32: Field = Field {
+    word: 2118,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b16_inter_atf_wgt3.cu16_rdo_inter_atf_wgt32",
+};
+pub const RDO_RDO_SKIP_CIME_THD0_ATF_RDO_SKIP_CIME_THD0: Field = Field {
+    word: 2119,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_skip_cime_thd0.atf_rdo_skip_cime_thd0",
+};
+pub const RDO_RDO_SKIP_CIME_THD0_ATF_RDO_SKIP_CIME_THD1: Field = Field {
+    word: 2119,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_skip_cime_thd0.atf_rdo_skip_cime_thd1",
+};
+pub const RDO_RDO_SKIP_CIME_THD1_ATF_RDO_SKIP_CIME_THD2: Field = Field {
+    word: 2120,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_skip_cime_thd1.atf_rdo_skip_cime_thd2",
+};
+pub const RDO_RDO_SKIP_CIME_THD1_ATF_RDO_SKIP_CIME_THD3: Field = Field {
+    word: 2120,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_skip_cime_thd1.atf_rdo_skip_cime_thd3",
+};
+pub const RDO_RDO_SKIP_VAR_THD0_ATF_RDO_SKIP_VAR_THD10: Field = Field {
+    word: 2121,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_skip_var_thd0.atf_rdo_skip_var_thd10",
+};
+pub const RDO_RDO_SKIP_VAR_THD0_ATF_RDO_SKIP_VAR_THD11: Field = Field {
+    word: 2121,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_skip_var_thd0.atf_rdo_skip_var_thd11",
+};
+pub const RDO_RDO_SKIP_VAR_THD1_ATF_RDO_SKIP_VAR_THD20: Field = Field {
+    word: 2122,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_skip_var_thd1.atf_rdo_skip_var_thd20",
+};
+pub const RDO_RDO_SKIP_VAR_THD1_ATF_RDO_SKIP_VAR_THD21: Field = Field {
+    word: 2122,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_skip_var_thd1.atf_rdo_skip_var_thd21",
+};
+pub const RDO_RDO_SKIP_VAR_THD2_ATF_RDO_SKIP_VAR_THD30: Field = Field {
+    word: 2123,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_skip_var_thd2.atf_rdo_skip_var_thd30",
+};
+pub const RDO_RDO_SKIP_VAR_THD2_ATF_RDO_SKIP_VAR_THD31: Field = Field {
+    word: 2123,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_skip_var_thd2.atf_rdo_skip_var_thd31",
+};
+pub const RDO_RDO_SKIP_VAR_THD3_ATF_RDO_SKIP_VAR_THD40: Field = Field {
+    word: 2124,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_skip_var_thd3.atf_rdo_skip_var_thd40",
+};
+pub const RDO_RDO_SKIP_VAR_THD3_ATF_RDO_SKIP_VAR_THD41: Field = Field {
+    word: 2124,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_skip_var_thd3.atf_rdo_skip_var_thd41",
+};
+pub const RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT00: Field = Field {
+    word: 2125,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt0.atf_rdo_skip_atf_wgt00",
+};
+pub const RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT10: Field = Field {
+    word: 2125,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt0.atf_rdo_skip_atf_wgt10",
+};
+pub const RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT11: Field = Field {
+    word: 2125,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt0.atf_rdo_skip_atf_wgt11",
+};
+pub const RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT12: Field = Field {
+    word: 2125,
+    shift: 24,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt0.atf_rdo_skip_atf_wgt12",
+};
+pub const RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT20: Field = Field {
+    word: 2126,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt1.atf_rdo_skip_atf_wgt20",
+};
+pub const RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT21: Field = Field {
+    word: 2126,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt1.atf_rdo_skip_atf_wgt21",
+};
+pub const RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT22: Field = Field {
+    word: 2126,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt1.atf_rdo_skip_atf_wgt22",
+};
+pub const RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT30: Field = Field {
+    word: 2127,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt2.atf_rdo_skip_atf_wgt30",
+};
+pub const RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT31: Field = Field {
+    word: 2127,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt2.atf_rdo_skip_atf_wgt31",
+};
+pub const RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT32: Field = Field {
+    word: 2127,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt2.atf_rdo_skip_atf_wgt32",
+};
+pub const RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT40: Field = Field {
+    word: 2128,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt3.atf_rdo_skip_atf_wgt40",
+};
+pub const RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT41: Field = Field {
+    word: 2128,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt3.atf_rdo_skip_atf_wgt41",
+};
+pub const RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT42: Field = Field {
+    word: 2128,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_skip_atf_wgt3.atf_rdo_skip_atf_wgt42",
+};
+pub const RDO_RDO_B8_INTRA_CIME_THD0_CU8_RDO_INTRA_CIME_THD0: Field = Field {
+    word: 2129,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_intra_cime_thd0.cu8_rdo_intra_cime_thd0",
+};
+pub const RDO_RDO_B8_INTRA_CIME_THD0_CU8_RDO_INTRA_CIME_THD1: Field = Field {
+    word: 2129,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_intra_cime_thd0.cu8_rdo_intra_cime_thd1",
+};
+pub const RDO_RDO_B8_INTRA_CIME_THD1_CU8_RDO_INTRA_CIME_THD2: Field = Field {
+    word: 2130,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_intra_cime_thd1.cu8_rdo_intra_cime_thd2",
+};
+pub const RDO_RDO_B8_INTRA_VAR_THD0_CU8_RDO_INTRA_VAR_THD00: Field = Field {
+    word: 2131,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_intra_var_thd0.cu8_rdo_intra_var_thd00",
+};
+pub const RDO_RDO_B8_INTRA_VAR_THD0_CU8_RDO_INTRA_VAR_THD01: Field = Field {
+    word: 2131,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_intra_var_thd0.cu8_rdo_intra_var_thd01",
+};
+pub const RDO_RDO_B8_INTRA_VAR_THD1_CU8_RDO_INTRA_VAR_THD10: Field = Field {
+    word: 2132,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_intra_var_thd1.cu8_rdo_intra_var_thd10",
+};
+pub const RDO_RDO_B8_INTRA_VAR_THD1_CU8_RDO_INTRA_VAR_THD11: Field = Field {
+    word: 2132,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_intra_var_thd1.cu8_rdo_intra_var_thd11",
+};
+pub const RDO_RDO_B8_INTRA_VAR_THD2_CU8_RDO_INTRA_VAR_THD20: Field = Field {
+    word: 2133,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_intra_var_thd2.cu8_rdo_intra_var_thd20",
+};
+pub const RDO_RDO_B8_INTRA_VAR_THD2_CU8_RDO_INTRA_VAR_THD21: Field = Field {
+    word: 2133,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_intra_var_thd2.cu8_rdo_intra_var_thd21",
+};
+pub const RDO_RDO_B8_INTRA_VAR_THD3_CU8_RDO_INTRA_VAR_THD30: Field = Field {
+    word: 2134,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_intra_var_thd3.cu8_rdo_intra_var_thd30",
+};
+pub const RDO_RDO_B8_INTRA_VAR_THD3_CU8_RDO_INTRA_VAR_THD31: Field = Field {
+    word: 2134,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_intra_var_thd3.cu8_rdo_intra_var_thd31",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT0_CU8_RDO_INTRA_ATF_WGT00: Field = Field {
+    word: 2135,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt0.cu8_rdo_intra_atf_wgt00",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT0_CU8_RDO_INTRA_ATF_WGT01: Field = Field {
+    word: 2135,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt0.cu8_rdo_intra_atf_wgt01",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT0_CU8_RDO_INTRA_ATF_WGT02: Field = Field {
+    word: 2135,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt0.cu8_rdo_intra_atf_wgt02",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT1_CU8_RDO_INTRA_ATF_WGT10: Field = Field {
+    word: 2136,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt1.cu8_rdo_intra_atf_wgt10",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT1_CU8_RDO_INTRA_ATF_WGT11: Field = Field {
+    word: 2136,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt1.cu8_rdo_intra_atf_wgt11",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT1_CU8_RDO_INTRA_ATF_WGT12: Field = Field {
+    word: 2136,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt1.cu8_rdo_intra_atf_wgt12",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT2_CU8_RDO_INTRA_ATF_WGT20: Field = Field {
+    word: 2137,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt2.cu8_rdo_intra_atf_wgt20",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT2_CU8_RDO_INTRA_ATF_WGT21: Field = Field {
+    word: 2137,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt2.cu8_rdo_intra_atf_wgt21",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT2_CU8_RDO_INTRA_ATF_WGT22: Field = Field {
+    word: 2137,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt2.cu8_rdo_intra_atf_wgt22",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT3_CU8_RDO_INTRA_ATF_WGT30: Field = Field {
+    word: 2138,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt3.cu8_rdo_intra_atf_wgt30",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT3_CU8_RDO_INTRA_ATF_WGT31: Field = Field {
+    word: 2138,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt3.cu8_rdo_intra_atf_wgt31",
+};
+pub const RDO_RDO_B8_INTRA_ATF_WGT3_CU8_RDO_INTRA_ATF_WGT32: Field = Field {
+    word: 2138,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_intra_atf_wgt3.cu8_rdo_intra_atf_wgt32",
+};
+pub const RDO_RDO_B8_INTER_CIME_THD0_CU8_RDO_INTER_CIME_THD0: Field = Field {
+    word: 2139,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_inter_cime_thd0.cu8_rdo_inter_cime_thd0",
+};
+pub const RDO_RDO_B8_INTER_CIME_THD0_CU8_RDO_INTER_CIME_THD1: Field = Field {
+    word: 2139,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_inter_cime_thd0.cu8_rdo_inter_cime_thd1",
+};
+pub const RDO_RDO_B8_INTER_CIME_THD1_CU8_RDO_INTER_CIME_THD2: Field = Field {
+    word: 2140,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_inter_cime_thd1.cu8_rdo_inter_cime_thd2",
+};
+pub const RDO_RDO_B8_INTER_VAR_THD0_CU8_RDO_INTER_VAR_THD00: Field = Field {
+    word: 2141,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_inter_var_thd0.cu8_rdo_inter_var_thd00",
+};
+pub const RDO_RDO_B8_INTER_VAR_THD0_CU8_RDO_INTER_VAR_THD01: Field = Field {
+    word: 2141,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_inter_var_thd0.cu8_rdo_inter_var_thd01",
+};
+pub const RDO_RDO_B8_INTER_VAR_THD1_CU8_RDO_INTER_VAR_THD10: Field = Field {
+    word: 2142,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_inter_var_thd1.cu8_rdo_inter_var_thd10",
+};
+pub const RDO_RDO_B8_INTER_VAR_THD1_CU8_RDO_INTER_VAR_THD11: Field = Field {
+    word: 2142,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_inter_var_thd1.cu8_rdo_inter_var_thd11",
+};
+pub const RDO_RDO_B8_INTER_VAR_THD2_CU8_RDO_INTER_VAR_THD20: Field = Field {
+    word: 2143,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_inter_var_thd2.cu8_rdo_inter_var_thd20",
+};
+pub const RDO_RDO_B8_INTER_VAR_THD2_CU8_RDO_INTER_VAR_THD21: Field = Field {
+    word: 2143,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_inter_var_thd2.cu8_rdo_inter_var_thd21",
+};
+pub const RDO_RDO_B8_INTER_VAR_THD3_CU8_RDO_INTER_VAR_THD30: Field = Field {
+    word: 2144,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_inter_var_thd3.cu8_rdo_inter_var_thd30",
+};
+pub const RDO_RDO_B8_INTER_VAR_THD3_CU8_RDO_INTER_VAR_THD31: Field = Field {
+    word: 2144,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_inter_var_thd3.cu8_rdo_inter_var_thd31",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT0_CU8_RDO_INTER_ATF_WGT00: Field = Field {
+    word: 2145,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt0.cu8_rdo_inter_atf_wgt00",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT0_CU8_RDO_INTER_ATF_WGT01: Field = Field {
+    word: 2145,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt0.cu8_rdo_inter_atf_wgt01",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT0_CU8_RDO_INTER_ATF_WGT02: Field = Field {
+    word: 2145,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt0.cu8_rdo_inter_atf_wgt02",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT1_CU8_RDO_INTER_ATF_WGT10: Field = Field {
+    word: 2146,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt1.cu8_rdo_inter_atf_wgt10",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT1_CU8_RDO_INTER_ATF_WGT11: Field = Field {
+    word: 2146,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt1.cu8_rdo_inter_atf_wgt11",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT1_CU8_RDO_INTER_ATF_WGT12: Field = Field {
+    word: 2146,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt1.cu8_rdo_inter_atf_wgt12",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT2_CU8_RDO_INTER_ATF_WGT20: Field = Field {
+    word: 2147,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt2.cu8_rdo_inter_atf_wgt20",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT2_CU8_RDO_INTER_ATF_WGT21: Field = Field {
+    word: 2147,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt2.cu8_rdo_inter_atf_wgt21",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT2_CU8_RDO_INTER_ATF_WGT22: Field = Field {
+    word: 2147,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt2.cu8_rdo_inter_atf_wgt22",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT3_CU8_RDO_INTER_ATF_WGT30: Field = Field {
+    word: 2148,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt3.cu8_rdo_inter_atf_wgt30",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT3_CU8_RDO_INTER_ATF_WGT31: Field = Field {
+    word: 2148,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt3.cu8_rdo_inter_atf_wgt31",
+};
+pub const RDO_RDO_B8_INTER_ATF_WGT3_CU8_RDO_INTER_ATF_WGT32: Field = Field {
+    word: 2148,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_inter_atf_wgt3.cu8_rdo_inter_atf_wgt32",
+};
+pub const RDO_RDO_B8_SKIP_CIME_THD0_CU8_RDO_SKIP_CIME_THD0: Field = Field {
+    word: 2149,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_skip_cime_thd0.cu8_rdo_skip_cime_thd0",
+};
+pub const RDO_RDO_B8_SKIP_CIME_THD0_CU8_RDO_SKIP_CIME_THD1: Field = Field {
+    word: 2149,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_skip_cime_thd0.cu8_rdo_skip_cime_thd1",
+};
+pub const RDO_RDO_B8_SKIP_CIME_THD1_CU8_RDO_SKIP_CIME_THD2: Field = Field {
+    word: 2150,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_skip_cime_thd1.cu8_rdo_skip_cime_thd2",
+};
+pub const RDO_RDO_B8_SKIP_CIME_THD1_CU8_RDO_SKIP_CIME_THD3: Field = Field {
+    word: 2150,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_skip_cime_thd1.cu8_rdo_skip_cime_thd3",
+};
+pub const RDO_RDO_B8_SKIP_VAR_THD0_CU8_RDO_SKIP_VAR_THD10: Field = Field {
+    word: 2151,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_skip_var_thd0.cu8_rdo_skip_var_thd10",
+};
+pub const RDO_RDO_B8_SKIP_VAR_THD0_CU8_RDO_SKIP_VAR_THD11: Field = Field {
+    word: 2151,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_skip_var_thd0.cu8_rdo_skip_var_thd11",
+};
+pub const RDO_RDO_B8_SKIP_VAR_THD1_CU8_RDO_SKIP_VAR_THD20: Field = Field {
+    word: 2152,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_skip_var_thd1.cu8_rdo_skip_var_thd20",
+};
+pub const RDO_RDO_B8_SKIP_VAR_THD1_CU8_RDO_SKIP_VAR_THD21: Field = Field {
+    word: 2152,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_skip_var_thd1.cu8_rdo_skip_var_thd21",
+};
+pub const RDO_RDO_B8_SKIP_VAR_THD2_CU8_RDO_SKIP_VAR_THD30: Field = Field {
+    word: 2153,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_skip_var_thd2.cu8_rdo_skip_var_thd30",
+};
+pub const RDO_RDO_B8_SKIP_VAR_THD2_CU8_RDO_SKIP_VAR_THD31: Field = Field {
+    word: 2153,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_skip_var_thd2.cu8_rdo_skip_var_thd31",
+};
+pub const RDO_RDO_B8_SKIP_VAR_THD3_CU8_RDO_SKIP_VAR_THD40: Field = Field {
+    word: 2154,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b8_skip_var_thd3.cu8_rdo_skip_var_thd40",
+};
+pub const RDO_RDO_B8_SKIP_VAR_THD3_CU8_RDO_SKIP_VAR_THD41: Field = Field {
+    word: 2154,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b8_skip_var_thd3.cu8_rdo_skip_var_thd41",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT0_CU8_RDO_SKIP_ATF_WGT00: Field = Field {
+    word: 2155,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt0.cu8_rdo_skip_atf_wgt00",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT0_CU8_RDO_SKIP_ATF_WGT10: Field = Field {
+    word: 2155,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt0.cu8_rdo_skip_atf_wgt10",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT0_CU8_RDO_SKIP_ATF_WGT11: Field = Field {
+    word: 2155,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt0.cu8_rdo_skip_atf_wgt11",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT0_CU8_RDO_SKIP_ATF_WGT12: Field = Field {
+    word: 2155,
+    shift: 24,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt0.cu8_rdo_skip_atf_wgt12",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT1_CU8_RDO_SKIP_ATF_WGT20: Field = Field {
+    word: 2156,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt1.cu8_rdo_skip_atf_wgt20",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT1_CU8_RDO_SKIP_ATF_WGT21: Field = Field {
+    word: 2156,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt1.cu8_rdo_skip_atf_wgt21",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT1_CU8_RDO_SKIP_ATF_WGT22: Field = Field {
+    word: 2156,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt1.cu8_rdo_skip_atf_wgt22",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT2_CU8_RDO_SKIP_ATF_WGT30: Field = Field {
+    word: 2157,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt2.cu8_rdo_skip_atf_wgt30",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT2_CU8_RDO_SKIP_ATF_WGT31: Field = Field {
+    word: 2157,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt2.cu8_rdo_skip_atf_wgt31",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT2_CU8_RDO_SKIP_ATF_WGT32: Field = Field {
+    word: 2157,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt2.cu8_rdo_skip_atf_wgt32",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT3_CU8_RDO_SKIP_ATF_WGT40: Field = Field {
+    word: 2158,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt3.cu8_rdo_skip_atf_wgt40",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT3_CU8_RDO_SKIP_ATF_WGT41: Field = Field {
+    word: 2158,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt3.cu8_rdo_skip_atf_wgt41",
+};
+pub const RDO_RDO_B8_SKIP_ATF_WGT3_CU8_RDO_SKIP_ATF_WGT42: Field = Field {
+    word: 2158,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_b8_skip_atf_wgt3.cu8_rdo_skip_atf_wgt42",
+};
+pub const RDO_RDO_SEGMENT_B64_THD0_RDO_SEGMENT_CU64_TH0: Field = Field {
+    word: 2159,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_segment_b64_thd0.rdo_segment_cu64_th0",
+};
+pub const RDO_RDO_SEGMENT_B64_THD0_RDO_SEGMENT_CU64_TH1: Field = Field {
+    word: 2159,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_segment_b64_thd0.rdo_segment_cu64_th1",
+};
+pub const RDO_RDO_SEGMENT_B64_THD1_RDO_SEGMENT_CU64_TH2: Field = Field {
+    word: 2160,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_segment_b64_thd1.rdo_segment_cu64_th2",
+};
+pub const RDO_RDO_SEGMENT_B64_THD1_RDO_SEGMENT_CU64_TH3: Field = Field {
+    word: 2160,
+    shift: 16,
+    width: 4,
+    name: "RDO.rdo_segment_b64_thd1.rdo_segment_cu64_th3",
+};
+pub const RDO_RDO_SEGMENT_B64_THD1_RDO_SEGMENT_CU64_TH4: Field = Field {
+    word: 2160,
+    shift: 20,
+    width: 4,
+    name: "RDO.rdo_segment_b64_thd1.rdo_segment_cu64_th4",
+};
+pub const RDO_RDO_SEGMENT_B64_THD1_RDO_SEGMENT_CU64_TH5_MINUS1: Field = Field {
+    word: 2160,
+    shift: 24,
+    width: 4,
+    name: "RDO.rdo_segment_b64_thd1.rdo_segment_cu64_th5_minus1",
+};
+pub const RDO_RDO_SEGMENT_B64_THD1_RDO_SEGMENT_CU64_TH6_MINUS1: Field = Field {
+    word: 2160,
+    shift: 28,
+    width: 4,
+    name: "RDO.rdo_segment_b64_thd1.rdo_segment_cu64_th6_minus1",
+};
+pub const RDO_RDO_SEGMENT_B32_THD0_RDO_SEGMENT_CU32_TH0: Field = Field {
+    word: 2161,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_segment_b32_thd0.rdo_segment_cu32_th0",
+};
+pub const RDO_RDO_SEGMENT_B32_THD0_RDO_SEGMENT_CU32_TH1: Field = Field {
+    word: 2161,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_segment_b32_thd0.rdo_segment_cu32_th1",
+};
+pub const RDO_RDO_SEGMENT_B32_THD1_RDO_SEGMENT_CU32_TH2: Field = Field {
+    word: 2162,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_segment_b32_thd1.rdo_segment_cu32_th2",
+};
+pub const RDO_RDO_SEGMENT_B32_THD1_RDO_SEGMENT_CU32_TH3: Field = Field {
+    word: 2162,
+    shift: 16,
+    width: 2,
+    name: "RDO.rdo_segment_b32_thd1.rdo_segment_cu32_th3",
+};
+pub const RDO_RDO_SEGMENT_B32_THD1_RDO_SEGMENT_CU32_TH4: Field = Field {
+    word: 2162,
+    shift: 20,
+    width: 2,
+    name: "RDO.rdo_segment_b32_thd1.rdo_segment_cu32_th4",
+};
+pub const RDO_RDO_SEGMENT_B32_THD1_RDO_SEGMENT_CU32_TH5_MINUS1: Field = Field {
+    word: 2162,
+    shift: 24,
+    width: 2,
+    name: "RDO.rdo_segment_b32_thd1.rdo_segment_cu32_th5_minus1",
+};
+pub const RDO_RDO_SEGMENT_B32_THD1_RDO_SEGMENT_CU32_TH6_MINUS1: Field = Field {
+    word: 2162,
+    shift: 28,
+    width: 2,
+    name: "RDO.rdo_segment_b32_thd1.rdo_segment_cu32_th6_minus1",
+};
+pub const RDO_RDO_SEGMENT_MULTI_RDO_SEGMENT_CU64_MULTI: Field = Field {
+    word: 2163,
+    shift: 0,
+    width: 8,
+    name: "RDO.rdo_segment_multi.rdo_segment_cu64_multi",
+};
+pub const RDO_RDO_SEGMENT_MULTI_RDO_SEGMENT_CU32_MULTI: Field = Field {
+    word: 2163,
+    shift: 8,
+    width: 8,
+    name: "RDO.rdo_segment_multi.rdo_segment_cu32_multi",
+};
+pub const RDO_RDO_SEGMENT_MULTI_RDO_SMEAR_CU16_MULTI: Field = Field {
+    word: 2163,
+    shift: 16,
+    width: 8,
+    name: "RDO.rdo_segment_multi.rdo_smear_cu16_multi",
+};
+pub const RDO_RDO_B16_SMEAR_THD0_RDO_SMEAR_CU16_CIME_SAD_TH0: Field = Field {
+    word: 2164,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b16_smear_thd0.rdo_smear_cu16_cime_sad_th0",
+};
+pub const RDO_RDO_B16_SMEAR_THD0_RDO_SMEAR_CU16_CIME_SAD_TH1: Field = Field {
+    word: 2164,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b16_smear_thd0.rdo_smear_cu16_cime_sad_th1",
+};
+pub const RDO_RDO_B16_SMEAR_THD1_RDO_SMEAR_CU16_CIME_SAD_TH2: Field = Field {
+    word: 2165,
+    shift: 0,
+    width: 12,
+    name: "RDO.rdo_b16_smear_thd1.rdo_smear_cu16_cime_sad_th2",
+};
+pub const RDO_RDO_B16_SMEAR_THD1_RDO_SMEAR_CU16_CIME_SAD_TH3: Field = Field {
+    word: 2165,
+    shift: 16,
+    width: 12,
+    name: "RDO.rdo_b16_smear_thd1.rdo_smear_cu16_cime_sad_th3",
+};
+pub const RDO_PREINTRA_B32_CST_VAR_THD_PRE_INTRA32_CST_VAR_TH00: Field = Field {
+    word: 2166,
+    shift: 0,
+    width: 12,
+    name: "RDO.preintra_b32_cst_var_thd.pre_intra32_cst_var_th00",
+};
+pub const RDO_PREINTRA_B32_CST_VAR_THD_PRE_INTRA32_CST_VAR_TH01: Field = Field {
+    word: 2166,
+    shift: 16,
+    width: 12,
+    name: "RDO.preintra_b32_cst_var_thd.pre_intra32_cst_var_th01",
+};
+pub const RDO_PREINTRA_B32_CST_VAR_THD_PRE_INTRA32_MODE_TH: Field = Field {
+    word: 2166,
+    shift: 29,
+    width: 3,
+    name: "RDO.preintra_b32_cst_var_thd.pre_intra32_mode_th",
+};
+pub const RDO_PREINTRA_B32_CST_WGT_PRE_INTRA32_CST_WGT00: Field = Field {
+    word: 2167,
+    shift: 0,
+    width: 8,
+    name: "RDO.preintra_b32_cst_wgt.pre_intra32_cst_wgt00",
+};
+pub const RDO_PREINTRA_B32_CST_WGT_PRE_INTRA32_CST_WGT01: Field = Field {
+    word: 2167,
+    shift: 16,
+    width: 8,
+    name: "RDO.preintra_b32_cst_wgt.pre_intra32_cst_wgt01",
+};
+pub const RDO_PREINTRA_B16_CST_VAR_THD_PRE_INTRA16_CST_VAR_TH00: Field = Field {
+    word: 2168,
+    shift: 0,
+    width: 12,
+    name: "RDO.preintra_b16_cst_var_thd.pre_intra16_cst_var_th00",
+};
+pub const RDO_PREINTRA_B16_CST_VAR_THD_PRE_INTRA16_CST_VAR_TH01: Field = Field {
+    word: 2168,
+    shift: 16,
+    width: 12,
+    name: "RDO.preintra_b16_cst_var_thd.pre_intra16_cst_var_th01",
+};
+pub const RDO_PREINTRA_B16_CST_VAR_THD_PRE_INTRA16_MODE_TH: Field = Field {
+    word: 2168,
+    shift: 29,
+    width: 3,
+    name: "RDO.preintra_b16_cst_var_thd.pre_intra16_mode_th",
+};
+pub const RDO_PREINTRA_B16_CST_WGT_PRE_INTRA16_CST_WGT00: Field = Field {
+    word: 2169,
+    shift: 0,
+    width: 8,
+    name: "RDO.preintra_b16_cst_wgt.pre_intra16_cst_wgt00",
+};
+pub const RDO_PREINTRA_B16_CST_WGT_PRE_INTRA16_CST_WGT01: Field = Field {
+    word: 2169,
+    shift: 16,
+    width: 8,
+    name: "RDO.preintra_b16_cst_wgt.pre_intra16_cst_wgt01",
+};
+
+// 687 fields in total.

@@ -31,6 +31,9 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
   ssh t6 'tar -xf - -C ~/rk-mpp-rs'
 ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
+# ONLY=sizes|gop runs one phase; the sizes phase rebuilds the reference harness
+# per profile and takes minutes, so the GOP phase can be checked alone.
+only="${ONLY:-all}"
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_src="$mpp_ref/test/mpi_enc_test.c"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
@@ -94,6 +97,7 @@ sys.exit(0)
 PY
 }
 
+if [ "$only" = all ] || [ "$only" = sizes ]; then
 for size in 64x64 320x240 640x480 1280x720; do
   width="${size%%x*}"; height="${size##*x}"
   frame="/tmp/rk-mpp-rs-probe-${size}.nv12"
@@ -121,6 +125,44 @@ for size in 64x64 320x240 640x480 1280x720; do
         printf 'FAIL %-34s (bitstreams differ)\n' "$tag"; fail=1
       fi
     done
+  done
+done
+fi
+
+# Multi-frame: the same comparison over a GOP, so the P path stays byte-exact and
+# the slice-type dependent tables cannot silently regress. Still and moving
+# fixtures, because the finetune module reads motion statistics between frames.
+configure_reference_profile baseline
+still6=/tmp/rk-mpp-rs-probe6-320x240.nv12
+ssh t6 'cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame /tmp/rk-mpp-rs-probe-1f.nv12 320 240 >/dev/null'
+ssh t6 "rm -f $still6; for i in 1 2 3 4 5 6; do cat /tmp/rk-mpp-rs-probe-1f.nv12 >> $still6; done"
+mv_fixture=/tmp/rk-mpp-rs-move-320x240.nv12
+ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v 6 \
+    -pix_fmt nv12 -f rawvideo -an $mv_fixture" >/dev/null 2>&1
+for fixture in "$still6 still" "$mv_fixture moving"; do
+  set -- $fixture
+  src="$1"; label="$2"
+  if ! ssh t6 "test -s $src"; then
+    printf 'SKIP %-12s (source missing)\n' "$label"; continue
+  fi
+  for n in 2 4 6; do
+    c_out="/tmp/rk-mpp-rs-gop-${label}-${n}f-c.264"
+    rust_out="/tmp/rk-mpp-rs-gop-${label}-${n}f-rust.264"
+    ssh t6 "sudo rm -f $c_out $rust_out"
+    if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 180 $mpp_bin -i $src -o $c_out \
+        -w 320 -h 240 -t 7 -f 0 -n $n -rc 2 -qc 26:26:26:26:26 -v q" >/dev/null 2>&1; then
+      printf 'FAIL %-12s %df (reference encode failed)\n' "$label" "$n"; fail=1; continue
+    fi
+    if ! ssh t6 "cd ~/rk-mpp-rs && timeout 180 sudo ./target/release/rk-mpp-rs \
+        h264-enc $src $rust_out 320 240 26 baseline $n 120" >/dev/null 2>&1; then
+      printf 'FAIL %-12s %df (our encode failed)\n' "$label" "$n"; fail=1; continue
+    fi
+    scp -q t6:"$c_out" t6:"$rust_out" /tmp/ 2>/dev/null
+    if compare "${c_out##*/}" "${rust_out##*/}"; then
+      printf 'PASS %-12s %df (1 IDR + %d P byte-identical)\n' "$label" "$n" "$((n - 1))"
+    else
+      printf 'FAIL %-12s %df (bitstreams differ)\n' "$label" "$n"; fail=1
+    fi
   done
 done
 

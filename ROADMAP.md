@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **multi-frame encoding works (GOP walk, reference double buffer, MD info, P pictures decode at 52 dB); a P job now matches the reference word for word except six section-3 words owned by the finetune module; CBR/VBR, SEI, ROI and finetune remain** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving) - with zero non-address register differences in all seven sections; scene detection, CBR/VBR, SEI and ROI remain** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 IDR is a size-parameterised replay of a recorded VEPU580 register image (see the encoder note below), so rate control, profile, level, GOP and P slices are all still frozen; H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -609,7 +609,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       `Vepu580BaseCfg` from the H.264 HAL header as well - reg221 onwards of the
       same BASE window, 83 more fields, with the 228 existing positions unchanged.
 - [x] **Multi-frame encoding: the GOP walk, the reference buffers and the
-      per-picture registers are in.** What a second picture needs, from
+      per-picture registers are in, and P pictures are byte-identical.** What a second picture needs, from
       `setup_vepu580_recn_refr` and `setup_vepu580_codec`: two reconstruction slots
       alternating as `curr_idx` / `refr_idx` (an IDR leaves the reference reads on
       its own slot, since there is nothing to read); `synt_sli0.sli_type` 2 for I
@@ -667,10 +667,38 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       `-atr_i 0 -atr_p 0 -atf 0 -atl 0 -dbe 0 -dbs 0` produced a byte-identical
       stream to the default run, so those tables move on the module's own per-frame
       state, not on any flag.
-      **Next step, named by that evidence:** the finetune path - the STATUS-window
-      statistics `stat_update` consumes, then the quant-bias and ATR patch itself.
-      That, not `mei_stor`, is what stands between P pictures and byte-exactness;
-      the GOP gate stays until it lands.
+      **Resolved: the six words were two layers, not the finetune module's state.**
+      `setup_vepu580_rdo_pred` writes the quantisation bias and the ATR thresholds
+      *per slice type* - `quant_f_bias_I` 683 against 583, `ATR_THD0` {1,4} against
+      {4,16}, `atr_thd2` 36 against 81, and a different Lvl16/8/4 weight triple -
+      and `vepu580_h264e_tune_reg_patch` then overwrites the inter ATR weights from
+      `atr_wgt[scene_motion_flag]`. Both layers were missing, so every P picture
+      inherited the I picture's thresholds; those five bytes were the whole gap.
+      Now the P job's register image differs from the captured reference job in
+      **zero non-address words across all seven sections**, and six board cells -
+      still and moving fixtures at 2, 4 and 6 frames, i.e. 1 IDR plus 1/3/5 P
+      pictures - are byte-identical NAL for NAL, with the 24-cell IDR matrix
+      unchanged. The `scene_motion_flag` those tables are indexed by is pinned at
+      its initial value.
+
+      What that leaves out, stated rather than hidden: the scene detector itself,
+      `vepu580_h264e_tune_stat_update`, which reads the block statistics
+      (`madi`, `madp`, `md_sad_b16num*`, `st_bnum_*`) out of the STATUS window and,
+      once three consecutive pictures flag large motion, moves the same tables to
+      another row. Not ported; none of the fixtures trip it. The STATUS window's
+      field semantics are the prerequisite, which is also what rate control needs.
+
+      Two smaller notes from the same work. `tools/gen_vepu580_regs.py` now covers
+      the section-3 and RDO windows too (688 fields), but deliberately does *not*
+      reimplement the `cime_multi` / `rime_multi` writes: that corner of section 3
+      moved between the 2024-04 build this crate is verified against and current
+      master, and the image already carries words that match, so inventing a layout
+      there would trade a real match for a cosmetic one. And `h264-enc` had been
+      sizing a frame as *file length / frame count*, which both mis-sliced any file
+      whose frame count differed from the request and silently re-encoded picture
+      zero; the frame size now comes from the encoder geometry, with an explicit
+      error when the input is short.
+
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the

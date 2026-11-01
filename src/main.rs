@@ -50,17 +50,34 @@ fn encode_h264(
             ))
         }
     }
+    let frame_bytes = h264e::input_size(&config)?;
     let mut encoder = h264e::Vepu580H264::open(config)?;
     let started = Instant::now();
     // Repeated pictures, which is what the C harness does with a one-frame raw
     // file too: every frame it wants and the file is short, it re-reads the same
     // bytes. `frames` > 1 exercises the P path against that reference.
-    let per_frame = input.len() / frames.max(1);
+    // The frame stride comes from the encoder geometry, not from the file's
+    // length: dividing the input by the frame count silently mis-slices every
+    // picture whenever the file holds more or fewer frames than asked for.
+    let per_frame = frame_bytes;
+    let wanted = frames.max(1);
+    if input.len() < per_frame * wanted {
+        return Err(format!(
+            "{path}: {} bytes, need {} for {wanted} frames of {width}x{height}",
+            input.len(),
+            per_frame * wanted
+        ));
+    }
+    let frame_at = |i: usize| -> &[u8] {
+        // Successive frames, like the C harness reads them.
+        let start = i * per_frame;
+        &input[start..start + per_frame]
+    };
     let mut annex_b = Vec::new();
     let mut headers = 0usize;
     let mut payload = 0usize;
-    for _ in 0..frames.max(1) {
-        let encoded = encoder.encode_frame(&input[..per_frame])?;
+    for index in 0..frames.max(1) {
+        let encoded = encoder.encode_frame(frame_at(index))?;
         headers += encoded.headers.len();
         payload += encoded.payload.len();
         annex_b.extend_from_slice(&encoded.annex_b);

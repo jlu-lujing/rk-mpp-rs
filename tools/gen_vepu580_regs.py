@@ -34,6 +34,10 @@ STRUCTS = [
     (COMMON, "Vepu580BaseCommon", "BASE", 160, 94),
     (COMMON, "Vepu580RcKlut", "RCKLUT", 1024, 57),
     (H264E, "Vepu580BaseCfg", "H264", 160, 94),
+    # The two tuning windows. The finetune module's writes land here, which is
+    # where the last difference between a Rust P job and a C P job lives.
+    (H264E, "Vepu580Section3", "S3", 1472, 180),
+    (H264E, "Vepu580RdoCfg", "RDO", 2048, 122),
 ]
 
 REG_COMMENT = re.compile(r"reg(\d+)")
@@ -55,10 +59,14 @@ def struct_body(text: str, name: str) -> str:
     raise SystemExit(f"{name}: unterminated struct")
 
 
-def members(body: str):
-    """Yield (word, group name, [(field, bits), ...], words) for one struct body."""
+def members(body: str, first_word: int):
+    """Yield (word, group name, [(field, bits), ...], words) for one struct body.
+
+    `first_word` seeds the running word: a few structs open with their range
+    comment above the `typedef` rather than above the first member.
+    """
     lines = body.splitlines()[1:]
-    comment, index, position = None, None, 0
+    comment, index, position = None, first_word, 0
     while position < len(lines):
         line = lines[position].strip()
         reg = REG_COMMENT.search(line)
@@ -162,7 +170,7 @@ def main() -> int:
     for header, struct, prefix, first_word, words in STRUCTS:
         out.append(f"// {struct} ({header.name}) at absolute word {first_word}.")
         body = struct_body(header.read_text(), struct)
-        for word, group, fields, consumed in members(body):
+        for word, group, fields, consumed in members(body, first_word):
             if not group.startswith("reserved") and word + consumed > first_word + words:
                 raise SystemExit(
                     f"{struct}.{group}: word {word} is outside the captured section"
@@ -176,6 +184,10 @@ def main() -> int:
                 )
                 emitted += 1
                 continue
+            if word is None:
+                raise SystemExit(
+                    f"{struct}.{group}: no register number and no word to inherit"
+                )
             named = [name for name, _ in fields if name]
             total = sum(bits for _, bits in fields)
             # An array or a scalar contributes whole words and has no bitfields;
