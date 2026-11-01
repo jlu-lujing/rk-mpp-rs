@@ -762,6 +762,23 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       and the bounds stay at `h264e_api_v2.c`'s "2Mbps +-25 %" - 1 500 000 to
       2 500 000 - which is what MPP's SEI shows on a caller that never set them,
       because the fixed-QP branch of the harness sets no bounds at all.
+- [x] **The first piece of rate control is in, checked against the library rather
+      than against a reading of the source.** `codec::rc::data` is `MppDataV2`
+      (`rc_base.h`, `rc_base.cpp`) - the window `rc_model_v2.c` keeps every bit and
+      QP history in, where `preset` records a predicted picture and `update`
+      replaces that prediction in the same slot rather than appending next to it.
+      `tools/rc_data_probe.c` calls the real `mpp_data_*_v2` out of
+      `librockchip_mpp.so.0` over one scripted sequence at the window lengths the
+      model actually allocates (2, 5, 8) plus two above the eight entries where
+      `rc_base.h` says the write mode changes, printing the internal positions
+      after every call. `tests/data/rc_data_c_probe.txt` is that transcript and
+      `the_window_matches_the_reference_library_line_for_line` replays it: all 310
+      lines agree, including the three behaviours a tidier reimplementation would
+      change without noticing - `sum()` and `mean()` narrow the 64-bit accumulator
+      to `int` before dividing, `reset` computes `val * size` in 32 bits and widens
+      afterwards, and `sum_with_ratio` walks the array from index zero with geometric
+      weights that overflow on a long window. The `swr=96343577,...` row at 64 slots
+      is that overflow; it has to stay.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
@@ -779,6 +796,16 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       this crate's boundary too: the unset-`-bps` derivation described above, and
       the per-mode bounds (`bps * 17 / 16` with `bps * 15 / 16` on CBR, the same
       top with `bps / 16` on VBR and AVBR, nothing on fixed QP).
+      Two more facts were measured before writing any of it, because both change
+      what has to be built. `-rc 1` is CBR and `-rc 2` is the fixed QP the matrix
+      uses, and outside fixed QP the harness' `-qc` bounds do not reach the
+      encoder: a CBR run with `-qc 10:20:10:20:10` writes
+      `default:cbr-b:300000[250000:350000]-g:60-q:26:[8:48]:[8:48]:2`, the
+      library's own medium quality with 8..48 bounds and an I delta of two. And
+      those six frames cost twelve encoder jobs - every picture went through
+      `check_re_enc` and encoded twice - so rate control is not reachable by
+      generating registers alone, the submit path has to be able to run a picture
+      again.
       The model is not the last word in the register file either: `check_re_enc`
       can raise the QP and ask for the *same* picture again, which the current
       single-shot submit path has no way to express, so rate control also pulls in
@@ -823,7 +850,7 @@ pipeline uses.
 
 ## Verification
 
-- Tests: `cargo test --all-targets` (337 unit + 88 integration, eleven ignored
+- Tests: `cargo test --all-targets` (343 unit + 88 integration, eleven ignored
   board-only tests: parsers, AV1 OBU/frame-header/CDF/PicParams snapshots,
   global-motion reconstruction, tile ranges and packet assembly, POC types
   0/1/2, DPB/MMCO/RPS, registers,

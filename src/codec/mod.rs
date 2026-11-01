@@ -3,6 +3,10 @@
 //! Each format owns a parser that turns the elementary stream into the syntax
 //! the hardware HAL wants. `Jpeg` is implemented; the video codecs of the
 //! official MPP (H.264/H.265/VP8/VP9/AV1/MPEG2/MPEG4/AVS) are the roadmap.
+//!
+//! `rc` is alongside them for the reason MPP puts it there (`mpp/codec/rc/`): the
+//! rate control is shared by the encoders rather than owned by the register file,
+//! which is why it is not under `hal`.
 
 pub mod av1;
 pub mod h263;
@@ -11,6 +15,7 @@ pub mod hevc;
 pub mod jpeg;
 pub mod m2v;
 pub mod mpg4;
+pub mod rc;
 pub mod vp8;
 pub mod vp9;
 pub mod yuv;
