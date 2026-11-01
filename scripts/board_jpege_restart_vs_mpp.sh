@@ -50,7 +50,7 @@ for size in 320x240 640x480; do
       ssh t6 "sudo rm -f $c_out $rust_out"
       if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib split_mode=2 split_arg=$arg \
           timeout 120 $mpp_bin -i $frame -o $c_out \
-          -w $width -h $height -t 9 -n 1 -qc ${qf}:1:99:0:0" \
+          -w $width -h $height -t 8 -n 1 -qc ${qf}:1:99:0:0" \
           >/dev/null 2>&1; then
         printf 'FAIL %-28s (reference encode failed)\n' "$tag"; fail=1; continue
       fi

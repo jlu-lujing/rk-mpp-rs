@@ -44,7 +44,7 @@ for rot in "1:90:rot90" "3:270:rot270"; do
       ssh t6 "sudo rm -f $c_out $rust_out"
       if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib rotation=$env_rot \
           timeout 120 $mpp_bin -i $frame -o $c_out \
-          -w $width -h $height -t 9 -n 1 -qc ${qf}:1:99:0:0" \
+          -w $width -h $height -t 8 -n 1 -qc ${qf}:1:99:0:0" \
           >/dev/null 2>&1; then
         printf 'FAIL %-28s (reference encode failed)\n' "$tag"; fail=1; continue
       fi

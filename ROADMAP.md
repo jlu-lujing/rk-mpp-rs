@@ -1076,8 +1076,32 @@ in what order the evidence gets produced.
       threads, which is `setup_ext_line_bufs` programming a shared system-controller
       line-buffer configuration for both sessions. Relevant to M10's multi-instance
       work.
-- [ ] JPEG encoder (vepu): RGB input, 90/270-degree rotation, restart markers,
-      low-delay slices and multi-core partitioning
+- [x] **JPEG encoder (vepu): restart interval, 90/270-degree rotation and RGB
+      input.** The restart interval follows C's split-by-CTU derivation
+      (`part_rows = ceil(arg / mcu columns)`, `DRI = mcu columns * part_rows`,
+      register 107 carrying the rows over the RST0 marker the HAL seeds), with
+      the DRI written between SOF and DHT exactly where `write_jpeg_header`
+      puts it, and the silently-truncated 16-bit DRI field refused explicitly
+      instead. Rotation maps `ROT_90`/`ROT_270` to the register-74 bits the way
+      `hal_jpege_vepu2_gen_regs` does: the SOF transposes and the geometry
+      registers stay on the unrotated input, which a test locks word for word;
+      180 and mirroring exist in MPP only as warnings and are refused here. RGB
+      input covers exactly the `vepu_rgb_cfg` rows that map to a real `VepuFmt`
+      - 565/555/444, ARGB/ABGR/BGRA/RGBA8888, RGB/BGR101010 - the 24-bit packed
+      pair excluded because C itself cannot read them, with the BT.601
+      coefficients, component masks and byte-swap bits copied from the table.
+      The byte verdict came from `scripts/board_jpege_restart_vs_mpp.sh` (twelve
+      cells, `mpi_enc_test -t 8` under `split_mode=2` plus a marker audit in
+      `scripts/jpege_markers.py`), `board_jpege_rotate_vs_mpp.sh` (eight cells,
+      transposed SOF verified) and `board_jpege_rgb_vs_mpp.sh` (twelve cells
+      through the colour path) - all byte-identical, all at sizes <= 480p
+      because the reference's own default for client-19 work above 720p is a
+      four-band partition the single-job path cannot byte-match by design.
+ - [ ] JPEG encoder (vepu): low-delay slices and multi-core partitioning,
+      researched in `docs/jpege-slices-multicore.md`: the per-band register
+      table, the fact that `base.low_delay` arms only through the `-cfg` event
+      file, the `MPP_DEV_DELIMIT` slot being NULL under the vcodec protocol
+      (a tracer study on the board decides it), and the >720p caveat above.
 
 ### Post-processing
 - [x] RGB888 letterbox scaler (own, faster than RGA for our sizes)

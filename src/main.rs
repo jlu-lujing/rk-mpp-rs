@@ -459,7 +459,7 @@ fn decode_job_sync(
     let mut stream_buf =
         dma_heap::DmaBuf::alloc("system", data.len(), false).map_err(|e| e.to_string())?;
     stream_buf.as_mut_slice()[..data.len()].copy_from_slice(data);
-    let mut out_buf = dma_heap::DmaBuf::alloc("system", output_geometry.frame_size, false)
+    let out_buf = dma_heap::DmaBuf::alloc("system", output_geometry.frame_size, false)
         .map_err(|e| e.to_string())?;
     let (regs, geom) = decode::build(&decode::Job {
         info,

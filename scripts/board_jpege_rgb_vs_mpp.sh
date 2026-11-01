@@ -35,8 +35,7 @@ fi
 
 # format token, -f argument (MppFrameFormat hex)
 for fmt in "rgb565:0x10000" "argb8888:0x1000A" "bgra8888:0x1000C"; do
-  set -- ${fmt//:}
-  name="$1"; fmt_hex="$2"
+  IFS=":" read -r name fmt_hex <<< "$fmt"
   for size in 320x240 640x480; do
     width="${size%%x*}"; height="${size##*x}"
     case "$name" in
@@ -52,7 +51,7 @@ for fmt in "rgb565:0x10000" "argb8888:0x1000A" "bgra8888:0x1000C"; do
       ssh t6 "sudo rm -f $c_out $rust_out"
       if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib \
           timeout 120 $mpp_bin -i $frame -o $c_out \
-          -w $width -h $height -f $fmt_hex -t 9 -n 1 -qc ${qf}:1:99:0:0" \
+          -w $width -h $height -f $fmt_hex -t 8 -n 1 -qc ${qf}:1:99:0:0" \
           >/dev/null 2>&1; then
         printf 'FAIL %-28s (reference encode failed)\n' "$tag"; fail=1; continue
       fi
