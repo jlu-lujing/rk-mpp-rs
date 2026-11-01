@@ -158,6 +158,44 @@ impl RegisterFile {
     /// the ROI area thresholds and `qpmap_mode` - belongs to the rate-control path
     /// and stays at the zero the reference image carries. Those are exactly the
     /// words a CBR or VBR encode will have to fill, which is the remaining M7 work.
+    /// The profile- and entropy-dependent fields of `setup_vepu580_codec`.
+    ///
+    /// `vlc_lmt` and `rect_size` are CAVLC and Baseline-at-or-below-3.0 knobs,
+    /// `etpy_mode` and `trns_8x8` mirror the PPS flags, and `cbc_init_idc` is the
+    /// slice field - `h264e_slice_setup` sets `cabac_init_idc = -1` when CABAC is
+    /// off, which lands as 3 in the two-bit register field. A recorded Baseline
+    /// job therefore has 3 there, and a Main job 0 from the default
+    /// `cabac_init_idc`; taking either value from the image would encode every
+    /// profile the way the captured one was encoded.
+    fn apply_profile(&mut self, config: &EncoderConfig) -> Result<(), String> {
+        let cabac = u32::from(config.entropy_coding);
+        self.set(&vepu580_regs::H264_SYNT_PPS_ETPY_MODE, cabac)?;
+        self.set(
+            &vepu580_regs::H264_SYNT_PPS_TRNS_8X8,
+            u32::from(config.transform_8x8),
+        )?;
+        // `h264e_sps_init` sets `direct8x8_inference = transform8x8_mode`, which is
+        // also what `build_sps` writes as `direct_8x8_inference_flag`. The High
+        // reference differs from Baseline in exactly this bit of `synt_sps`.
+        self.set(
+            &vepu580_regs::H264_SYNT_SPS_DRCT_8X8,
+            u32::from(config.transform_8x8),
+        )?;
+        self.set(
+            &vepu580_regs::H264_SYNT_SLI0_CBC_INIT_IDC,
+            if config.entropy_coding { 0 } else { 3 },
+        )?;
+        self.set(
+            &vepu580_regs::H264_RDO_CFG_RECT_SIZE,
+            u32::from(config.profile == encoder::PROFILE_BASELINE && config.level_idc <= 30),
+        )?;
+        self.set(
+            &vepu580_regs::H264_RDO_CFG_VLC_LMT,
+            u32::from(config.profile < encoder::PROFILE_MAIN && !config.entropy_coding),
+        )?;
+        Ok(())
+    }
+
     fn apply_fixed_qp(&mut self, qp: u32) -> Result<(), String> {
         self.set(&vepu580_regs::BASE_ENC_PIC_PIC_QP, qp)?;
         self.set(&vepu580_regs::BASE_RC_QP_RC_MIN_QP, qp)?;
@@ -397,6 +435,7 @@ pub fn build_registers(
     // words of `setup_vepu580_rc_base`. Everything else is still the captured
     // image, and `validate_reference_config` refuses what it depends on.
     file.apply_fixed_qp(u32::from(config.qp_init))?;
+    file.apply_profile(config)?;
     // The reference job was captured with a harness that asked for motion
     // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
     // side information needs the MD buffer `setup_hal_bufs` allocates for it,
@@ -557,16 +596,13 @@ fn validate_reference_config(config: &EncoderConfig) -> Result<(), String> {
             "VEPU580 bootstrap does not yet allocate the >4096-pixel CIME extension lines".into(),
         );
     }
-    if config.profile != encoder::PROFILE_BASELINE {
-        return Err("VEPU580 bootstrap supports Baseline profile only".into());
-    }
     if config.qp_init > 51 {
         return Err(format!("H.264 QP {} is outside 0..=51", config.qp_init));
     }
-    if config.level_idc != 30 || config.gop != 1 || config.entropy_coding || config.transform_8x8 {
+    if config.level_idc != 30 || config.gop != 1 {
         return Err(
-            "the VEPU580 register image is still recorded at level 3.0, GOP 1, CAVLC and no \
-             transform-8x8; those remain fixed"
+            "the VEPU580 register image is still recorded at level 3.0 and GOP 1; those \
+             remain fixed"
                 .into(),
         );
     }
@@ -921,11 +957,64 @@ mod tests {
         too_high.qp_init = 52;
         assert!(too_high.validate().is_err(), "QP 52 is not an H.264 QP");
 
-        let mut cabac = config();
-        cabac.entropy_coding = true;
-        assert!(build_registers(&cabac, 1, 2, 3, 4, 119_296).is_err());
-        let mut gop = config();
-        gop.gop = 30;
-        assert!(build_registers(&gop, 1, 2, 3, 4, 119_296).is_err());
+        // Baseline with CABAC is not a thing to generate; validate says so.
+        let mut cabac_baseline = config();
+        cabac_baseline.entropy_coding = true;
+        assert!(
+            cabac_baseline.validate().is_err(),
+            "Baseline cannot use CABAC"
+        );
+        assert!(build_registers(&cabac_baseline, 1, 2, 3, 4, 119_296).is_err());
+
+        // What is still frozen is the image's geometry of time and rate: GOP and level.
+        for (name, mut frozen) in [("gop", config()), ("level", config())] {
+            match name {
+                "gop" => frozen.gop = 30,
+                _ => frozen.level_idc = 40,
+            }
+            assert!(
+                build_registers(&frozen, 1, 2, 3, 4, 119_296).is_err(),
+                "{name} is not a parameter yet"
+            );
+        }
+    }
+
+    /// Profile and entropy coding are generator inputs now, and the fields
+    /// `setup_vepu580_codec` derives from them move accordingly - including
+    /// `cbc_init_idc`, which the reference leaves as -1 (3 in the register) under
+    /// CAVLC and sets from `cabac_init_idc` under CABAC.
+    #[test]
+    fn profile_and_entropy_reach_the_codec_fields() {
+        let read = |file: &RegisterFile, field: &vepu580_regs::Field| {
+            file.get(field)
+                .unwrap_or_else(|e| panic!("{}: {e}", field.name))
+        };
+
+        let baseline = build_registers(&config(), 1, 2, 3, 4, 119_296).unwrap();
+        assert_eq!(read(&baseline, &vepu580_regs::H264_SYNT_PPS_ETPY_MODE), 0);
+        assert_eq!(read(&baseline, &vepu580_regs::H264_RDO_CFG_VLC_LMT), 1);
+        assert_eq!(read(&baseline, &vepu580_regs::H264_RDO_CFG_RECT_SIZE), 1);
+        assert_eq!(
+            read(&baseline, &vepu580_regs::H264_SYNT_SLI0_CBC_INIT_IDC),
+            3
+        );
+
+        let mut main = config();
+        main.profile = encoder::PROFILE_MAIN;
+        main.entropy_coding = true;
+        let main = build_registers(&main, 1, 2, 3, 4, 119_296).unwrap();
+        assert_eq!(read(&main, &vepu580_regs::H264_SYNT_PPS_ETPY_MODE), 1);
+        assert_eq!(read(&main, &vepu580_regs::H264_RDO_CFG_VLC_LMT), 0);
+        assert_eq!(read(&main, &vepu580_regs::H264_RDO_CFG_RECT_SIZE), 0);
+        assert_eq!(read(&main, &vepu580_regs::H264_SYNT_SLI0_CBC_INIT_IDC), 0);
+        assert_eq!(read(&main, &vepu580_regs::H264_SYNT_PPS_TRNS_8X8), 0);
+
+        let mut high = config();
+        high.profile = encoder::PROFILE_HIGH;
+        high.entropy_coding = true;
+        high.transform_8x8 = true;
+        let high = build_registers(&high, 1, 2, 3, 4, 119_296).unwrap();
+        assert_eq!(read(&high, &vepu580_regs::H264_SYNT_PPS_TRNS_8X8), 1);
+        assert_eq!(read(&high, &vepu580_regs::H264_SYNT_PPS_ETPY_MODE), 1);
     }
 }

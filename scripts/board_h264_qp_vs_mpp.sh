@@ -1,28 +1,26 @@
 #!/usr/bin/env bash
-# H.264 fixed-QP IDR: our VEPU580 driver vs the C encoder, NAL by NAL.
+# H.264: our VEPU580 driver vs the C encoder, NAL by NAL, over QP and profile.
 #
 # The reference is MPP built from source at the vintage of the library installed
-# on t6, with tools/patches/mpi_enc_test-constrained-baseline.patch applied,
-# because mpi_enc_test hard-codes High profile with CABAC and transform-8x8 in
-# both that vintage and master and applies them after -cfg, so the stock tool
-# cannot be asked for the Constrained Baseline job this driver produces. Point
-# MPP_REF elsewhere to use a different build.
+# on t6 (`MPP_REF_SRC`), with the harness' hard-coded profile rewritten per run -
+# `mpi_enc_test` fixes High profile + CABAC + transform-8x8 in both that vintage
+# and master and applies it after `-cfg`, so a cfg file cannot change it. See
+# tools/patches/mpi_enc_test-constrained-baseline.patch for the four lines and
+# why they have to be source lines.
 #
 # `mpi_enc_test` also inserts user-data SEI NAL units of its own, which are not
 # encoder output, so the compare is per NAL unit and skips type 6.
 #
-# Only sizes whose width *and* height are multiples of 16 are compared - 1920x1080
-# is not one of them, since 1080 rounds up to 1088. `mpi_enc_test` seeks raw NV12 rows by width
-# and ignores `-hstride`, so feeding it a stride-packed picture shears every row:
-# at 322x242 that cost it 9053 bytes of entropy where the same frame, packed, cost
-# 1159. What is coded in the padding macroblocks of a non-aligned picture is
-# harness-dependent either way, so those sizes are checked functionally - decoded
-# and scored by PSNR - in tests/h264_encoder_hw.rs instead of byte-compared here.
+# Only sizes whose width and height are multiples of 16 are byte-compared.
+# `mpi_enc_test` seeks raw NV12 by width and ignores `-hstride`, so a
+# stride-packed 322x242 frame shears into 9053 bytes of garbage where the packed
+# one costs 1159, and 1920x1080 is in the same class because 1080 rounds to 1088.
+# Non-multiple sizes are covered functionally - decoded and scored by PSNR - in
+# tests/h264_encoder_hw.rs.
 #
 # Reference setup, once per board:
 #   git clone https://github.com/rockchip-linux/mpp /tmp/mpp-old
 #   git -C /tmp/mpp-old checkout <commit matching the installed library>
-#   git -C /tmp/mpp-old apply ~/rk-mpp-rs/tools/patches/mpi_enc_test-constrained-baseline.patch
 #   cmake -S /tmp/mpp-old -B /tmp/mpp-old/build -DCMAKE_BUILD_TYPE=Release
 #   make -C /tmp/mpp-old/build -j8 rockchip_mpp mpi_enc_test
 #
@@ -34,35 +32,38 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
 ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
+mpp_src="$mpp_ref/test/mpi_enc_test.c"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
 mpp_lib="$mpp_ref/build/mpp"
 fail=0
 
-if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f $mpp_src"; then
   printf 'SKIP H.264 vs MPP (reference build missing at %s)\n' "$mpp_ref"
   exit 0
 fi
+ssh t6 "test -f /tmp/mpi_enc_test.c.orig || cp $mpp_src /tmp/mpi_enc_test.c.orig"
 
-for size in 64x64 320x240 640x480 1280x720; do
-  width="${size%%x*}"; height="${size##*x}"
-  frame="/tmp/rk-mpp-rs-probe-${size}.nv12"
-  ssh t6 "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $frame $width $height" >/dev/null
+# The three profiles, spelled the way mpi_enc_test writes them.
+profile_args() {
+  case "$1" in
+    baseline) echo 66 0 0 ;;
+    main)     echo 77 1 0 ;;
+    high)     echo 100 1 1 ;;
+  esac
+}
 
-for qp in 26 18 42; do
-  c_out="/tmp/rk-mpp-rs-h264-${size}-c-qp${qp}.264"
-  rust_out="/tmp/rk-mpp-rs-h264-${size}-rust-qp${qp}.264"
-  ssh t6 "sudo rm -f $c_out $rust_out"
-  if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $frame -o $c_out \
-      -w $width -h $height -t 7 -f 0 -n 1 -rc 2 -qc ${qp}:${qp}:${qp}:${qp}:${qp} -v q" \
-      >/dev/null 2>&1; then
-    printf 'FAIL %s qp %2d (reference encode failed)\n' "$size" "$qp"; fail=1; continue
-  fi
-  if ! ssh t6 "cd ~/rk-mpp-rs && timeout 120 sudo ./target/release/rk-mpp-rs h264-enc $frame $rust_out $width $height $qp" \
-      >/dev/null 2>&1; then
-    printf 'FAIL %s qp %2d (our encode failed)\n' "$size" "$qp"; fail=1; continue
-  fi
-  scp -q t6:"$c_out" t6:"$rust_out" /tmp/ 2>/dev/null
-  if python3 - "${c_out##*/}" "${rust_out##*/}" <<'PY'
+configure_reference_profile() {
+  set -- $(profile_args "$1")
+  ssh t6 "cp /tmp/mpi_enc_test.c.orig $mpp_src &&
+          sed -i -e 's/\"h264:profile\", [0-9]*/\"h264:profile\", $1/' \
+                 -e 's/\"h264:cabac_en\", [0-9]*/\"h264:cabac_en\", $2/' \
+                 -e 's/\"h264:trans8x8\", [0-9]*/\"h264:trans8x8\", $3/' $mpp_src &&
+          make -C $mpp_ref/build -j8 mpi_enc_test" >/dev/null 2>&1
+}
+
+# compare NAL units, ignoring the harness' own SEI
+compare() {
+  python3 - "$1" "$2" <<'PY'
 import re, sys
 
 def nals(path):
@@ -74,7 +75,6 @@ def nals(path):
         if not body:
             continue
         unit = body[0] & 0x1f
-        # SEI from the C harness is its own user data, not encoder output.
         if unit == 6:
             continue
         out.setdefault(unit, []).append(body)
@@ -92,12 +92,38 @@ for unit in sorted(c):
             sys.exit(1)
 sys.exit(0)
 PY
-  then
-    printf 'PASS %s qp %2d (SPS, PPS and IDR byte-identical to the C encoder)\n' "$size" "$qp"
-  else
-    printf 'FAIL %s qp %2d (bitstreams differ)\n' "$size" "$qp"; fail=1
-  fi
-done
+}
+
+for size in 64x64 320x240 640x480 1280x720; do
+  width="${size%%x*}"; height="${size##*x}"
+  frame="/tmp/rk-mpp-rs-probe-${size}.nv12"
+  ssh t6 "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $frame $width $height" >/dev/null
+  for profile in baseline main high; do
+    for qp in 26 18; do
+      tag="${size}-${profile}-qp${qp}"
+      c_out="/tmp/rk-mpp-rs-h264-${tag}.264"
+      rust_out="/tmp/rk-mpp-rs-h264-${tag}-rust.264"
+      configure_reference_profile "$profile" || { printf 'FAIL %s (could not configure reference)\n' "$tag"; fail=1; continue; }
+      ssh t6 "sudo rm -f $c_out $rust_out"
+      if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $frame -o $c_out \
+          -w $width -h $height -t 7 -f 0 -n 1 -rc 2 -qc ${qp}:${qp}:${qp}:${qp}:${qp} -v q" \
+          >/dev/null 2>&1; then
+        printf 'FAIL %-34s (reference encode failed)\n' "$tag"; fail=1; continue
+      fi
+      if ! ssh t6 "cd ~/rk-mpp-rs && timeout 120 sudo ./target/release/rk-mpp-rs h264-enc $frame $rust_out $width $height $qp $profile" \
+          >/dev/null 2>&1; then
+        printf 'FAIL %-34s (our encode failed)\n' "$tag"; fail=1; continue
+      fi
+      scp -q t6:"$c_out" t6:"$rust_out" /tmp/ 2>/dev/null
+      if compare "${c_out##*/}" "${rust_out##*/}"; then
+        printf 'PASS %-34s (SPS, PPS and IDR byte-identical to the C encoder)\n' "$tag"
+      else
+        printf 'FAIL %-34s (bitstreams differ)\n' "$tag"; fail=1
+      fi
+    done
+  done
 done
 
+# Leave the reference harness on the Baseline pin the patch documents.
+configure_reference_profile baseline
 exit "$fail"

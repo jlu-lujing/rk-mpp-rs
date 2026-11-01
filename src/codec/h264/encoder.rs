@@ -184,10 +184,15 @@ impl EncoderConfig {
         self.level_idc
     }
 
+    /// `h264e_sps_init` picks the constraint flags per profile: Baseline sets
+    /// set0 and set1, Main sets set1, High sets set3. Nothing else in this crate
+    /// forces them (`constraint_set` stays zero, so the force path in the
+    /// reference never fires).
     fn constraints(&self) -> u8 {
         match self.profile {
             PROFILE_BASELINE => 0b1100_0000,
             PROFILE_MAIN => 0b0100_0000,
+            PROFILE_HIGH => 0b0001_0000,
             _ => 0,
         }
     }
@@ -426,6 +431,60 @@ mod tests {
     /// `pic_init_qp` at 26 and the hardware derives `slice_qp_delta` from that, so
     /// writing qp_init here would apply it twice. On the board this showed up as a
     /// 6-byte PPS against the reference's 4 at every QP but 26.
+    /// SPS and PPS bytes taken from the C encoder on t6 at 320x240 QP 26 for each
+    /// profile it can be pinned to (`mpi_enc_test` has to be patched, see
+    /// tools/patches). These are the headers our own writer must reproduce, byte
+    /// for byte, before the hardware ever sees a picture.
+    #[test]
+    fn sps_and_pps_match_the_c_encoder_per_profile() {
+        let cases: [(&str, u8, bool, bool, &[u8], &[u8]); 3] = [
+            (
+                "baseline",
+                PROFILE_BASELINE,
+                false,
+                false,
+                &[
+                    0x67, 0x42, 0xc0, 0x1e, 0x8d, 0x8d, 0x50, 0xa0, 0xf9, 0x08, 0x00, 0x00, 0x03,
+                    0x00, 0x08, 0x00, 0x00, 0x03, 0x01, 0xe4, 0x78, 0x44, 0x23, 0x50,
+                ],
+                &[0x68, 0xce, 0x31, 0xb2],
+            ),
+            (
+                "main",
+                PROFILE_MAIN,
+                true,
+                false,
+                &[
+                    0x67, 0x4d, 0x40, 0x1e, 0x8d, 0x8d, 0x50, 0xa0, 0xf9, 0x08, 0x00, 0x00, 0x03,
+                    0x00, 0x08, 0x00, 0x00, 0x03, 0x01, 0xe4, 0x78, 0x44, 0x23, 0x50,
+                ],
+                &[0x68, 0xee, 0x31, 0xb2],
+            ),
+            (
+                "high",
+                PROFILE_HIGH,
+                true,
+                true,
+                &[
+                    0x67, 0x64, 0x10, 0x1e, 0xac, 0x1b, 0x1a, 0xa1, 0x41, 0xfa, 0x10, 0x00, 0x00,
+                    0x03, 0x00, 0x10, 0x00, 0x00, 0x03, 0x03, 0xc8, 0xf0, 0x88, 0x46, 0xa0,
+                ],
+                &[0x68, 0xee, 0x31, 0xb2, 0x1b],
+            ),
+        ];
+        for (name, profile, cabac, t8x8, sps, pps) in cases {
+            let mut config = EncoderConfig::new(320, 240);
+            config.profile = profile;
+            config.entropy_coding = cabac;
+            config.transform_8x8 = t8x8;
+            let got_sps = build_sps(&config).unwrap();
+            let got_pps = build_pps(&config).unwrap();
+            // build_sps / build_pps include the four-byte start code.
+            assert_eq!(&got_sps[4..], sps, "{name} SPS");
+            assert_eq!(&got_pps[4..], pps, "{name} PPS");
+        }
+    }
+
     #[test]
     fn pps_qp_fields_ignore_qp_init() {
         for qp in [0u8, 10, 18, 26, 32, 42, 51] {

@@ -23,10 +23,30 @@ fn encode_h264(
     width: usize,
     height: usize,
     qp_init: u8,
+    profile: &str,
 ) -> Result<(usize, usize, usize, f64), String> {
     let input = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     let mut config = h264_syntax::EncoderConfig::new(width, height);
     config.qp_init = qp_init;
+    // Same mapping `mpi_enc_test` uses: CABAC from Main upwards, transform-8x8
+    // only at High.
+    match profile {
+        "baseline" | "" => {}
+        "main" => {
+            config.profile = h264_syntax::PROFILE_MAIN;
+            config.entropy_coding = true;
+        }
+        "high" => {
+            config.profile = h264_syntax::PROFILE_HIGH;
+            config.entropy_coding = true;
+            config.transform_8x8 = true;
+        }
+        other => {
+            return Err(format!(
+                "unknown profile {other}; expected baseline, main or high"
+            ))
+        }
+    }
     let mut encoder = h264e::Vepu580H264::open(config)?;
     let started = Instant::now();
     let encoded = encoder.encode_idr(&input)?;
@@ -440,13 +460,14 @@ fn main() {
         // QP defaults to the value the recorded VEPU580 register image carries, so
         // an existing invocation keeps producing the same bytes.
         let qp_init = args.get(6).and_then(|s| s.parse::<u8>().ok()).unwrap_or(26);
+        let profile = args.get(7).map(String::as_str).unwrap_or("baseline");
         if src.is_empty() || dst.is_empty() {
             eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp]");
             std::process::exit(2);
         }
-        match encode_h264(src, dst, width, height, qp_init) {
+        match encode_h264(src, dst, width, height, qp_init, profile) {
             Ok((bytes, header_bytes, payload_bytes, ms)) => println!(
-                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} qp {qp_init}, {ms:.3} ms"
+                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_init}, {ms:.3} ms"
             ),
             Err(e) => {
                 eprintln!("H.264 encode failed: {e}");

@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **fixed-QP IDR is byte-identical to the C encoder across four sizes and six QPs against a vintage-matched reference; P slices, CBR/VBR, SEI and ROI remain** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **fixed-QP IDR byte-identical to the C encoder in all 24 cells of four sizes x three profiles x QP {18,26}, plus six QPs at the reference size; P slices, CBR/VBR, SEI and ROI remain** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 IDR is a size-parameterised replay of a recorded VEPU580 register image (see the encoder note below), so rate control, profile, level, GOP and P slices are all still frozen; H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -589,6 +589,25 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       in that class too, because 1080 rounds up to 1088. Sizes that are not
       macroblock multiples stay under decode-and-PSNR coverage in
       `tests/h264_encoder_hw.rs`, where they pass.
+- [x] **Profile is a parameter, not a property of the captured image.** Six fields
+      of the H.264 window depend on it and `setup_vepu580_codec` derives every one:
+      `synt_pps.etpy_mode` and `trns_8x8` mirror the PPS flags,
+      `synt_sli0.cbc_init_idc` takes `cabac_init_idc` under CABAC and -1 otherwise
+      - which lands as 3 in the two-bit register field, so a Baseline capture reads
+      3 and a Main capture 0 and neither is a constant to copy,
+      `synt_sps.drct_8x8` follows `transform8x8_mode` like
+      `direct_8x8_inference_flag` in the SPS does, and `rdo_cfg.rect_size` /
+      `vlc_lmt` are Baseline-and-level-at-or-below-3.0 and CAVLC respectively. In
+      the SPS the constraint flags are per profile - Baseline `0xc0`, Main `0x40`,
+      High `0x10` (set3, which is the one `constraints()` got wrong for High).
+      Verified on t6 against a reference harness reconfigured per run by the board
+      script: **24 of 24 cells - 64x64, 320x240, 640x480 and 1280x720 at Baseline,
+      Main and High, QP 18 and 26 - byte-identical SPS, PPS and IDR**. The SPS and
+      PPS bytes of the three profiles are also locked as unit-test fixtures, so a
+      header regression shows up on the host without the board.
+      To name those registers at all, `tools/gen_vepu580_regs.py` now parses
+      `Vepu580BaseCfg` from the H.264 HAL header as well - reg221 onwards of the
+      same BASE window, 83 more fields, with the 228 existing positions unchanged.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
