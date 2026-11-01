@@ -1208,8 +1208,22 @@ in what order the evidence gets produced.
       assertions exist - that client 28 binds and answers `POLL_HW_FINISH`, and that
       one I5O2 job returns two frames of the input size
       (`tests/iep_deinterlace_hw.rs`) - and `scripts/board_iep_dei_vs_mpp.sh` is the
-      byte comparison against the C `iep2_test`. **Neither has a recorded run**, so
-      the claim stops at "derives and would submit"; nothing here is byte-exact yet.
+      byte comparison against the C `iep2_test`, which ships at
+      `build/mpp/vproc/iep2/test/iep2_test` of the reference tree.
+
+      The board has now run it, and it says the hardware question is answered but
+      the pixel question is not. One I5O2 job at 720x480 TFF: both sides write
+      1,036,800 bytes - two progressive frames of the input size, so the session,
+      the register write/read pair and `POLL_HW_FINISH` all work - and
+      **1,035,360 of them differ**. The shape of the difference is the finding: in
+      the C's output, every row of a given frame follows one `y * 3 + n * 7`
+      sequence (rows 7, 10, 13, 31, 55 - one source picture), and the first input
+      frame contributes no rows at all; ours interleaves rows from the previous and
+      current fields. So C's I5O2 chose same-frame pairing on this fixture - the
+      motion-history decision `iep2_test` runs with its default thresholds - and
+      this driver pairs fields unconditionally. Byte-exactness needs that decision,
+      not a register fix: the pairing is the open piece, and it is why M9 stays
+      open here.
 - [ ] IEP (`mpp/vproc/iep/iep.c`, `iep2/iep2.c`, client 28): YUV scale and crop,
       and the recorded board run of the deinterlace path above. This is the M9
       engine that exists on this board.

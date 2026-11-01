@@ -239,7 +239,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 8. W4 后处理（L，约 8–12 天）
 
-- [~] W4-1 IEP（client 28）：去隔行 HAL + session + CLI 已落地（18 条宿主字段单测 +
+- [~] W4-1 IEP（client 28）：去隔行 HAL + session + CLI 已落地并**跑通硬件**；板级首跑
+      记录到真实分歧（尺寸相同、1,035,360/1,036,800 字节不同：C 依 motion-history 选同帧
+      配对，我们无条件混场），下一步实现配对决策；YUV 缩放与裁剪未做。
       2 条 `#[ignore]` 板级断言），板级无记录运行；YUV 缩放与裁剪未做。
 - [ ] W4-2 IEP 与解码器联动（NV12 直通、零拷贝）
 - [ ] W4-3 8/10-bit 互转（打包/planar、位深扩展）
