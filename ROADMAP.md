@@ -699,6 +699,30 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       zero; the frame size now comes from the encoder geometry, with an explicit
       error when the input is short.
 
+- [x] **The STATUS window is ported and verified field for field**, because it is
+      the shared input of the two things still missing from the encoder: the scene
+      motion detector and rate control. `Statistics::from_words` names
+      `bs_lgth_l32`, `qp_sum`, `madp`, `num_ctu`, `madi`, `num_b16` and the
+      `md_sad_b16num` / `madi_b16num` histograms, and every offset is checked
+      twice over rather than trusted: `tests/data/vepu580_status_c_fixqp_2f.txt`
+      holds the C encoder's own read-back on t6 as an offline fixture, and
+      `scripts/board_h264_status_vs_mpp.sh` encodes the same two pictures with
+      both encoders and requires the windows to agree. They do, for the IDR and
+      the P job alike, word for word - with one exception that has to stay
+      different: reg4107, `st_bsb.bsbw_addr`, the bitstream address the hardware
+      wrote to, which cannot match between two processes and is therefore reported
+      rather than asserted.
+      Two corrections the measurements forced, both of which were asserted more
+      confidently than the evidence supported. First, the previous entry's claim
+      that "madp and num_ctu are zero on this block" is only half right: `num_ctu`
+      is 75 on the P picture, alive and non-zero; `madp` is zero because the
+      fixture encodes the same picture twice, so the mean absolute inter difference
+      is zero by definition. Which inputs actually gate the scene detector is
+      therefore a measured question now, not an assumed one. Second, the first
+      version of the STATUS fixture was shifted by one word, because the ioctl
+      tracer prints `words=<count>` before the values and the extractor parsed the
+      count as data; the fixture's own header now records that, since the mistake
+      was invisible everywhere else it could have been caught.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the

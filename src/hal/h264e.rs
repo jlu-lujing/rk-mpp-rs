@@ -86,6 +86,8 @@ pub struct EncodedFrame {
     pub is_idr: bool,
     pub frame_num: u32,
     pub poc: i32,
+    /// What the hardware reported about this picture.
+    pub statistics: Statistics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -477,6 +479,8 @@ impl Vepu580H264 {
         let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
         annex_b.extend_from_slice(&headers);
         annex_b.extend_from_slice(&payload);
+        let statistics = Statistics::from_words(&status);
+        dump_statistics(&job.state, &status);
         Ok(EncodedFrame {
             annex_b,
             payload,
@@ -484,6 +488,7 @@ impl Vepu580H264 {
             is_idr: state.is_idr,
             frame_num: state.frame_num,
             poc: state.poc,
+            statistics,
         })
     }
 
@@ -562,6 +567,94 @@ const RIME_MULTI: [[u32; 3]; 4] = [[4, 32, 128], [4, 16, 64], [4, 16, 64], [4, 4
 /// reads the block statistics out of the STATUS window - is not ported yet, so
 /// this is the flag's initial value, 0, and the tables are the no-change rows.
 pub const SCENE_MOTION_FLAG_DEFAULT: usize = 2;
+
+/// The STATUS window (`Vepu580Status_t`), read back after every job.
+///
+/// Field positions are the absolute register words of `Vepu580Status_t` minus
+/// reg4096, which is where the window starts (`VEPU580_STATUS_OFFSET`). They are
+/// not taken on trust: the ioctl tracer records the C encoder's own read-back of
+/// this window, and `scripts/board_h264_status_vs_mpp.sh` diffs the two, so a
+/// wrong offset fails a comparison rather than feeding a silent zero to the
+/// motion and rate-control logic downstream.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Statistics {
+    /// `bs_lgth_l32`: bytes the hardware wrote for this picture.
+    pub bitstream_bytes: u32,
+    /// `st_bnum_b16.num_b16`, reg4171 - the 16x16 block count the statistics below
+    /// are averages over.
+    pub num_b16: u32,
+    /// `madi`, reg4170 - mean absolute difference of the intra prediction.
+    pub madi: u32,
+    /// `madp`, reg4168 - mean absolute difference of the inter prediction.
+    pub madp: u32,
+    /// `st_bnum_cme.num_ctu`, reg4169 - the CME block count `madp` averages over.
+    /// Zero on t6's block, which is why the motion level never leaves "still".
+    pub num_ctu: u32,
+    /// `md_sad_b16num0..3`, reg4173..4176.
+    pub md_sad_b16num: [u32; 4],
+    /// `madi_b16num0..3`, reg4177..4180.
+    pub madi_b16num: [u32; 4],
+    /// `qp_sum`, reg4099 - the QP sum rate control divides by the CTU count.
+    pub qp_sum: u32,
+}
+
+impl Statistics {
+    /// Interpret a status readback whose first word is reg4096.
+    pub fn from_words(words: &[u32]) -> Self {
+        let at = |word: usize| -> u32 {
+            word.checked_sub(4096)
+                .and_then(|i| words.get(i).copied())
+                .unwrap_or(0)
+        };
+        Self {
+            bitstream_bytes: at(4096),
+            num_b16: at(4171) & 0x7f_ffff,
+            madi: at(4170),
+            madp: at(4168),
+            num_ctu: at(4169) & 0x1f_ffff,
+            md_sad_b16num: [at(4173), at(4174), at(4175), at(4176)],
+            madi_b16num: [at(4177), at(4178), at(4179), at(4180)],
+            qp_sum: at(4099),
+        }
+    }
+
+    /// The window as the trace format prints it, for `scripts/` to diff against
+    /// the C encoder's read-back.
+    pub fn to_trace_words(&self, words: &[u32]) -> String {
+        let mut out = String::new();
+        for word in words {
+            out.push_str(&format!("{word:08x} "));
+        }
+        let _ = self;
+        out
+    }
+}
+
+/// Write our STATUS readback in the same text shape the ioctl tracer prints for
+/// the C encoder's, so the two can be diffed word by word.
+fn dump_statistics(state: &FrameState, status: &[u32]) {
+    let Some(path) = std::env::var_os("RKMPP_STAT_DUMP") else {
+        return;
+    };
+    let mut text = format!(
+        "mpp_trace read_complete[1]@{} job={} words={}",
+        STATUS_OFFSET,
+        state.index,
+        status.len()
+    );
+    for word in status {
+        text.push_str(&format!(" {word:08x}"));
+    }
+    text.push('\n');
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(text.as_bytes());
+    }
+}
 
 /// The chroma KLUT weights of `hal_h264e_vepu580.c`. An I picture loads the
 /// table from word 0 and a P picture from word 4, 24 words each.
@@ -1482,6 +1575,66 @@ mod tests {
             idr.rc_klut[vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word - 1024],
             CHROMA_KLUT_WEIGHT[0]
         );
+    }
+
+    /// The STATUS field positions come from `Vepu580Status_t`, but what makes them
+    /// trustworthy is the C encoder's own read-back of the same window, captured on
+    /// t6 and kept as a fixture. A wrong offset here would hand the motion and rate
+    /// control logic a silent zero instead of failing this test.
+    #[test]
+    fn statistics_match_the_c_encoders_readback() {
+        let text = std::fs::read_to_string("tests/data/vepu580_status_c_fixqp_2f.txt")
+            .expect("C STATUS capture");
+        let jobs: Vec<Statistics> = text
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                Statistics::from_words(
+                    &line
+                        .split_whitespace()
+                        .map(|w| u32::from_str_radix(w, 16).expect("hex word"))
+                        .collect::<Vec<u32>>(),
+                )
+            })
+            .collect();
+        assert_eq!(jobs.len(), 2, "the IDR job and the P job");
+
+        // Values read straight from the C encoder's own read-back on t6: 20x15
+        // macroblocks, QP 26 over 300 blocks, and the second picture being a repeat
+        // of the first.
+        assert_eq!(jobs[0].bitstream_bytes, 825, "the IDR the C encoder wrote");
+        assert_eq!(jobs[0].qp_sum, 7800, "qp_sum at reg4099");
+        assert_eq!(jobs[0].num_b16, 300, "st_bnum_b16.num_b16 at reg4171");
+        assert_eq!(jobs[0].madi, 600, "madi at reg4170");
+        assert_eq!(jobs[0].madi_b16num, [300, 0, 0, 0], "reg4177..4180");
+        assert_eq!(
+            jobs[0].md_sad_b16num,
+            [0, 0, 0, 0],
+            "no inter search on an IDR"
+        );
+        assert_eq!(jobs[0].madp, 0);
+        assert_eq!(jobs[0].num_ctu, 0, "no CME blocks on an IDR");
+
+        // The P picture populates the CME side, and its mean absolute inter
+        // difference is zero because the two pictures are identical - which is the
+        // mechanism holding the scene motion level at "still" in this fixture, not a
+        // property of the hardware: `num_ctu`, the divisor, is a live 75.
+        assert_eq!(jobs[1].bitstream_bytes, 62, "the P picture");
+        assert_eq!(jobs[1].qp_sum, 7800);
+        assert_eq!(jobs[1].num_b16, 300);
+        assert_eq!(jobs[1].madi, 600);
+        assert_eq!(
+            jobs[1].md_sad_b16num,
+            [300, 0, 0, 0],
+            "md_sad_b16num0 at reg4173"
+        );
+        assert_eq!(jobs[1].madi_b16num, [300, 0, 0, 0]);
+        assert_eq!(
+            jobs[1].madp, 0,
+            "identical pictures, so no inter difference"
+        );
+        assert_eq!(jobs[1].num_ctu, 75, "num_ctu at reg4169");
     }
 
     #[test]
