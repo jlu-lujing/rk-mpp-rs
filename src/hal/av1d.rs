@@ -206,6 +206,11 @@ pub struct Av1d {
     pub last_status: (u32, u32, u32),
     pub last_hardware_error: bool,
     pub last_probability: Vec<u8>,
+    /// Reused across jobs: the stream packet grows monotonically, and the
+    /// offset list and request batch are rebuilt in full every job.
+    stream: Option<DmaBuf>,
+    offsets_scratch: Vec<RegOffsetInfo>,
+    batch: Batch,
 }
 
 impl Av1d {
@@ -222,6 +227,9 @@ impl Av1d {
             last_status: (0, 0, 0),
             last_hardware_error: false,
             last_probability: Vec::new(),
+            stream: None,
+            offsets_scratch: Vec::with_capacity(24),
+            batch: Batch::new(),
         })
     }
 
@@ -275,9 +283,29 @@ impl Av1d {
             self.filter = Some(DmaBuf::alloc("system", filter.allocation_size, false)?);
         }
 
+        // Reuse and grow the stream packet across jobs the way the VP8
+        // decoder's load_stream does; zeroing the tail keeps the bytes the
+        // hardware sees identical to a fresh zeroed allocation.
         let padded_stream_len = align(stream_data.len(), 128).max(128);
-        let mut stream = DmaBuf::alloc("system", padded_stream_len, false)?;
-        write_dma(&mut stream, stream_data)?;
+        if self
+            .stream
+            .as_ref()
+            .is_none_or(|buffer| buffer.len() < padded_stream_len)
+        {
+            self.stream = None;
+            self.stream = Some(DmaBuf::alloc("system", padded_stream_len, false)?);
+        }
+        let stream = self
+            .stream
+            .as_mut()
+            .expect("stream buffer was just created");
+        stream.sync_write_begin()?;
+        {
+            let window = stream.as_mut_slice();
+            window[..stream_data.len()].copy_from_slice(stream_data);
+            window[stream_data.len()..padded_stream_len].fill(0);
+        }
+        stream.sync_write_end()?;
 
         let mut reference_fds = [None; AV1_MAX_PIC_BUFFERS];
         for (destination, frame) in reference_fds.iter_mut().zip(references) {
@@ -313,22 +341,15 @@ impl Av1d {
             }
             std::fs::write(directory.join(format!("reg_in_{job:03}.txt")), text)?;
         }
-        let offsets: Vec<RegOffsetInfo> = registers
-            .address_offsets()
-            .iter()
-            .filter(|offset| offset.offset != 0)
-            .map(|offset| RegOffsetInfo {
-                reg_idx: offset.reg_idx,
-                offset: offset.offset,
-            })
-            .collect();
+        self.offsets_scratch.clear();
+        write_armed_offsets(&registers, &mut self.offsets_scratch);
         let mut readback = [0u32; AV1_REGISTER_COUNT];
-        let mut batch = Batch::new();
-        batch
+        self.batch.clear();
+        self.batch
             .reg_write(registers.words(), 0)
             .reg_read(&mut readback, 0)
-            .reg_offsets(&offsets);
-        self.svc.submit_batch(&mut batch)?;
+            .reg_offsets(&self.offsets_scratch);
+        self.svc.submit_batch(&mut self.batch)?;
         self.svc.poll_hw_finish()?;
 
         self.last_status = (readback[1], readback[261], readback[262]);
@@ -347,6 +368,22 @@ impl Av1d {
         self.probability_out.sync_read_end()?;
         Ok(())
     }
+}
+
+/// The address-offset entries one job arms: every nonzero declared offset,
+/// in declaration order. Appended into caller-owned scratch; the entry list
+/// is identical to the original per-frame `filter().map().collect()` pass.
+pub fn write_armed_offsets(registers: &Av1Registers, out: &mut Vec<RegOffsetInfo>) {
+    out.extend(
+        registers
+            .address_offsets()
+            .iter()
+            .filter(|offset| offset.offset != 0)
+            .map(|offset| RegOffsetInfo {
+                reg_idx: offset.reg_idx,
+                offset: offset.offset,
+            }),
+    );
 }
 
 fn write_dma(buffer: &mut DmaBuf, bytes: &[u8]) -> io::Result<()> {
