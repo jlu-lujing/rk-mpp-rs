@@ -873,6 +873,41 @@ pipeline uses.
   re-run. Non-interleaved single runs are not evidence at all:
   one lone `mpi_dec_test` pass over `test720.264` printed 1037 fps where the
   interleaved median is 166 fps.
+- Encode throughput versus the source-built C encoder, from
+  `scripts/board_bench_encode_vs_mpp.sh` - the encode side had never been measured
+  at all, which left "never slower than the C MPP" unverified for every encoder
+  feature so far. Twelve 16-aligned NV12 frames, QP 26, both sides writing to
+  `/dev/null`, both timed externally in interleaved samples. The C tool's own
+  `encode N frames time T ms` line would be the natural clock, but this vintage's
+  `mpi_enc_test` prints nothing at all - not even its usage - so its internal
+  timer is unreachable, and timing one side internally and the other externally
+  would charge process startup to only one of them.
+
+  Three passes, medians of interleaved samples; the spread across passes is given
+  because it is not negligible:
+
+  | input | C MPP | this crate | rust |
+  |---|---|---|---|
+  | 320x240 12p | 41-45 ms | 31-35 ms | +9% to +32% |
+  | 640x480 12p | 51-54 ms | 44-48 ms | +8% to +16% |
+  | 1280x720 12p | 81-91 ms | 64-73 ms | +16% to +30% |
+  | 1920x1088 12p | 123-143 ms | 108-135 ms | parity, within noise |
+
+  At 1080p-class the two distributions overlap - nine interleaved samples gave C
+  {153,140,123,124,124,118,123,123,147} against our {149,108,136,135,144,109,134,110,148},
+  medians 124 against 135 - so no claim of a win is made there, and the row is
+  bimodal (about 110 and about 140) on both sides rather than one of them being
+  erratic. Our codec loop for the same encode is ~80 ms of that, the rest being
+  frame reads and roughly 18 MB of dma-buf per `open`, which the C encoder pays
+  too.
+
+  One real fix came out of measuring: the CLI read the whole input clip into
+  memory before encoding, harmless while the encoder could only produce one IDR
+  and a plain cost with a GOP - 12 frames of 1920x1088 is 37 MB read and held live
+  to be consumed 3 MB at a time. It now streams one frame per picture, which
+  moved that row's own reported work back into the timed region where it belongs.
+  The six byte-exact GOP cells still pass after the change.
+
 - Frame readback rule: the decoder output mapping is uncached, so a plane is
   read exactly once and eight bytes per load. `codec::yuv::nv12_to_planar` is
   the shared implementation behind H.264, H.265, VP9 and AV1. The per-sample

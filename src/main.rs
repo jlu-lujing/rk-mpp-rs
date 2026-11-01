@@ -27,7 +27,13 @@ fn encode_h264(
     frames: usize,
     gop: u32,
 ) -> Result<(usize, usize, usize, f64), String> {
-    let input = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    // The frames are read one at a time. slurping the file was fine while the
+    // encoder only ever produced a single IDR, but with a GOP it charges the
+    // whole clip to the encode: 12 frames of 1920x1088 is 37 MB read and held
+    // live to be used 3 MB at a time, which was most of the gap between the
+    // loop's own 58 ms and the command's 135 ms in the throughput measurement.
+    let mut source =
+        std::io::BufReader::new(std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?);
     let mut config = h264_syntax::EncoderConfig::new(width, height);
     config.qp_init = qp_init;
     config.gop = gop.max(1);
@@ -61,23 +67,32 @@ fn encode_h264(
     // picture whenever the file holds more or fewer frames than asked for.
     let per_frame = frame_bytes;
     let wanted = frames.max(1);
-    if input.len() < per_frame * wanted {
-        return Err(format!(
-            "{path}: {} bytes, need {} for {wanted} frames of {width}x{height}",
-            input.len(),
-            per_frame * wanted
-        ));
-    }
-    let frame_at = |i: usize| -> &[u8] {
-        // Successive frames, like the C harness reads them.
-        let start = i * per_frame;
-        &input[start..start + per_frame]
+    let mut frame = vec![0u8; per_frame];
+    let mut read_frame = |buffer: &mut [u8]| -> Result<bool, String> {
+        use std::io::Read;
+        let mut filled = 0usize;
+        while filled < buffer.len() {
+            match source.read(&mut buffer[filled..]) {
+                Ok(0) => return Ok(false),
+                Ok(n) => filled += n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(true)
     };
     let mut annex_b = Vec::new();
     let mut headers = 0usize;
     let mut payload = 0usize;
-    for index in 0..frames.max(1) {
-        let encoded = encoder.encode_frame(frame_at(index))?;
+    for index in 0..wanted {
+        if !read_frame(&mut frame)? {
+            return Err(format!(
+                "{path}: short at frame {}, need {} bytes each",
+                index + 1,
+                per_frame
+            ));
+        }
+        let encoded = encoder.encode_frame(&frame)?;
         headers += encoded.headers.len();
         payload += encoded.payload.len();
         annex_b.extend_from_slice(&encoded.annex_b);
