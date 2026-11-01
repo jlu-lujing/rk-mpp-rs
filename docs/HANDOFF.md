@@ -243,9 +243,14 @@ H.264/VEPU580 编码已做到：
   提交六段寄存器并 poll，前缀由 `codec::h265::encoder::build_prefix` 拼出。
   `scripts/board_h265_idr_vs_mpp.sh`：**320x240 / 640x480 / 1280x720 整条码流与 C
   逐字节相同**（860 / 1618 / 3585 字节）。
-- 下一步：P 帧（DPB/参考面轮换）、tiles/WPP/SAO、码率控制（CBR/VBR/AVBR），以及逐 slice
-  输出（当前每个作业一个 NAL）。还有一条已知差异：推导图在非提交态刻意不开
-  `enc_pic.mei_stor`，会话里因为自己拥有 MD 缓冲才置 1。
+- P 帧已通：GOP 的长期参考是**首帧 IDR**（SPS 里一条 `poc_lsb 0` 的 LT 条目，
+  P 的 `synt_refm` 标 `used_by_lt_flg0`），P 都重建到另一个槽；第三张起
+  `ref_pic_lst_mdf_l0`/`lst_entry_l0`/`num_negative_pics` 置 1。P 图还要把
+  `lamd_modb_qp` 写进 `iprd_wgt_qp_hevc_0_51`，IDR 保留 intra 表。
+  `scripts/board_h265_gop_vs_mpp.sh`：2/3/5 帧在 320x240，以及 2 帧的 640x480、
+  1280x720 **整条码流与 C 逐字节相同**；横移 8 像素的动画面（1032 字节）也逐字节。
+- 下一步：tiles/WPP/SAO、码率控制（CBR/VBR/AVBR）、B 帧/多参考、逐 slice 输出；
+  另一条已知差异：纯推导图刻意不开 `enc_pic.mei_stor`，会话里因为自己拥有 MD 缓冲才置 1。
 
 ### 5.5 M9 后处理（IEP）
 

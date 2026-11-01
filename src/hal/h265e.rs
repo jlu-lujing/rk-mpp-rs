@@ -45,6 +45,34 @@ use crate::service::RegOffsetInfo;
 pub const REFERENCE_WIDTH: usize = 320;
 pub const REFERENCE_HEIGHT: usize = 240;
 
+/// Which picture of the GOP the register image is for. `set_slice_regs` and
+/// `set_ref_regs` branch on the syntax the slice writer produced; the two shapes
+/// this crate emits today are the opening IDR and a single-reference P.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Picture {
+    /// `NAL_IDR_W_RADL`, `sli_type` 2 (I), POC 0, no reference markings.
+    Idr,
+    /// `NAL_TRAIL_R`, `sli_type` 1 (P), one short-term reference rebuilt as an LT
+    /// entry the way `h265e_set_ref_regs` does for this vintage.
+    P { poc_lsb: u32 },
+}
+
+/// `lamd_modb_qp`, the inter-picture lambda table `global_cfg_set` copies for a P
+/// picture (`vepu5xx_common.c:183`). The IDR keeps the intra table the template
+/// recorded.
+const MODB_LAMBDA: [u32; 52] = [
+    0x00000070, 0x00000089, 0x000000b0, 0x000000e0, 0x00000112, 0x00000160, 0x000001c0, 0x00000224,
+    0x000002c0, 0x00000380, 0x00000448, 0x00000580, 0x00000700, 0x00000890, 0x00000b00, 0x00000e00,
+    0x00001120, 0x00001600, 0x00001c00, 0x00002240, 0x00002c00, 0x00003800, 0x00004480, 0x00005800,
+    0x00007000, 0x00008900, 0x0000b000, 0x0000e000, 0x00011200, 0x00016000, 0x0001c000, 0x00022400,
+    0x0002c000, 0x00038000, 0x00044800, 0x00058000, 0x00070000, 0x00089000, 0x000b0000, 0x000e0000,
+    0x00112000, 0x00160000, 0x001c0000, 0x00224000, 0x002c0000, 0x00380000, 0x00448000, 0x00580000,
+    0x00700000, 0x00890000, 0x00b00000, 0x00e00000,
+];
+
+/// First absolute word of `iprd_wgt_qp_hevc_0_51` in the WGT window.
+const IPRD_WGT_QP_WORD: usize = 1600;
+
 /// An IDR picture at a fixed QP: the geometry, the QP the reference would aim at,
 /// the RC's picture bounds (which collapse to the QP under fixed QP), and the
 /// dma-buf fds the picture moves between.
@@ -59,6 +87,7 @@ pub struct IdrJob {
     /// job carries them separately because the reference reads them separately.
     pub qp_min: u32,
     pub qp_max: u32,
+    pub picture: Picture,
     pub input_fd: i32,
     pub output_fd: i32,
     pub current_fd: i32,
@@ -77,6 +106,7 @@ impl IdrJob {
             qp,
             qp_min: qp,
             qp_max: qp,
+            picture: Picture::Idr,
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -416,6 +446,36 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
 
     // reg0252 tile_cfg: tiles off (auto_tile default 0). Left 0.
 
+    // ---- picture type: set_slice_regs / set_ref_regs ----
+    // The traced P job settles every one of these bits: `sli_type` 1, NAL 1
+    // (TRAIL_R), POC 1, the reference rebuilt as an LT entry with
+    // `used_by_lt_flg0`, and the inter lambda table in `iprd_wgt_qp_hevc_0_51`.
+    if let Picture::P { poc_lsb } = job.picture {
+        file.set(&regs::CTL_DTRNS_CFG_DSPR_OTSD, 1)?;
+        // `tot_poc_num` is 1 for every traced P picture, not the running count.
+        file.set(&regs::H265_REG0192_ENC_PIC_NUM_PIC_TOT_CUR, 1)?;
+        file.set(&regs::H265_REG0232_RDO_CFG_LTM_IDX0L0, 1)?;
+        file.set(&regs::H265_REG0236_SYNT_NAL_NAL_UNIT_TYPE, 1)?;
+        file.set(&regs::H265_REG0237_SYNT_SPS_LT_REF_PIC_PRSNT, 1)?;
+        file.set(&regs::H265_REG0237_SYNT_SPS_NUM_LT_REF_PIC, 1)?;
+        file.set(&regs::H265_REG0239_SYNT_SLI0_NUM_REFIDX_ACT_OVRD, 0)?;
+        file.set(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE, 1)?;
+        file.set(&regs::H265_REG0241_SYNT_SLI2_SLI_POC_LSB, poc_lsb)?;
+        file.set(&regs::H265_REG0242_SYNT_REFM0_NUM_LT_PIC, 1)?;
+        file.set(&regs::H265_REG0243_SYNT_REFM1_USED_BY_LT_FLG0, 1)?;
+        // From the third picture on the reference is the previous P, and the
+        // traced job states the list explicitly: `ref_pic_lst_mdf_l0`,
+        // `lst_entry_l0` and `num_negative_pics` all carry 1 where the first P
+        // leaves them clear.
+        if poc_lsb >= 2 {
+            file.set(&regs::H265_REG0239_SYNT_SLI0_REF_PIC_LST_MDF_L0, 1)?;
+            file.set(&regs::H265_REG0240_SYNT_SLI1_LST_ENTRY_L0, 1)?;
+            file.set(&regs::H265_REG0243_SYNT_REFM1_NUM_NEGATIVE_PICS, 1)?;
+        }
+        let start = IPRD_WGT_QP_WORD - 1472;
+        file.wgt[start..start + MODB_LAMBDA.len()].copy_from_slice(&MODB_LAMBDA);
+    }
+
     // No MD surface is implemented here, so `enc_pic.mei_stor` stays 0 and the
     // `meiw_addr` word stays clear. H.264 sets this bit *because* its harness passed
     // an MD buffer; the H.265 HAL leaves it 0 when `enc_task->md_info` is null
@@ -713,6 +773,74 @@ mod tests {
                 .unwrap_or_else(|e| panic!("last word of window {name}: {e}"));
             assert_eq!(file.get(&probe).unwrap(), 1, "window {name}");
         }
+    }
+
+    /// The traced P job's delta from the IDR image: slice type, NAL type, POC,
+    /// reference markings and the inter lambda table. The third picture and later
+    /// additionally state the reference list explicitly.
+    #[test]
+    fn a_p_picture_sets_the_traced_delta_fields() {
+        let mut job = IdrJob::reference(26);
+        job.picture = Picture::P { poc_lsb: 1 };
+        let first = build_registers(&job).unwrap();
+        assert_eq!(first.get(&regs::CTL_DTRNS_CFG_DSPR_OTSD).unwrap(), 1);
+        assert_eq!(
+            first
+                .get(&regs::H265_REG0236_SYNT_NAL_NAL_UNIT_TYPE)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            first.get(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE).unwrap(),
+            1
+        );
+        assert_eq!(
+            first
+                .get(&regs::H265_REG0192_ENC_PIC_NUM_PIC_TOT_CUR)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            first
+                .get(&regs::H265_REG0241_SYNT_SLI2_SLI_POC_LSB)
+                .unwrap(),
+            1
+        );
+        assert_eq!(&first.wgt[128..132], &MODB_LAMBDA[..4]);
+        // The first P still uses the SPS long-term entry; the list is not modified.
+        assert_eq!(
+            first
+                .get(&regs::H265_REG0239_SYNT_SLI0_REF_PIC_LST_MDF_L0)
+                .unwrap(),
+            0
+        );
+
+        job.picture = Picture::P { poc_lsb: 2 };
+        let third = build_registers(&job).unwrap();
+        assert_eq!(
+            third
+                .get(&regs::H265_REG0239_SYNT_SLI0_REF_PIC_LST_MDF_L0)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            third
+                .get(&regs::H265_REG0240_SYNT_SLI1_LST_ENTRY_L0)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            third
+                .get(&regs::H265_REG0243_SYNT_REFM1_NUM_NEGATIVE_PICS)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            third
+                .get(&regs::H265_REG0241_SYNT_SLI2_SLI_POC_LSB)
+                .unwrap(),
+            2
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
-use super::h265e::{build_registers, IdrJob};
+use super::h265e::{build_registers, IdrJob, Picture};
 use super::h265e_regs as regs;
 
 const CTL_OFFSET: u32 = 0;
@@ -60,15 +60,33 @@ pub struct Vepu580H265 {
     width: usize,
     height: usize,
     qp: u32,
+    /// Emit the GOP SPS variant (long-term reference entry) and let `encode_frame`
+    /// produce P pictures.
+    long_term: bool,
     input: DmaBuf,
     output: DmaBuf,
-    current: Surface,
-    reference: Surface,
+    /// Two DPB slots. Slot 0 is the opening IDR's reconstruction; the next picture
+    /// reconstructs into the other slot and reads slot 0 as its reference.
+    surfaces: [Surface; 2],
+    slot: usize,
+    /// Pictures this session has encoded; 0 means the next one is the IDR.
+    frames: u32,
     md_info: DmaBuf,
 }
 
 impl Vepu580H265 {
+    /// A single-picture session: the IDR gate.
     pub fn open(width: usize, height: usize, qp: u32) -> Result<Self, String> {
+        Self::open_inner(width, height, qp, false)
+    }
+
+    /// A GOP session: the SPS carries the long-term reference entry the harness
+    /// writes when it is given an explicit `-g`, and later pictures are P.
+    pub fn open_gop(width: usize, height: usize, qp: u32) -> Result<Self, String> {
+        Self::open_inner(width, height, qp, true)
+    }
+
+    fn open_inner(width: usize, height: usize, qp: u32, long_term: bool) -> Result<Self, String> {
         if width == 0 || height == 0 {
             return Err("H.265 session needs a non-zero picture".into());
         }
@@ -89,20 +107,49 @@ impl Vepu580H265 {
             width,
             height,
             qp,
+            long_term,
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
             output: DmaBuf::alloc("system", output_size, false)
                 .map_err(|e| format!("allocate H.265 output: {e}"))?,
-            current: Surface::alloc(sizes)?,
-            reference: Surface::alloc(sizes)?,
+            surfaces: [Surface::alloc(sizes)?, Surface::alloc(sizes)?],
+            slot: 0,
+            frames: 0,
             md_info: DmaBuf::alloc("system", md_info_size(width, height), false)
                 .map_err(|e| format!("allocate H.265 motion info: {e}"))?,
         })
     }
 
-    /// Encode one IDR and return the bitstream the hardware wrote: the VPS, SPS,
-    /// PPS, the two SEIs and the IDR NAL, exactly as `mpi_enc_test` writes them.
+    /// Encode the next picture: the first call is an IDR, every later call a P.
+    /// Only the opening IDR carries the VPS/SPS/PPS and the two SEIs, which is what
+    /// `MppEncHeaderStatus` makes the C do once per sequence.
+    pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        let (picture, prefix) = if self.frames == 0 {
+            (Picture::Idr, true)
+        } else {
+            let poc = self.frames;
+            (Picture::P { poc_lsb: poc }, false)
+        };
+        let stream = self.encode_picture(nv12, picture, prefix)?;
+        self.slot = 1 - self.slot;
+        self.frames += 1;
+        Ok(stream)
+    }
+
+    /// One IDR and nothing else: the board gate's entry point.
     pub fn encode_idr(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        assert_eq!(self.frames, 0, "encode_idr is the opening picture");
+        let stream = self.encode_picture(nv12, Picture::Idr, true)?;
+        self.frames = 1;
+        Ok(stream)
+    }
+
+    fn encode_picture(
+        &mut self,
+        nv12: &[u8],
+        picture: Picture,
+        with_prefix: bool,
+    ) -> Result<Vec<u8>, String> {
         // dma-heap rounds the allocation up to a page, so the usable picture is
         // the logical size, not `self.input.len()`.
         let input_size = luma_bytes(self.width, self.height) * 3 / 2;
@@ -127,18 +174,27 @@ impl Vepu580H265 {
             .sync_write_end()
             .map_err(|e| format!("H.265 input flush: {e}"))?;
 
+        // The GOP's long-term reference is the opening IDR (`used_by_lt_flg0` and
+        // the SPS LT entry): every P predicts from slot 0 and reconstructs into
+        // slot 1. An IDR reconstructs into and reads from slot 0.
+        let (current, reference) = if matches!(picture, Picture::Idr) {
+            (&self.surfaces[self.slot], &self.surfaces[self.slot])
+        } else {
+            (&self.surfaces[1], &self.surfaces[0])
+        };
         let job = IdrJob {
             width: self.width,
             height: self.height,
             qp: self.qp,
             qp_min: self.qp,
             qp_max: self.qp,
+            picture,
             input_fd: self.input.fd(),
             output_fd: self.output.fd(),
-            current_fd: self.current.pixel.fd(),
-            current_thumb_fd: self.current.dsp.fd(),
-            reference_fd: self.reference.pixel.fd(),
-            reference_thumb_fd: self.reference.dsp.fd(),
+            current_fd: current.pixel.fd(),
+            current_thumb_fd: current.dsp.fd(),
+            reference_fd: reference.pixel.fd(),
+            reference_thumb_fd: reference.dsp.fd(),
         };
         let mut registers = build_registers(&job)?;
         let header = fbc_header_len(self.width, self.height);
@@ -155,14 +211,14 @@ impl Vepu580H265 {
         base[0] = input; // 160 adr_src0
         base[1] = input; // 161 adr_src1
         base[2] = input; // 162 adr_src2
-        base[3] = self.current.pixel.fd() as u32; // 163 rfpw_h
-        base[4] = self.current.pixel.fd() as u32; // 164 rfpw_b
-        base[5] = self.reference.pixel.fd() as u32; // 165 rfpr_h
-        base[6] = self.reference.pixel.fd() as u32; // 166 rfpr_b
-        base[7] = self.current.cmv.fd() as u32; // 167 cmvw
-        base[8] = self.reference.cmv.fd() as u32; // 168 cmvr
-        base[9] = self.current.dsp.fd() as u32; // 169 dspw
-        base[10] = self.reference.dsp.fd() as u32; // 170 dspr
+        base[3] = current.pixel.fd() as u32; // 163 rfpw_h
+        base[4] = current.pixel.fd() as u32; // 164 rfpw_b
+        base[5] = reference.pixel.fd() as u32; // 165 rfpr_h
+        base[6] = reference.pixel.fd() as u32; // 166 rfpr_b
+        base[7] = current.cmv.fd() as u32; // 167 cmvw
+        base[8] = reference.cmv.fd() as u32; // 168 cmvr
+        base[9] = current.dsp.fd() as u32; // 169 dspw
+        base[10] = reference.dsp.fd() as u32; // 170 dspr
         base[11] = self.md_info.fd() as u32; // 171 meiw
         base[12] = output; // 172 bsbt
         base[13] = output; // 173 bsbb
@@ -245,8 +301,13 @@ impl Vepu580H265 {
             .sync_read_end()
             .map_err(|e| format!("H.265 output sync end: {e}"))?;
         // The hardware writes the slice NAL; the parameter sets and the two SEIs are
-        // software output, exactly as `mpp_enc_impl.cpp` prepends them.
-        let config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
+        // software output, exactly as `mpp_enc_impl.cpp` prepends them - once, ahead
+        // of the opening IDR.
+        if !with_prefix {
+            return Ok(slice);
+        }
+        let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
+        config.long_term_refs = self.long_term;
         let mut stream = crate::codec::h265::encoder::build_prefix(&config, self.qp, DEFAULT_IGOP)
             .map_err(|e| format!("H.265 prefix: {e:?}"))?;
         stream.extend_from_slice(&slice);

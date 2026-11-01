@@ -190,6 +190,7 @@ fn encode_h265_headers(
         qp,
         qp_min: qp,
         qp_max: qp,
+        picture: h265e::Picture::Idr,
         input_fd: -1,
         output_fd: -1,
         current_fd: -1,
@@ -1123,12 +1124,20 @@ fn main() {
             .get(4)
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(26);
+        let picture = match args.get(5).map(|s| s.as_str()) {
+            Some(mode) if mode.starts_with('p') => {
+                let poc = mode[1..].parse::<u32>().unwrap_or(0);
+                h265e::Picture::P { poc_lsb: poc }
+            }
+            _ => h265e::Picture::Idr,
+        };
         let job = h265e::IdrJob {
             width,
             height,
             qp,
             qp_min: qp,
             qp_max: qp,
+            picture,
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -1192,6 +1201,67 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("H.265 IDR encode failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if args.len() > 1 && args[1] == "h265-gop" {
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
+        let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
+        let usage = "usage: rk-mpp-rs h265-gop <in.nv12> <out.265> <width> <height> [frames] [qp]";
+        let (Some(width), Some(height)) = (width, height) else {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        };
+        if src.is_empty() || dst.is_empty() {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        }
+        let frames = args
+            .get(6)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(2);
+        let qp = args
+            .get(7)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(26);
+        let input = match std::fs::read(src) {
+            Ok(input) => input,
+            Err(e) => {
+                eprintln!("{src}: {e}");
+                std::process::exit(1);
+            }
+        };
+        let frame_size = width * height * 3 / 2;
+        if input.len() < frame_size * frames {
+            eprintln!(
+                "{src}: {frames} frames of {width}x{height} need {} bytes, file has {}",
+                frame_size * frames,
+                input.len()
+            );
+            std::process::exit(1);
+        }
+        let result =
+            h265e_session::Vepu580H265::open_gop(width, height, qp).and_then(|mut encoder| {
+                let mut out = Vec::new();
+                for index in 0..frames {
+                    let frame = &input[index * frame_size..(index + 1) * frame_size];
+                    out.extend_from_slice(&encoder.encode_frame(frame)?);
+                }
+                Ok(out)
+            });
+        match result.and_then(|stream| {
+            std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
+            Ok(stream.len())
+        }) {
+            Ok(bytes) => println!(
+                "h265-gop {src} -> {dst}: {bytes} bytes, {frames} frames {width}x{height} fixed qp {qp}"
+            ),
+            Err(e) => {
+                eprintln!("H.265 GOP encode failed: {e}");
                 std::process::exit(1);
             }
         }

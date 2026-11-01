@@ -113,6 +113,10 @@ pub struct EncoderConfig {
     pub fps_num: u32,
     pub fps_den: u32,
     pub vui: bool,
+    /// `long_term_ref_pics_present_flag` plus one `(poc_lsb 0, used 0)` entry. The
+    /// harness enables this when it is given an explicit `-g` GOP mode, which is
+    /// also what makes it emit P pictures; without it the SPS is two bytes shorter.
+    pub long_term_refs: bool,
 }
 
 /// The derived coding-tree geometry, the numbers `h265e_set_sps` computes once from
@@ -166,6 +170,7 @@ impl EncoderConfig {
             fps_den: 1,
             // h265_init sets codec->vui.vui_en = 1.
             vui: true,
+            long_term_refs: false,
         }
     }
 
@@ -381,7 +386,14 @@ pub fn build_sps(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
     w.put_bits(u32::from(config.sao_enable), 1); // sample_adaptive_offset_enabled_flag
     w.put_bits(0, 1); // pcm_enabled_flag
     w.put_ue(0); // num_short_term_ref_pic_sets (m_numberOfReferencePictureSets)
-    w.put_bits(0, 1); // long_term_ref_pics_present_flag
+    w.put_bits(u32::from(config.long_term_refs), 1); // long_term_ref_pics_present_flag
+    if config.long_term_refs {
+        w.put_ue(1); // num_long_term_ref_pics_sps
+                     // The traced GOP SPS carries one entry: poc_lsb 0, not used by the current
+                     // picture (the P marks it through `synt_refm` instead).
+        w.put_bits(0, 16); // lt_ref_pic_poc_lsb_sps[0]
+        w.put_bits(0, 1); // used_by_curr_pic_lt_sps_flag[0]
+    }
     w.put_bits(u32::from(config.tmvp_enable), 1); // sps_temporal_mvp_enable_flag
     w.put_bits(u32::from(config.strong_intra_smoothing), 1); // sps_strong_intra_smoothing_enable_flag
     w.put_bits(u32::from(config.vui), 1); // vui_parameters_present_flag

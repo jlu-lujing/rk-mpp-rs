@@ -800,9 +800,26 @@ in what order the evidence gets produced.
        `set_me_ram`'s `cme_rama_h`/`cme_rama_max`/`cach_l2_tag`, whose C loop fills
        the line buffer until the window holds the search. The 1280x720 cell then
        needed no further change.
-- [ ] H.265 (rkvenc): P pictures, tiles/WPP/SAO and rate control (CBR/VBR/AVBR). The
-      fixed-QP IDR is byte-identical at three sizes; output is one NAL per picture
-      (no per-slice packets) and the session encodes a single picture.
+ - [x] **H.265 P pictures: the GOP is byte-identical.** The C's GOP configuration
+       (an explicit `-g`) makes two things true that the single-IDR cell never shows:
+       the SPS carries one long-term entry (`long_term_ref_pics_present = 1`,
+       `num_long_term_ref_pics_sps = 1`, poc 0, unused by the current picture), and
+       every P predicts from the **opening IDR** while reconstructing into the other
+       slot - `synt_refm1.used_by_lt_flg0` says so, and rotating the reference to the
+       previous P instead made the third picture's CABAC tail differ by three bytes.
+       The traced P register delta is `dtrns_cfg.dspr_otsd = 1`,
+       `enc_pic.num_pic_tot_cur = 1`, `rdo_cfg.ltm_idx0l0 = 1`, NAL type 1,
+       `synt_sli0.sli_type = 1`, `num_refidx_act_ovrd = 0`, POC in `synt_sli2`, and
+       `lamd_modb_qp` (52 words, `vepu5xx_common.c:183`) over the IDR's intra lambda
+       table. From the third picture the reference list is stated explicitly:
+       `ref_pic_lst_mdf_l0`, `lst_entry_l0` and `num_negative_pics` all 1.
+       `scripts/board_h265_gop_vs_mpp.sh` compares whole streams: 320x240 at 2, 3 and
+       5 pictures (883, 904, 946 bytes), 640x480 and 1280x720 at 2 (1643, 3617), and
+       a horizontally shifted second frame (1032 bytes) are **byte-identical**.
+       `board_gop_matches_the_c_encoder` runs the three-size cell as an ignored test.
+- [ ] H.265 (rkvenc): tiles/WPP/SAO, rate control (CBR/VBR/AVBR), B frames and
+      multiple references, per-slice output. The fixed-QP IDR+P GOP is byte-identical
+      at three sizes; output is one NAL per picture.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,

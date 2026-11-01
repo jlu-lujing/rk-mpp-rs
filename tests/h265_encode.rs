@@ -221,3 +221,15 @@ fn board_idr_matches_the_c_encoder() {
         .expect("run scripts/board_h265_idr_vs_mpp.sh");
     assert!(status.success(), "H.265 board IDR compare failed");
 }
+
+/// The GOP gate: an opening IDR plus P pictures, whole streams byte for byte.
+#[test]
+#[ignore = "board-only: needs t6, the MPP reference and /dev/mpp_service"]
+fn board_gop_matches_the_c_encoder() {
+    let status = std::process::Command::new("scripts/board_h265_gop_vs_mpp.sh")
+        .env("ONLY", "320x240 640x480 1280x720")
+        .env("FRAMES", "2")
+        .status()
+        .expect("run scripts/board_h265_gop_vs_mpp.sh");
+    assert!(status.success(), "H.265 board GOP compare failed");
+}
