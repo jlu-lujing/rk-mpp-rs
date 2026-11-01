@@ -1158,7 +1158,9 @@ in what order the evidence gets produced.
        `align(aligned_w * aligned_h / 64, 8K)`, which stays 8192 while the coded
        area is under 524288 pixels and becomes 16384 past it - so at 1280x720 the
        driver told the hardware to read the reference from 8192 in a surface whose
-       body begins at 16384. An IDR reads no reference, which is why the 24-cell
+       body begins at 16384, and at 1920x1088 the two numbers are 8192 and 40960,
+       a displacement of 32 KB on a surface nobody had ever byte-compared (the
+       harness cannot, at a height that is not a multiple of 16). An IDR reads no reference, which is why the 24-cell
        matrix - every cell a single IDR picture - stayed green at 1280x720 for as
        long as it has existed, and why the surplus looked content-independent:
        it was a constant, and it was a *displacement*.
@@ -1433,6 +1435,17 @@ pipeline uses.
   | 640x480 12p | 51-54 ms | 44-48 ms | +8% to +16% |
   | 1280x720 12p | 81-91 ms | 64-73 ms | +16% to +30% |
   | 1920x1088 12p | 123-143 ms | 108-135 ms | parity, within noise |
+
+  Those passes were all measured **before** the FBC body-offset fix, which means at
+  720p and 1088 the encoder was reading its reference from a displaced address - it
+  was timing a codec that coded a different picture than it thought it did. Re-measured
+  after the fix (2026-11-02, `SAMPLES=5`, same board and script, from cold):
+  320x240 39 to 23 ms (+70 %), 640x480 53 to 39 ms (+36 %), 1280x720 86 to 68 ms
+  (+27 %), 1920x1088 134 to 135 ms (-1 %, parity again). The small-size rows came in
+  above the band above, which is what twelve-picture rows do - the C side is whole
+  milliseconds there and a single cold pass proves nothing - and the useful reading
+  is that the 1088 row did not change character: the displacement cost bits, not
+  frames.
 
   At 1080p-class the two distributions overlap - nine interleaved samples gave C
   {153,140,123,124,124,118,123,123,147} against our {149,108,136,135,144,109,134,110,148},
