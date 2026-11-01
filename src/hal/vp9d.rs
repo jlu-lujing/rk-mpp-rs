@@ -182,33 +182,83 @@ impl RcbInfo {
     }
 
     pub fn offsets(&self) -> Vec<RegOffsetInfo> {
-        [139u32, 133, 134, 136, 137, 140, 141, 135, 138, 142]
-            .iter()
-            .zip(self.offsets)
-            .map(|(&reg_idx, offset)| RegOffsetInfo { reg_idx, offset })
-            .collect()
+        let mut out = Vec::with_capacity(RCB_REGION_COUNT);
+        self.write_offsets(&mut out);
+        out
     }
 
-    fn hardware_sizes(&self) -> Vec<RcbConfig> {
-        [
-            (139u32, self.dblk),
-            (133, self.intra),
-            (140, self.sao),
-            (141, self.fbc),
-            (134, self.transd_row),
-            (136, self.strmd_row),
-            (138, self.inter_col),
-            (142, self.filt_col),
-            (135, self.transd_col),
-        ]
-        .into_iter()
-        .filter(|(_, size)| *size > 0)
-        .map(|(reg_idx, size)| RcbConfig {
-            reg_idx,
-            size: size as u32,
-        })
-        .collect()
+    /// Same entries as [`Self::offsets`], appended into a caller-owned
+    /// buffer so the decode path does not allocate per frame.
+    pub fn write_offsets(&self, out: &mut Vec<RegOffsetInfo>) {
+        out.extend(
+            [139u32, 133, 134, 136, 137, 140, 141, 135, 138, 142]
+                .iter()
+                .zip(self.offsets)
+                .map(|(&reg_idx, offset)| RegOffsetInfo { reg_idx, offset }),
+        );
     }
+
+    #[cfg(test)]
+    fn hardware_sizes(&self) -> Vec<RcbConfig> {
+        let mut out = Vec::new();
+        self.write_hardware_sizes(&mut out);
+        out
+    }
+
+    /// Same entries as [`Self::hardware_sizes`], appended into a
+    /// caller-owned buffer so the decode path does not allocate per frame.
+    fn write_hardware_sizes(&self, out: &mut Vec<RcbConfig>) {
+        out.extend(
+            [
+                (139u32, self.dblk),
+                (133, self.intra),
+                (140, self.sao),
+                (141, self.fbc),
+                (134, self.transd_row),
+                (136, self.strmd_row),
+                (138, self.inter_col),
+                (142, self.filt_col),
+                (135, self.transd_col),
+            ]
+            .into_iter()
+            .filter(|(_, size)| *size > 0)
+            .map(|(reg_idx, size)| RcbConfig {
+                reg_idx,
+                size: size as u32,
+            }),
+        );
+    }
+}
+
+/// The address offsets one VP9 job arms: the ten RCB regions plus the
+/// colmv-count and the two segmentation-map slots, zero offsets dropped.
+/// The scratch buffer is cleared first, so the entry list is rebuilt in
+/// full every frame.
+fn build_offset_list(
+    rcb: &RcbInfo,
+    segment_previous: u32,
+    segment_current: u32,
+    out: &mut Vec<RegOffsetInfo>,
+) {
+    out.clear();
+    rcb.write_offsets(out);
+    out.push(RegOffsetInfo {
+        reg_idx: 167,
+        offset: COUNT_OFFSET as u32,
+    });
+    out.push(RegOffsetInfo {
+        reg_idx: 168,
+        offset: segment_previous,
+    });
+    out.push(RegOffsetInfo {
+        reg_idx: 169,
+        offset: segment_current,
+    });
+    // MPP's mpp_service_reg_offset() deliberately ignores zero offsets.
+    // Sending an explicit zero is not equivalent on the kernel ABI: the
+    // segmentation map swaps one register at a time, so the zero-offset
+    // register must stay absent just like in the C HAL.
+    out.retain(|info| info.offset != 0);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -264,6 +314,11 @@ pub struct Vp9d {
     pub regs: reg::Regs,
     pub last_status: (u32, u32, u32),
     pub last_hardware_error: bool,
+    /// Reused across frames: the ioctl needs owned scratch but not fresh
+    /// allocations, and the entries are rebuilt in full every job.
+    offsets_scratch: Vec<RegOffsetInfo>,
+    rcb_scratch: Vec<RcbConfig>,
+    batch: Batch,
 }
 
 impl Vp9d {
@@ -301,6 +356,9 @@ impl Vp9d {
             regs: reg::Regs::new(),
             last_status: (0, 0, 0),
             last_hardware_error: false,
+            offsets_scratch: Vec::with_capacity(RCB_REGION_COUNT + 3),
+            rcb_scratch: Vec::with_capacity(RCB_REGION_COUNT),
+            batch: Batch::new(),
         })
     }
 
@@ -409,46 +467,34 @@ impl Vp9d {
             let _ = self.segment.sync_read_end();
         }
 
-        let r = &self.regs;
-        let common: Vec<u32> = r.w[8..64].to_vec();
-        let parameters: Vec<u32> = r.w[64..128].to_vec();
-        let addresses: Vec<u32> = r.w[128..200].to_vec();
-        let statistics: Vec<u32> = r.w[256..276].to_vec();
-
-        let mut offsets = self.rcb_info.offsets();
-        offsets.push(RegOffsetInfo {
-            reg_idx: 167,
-            offset: COUNT_OFFSET as u32,
-        });
+        // The five register sections are contiguous in the register file, so
+        // the batch can point straight into it: the bytes the driver sees are
+        // the same words the to_vec() pass used to copy, without a per-frame
+        // allocation.
         let (segment_previous, segment_current) = self.pending_segment_offsets;
-        offsets.push(RegOffsetInfo {
-            reg_idx: 168,
-            offset: segment_previous as u32,
-        });
-        offsets.push(RegOffsetInfo {
-            reg_idx: 169,
-            offset: segment_current as u32,
-        });
-        // MPP's mpp_service_reg_offset() deliberately ignores zero offsets.
-        // Sending an explicit zero is not equivalent on the kernel ABI: the
-        // segmentation map swaps one register at a time, so the zero-offset
-        // register must stay absent just like in the C HAL.
-        offsets.retain(|info| info.offset != 0);
+        build_offset_list(
+            &self.rcb_info,
+            segment_previous as u32,
+            segment_current as u32,
+            &mut self.offsets_scratch,
+        );
+
+        self.rcb_scratch.clear();
+        self.rcb_info.write_hardware_sizes(&mut self.rcb_scratch);
 
         let mut readback = [0u32; REG_READBACK_WORDS];
-        let mut batch = Batch::new();
-        batch
-            .reg_write(&common, 32)
-            .reg_write(&parameters, 256)
-            .reg_write(&addresses, 512)
-            .reg_write(&statistics, 1024)
+        self.batch.clear();
+        self.batch
+            .reg_write(&self.regs.w[8..64], 32)
+            .reg_write(&self.regs.w[64..128], 256)
+            .reg_write(&self.regs.w[128..200], 512)
+            .reg_write(&self.regs.w[256..276], 1024)
             .reg_read(&mut readback, 0)
-            .reg_offsets(&offsets);
-        let rcb_configs = self.rcb_info.hardware_sizes();
-        if self.rcb_info_supported && !rcb_configs.is_empty() {
-            batch.rcb_info(&rcb_configs);
+            .reg_offsets(&self.offsets_scratch);
+        if self.rcb_info_supported && !self.rcb_scratch.is_empty() {
+            self.batch.rcb_info(&self.rcb_scratch);
         }
-        self.svc.submit_batch(&mut batch)?;
+        self.svc.submit_batch(&mut self.batch)?;
         self.svc.poll_hw_finish()?;
 
         self.last_status = (readback[224], readback[225], readback[230]);
@@ -945,6 +991,68 @@ mod tests {
             [0, 5632, 7168, 7424, 8192, 9728, 11264, 14080, 14336, 15104]
         );
         assert_eq!(info.total(), 32256);
+    }
+
+    /// The reused-scratch offset path must produce exactly the entry list the
+    /// original per-frame `Vec` build produced: the ten RCB offsets, the
+    /// colmv-count slot, the two segmentation slots in their swap order, and
+    /// no zero-offset entry (the kernel ABI treats an explicit zero as absent
+    /// only when it is not sent at all).
+    #[test]
+    fn offset_list_matches_the_original_per_frame_build() {
+        for (width, height, depth) in [(256, 256, 8u8), (1280, 720, 8), (3840, 2160, 10)] {
+            let info = RcbInfo::compute(&header(width, height, depth));
+            for (previous, current) in [
+                (MAX_SEGMAP_SIZE_ALIGNED as u32, 0u32),
+                (0u32, MAX_SEGMAP_SIZE_ALIGNED as u32),
+            ] {
+                // The original sequence, spelled out exactly as the pre-
+                // optimisation decode() built it into a fresh Vec.
+                let mut expected = info.offsets();
+                expected.push(RegOffsetInfo {
+                    reg_idx: 167,
+                    offset: COUNT_OFFSET as u32,
+                });
+                expected.push(RegOffsetInfo {
+                    reg_idx: 168,
+                    offset: previous,
+                });
+                expected.push(RegOffsetInfo {
+                    reg_idx: 169,
+                    offset: current,
+                });
+                expected.retain(|entry| entry.offset != 0);
+
+                let mut got = vec![RegOffsetInfo {
+                    reg_idx: 0,
+                    offset: u32::MAX,
+                }]; // dirty scratch must be fully rebuilt
+                build_offset_list(&info, previous, current, &mut got);
+                assert_eq!(got, expected, "{width}x{height}@{depth}");
+            }
+        }
+    }
+
+    /// The RCB size list built into a reused scratch equals the one the
+    /// original allocating `hardware_sizes()` produced, for a layout where
+    /// the width-dependent zero-size regions must stay dropped.
+    #[test]
+    fn rcb_size_list_matches_the_original_per_frame_build() {
+        for (width, height, depth) in [(256, 256, 8u8), (4096, 2304, 8), (8192, 4608, 10)] {
+            let info = RcbInfo::compute(&header(width, height, depth));
+            let expected = info.hardware_sizes();
+            let mut got = vec![RcbConfig {
+                reg_idx: 0,
+                size: u32::MAX,
+            }];
+            // The write_* helpers append; the decode path clears first.
+            got.clear();
+            info.write_hardware_sizes(&mut got);
+            assert_eq!(got.len(), expected.len(), "{width}x{height}@{depth}");
+            for (got, want) in got.iter().zip(&expected) {
+                assert_eq!((got.reg_idx, got.size), (want.reg_idx, want.size));
+            }
+        }
     }
 
     #[test]
