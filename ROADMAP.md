@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR rate control is ported in three verified pieces - the registers, the bit allocation, the quantiser - and not yet wired in; scene detection and ROI remain, and VBR/AVBR ratios are not ported** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR rate control is ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL; VBR/AVBR, scene detection, ROI/GDR and slice split remain** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for rate control, level and the CIME/RIME corner of section 3 (see the encoder notes below); H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -903,6 +903,24 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       sets and are not ported; `cal_first_i_start_qp` is reached only when a caller
       leaves the initial quality unset, which neither `mpi_enc_test` nor a default
       `h264e_api_v2.c` configuration does.
+- [x] **CBR is live and byte-identical to the reference on a six-picture run.**
+      `EncoderConfig::rc_mode` selects it (`-bps` on the CLI is a request for rate
+      control, as it is for `mpi_enc_test`), `Vepu580H264` owns an
+      `rc::model::Model`, each picture gets a bit target and a QP from `start`, the
+      job carries them into `apply_rate_control`, and the STATUS bitstream length
+      feeds `end`. `scripts/board_h264_cbr_vs_mpp.sh` encodes the same six frames
+      with our driver and with the reference library and compares NAL by NAL: ten
+      NAL units identical, the version SEI framing-only as always. The two rc-cfg
+      SEIs match byte for byte, which means the SEI's own rendering of the mode,
+      bounds and I delta agreed before the payload did.
+      The reference side runs through `tools/rc_probe.c` rather than
+      `mpi_enc_test`, and that is a deliberate choice rather than convenience: both
+      sides then set exactly CBR, the bit rate and GOP 60 at 30 fps, leaving the
+      quality band at `h264e_api_v2.c`'s defaults, where `mpi_enc_test` configures
+      more of its own and lands its first picture at QP 23 against the library's
+      26. That harness difference is recorded as an open question, not papered
+      over: the same six-frame stream from `mpi_enc_test` is a different stream,
+      and matching it needs its exact configuration enumerated.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the

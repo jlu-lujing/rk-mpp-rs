@@ -59,6 +59,9 @@ fn encode_h264(
     }
     match bps {
         Some((target, min, max)) => {
+            // `-bps`, like `mpi_enc_test`, is a request for rate control rather than
+            // a label on a fixed-QP stream: the mode changes with it.
+            config.rc_mode = h264_syntax::RcMode::Cbr;
             config.bps_target = target;
             config.bps_min = min;
             config.bps_max = max;
@@ -509,7 +512,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [bps]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [bps:cbr]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -539,7 +542,7 @@ fn main() {
             }
         });
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [bps]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [bps:cbr]");
             std::process::exit(2);
         }
         match encode_h264(src, dst, width, height, qp_init, profile, frames, gop, bps) {

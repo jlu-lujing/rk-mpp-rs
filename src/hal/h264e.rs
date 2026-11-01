@@ -15,8 +15,9 @@
 //! `enc_pic.pic_qp`, `rc_qp.rc_min_qp` and `rc_qp.rc_max_qp`, which is exactly
 //! what the reference writes there for fixed QP.
 
-use crate::codec::h264::encoder::{self, EncoderConfig};
+use crate::codec::h264::encoder::{self, EncoderConfig, RcMode};
 use crate::codec::h264::sei;
+use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
@@ -196,6 +197,8 @@ pub struct Job<'a> {
     pub md_fd: i32,
     pub state: FrameState,
     pub output_capacity: usize,
+    /// What rate control decided for this picture, or `None` under fixed QP.
+    pub rc: Option<RateControl>,
 }
 
 /// What rate control decided about one picture.
@@ -479,6 +482,8 @@ pub struct Vepu580H264 {
     md_info: DmaBuf,
     state: FrameState,
     slot: usize,
+    /// The rate-control model, present only in CBR mode.
+    rc: Option<rc_model::Model>,
 }
 
 impl Vepu580H264 {
@@ -507,6 +512,10 @@ impl Vepu580H264 {
                 .map_err(|e| format!("allocate H.264 motion info: {e}"))?,
             state: FrameState::default(),
             slot: 0,
+            rc: match config.rc_mode {
+                RcMode::FixedQp => None,
+                RcMode::Cbr => Some(rc_model::Model::new(rc_model_config(&config)?)),
+            },
             config,
         })
     }
@@ -529,16 +538,24 @@ impl Vepu580H264 {
             &sei::UUID_VERSION,
             version_info(&self.config).as_bytes(),
         ));
-        out.extend(sei::user_data(
-            &sei::UUID_RC_CFG,
-            sei::rc_cfg_line(&sei::RcCfgLine::fixqp(
+        let line = match self.config.rc_mode {
+            RcMode::FixedQp => sei::RcCfgLine::fixqp(
                 i32::from(self.config.qp_init),
                 self.config.bps_target,
                 self.config.bps_min,
                 self.config.bps_max,
                 i64::from(self.config.gop),
-            ))
-            .as_bytes(),
+            ),
+            RcMode::Cbr => sei::RcCfgLine::cbr(
+                self.config.bps_target,
+                self.config.bps_min,
+                self.config.bps_max,
+                i64::from(self.config.gop),
+            ),
+        };
+        out.extend(sei::user_data(
+            &sei::UUID_RC_CFG,
+            sei::rc_cfg_line(&line).as_bytes(),
         ));
         Ok(out)
     }
@@ -579,6 +596,27 @@ impl Vepu580H264 {
         } else {
             1 - self.slot
         };
+        // The model decides the picture's bits and QP before the register file is
+        // built; under fixed QP there is no decision to make.
+        let rc = match self.rc.as_mut() {
+            Some(model) => {
+                let frame = if state.is_idr {
+                    rc_model::FrameType::Intra
+                } else {
+                    rc_model::FrameType::InterP
+                };
+                let (bit_target, quality_target) = model.start(frame);
+                Some(RateControl {
+                    bit_target,
+                    qp_target: quality_target as u32,
+                    qp_min: 8,
+                    qp_max: 48,
+                    qp_delta_row: 2,
+                    qp_delta_row_i: 2,
+                })
+            }
+            None => None,
+        };
         let job = Job {
             config: &self.config,
             input_fd: self.input.fd(),
@@ -590,6 +628,7 @@ impl Vepu580H264 {
             reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
             state,
             output_capacity: logical_output_size(&self.config)?,
+            rc,
         };
         let registers = build_registers(&job)?;
         dump_job_registers(&job, &registers);
@@ -660,6 +699,16 @@ impl Vepu580H264 {
         annex_b.extend_from_slice(&payload);
         let statistics = Statistics::from_words(&status);
         dump_statistics(&job.state, &status);
+        if let (Some(model), Some(rc)) = (self.rc.as_mut(), job.rc) {
+            let frame = if state.is_idr {
+                rc_model::FrameType::Intra
+            } else {
+                rc_model::FrameType::InterP
+            };
+            // `regs->reg_st.bs_lgth_l32`, which the HAL multiplies by eight before
+            // handing it back as `bit_real`.
+            model.end(frame, rc.bit_target, statistics.bitstream_bytes as i32 * 8);
+        }
         Ok(EncodedFrame {
             annex_b,
             payload,
@@ -985,7 +1034,10 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     // The first piece of the register file that stops being a recording: the QP
     // words of `setup_vepu580_rc_base`. Everything else is still the captured
     // image, and `validate_reference_config` refuses what it depends on.
-    file.apply_fixed_qp(u32::from(config.qp_init))?;
+    match job.rc {
+        Some(rc) => file.apply_rate_control(config, job.state.is_idr, &rc)?,
+        None => file.apply_fixed_qp(u32::from(config.qp_init))?,
+    }
     file.apply_profile(config)?;
     file.apply_picture(job)?;
     // The reference job was captured with a harness that asked for motion
@@ -1343,6 +1395,39 @@ fn verified_on_board(config: &EncoderConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// `rc_model_v2.c`'s configuration, from ours plus `h264e_api_v2.c`'s defaults.
+fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
+    if config.gop < 2 {
+        return Err("CBR needs a GOP longer than one picture".into());
+    }
+    let (Ok(target), Ok(min), Ok(max)) = (
+        i32::try_from(config.bps_target),
+        i32::try_from(config.bps_min),
+        i32::try_from(config.bps_max),
+    ) else {
+        return Err("CBR bit rates do not fit a signed 32-bit field".into());
+    };
+    if target <= 0 {
+        return Err("CBR needs a positive bps target".into());
+    }
+    Ok(rc_model::Config {
+        igop: config.gop as i32,
+        fps_num: config.fps_num as i32,
+        fps_den: config.fps_den as i32,
+        bps_target: target,
+        bps_min: min,
+        bps_max: max,
+        init_ip_ratio: 160,
+        min_i_bit_prop: 10,
+        max_i_bit_prop: 30,
+        stats_time: 3,
+        quality_init: i32::from(config.qp_init),
+        quality_min: 8,
+        quality_max: 48,
+        i_quality_delta: 2,
+    })
+}
+
 fn validate_reference_config(config: &EncoderConfig) -> Result<(), String> {
     config.validate().map_err(|e| e.to_string())?;
     if config.width < 16 || config.height < 16 || config.width % 2 != 0 || config.height % 2 != 0 {
@@ -1483,6 +1568,7 @@ mod tests {
             reference_fd: 11,
             reference_thumb_fd: 13,
             md_fd: 15,
+            rc: None,
             state,
             output_capacity: 119_296,
         }
@@ -2130,6 +2216,7 @@ mod rate_control_registers {
             reference_fd: 13,
             reference_thumb_fd: 14,
             md_fd: 15,
+            rc: None,
             // Job 1 of the capture is the P picture that follows the IDR, so it
             // needs the state the GOP walk would be in by then - `apply_picture`
             // owns the slice-type fields, and rate control only the RC ones.
@@ -2213,6 +2300,7 @@ mod rate_control_registers {
             reference_fd: 13,
             reference_thumb_fd: 14,
             md_fd: 15,
+            rc: None,
             state: FrameState::default(),
             output_capacity: logical_output_size(&config).unwrap(),
         })

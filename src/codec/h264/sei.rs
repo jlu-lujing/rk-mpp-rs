@@ -142,6 +142,27 @@ pub struct RcCfgLine {
 }
 
 impl RcCfgLine {
+    /// The CBR rendering `mpi_enc_test -rc 1 -bps a:b:c` produces: the mode name,
+    /// the library's medium quality and its 8..48 band, with the I delta the H.264
+    /// API defaults to. None of these numbers come from the harness - it sets only
+    /// the mode and the bit rate.
+    pub fn cbr(bps_target: i64, bps_min: i64, bps_max: i64, igop: i64) -> Self {
+        Self {
+            model_name: "default",
+            mode_name: "cbr",
+            bps_target,
+            bps_min,
+            bps_max,
+            igop,
+            init_quality: 26,
+            min_quality: 8,
+            max_quality: 48,
+            min_i_quality: 8,
+            max_i_quality: 48,
+            i_quality_delta: 2,
+        }
+    }
+
     /// The fixed-QP rendering: every quality bound collapses onto `init_quality`
     /// and the I/QP delta is zero, as the reference's own output shows for
     /// `-rc 2 -qc 26:...`.

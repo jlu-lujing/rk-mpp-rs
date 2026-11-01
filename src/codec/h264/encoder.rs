@@ -56,6 +56,7 @@ pub struct EncoderConfig {
     /// as `* 5 / 4` and `* 3 / 4`. They are the values a caller gets for not
     /// asking, and they are what MPP's own SEI shows when the harness never set
     /// bounds - which the fixed-QP comparison does.
+    pub rc_mode: RcMode,
     pub bps_target: i64,
     pub bps_min: i64,
     pub bps_max: i64,
@@ -80,6 +81,17 @@ pub fn default_bps_target(width: usize, height: usize, fps: u32) -> i64 {
     (width * height / 8 * usize::try_from(fps).unwrap()) as i64
 }
 
+/// Which rate control drives the encoder.
+///
+/// `FixedQp` is the path the whole comparison matrix was built on. `Cbr` runs
+/// `codec::rc::model` per picture and writes the rate-control register block; a
+/// stream from one is not comparable to a stream from the other by design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RcMode {
+    FixedQp,
+    Cbr,
+}
+
 impl EncoderConfig {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
@@ -98,6 +110,7 @@ impl EncoderConfig {
             transform_8x8: false,
             chroma_qp_index_offset: -6,
             second_chroma_qp_index_offset: -6,
+            rc_mode: RcMode::FixedQp,
             bps_target: 2_000_000,
             bps_min: 1_500_000,
             bps_max: 2_500_000,
