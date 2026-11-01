@@ -1,135 +1,113 @@
 # rk-mpp-rs
 
-Pure-Rust replacement for the parts of Rockchip **MPP** (and eventually **RGA**)
-that `rknn-fastinfer` needs: hardware JPEG decode and a 2D scale/letterbox, with
-no `librockchip_mpp` / `librga` dependency.
+用纯 Rust 重写 Rockchip **MPP**：直接驱动 `/dev/mpp_service`，不链接
+`librockchip_mpp`、不依赖 `librga`。目标是覆盖 `refs/mpp` 的完整表面——
+所有解码器、编码器、后处理与 framework——并保证**与 C MPP 逐字节相同**、
+性能不劣于 C。
 
-## Why
+起源是 `rknn-fastinfer` 需要一条无 C 依赖的 JPEG 解码 + 缩放链路；现在范围已经是
+整个库。当前进度与逐项证据见 [ROADMAP.md](ROADMAP.md)，接手指南见
+[docs/HANDOFF.md](docs/HANDOFF.md)。
 
-`rknn-fastinfer` measured, on a NanoPC-T6 (RK3588, driver `mpp_jpgdec`):
+## 现状
 
-| input | shippped MPP / TurboJPEG | source-built MPP | pure-Rust target |
-| --- | ---: | ---: | ---: |
-| 640x640 JPEG | 4.95 ms | 1.34 ms | <= 1.3 ms |
-| 1920x1080 JPEG | 15.9 ms | 2.60 ms | <= 2.6 ms |
+| 能力 | 状态 |
+|---|---|
+| `mpp_service` 客户端（全部 `MPP_CMD_*`、MULTI_MSG、RCB、IOVA、poll、probe） | 完成 |
+| JPEG 解码（jpegd，RGB888/NV12，1/2–1/8 缩放） | 完成，比 C 快约 30% |
+| H.264 解码（rkvdec） | 完成：frame/MBAFF/PAFF/长参考/错误路径**逐字节** |
+| H.265 解码（rkvdec） | 完成：Main/Main10/tiles/WPP/DSLICE/LTR/scaling list；4:2:2/4:4:4 被硬件拒收 |
+| VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；边界矩阵未完 |
+| AV1 解码（av1d） | Main 8/10-bit、film grain 逐字节；更宽 conformance 未完 |
+| MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 全部逐字节；AVS+/AVS2 未做 |
+| H.264 编码（VEPU580） | 固定 QP、CBR、VBR 与 C **逐 NAL 相同**；AVBR/ROI/GDR/slice split/>4096 未完 |
+| JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）完成 |
+| H.265 编码 | 未开始 |
+| 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP 未移植，VDPP 该板不存在 |
+| framework | 仅同步 submit+poll；异步队列/fence/多核/secure 未做 |
 
-The shipped MPP never submits JPEG jobs at all; a source build of
-rockchip-linux/mpp fixes it (see `rknn-fastinfer/docs/NATIVE_CONV.md`). Driving
-the kernel interface directly means no C library, no ABI mismatch and no
-"version of the day" behaviour.
+整体约完成一半（按 ROADMAP 各里程碑的工作量估加权）。ROADMAP 上 47 项已勾、18 项未勾。
 
-## Status
+## 怎么验证的
 
-| piece | state |
-| --- | --- |
-| dma-heap allocation + mmap | **working** |
-| `mpp_service` session (`MPP_CMD_INIT_CLIENT_TYPE`) | **working** |
-| `MPP_CMD_PROBE_HW_SUPPORT` / `QUERY_HW_ID` | **working** |
-| JPEG parser (SOF/DQT/DHT/DRI/SOS, zigzag tables) | **working** |
-| table buffer (1280 B) | **working** |
-| jpegd register builder (`jpegd_gen_regs` port) | **working**, RGB888 + NV12 |
-| submit / poll (`SET_REG_WRITE`, `POLL_HW_FINISH`) | **working** |
-| NV12 or RGB888 output | **working** |
-| RGB888 bilinear letterbox scaler | **working**, 0.84 ms (1080p) / 0.53 ms (640) |
-| RGA3 driver port | optional, see below |
+所有"完成"都对应板上（NanoPC-T6，RK3588）源码编译的 C MPP：
 
-**The decoder works end to end in pure Rust** (`rk-mpp-rs decode frame.jpg out.rgb`):
+- 解码器：与 `mpi_dec_test` 的输出**逐字节**相同（NV12→planar 换算后）。
+- 编码器：与 C 编码器**逐 NAL**相同。固定 QP 覆盖 4 尺寸 × 3 profile × 2 QP = 24 格，
+  加 6 格 GOP（1 IDR + 1/3/5 P，静止/运动）；CBR 与 VBR 各 6 帧 10/10 NAL 相同。
+- 码率控制：寄存器半边对 C 作业**逐字**相同；位分配与量化控制器对 C **自己打印的内部
+  状态**逐帧相同（`rc_debug=0xf0`）。
+- 性能：同一流、两侧外部计时、交错采样取中位数。
 
-| image | size | PSNR vs libjpeg | decode (submit+poll) |
-| --- | --- | ---: | ---: |
-| bus.jpg 4:2:0 | 640x640 | 44.1 dB | **0.95 ms** (1056 fps) |
-| COCO 4:4:4 | 640x436 | 56.6 dB | 1.13 ms |
-| big1080 4:2:0 | 1920x1080 | 49.9 dB | **2.22 ms** (451 fps) |
-
-The C MPP wrapper takes 1.34 ms (640) and 2.60 ms (1080p) for the same work, so
-the Rust path is ~30% faster and drops the dependency.
-
-Full pipeline (decode + bilinear letterbox into the 640x640 model input), with
-`DMA_BUF_IOCTL_SYNC` around the CPU read of the decoder output:
-
-| image | decode | scale | total |
-| --- | ---: | ---: | ---: |
-| bus.jpg 640 | 1.00 ms | 1.22 ms | **2.22 ms** |
-| 1080p | 2.25 ms | 0.80 ms | **3.05 ms** |
-
-The produced model input is **bit-identical** to the C pipeline's output
-(PSNR infinite against `yolo_cli --hwdec --dump`), so the speed difference is
-pure overhead, not a different result. The 640 case is slower than the C path
-(1.4-1.8 ms) because the identity copy reads the whole uncached DMA buffer;
-1080p is faster than C (3.6-4.3 ms) because decimation reads far less.
-
-Verified on the board:
-
-```
-$ ./target/release/rk-mpp-rs
-rk-mpp-rs probe
-  session: client_type=13
-  hw support mask: 0x1009321a
-  jpeg dec present: true
-  rkvdec present:  true
-  hw id: 3676241925
-  dma-heap system: 1048576 bytes, fd=4
-  dma-heap system-uncached: 1048576 bytes, fd=4
-  dma-heap cma: 1048576 bytes, fd=4
-```
-
-## Layout
-
-```
-src/mpp.rs       mpp_service ioctl client (single MPP_IOC_CFG_V1 command channel)
-src/dma_heap.rs  /dev/dma_heap alloc + mmap
-src/main.rs      probe binary
-```
-
-The protocol is one ioctl (`_IOW('v', 1, u32)`) taking a `MppReqV1`; definitions
-are ported from `rockchip-linux/mpp`: `osal/inc/mpp_service.h`,
-`osal/inc/mpp_dev_defs.h`, `osal/driver/inc/mpp_service_impl.h`.
-
-## Scaler (replaces RGA today)
-
-`src/scale.rs` resizes RGB888 and letterboxes into a fixed destination, with the
-padding filled with 114. Measured on the board against the RGA blit it replaces
-(same source buffer, same destination fill, 300 iterations):
-
-| conversion | this crate | RGA (`c_RkRgaBlit`) |
-| --- | ---: | ---: |
-| 1920x1080 -> 640x640 letterbox | **0.84 ms** (1190 fps) | 3.21 ms |
-| 640x640 -> 640x640 letterbox | **0.53 ms** (1900 fps) | 1.50 ms |
-
-That is 3.8x and 2.9x faster than RGA, and it removes `librga` from the
-dependency list. The win comes from specialising the integer case: when the
-ratio is exact (1920x1080 -> 640 is exactly 1/3) the bilinear weights are zero
-and the loop reduces to a strided copy; a 1:1 mapping becomes a `memcpy`.
-
-## Plan
-
-1. ~~**JPEG parser**~~ done (`src/jpeg.rs`): SOF0/SOF1/SOF2, DQT (8/16-bit),
-   DHT, DRI, SOS; tables kept in file (zigzag) order; entropy range computed.
-   `rk-mpp-rs jpeg-info frame.jpg` prints dimensions, sampling, components.
-2. ~~**Table buffer**~~ done (`src/tables.rs`): 384 B quant (zigzag -> raster),
-   704 B min-code/acc-addr blocks, 576 B symbols; 1280 B total, matching
-   `RKD_TABLE_SIZE`.
-3. **Register builder** (map generated into `src/jpeg_regs.rs`): port `mpp/hal/vpu/jpegd/hal_jpegd_rkv.c`
-   (`jpegd_gen_regs`, `setup_output_fmt`) into a typed `JpegRegSet`.
-4. **Submit/poll**: `MPP_CMD_SET_REG_WRITE` then `MPP_CMD_POLL_HW_FINISH`,
-   buffers translated with `MPP_CMD_TRANS_FD_TO_IOVA`.
-5. **Output**: ask for `YUV420SP` first (simplest), then `RGB888` like the C path
-   did (the PP does full-range YUV->RGB for JPEG frames).
-6. ~~Scaler~~ done; a NEON kernel for the non-integer ratios is still open
-   (e.g. 1280x960 -> 640x640 has fractional weights).
-7. **RGA (optional)**: the kernel ABI is public —
-   `drivers/video/rockchip/rga3/include/rga.h` (`RGA_IOC_REQUEST_CREATE/SUBMIT`,
-   `struct rga_user_request`) plus `rga3_reg_info.c` for the registers. Only
-   worth porting if we need operations a NEON kernel cannot do well
-   (rotation, format conversion, multi-plane composition).
-
-## Build
+复跑：
 
 ```bash
-cargo build --release            # host, for type checking
-# on the board (aarch64):
-cargo build --release --offline
-./target/release/rk-mpp-rs
+cargo test --all-targets                     # 441 通过，11 个板级用例 ignore
+ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
+./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
+BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 ```
 
-No third-party crates beyond `libc`.
+## 性能
+
+| 项目 | 结果 |
+|---|---|
+| 解码（21 条流，`scripts/board_bench_vs_mpp.sh`） | 全部快于 C：+55% … +738% |
+| 编码（`scripts/board_bench_encode_vs_mpp.sh`） | 320p/480p/720p 快 8–30%；1088 行**平手**（不作胜利声明） |
+| RGB letterbox（替换 RGA） | 1080p→640: 0.84 ms vs RGA 3.21 ms；1:1: 0.53 vs 1.50 |
+
+## 用法
+
+硬件 probe（无参数）：`rk-mpp-rs`
+
+| 子命令 | 说明 |
+|---|---|
+| `decode <jpg> <out.rgb> [1\|2\|4\|8]` | JPEG 解码到 RGB（下采样） |
+| `jpeg-info <jpg>` / `jpeg-enc <in.yuv> <out.jpg> <w> <h> [quant] [fmt] [nv12\|yuyv\|uyvy]` | JPEG 解析 / 编码 |
+| `h264 <file>` / `h264dec <in.264> <out.yuv>` | H.264 语法打印 / 解码 |
+| `hevc` / `hevcdec <in.265> <out.yuv>` / `hevcpps` / `hevcdpb` | H.265 语法、PPS、DPB 打印与解码 |
+| `av1dec <in.ivf> <out.yuv>` / `vp9dec <in.ivf> <out.yuv>` / `vp8dec <in.ivf> <out.yuv>` / `vp8` | AV1、VP9、VP8 |
+| `m2v` / `m2vdec <in.m2v> <out.yuv>` / `mp4dec <in.m4v> <out.yuv>` / `h263dec <in.263> <out.yuv>` | MPEG-2 / MPEG-4 / H.263 |
+| `h264-enc <in.nv12> <out.264> <w> <h> [qp] [profile] [frames] [gop] [cbr:\|vbr:bps:min:max]` | H.264 编码；给码率三元组即进入码率控制 |
+| `spspps` / `h264dpb` | H.264 参数集与 DPB 打印 |
+| `probe-frame` / `bench-scale` / `bench-decode` / `bench-dma` / `pipeline` | 夹具与基准 |
+
+## 构建
+
+```bash
+cargo build --release                     # 宿主仅做类型检查
+# 板上（aarch64）
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
+  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
+ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+```
+
+除 `libc` 外无第三方依赖。
+
+## 布局
+
+```
+src/service/      mpp_service ioctl 客户端、dma-heap、batch、poll、probe
+src/codec/        各格式语法解析（h264 hevc vp9 av1 m2v mpg4 h263 vp8 jpeg）
+src/codec/rc/     码率控制移植（MppDataV2 + rc_model_v2 的 CBR/VBR）
+src/hal/          各硬件块寄存器生成（h264d hevc av1d vp9d vp8d jpegd jpege h264e）
+src/scale.rs      RGB 缩放 / letterbox（替代 RGA）
+src/reference/    自研软件参考解码器（M11）
+scripts/          板上回归、吞吐、取证脚本
+tools/            寄存器字段生成器、ioctl tracer、C 侧探针、diff 工具
+tests/data/       C 侧真实输出构成的 golden / fixture
+```
+
+## 文档
+
+- [ROADMAP.md](ROADMAP.md) —— 逐 capability 的进度台账与证据（权威）
+- [docs/HANDOFF.md](docs/HANDOFF.md) —— 交接：下一步、板子工具链、易错清单
+- [docs/h264d_hw.md](docs/h264d_hw.md) —— rkvdec H.264 硬件契约（从 C 提取）
+- [docs/superpowers/](docs/superpowers/) —— 历史计划与设计稿（带状态说明）
+
+## 已知限制
+
+- 板上参考实现与 tracer 放在 `/tmp`（`/tmp/mpp-old`、`/tmp/mpp-develop`、
+  `/tmp/mpp_trace.so`），重启即失，重建步骤见 HANDOFF。
+- rkvenc 每进程只支持一个活会话，多实例需先解决（framework 部分）。
+- AVS+/AVS2 无 conformance 流/硬件支持，未实现；损坏码流一致性只测了退出码。

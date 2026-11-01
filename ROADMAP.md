@@ -8,6 +8,10 @@ Scope is the whole library, not only what YOLO needs: all decoders, all
 encoders, post-processing, and the framework features (async tasks, fences,
 multi-core, secure mode).
 
+Companions: [README.md](README.md) for the current state at a glance, and
+[docs/HANDOFF.md](docs/HANDOFF.md) for how to pick the work up - board toolchain,
+debug switches, traps, and the ordered next steps.
+
 ## Board capability map (NanoPC-T6-LTS, mask `0x1009321a`)
 
 Measured with `rk-mpp-rs probe`, which asks two different questions per block:
@@ -50,7 +54,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
 | M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR *and* VBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; AVBR, scene detection, ROI/GDR and slice split remain** |
-| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for rate control, level and the CIME/RIME corner of section 3 (see the encoder notes below); H.265 encode pending** |
+| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
@@ -536,20 +540,19 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       produced DC errors; the same input with a 4:2:0 header decoded correctly.
       Those unsupported requests must not be represented by changing only the
       JPEG header
-- **What the H.264 IDR path actually is.** `src/hal/h264e.rs` does not generate
-      the VEPU580 register file; it replays one captured from `mpi_enc_test` over
-      an `MPP_CMD_SET_REG_WRITE` trace, patches the eleven address words, and
-      derives only what a different picture size needs - the macroblock counts,
-      the line-buffer layout, the source plane offsets and the search ranges.
-      `validate_reference_config` is the boundary and it is deliberate: Baseline
-      only, level 3.0, GOP 1, QP 26, CAVLC, no transform-8x8, and nothing past
-      4096 pixels, everything else still coming from the recorded image. Byte-
-      exactness against C across six sizes therefore shows the plumbing and the
-      address arithmetic are right; it says nothing about `setup_vepu580_codec`,
-      `setup_vepu580_rc_base`, `setup_vepu580_me` or `calc_cime_parameter` in
-      `mpp/hal/rkenc/h264e/hal_h264e_vepu580.c`, none of which is ported. M7 is
-      gated on replacing the template with that generator, not on adding features
-      on top of a fixture.
+- **What the H.264 register file is, and what it was.** It began as a replay: the
+      job captured from `mpi_enc_test` over an `MPP_CMD_SET_REG_WRITE` trace with
+      eleven address words patched and only the geometry's consequences derived,
+      gated on Baseline, level 3.0, GOP 1, QP 26 and everything else frozen in the
+      image. That boundary is long gone - profile, entropy, transform-8x8, QP, GOP,
+      slice type, the P-picture fields, the two SEI NAL units and the whole
+      rate-control block are generated now, and the 24-cell matrix plus the GOP and
+      CBR/VBR runs are byte-exact because of it.
+      What is still a recorded-image replay: the level (only 3.0 is compared), the
+      `cime_multi` / `rime_multi` corner of section 3 (where the 2024-04 build and
+      master disagree), and the parts of `setup_vepu580_me` and
+      `calc_cime_parameter` whose outputs happen to be constant for every fixture
+      used so far. Those are listed as open work, not presented as ported.
 - [x] VEPU580 register field map generated from the C struct definitions
       (`tools/gen_vepu580_regs.py` to `src/hal/vepu580_regs.rs`): the absolute word,
       bit position and width of every named field in `Vepu580CtlCommon`,
@@ -1008,7 +1011,7 @@ pipeline uses.
 
 ## Verification
 
-- Tests: `cargo test --all-targets` (343 unit + 88 integration, eleven ignored
+- Tests: `cargo test --all-targets` (353 unit + 88 integration, eleven ignored
   board-only tests: parsers, AV1 OBU/frame-header/CDF/PicParams snapshots,
   global-motion reconstruction, tile ranges and packet assembly, POC types
   0/1/2, DPB/MMCO/RPS, registers,

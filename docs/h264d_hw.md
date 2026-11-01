@@ -1,5 +1,10 @@
 # rkvdec H.264 (vdpu34x) hardware contract — ported spec
 
+> **状态（2026-11-01）**：本文是从官方 C 源码提取的硬件契约，作为实现说明保留。
+> 对应实现在 `src/hal/h264d.rs` + `src/codec/h264/`，已在 t6 上与 C MPP 逐字节验证
+> （frame、MBAFF、PAFF、多 slice、长参考、缺失参考的错误路径；见 `ROADMAP.md` M2）。
+> 寄存器字段以生成的 `src/hal/vdpu34x_regs.rs` 为准，本文用于解释布局与语义。
+
 Extracted from the official MPP sources so the Rust HAL can be written without
 re-reading 1600 lines of C. Every constant below is used verbatim.
 

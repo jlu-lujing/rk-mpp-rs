@@ -1,7 +1,7 @@
 # rk-mpp-rs：RK3588 全硬件路径重写设计
 
 日期：2026-10-30
-状态：已确认（用户选择「按顺序全部做完」）
+状态：已确认（用户选择「按顺序全部做完」）；实施进度见文末与 `ROADMAP.md`
 
 ## 1. 目标
 
@@ -177,3 +177,23 @@ ssh t6 'cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264dec /tmp/test720.2
 
 A→G 合计约 9 万行量级，属数月工程。按上表顺序推进，每个子项目独立交付、独立验证；
 不把未验证的代码合入主线。
+
+## 实施进度（2026-11-01）
+
+| 硬件块 | 状态 |
+|---|---|
+| jpegd（13） | 完成，含 1/2–1/8 缩放与 RGB888 |
+| rkvdec（9）H.264 | 完成，逐字节（frame/MBAFF/PAFF/LTR/错误路径） |
+| rkvdec（9）H.265 | 完成，逐字节（Main/Main10/tiles/WPP/DSLICE/LTR/scaling list） |
+| rkvdec（9）VP9 | profile 0/2、lossless、tiles、error-resilient 逐字节；边界矩阵未完 |
+| rkvdec（9）AVS2 | 该板上 rkvdec 声明支持，但无 conformance 流，未做 |
+| av1d（4） | Main 8/10-bit、film grain 逐字节；更宽 conformance 未完 |
+| vdpu2（1） | H.264/MPEG2/MPEG4/H.263/VP8 解码全部逐字节；AVS+ 未有流 |
+| vdpu2-pp（3） | 本源码中无解码器使用；该板的通用后处理是 IEP（28），未移植 |
+| rkv-enc（16）H.264 | 固定 QP / CBR / VBR 逐 NAL 相同；AVBR、ROI/GDR、slice split、>4096 未完 |
+| rkv-enc（16）H.265 | 未开始 |
+| vepu-jpeg（19） | baseline 4:2:0 完成 |
+| framework | 仅同步 submit+poll；异步/fence/多核/secure 未做 |
+
+整体约五成（按 `ROADMAP.md` 的里程碑工作量估加权）；后续顺序与注意事项见
+`docs/HANDOFF.md`。
