@@ -80,6 +80,33 @@ struct Slot {
     hardware_error: bool,
 }
 
+/// Frame buffers released by the DPB, kept allocated so the next picture
+/// that needs a surface of the same coded size takes one back instead of
+/// paying for a new dma-heap allocation. The decoder resets the per-job
+/// state when it hands a buffer back out, exactly like a fresh allocation.
+struct FramePool<T> {
+    entries: Vec<T>,
+}
+
+impl<T> FramePool<T> {
+    fn new() -> Self {
+        FramePool {
+            entries: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, frame: T) {
+        self.entries.push(frame);
+    }
+
+    /// The first retained buffer the predicate accepts, removed from the
+    /// pool. Buffers of other sizes stay for a later resolution.
+    fn take_matching(&mut self, matches: impl Fn(&T) -> bool) -> Option<T> {
+        let index = self.entries.iter().position(|frame| matches(frame))?;
+        Some(self.entries.swap_remove(index))
+    }
+}
+
 /// One displayed picture in tightly packed planar YUV 4:2:0.
 #[derive(Debug)]
 pub struct Picture {
@@ -95,6 +122,7 @@ pub struct Decoder {
     dpb: Dpb,
     /// Frame buffers, indexed by the slot numbers the DPB hands out.
     slots: Vec<Option<Slot>>,
+    pool: FramePool<crate::hal::vdpu2::Frame>,
     stream: Option<DmaBuf>,
     /// `sw55` of the most recent job.
     pub last_irq: u32,
@@ -109,6 +137,7 @@ impl Decoder {
             parser: Parser::new(),
             dpb: Dpb::new(),
             slots: Vec::new(),
+            pool: FramePool::new(),
             stream: None,
             last_irq: 0,
             dropped_before_key_frame: 0,
@@ -122,7 +151,7 @@ impl Decoder {
             output.extend(self.decode_packet(frame.data)?);
         }
         for slot in self.dpb.flush() {
-            self.slots[slot] = None;
+            self.release_slot(slot);
         }
         Ok(output)
     }
@@ -183,7 +212,7 @@ impl Decoder {
             }
         }
         for slot in self.dpb.flush() {
-            self.slots[slot] = None;
+            self.release_slot(slot);
         }
         outcome
     }
@@ -218,8 +247,14 @@ impl Decoder {
                 self.slots.push(None);
             }
             if self.slots[slot].is_none() {
-                let frame = crate::hal::vdpu2::Frame::alloc(coded_width, coded_height)
-                    .map_err(PacketError::Hardware)?;
+                let frame = match self
+                    .pool
+                    .take_matching(|frame| frame.matches(coded_width, coded_height))
+                {
+                    Some(frame) => frame,
+                    None => crate::hal::vdpu2::Frame::alloc(coded_width, coded_height)
+                        .map_err(PacketError::Hardware)?,
+                };
                 self.slots[slot] = Some(Slot {
                     frame,
                     hardware_error: false,
@@ -302,9 +337,17 @@ impl Decoder {
         }
         let released = self.dpb.update(&picture);
         for index in released {
-            self.slots[index] = None;
+            self.release_slot(index);
         }
         Ok(output)
+    }
+
+    /// Retire a surface the DPB no longer references, keeping its
+    /// allocation in the pool for the next picture.
+    fn release_slot(&mut self, index: usize) {
+        if let Some(slot) = self.slots[index].take() {
+            self.pool.push(slot.frame);
+        }
     }
 
     /// Copy one displayed picture out of its DMA mapping. The frame buffer stays
@@ -361,5 +404,73 @@ impl Decoder {
         }
         buffer.sync_write_end().map_err(PacketError::Hardware)?;
         Ok(fd)
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::FramePool;
+
+    /// A retained buffer is only handed back at the same coded size; a
+    /// resolution change must fall through to a fresh allocation and the
+    /// old surface stays parked for a later return to the old size.
+    #[test]
+    fn the_pool_only_hands_back_matching_surfaces() {
+        #[derive(PartialEq, Debug)]
+        struct Fake {
+            width: usize,
+            height: usize,
+        }
+        let mut pool: FramePool<Fake> = FramePool::new();
+        pool.push(Fake {
+            width: 320,
+            height: 240,
+        });
+        assert_eq!(
+            pool.take_matching(|frame| frame.width == 640 && frame.height == 480),
+            None,
+            "the other resolution must not match"
+        );
+        assert_eq!(
+            pool.take_matching(|frame| frame.width == 320 && frame.height == 240),
+            Some(Fake {
+                width: 320,
+                height: 240,
+            })
+        );
+        assert_eq!(
+            pool.take_matching(|frame| frame.width == 320 && frame.height == 240),
+            None,
+            "a handed-back buffer is no longer in the pool"
+        );
+
+        // Parked surfaces of two resolutions survive until their size is
+        // requested again, and take_matching removes exactly one.
+        pool.push(Fake {
+            width: 320,
+            height: 240,
+        });
+        pool.push(Fake {
+            width: 640,
+            height: 480,
+        });
+        pool.push(Fake {
+            width: 320,
+            height: 240,
+        });
+        assert_eq!(
+            pool.take_matching(|frame| frame.width == 640),
+            Some(Fake {
+                width: 640,
+                height: 480,
+            })
+        );
+        assert_eq!(
+            pool.take_matching(|frame| frame.width == 320 && frame.height == 240),
+            Some(Fake {
+                width: 320,
+                height: 240,
+            })
+        );
     }
 }
