@@ -13,3 +13,4 @@
 //! attributable to the model.
 
 pub mod data;
+pub mod model;

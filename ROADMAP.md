@@ -828,11 +828,37 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       number instead of the first gives 104, which is not a QP. The divisor is now
       derived from that reading rather than assumed, and the report prints 26.00 for
       the fixed-QP run, which is the check that it is right.
+- [x] **The bit-allocation half of the model is ported, and the first picture's
+      target lands on the captured register word.** `codec::rc::model` is
+      `bits_model_init` / `bits_frm_init` / `bits_model_preset` /
+      `bits_model_update` / `bits_model_alloc` / `calc_next_i_ratio` with their
+      windows, water level and the `max_i_delta_qp` cap. It is separable because
+      `bit_target` comes out of `bits_model_alloc` for every mode, while
+      `calc_cbr_ratio` / `calc_vbr_ratio` / `calc_avbr_ratio` only move
+      `next_ratio`, which the quantiser path consumes - so this layer can be
+      finished and checked before the controller exists. The check that matters is
+      `the_first_intra_target_matches_the_captured_job`: 300 kbps, GOP 60 and
+      `h264e_api_v2.c`'s own defaults give `600000 * 160 / (160 + 16 * 59) = 86956`
+      bits for the intra picture, which scaled into sixteenths over 300 macroblocks
+      is `ctu_ebit` 4637 - and the test reads 4637 out of
+      `tests/data/vepu580_rc_c_move6_cbr_regs.txt` rather than being told it, so the
+      allocation and the capture cannot drift apart.
+      What is open is the feedback input, and it is a number rather than a hunch.
+      With the coded size taken from the STATUS window (4378 bytes for the IDR, so
+      35024 bits) the model puts the first P picture's target at 9090 bits, which
+      would be `ctu_ebit` 484; the capture has 476 for that job and 484 for the one
+      after it. Reproducing 476 needs `bit_real` near 54300 bits, so
+      `task->hw_length` of `hal_h264e_vepu580.c:2440` - which is what MPP multiplies
+      by eight and feeds back - is not the STATUS bitstream length this driver
+      reads. Measuring which length it is is the next step, and the QP controller
+      cannot be checked before it, because every one of its four terms is a function
+      of the same feedback.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
-      fixed-QP path leaves at zero, so it is the next thing to generate. It needs
-      MPP's rate-control loop (`mpp/codec/rc/`) behind it, not just the registers.
+      fixed-QP path leaves at zero. Those registers are generated now (above); what
+      remains here is the loop behind them - the feedback input that is not yet
+      identified, and the quantiser controller that reads it.
       Measured so far, so the size of it is known rather than guessed. The SEI's
       own `default:` prefix names the implementation: `h264e_rc.c` registers
       `default_h264e` as a `RcImplApi` over `rc_model_v2.c`, so the loop to port is
