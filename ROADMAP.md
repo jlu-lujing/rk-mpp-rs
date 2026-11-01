@@ -833,9 +833,14 @@ in what order the evidence gets produced.
       `rc_model::Model` into `h265e_session` so CBR/VBR/AVBR track per-picture QP,
       plus tiles/WPP/SAO, B frames, multiple references and per-slice output. One
       open number before the loop can be called byte-exact: the C's first-picture
-      QP at 320x240/CBR is **29**, while `cal_first_i_start_qp` with the 16x16
-      macroblock count the H.264 path uses gives **23** (a `total_mb` of 500
-      reproduces 29, but the H.265 rule behind that number is not established).
+      QP is **29** under `mpi_enc_test` at 320x240, 640x480 and at 100 kbps as well
+      as 2 Mbps - it does not move with size or rate - while
+      `cal_first_i_start_qp` with the 16x16 macroblock count the H.264 path uses
+      gives **23**, and the library-API probe (`tools/h265e_probe.c`, CBR mode)
+      gives **21** for the same bit target. A `total_mb` of 500 reproduces 29, but
+      that is a fit, not a rule; the three callers differ in what they feed the
+      model, and the H.265 entry point has to be found before the loop can claim
+      byte-exactness.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,
