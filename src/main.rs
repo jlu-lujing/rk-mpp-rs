@@ -512,7 +512,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [cbr:|vbr:target:min:max]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -537,6 +537,7 @@ fn main() {
             let (mode, text) = match text.split_once(':') {
                 Some(("cbr", rest)) => (h264_syntax::RcMode::Cbr, rest),
                 Some(("vbr", rest)) => (h264_syntax::RcMode::Vbr, rest),
+                Some(("avbr", rest)) => (h264_syntax::RcMode::Avbr, rest),
                 _ => (h264_syntax::RcMode::Cbr, text.as_str()),
             };
             let parts: Vec<i64> = text.split(':').filter_map(|s| s.parse().ok()).collect();
@@ -549,7 +550,7 @@ fn main() {
             }
         });
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [cbr:|vbr:target:min:max]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max]");
             std::process::exit(2);
         }
         match encode_h264(src, dst, width, height, qp_init, profile, frames, gop, bps) {

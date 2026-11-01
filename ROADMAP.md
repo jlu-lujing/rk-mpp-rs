@@ -59,7 +59,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR *and* VBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; AVBR, scene detection, ROI/GDR and slice split remain** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; scene detection, ROI/GDR and slice split remain** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -527,8 +527,8 @@ in what order the evidence gets produced.
       including non-16-aligned crops. Every SPS/PPS/IDR NAL is byte-identical
       to a freshly generated C MPP golden, deterministic across repeated runs,
       and independently decodes with at least 45 dB plane PSNR
-- [ ] H.264 (rkvenc): rate control beyond fixed QP, QP map, ROI, GDR, deblock
-      fine tuning, slice split and widths above 4096. P pictures, the DPB, the SEI
+- [ ] H.264 (rkvenc): QP map, ROI, GDR, deblock fine tuning, slice split and
+      widths above 4096 (fixed QP and CBR/VBR/AVBR are done, below). P pictures, the DPB, the SEI
       NAL units and the Baseline/Main/High profiles are done, each in its own entry
       below; the scene detector and the >4096-pixel CIME lines are the open items
 - [ ] H.265 (rkvenc): same plus tiles/WPP, SAO
@@ -945,16 +945,28 @@ in what order the evidence gets produced.
       first picture is aimed at 101,449 where CBR's target budget gives 86,956) while
       the controller steers towards `bps_target`. `board_h264_cbr_vs_mpp.sh` now runs
       both modes and passes both: ten NAL units identical each, six frames.
-      AVBR is the remaining member of the family. It differs by weighting motion
-      statistics - `moving_ratio_calc` reads `pre_i_bit`, `pre_i_mean_qp`, `pre_p_bit`
-      and the `madi`/`madp` windows, and its own `min_still_percent` - and none of
-      those windows is fed yet.
-- [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
+- [x] **AVBR too, which is where the motion statistics start feeding back.**
+      `moving_ratio_calc` weighs the last two intra pictures' sizes by how far their
+      mean QP sat from the current one (`mean_qp2scale`), compares that against the
+      inter pictures' cost, and blends in `madi`/`madp` and `motion_sensitivity` into
+      a 0..255 level that scales the GOP budget *before* any allocation. Five integer
+      divisions and a shift, all rounding, all pinned by
+      `avbr_scales_the_gop_by_a_still_moving_level` against the reference's own
+      printout (`tests/data/rc_model_v2_c_avbr_state.txt`): `min_still_percent` 71,
+      `percent_a` 10496, `percent_b` 29, `percent` 255, `mv_ratio` 181,
+      `mad_ratio` 258, `moving_ratio` 222, `gop_bits` 607031 and a first P target of
+      9276 at QP 27. Reaching it needed the STATUS feedback the other modes ignore -
+      `quality_real`, `madi` and `madp`, each with the divisor the HAL applies.
+      `board_h264_cbr_vs_mpp.sh` now runs all three modes and passes all three:
+      ten NAL units identical each, including the rc-cfg SEI's own mode name.
+- [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
+      What follows is the record of how it was measured, kept because the
+      corrections in it are the useful part. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the
       fixed-QP path leaves at zero. Those registers are generated now (above); what
-      remains here is the loop behind them - the feedback input that is not yet
-      identified, and the quantiser controller that reads it.
+      what remained after that was the loop behind them - the feedback input, since
+      identified as `bs_lgth_l32 * 8`, and the quantiser controller that reads it.
       Measured so far, so the size of it is known rather than guessed. The SEI's
       own `default:` prefix names the implementation: `h264e_rc.c` registers
       `default_h264e` as a `RcImplApi` over `rc_model_v2.c`, so the loop to port is

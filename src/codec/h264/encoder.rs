@@ -91,6 +91,7 @@ pub enum RcMode {
     FixedQp,
     Cbr,
     Vbr,
+    Avbr,
 }
 
 impl EncoderConfig {

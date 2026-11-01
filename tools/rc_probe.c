@@ -98,8 +98,9 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP));
-    CHECK(mpp_enc_cfg_set_s32(
-        cfg, "rc:mode", mode ? MPP_ENC_RC_MODE_CBR : MPP_ENC_RC_MODE_VBR));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:mode", mode == 1   ? MPP_ENC_RC_MODE_CBR
+                                             : mode == 2 ? MPP_ENC_RC_MODE_AVBR
+                                                         : MPP_ENC_RC_MODE_VBR));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_target", bps_target));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_max", bps_max));

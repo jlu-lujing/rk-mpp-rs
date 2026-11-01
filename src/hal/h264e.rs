@@ -514,7 +514,9 @@ impl Vepu580H264 {
             slot: 0,
             rc: match config.rc_mode {
                 RcMode::FixedQp => None,
-                RcMode::Cbr | RcMode::Vbr => Some(rc_model::Model::new(rc_model_config(&config)?)),
+                RcMode::Cbr | RcMode::Vbr | RcMode::Avbr => {
+                    Some(rc_model::Model::new(rc_model_config(&config)?))
+                }
             },
             config,
         })
@@ -548,16 +550,16 @@ impl Vepu580H264 {
             ),
             // VBR renders the same line with a different mode name: the bit rate,
             // bounds and quality band are the library's own defaults in both.
-            RcMode::Cbr | RcMode::Vbr => sei::RcCfgLine::cbr(
+            RcMode::Cbr | RcMode::Vbr | RcMode::Avbr => sei::RcCfgLine::cbr(
                 self.config.bps_target,
                 self.config.bps_min,
                 self.config.bps_max,
                 i64::from(self.config.gop),
             )
-            .with_mode(if self.config.rc_mode == RcMode::Vbr {
-                "vbr"
-            } else {
-                "cbr"
+            .with_mode(match self.config.rc_mode {
+                RcMode::Vbr => "vbr",
+                RcMode::Avbr => "avbr",
+                _ => "cbr",
             }),
         };
         out.extend(sei::user_data(
@@ -712,9 +714,26 @@ impl Vepu580H264 {
             } else {
                 rc_model::FrameType::InterP
             };
-            // `regs->reg_st.bs_lgth_l32`, which the HAL multiplies by eight before
-            // handing it back as `bit_real`.
-            model.end(frame, rc.bit_target, statistics.bitstream_bytes as i32 * 8);
+            // Everything the model weighs comes out of the same STATUS window, with
+            // the same divisors the HAL uses before handing it to the reference's
+            // rate control: the coded size (`bs_lgth_l32` * 8), the mean QP over
+            // 16x16 blocks, and the two block-difference averages.
+            let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as i32;
+            let measured = rc_model::Measured {
+                bits: statistics.bitstream_bytes as i32 * 8,
+                quality: statistics.qp_sum as i32 / mbs,
+                madi: if statistics.num_b16 > 0 {
+                    (statistics.madi / statistics.num_b16) as i32
+                } else {
+                    0
+                },
+                madp: if statistics.num_ctu > 0 {
+                    (statistics.madp / statistics.num_ctu) as i32
+                } else {
+                    0
+                },
+            };
+            model.end_with(frame, rc.bit_target, measured);
         }
         Ok(EncodedFrame {
             annex_b,
@@ -1434,6 +1453,7 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
         i_quality_delta: 2,
         mode: match config.rc_mode {
             RcMode::Vbr => rc_model::Mode::Vbr,
+            RcMode::Avbr => rc_model::Mode::Avbr,
             _ => rc_model::Mode::Cbr,
         },
     })

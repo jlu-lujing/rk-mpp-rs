@@ -142,12 +142,15 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ### 5.1 AVBR（最先，1–2 天；有现成补丁）
 
-- [ ] W1-1 `git apply docs/rc-avbr-wip.patch`，补 `src/hal/h264e.rs` 四处 `RcMode::Avbr`
-      match，编译通过。
-- [ ] W1-2 用 `tools/rc_probe.c … 2`（AVBR）+ `rc_debug=0xf0` 抓 C 侧逐帧
-      `moving_ratio / bit_target / next_ratio / quality_target`，存 fixture。
-- [ ] W1-3 单测逐帧比对；扩 `scripts/board_h264_cbr_vs_mpp.sh` 加 `avbr:2`，
-      要求 10/10 NAL 相同。
+- [x] W1-1 `docs/rc-avbr-wip.patch` 已应用（提交见 git log），补 `src/hal/h264e.rs`
+      三处 match 与 `rc_model_config` 的模式映射（原先 `_ => Cbr` 会把 AVBR 静默当成
+      CBR，属于必须修的坑），并把 STATUS 反馈改为 `end_with`（`quality_real`、
+      `madi`、`madp` 按 HAL 的除数）。补丁已可删除。
+- [x] W1-2 用 `tools/rc_probe.c … 2`（AVBR）+ `rc_debug=0xf0` 抓取 C 侧状态，
+      存为 `tests/data/rc_model_v2_c_avbr_state.txt`（含逐步算式注释）。
+- [x] W1-3 单测 `avbr_scales_the_gop_by_a_still_moving_level` 逐步比对
+      （222 / 607031 / 9276 / QP 27）；`board_h264_cbr_vs_mpp.sh` 已加 `avbr:2`，
+      **CBR / VBR / AVBR 三模式各 10/10 NAL 相同**（6 帧，实测通过）。
 - 注意：`pre_i_scale` 在该版本从未赋值（恒 0）；`bps_change` 在有符号调整前算；
       `qratio = -6` 的静止条件；`min_still_percent = bps_min*100/bps_max`。
 

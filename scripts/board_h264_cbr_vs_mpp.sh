@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CBR and VBR: our encoder against the reference library, NAL by NAL.
+# CBR, VBR and AVBR: our encoder against the reference library, NAL by NAL.
 #
 # The reference is driven through `tools/rc_probe.c` rather than `mpi_enc_test`,
 # because both sides then configure the same three things - CBR, the bit rate and
@@ -46,7 +46,7 @@ ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $F
 ssh t6 "cc -O2 -w -I$mpp_ref/inc /tmp/rc_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/rc_probe" || true
 
 fail=0
-for entry in cbr:1 vbr:0; do
+for entry in cbr:1 vbr:0 avbr:2; do
   mode="${entry%%:*}"; probe_mode="${entry##*:}"
   ssh t6 "sudo rm -f /tmp/rc_ours_$mode.264 /tmp/rc_c_$mode.264 &&
           cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture /tmp/rc_ours_$mode.264 \

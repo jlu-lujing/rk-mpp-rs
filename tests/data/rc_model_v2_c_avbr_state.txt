@@ -1,0 +1,26 @@
+# `rc_model_v2` in AVBR mode printing its own state, captured on t6 with
+#   rc_debug=0xf0 mpp_syslog_perror=1 /tmp/rc_probe2 <fixture> out.264 320 240 6
+#   300000 250000 350000 2
+# (mode 2 = AVBR). Only the lines the AVBR unit test replays are kept.
+#
+# picture 0 - allocated straight from the GOP budget, which for AVBR is bps_max:
+#   bits_model_alloc i_scale  160, total_bits 112000000
+#   rc_model_v2_hal_start quality [8 : 26 : 48] -> [8 : 26 : 48]
+# picture 1 - after a 30224-bit, mean-QP-24 intra picture:
+#   moving_ratio_calc pbit_sum 0, madi_sum = 0, madp_sum = 0
+#   moving_ratio_calc means qp percent 255 min_still_percent 71
+#   moving_ratio_calc percent_a = 10496 percent_b 29
+#   moving_ratio_calc percent 255 mad_ratio 256 hr_ratio 181, moving_ratio 222
+#   bits_model_alloc i_scale  103, total_bits 9712496
+#   rc_model_v2_hal_start quality [8 : 0 : 48] -> [8 : 27 : 48]
+#
+# The arithmetic the test checks line by line:
+#   min_still_percent  250000 * 100 / 350000                       = 71
+#   percent_a / percent_b  (71 - 30) << 8, 100 - 71                = 10496, 29
+#   percent            (10496 + 255 * 29) / 70                     = 255
+#   mv_ratio           (10496 + 7680 + 0) / 100                    = 181
+#   mad_ratio          (10496 + 7680 + 29 * 256) / 100             = 258
+#   moving_ratio       (255 + 1 + (181*90 + 10*258) / 100) >> 1    = 222
+#   gop_bits           222 * 700000 >> 8                           = 607031
+#   alloc total        607031 * 16                                = 9712496
+#   picture 1 target   9712496 / (103 + 16 * 59)                  = 9276
