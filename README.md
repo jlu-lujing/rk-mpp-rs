@@ -41,7 +41,7 @@
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）完成 |
 | H.265 编码 | 未开始 |
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP 未移植，VDPP 该板不存在 |
-| framework | 仅同步 submit+poll；异步队列/fence/多核/secure 未做 |
+| framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
 整体约完成一半（按 ROADMAP 各里程碑的工作量估加权）。ROADMAP 上 47 项已勾、18 项未勾。
 
@@ -88,6 +88,7 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 | `h264-enc <in.nv12> <out.264> <w> <h> [qp] [profile] [frames] [gop] [cbr:\|vbr:bps:min:max]` | H.264 编码；给码率三元组即进入码率控制 |
 | `spspps` / `h264dpb` | H.264 参数集与 DPB 打印 |
 | `probe-frame` / `bench-scale` / `bench-decode` / `bench-dma` / `pipeline` | 夹具与基准 |
+| `async-demo <jpg> [jobs] [workers] [out.rgb]` | 异步任务队列 + 缓冲池跑 JPEG 解码，逐帧与同步路径比字节 |
 
 ## 构建
 
