@@ -1263,13 +1263,6 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let ivf = match rk_mpp_rs::codec::vp9::parser::parse_ivf(&data) {
-            Ok(ivf) => ivf,
-            Err(error) => {
-                eprintln!("{src}: {error}");
-                std::process::exit(1);
-            }
-        };
         let mut decoder = match rk_mpp_rs::codec::vp9::decoder::Decoder::new() {
             Ok(decoder) => decoder,
             Err(error) => {
@@ -1286,43 +1279,47 @@ fn main() {
             }
         });
         let started = Instant::now();
-        let mut decoded = 0usize;
+        let outcome = decoder.decode_stream(&data);
         let mut shown = 0usize;
-        for (index, frame) in ivf.frames.iter().enumerate() {
-            let pictures = match decoder.decode_packet(frame.data) {
-                Ok(pictures) => pictures,
-                Err(error) => {
-                    eprintln!("frame {index}: {error}");
-                    std::process::exit(1);
-                }
-            };
-            decoded += 1;
-            for picture in pictures {
-                if picture.err_info == 0 {
-                    output.write_all(&picture.yuv).expect("write VP9 frame");
-                }
-                shown += 1;
-                if std::env::var_os("RFI_VP9_TRACE").is_some() {
-                    println!(
-                        "  frame {index}: poc={} {}x{} err={:#x} status={:08x}/{:08x}/{:08x}",
-                        picture.poc,
-                        picture.width,
-                        picture.height,
-                        picture.err_info,
-                        decoder.status().0,
-                        decoder.status().1,
-                        decoder.status().2,
-                    );
-                }
+        for picture in &outcome.pictures {
+            if picture.err_info == 0 {
+                output.write_all(&picture.yuv).expect("write VP9 frame");
             }
+            shown += 1;
+            if std::env::var_os("RFI_VP9_TRACE").is_some() {
+                println!(
+                    "  picture {shown}: poc={} {}x{} err={:#x} status={:08x}/{:08x}/{:08x}",
+                    picture.poc,
+                    picture.width,
+                    picture.height,
+                    picture.err_info,
+                    decoder.status().0,
+                    decoder.status().1,
+                    decoder.status().2,
+                );
+            }
+        }
+        for drop in &outcome.dropped {
+            eprintln!("packet {} dropped: {}", drop.packet, drop.reason);
         }
         output.flush().ok();
         let elapsed = started.elapsed().as_secs_f64();
         println!(
-            "decoded {decoded} packets ({shown} output) in {:.1} ms ({:.1} fps)",
+            "decoded {} packets ({} output, {} packets dropped{}) in {:.1} ms ({:.1} fps)",
+            shown + outcome.dropped.len(),
+            shown,
+            outcome.dropped.len(),
+            if outcome.stopped_early {
+                ", stopped early"
+            } else {
+                ""
+            },
             elapsed * 1000.0,
             shown as f64 / elapsed.max(f64::EPSILON)
         );
+        if outcome.stopped_early {
+            std::process::exit(1);
+        }
         return;
     }
     if args.len() > 1 && args[1] == "h264dec" {
@@ -2038,17 +2035,11 @@ fn main() {
             }
         });
         let started = Instant::now();
-        let pictures = match decoder.decode_ivf(&data) {
-            Ok(pictures) => pictures,
-            Err(error) => {
-                eprintln!("{src}: {error}");
-                std::process::exit(1);
-            }
-        };
+        let outcome = decoder.decode_stream(&data);
         let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut failed = false;
         let mut shown = 0usize;
-        for picture in &pictures {
+        for picture in &outcome.pictures {
             if picture.err_info != 0 {
                 failed = true;
                 eprintln!(
@@ -2067,13 +2058,24 @@ fn main() {
                 );
             }
         }
+        for drop in &outcome.dropped {
+            eprintln!("packet {} dropped: {}", drop.packet, drop.reason);
+        }
         output.flush().ok();
         println!(
-            "decoded {shown} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps)",
+            "decoded {shown} frames ({} output, {} packets dropped{}) in {decode_ms:.1} ms ({:.1} fps)",
+            shown,
+            outcome.dropped.len(),
+            if outcome.stopped_early { ", stopped early" } else { "" },
             shown as f64 / (decode_ms / 1000.0).max(f64::EPSILON)
         );
-        if failed {
+        if outcome.stopped_early {
             std::process::exit(1);
+        }
+        if failed {
+            // The reference harness prints failed pictures and still exits 0;
+            // the board table of board_vp_corrupt_vs_mpp.sh matched on that.
+            eprintln!("some pictures carried hardware error flags");
         }
         return;
     }

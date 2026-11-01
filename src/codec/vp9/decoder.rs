@@ -107,6 +107,9 @@ impl Decoder {
     /// stop the run, and the shape of the outcome is what the tests lock.
     pub fn decode_stream(&mut self, data: &[u8]) -> StreamOutcome {
         let mut outcome = StreamOutcome::default();
+        // Measured on the board: the VP9 C harness exits 255 on a truncated
+        // container without decoding anything, the opposite of VP8's tolerance,
+        // so VP9 keeps the strict walk.
         let ivf = match parser::parse_ivf(data) {
             Ok(ivf) => ivf,
             Err(error) => {

@@ -50,7 +50,7 @@ rust_decode() {
   [ "$dump_regs" = regs ] && env="RFI_VP8_REG_DUMP=1"
   ssh t6 "cd ~/rk-mpp-rs && sudo env $env ./target/release/rk-mpp-rs vp8dec $stream $output \
     >$log 2>&1"
-  ssh t6 "grep -q 'decoded $frames frames ($frames output) in' $log"
+  ssh t6 "grep -q 'decoded $frames frames ($frames output, 0 packets dropped)' $log"
 }
 
 if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then

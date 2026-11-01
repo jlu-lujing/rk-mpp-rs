@@ -135,17 +135,17 @@ impl Decoder {
     /// reaction to the same damage - is what the unit tests lock.
     pub fn decode_stream(&mut self, data: &[u8]) -> StreamOutcome {
         let mut outcome = StreamOutcome::default();
-        let frames = match parser::parse_ivf(data) {
-            Ok(frames) => frames,
-            Err(error) => {
-                outcome.dropped.push(DroppedPacket {
-                    packet: usize::MAX,
-                    reason: format!("container: {error}"),
-                });
-                outcome.stopped_early = true;
-                return outcome;
-            }
-        };
+        let (frames, container, tail) = parser::parse_ivf_tolerant(data);
+        if let Some(error) = container {
+            outcome.dropped.push(DroppedPacket {
+                packet: usize::MAX,
+                reason: format!("container: {error}"),
+            });
+        }
+        if frames.is_empty() && tail.is_none() {
+            outcome.stopped_early = true;
+            return outcome;
+        }
         for (index, frame) in frames.iter().enumerate() {
             match self.decode_packet_checked(frame.data) {
                 Ok(pictures) => outcome.pictures.extend(pictures),
@@ -167,6 +167,19 @@ impl Decoder {
                     outcome.stopped_early = true;
                     break;
                 }
+            }
+        }
+        // The cut-short last packet, padded back to its declared size the way
+        // the reference's buffer copy leaves it: zeros where the file ran out.
+        if let Some((partial, declared)) = tail {
+            let mut padded = partial.to_vec();
+            padded.resize(declared, 0);
+            match self.decode_packet_checked(&padded) {
+                Ok(pictures) => outcome.pictures.extend(pictures),
+                Err(error) => outcome.dropped.push(DroppedPacket {
+                    packet: frames.len(),
+                    reason: format!("tail: {error}"),
+                }),
             }
         }
         for slot in self.dpb.flush() {

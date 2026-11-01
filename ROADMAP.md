@@ -245,6 +245,43 @@ in what order the evidence gets produced.
       status was checked. Profile 1/3 remain unsupported because C MPP rejects
       them before the HAL. Corrupt-stream behavior and performance remain
       before closing M4
+- [x] **VP8 profiles 1 and 3.** The corpus probe (`scripts/board_vp8_profile_probe.sh`)
+      established that every VP8 stream in `~/rk-mpp-oracles/corpus` is profile 0
+      with no key-frame scale factors, so the comparison runs on derived fixtures:
+      the frame-tag version bits of `vp8_320x240_12_ip.ivf` patched to 1 and to 3.
+      The VP8-mode syntax turns out to be version-opaque in the reference - all
+      version-conditional code sits in the dead `vp7_header_parser` - and the
+      vdpu2 derivation (bilinear on any low bit, the tap bank only when the low
+      two bits are clear, the extra MV range off for version three alone) is
+      pinned for all eight version values.
+      `scripts/board_vp8_profile_vs_mpp.sh`: profile 1 and profile 3, twelve
+      frames each, byte-identical to `mpi_dec_test -t 9`. The key-frame scale
+      bits stay a documented divergence - C parses them into fields no register
+      reads and decodes at full size, Rust refuses the stream instead.
+ - [x] **The damaged-stream policy, adjudicated against the board's C harness**
+       (`scripts/board_vp_corrupt_vs_mpp.sh`: container truncation, half of the
+       last packet, a mid-stream bit flip, on both decoders). What the table
+       settled, and what changed because of it: the VP8 CLI now writes every
+       picture it decoded instead of nothing on damage, and a torn container
+       tail is the *packets'* business, not the run's - a truncated last packet
+       is padded back to its declared size with the zeros the reference's own
+       buffer copy leaves there and still decodes, and a failed-picture exit
+       code was wrong where `mpi_dec_test` prints the failure and exits 0.
+       Result: vp8/container, vp8/half-last and vp8/mid-flip SAME (both sides
+       rc 0, twelve frames), and vp9/container SAME (both rc 255, nothing). The
+       remaining named rows are listed below, not hidden.
+ - [ ] The named divergences the damage and boundary tables left open:
+       vp9/half-last and vp9/mid-flip, where the rkvdec harness aborts the whole
+       run (rc 255, zero frames) and Rust recovers the surviving packets (11 or
+       12 frames) - matching C exactly would mean discarding pictures already
+       decoded, which is a worse decoder, so this stays a measured divergence;
+       `vp9_p0_720p_errres_seg`, byte-identical for its first four frames and
+       then 213 bytes of chroma in frames 4 and 5, the register images matching
+       word for word - a state question around error-resilient segmentation to
+       chase; and the odd-dimension matrix cells (321x241), where rkvdec's
+       padded 16-aligned strides make a naive byte compare meaningless - the
+       existing odd-size proof stands on the FFmpeg hash and the padded DMA
+       stride test, not on that compare.
 - [ ] AV1 Main, film grain
   - [x] IVF packet boundaries, OBU headers/LEB128 and complete OBU splitting
   - [x] Sequence header, operating points, color config and tool flags

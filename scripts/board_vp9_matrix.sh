@@ -18,6 +18,7 @@
 # name starts with vp9 (they are run by path, list printed first).
 #
 # Usage: scripts/board_vp9_matrix.sh
+here="$(cd "$(dirname "$0")" && pwd)"
 set -euo pipefail
 
 corpus="${CORPUS:-}"
@@ -58,27 +59,41 @@ for entry in "${streams[@]}"; do
   planar="/tmp/vpx9_${name}_c.yuv"
   rust="/tmp/vpx9_${name}_rust.yuv"
 
+  # mpi_dec_test loops the last picture when -n exceeds the stream, so the
+  # reference runs after the Rust one and asks for exactly Rust's frame count;
+  # a count difference would then show as differing bytes, which the verdict
+  # text below reports under the same 'named' umbrella.
   ssh t6 "sudo rm -f $mpp_out $rust"
-  ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 300 \
-    $mpp_bin -i ~/rk-mpp-rs/tests/data/${name}.ivf -t 11 -o $mpp_out" \
-    >/dev/null 2>&1 && c_rc=0 || c_rc=$?
   ssh t6 "cd ~/rk-mpp-rs && sudo timeout 300 \
     ./target/release/rk-mpp-rs vp9dec ~/rk-mpp-rs/tests/data/${name}.ivf $rust" \
     >/dev/null 2>&1 && r_rc=0 || r_rc=$?
+  r_bytes=$(ssh t6 "stat -c %s $rust 2>/dev/null || echo 0")
+  r_frames=$(( r_bytes / frame_bytes ))
+  if [ "$r_frames" = 0 ]; then r_frames=1; fi
+  ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 300 \
+    $mpp_bin -i ~/rk-mpp-rs/tests/data/${name}.ivf -t 10 -o $mpp_out -n $r_frames" \
+    >/dev/null 2>&1 && c_rc=0 || c_rc=$?
 
   c_bytes=$(ssh t6 "stat -c %s $mpp_out 2>/dev/null || echo 0")
-  r_bytes=$(ssh t6 "stat -c %s $rust 2>/dev/null || echo 0")
 
+  # rkvdec writes NV12-family output while the Rust decoder emits planar,
+  # exactly like the VP8 comparison: convert the C side to the planar form
+  # both sides agree on before the cmp.
+  # rkvdec writes semi-planar on both depths - NV12 at 8-bit, P010 at 10-bit -
+  # while the Rust decoder emits fully planar, exactly as the VP8 comparison
+  # assumes. The probe that settled the 10-bit layout: the raw chroma plane
+  # interleaves U,V pairs (891,655,878,662 against the planar 891,878,883).
+  scp -q "$here/p010_to_planar.py" t6:/tmp/p010_to_planar.py 2>/dev/null
   if [ "$depth" = 10 ]; then
-    # 10-bit C output is NV12-style packed; convert to the same planar
-    # yuv420p10le the Rust decoder emits before comparing.
+    # FFmpeg p010 is MSB-aligned; rkvdec is LSB-aligned. See the script.
+    ssh t6 "python3 /tmp/p010_to_planar.py $mpp_out $planar $width $height" \
+      >/dev/null 2>&1 || planar=""
+  else
     ssh t6 "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
       -video_size ${width}x${height} -i $mpp_out \
-      -pix_fmt yuv420p10le -f rawvideo $planar" >/dev/null 2>&1 || planar=""
-    c_cmp="$planar"
-  else
-    c_cmp="$mpp_out"
+      -pix_fmt yuv420p -f rawvideo $planar" >/dev/null 2>&1 || planar=""
   fi
+  c_cmp="$planar"
 
   c_frames=$(( c_bytes / frame_bytes ))
   r_frames=$(( r_bytes / frame_bytes ))
@@ -104,7 +119,7 @@ if [ -n "$corpus" ] && ssh t6 "test -d '$corpus'"; then
     base=$(basename "$stream" .ivf)
     ssh t6 "sudo rm -f /tmp/vpx9_corpus_c.yuv /tmp/vpx9_corpus_r.yuv"
     ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 300 \
-      $mpp_bin -i '$stream' -t 11 -o /tmp/vpx9_corpus_c.yuv" >/dev/null 2>&1 && c_rc=0 || c_rc=$?
+      $mpp_bin -i '$stream' -t 10 -o /tmp/vpx9_corpus_c.yuv" >/dev/null 2>&1 && c_rc=0 || c_rc=$?
     ssh t6 "cd ~/rk-mpp-rs && sudo timeout 300 \
       ./target/release/rk-mpp-rs vp9dec '$stream' /tmp/vpx9_corpus_r.yuv" >/dev/null 2>&1 && r_rc=0 || r_rc=$?
     c_bytes=$(ssh t6 "stat -c %s /tmp/vpx9_corpus_c.yuv 2>/dev/null || echo 0")

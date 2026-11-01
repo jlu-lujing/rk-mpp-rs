@@ -799,25 +799,59 @@ pub struct IvfFrame<'a> {
 }
 
 pub fn parse_ivf(data: &[u8]) -> Result<Vec<IvfFrame<'_>>, Vp8Error> {
+    let (frames, error, _tail) = parse_ivf_tolerant(data);
+    match error {
+        None => Ok(frames),
+        Some(error) => Err(error),
+    }
+}
+
+/// The same walk, but a container whose *tail* is torn still hands over the
+/// packets that survived: `mpi_dec_test` fed a truncated file on the board
+/// decoded the twelve complete frames and exited 0, and matching that shape
+/// is the damaged-stream policy. A broken header or a lying frame count has
+/// no such recovery and gives back nothing.
+pub fn parse_ivf_tolerant(
+    data: &[u8],
+) -> (Vec<IvfFrame<'_>>, Option<Vp8Error>, Option<(&[u8], usize)>) {
     if data.len() < 32 || &data[..4] != b"DKIF" {
-        return Err(Vp8Error::Unsupported("not an IVF file"));
+        return (
+            Vec::new(),
+            Some(Vp8Error::Unsupported("not an IVF file")),
+            None,
+        );
     }
     let header_size = u16::from_le_bytes([data[6], data[7]]) as usize;
     if header_size < 32 || header_size > data.len() || &data[8..12] != b"VP80" {
-        return Err(Vp8Error::Unsupported("IVF header is not VP80"));
+        return (
+            Vec::new(),
+            Some(Vp8Error::Unsupported("IVF header is not VP80")),
+            None,
+        );
     }
     let declared = u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize;
     let mut frames = Vec::new();
     let mut offset = header_size;
     while offset < data.len() {
         if offset + 12 > data.len() {
-            return Err(Vp8Error::Truncated);
+            return (frames, Some(Vp8Error::Truncated), None);
         }
         let size = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         let timestamp = u64::from_le_bytes(data[offset + 4..offset + 12].try_into().unwrap());
         offset += 12;
-        if size == 0 || offset + size > data.len() {
-            return Err(Vp8Error::Truncated);
+        if size == 0 {
+            return (frames, Some(Vp8Error::Truncated), None);
+        }
+        if offset + size > data.len() {
+            // The last packet's bytes were cut short but its declared size is
+            // known. `mpi_dec_test` still submitted it - the decoder copies the
+            // packet into a buffer of its own, and the missing bytes stay zero
+            // there - so hand it over for the caller to pad and decode.
+            return (
+                frames,
+                Some(Vp8Error::Truncated),
+                Some((&data[offset..data.len()], size)),
+            );
         }
         frames.push(IvfFrame {
             timestamp,
@@ -826,9 +860,13 @@ pub fn parse_ivf(data: &[u8]) -> Result<Vec<IvfFrame<'_>>, Vp8Error> {
         offset += size;
     }
     if declared != 0 && frames.len() != declared {
-        return Err(Vp8Error::Unsupported("IVF frame count does not match"));
+        return (
+            Vec::new(),
+            Some(Vp8Error::Unsupported("IVF frame count does not match")),
+            None,
+        );
     }
-    Ok(frames)
+    (frames, None, None)
 }
 
 #[cfg(test)]

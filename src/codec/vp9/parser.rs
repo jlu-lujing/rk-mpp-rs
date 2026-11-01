@@ -703,29 +703,70 @@ pub struct Ivf<'a> {
 }
 
 pub fn parse_ivf(data: &[u8]) -> Result<Ivf<'_>, Vp9Error> {
+    let (ivf, error) = parse_ivf_tolerant(data);
+    match error {
+        None => Ok(ivf),
+        Some(error) => Err(error),
+    }
+}
+
+/// The same walk, but a container whose *tail* is torn still hands over the
+/// packets that survived, matching the damaged-stream behaviour measured on
+/// the board against `mpi_dec_test`. A broken header gives back nothing.
+pub fn parse_ivf_tolerant(data: &[u8]) -> (Ivf<'_>, Option<Vp9Error>) {
+    let empty = || {
+        (
+            Ivf {
+                width: 0,
+                height: 0,
+                timebase_denominator: 0,
+                timebase_numerator: 0,
+                frames: Vec::new(),
+            },
+            Some(Vp9Error::BadIvf),
+        )
+    };
     if data.len() < 32 || &data[..4] != b"DKIF" {
-        return Err(Vp9Error::BadIvf);
+        return empty();
     }
     let header_size = u16::from_le_bytes([data[6], data[7]]) as usize;
     if header_size < 32 || header_size > data.len() || &data[8..12] != b"VP90" {
-        return Err(Vp9Error::BadIvf);
+        return empty();
     }
     let width = u16::from_le_bytes([data[12], data[13]]);
     let height = u16::from_le_bytes([data[14], data[15]]);
     let timebase_denominator = u32::from_le_bytes(data[16..20].try_into().unwrap());
     let timebase_numerator = u32::from_le_bytes(data[20..24].try_into().unwrap());
     let declared_frames = u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize;
-    let mut frames = Vec::with_capacity(declared_frames);
+    let mut frames = Vec::with_capacity(declared_frames.min(1024));
     let mut offset = header_size;
     while offset < data.len() {
         if offset + 12 > data.len() {
-            return Err(Vp9Error::BadIvf);
+            return (
+                Ivf {
+                    width,
+                    height,
+                    timebase_denominator,
+                    timebase_numerator,
+                    frames,
+                },
+                Some(Vp9Error::BadIvf),
+            );
         }
         let size = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         let timestamp = u64::from_le_bytes(data[offset + 4..offset + 12].try_into().unwrap());
         offset += 12;
         if size == 0 || offset + size > data.len() {
-            return Err(Vp9Error::BadIvf);
+            return (
+                Ivf {
+                    width,
+                    height,
+                    timebase_denominator,
+                    timebase_numerator,
+                    frames,
+                },
+                Some(Vp9Error::BadIvf),
+            );
         }
         frames.push(IvfFrame {
             timestamp,
@@ -734,15 +775,26 @@ pub fn parse_ivf(data: &[u8]) -> Result<Ivf<'_>, Vp9Error> {
         offset += size;
     }
     if declared_frames != 0 && frames.len() != declared_frames {
-        return Err(Vp9Error::BadIvf);
+        let mut hard = Ivf {
+            width,
+            height,
+            timebase_denominator,
+            timebase_numerator,
+            frames,
+        };
+        hard.frames = Vec::new();
+        return (hard, Some(Vp9Error::BadIvf));
     }
-    Ok(Ivf {
-        width,
-        height,
-        timebase_denominator,
-        timebase_numerator,
-        frames,
-    })
+    (
+        Ivf {
+            width,
+            height,
+            timebase_denominator,
+            timebase_numerator,
+            frames,
+        },
+        None,
+    )
 }
 
 fn read_sync_code(bits: &mut BitReader<'_>) -> Result<(), Vp9Error> {

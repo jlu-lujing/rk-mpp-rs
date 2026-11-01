@@ -7,7 +7,7 @@
 # Usage: scripts/board_vp8_profile_probe.sh [corpus-dir]
 set -euo pipefail
 
-corpus="${1:-$HOME/rk-mpp-oracles/corpus}"
+corpus="${1:-/home/user/rk-mpp-oracles/corpus}"
 here="$(cd "$(dirname "$0")" && pwd)"
 
 if ssh t6 "test -d $corpus"; then
