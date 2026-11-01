@@ -101,6 +101,7 @@ tests/data/       C 侧真实输出构成的 golden / fixture
 ## 文档
 
 - [ROADMAP.md](ROADMAP.md) —— 逐 capability 的进度台账与证据（权威）
+- [docs/PLAN.md](docs/PLAN.md) —— 完整未来计划：全部剩余工作、阶段出口、依赖与风险
 - [docs/HANDOFF.md](docs/HANDOFF.md) —— 交接：下一步、板子工具链、易错清单
 - [docs/h264d_hw.md](docs/h264d_hw.md) —— rkvdec H.264 硬件契约（从 C 提取）
 - [docs/superpowers/](docs/superpowers/) —— 历史计划与设计稿（带状态说明）

@@ -59,6 +59,11 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
 
+Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
+workstreams covering every open item here, their dependencies, phase exits, the
+acceptance matrix and the risks. This file stays the evidence ledger; the plan says
+in what order the evidence gets produced.
+
 ## Feature checklist (per official capability)
 
 ### Decoders
