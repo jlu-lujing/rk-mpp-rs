@@ -1,9 +1,11 @@
 //! Probe: does the pure-Rust MPP client reach the JPEG decoder?
 
 use rk_mpp_rs::codec::h264::encoder as h264_syntax;
+use rk_mpp_rs::codec::h265::encoder as h265_syntax;
 use rk_mpp_rs::codec::jpeg::parser as jpeg;
 use rk_mpp_rs::codec::jpeg::tables;
 use rk_mpp_rs::hal::h264e;
+use rk_mpp_rs::hal::h265e;
 use rk_mpp_rs::hal::jpegd as decode;
 use rk_mpp_rs::hal::jpege;
 use rk_mpp_rs::scale;
@@ -141,6 +143,49 @@ fn encode_h264(
     let elapsed = started.elapsed();
     std::fs::write(out_path, &annex_b).map_err(|e| format!("{out_path}: {e}"))?;
     Ok((annex_b.len(), headers, payload, us(elapsed) / 1000.0))
+}
+
+/// Write the H.265 VPS/SPS/PPS a fixed-QP IDR carries, and report the QP that the
+/// derived register image would send. The input file is only checked to exist and
+/// hold a picture; the parameter sets are pure software output and do not read it.
+/// The IDR NAL itself still needs the on-board job template (see hal::h265e), so it
+/// is deliberately not produced here yet.
+fn encode_h265_headers(
+    path: &str,
+    out_path: &str,
+    width: usize,
+    height: usize,
+    qp: u32,
+) -> Result<(usize, u32), String> {
+    let input = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let frame_bytes = width * height * 3 / 2;
+    if input.len() < frame_bytes {
+        return Err(format!(
+            "{path}: {width}x{height} NV12 needs {frame_bytes} bytes, file has {}",
+            input.len()
+        ));
+    }
+    let config = h265_syntax::EncoderConfig::new(width, height);
+    let headers = h265_syntax::build_headers(&config).map_err(|e| e.to_string())?;
+    std::fs::write(out_path, &headers).map_err(|e| format!("{out_path}: {e}"))?;
+    let job = h265e::IdrJob {
+        width,
+        height,
+        qp,
+        qp_min: qp,
+        qp_max: qp,
+        input_fd: -1,
+        output_fd: -1,
+        current_fd: -1,
+        current_thumb_fd: -1,
+        reference_fd: -1,
+        reference_thumb_fd: -1,
+    };
+    let registers = h265e::build_registers(&job)?;
+    let pic_qp = registers
+        .get(&rk_mpp_rs::hal::h265e_regs::BASE_ENC_PIC_PIC_QP)
+        .map_err(|e| e.to_string())?;
+    Ok((headers.len(), pic_qp))
 }
 
 fn encode_jpeg(
@@ -900,6 +945,40 @@ fn main() {
             ),
             Err(e) => {
                 eprintln!("H.264 encode failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if args.len() > 1 && args[1] == "h265-enc" {
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
+        let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
+        let (Some(width), Some(height)) = (width, height) else {
+            eprintln!("usage: rk-mpp-rs h265-enc <in.nv12> <out.265> <width> <height> [qp]");
+            std::process::exit(2);
+        };
+        if src.is_empty() || dst.is_empty() {
+            eprintln!("usage: rk-mpp-rs h265-enc <in.nv12> <out.265> <width> <height> [qp]");
+            std::process::exit(2);
+        }
+        let qp = args
+            .get(6)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(26);
+        // M8 opens with the parameter sets, which the software emits and which are
+        // the byte-comparable part before any on-board job template exists. The QP
+        // never reaches them - `h265e_set_pps` pins pic_init_qp at intra_qp and the
+        // hardware derives the slice QP against it, exactly as H.264's PPS ignores
+        // qp_init - so the QP is reported through the derived register image below
+        // rather than through the header bytes.
+        match encode_h265_headers(src, dst, width, height, qp) {
+            Ok((header_bytes, pic_qp)) => println!(
+                "h265-enc {src} -> {dst}: {header_bytes} header bytes (VPS+SPS+PPS), {width}x{height} fixed qp {pic_qp} (IDR payload pending the board job template)"
+            ),
+            Err(e) => {
+                eprintln!("H.265 encode failed: {e}");
                 std::process::exit(1);
             }
         }
