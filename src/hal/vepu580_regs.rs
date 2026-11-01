@@ -4198,4 +4198,160 @@ pub const RDO_PREINTRA_B16_CST_WGT_PRE_INTRA16_CST_WGT01: Field = Field {
     name: "RDO.preintra_b16_cst_wgt.pre_intra16_cst_wgt01",
 };
 
-// 687 fields in total.
+// Vepu580WgtCommon (vepu580_common.h) at absolute word 1496.
+pub const S3_CIME_SQI_CFG_CIME_SAD_MOD_SEL: Field = Field {
+    word: 1496,
+    shift: 0,
+    width: 1,
+    name: "S3.cime_sqi_cfg.cime_sad_mod_sel",
+};
+pub const S3_CIME_SQI_CFG_CIME_SAD_USE_BIG_BLOCK: Field = Field {
+    word: 1496,
+    shift: 1,
+    width: 1,
+    name: "S3.cime_sqi_cfg.cime_sad_use_big_block",
+};
+pub const S3_CIME_SQI_CFG_CIME_PMV_SET_ZERO: Field = Field {
+    word: 1496,
+    shift: 2,
+    width: 1,
+    name: "S3.cime_sqi_cfg.cime_pmv_set_zero",
+};
+pub const S3_CIME_SQI_CFG_CIME_PMV_NUM: Field = Field {
+    word: 1496,
+    shift: 8,
+    width: 2,
+    name: "S3.cime_sqi_cfg.cime_pmv_num",
+};
+pub const S3_CIME_SQI_THD_CIME_MVD_TH0: Field = Field {
+    word: 1497,
+    shift: 0,
+    width: 9,
+    name: "S3.cime_sqi_thd.cime_mvd_th0",
+};
+pub const S3_CIME_SQI_THD_CIME_MVD_TH1: Field = Field {
+    word: 1497,
+    shift: 10,
+    width: 9,
+    name: "S3.cime_sqi_thd.cime_mvd_th1",
+};
+pub const S3_CIME_SQI_THD_CIME_MVD_TH2: Field = Field {
+    word: 1497,
+    shift: 20,
+    width: 9,
+    name: "S3.cime_sqi_thd.cime_mvd_th2",
+};
+pub const S3_CIME_SQI_MULTI0_CIME_MULTI0: Field = Field {
+    word: 1498,
+    shift: 0,
+    width: 10,
+    name: "S3.cime_sqi_multi0.cime_multi0",
+};
+pub const S3_CIME_SQI_MULTI0_CIME_MULTI1: Field = Field {
+    word: 1498,
+    shift: 16,
+    width: 10,
+    name: "S3.cime_sqi_multi0.cime_multi1",
+};
+pub const S3_CIME_SQI_MULTI1_CIME_MULTI2: Field = Field {
+    word: 1499,
+    shift: 0,
+    width: 10,
+    name: "S3.cime_sqi_multi1.cime_multi2",
+};
+pub const S3_CIME_SQI_MULTI1_CIME_MULTI3: Field = Field {
+    word: 1499,
+    shift: 16,
+    width: 10,
+    name: "S3.cime_sqi_multi1.cime_multi3",
+};
+pub const S3_RIME_SQI_THD_CIME_SAD_TH0: Field = Field {
+    word: 1500,
+    shift: 0,
+    width: 12,
+    name: "S3.rime_sqi_thd.cime_sad_th0",
+};
+pub const S3_RIME_SQI_THD_RIME_MVD_TH0: Field = Field {
+    word: 1500,
+    shift: 16,
+    width: 4,
+    name: "S3.rime_sqi_thd.rime_mvd_th0",
+};
+pub const S3_RIME_SQI_THD_RIME_MVD_TH1: Field = Field {
+    word: 1500,
+    shift: 24,
+    width: 4,
+    name: "S3.rime_sqi_thd.rime_mvd_th1",
+};
+pub const S3_RIME_SQI_MULTI_RIME_MULTI0: Field = Field {
+    word: 1501,
+    shift: 0,
+    width: 10,
+    name: "S3.rime_sqi_multi.rime_multi0",
+};
+pub const S3_RIME_SQI_MULTI_RIME_MULTI1: Field = Field {
+    word: 1501,
+    shift: 10,
+    width: 10,
+    name: "S3.rime_sqi_multi.rime_multi1",
+};
+pub const S3_RIME_SQI_MULTI_RIME_MULTI2: Field = Field {
+    word: 1501,
+    shift: 20,
+    width: 10,
+    name: "S3.rime_sqi_multi.rime_multi2",
+};
+pub const S3_FME_SQI_THD0_CIME_SAD_PU16_TH: Field = Field {
+    word: 1502,
+    shift: 0,
+    width: 12,
+    name: "S3.fme_sqi_thd0.cime_sad_pu16_th",
+};
+pub const S3_FME_SQI_THD0_CIME_SAD_PU32_TH: Field = Field {
+    word: 1502,
+    shift: 16,
+    width: 12,
+    name: "S3.fme_sqi_thd0.cime_sad_pu32_th",
+};
+pub const S3_FME_SQI_THD1_CIME_SAD_PU64_TH: Field = Field {
+    word: 1503,
+    shift: 0,
+    width: 12,
+    name: "S3.fme_sqi_thd1.cime_sad_pu64_th",
+};
+pub const S3_FME_SQI_THD1_MOVE_LAMBDA: Field = Field {
+    word: 1503,
+    shift: 16,
+    width: 4,
+    name: "S3.fme_sqi_thd1.move_lambda",
+};
+pub const S3_RESERVED1504_1535: Array = Array {
+    word: 1504,
+    count: 32,
+    elem_bytes: 4,
+    words: 32,
+    name: "S3.reserved1504_1535",
+};
+pub const S3_IPRD_WGT_QP_HEVC_0_51: Array = Array {
+    word: 1536,
+    count: 52,
+    elem_bytes: 4,
+    words: 52,
+    name: "S3.iprd_wgt_qp_hevc_0_51",
+};
+pub const S3_RESERVED1588_1599: Array = Array {
+    word: 1588,
+    count: 12,
+    elem_bytes: 4,
+    words: 12,
+    name: "S3.reserved1588_1599",
+};
+pub const S3_RDO_WGTA_QP_GRPA_0_51: Array = Array {
+    word: 1600,
+    count: 52,
+    elem_bytes: 4,
+    words: 52,
+    name: "S3.rdo_wgta_qp_grpa_0_51",
+};
+
+// 712 fields in total.

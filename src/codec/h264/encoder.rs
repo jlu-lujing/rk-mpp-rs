@@ -63,6 +63,30 @@ pub struct EncoderConfig {
     pub fps_num: u32,
     pub fps_den: u32,
     pub vui: bool,
+    /// The caller left the initial quality unset - `rc:qp_init <= 0` in MPP's own
+    /// terms. Under rate control the first intra picture's QP is then derived from
+    /// its bit budget (`cal_first_i_start_qp`); under fixed QP the reference forces
+    /// 26 and logs about it, which is what `qp_init` already carries in that case.
+    pub quality_auto: bool,
+    /// The deblocking triple of `MppEncH264Cfg`, reaching the slice syntax the
+    /// hardware emits: `disable_deblocking_filter_idc`,
+    /// `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2`.
+    ///
+    /// The defaults are `MppEncCfgSet`'s memset zeros, which is what every
+    /// byte-verified stream carries. `h264e_slice_update` copies the three straight
+    /// through; VEPU580's HAL then writes `dis_dblk_idc` and `sli_alph_ofst` into
+    /// `synt_sli2` and *never writes the beta field* - `setup_vepu580_codec` has
+    /// exactly two deblocking statements - so a beta that is not zero is dropped on
+    /// the floor there too, and a port that dutifully wrote it would diverge from
+    /// the reference instead of matching it.
+    pub deblock_disable: u32,
+    pub deblock_offset_alpha: i32,
+    pub deblock_offset_beta: i32,
+    /// The ROI regions, in the order the reference's caller adds them. Empty
+    /// - the default - means no ROI tables are built, no `roi_en` set, and the
+    /// `roi_qthd` rows stay the picture-wide bounds they are in every stream
+    /// verified so far.
+    pub rois: Vec<RoiRegion>,
 }
 
 /// The bit rate target a caller that says nothing gets.
@@ -94,6 +118,34 @@ pub enum RcMode {
     Avbr,
 }
 
+/// One ROI region, the `RoiRegionCfg` the reference's `mpi_enc_test` hands to
+/// `mpp_enc_roi_add_region` - a 16-grid rectangle plus the force-intra flag and
+/// the QP adjustment with its mode.
+///
+/// The VEPU580 path (the reference's `ROI_TYPE_2`) never turns these into
+/// per-area `roi_qthd` register rows - `setup_vepu580_rc_base` writes the same
+/// picture-wide `qp_min`/`qp_max` into all eight areas whatever the ROI - the
+/// regions instead reach the hardware as per-16x16-block records in two DMA
+/// tables, `Vepu580RoiH264BsCfg` (force-intra and the qp-adjust enable) and
+/// `Vepu580RoiQpCfg` (the signed 7-bit `qp_adj`, its absolute/relative mode,
+/// and the always-zero area index). The region-to-block conversion mirrors
+/// `roi_data_update_cfg` + `gen_vepu580_roi_h264` of `mpp_enc_roi_utils.c`,
+/// including its round-up of the region origin, `x + 15` style, which
+/// `vepu5xx_h264_set_one_roi` (the VEPU54x path) does *not* do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoiRegion {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub force_intra: bool,
+    /// True for absolute QP mode (`qp_mode = 1`), false for relative.
+    pub qp_absolute: bool,
+    /// The QP the region codes at (absolute) or by (relative); the reference
+    /// accepts up to 51 either way and stores it in a 7-bit signed field.
+    pub qp_val: i32,
+}
+
 impl EncoderConfig {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
@@ -119,6 +171,11 @@ impl EncoderConfig {
             fps_num: 30,
             fps_den: 1,
             vui: true,
+            quality_auto: false,
+            deblock_disable: 0,
+            deblock_offset_alpha: 0,
+            deblock_offset_beta: 0,
+            rois: Vec::new(),
         }
     }
 
@@ -178,6 +235,37 @@ impl EncoderConfig {
             || !(-12..=12).contains(&self.second_chroma_qp_index_offset)
         {
             return Err(Error("chroma QP offsets must be in -12..=12".into()));
+        }
+        for region in &self.rois {
+            // `RoiRegionCfg`'s geometry is unsigned four-wide fields, so a
+            // negative origin or an empty extent cannot exist in a C call and
+            // must not exist here either.
+            if region.x < 0 || region.y < 0 || region.w <= 0 || region.h <= 0 {
+                return Err(Error(format!(
+                    "ROI region [{}/{} {}x{}] is empty or off-grid negative",
+                    region.x, region.y, region.w, region.h
+                )));
+            }
+            // The checks `roi_data_update_cfg` makes before it touches a single
+            // block - out-of-frame geometry first, then the flag and QP ranges.
+            if region.x + region.w > self.width as i32 || region.y + region.h > self.height as i32 {
+                return Err(Error(format!(
+                    "ROI region [{}/{} {}x{}] exceeds the picture {}x{}",
+                    region.x, region.y, region.w, region.h, self.width, self.height
+                )));
+            }
+            if region.qp_absolute && region.qp_val > 51 {
+                return Err(Error(format!(
+                    "absolute ROI QP {} exceeds 51",
+                    region.qp_val
+                )));
+            }
+            if !region.qp_absolute && region.qp_val.abs() > 51 {
+                return Err(Error(format!(
+                    "relative ROI QP {} exceeds +-51",
+                    region.qp_val
+                )));
+            }
         }
         Ok(())
     }

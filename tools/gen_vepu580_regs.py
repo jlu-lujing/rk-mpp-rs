@@ -38,6 +38,12 @@ STRUCTS = [
     # where the last difference between a Rust P job and a C P job lives.
     (H264E, "Vepu580Section3", "S3", 1472, 180),
     (H264E, "Vepu580RdoCfg", "RDO", 2048, 122),
+    # The cime/rime/fme weights. `Vepu580Section3` ends with a `common` member
+    # this struct by value, and `vepu580_h264e_tune_reg_patch` writes into it -
+    # the CIME/RIME search multipliers and the scene-change overrides. It gets
+    # the same `S3` prefix and shares the `param` array, so its words are read
+    # from the struct's own `reg` comments.
+    (COMMON, "Vepu580WgtCommon", "S3", 1496, 180),
 ]
 
 REG_COMMENT = re.compile(r"reg(\d+)")
