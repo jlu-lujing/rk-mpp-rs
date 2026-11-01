@@ -611,6 +611,14 @@ pub fn build_registers(job: &PictureJob) -> [u32; REG_NUM] {
 /// is simply not sent.
 pub fn build_offsets(job: &PictureJob) -> Vec<RegOffsetInfo> {
     let mut offsets = Vec::new();
+    write_offsets(job, &mut offsets);
+    offsets
+}
+
+/// Same entries as [`build_offsets`], appended into caller-owned scratch so
+/// the job path does not allocate; the caller clears first, so the list is
+/// rebuilt in full every job.
+pub fn write_offsets(job: &PictureJob, offsets: &mut Vec<RegOffsetInfo>) {
     let mut arm = |reg: usize, offset: u32| {
         if offset != 0 {
             offsets.push(RegOffsetInfo {
@@ -648,7 +656,6 @@ pub fn build_offsets(job: &PictureJob) -> Vec<RegOffsetInfo> {
         REG_SEG_MAP,
         u32::from(job.segmentation_enabled) + (u32::from(job.segmentation_map_update) << 1),
     );
-    offsets
 }
 
 /// Append a register image to `path` in the text `hal_vp8d_debug=2` prints, so
@@ -681,6 +688,8 @@ pub struct Vp8d {
     /// `sw55` of the last completed job.
     pub last_irq: u32,
     jobs: usize,
+    /// Reused across jobs; the list is rebuilt in full every job.
+    offsets_scratch: Vec<RegOffsetInfo>,
 }
 
 impl Vp8d {
@@ -697,6 +706,7 @@ impl Vp8d {
             seg_map: DmaBuf::alloc("system", SEG_MAP_SIZE, false)?,
             last_irq: 0,
             jobs: 0,
+            offsets_scratch: Vec::with_capacity(11),
         })
     }
 
@@ -729,8 +739,9 @@ impl Vp8d {
         }
 
         let registers = build_registers(job);
-        let offsets = build_offsets(job);
-        self.last_irq = vdpu2::run_job(&mut self.svc, &registers, &offsets)?;
+        self.offsets_scratch.clear();
+        write_offsets(job, &mut self.offsets_scratch);
+        self.last_irq = vdpu2::run_job(&mut self.svc, &registers, &self.offsets_scratch)?;
         self.jobs += 1;
         if std::env::var_os("RFI_VP8_REG_DUMP").is_some() {
             dump_registers(
@@ -1034,6 +1045,30 @@ mod tests {
             vec![145, 64, 140, 141, 142, 131],
             "the stream, one base per extra partition, and the key-frame self reference"
         );
+    }
+
+    /// The reused-scratch offset writer must emit exactly the list the
+    /// original allocating `build_offsets` produced, including the cases
+    /// where zero offsets must stay absent (a P picture arms no self
+    /// reference, and an unsegmented picture arms no map offset).
+    #[test]
+    fn the_offset_scratch_matches_the_allocating_builder() {
+        for (path, index) in [
+            ("tests/data/vp8_320x240_12_ip.ivf", 0usize),
+            ("tests/data/vp8_320x240_12_ip.ivf", 2),
+            ("tests/data/vp8_320x240_12_parts.ivf", 0),
+            ("tests/data/vp8_320x240_12_parts.ivf", 2),
+        ] {
+            let job = job_for(path, index);
+            let expected = build_offsets(&job);
+            let mut got = vec![RegOffsetInfo {
+                reg_idx: 0xffff_ffff,
+                offset: u32::MAX,
+            }]; // dirty scratch must be fully rebuilt
+            got.clear();
+            write_offsets(&job, &mut got);
+            assert_eq!(got, expected, "{path} picture {index}");
+        }
     }
 
     /// The probability image, byte for byte, against the buffer the C decoder left
