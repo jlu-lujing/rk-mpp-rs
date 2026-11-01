@@ -34,11 +34,11 @@
 | JPEG 解码（jpegd，RGB888/NV12，1/2–1/8 缩放） | 完成，比 C 快约 30% |
 | H.264 解码（rkvdec） | 完成：frame/MBAFF/PAFF/长参考/错误路径**逐字节** |
 | H.265 解码（rkvdec） | 完成：Main/Main10/tiles/WPP/DSLICE/LTR/scaling list；4:2:2/4:4:4 被硬件拒收 |
-| VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；边界矩阵未完 |
+| VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；边界矩阵已对 C 判决（scripts/board_vp9_matrix.sh），剩 720p 分割色度 213 字节与 rkvdec 损坏流整体中止两处有名差异 |
 | AV1 解码（av1d） | Main 8/10-bit、film grain 逐字节；更宽 conformance 未完 |
-| MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 全部逐字节；AVS+/AVS2 未做 |
-| H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；ROI/QP map、GDR、slice split、>4096、场景检测未完 |
-| JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）完成 |
+| MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 全部逐字节；VP8 profile 1/3（板验，语料仅 p0 故派生流）；损坏/截断流与 C 的行为表 4/6 SAME（scripts/board_vp_corrupt_vs_mpp.sh）；AVS+/AVS2 未做 |
+| H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR、slice split、>4096 未完。**开放**：P 帧 >320x240 不逐字节（见 ROADMAP） |
+| JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices / 多核分带见 docs/jpege-slices-multicore.md |
 | H.265 编码 | 未开始 |
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP 未移植，VDPP 该板不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |

@@ -12,22 +12,31 @@
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 441 passed, 11 board-only ignored
+cargo test --all-targets      # 512 passed, 20 board-only ignored
 cargo fmt --check
 git log --oneline -10
-grep -c '^- \[x\]' ROADMAP.md  # 47 已完成
-grep -c '^- \[ \]' ROADMAP.md  # 18 未完成
+grep -c '^- \[x\]' ROADMAP.md  # 已完成条目数
+grep -c '^- \[ \]' ROADMAP.md  # 未完成条目数
 ```
 
 板上验证（需要 `ssh t6`，详见第 4 节）：
 
 ```bash
 ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 分钟
-./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR 各 10 NAL 全同，约 2 分钟
+./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR + AVBR 各 10 NAL 全同
+./scripts/board_h264_level_vs_mpp.sh         # SPS level 矩阵 13 格
+./scripts/board_h264_deblock_vs_mpp.sh       # deblock 3 格 + auto-QP 2 格
+./scripts/board_h264_roi_vs_mpp.sh           # ROI/QP map 2 格
+./scripts/board_h264_scene_vs_mpp.sh         # 硬切场景检测
+./scripts/board_jpege_restart_vs_mpp.sh      # JPEG restart（-t 8 + split env）
+./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-整体完成度约 **五成**（按 ROADMAP 各里程碑的官方 LOC 估加权）。解码侧基本收口，
-编码侧 H.264 刚过半，framework（M10）几乎没动。
+整体完成度约五成半。解码侧基本收口；H.264 编码新增 level、deblock、ROI/QP map、
+auto-QP 起始 QP、场景检测（全部板上逐字节）；JPEG 编码新增 restart/90°/270°/RGB；
+framework 落了异步任务队列 + 引用计数缓冲池（板上验证）。
+**新发现的开放项**：P 帧在 320x240 以上不逐字节（寄存器图逐字相同，差异在 DMA 内容侧，
+见 ROADMAP "P pictures diverge from the reference beyond 320x240"）——建议优先处理。
 
 ---
 
@@ -141,7 +150,9 @@ H.264/VEPU580 编码已做到：
 
 ## 5. 下一步（按优先级）
 
-### 5.1 AVBR（最接近完成，半天到一天）
+### 5.1 AVBR —— 已完成（`12626d2`，三模式 10/10 NAL 相同）
+
+以下为当时的实施记录，保留备查。原计划：
 
 **源码**：`mpp/codec/rc/rc_model_v2.c`
 
