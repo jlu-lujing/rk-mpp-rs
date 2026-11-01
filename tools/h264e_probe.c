@@ -1,0 +1,318 @@
+/*
+ * Drive the reference H.264 encoder with the configuration knobs the board
+ * comparisons need and `mpi_enc_test` either hard-codes or does not have.
+ *
+ * Cells covered, one invocation each:
+ *
+ *   * a caller that never set an initial quality (the `rc_model_v2` flag is
+ *     `init_quality <= 0`, which `rc_model_v2_start` folds onto -1 and
+ *     `rc_model_v2_hal_start` derives from the bit budget);
+ *   * the `MppEncH264Cfg` deblocking triple - `mpi_enc_test` of this vintage
+ *     never touches `h264:dblk_*`, so the reference stream under test has to be
+ *     produced by a caller that does;
+ *   * ROI regions, through the same `mpp_enc_roi_*` helpers `mpi_enc_test`
+ *     links, so the region-to-CU-map conversion is the reference's own.
+ *
+ * Build on t6 against the reference build, not the installed library, and link
+ * the reference's own ROI helper:
+ *   cc -O2 -w -I$MPP/inc $MPP/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c \
+ *      $MPP/build/mpp/librockchip_mpp.so.1 -o /tmp/h264e_probe
+ *
+ * Usage:
+ *   h264e_probe in.nv12 out.264 w h frames <0|1|2|3> qp [bps[:min:max]]
+ *               [dblk disable alpha beta] [roi x y w h fi qpmode qpval]...
+ *
+ *   mode 0 = fixed QP, 1 = CBR, 2 = VBR, 3 = AVBR.
+ *   qp: the value written to the initial-quality field; pass -1 under a rate
+ *       control to say "the caller left it unset" (written as -1 so the model
+ *       takes its derivation branch), ignored beyond that.
+ *   The rc-cfg key is tried as `rc:qp_init` first and `rc:quality_init` next,
+ *   and the deblocking keys as `h264:dblk_*` then `h264:deblock_*`, because the
+ *   trie renames between 2024-04 and master are exactly the kind of thing this
+ *   probe should not have to know.
+ */
+#include <errno.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "mpp_buffer.h"
+#include "mpp_err.h"
+#include "mpp_frame.h"
+#include "mpp_packet.h"
+#include "rk_mpi.h"
+#include "rk_venc_cfg.h"
+
+#include "mpp_enc_roi_utils.h"
+
+#define CHECK(call)                                                             \
+    do {                                                                        \
+        MPP_RET check_ret = (call);                                            \
+        if (check_ret) {                                                        \
+            fprintf(stderr, "%s:%d: %s failed: %d\n", __FILE__, __LINE__,      \
+                    #call, check_ret);                                         \
+            goto cleanup;                                                       \
+        }                                                                       \
+    } while (0)
+
+/* Try a sequence of config keys and keep the one the library knows. */
+static MPP_RET set_s32_any(MppEncCfg cfg, int *tried, const char *key,
+                           int value)
+{
+    MPP_RET ret = mpp_enc_cfg_set_s32(cfg, key, value);
+    if (tried && *tried && ret)
+        return MPP_NOK;
+    if (!ret && tried)
+        *tried = 1;
+    return ret;
+}
+
+static MPP_RET set_quality_init(MppEncCfg cfg, int value)
+{
+    int tried = 0;
+    MPP_RET ret = set_s32_any(cfg, &tried, "rc:qp_init", value);
+    if (ret)
+        ret = set_s32_any(cfg, &tried, "rc:quality_init", value);
+    return ret;
+}
+
+static MPP_RET set_deblock(MppEncCfg cfg, int disable, int alpha, int beta)
+{
+    int tried = 0;
+    MPP_RET ret = set_s32_any(cfg, &tried, "h264:dblk_disable", disable);
+    if (ret)
+        ret = set_s32_any(cfg, &tried, "h264:deblock_disable", disable);
+    if (!ret)
+        ret = set_s32_any(cfg, &tried, "h264:dblk_alpha", alpha);
+    if (ret)
+        ret = set_s32_any(cfg, &tried, "h264:deblock_offset_alpha", alpha);
+    if (!ret)
+        ret = set_s32_any(cfg, &tried, "h264:dblk_beta", beta);
+    if (ret)
+        ret = set_s32_any(cfg, &tried, "h264:deblock_offset_beta", beta);
+    return ret;
+}
+
+int main(int argc, char **argv)
+{
+    const char *input_path = argc > 1 ? argv[1] : "";
+    const char *output_path = argc > 2 ? argv[2] : "/tmp/h264e_probe.264";
+    int width = argc > 3 ? atoi(argv[3]) : 320;
+    int height = argc > 4 ? atoi(argv[4]) : 240;
+    int frames = argc > 5 ? atoi(argv[5]) : 1;
+    int mode = argc > 6 ? atoi(argv[6]) : 0; /* 0 fixqp 1 cbr 2 vbr 3 avbr */
+    int qp = argc > 7 ? atoi(argv[7]) : 26;
+    int bps_target = 300000, bps_min = 250000, bps_max = 350000;
+    int have_dblk = 0, dblk_disable = 0, dblk_alpha = 0, dblk_beta = 0;
+    int hor_stride = (width + 15) & ~15;
+    int ver_stride = (height + 15) & ~15;
+    size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
+
+    MppCtx ctx = NULL;
+    MppApi *mpi = NULL;
+    MppEncCfg cfg = NULL;
+    MppBufferGroup group = NULL;
+    MppBuffer frame_buf = NULL;
+    MppBuffer packet_buf = NULL;
+    MppEncRoiCtx roi_ctx = NULL;
+    int roi_regions = 0;
+    FILE *input = NULL;
+    FILE *output = NULL;
+    MPP_RET ret = MPP_NOK;
+    int i, arg;
+
+    /* Optional `bps:min:max` or bare bps, then the optional dblk and roi
+     * option groups in any order after it. */
+    arg = 8;
+    if (arg < argc && argv[arg][0] != 'd' && argv[arg][0] != 'r') {
+        int parts = sscanf(argv[arg], "%d:%d:%d", &bps_target, &bps_min,
+                           &bps_max);
+        if (parts < 1) {
+            fprintf(stderr, "bad bps %s\n", argv[arg]);
+            return 2;
+        }
+        if (parts == 1) {
+            bps_min = bps_target * 5 / 4;
+            bps_max = bps_target * 3 / 4;
+        }
+        arg++;
+    }
+    for (; arg < argc; arg++) {
+        if (!strcmp(argv[arg], "dblk")) {
+            if (arg + 3 >= argc) {
+                fprintf(stderr, "dblk wants disable alpha beta\n");
+                return 2;
+            }
+            have_dblk = 1;
+            dblk_disable = atoi(argv[++arg]);
+            dblk_alpha = atoi(argv[++arg]);
+            dblk_beta = atoi(argv[++arg]);
+        } else if (!strcmp(argv[arg], "roi")) {
+            roi_regions++;
+            arg += 7;
+            if (arg >= argc) {
+                fprintf(stderr, "roi wants x y w h fi qpmode qpval\n");
+                return 2;
+            }
+            arg--;
+        }
+    }
+
+    input = fopen(input_path, "rb");
+    if (!input) {
+        fprintf(stderr, "open %s: %s\n", input_path, strerror(errno));
+        return 2;
+    }
+    output = fopen(output_path, "wb");
+    if (!output) {
+        fprintf(stderr, "open %s: %s\n", output_path, strerror(errno));
+        return 2;
+    }
+
+    CHECK(mpp_buffer_group_get_internal(
+        &group, (MppBufferType)(MPP_BUFFER_TYPE_DMA_HEAP |
+                                MPP_BUFFER_FLAGS_CACHABLE)));
+    CHECK(mpp_buffer_get(group, &frame_buf, frame_size));
+    CHECK(mpp_buffer_get(group, &packet_buf, frame_size + 4096));
+
+    CHECK(mpp_create(&ctx, &mpi));
+    CHECK(mpp_init(ctx, MPP_CTX_ENC, MPP_VIDEO_CodingAVC));
+    CHECK(mpp_enc_cfg_init(&cfg));
+    CHECK(mpi->control(ctx, MPP_ENC_GET_CFG, cfg));
+
+    CHECK(mpp_enc_cfg_set_s32(cfg, "codec:type", MPP_VIDEO_CodingAVC));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:width", width));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:height", height));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP));
+    CHECK(mpp_enc_cfg_set_s32(cfg,
+                              "rc:mode",
+                              mode == 0 ? MPP_ENC_RC_MODE_FIXQP
+                                        : (mode == 1 ? MPP_ENC_RC_MODE_CBR
+                                                     : (mode == 2
+                                                            ? MPP_ENC_RC_MODE_VBR
+                                                            : MPP_ENC_RC_MODE_AVBR))));
+    CHECK(set_quality_init(cfg, qp));
+    /* Fixed QP ignores the budget for quantisation but the `uuid_rc_cfg` SEI
+     * prints all three figures, so the probe writes them in every mode; the
+     * board scripts pass the size-derived target and the library's bounds,
+     * which is what the harness leaves behind for a fixed-QP stream. */
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_target", bps_target));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_max", bps_max));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 60));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", 30));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denom", 1));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_flex", 0));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num", 30));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denom", 1));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:profile", 66));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:level", 30));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 0));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:trans8x8", 0));
+    if (have_dblk)
+        CHECK(set_deblock(cfg, dblk_disable, dblk_alpha, dblk_beta));
+    CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));
+
+    /* The ROI regions are re-read from the tail of the command line here, the
+     * same way mpi_enc_test builds them per frame: the same regions every
+     * picture, sent as metadata. */
+    if (roi_regions) {
+        CHECK(mpp_enc_roi_init(&roi_ctx, width, height, MPP_VIDEO_CodingAVC,
+                               roi_regions));
+    }
+
+    for (i = 0; i < frames; i++) {
+        MppFrame frame = NULL;
+        MppPacket packet = NULL;
+        MppMeta meta = NULL;
+        size_t read;
+
+        mpp_buffer_sync_begin(frame_buf);
+        read = fread(mpp_buffer_get_ptr(frame_buf), 1, frame_size, input);
+        if (read != frame_size) {
+            fprintf(stderr, "short read on frame %d: %zu of %zu\n", i, read,
+                    frame_size);
+            goto cleanup;
+        }
+        mpp_buffer_sync_end(frame_buf);
+
+        CHECK(mpp_frame_init(&frame));
+        mpp_frame_set_width(frame, width);
+        mpp_frame_set_height(frame, height);
+        mpp_frame_set_hor_stride(frame, hor_stride);
+        mpp_frame_set_ver_stride(frame, ver_stride);
+        mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+        mpp_frame_set_buffer(frame, frame_buf);
+
+        meta = mpp_frame_get_meta(frame);
+        CHECK(mpp_packet_init_with_buffer(&packet, packet_buf));
+        mpp_packet_set_length(packet, 0);
+        mpp_meta_set_packet(meta, KEY_OUTPUT_PACKET, packet);
+
+        if (roi_ctx) {
+            int at = 8;
+            /* walk past the bps token to the first roi group again;
+             * `mpp_enc_roi_setup_meta` resets the pending count itself, so the
+             * same init serves every frame, as it does in mpi_enc_test */
+            if (at < argc && argv[at][0] != 'd' && argv[at][0] != 'r')
+                at++;
+            for (; at < argc; at++) {
+                if (strcmp(argv[at], "roi"))
+                    continue;
+                {
+                    RoiRegionCfg region;
+                    region.x = (RK_U16)atoi(argv[at + 1]);
+                    region.y = (RK_U16)atoi(argv[at + 2]);
+                    region.w = (RK_U16)atoi(argv[at + 3]);
+                    region.h = (RK_U16)atoi(argv[at + 4]);
+                    region.force_intra = atoi(argv[at + 5]);
+                    region.qp_mode = atoi(argv[at + 6]);
+                    region.qp_val = atoi(argv[at + 7]);
+                    CHECK(mpp_enc_roi_add_region(roi_ctx, &region));
+                    at += 7;
+                }
+            }
+            CHECK(mpp_enc_roi_setup_meta(roi_ctx, meta));
+        }
+
+        CHECK(mpi->encode_put_frame(ctx, frame));
+        mpp_frame_deinit(&frame);
+        CHECK(mpi->encode_get_packet(ctx, &packet));
+        if (!packet) {
+            fprintf(stderr, "no packet for frame %d\n", i);
+            goto cleanup;
+        }
+        {
+            void *data = mpp_packet_get_pos(packet);
+            size_t len = mpp_packet_get_length(packet);
+            fprintf(stderr, "picture %d: %zu bytes\n", i, len);
+            if (data && len)
+                fwrite(data, 1, len, output);
+        }
+        mpp_packet_deinit(&packet);
+    }
+    ret = MPP_OK;
+
+cleanup:
+    if (roi_ctx)
+        mpp_enc_roi_deinit(roi_ctx);
+    if (output)
+        fclose(output);
+    if (input)
+        fclose(input);
+    if (ctx)
+        mpp_destroy(ctx);
+    if (cfg)
+        mpp_enc_cfg_deinit(cfg);
+    if (frame_buf)
+        mpp_buffer_put(frame_buf);
+    if (packet_buf)
+        mpp_buffer_put(packet_buf);
+    if (group)
+        mpp_buffer_group_put(group);
+    return ret;
+}

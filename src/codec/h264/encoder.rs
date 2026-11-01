@@ -68,6 +68,20 @@ pub struct EncoderConfig {
     /// its bit budget (`cal_first_i_start_qp`); under fixed QP the reference forces
     /// 26 and logs about it, which is what `qp_init` already carries in that case.
     pub quality_auto: bool,
+    /// The deblocking triple of `MppEncH264Cfg`, reaching the slice syntax the
+    /// hardware emits: `disable_deblocking_filter_idc`,
+    /// `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2`.
+    ///
+    /// The defaults are `MppEncCfgSet`'s memset zeros, which is what every
+    /// byte-verified stream carries. `h264e_slice_update` copies the three straight
+    /// through; VEPU580's HAL then writes `dis_dblk_idc` and `sli_alph_ofst` into
+    /// `synt_sli2` and *never writes the beta field* - `setup_vepu580_codec` has
+    /// exactly two deblocking statements - so a beta that is not zero is dropped on
+    /// the floor there too, and a port that dutifully wrote it would diverge from
+    /// the reference instead of matching it.
+    pub deblock_disable: u32,
+    pub deblock_offset_alpha: i32,
+    pub deblock_offset_beta: i32,
 }
 
 /// The bit rate target a caller that says nothing gets.
@@ -125,6 +139,9 @@ impl EncoderConfig {
             fps_den: 1,
             vui: true,
             quality_auto: false,
+            deblock_disable: 0,
+            deblock_offset_alpha: 0,
+            deblock_offset_beta: 0,
         }
     }
 

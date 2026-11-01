@@ -344,6 +344,34 @@ impl RegisterFile {
         Ok(())
     }
 
+    /// The deblocking fields of `setup_vepu580_codec`, which reach the slice
+    /// header the hardware emits. Two statements, matching the reference's two:
+    ///
+    /// * `synt_sli2.dis_dblk_idc = slice->disable_deblocking_filter_idc` - a
+    ///   `RK_U32 : 2` bitfield assignment, so anything above three truncates the
+    ///   way C does rather than being refused;
+    /// * `synt_sli2.sli_alph_ofst = slice->slice_alpha_c0_offset_div2` - a signed
+    ///   value into a 4-bit field, stored as two's complement, so -3 reads back
+    ///   as 13 exactly as the C's bitfield would.
+    ///
+    /// There is deliberately no beta statement: the VEPU580 HAL never writes
+    /// `sli_beta_ofst` even though the register declares it, so the field stays
+    /// at the zero the register set was memset to whatever the caller asked for.
+    /// `deblock_offset_beta` therefore travels with the configuration and changes
+    /// nothing on VEPU580 - the unit test below pins that, because matching the
+    /// reference means matching what it *does*, not what it ought to do.
+    fn apply_deblock(&mut self, config: &EncoderConfig) -> Result<(), String> {
+        self.set(
+            &vepu580_regs::H264_SYNT_SLI2_DIS_DBLK_IDC,
+            config.deblock_disable & 3,
+        )?;
+        self.set_signed(
+            &vepu580_regs::H264_SYNT_SLI2_SLI_ALPH_OFST,
+            config.deblock_offset_alpha,
+        )?;
+        Ok(())
+    }
+
     /// The rate-control half of `setup_vepu580_rc_base` - the branch that only
     /// runs under CBR, VBR or AVBR. The fixed-QP branch above is the other one,
     /// and it is the branch that writes three words and returns.
@@ -1065,6 +1093,7 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
         None => file.apply_fixed_qp(u32::from(config.qp_init))?,
     }
     file.apply_profile(config)?;
+    file.apply_deblock(config)?;
     file.apply_picture(job)?;
     // The reference job was captured with a harness that asked for motion
     // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
@@ -2146,6 +2175,84 @@ mod tests {
         let high = registers_at(&high, FrameState::default());
         assert_eq!(read(&high, &vepu580_regs::H264_SYNT_PPS_TRNS_8X8), 1);
         assert_eq!(read(&high, &vepu580_regs::H264_SYNT_PPS_ETPY_MODE), 1);
+    }
+
+    /// The deblocking fields, pinned at the shape `setup_vepu580_codec` writes.
+    /// It has exactly two deblocking statements - `dis_dblk_idc` and
+    /// `sli_alph_ofst` - and the alpha one is a signed value into a 4-bit
+    /// bitfield, which the C stores as two's complement, so -3 must read back as
+    /// 13. The beta field exists in the register but is never written, so a
+    /// configured beta has to leave it at zero: the reference cannot be matched
+    /// by being *more* faithful than it is.
+    #[test]
+    fn deblock_writes_the_two_fields_the_reference_writes_and_no_beta() {
+        let mut at = config();
+        at.deblock_disable = 2;
+        at.deblock_offset_alpha = -3;
+        at.deblock_offset_beta = 5;
+        let registers = registers_at(&at, FrameState::default());
+        assert_eq!(
+            registers
+                .get(&vepu580_regs::H264_SYNT_SLI2_DIS_DBLK_IDC)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            registers
+                .get(&vepu580_regs::H264_SYNT_SLI2_SLI_ALPH_OFST)
+                .unwrap(),
+            13,
+            "two's complement in four bits, as the RK_U32 : 4 stores it"
+        );
+        assert_eq!(
+            registers
+                .get(&vepu580_regs::H264_SYNT_SLI2_SLI_BETA_OFST)
+                .unwrap(),
+            0,
+            "VEPU580's HAL never writes sli_beta_ofst"
+        );
+
+        // The defaults - every byte-verified stream so far - write the zeros the
+        // recorded image already carries, which is why this commit changes
+        // nothing for them.
+        let registers = registers_at(&config(), FrameState::default());
+        for field in [
+            &vepu580_regs::H264_SYNT_SLI2_DIS_DBLK_IDC,
+            &vepu580_regs::H264_SYNT_SLI2_SLI_ALPH_OFST,
+            &vepu580_regs::H264_SYNT_SLI2_SLI_BETA_OFST,
+        ] {
+            assert_eq!(registers.get(field).unwrap(), 0, "{}", field.name);
+        }
+
+        // `disable_deblocking_filter_idc` is a 2-bit unsigned field: an
+        // out-of-range idc truncates through the low two bits the way the
+        // bitfield assignment does. 4 lands on 0, 7 on 3, and MAX on 3.
+        for (value, want) in [(4u32, 0u32), (7, 3), (u32::MAX, 3)] {
+            let mut at = config();
+            at.deblock_disable = value;
+            let registers = registers_at(&at, FrameState::default());
+            assert_eq!(
+                registers
+                    .get(&vepu580_regs::H264_SYNT_SLI2_DIS_DBLK_IDC)
+                    .unwrap(),
+                want,
+                "idc {value} truncates through the field width"
+            );
+        }
+
+        // The full alpha range the reference documentation allows, both signs.
+        for alpha in -6..=6i32 {
+            let mut at = config();
+            at.deblock_offset_alpha = alpha;
+            let registers = registers_at(&at, FrameState::default());
+            assert_eq!(
+                registers
+                    .get(&vepu580_regs::H264_SYNT_SLI2_SLI_ALPH_OFST)
+                    .unwrap(),
+                (alpha & 0xf) as u32,
+                "alpha {alpha}"
+            );
+        }
     }
 }
 

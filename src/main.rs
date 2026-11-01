@@ -28,6 +28,7 @@ fn encode_h264(
     frames: usize,
     gop: u32,
     bps: Option<(h264_syntax::RcMode, i64, i64, i64)>,
+    deblock: Option<(u32, i32, i32)>,
 ) -> Result<(usize, usize, usize, f64), String> {
     // The frames are read one at a time. slurping the file was fine while the
     // encoder only ever produced a single IDR, but with a GOP it charges the
@@ -73,6 +74,13 @@ fn encode_h264(
         // defaults. A fixed-QP encode ignores all three for quantisation but
         // prints them, so this cannot be skipped just because it is rate control.
         None => config.bps_target = h264_syntax::default_bps_target(width, height, config.fps_num),
+    }
+    if let Some((disable, alpha, beta)) = deblock {
+        // The fields reach the slice header through the two writes in
+        // `setup_vepu580_codec`; beta configures but is not written, as in C.
+        config.deblock_disable = disable;
+        config.deblock_offset_alpha = alpha;
+        config.deblock_offset_beta = beta;
     }
     let frame_bytes = h264e::input_size(&config)?;
     let mut encoder = h264e::Vepu580H264::open(config)?;
@@ -514,7 +522,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -559,8 +567,37 @@ fn main() {
                 }
             }
         });
+        // `dblk:disable:alpha:beta`, the three `MppEncH264Cfg` deblocking fields.
+        // The reference range-checks none of them and VEPU580's register fields
+        // are two and four bits wide, so the truncation the bitfield assignment
+        // performs is reproduced, not policed.
+        let deblock = args.get(11).map(|text| {
+            let parts: Vec<&str> = match text.strip_prefix("dblk:") {
+                Some(rest) => rest.split(':').collect(),
+                None => Vec::new(),
+            };
+            match parts.as_slice() {
+                [disable, alpha, beta] => {
+                    match (
+                        disable.parse::<u32>(),
+                        alpha.parse::<i32>(),
+                        beta.parse::<i32>(),
+                    ) {
+                        (Ok(disable), Ok(alpha), Ok(beta)) => (disable, alpha, beta),
+                        _ => {
+                            eprintln!("bad dblk; expected dblk:disable:alpha:beta");
+                            std::process::exit(2);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("bad dblk; expected dblk:disable:alpha:beta");
+                    std::process::exit(2);
+                }
+            }
+        });
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta]");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -579,6 +616,7 @@ fn main() {
             frames,
             gop,
             bps,
+            deblock,
         ) {
             Ok((bytes, header_bytes, payload_bytes, ms)) => println!(
                 "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_desc} gop {gop}, {ms:.3} ms"
