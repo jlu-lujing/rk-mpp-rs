@@ -49,7 +49,7 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections; rate control, scene detection and ROI remain** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR *and* P pictures byte-identical to the C encoder - 24 cells of size x profile x QP plus 6 GOP cells (1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR rate control is ported in three verified pieces - the registers, the bit allocation, the quantiser - and not yet wired in; scene detection and ROI remain, and VBR/AVBR ratios are not ported** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for rate control, level and the CIME/RIME corner of section 3 (see the encoder notes below); H.265 encode pending** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
@@ -883,6 +883,26 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       size, which is why fixed QP 26 at 320x240 reads back 7800), `madi` divided by
       `num_b16`, and `madp` divided by `num_ctu` - with a zero denominator taking
       the whole term to zero rather than being skipped.
+- [x] **The CBR quantiser is ported and pinned to the reference's own printout.**
+      `calc_cbr_ratio`'s four terms - overshoot against the previous target, the
+      `tab_lnx` instantaneous-rate term, the rate-error term and the buffer
+      water-level term - plus the `cur_scale_qp` bookkeeping in QP-sixteenths. The
+      oracle is `tests/data/rc_model_v2_c_cbr_qp.txt`: the library printing its own
+      state under `rc_debug=0xf0`, which the repository could not reach for days
+      because `mpp_env_get_u32` reads the bare lowercase name and MPP logs to
+      syslog. `the_cbr_quantiser_matches_the_reference_printout` replays that run
+      and matches all six pictures on six numbers each - bit target, quality target,
+      `next_ratio`, `ins_bps`, `last_inst_bps` and `stat_watl` - not just the QP
+      that comes out.
+      Two details are the easy-to-get-wrong kind and are worth naming: `ins_ratio`
+      is *zeroed* unless the instantaneous rate is closing on the target from either
+      side (so the logarithm table usually contributes nothing, and a port that
+      always uses it will disagree on quiet scenes), and `i_quality_delta` enters
+      once, as a two-QP offset on the sixteenths scale at the first intra picture,
+      rather than as a per-picture QP reduction. VBR and AVBR use different term
+      sets and are not ported; `cal_first_i_start_qp` is reached only when a caller
+      leaves the initial quality unset, which neither `mpi_enc_test` nor a default
+      `h264e_api_v2.c` configuration does.
 - [ ] Rate control beyond fixed QP. `setup_vepu580_rc_base`'s VBR/CBR path -
       `rc_en`, `aq_en`, `rc_ctu_num`, `rc_qp_range`, the `rc_adj` ladder, the
       `rc_dthd` thresholds and the ROI area thresholds - is exactly the set the

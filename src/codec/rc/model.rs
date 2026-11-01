@@ -15,6 +15,15 @@
 
 use super::data::DataV2;
 
+/// `tab_lnx`: the log-shaped lookup the CBR controller reads its instantaneous-rate
+/// term out of, indexed by `(ins_bps << 5) / target_bps` clipped to 0..63.
+const TAB_LNX: [i32; 64] = [
+    -1216, -972, -830, -729, -651, -587, -533, -486, -445, -408, -374, -344, -316, -290, -265,
+    -243, -221, -201, -182, -164, -147, -131, -115, -100, -86, -72, -59, -46, -34, -22, -11, 0, 10,
+    21, 31, 41, 50, 60, 69, 78, 86, 95, 87, 103, 111, 119, 127, 134, 142, 149, 156, 163, 170, 177,
+    183, 190, 196, 202, 208, 214, 220, 226, 232, 237,
+];
+
 /// `I_WINDOW_LEN`, `P_WINDOW1_LEN`, `P_WINDOW2_LEN`.
 const I_WINDOW: i32 = 2;
 const P_WINDOW1: i32 = 5;
@@ -57,6 +66,13 @@ pub struct Config {
     pub max_i_bit_prop: i32,
     /// `usr_cfg.stats_time`, `set_rc_cfg`'s `rc->stats_time ? : 3` clipped to 1..60.
     pub stats_time: i32,
+    /// The quantiser bounds, on MPP's 0..100 quality scale. `h264e_api_v2.c`'s
+    /// defaults: medium (26) as the initial target and 8..48 as the bounds, with an
+    /// I-picture delta of two - the `:2` the `uuid_rc_cfg` SEI ends with.
+    pub quality_init: i32,
+    pub quality_min: i32,
+    pub quality_max: i32,
+    pub i_quality_delta: i32,
 }
 
 impl Config {
@@ -74,6 +90,10 @@ impl Config {
             min_i_bit_prop: 10,
             max_i_bit_prop: 30,
             stats_time: 3,
+            quality_init: 26,
+            quality_min: 8,
+            quality_max: 48,
+            i_quality_delta: 2,
         }
     }
 }
@@ -112,6 +132,13 @@ pub struct Model {
     first: bool,
     /// `next_i_ratio`, the accumulated head start owed to the next intra picture.
     next_i_ratio: i32,
+    /// `cur_scale_qp`: the QP in 64ths, the quantiser controller's real state - the
+    /// picture's QP is only this shifted back down.
+    cur_scale_qp: i32,
+    /// `next_ratio`, the sum of the CBR controller's four terms.
+    next_ratio: i32,
+    /// `last_inst_bps`: `ins_bps` as it stood before the last picture's update.
+    last_inst_bps: i32,
 }
 
 impl Model {
@@ -159,6 +186,9 @@ impl Model {
             last_frame_type: FrameType::Intra,
             first: true,
             next_i_ratio: 0,
+            cur_scale_qp: 0,
+            next_ratio: 0,
+            last_inst_bps: 0,
             cfg,
         };
         out.bits_frm_init();
@@ -300,11 +330,117 @@ impl Model {
 
     /// `rc_model_v2_end`'s bookkeeping, minus the AVBR-only updates.
     pub fn end(&mut self, frame: FrameType, bit_target: i32, real_bit: i32) {
+        // `last_inst_bps` is taken before the update, so it is the rate as this
+        // picture was *promised*, not as it turned out.
+        self.last_inst_bps = self.ins_bps;
         self.pre_target_bits = bit_target;
         self.pre_real_bits = real_bit;
         self.last_frame_type = frame;
         self.first = false;
         self.update(frame, real_bit);
+    }
+
+    /// `calc_cbr_ratio`: the four terms that move the quantiser for CBR, added into
+    /// `next_ratio`. The bit target is not one of them - `bits_model_alloc` has
+    /// already fixed it by the time this runs.
+    ///
+    /// The second term is the odd one: it is a difference of table entries, then
+    /// multiplied by six or four when the instantaneous rate is closing in on the
+    /// target from either side - and *zeroed* otherwise, so the table usually
+    /// contributes nothing at all.
+    pub fn calc_cbr_ratio(&mut self, frame: FrameType) -> i32 {
+        // The reference's `calc_ratio` allocates before weighing; the weighing does not
+        // feed back into the target, but the order fixes which `i_scale` is current.
+        let bit_target = self.alloc(frame);
+        let fluc_l = 3;
+        let target = self.target_bps;
+
+        let mut bit_diff_ratio = if self.pre_target_bits > self.pre_real_bits {
+            52 * (self.pre_real_bits - self.pre_target_bits) / self.pre_target_bits
+        } else {
+            64 * (self.pre_real_bits - self.pre_target_bits) / self.pre_target_bits
+        };
+
+        let idx1 = clip((self.ins_bps << 5) / target, 0, 63) as usize;
+        let idx2 = clip((self.last_inst_bps << 5) / target, 0, 63) as usize;
+        let mut ins_ratio = TAB_LNX[idx1] - TAB_LNX[idx2];
+        if self.ins_bps > self.last_inst_bps && target - self.last_inst_bps < (target >> 4) {
+            ins_ratio *= 6;
+        } else if self.ins_bps < self.last_inst_bps && self.last_inst_bps - target < (target >> 4) {
+            ins_ratio *= 4;
+        } else {
+            ins_ratio = 0;
+        }
+
+        bit_diff_ratio = clip(bit_diff_ratio, -128, 256);
+        ins_ratio = clip(ins_ratio, -128, 256);
+
+        let bps_ratio = clip((self.ins_bps - target) * fluc_l / (target >> 4), -32, 32);
+        let wl_ratio = clip(
+            4 * (self.stat_watl - self.watl_base) * fluc_l / self.watl_base,
+            -16,
+            32,
+        );
+
+        self.next_ratio = bit_diff_ratio + ins_ratio + bps_ratio + wl_ratio;
+        bit_target
+    }
+
+    /// `rc_model_v2_start` plus `rc_model_v2_hal_start` for CBR: this picture's bit
+    /// target and the QP it will be coded at.
+    ///
+    /// The first picture is the odd one: it is allocated straight from the GOP
+    /// budget with no ratio at all, and its QP becomes the configured initial
+    /// quality, from which `cur_scale_qp` is seeded two QPs high - that offset is
+    /// the I-picture delta, and it is why the *next* picture lands where it does.
+    pub fn start(&mut self, frame: FrameType) -> (i32, i32) {
+        // For every picture after the first, `calc_ratio` is what allocates - it is
+        // not a separate step after one.
+        let (bit_target, first) = if self.first {
+            (self.alloc(frame), true)
+        } else {
+            (self.calc_cbr_ratio(frame), false)
+        };
+        self.preset(frame, bit_target);
+
+        let quality_target = if first {
+            let seed = self.cfg.quality_init + self.cfg.i_quality_delta;
+            self.cur_scale_qp = clip(
+                seed << 6,
+                self.cfg.quality_min << 6,
+                self.cfg.quality_max << 6,
+            );
+            self.cfg.quality_init
+        } else {
+            self.cur_scale_qp = clip(
+                self.cur_scale_qp + self.next_ratio,
+                self.cfg.quality_min << 6,
+                self.cfg.quality_max << 6,
+            );
+            self.cur_scale_qp >> 6
+        };
+
+        (bit_target, quality_target)
+    }
+
+    /// `last_inst_bps`, the previous picture's instantaneous rate.
+    pub fn last_inst_bps(&self) -> i32 {
+        self.last_inst_bps
+    }
+
+    /// `next_ratio` as the last `calc_cbr_ratio` left it.
+    pub fn next_ratio(&self) -> i32 {
+        self.next_ratio
+    }
+
+    /// `stat_watl`, the encoder buffer's water level.
+    pub fn stat_watl(&self) -> i32 {
+        self.stat_watl
+    }
+
+    /// `cur_scale_qp`, the QP in 64ths.
+    pub fn cur_scale_qp(&self) -> i32 {
+        self.cur_scale_qp
     }
 
     /// The GOP's whole budget, `gop_total_bits`.
@@ -508,6 +644,52 @@ mod tests {
                 })
                 .collect();
             assert_eq!(seen, expect.to_vec(), "run {name}");
+        }
+    }
+    /// The quantiser controller, picture by picture, against the reference's own
+    /// printout (`tests/data/rc_model_v2_c_cbr_qp.txt`, captured with
+    /// `rc_debug=0xf0`). Four numbers per picture are compared, and they are the
+    /// controller's whole visible life: the bit target, the QP it asks for, the
+    /// instantaneous rate and the buffer water level the decision was made from.
+    ///
+    /// This is the part of rate control that had been described here as "the next
+    /// unknown". It is now pinned instead: `calc_cbr_ratio`'s four terms and the
+    /// `cur_scale_qp` bookkeeping reproduce the reference exactly on all six
+    /// pictures, including the two places where a plausible transcription would
+    /// drift - `ins_ratio` being *zeroed* unless the rate is closing on the target
+    /// from either side, and the I-picture delta entering as a two-QP offset on the
+    /// 64ths scale at the first picture only.
+    #[test]
+    fn the_cbr_quantiser_matches_the_reference_printout() {
+        let coded = [30_224, 1_728, 2_096, 2_216, 2_616, 2_416];
+        let want_target = [86_956, 9_134, 8_955, 8_727, 8_391, 7_907];
+        let want_quality = [26, 27, 27, 26, 25, 25];
+        let want_next = [0, -22, -33, -31, -71, -29];
+        let want_ins = [0, 306_741, 303_984, 301_349, 298_754, 296_293];
+        let want_pre_ins = [0, 325_652, 306_452, 303_635, 300_925, 298_218];
+        let want_watl = [0, 204, 195, 187, 178, 169];
+
+        let mut model = cbr();
+        for (i, bits) in coded.iter().enumerate() {
+            let frame = if i == 0 {
+                FrameType::Intra
+            } else {
+                FrameType::InterP
+            };
+            // What the controller is about to see: the state the previous picture
+            // left behind, before this one promises anything.
+            let (ins, pre_ins, watl) = (model.ins_bps(), model.last_inst_bps(), model.stat_watl());
+            let (target, quality) = model.start(frame);
+
+            assert_eq!(target, want_target[i], "bit target, picture {i}");
+            assert_eq!(quality, want_quality[i], "quality target, picture {i}");
+            assert_eq!(model.next_ratio(), want_next[i], "next_ratio, picture {i}");
+            if i > 0 {
+                assert_eq!(ins, want_ins[i], "ins_bps, picture {i}");
+                assert_eq!(pre_ins, want_pre_ins[i], "last_inst_bps, picture {i}");
+                assert_eq!(watl >> 10, want_watl[i], "stat_watl, picture {i}");
+            }
+            model.end(frame, target, *bits);
         }
     }
 }
