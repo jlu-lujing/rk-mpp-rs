@@ -37,7 +37,7 @@
 | VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；边界矩阵未完 |
 | AV1 解码（av1d） | Main 8/10-bit、film grain 逐字节；更宽 conformance 未完 |
 | MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 全部逐字节；AVS+/AVS2 未做 |
-| H.264 编码（VEPU580） | 固定 QP、CBR、VBR 与 C **逐 NAL 相同**；AVBR/ROI/GDR/slice split/>4096 未完 |
+| H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；ROI/QP map、GDR、slice split、>4096、场景检测未完 |
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）完成 |
 | H.265 编码 | 未开始 |
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP 未移植，VDPP 该板不存在 |

@@ -6,8 +6,8 @@
 > 什么算做完"。
 >
 > 基线：`6029ebe`（2026-11-01）。441 测试通过（353 单元 + 88 集成，11 个板级 ignore），
-> ROADMAP 47 项已勾 / 18 项未勾。码率控制 CBR 与 VBR 已逐字节；AVBR 有未验证补丁
-> `docs/rc-avbr-wip.patch`。
+> ROADMAP 49 项已勾 / 17 项未勾。码率控制固定 QP / CBR / VBR / AVBR **全部逐 NAL 相同**；
+> 板上 oracle 与语料已固化到 `~/rk-mpp-oracles`（`scripts/setup_board_refs.sh`）。
 
 ---
 
@@ -45,7 +45,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 **未收口**（全部 18 项 + 已知隐含项）：
 
-- H.264 编码：AVBR、场景检测、ROI/QP map、GDR、deblock 细调、slice split、
+- H.264 编码：场景检测、ROI/QP map、GDR、deblock 细调、slice split、
   >4096 宽度、level 参数化、CIME/RIME 生成、ME/CIME 参数化、重编码/多 pass、
   hier QP/SMART_P、`cal_first_i_start_qp`、与 `mpi_enc_test` 的配置对齐
 - H.265 编码：零
@@ -140,7 +140,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 5. W1 H.264 编码收尾（约 10–15 天）
 
-### 5.1 AVBR（最先，1–2 天；有现成补丁）
+### 5.1 AVBR —— **已完成**（`12626d2`；三模式 10/10 NAL 相同）
 
 - [x] W1-1 `docs/rc-avbr-wip.patch` 已应用（提交见 git log），补 `src/hal/h264e.rs`
       三处 match 与 `rc_model_config` 的模式映射（原先 `_ => Cbr` 会把 AVBR 静默当成
