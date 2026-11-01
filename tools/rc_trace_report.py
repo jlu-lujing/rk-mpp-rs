@@ -137,8 +137,10 @@ def main():
         return 1
 
     # Names rather than paths, so the output can be committed as a fixture without
-    # recording where somebody's copy of the log happened to live.
-    print(f"{len(jobs)} encoder jobs in {Path(args.log).name}")
+    # recording where somebody's copy of the log happened to live. The count is not
+    # printed for --dump-job, whose whole output is fixture material.
+    if args.dump_job is None:
+        print(f"{len(jobs)} encoder jobs in {Path(args.log).name}")
     if args.against:
         other = parse(args.against)
         if not other:

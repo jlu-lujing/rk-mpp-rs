@@ -789,6 +789,25 @@ Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
       stream is 6283 bytes with md5 `c34eba92a3196865d04ac23253b2f7af`, repeating
       byte for byte across runs, so it can serve as the byte oracle the way the
       fixed-QP streams do.
+      **The register half of that is done and matched word for word.**
+      `RegisterFile::apply_rate_control` generates the non-fixed-QP branch of
+      `setup_vepu580_rc_base` - the scaled per-macroblock target and the two
+      thresholds that come off it, the ladder, the ROI rows, `qpmap_mode`, the
+      motion and `madi` triples - and against the captured words of both jobs
+      (`the_c_encoder_s_cbr_intra_job_is_reproduced`,
+      `the_c_encoder_s_cbr_p_job_is_reproduced`) our image equals the C encoder's
+      CBR job in every BASE, RCKLUT and RDO word except the dma-buf addresses.
+      Two things that check had to be fixed before it could mean anything. The
+      fixture initially held a stray line of prose, because `--dump-job` printed
+      its job count into what was meant to be machine-readable output; the strict
+      hex parse caught it rather than skipping over it. And the P job only compares
+      once the picture is built as the P picture the capture has - the crate's
+      default intra GOP of 1 made every picture an IDR, which showed up as 30
+      differences in `me_cfg`, `synt_nal`, `synt_sli0/1` and the slice-type KLUT
+      tables, all of which `apply_picture` owns and rate control does not touch.
+      It is not wired into `build_registers` yet, deliberately: the branch needs a
+      bit target and a QP from `rc_model_v2.c`, and a half-wired mode that encodes
+      at a guessed target would be worse than the fixed-QP path that is verified.
       What CBR adds to a job is 30 named fields, every one in BASE or RCKLUT, and
       all of them are what `setup_vepu580_rc_base` writes: `rc_en`, `aq_en`,
       `rc_ctu_num` = `mb_w`, `rc_qp_range`, `rc_min_qp` 10 and `rc_max_qp` 51, the

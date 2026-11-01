@@ -198,6 +198,28 @@ pub struct Job<'a> {
     pub output_capacity: usize,
 }
 
+/// What rate control decided about one picture.
+///
+/// `setup_vepu580_rc_base` reads exactly these four things out of `EncRcTaskInfo`
+/// plus the two hardware QP-row defaults, so this is the whole surface the model
+/// in `rc_model_v2.c` has on the register file. `bit_target` is the picture's bit
+/// budget, not the configured bit rate: the model divides the rate by the frame
+/// rate and then moves bits between intra and inter pictures, which is the part
+/// still to be ported.
+#[derive(Debug, Clone, Copy)]
+pub struct RateControl {
+    /// `rc_info->bit_target`, in bits for this picture.
+    pub bit_target: i32,
+    /// `rc_info->quality_target`, the QP the model aims at.
+    pub qp_target: u32,
+    pub qp_min: u32,
+    pub qp_max: u32,
+    /// `hw->qp_delta_row` and `hw->qp_delta_row_i`, the per-row QP slack. The
+    /// VEPU580 HAL's default block sets both to 2.
+    pub qp_delta_row: u32,
+    pub qp_delta_row_i: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct RegisterFile {
     pub ctl: [u32; 24],
@@ -317,6 +339,133 @@ impl RegisterFile {
         self.set(&vepu580_regs::BASE_RC_QP_RC_MIN_QP, qp)?;
         self.set(&vepu580_regs::BASE_RC_QP_RC_MAX_QP, qp)?;
         Ok(())
+    }
+
+    /// The rate-control half of `setup_vepu580_rc_base` - the branch that only
+    /// runs under CBR, VBR or AVBR. The fixed-QP branch above is the other one,
+    /// and it is the branch that writes three words and returns.
+    ///
+    /// Almost all of it is constants: the `qp_adj` ladder, the ROI threshold rows,
+    /// the `qpmap_mode`, the motion and `madi` threshold triples. What is computed
+    /// is the per-macroblock bit target and the three thresholds derived from it,
+    /// which is why the arithmetic is written in the same order the C does it -
+    /// `mb_target_bits` comes from the *truncated* scaled target, and the
+    /// thresholds truncate again.
+    pub fn apply_rate_control(
+        &mut self,
+        config: &EncoderConfig,
+        is_idr: bool,
+        rc: &RateControl,
+    ) -> Result<(), String> {
+        let mb_w = (config.coded_width() / 16) as i32;
+        let mb_h = (config.coded_height() / 16) as i32;
+
+        // `mb_target_bits_mul_16 = (bit_target << 4) / (mb_w * mb_h)`, the target
+        // in sixteenths of a bit per macroblock. A picture aimed at more than
+        // 0x100000 is reset to 0x50000 rather than clamped - the reference does not
+        // trust the hardware above that figure.
+        let mut target_16 = rc.bit_target.wrapping_shl(4) / (mb_w * mb_h);
+        if target_16 >= 0x0010_0000 {
+            target_16 = 0x0005_0000;
+        }
+        let mb_target_bits = (target_16 * mb_w) >> 4;
+        let negative_bits_thd = 0 - 5 * mb_target_bits / 16;
+        let positive_bits_thd = 5 * mb_target_bits / 16;
+
+        self.set(&vepu580_regs::BASE_ENC_PIC_PIC_QP, rc.qp_target)?;
+        self.set(&vepu580_regs::BASE_RC_CFG_RC_EN, 1)?;
+        self.set(&vepu580_regs::BASE_RC_CFG_AQ_EN, 1)?;
+        self.set(&vepu580_regs::BASE_RC_CFG_AQ_MODE, 0)?;
+        self.set(&vepu580_regs::BASE_RC_CFG_RC_CTU_NUM, mb_w as u32)?;
+        self.set(
+            &vepu580_regs::BASE_RC_QP_RC_QP_RANGE,
+            if is_idr {
+                rc.qp_delta_row_i
+            } else {
+                rc.qp_delta_row
+            },
+        )?;
+        self.set(&vepu580_regs::BASE_RC_QP_RC_MAX_QP, rc.qp_max)?;
+        self.set(&vepu580_regs::BASE_RC_QP_RC_MIN_QP, rc.qp_min)?;
+        self.set(&vepu580_regs::BASE_RC_TGT_CTU_EBIT, target_16 as u32)?;
+
+        // The quantiser-adjustment ladder, indexed by how far a block came in
+        // under its target. The negative entries land as two's complement in the
+        // five-bit fields, which is why a capture shows 30 and 31 where the source
+        // says -2 and -1.
+        for (field, value) in [
+            (&vepu580_regs::RCKLUT_RC_ADJ0_QP_ADJ0, -2),
+            (&vepu580_regs::RCKLUT_RC_ADJ0_QP_ADJ1, -1),
+            (&vepu580_regs::RCKLUT_RC_ADJ0_QP_ADJ2, 0),
+            (&vepu580_regs::RCKLUT_RC_ADJ0_QP_ADJ3, 1),
+            (&vepu580_regs::RCKLUT_RC_ADJ0_QP_ADJ4, 2),
+            (&vepu580_regs::RCKLUT_RC_ADJ1_QP_ADJ5, 0),
+            (&vepu580_regs::RCKLUT_RC_ADJ1_QP_ADJ6, 0),
+            (&vepu580_regs::RCKLUT_RC_ADJ1_QP_ADJ7, 0),
+            (&vepu580_regs::RCKLUT_RC_ADJ1_QP_ADJ8, 1),
+        ] {
+            self.set_signed(field, value)?;
+        }
+
+        let dthd = [
+            4 * negative_bits_thd,
+            negative_bits_thd,
+            positive_bits_thd,
+            4 * positive_bits_thd,
+            0x7fff_ffff,
+            0x7fff_ffff,
+            0x7fff_ffff,
+            0x7fff_ffff,
+            0x7fff_ffff,
+        ];
+        for (index, value) in dthd.iter().enumerate() {
+            let word = self.rc_klut_word_mut(vepu580_regs::RCKLUT_RC_DTHD_0_8.word + index)?;
+            *word = *value as u32;
+        }
+
+        // Every ROI area gets the picture's own bounds: with no ROI configured the
+        // rows are uniform, and the hardware still reads them.
+        for (field, bound) in [
+            (&vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA0, rc.qp_min),
+            (&vepu580_regs::RCKLUT_ROI_QTHD0_QPMAX_AREA0, rc.qp_max),
+            (&vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA1, rc.qp_min),
+            (&vepu580_regs::RCKLUT_ROI_QTHD0_QPMAX_AREA1, rc.qp_max),
+            (&vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA2, rc.qp_min),
+            (&vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA2, rc.qp_max),
+            (&vepu580_regs::RCKLUT_ROI_QTHD1_QPMIN_AREA3, rc.qp_min),
+            (&vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA3, rc.qp_max),
+            (&vepu580_regs::RCKLUT_ROI_QTHD1_QPMIN_AREA4, rc.qp_min),
+            (&vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA4, rc.qp_max),
+            (&vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA5, rc.qp_min),
+            (&vepu580_regs::RCKLUT_ROI_QTHD2_QPMAX_AREA5, rc.qp_max),
+            (&vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA6, rc.qp_min),
+            (&vepu580_regs::RCKLUT_ROI_QTHD2_QPMAX_AREA6, rc.qp_max),
+            (&vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA7, rc.qp_min),
+            (&vepu580_regs::RCKLUT_ROI_QTHD3_QPMAX_AREA7, rc.qp_max),
+        ] {
+            self.set(field, bound)?;
+        }
+        self.set(&vepu580_regs::RCKLUT_ROI_QTHD3_QPMAP_MODE, 1)?;
+
+        for (field, value) in [
+            (&vepu580_regs::RCKLUT_MD_SAD_THD_MD_SAD_THD0, 4),
+            (&vepu580_regs::RCKLUT_MD_SAD_THD_MD_SAD_THD1, 9),
+            (&vepu580_regs::RCKLUT_MD_SAD_THD_MD_SAD_THD2, 15),
+            (&vepu580_regs::RCKLUT_MADI_THD_MADI_THD0, 4),
+            (&vepu580_regs::RCKLUT_MADI_THD_MADI_THD1, 9),
+            (&vepu580_regs::RCKLUT_MADI_THD_MADI_THD2, 15),
+        ] {
+            self.set(field, value)?;
+        }
+        Ok(())
+    }
+
+    /// Write a signed value into a field the reference declares as a signed
+    /// bitfield. The C stores the two's complement bits, so -2 in a five-bit field
+    /// is 30, and a plain `set` would refuse it.
+    fn set_signed(&mut self, field: &vepu580_regs::Field, value: i32) -> Result<(), String> {
+        let mask = (1u32 << field.width) - 1;
+        self.set(field, value as u32 & mask)
     }
 }
 
@@ -1886,4 +2035,211 @@ pub fn version_info(config: &EncoderConfig) -> String {
         config.qp_init,
         config.gop
     )
+}
+
+/// The register half of rate control, checked against the C encoder's own job.
+///
+/// `tests/data/vepu580_rc_c_move6_cbr_regs.txt` is a capture of the C encoder
+/// encoding six frames at 320x240 CBR 300 kbps. Our fixed-QP image for that size
+/// is already byte-identical to the C encoder's fixed-QP job, and the difference
+/// between a fixed-QP job and a CBR job is the set `setup_vepu580_rc_base` writes,
+/// so rebuilding the image with that branch applied has to land on the captured
+/// words. Anything else that moves here is a field this generator touched and
+/// should not have.
+#[cfg(test)]
+mod rate_control_registers {
+    use super::*;
+
+    fn fixture() -> String {
+        std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/vepu580_rc_c_move6_cbr_regs.txt"
+        ))
+        .expect("the captured CBR jobs")
+    }
+
+    /// The windows of one captured job, keyed by section name.
+    fn traced_job(job: usize) -> std::collections::HashMap<&'static str, Vec<u32>> {
+        let mut out = std::collections::HashMap::new();
+        let mut current: Option<usize> = None;
+        for line in fixture().lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            match fields.next() {
+                Some("job") => current = Some(fields.next().unwrap().parse().unwrap()),
+                Some(name) if current == Some(job) => {
+                    let words: Vec<u32> = fields
+                        .map(|w| u32::from_str_radix(w, 16).unwrap())
+                        .collect();
+                    // The keys are literals rather than `name`, which borrows the
+                    // fixture string this function does not outlive.
+                    for key in ["BASE", "RCKLUT", "RDO"] {
+                        if name == key {
+                            out.insert(key, words.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(out.len(), 3, "job {job} of the capture");
+        out
+    }
+
+    fn get(words: &[u32], first_word: usize, field: &vepu580_regs::Field) -> u32 {
+        let word = words[field.word - first_word];
+        (word >> field.shift) & ((1 << field.width) - 1)
+    }
+
+    /// The picture's bit target, recovered from the `ctu_ebit` the capture shows -
+    /// the only form in which the model's decision reaches the ioctl log. Any
+    /// `bit_target` in the same sixteenth-of-a-bit band produces the same word.
+    fn bit_target_for(ctu_ebit: i32, mbs: i32) -> i32 {
+        (ctu_ebit * mbs + 15) / 16
+    }
+
+    fn check(job: usize, is_idr: bool) {
+        let traced = traced_job(job);
+        let base = &traced["BASE"];
+        let mut config = EncoderConfig::new(320, 240);
+        // The capture is `mpi_enc_test` at its default intra GOP of 60 over six
+        // frames, so only picture 0 is an IDR. Left at the crate default of 1, the
+        // GOP walk would make every picture one.
+        config.gop = 60;
+        let rate = RateControl {
+            bit_target: bit_target_for(
+                get(base, 160, &vepu580_regs::BASE_RC_TGT_CTU_EBIT) as i32,
+                (config.coded_width() / 16 * config.coded_height() / 16) as i32,
+            ),
+            qp_target: get(base, 160, &vepu580_regs::BASE_ENC_PIC_PIC_QP),
+            qp_min: get(base, 160, &vepu580_regs::BASE_RC_QP_RC_MIN_QP),
+            qp_max: get(base, 160, &vepu580_regs::BASE_RC_QP_RC_MAX_QP),
+            qp_delta_row: 2,
+            qp_delta_row_i: 2,
+        };
+
+        let mut file = build_registers(&Job {
+            config: &config,
+            input_fd: 11,
+            output_fd: 12,
+            current_fd: 13,
+            current_thumb_fd: 14,
+            reference_fd: 13,
+            reference_thumb_fd: 14,
+            md_fd: 15,
+            // Job 1 of the capture is the P picture that follows the IDR, so it
+            // needs the state the GOP walk would be in by then - `apply_picture`
+            // owns the slice-type fields, and rate control only the RC ones.
+            state: if is_idr {
+                FrameState::default()
+            } else {
+                FrameState::default().next(config.gop)
+            },
+            output_capacity: logical_output_size(&config).unwrap(),
+        })
+        .unwrap();
+        file.apply_rate_control(&config, is_idr, &rate).unwrap();
+
+        // The addresses are dma-buf fds, which are per-process by nature; the
+        // capture's are the reference's and ours are the fds above.
+        let addresses = [
+            BASE_ADR_SRC0,
+            BASE_ADR_SRC1,
+            BASE_ADR_SRC2,
+            BASE_RFPW_H,
+            BASE_RFPW_B,
+            BASE_RFPR_H,
+            BASE_RFPR_B,
+            BASE_DSPW,
+            BASE_DSPR,
+            BASE_BSBT,
+            BASE_BSBB,
+            BASE_BSBR,
+            BASE_ADR_BSBS,
+            BASE_ADR_MEI,
+        ];
+        let mut differences = Vec::new();
+        for (name, first_word, ours) in [
+            ("BASE", 160usize, file.base.as_slice()),
+            ("RCKLUT", 1024usize, file.rc_klut.as_slice()),
+            ("RDO", 2048usize, file.rdo.as_slice()),
+        ] {
+            let want = &traced[name];
+            for index in 0..ours.len() {
+                let is_address = name == "BASE" && addresses.contains(&index);
+                if ours[index] != want[index] && !is_address {
+                    differences.push(format!(
+                        "{name}[{index}] sw{} ours={:08x} c={:08x}",
+                        first_word + index,
+                        ours[index],
+                        want[index]
+                    ));
+                }
+            }
+        }
+        assert!(
+            differences.is_empty(),
+            "job {job} differs in {} words:\n{}",
+            differences.len(),
+            differences.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_c_encoder_s_cbr_intra_job_is_reproduced() {
+        check(0, true);
+    }
+
+    #[test]
+    fn the_c_encoder_s_cbr_p_job_is_reproduced() {
+        check(1, false);
+    }
+
+    /// The sixteenth-of-a-bit scaling is not decoration: it is what lets a target
+    /// of a few thousand bits per picture reach the hardware without rounding away
+    /// the fraction, and the reference truncates twice on the way.
+    #[test]
+    fn the_target_is_scaled_before_it_is_divided_and_the_thresholds_after() {
+        let config = EncoderConfig::new(320, 240);
+        let mut file = build_registers(&Job {
+            config: &config,
+            input_fd: 11,
+            output_fd: 12,
+            current_fd: 13,
+            current_thumb_fd: 14,
+            reference_fd: 13,
+            reference_thumb_fd: 14,
+            md_fd: 15,
+            state: FrameState::default(),
+            output_capacity: logical_output_size(&config).unwrap(),
+        })
+        .unwrap();
+        let rate = RateControl {
+            bit_target: 10_000,
+            qp_target: 26,
+            qp_min: 10,
+            qp_max: 51,
+            qp_delta_row: 2,
+            qp_delta_row_i: 2,
+        };
+        file.apply_rate_control(&config, false, &rate).unwrap();
+
+        // (10000 << 4) / (20 * 15) = 533.
+        let ebit = &vepu580_regs::BASE_RC_TGT_CTU_EBIT;
+        let word = file.base[ebit.word - 160] >> ebit.shift & ((1 << ebit.width) - 1);
+        assert_eq!(word, 533, "the scaled target reaches the register");
+
+        // (533 * 20) >> 4 = 666 per macroblock, so the ladder is placed 666 * 5 / 16
+        // = 208 either side of zero, with the outer pair four times out.
+        let first = vepu580_regs::RCKLUT_RC_DTHD_0_8.word - 1024;
+        let dthd: Vec<u32> = (0..4).map(|i| file.rc_klut[first + i]).collect();
+        assert_eq!(
+            dthd,
+            [(-832i32) as u32, (-208i32) as u32, 208, 832,],
+            "the thresholds are the C truncations, negatives and all"
+        );
+    }
 }
