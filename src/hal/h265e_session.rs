@@ -12,6 +12,7 @@
 //! header length), 165/166 the reference, 167..170 the motion-vector and display
 //! thumbs, 171 the motion-info buffer, and 172..175 the bitstream buffer.
 
+use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
@@ -69,6 +70,11 @@ pub struct RcSei {
 pub struct Vepu580H265 {
     /// Present when the session runs rate control.
     rc_sei: Option<RcSei>,
+    /// The rate-control model, when the session picks QPs itself.
+    rc: Option<rc_model::Model>,
+    rc_band: (u32, u32),
+    /// The finished picture'sSTATUS measurements, taken by `encode_picture_rc`.
+    last_measured: Option<rc_model::Measured>,
     service: MppService,
     width: usize,
     height: usize,
@@ -99,6 +105,39 @@ impl Vepu580H265 {
         Self::open_inner(width, height, qp, true)
     }
 
+    /// A CBR session whose model picks the per-picture QP and bit target.
+    pub fn open_cbr(
+        width: usize,
+        height: usize,
+        bps_target: i32,
+        bps_min: i32,
+        bps_max: i32,
+        init_qp: i32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<Self, String> {
+        let mut session = Self::open_inner(width, height, qp_max, true)?;
+        let mb64 = ((width + 63) / 64) * ((height + 63) / 64);
+        let mut config = rc_model::Config::cbr(bps_target, bps_min, bps_max, 60);
+        config.quality_init = init_qp;
+        config.quality_min = qp_min as i32;
+        config.quality_max = qp_max as i32;
+        config.i_quality_delta = 2;
+        config.total_mb = (mb64 << 6) as i32;
+        config.mode = rc_model::Mode::Cbr;
+        session.rc = Some(rc_model::Model::new(config));
+        session.rc_band = (qp_min, qp_max);
+        session.set_rate_control_sei(RcSei {
+            target: bps_target as i64,
+            min: bps_min as i64,
+            max: bps_max as i64,
+            init_quality: init_qp,
+            qp_min,
+            qp_max,
+        });
+        Ok(session)
+    }
+
     fn open_inner(width: usize, height: usize, qp: u32, long_term: bool) -> Result<Self, String> {
         if width == 0 || height == 0 {
             return Err("H.265 session needs a non-zero picture".into());
@@ -122,6 +161,9 @@ impl Vepu580H265 {
             qp,
             long_term,
             rc_sei: None,
+            rc: None,
+            rc_band: (8, 48),
+            last_measured: None,
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
             output: DmaBuf::alloc("system", output_size, false)
@@ -138,6 +180,51 @@ impl Vepu580H265 {
     /// Only the opening IDR carries the VPS/SPS/PPS and the two SEIs, which is what
     /// `MppEncHeaderStatus` makes the C do once per sequence.
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        if self.rc.is_some() {
+            let frame = if self.frames == 0 {
+                rc_model::FrameType::Intra
+            } else {
+                rc_model::FrameType::InterP
+            };
+            let (bit_target, qp) = self.rc.as_mut().unwrap().start(frame);
+            if std::env::var_os("H265_RC_DEBUG").is_some() {
+                eprintln!(
+                    "h265 rc: frame {} bit_target {} qp {}",
+                    self.frames, bit_target, qp
+                );
+            }
+            let (picture, prefix) = if self.frames == 0 {
+                (Picture::Idr, true)
+            } else {
+                (
+                    Picture::P {
+                        poc_lsb: self.frames,
+                    },
+                    false,
+                )
+            };
+            let rc = RateControl {
+                bit_target,
+                qp_target: qp as u32,
+                qp_min: self.rc_band.0,
+                qp_max: self.rc_band.1,
+                qp_delta_row: 2,
+                qp_delta_row_i: 2,
+            };
+            let stream = self.encode_picture_rc(nv12, picture, prefix, Some(rc))?;
+            if let Some(measured) = self.last_measured.take() {
+                if std::env::var_os("H265_RC_DEBUG").is_some() {
+                    eprintln!("h265 rc measured: {:?}", measured);
+                }
+                self.rc
+                    .as_mut()
+                    .unwrap()
+                    .end_with(frame, bit_target, measured);
+            }
+            self.slot = 1 - self.slot;
+            self.frames += 1;
+            return Ok(stream);
+        }
         let (picture, prefix) = if self.frames == 0 {
             (Picture::Idr, true)
         } else {
@@ -358,6 +445,11 @@ impl Vepu580H265 {
                 self.output.len()
             ));
         }
+        // STATUS measurement, `vepu580_h265_set_feedback`: madp/num_ctu, madi/num_b16
+        // and quality over the 8x8 block count (`mb64_num << 6`), not the 16x16
+        // macroblock count the H.264 path divides by.
+        self.last_measured = Some(measured_from_status(self.width, self.height, &status));
+
         self.output
             .sync_read_begin()
             .map_err(|e| format!("H.265 output invalidate: {e}"))?;
@@ -397,6 +489,41 @@ impl Vepu580H265 {
         };
         stream.extend_from_slice(&slice);
         Ok(stream)
+    }
+}
+
+/// `vepu580_h265_set_feedback`'s STATUS translation. The divisor for `quality_real`
+/// is the 8x8 block count (`mb64_num << 6`), not the 16x16 macroblock count the
+/// H.264 HAL uses; `bits` counts only the hardware slice, not the software prefix.
+fn measured_from_status(width: usize, height: usize, status: &[u32]) -> rc_model::Measured {
+    let at = |word: usize| status.get(word - 4096).copied().unwrap_or(0);
+    let mb64 = ((width + 63) / 64) * ((height + 63) / 64);
+    let quality = if mb64 > 0 {
+        (at(4099) / ((mb64 << 6) as u32)) as i32
+    } else {
+        0
+    };
+    let madi = {
+        let count = at(4171) & 0x7f_ffff;
+        if count > 0 {
+            (at(4170) / count) as i32
+        } else {
+            0
+        }
+    };
+    let madp = {
+        let count = at(4169) & 0x1f_ffff;
+        if count > 0 {
+            (at(4168) / count) as i32
+        } else {
+            0
+        }
+    };
+    rc_model::Measured {
+        bits: at(4096) as i32 * 8,
+        quality,
+        madi,
+        madp,
     }
 }
 
@@ -442,6 +569,23 @@ mod tests {
         assert_eq!(surface_sizes(320, 240), (161792, 6400, 2560));
         assert_eq!(luma_bytes(320, 240), 76800);
         assert_eq!(md_info_size(320, 240), 1280);
+    }
+
+    #[test]
+    fn the_status_translation_uses_the_h265_divisors() {
+        let mut status = vec![0u32; 180];
+        let mut put = |word: usize, value: u32| status[word - 4096] = value;
+        put(4096, 847); // slice bytes
+        put(4099, 19 * 1280); // qp_sum over 5x4 CTUs -> 1280 8x8 blocks
+        put(4168, 7 * 3); // madp sum, num_ctu
+        put(4169, 3);
+        put(4170, 2 * 10); // madi sum, num_b16
+        put(4171, 10);
+        let measured = measured_from_status(320, 240, &status);
+        assert_eq!(measured.bits, 847 * 8);
+        assert_eq!(measured.quality, 19);
+        assert_eq!(measured.madi, 2);
+        assert_eq!(measured.madp, 7);
     }
 
     #[test]

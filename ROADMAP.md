@@ -844,15 +844,23 @@ in what order the evidence gets produced.
        not at bit 0 of `enc_pic`). With `-qc 26` the IDR is QP 26; with the default
        `-qc` the harness leaves `init_quality` at -1 and takes a derivation path the
        H.264-style `cal_first_i_start_qp` does not reproduce.
-- [ ] H.265 (rkvenc): the rate-control *decision* loop on top of that path - wiring
-      `rc_model::Model` into `h265e_session` so CBR/VBR/AVBR pick the per-picture QP
-      themselves, plus tiles/WPP/SAO, B frames, multiple references and per-slice
-      output. On the 320x240 CBR cell the first decision already matches
-      (`86956` bits / QP 26), but the next one does not: the model says
-      `9302` bits / QP 27 where the C's register says `582` / 25. The bits differ by
-      the measured-state update (`rc_model_v2_hal_start` / `end` with the STATUS
-      quality, MADI and MADP), which the H.265 STATUS window has not been ported
-      yet.
+ - [x] **H.265 STATUS measurement, and the CBR model loop wired end to end.**
+       `measured_from_status` reads the same STATUS words as H.264 but with H.265's
+       divisors: `quality_real = qp_sum / (mb64_num << 6)`, `madi / num_b16`,
+       `madp / num_ctu`, and only the hardware slice bytes for `bit_real`.
+       `open_cbr` builds `rc_model::Model` (GOP 60, 30 fps, the caller's quality
+       band and init QP) and `encode_frame` now runs start -> registers -> submit ->
+       STATUS -> `end_with`. On the 320x240 CBR cell the first decision is the C's
+       (`86956` bits / QP 26), the prefix and IDR NAL are byte-identical, and the P
+       NAL is two bytes shorter. `H265_RC_DEBUG=1` prints each decision and its
+       measurement.
+- [ ] H.265 (rkvenc): the CBR controller's second decision still differs. Our model
+      measures frame 0 as 6776 bits / quality 19 / madi 2 / madp 0 and chooses
+      `9320` bits / QP 27 for the next picture; the C's register carries `582` / 25.
+      The measured bits are within 24 of the C's slice (`6752`), so the gap is in
+      how the model folds that undershoot into the next budget - the VBV/`calc_ratio`
+      state - not in the STATUS translation. Also open: VBR/AVBR, tiles/WPP/SAO,
+      B frames, multiple references and per-slice output.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,

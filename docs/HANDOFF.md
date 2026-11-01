@@ -252,8 +252,10 @@ H.264/VEPU580 编码已做到：
 - CBR 通路也已逐字节：`h265-gop-rc` 喂 C 的逐帧决策（IDR 26/86955、P 25/582）后，
   含 CBR PPS、`cbr` SEI 行与两个 slice NAL 的 1169 字节流与 C 完全一致
   （`scripts/board_h265_cbr_vs_mpp.sh`）。注意 GOP 的 LT 寄存器状态对 IDR 也要置位。
-  还差的是**模型自己选 QP**：首帧决策一致，第二帧我们的模型给 9302 bits/QP27，
-  C 给 582/QP25——差在 STATUS 测量（quality/MADI/MADP）的更新，H.265 的 STATUS 窗口尚未移植。
+  STATUS 测量已移植（`measured_from_status`：`quality = qp_sum/(mb64<<6)`、
+  `madi/num_b16`、`madp/num_ctu`），CBR 模型环也接上了：首帧决策与 C 一致，
+  前缀与 IDR NAL 逐字节。第二帧仍不同（我们 9320 bits/QP27，C 582/QP25）；
+  测量 bits 与 C 只差 24，所以问题在模型的 VBV/`calc_ratio` 状态折叠，不在测量。
 - 下一步：tiles/WPP/SAO、RC 的测量环、B 帧/多参考、逐 slice 输出；
   另一条已知差异：纯推导图刻意不开 `enc_pic.mei_stor`，会话里因为自己拥有 MD 缓冲才置 1。
 

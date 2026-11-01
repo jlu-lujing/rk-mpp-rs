@@ -1383,6 +1383,79 @@ fn main() {
         }
         return;
     }
+    if args.len() > 1 && args[1] == "h265-cbr" {
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
+        let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
+        let frames = args.get(6).and_then(|s| s.parse::<usize>().ok());
+        let bps = args.get(7).and_then(|spec| {
+            let f: Vec<i32> = spec.split(':').filter_map(|v| v.parse().ok()).collect();
+            if f.len() == 3 {
+                Some((f[0], f[1], f[2]))
+            } else {
+                None
+            }
+        });
+        let usage = "usage: rk-mpp-rs h265-cbr <in.nv12> <out.265> <w> <h> <frames> <bps:min:max> [init_qp] [qp_min] [qp_max]";
+        let (Some(width), Some(height), Some(frames), Some((target, min, max))) =
+            (width, height, frames, bps)
+        else {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        };
+        if src.is_empty() || dst.is_empty() || frames == 0 {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        }
+        let init_qp = args
+            .get(8)
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(26);
+        let qp_min = args
+            .get(9)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(10);
+        let qp_max = args
+            .get(10)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(51);
+        let input = match std::fs::read(src) {
+            Ok(input) => input,
+            Err(e) => {
+                eprintln!("{src}: {e}");
+                std::process::exit(1);
+            }
+        };
+        let frame_size = width * height * 3 / 2;
+        if input.len() < frame_size * frames {
+            eprintln!("{src}: {frames} frames need {} bytes", frame_size * frames);
+            std::process::exit(1);
+        }
+        let result = h265e_session::Vepu580H265::open_cbr(
+            width, height, target, min, max, init_qp, qp_min, qp_max,
+        )
+        .and_then(|mut encoder| {
+            let mut out = Vec::new();
+            for index in 0..frames {
+                out.extend_from_slice(
+                    &encoder.encode_frame(&input[index * frame_size..(index + 1) * frame_size])?,
+                );
+            }
+            Ok(out)
+        });
+        match result.and_then(|stream| {
+            std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
+            Ok(stream.len())
+        }) {
+            Ok(bytes) => println!("h265-cbr {src} -> {dst}: {bytes} bytes, {frames} pictures"),
+            Err(e) => {
+                eprintln!("H.265 CBR encode failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "jpeg-enc" {
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
