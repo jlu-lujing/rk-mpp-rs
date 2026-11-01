@@ -9,6 +9,23 @@
 整个库。当前进度与逐项证据见 [ROADMAP.md](ROADMAP.md)，接手指南见
 [docs/HANDOFF.md](docs/HANDOFF.md)。
 
+## 验证范围（重要）
+
+**本项目只对 RK3588（NanoPC-T6-LTS）做验证与保证。**
+
+- 所有"完成 / 逐字节一致 / 性能"结论都只在这块板子上成立，且只针对它暴露的硬件块：
+  client 1（vdpu2）、4（av1d）、9（rkvdec）、13（jpegd）、16（rkv-enc）、
+  19（vepu JPEG）、28（IEP）。client 12（AVS+）能绑定但尚无 conformance 流，
+  因此**未实现、不宣称**；client 3（vdpu2-pp）会绑定，但本源码里没有任何解码器
+  驱动它（见 ROADMAP 的能力表）。
+- **其他 Rockchip SoC 未验证。** 代码不把板型写死（有 `probe` 能力探测，HAL 按硬件块分层），
+  因此可能在别的板子上编译甚至运行，但那不属于承诺范围：不同代的 VEPU/VDEC
+  寄存器布局、STATUS 语义和固件行为都不同，需要各自取证。
+- 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
+  rkvdec 拒收 H.265 4:2:2 / 4:4:4。
+- 未来扩展到其他 SoC 的工作与成本见 [docs/PLAN.md](docs/PLAN.md) 的 W12 与决策 D2；
+  当前决定是 **先只保 RK3588**。
+
 ## 现状
 
 | 能力 | 状态 |
@@ -112,3 +129,4 @@ tests/data/       C 侧真实输出构成的 golden / fixture
   `/tmp/mpp_trace.so`），重启即失，重建步骤见 HANDOFF。
 - rkvenc 每进程只支持一个活会话，多实例需先解决（framework 部分）。
 - AVS+/AVS2 无 conformance 流/硬件支持，未实现；损坏码流一致性只测了退出码。
+- 只验证 RK3588；其他 SoC、其他内核/固件版本的行为未测（见上文"验证范围"）。

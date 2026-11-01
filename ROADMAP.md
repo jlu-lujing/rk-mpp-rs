@@ -39,6 +39,12 @@ but has no driver behind it cannot be driven - the C tools say so as
 Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
 `MPP_CMD_POLL_HW_FINISH`.
 
+**Scope decision (2026-11-01): RK3588 only.** Every "done", "byte-exact" and
+"faster" claim below is a statement about NanoPC-T6-LTS and the hardware blocks it
+exposes. The code probes capability and layers per block rather than baking in a
+board, so other SoCs may run - but they are unverified and unclaimed. Extending
+elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
+
 ## Milestones
 
 | # | deliverable | official LOC | status |
