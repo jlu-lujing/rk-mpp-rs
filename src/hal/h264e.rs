@@ -202,6 +202,10 @@ pub struct Job<'a> {
     /// The scene-motion state as it stands before this picture - the register
     /// patch reads it, the next status update moves it.
     pub tune: &'a SceneTune,
+    /// The ROI tables' dma-buf fds, `roi_addr` and `roi_qp_addr`, or -1 when
+    /// the configuration carries no regions.
+    pub roi_fd: i32,
+    pub roi_qp_fd: i32,
 }
 
 /// What rate control decided about one picture.
@@ -517,6 +521,10 @@ pub struct Vepu580H264 {
     rc: Option<rc_model::Model>,
     /// The scene-motion detector, updated from every picture's STATUS window.
     tune: SceneTune,
+    /// The ROI tables, written once: the regions do not move between
+    /// pictures, exactly as in the reference harness that adds the same
+    /// regions to every frame's meta.
+    roi: Option<(DmaBuf, DmaBuf)>,
 }
 
 impl Vepu580H264 {
@@ -543,6 +551,30 @@ impl Vepu580H264 {
             ],
             md_info: DmaBuf::alloc("system", mdinfo_size(&config)?, false)
                 .map_err(|e| format!("allocate H.264 motion info: {e}"))?,
+            roi: if config.rois.is_empty() {
+                None
+            } else {
+                let (base, qp) = roi_tables(&config);
+                let mut base_buf = DmaBuf::alloc("system", base.len(), false)
+                    .map_err(|e| format!("allocate ROI base table: {e}"))?;
+                let mut qp_buf = DmaBuf::alloc("system", qp.len(), false)
+                    .map_err(|e| format!("allocate ROI qp table: {e}"))?;
+                base_buf
+                    .sync_write_begin()
+                    .map_err(|e| format!("ROI base write: {e}"))?;
+                base_buf.as_mut_slice()[..base.len()].copy_from_slice(&base);
+                base_buf
+                    .sync_write_end()
+                    .map_err(|e| format!("ROI base flush: {e}"))?;
+                qp_buf
+                    .sync_write_begin()
+                    .map_err(|e| format!("ROI qp write: {e}"))?;
+                qp_buf.as_mut_slice()[..qp.len()].copy_from_slice(&qp);
+                qp_buf
+                    .sync_write_end()
+                    .map_err(|e| format!("ROI qp flush: {e}"))?;
+                Some((base_buf, qp_buf))
+            },
             state: FrameState::default(),
             slot: 0,
             tune: SceneTune::new(false),
@@ -673,6 +705,8 @@ impl Vepu580H264 {
             output_capacity: logical_output_size(&self.config)?,
             rc,
             tune: &self.tune,
+            roi_fd: self.roi.as_ref().map_or(-1, |b| b.0.fd()),
+            roi_qp_fd: self.roi.as_ref().map_or(-1, |b| b.1.fd()),
         };
         let registers = build_registers(&job)?;
         dump_job_registers(&job, &registers);
@@ -1323,6 +1357,7 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     file.apply_profile(config)?;
     file.apply_deblock(config)?;
     file.apply_picture(job)?;
+    file.apply_roi(job)?;
     // The reference job was captured with a harness that asked for motion
     // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
     // side information needs the MD buffer `setup_hal_bufs` allocates for it,
@@ -1486,6 +1521,39 @@ impl RegisterFile {
         }
         Ok(())
     }
+    /// `setup_vepu580_roi`, which runs whenever the task carries ROI data:
+    /// the base table's fd into `roi_addr` with `enc_pic.roi_en` set, and - the
+    /// reference's `ROI_TYPE_2` helper always turns QP adjustment on - the qp
+    /// table's fd into `roi_qp_addr` with `roi_en.roi_qp_en`. The enable checks
+    /// compare the buffer sizes against `mb_w * mb_h * 8` with `mb_w` aligned
+    /// to 64 pixels, which the tables built here always satisfy; the guard is
+    /// kept because a table that failed it would silently disable the feature
+    /// in the reference, and this driver must not diverge on the same input.
+    fn apply_roi(&mut self, job: &Job<'_>) -> Result<(), String> {
+        if job.roi_fd < 0 {
+            return Ok(());
+        }
+        let (mb_w, mb_h, stride_h, stride_v) = roi_grid(job.config);
+        let stride_blocks = (stride_h * stride_v) as i64;
+        let checked_w = (align(job.config.width, 64) / 16) as i64;
+        let checked_h = (align(job.config.height, 16) / 16) as i64;
+        let _ = mb_w;
+        let _ = mb_h;
+        // The tables are `stride_blocks` records long; the reference enables
+        // only if that many bytes-times-eight reaches its own product.
+        if stride_blocks * 8 < checked_w * checked_h * 8
+            || stride_blocks * 2 < checked_w * checked_h * 2
+        {
+            return Err("ROI tables smaller than the encoder's enable check".into());
+        }
+        self.set(&vepu580_regs::BASE_ENC_PIC_ROI_EN, 1)?;
+        let base_index = 178 - 160;
+        self.base[base_index] = job.roi_fd as u32;
+        self.set(&vepu580_regs::H264_ROI_EN_ROI_QP_EN, 1)?;
+        self.base[179 - 160] = job.roi_qp_fd as u32;
+        Ok(())
+    }
+
     /// The nine Lvl16 / Lvl8 / Lvl4 ATR weight fields, in declaration order.
     fn set_atr_weights(&mut self, weights: &[u32; 9]) -> Result<(), String> {
         let fields = [
@@ -1829,6 +1897,83 @@ fn validate_reference_config(config: &EncoderConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// ROI grid of the VEPU580 path: 16x16 blocks over the *visible* picture,
+/// rows padded to a multiple of four, as `gen_vepu580_roi_h264` indexes it.
+fn roi_grid(config: &EncoderConfig) -> (usize, usize, usize, usize) {
+    let mb_w = (align(config.width, 16) / 16).max(1);
+    let mb_h = (align(config.height, 16) / 16).max(1);
+    (mb_w, mb_h, align(mb_w, 4), align(mb_h, 4))
+}
+
+/// Build the two ROI DMA tables the VEPU580 reads, `Vepu580RoiH264BsCfg`
+/// (eight bytes per 16x16 block) and `Vepu580RoiQpCfg` (two bytes), from the
+/// configured regions.
+///
+/// The transcription follows `roi_data_update_cfg` then
+/// `gen_vepu580_roi_h264`: a default record covers the whole grid, each region
+/// overwrites the blocks it touches - its origin rounded *up* to the grid,
+/// `(x + 15) / 16`, which the VEPU54x helper `vepu5xx_h264_set_one_roi` does
+/// not do - and only blocks whose map entry got set produce non-zero records.
+/// The bit positions are the C's little-endian bitfields: `force_intra` at bit
+/// 61 and `qp_adj_en` at bit 62 of the eight-byte record, `qp_adj` in bits
+/// 8..14 of the two-byte one with the absolute mode at bit 15. `qp_adj_en`
+/// follows `!!cu_cfg->qp_adj` - a region at relative QP zero enables nothing,
+/// and `force_intra` still reaches the block.
+fn roi_tables(config: &EncoderConfig) -> (Vec<u8>, Vec<u8>) {
+    let (mb_w, mb_h, stride_h, stride_v) = roi_grid(config);
+    let blocks = stride_h * stride_v;
+    // Records as the tmp map holds them: (force_intra, 7-bit qp, absolute).
+    let mut tmp = vec![(false, 0u16, false); stride_h * mb_h];
+    let mut cu_map = vec![0u8; stride_h * mb_h];
+
+    for region in &config.rois {
+        let qp_adj = (region.qp_val as u16) & 0x7f;
+        let cfg = (region.force_intra, qp_adj, region.qp_absolute);
+        let roi_width = (region.w + 15) / 16;
+        let roi_height = (region.h + 15) / 16;
+        let pos_x_init = (region.x + 15) / 16;
+        let pos_y_init = (region.y + 15) / 16;
+        let pos_x_end = (pos_x_init + roi_width).min(mb_w as i32) as usize;
+        let pos_y_end = (pos_y_init + roi_height).min(mb_h as i32) as usize;
+        // The C `mpp_assert`s the region fits the grid after the frame check;
+        // a region clipped by the two `min`s above is exactly the case that
+        // assert would trap on, so no byte comparison can observe the
+        // difference and this port clips instead of crashing.
+        for j in (pos_y_init.max(0) as usize)..pos_y_end {
+            for x in (pos_x_init.max(0) as usize)..pos_x_end {
+                tmp[j * stride_h + x] = cfg;
+                cu_map[j * stride_h + x] = 1;
+            }
+        }
+    }
+
+    let mut base = vec![0u8; blocks * 8];
+    let mut qp = vec![0u8; blocks * 2];
+    for j in 0..mb_h {
+        for k in 0..stride_h {
+            if cu_map[j * stride_h + k] == 0 {
+                continue;
+            }
+            let (force_intra, qp_adj, absolute) = tmp[j * stride_h + k];
+            let index = j * stride_h + k;
+            let mut record = 0u64;
+            if force_intra {
+                record |= 1 << 61;
+            }
+            if qp_adj != 0 {
+                record |= 1 << 62;
+            }
+            base[index * 8..index * 8 + 8].copy_from_slice(&record.to_le_bytes());
+            let mut word = qp_adj << 8;
+            if absolute {
+                word |= 1 << 15;
+            }
+            qp[index * 2..index * 2 + 2].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+    (base, qp)
+}
+
 fn reconstruction_sizes(config: &EncoderConfig) -> Result<(usize, usize), String> {
     let aligned_w = align(config.width, 64);
     let aligned_h = align(config.height, 16) + 16;
@@ -1935,6 +2080,8 @@ mod tests {
     fn job(config: &EncoderConfig, state: FrameState) -> Job<'_> {
         Job {
             tune: quiet_tune(),
+            roi_fd: -1,
+            roi_qp_fd: -1,
             config,
             input_fd: 7,
             output_fd: 9,
@@ -2563,6 +2710,191 @@ mod tests {
         }
     }
 
+    /// The ROI region arithmetic, block by block. The two regions are the
+    /// `mpi_enc_test` pair scaled to fit 320x240 - an absolute-QP-24 region
+    /// first, an absolute-QP-10 force-intra region added second, overlapping
+    /// the first at blocks x 10..11, y 4..11 where the second must win.
+    ///
+    /// The expected block coordinates are derived from the grid rules, not
+    /// copied: origins round up (`(x + 15) / 16`), sizes round up
+    /// (`(w + 15) / 16`), the row stride pads the macroblock count to four
+    /// (20 columns, 16 rows of records for a 20x15 grid), and a block record
+    /// carries `force_intra` at bit 61 and `qp_adj_en` - non-zero `qp_adj`
+    /// only - at bit 62, with the signed QP in bits 8..14 of the two-byte
+    /// companion and the absolute mode at bit 15.
+    #[test]
+    fn roi_regions_map_to_the_block_records_the_encoder_reads() {
+        let mut config = config();
+        config.rois = vec![
+            encoder::RoiRegion {
+                x: 48,
+                y: 32,
+                w: 128,
+                h: 160,
+                force_intra: false,
+                qp_absolute: true,
+                qp_val: 24,
+            },
+            encoder::RoiRegion {
+                x: 160,
+                y: 64,
+                w: 96,
+                h: 128,
+                force_intra: true,
+                qp_absolute: true,
+                qp_val: 10,
+            },
+        ];
+        let (base, qp) = roi_tables(&config);
+        assert_eq!(base.len(), 20 * 16 * 8, "stride 20, rows padded to 16");
+        assert_eq!(qp.len(), 20 * 16 * 2);
+        let record = |x: usize, y: usize| {
+            u64::from_le_bytes(
+                base[(y * 20 + x) * 8..(y * 20 + x) * 8 + 8]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        let word = |x: usize, y: usize| {
+            u16::from_le_bytes(
+                qp[(y * 20 + x) * 2..(y * 20 + x) * 2 + 2]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+
+        // Outside both regions: nothing set.
+        assert_eq!(record(0, 0), 0);
+        assert_eq!(word(0, 0), 0);
+        // Inside region one only: qp_adj enabled by a non-zero adjustment, no
+        // force-intra, absolute mode, the QP itself in bits 8..14.
+        assert_eq!(record(3, 2), 1 << 62);
+        assert_eq!(word(3, 2), 24 << 8 | 1 << 15);
+        // The overlap: the later region wins outright, in both tables.
+        assert_eq!(record(10, 4), 1 << 61 | 1 << 62);
+        assert_eq!(word(10, 4), 10 << 8 | 1 << 15);
+        // Just past region one's bottom edge (y rounds up to 10 rows from row
+        // 2) and region two's right edge (x rounds up to 6 columns from 10).
+        assert_eq!(record(5, 12), 0);
+        assert_eq!(record(16, 4), 0);
+        assert_eq!(
+            record(9, 4),
+            1 << 62,
+            "still region one at the overlap edge"
+        );
+        // The padding rows below the grid stay zero.
+        assert_eq!(record(0, 15), 0, "the padding row carries no region");
+    }
+
+    /// `base_cfg->qp_adj_en = !!cu_cfg->qp_adj`: a force-intra region at
+    /// relative QP zero sets the intra bit and nothing else, and its companion
+    /// word is zero. A relative adjustment of -3 wraps into the 7-bit signed
+    /// field as 125 - which is also what makes it non-zero, and therefore
+    /// enables the adjustment.
+    #[test]
+    fn roi_qp_adjustment_is_the_seven_bit_wrap_not_the_sign() {
+        let mut config = config();
+        config.rois = vec![encoder::RoiRegion {
+            x: 0,
+            y: 0,
+            w: 16,
+            h: 16,
+            force_intra: true,
+            qp_absolute: false,
+            qp_val: 0,
+        }];
+        let (base, qp) = roi_tables(&config);
+        assert_eq!(u64::from_le_bytes(base[..8].try_into().unwrap()), 1 << 61);
+        assert_eq!(u16::from_le_bytes(qp[..2].try_into().unwrap()), 0);
+
+        config.rois[0].qp_val = -3;
+        let (base, qp) = roi_tables(&config);
+        assert_eq!(
+            u64::from_le_bytes(base[..8].try_into().unwrap()),
+            1 << 61 | 1 << 62,
+            "a wrapped -3 is a non-zero qp_adj and enables it"
+        );
+        assert_eq!(
+            u16::from_le_bytes(qp[..2].try_into().unwrap()),
+            125 << 8,
+            "relative mode: no bit 15, the wrap in bits 8..14"
+        );
+    }
+
+    /// The register side: with regions configured the two fds, `roi_en` and
+    /// `roi_qp_en` reach the image - the `setup_vepu580_roi` pair; without
+    /// them the fields and the address words stay exactly as recorded, which
+    /// is what every byte-verified stream carries.
+    #[test]
+    fn roi_registers_follow_the_configuration_and_nothing_else() {
+        let state = FrameState::default();
+        let mut with_rois = config();
+        with_rois.rois = vec![encoder::RoiRegion {
+            x: 0,
+            y: 0,
+            w: 32,
+            h: 32,
+            force_intra: true,
+            qp_absolute: true,
+            qp_val: 10,
+        }];
+        let file = build_registers(&Job {
+            roi_fd: 20,
+            roi_qp_fd: 21,
+            ..job(&with_rois, state)
+        })
+        .unwrap();
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_ENC_PIC_ROI_EN).unwrap(),
+            1,
+            "enc_pic.roi_en"
+        );
+        assert_eq!(
+            file.get(&vepu580_regs::H264_ROI_EN_ROI_QP_EN).unwrap(),
+            1,
+            "the ROI_TYPE_2 helper always enables the qp table"
+        );
+        assert_eq!(file.base[178 - 160], 20, "roi_addr");
+        assert_eq!(file.base[179 - 160], 21, "roi_qp_addr");
+
+        let quiet = registers_at(&config(), state);
+        assert_eq!(quiet.get(&vepu580_regs::BASE_ENC_PIC_ROI_EN).unwrap(), 0);
+        assert_eq!(quiet.get(&vepu580_regs::H264_ROI_EN_ROI_QP_EN).unwrap(), 0);
+        assert_eq!(quiet.base[178 - 160], 0);
+        assert_eq!(quiet.base[179 - 160], 0);
+    }
+
+    /// The validation `roi_data_update_cfg` performs before touching a block:
+    /// geometry inside the visible picture, absolute QPs up to 51, relative
+    /// adjustments within +-51, no empty or negative-extent regions.
+    #[test]
+    fn roi_regions_are_the_reference_checks_not_a_new_policy() {
+        let fits = encoder::RoiRegion {
+            x: 0,
+            y: 0,
+            w: 32,
+            h: 32,
+            force_intra: true,
+            qp_absolute: true,
+            qp_val: 10,
+        };
+        let mut at = config();
+        at.rois = vec![fits];
+        assert_eq!(at.validate().map_err(|e| e.to_string()), Ok(()));
+
+        at.rois[0].x = 300;
+        assert!(at.validate().is_err(), "300 + 32 crosses 320");
+        at.rois[0].x = 0;
+        at.rois[0].qp_val = 52;
+        assert!(at.validate().is_err(), "absolute QP 52");
+        at.rois[0].qp_absolute = false;
+        at.rois[0].qp_val = 52;
+        assert!(at.validate().is_err(), "relative +52");
+        at.rois[0].qp_val = -51;
+        assert!(at.validate().is_ok(), "relative -51 is the edge");
+        at.rois[0].w = 0;
+        assert!(at.validate().is_err(), "an empty region is not a region");
+    }
     /// The rows `vepu580_h264e_tune_reg_patch` writes on every picture - the
     /// ATR weights, the search multipliers and the two ATF weight sets - match
     /// the captured image while the detector is silent. That agreement is what
@@ -2912,6 +3244,8 @@ mod rate_control_registers {
             },
             output_capacity: logical_output_size(&config).unwrap(),
             tune: quiet_tune(),
+            roi_fd: -1,
+            roi_qp_fd: -1,
         })
         .unwrap();
         file.apply_rate_control(&config, is_idr, &rate).unwrap();
@@ -2990,6 +3324,8 @@ mod rate_control_registers {
             state: FrameState::default(),
             output_capacity: logical_output_size(&config).unwrap(),
             tune: quiet_tune(),
+            roi_fd: -1,
+            roi_qp_fd: -1,
         })
         .unwrap();
         let rate = RateControl {

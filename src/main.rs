@@ -29,6 +29,7 @@ fn encode_h264(
     gop: u32,
     bps: Option<(h264_syntax::RcMode, i64, i64, i64)>,
     deblock: Option<(u32, i32, i32)>,
+    rois: Vec<h264_syntax::RoiRegion>,
 ) -> Result<(usize, usize, usize, f64), String> {
     // The frames are read one at a time. slurping the file was fine while the
     // encoder only ever produced a single IDR, but with a GOP it charges the
@@ -82,6 +83,7 @@ fn encode_h264(
         config.deblock_offset_alpha = alpha;
         config.deblock_offset_beta = beta;
     }
+    config.rois = rois;
     let frame_bytes = h264e::input_size(&config)?;
     let mut encoder = h264e::Vepu580H264::open(config)?;
     let started = Instant::now();
@@ -522,7 +524,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]...");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -596,8 +598,32 @@ fn main() {
                 }
             }
         });
+        // `roi:x:y:w:h:intra:abs:qp`, repeatable - the `RoiRegionCfg` list
+        // `mpi_enc_test` adds per frame, in the same add order.
+        let mut rois: Vec<h264_syntax::RoiRegion> = Vec::new();
+        for text in args.iter().skip(12) {
+            let Some(rest) = text.strip_prefix("roi:") else {
+                continue;
+            };
+            let parts: Vec<i64> = rest.split(':').filter_map(|s| s.parse().ok()).collect();
+            match parts.as_slice() {
+                [x, y, w, h, intra, qp_abs, qp] => rois.push(h264_syntax::RoiRegion {
+                    x: *x as i32,
+                    y: *y as i32,
+                    w: *w as i32,
+                    h: *h as i32,
+                    force_intra: *intra != 0,
+                    qp_absolute: *qp_abs != 0,
+                    qp_val: *qp as i32,
+                }),
+                _ => {
+                    eprintln!("bad roi; expected roi:x:y:w:h:intra:abs:qp");
+                    std::process::exit(2);
+                }
+            }
+        }
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]...");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -617,6 +643,7 @@ fn main() {
             gop,
             bps,
             deblock,
+            rois,
         ) {
             Ok((bytes, header_bytes, payload_bytes, ms)) => println!(
                 "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_desc} gop {gop}, {ms:.3} ms"
