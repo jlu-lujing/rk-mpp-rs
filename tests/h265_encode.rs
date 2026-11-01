@@ -2,9 +2,10 @@
 //! register image, driven through the crate's public API.
 //!
 //! These run on the host - the parameter sets are pure software output and the
-//! register image is pure derivation. The board-only test that compares them
-//! against the reference C encoder is ignored and runs via
-//! `scripts/board_h265_qp_vs_mpp.sh`.
+//! register image is pure derivation. The parameter sets are compared byte for
+//! byte against streams the C encoder wrote on t6
+//! (`tests/data/h265e_c_fixqp_qp26_*.265`); the board test that reproduces the
+//! same comparison live is ignored and runs via `scripts/board_h265_qp_vs_mpp.sh`.
 
 use rk_mpp_rs::codec::h265::encoder::{build_headers, build_pps, build_sps, EncoderConfig};
 use rk_mpp_rs::codec::hevc::parser;
@@ -23,33 +24,98 @@ fn default_idr_parameter_sets_parse_back() {
     // Three NAL units back to back, VPS first.
     assert_eq!(headers[0..4], [0, 0, 0, 1]);
     assert_eq!((headers[4] >> 1) & 0x3f, 32); // VPS
+                                              // `42 01`: nal_unit_type 33 in the first byte, nuh_layer_id 0 and
+                                              // nuh_temporal_id_plus1 1 in the second. `42 81` was layer_id 2 - the board's
+                                              // SPS settled it.
     assert!(build_sps(&config)
         .unwrap()
-        .starts_with(&[0, 0, 0, 1, 0x42, 0x81]));
+        .starts_with(&[0, 0, 0, 1, 0x42, 0x01]));
 
-    // Round-trip the SPS and PPS.
+    // Round-trip the SPS and PPS. The payload is passed through the parser's
+    // escape stripper, because the writer emits an EBSP (Annex B) and the parser
+    // reads an RBSP.
     let sps = build_sps(&config).unwrap();
-    let parsed_sps = parser::parse_sps(&sps[6..]).unwrap();
+    let parsed_sps = parser::parse_sps(&parser::ebsp_to_rbsp(&sps[6..])).unwrap();
     assert_eq!((parsed_sps.width, parsed_sps.height), (320, 240));
     assert!(parsed_sps.sao_enabled);
     assert!(!parsed_sps.amp_enabled);
 
     let pps = build_pps(&config).unwrap();
-    let parsed_pps = parser::parse_pps(&pps[6..]).unwrap();
+    let parsed_pps = parser::parse_pps(&parser::ebsp_to_rbsp(&pps[6..])).unwrap();
     assert_eq!(parsed_pps.init_qp, 26);
-    assert!(parsed_pps.cu_qp_delta_enabled);
+    // Fixed QP: `h265e_set_pps` leaves m_useDQP at 0.
+    assert!(!parsed_pps.cu_qp_delta_enabled);
     assert_eq!(parsed_pps.log2_parallel_merge_level, 2);
 }
 
-/// The PPS byte golden for the default configuration - hand-derived from
-/// h265e_set_pps + h265e_pps_write, and independent of the requested QP.
+/// The PPS byte golden for the default (fixed-QP) configuration, taken from the
+/// oracle's own stream on t6 rather than hand-derived: `mpi_enc_test -t 16777220
+/// -n 1 -rc 2 -qc 26:...` writes `44 01 c0 f1 80 9b 20`. The `f1` is
+/// `cabac_init 1, ref_idx 1/1, init_qp 1, constrained 0, transform_skip 0,
+/// cu_qp_delta 0` - the last field is the one a hard-wired `m_useDQP = 1` got
+/// wrong, which produced `c0 f3 c0 4d 90` and shifted everything after it.
 #[test]
 fn default_pps_matches_the_c_bytes() {
     let pps = build_pps(&EncoderConfig::new(320, 240)).unwrap();
     assert_eq!(
         pps,
-        vec![0, 0, 0, 1, 0x44, 0x01, 0xc0, 0xf3, 0xc0, 0x4d, 0x90]
+        vec![0, 0, 0, 1, 0x44, 0x01, 0xc0, 0xf1, 0x80, 0x9b, 0x20]
     );
+}
+
+/// The VPS/SPS/PPS prefix of a recorded oracle stream: everything up to the first
+/// NAL that is not a parameter set (32/33/34). A plain start-code scan is safe
+/// here because the writer escapes the payload, so `00 00 01` cannot occur inside
+/// a NAL - that was not true before the escape landed.
+fn parameter_set_prefix(stream: &[u8]) -> &[u8] {
+    let mut search = 0;
+    while let Some(pos) = stream[search..].windows(3).position(|w| w == [0, 0, 1]) {
+        let code = search + pos;
+        let nal = code + 3;
+        let unit_type = (stream[nal] >> 1) & 0x3f;
+        if (32..=34).contains(&unit_type) {
+            search = nal;
+            continue;
+        }
+        // Include a leading zero byte when the parameter sets used a four-byte
+        // start code, so the prefix is exactly what `build_headers` writes.
+        return &stream[..if code > 0 && stream[code - 1] == 0 {
+            code - 1
+        } else {
+            code
+        }];
+    }
+    stream
+}
+
+/// The complete parameter-set gate, on the host, against oracle streams recorded
+/// on t6: `mpi_enc_test -i probe.nv12 -o out.265 -w W -h H -t 16777220 -f 0 -n 1
+/// -rc 2 -qc 26:26:26:26:26 -v q`. Each fixture is the full 860/1618/3585-byte
+/// stream (VPS, SPS, PPS, two SEIs and the IDR); only the prefix is compared here,
+/// because the IDR payload needs the register-job template.
+#[test]
+fn parameter_sets_match_the_recorded_c_streams() {
+    for (w, h, file) in [
+        (320usize, 240usize, "h265e_c_fixqp_qp26_320x240.265"),
+        (640, 480, "h265e_c_fixqp_qp26_640x480.265"),
+        (1280, 720, "h265e_c_fixqp_qp26_1280x720.265"),
+    ] {
+        let path = format!("{}/tests/data/{file}", env!("CARGO_MANIFEST_DIR"));
+        let c = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let rust = build_headers(&EncoderConfig::new(w, h)).unwrap();
+        let prefix = parameter_set_prefix(&c);
+        assert_eq!(
+            rust.len(),
+            prefix.len(),
+            "{file}: parameter-set prefix length"
+        );
+        assert_eq!(rust, prefix, "{file}: parameter sets differ");
+        // The reference's next NAL is an SEI (39), not another parameter set: the
+        // prefix stopped on a real boundary rather than by running out of stream.
+        let next = &c[prefix.len()..];
+        let after_code = next.windows(3).position(|w| w == [0, 0, 1]).unwrap() + 3;
+        assert_eq!((next[after_code] >> 1) & 0x3f, 39, "{file}: next NAL");
+    }
 }
 
 /// A small size matrix: the coded picture is padded to the 8-sized minimum CU and
@@ -66,7 +132,7 @@ fn coded_size_matrix_round_trips() {
     ] {
         let config = EncoderConfig::new(w, h);
         let sps = build_sps(&config).unwrap();
-        let parsed = parser::parse_sps(&sps[6..]).unwrap();
+        let parsed = parser::parse_sps(&parser::ebsp_to_rbsp(&sps[6..])).unwrap();
         assert_eq!(
             (parsed.width, parsed.height),
             (vis_w as u32, vis_h as u32),

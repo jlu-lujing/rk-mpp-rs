@@ -33,12 +33,12 @@ def main(argv):
         print("Rust file is empty", file=sys.stderr)
         return 1
     # The reference emits the parameter-set prefix first, then SEI/IDR NAL units.
-    # Because neither side inserts emulation-prevention bytes, the SPS can contain
-    # a literal `00 00 01` inside `vui_num_units_in_tick`, so splitting by start
-    # codes would mis-cut the NAL. The robust check is instead: the reference's
-    # leading `len(rust)` bytes must equal the Rust file exactly, and the byte
-    # after it must open a new start code (proving the Rust prefix stopped on a NAL
-    # boundary and did not run past or stop inside the reference's own PPS).
+    # Both sides now insert emulation-prevention bytes, so a start-code split would
+    # work; the check stays a prefix comparison because it needs no parser and pins
+    # the boundary on its own: the reference's leading `len(rust)` bytes must equal
+    # the Rust file exactly, and the byte after it must open a new start code
+    # (proving the Rust prefix stopped on a NAL boundary and did not run past or
+    # stop inside the reference's own PPS).
     if len(c) < len(rust):
         print(
             f"reference stream ({len(c)} bytes) is shorter than the Rust "

@@ -27,9 +27,16 @@
 #   scripts/board_h265_qp_vs_mpp.sh            # header compare
 #   REFRESH=1 scripts/board_h265_qp_vs_mpp.sh  # also (re)capture the job template
 #
-# HEVC_TYPE overrides the harness coding type. The task specifies `-t 9`; the
-# master mpi_enc_test indexes coding by the MppCodingType enum (HEVC = 0x0100000b),
-# so confirm which on the board before trusting a run.
+# HEVC_TYPE overrides the harness coding type, and it is the decimal enum value:
+# `mpi_enc_opt_t` in the vintage's utils/mpi_enc_utils.c does `atoi(next)`, so
+# `0x01000004` would arrive as 0. In the vintage's inc/rk_type.h the enum runs
+# Unused 0, AutoDetect 1, MPEG2 2, H263 3, MPEG4 4, WMV 5, RV 6, AVC 7, MJPEG 8,
+# VP8 9, VP9 10, then VC1 = 0x01000000, FLV1, DIVX3, VP6 and **HEVC =
+# 0x01000004 = 16777220**. `-t 9` is VP8, not HEVC - the first version of this
+# script carried 9 and would have compared an H.265 file against a refused VP8
+# encode. Confirmed on t6: 320x240, -n 1, -rc 2, -qc 26:26:26:26:26 writes 860
+# bytes whose NAL types are 32 (VPS), 33 (SPS), 34 (PPS), 39, 39 (SEI) and 19
+# (IDR_W_RADL).
 set -uo pipefail
 
 SKIP="${SKIP:-}"
@@ -39,7 +46,7 @@ mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
 mpp_lib="$mpp_ref/build/mpp"
 tracer="${TRACER:-/tmp/mpp_trace.so}"
-hevc_type="${HEVC_TYPE:-9}"
+hevc_type="${HEVC_TYPE:-16777220}"
 frame_w=320
 frame_h=240
 fail=0

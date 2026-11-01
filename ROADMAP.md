@@ -699,7 +699,7 @@ in what order the evidence gets produced.
        `tools/h265e_probe.c`, `scripts/board_h265_qp_vs_mpp.sh` and
        `scripts/h265_hdr_cmp.py` are the harness, `h265-enc` writes the parameter
        sets from the CLI, and `board_parameter_sets_match_the_c_encoder` sits
-       `#[ignore]`d until the board run is recorded.
+       `#[ignore]`d so the live comparison stays opt-in.
        The H.265 job has six windows, not the seven of an H.264 job, and the map now
        says so. The vintage's `H265eV580RegSet` is `reg_ctl`, `reg_base`,
        `reg_rc_klut`, `reg_wgt`, `reg_rdo`, `reg_osd_cfg` (plus `reg_dbg`, which is
@@ -727,6 +727,36 @@ in what order the evidence gets produced.
        resolves its headers from its own location rather than the working directory
        and no longer emits a second const when two struct views name the same
        padding - the duplicate `CTL.reserved1_3` was the symptom.
+       **The header gate now passes on the board, 3/3, and the first run did not.**
+       `scripts/board_h265_qp_vs_mpp.sh` on t6 compares the VPS+SPS+PPS prefix of
+       `mpi_enc_test` and of `h265-enc`: 320x240, 640x480 and 1280x720 are
+       byte-identical (82, 82 and 83 bytes). Two defects stood in the way, and both
+       were invisible to the host tests because those tests had been derived from
+       the same misreading:
+       1. The NAL header's second byte carried `unit_type & 1` in its top bit, which
+          is `nuh_layer_id` bit 5, not part of the NAL type. Every odd unit type
+          claimed layer id 2; the SPS came out `42 81` against the oracle's `42 01`.
+       2. The payload was not escaped. The oracle's VPS is `...0160 0000 0300 8000
+          0003 0000 0300 78...`; deleting the three `03` bytes gives back the RBSP
+          this writer produced byte for byte, so the bit patterns were already
+          right and only Annex-B escaping was missing. The escape cannot come from
+          `h265e_nal_escape_c`: that function leaves the insertion commented out in
+          both vintages (`h265e_header_gen.c:42`). VEPU580 writes its parameter
+          sets from `reg0237_synt_sps` / `reg0238_synt_pps`, and the hardware
+          formatter escapes them - the C source's no-op describes the software
+          fallback path only.
+       A third field was wrong behind the escape: `pps_cu_qp_delta_enabled_flag`.
+       `h265e_set_pps` sets `m_useDQP = (rc_mode != FIXQP)`, and the fixed-QP board
+       cell writes PPS `44 01 c0 f1 80 9b 20` where the hard-wired 1 produced
+       `c0 f3 c0 4d 90` and shifted every later field. `EncoderConfig::rc_mode`
+       now derives the flag, with a host test covering the CBR/VBR branch. The
+       `-t` value was wrong too: this vintage's `MppCodingType` makes HEVC
+       `0x01000004`, which `mpi_enc_opt_t`'s `atoi` needs as `16777220`; `-t 9` is
+       VP8, and that was the script's default before the first run.
+       The three oracle streams are checked in as
+       `tests/data/h265e_c_fixqp_qp26_{320x240,640x480,1280x720}.265` (860, 1618 and
+       3585 bytes) and `parameter_sets_match_the_recorded_c_streams` compares the
+       prefix on the host, so this gate no longer needs the board to stay honest.
 - [ ] H.265 (rkvenc): the IDR payload, tiles/WPP/SAO, rate control and P
       pictures - all of which depend on the board capture named above.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline

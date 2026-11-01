@@ -8,20 +8,26 @@
 //! are the ones `h265e_init` sets, i.e. what `mpi_enc_test -t 9` inherits unless it
 //! overrides a field - which the fixed-QP comparison does not.
 //!
-//! The two-byte NAL header and Annex-B framing follow `h265e_nal_encode`, notably
-//! including that its `h265e_nal_escape_c` copies the RBSP *verbatim* - the
-//! emulation-prevention byte insertion is commented out in the reference - so this
-//! writer inserts no `0x03` either, byte-identical to what the library emits. The
-//! VPS/SPS/PPS bit patterns never produce a `00 00 0x` sequence, so the escape is a
-//! no-op for them regardless; the point of matching it is to match what the
-//! reference *does*, not what the standard says it should do.
+//! The two-byte NAL header packs `nal_unit_type(6) | nuh_layer_id(6) |
+//! nuh_temporal_id_plus1(3)` across the byte boundary, so with layer id 0 and
+//! temporal id 0 it is `[type << 1, 0x01]` for every unit. The payload is then
+//! Annex-B escaped. Both facts came off the board rather than out of the header
+//! generator: the oracle's VPS carries `01 60 00 00 03 00 80 ...` where this
+//! writer had `01 60 00 00 00 80 ...`, and removing the `0x03` gives the RBSP back
+//! byte for byte; its SPS NAL header is `42 01` where this writer had `42 81`.
 //!
-//! The claim this module can back right now is per-field equality with the C
-//! source, verified by round-tripping every non-VUI field back through the
-//! independent `codec::hevc` decoder parser and by byte-goldens hand-derived from
-//! the C for the short VPS and PPS. Byte-for-byte agreement with the on-board
-//! library is decided by `scripts/board_h265_qp_vs_mpp.sh`, which the orchestrator
-//! runs.
+//! The escape is *not* `h265e_nal_escape_c`'s work - that function leaves the
+//! insertion commented out in both vintages (`h265e_header_gen.c:42`). VEPU580
+//! writes its parameter sets from `reg0237_synt_sps` / `reg0238_synt_pps` and the
+//! hardware formatter escapes them. That formatter is the layer every board golden
+//! was produced by, so it is the one this writer matches, whatever the software
+//! fallback in the C source does.
+//!
+//! What this module backs with bytes: the VPS, SPS and PPS are byte-identical to
+//! the oracle at 320x240, 640x480 and 1280x720 (`scripts/board_h265_qp_vs_mpp.sh`,
+//! three cells), and the same comparison runs on the host against the recorded
+//! streams in `tests/data/h265e_c_fixqp_qp26_*.265`. The IDR payload is still not
+//! compared - that needs the captured register-job template, see `hal::h265e`.
 
 use std::fmt;
 
@@ -84,8 +90,12 @@ pub struct EncoderConfig {
     pub scaling_list_enabled: bool,
     pub transform_skip_enabled: bool,
     pub transquant_bypass_enabled: bool,
-    /// `pps->m_useDQP`, hard-wired to 1 by `h265e_set_pps`.
-    pub cu_qp_delta_enabled: bool,
+    /// `rc->rc_mode`. `h265e_set_pps` writes `m_useDQP = (rc_mode != FIXQP)`, so a
+    /// fixed-QP picture carries no `diff_cu_qp_delta_depth` at all. The board
+    /// settles it: the oracle's PPS is `44 01 c0 f1 80 9b 20` - `f1` has that bit
+    /// clear - where a hard-wired 1 produced `c0 f3 ...` and every following field
+    /// shifted by one bit.
+    pub rc_mode: RateControl,
     /// `pps->m_maxCuDQPDepth` = `trans_cfg.diff_cu_qp_delta_depth`.
     pub diff_cu_qp_delta_depth: u32,
     /// `codec->intra_qp`; the PPS writes `init_qp_minus26 = intra_qp - 26`.
@@ -139,8 +149,9 @@ impl EncoderConfig {
             scaling_list_enabled: false,
             transform_skip_enabled: false,
             transquant_bypass_enabled: false,
-            // h265e_set_pps sets m_useDQP unconditionally.
-            cu_qp_delta_enabled: true,
+            // `h265-enc <qp>` is the fixed-QP caller; CBR/VBR are not wired for
+            // H.265 yet, but the PPS branch for them is.
+            rc_mode: RateControl::FixQp,
             diff_cu_qp_delta_depth: 0,
             intra_qp: 26,
             cb_qp_offset: 0,
@@ -250,6 +261,20 @@ impl EncoderConfig {
         let clipped = MAX_REFS.min((0 + 3).max(self.num_ref)) + 0;
         clipped.max(1)
     }
+
+    /// `pps->m_useDQP`: on for every rate-control mode except fixed QP.
+    pub fn cu_qp_delta_enabled(&self) -> bool {
+        self.rc_mode != RateControl::FixQp
+    }
+}
+
+/// The rate-control modes `h265e_set_pps` distinguishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateControl {
+    /// `MPP_ENC_RC_MODE_FIXQP`: no in-loop CU QP delta.
+    FixQp,
+    Cbr,
+    Vbr,
 }
 
 /// Serialise the VPS, SPS and PPS, in that order, each with a four-byte Annex-B
@@ -365,8 +390,8 @@ pub fn build_pps(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
     w.put_se(i32::from(config.intra_qp) - 26); // init_qp_minus26
     w.put_bits(u32::from(config.const_intra_pred), 1); // constrained_intra_pred_flag
     w.put_bits(u32::from(config.transform_skip_enabled), 1); // transform_skip_enabled_flag
-    w.put_bits(u32::from(config.cu_qp_delta_enabled), 1); // cu_qp_delta_enabled_flag
-    if config.cu_qp_delta_enabled {
+    w.put_bits(u32::from(config.cu_qp_delta_enabled()), 1); // cu_qp_delta_enabled_flag
+    if config.cu_qp_delta_enabled() {
         w.put_ue(config.diff_cu_qp_delta_depth); // diff_cu_qp_delta_depth
     }
     w.put_se(config.cb_qp_offset); // pps_cb_qp_offset
@@ -453,21 +478,43 @@ fn log2(value: usize) -> u32 {
 }
 
 fn nal_header(unit_type: u8) -> [u8; 2] {
-    // forbidden_zero_bit(1) | nal_unit_type(6) | nuh_layer_id(6) on the first two
-    // bytes' high side; nuh_reserved_zero_6bits(6) | nuh_temporal_id_plus1(3) is
-    // the second byte. nuh_layer_id and the reserved 6 bits are 0, temporal_id is
-    // 0 so nuh_temporal_id_plus1 is 1.
-    [unit_type << 1, (unit_type & 0x01) << 7 | 0x01]
+    // forbidden_zero_bit(1) | nal_unit_type(6) | nuh_layer_id bit 5 in the first
+    // byte; nuh_layer_id bits 4..0 | nuh_temporal_id_plus1(3) in the second. Layer
+    // id and temporal id are both 0. Putting `unit_type & 0x01` in the second
+    // byte's top bit - which this function did - writes layer_id bit 5, so an odd
+    // unit type claimed nuh_layer_id 2: the SPS (33) came out `42 81` against the
+    // oracle's `42 01`.
+    const LAYER_ID: u8 = 0;
+    const TEMPORAL_ID: u8 = 0;
+    [unit_type << 1, (LAYER_ID << 3) | (TEMPORAL_ID + 1)]
 }
 
-/// Annex-B framing as `h265e_nal_encode` performs it: a four-byte start code, the
-/// two-byte NAL header, and the RBSP copied verbatim - no emulation-prevention
-/// bytes, matching the reference's no-op `h265e_nal_escape_c`.
+/// Annex-B framing: a four-byte start code, the two-byte NAL header, then the RBSP
+/// with emulation-prevention bytes inserted.
 fn annex_b(unit_type: u8, rbsp: Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 2 + rbsp.len());
+    let escaped = escape_rbsp(&rbsp);
+    let mut out = Vec::with_capacity(4 + 2 + escaped.len());
     out.extend_from_slice(&[0, 0, 0, 1]);
     out.extend_from_slice(&nal_header(unit_type));
-    out.extend_from_slice(&rbsp);
+    out.extend_from_slice(&escaped);
+    out
+}
+
+/// Insert an emulation-prevention byte after any `00 00` that is followed by a
+/// byte in `00..=03`, so no `00 00 0x` can be mistaken for a start code. This is
+/// `parser::ebsp_to_rbsp` in reverse; `the_escape_round_trips_through_the_parser`
+/// checks that the two agree on every pattern that matters.
+fn escape_rbsp(rbsp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rbsp.len() + rbsp.len() / 8);
+    let mut zeros = 0usize;
+    for &b in rbsp {
+        if zeros >= 2 && b <= 0x03 {
+            out.push(0x03);
+            zeros = 0;
+        }
+        out.push(b);
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+    }
     out
 }
 
@@ -569,13 +616,12 @@ mod tests {
     /// check every field it can see came out as the C source sets it. The parser
     /// is a separate implementation, so agreement is a genuine cross-check.
     ///
-    /// The SPS body is fed to the parser by slicing off the known start code and
-    /// two-byte NAL header directly, rather than via `split_annex_b`: the default
-    /// VUI carries `vui_num_units_in_tick = 1` as the four bytes `00 00 00 01`, and
-    /// the reference emits no emulation-prevention byte, so that start-code pattern
-    /// legitimately sits inside the SPS NAL for both C and Rust. The parser stops
-    /// at `strong_intra_smoothing`, before the VUI, so reading the body directly is
-    /// well-defined.
+    /// The start code and two-byte NAL header are sliced off explicitly, then the
+    /// escaped payload goes through `parser::ebsp_to_rbsp` because the parser reads
+    /// RBSP. Both operations are load-bearing: the default VUI carries
+    /// `vui_num_units_in_tick = 1`, four bytes that begin `00 00 00 01`, and the
+    /// formatter escapes that to `00 00 03 00 01` - a parser fed the EBSP directly
+    /// would read the `0x03` as VUI data.
     #[test]
     fn sps_and_vps_round_trip_through_the_decoder_parser() {
         let config = EncoderConfig::new(320, 240);
@@ -583,14 +629,16 @@ mod tests {
         let sps = build_sps(&config).unwrap();
 
         assert_eq!(&vps[4..6], &[NAL_VPS << 1, 0x01]);
-        let parsed_vps = parser::parse_vps(&vps[6..]).unwrap();
+        let vps_rbsp = parser::ebsp_to_rbsp(&vps[6..]);
+        let parsed_vps = parser::parse_vps(&vps_rbsp).unwrap();
         assert_eq!(parsed_vps.vps_id, 0);
         assert_eq!(parsed_vps.max_sub_layers, 1);
         assert!(parsed_vps.temporal_id_nesting);
         assert_eq!(parsed_vps.profile.general_profile_idc, PROFILE_HEVC_MAIN);
         assert_eq!(parsed_vps.profile.general_level_idc, 120);
 
-        let parsed_sps = parser::parse_sps(&sps[6..]).unwrap();
+        let sps_rbsp = parser::ebsp_to_rbsp(&sps[6..]);
+        let parsed_sps = parser::parse_sps(&sps_rbsp).unwrap();
         assert_eq!(parsed_sps.sps_id, 0);
         assert_eq!(parsed_sps.vps_id, 0);
         assert_eq!(parsed_sps.chroma_format_idc, 1);
@@ -615,7 +663,7 @@ mod tests {
     fn cropped_sps_round_trips_to_the_visible_size() {
         let config = EncoderConfig::new(322, 242);
         let sps = build_sps(&config).unwrap();
-        let parsed = parser::parse_sps(&sps[6..]).unwrap();
+        let parsed = parser::parse_sps(&parser::ebsp_to_rbsp(&sps[6..])).unwrap();
         assert_eq!((parsed.width, parsed.height), (322, 242));
     }
 
@@ -640,7 +688,8 @@ mod tests {
         assert_eq!(parsed.init_qp, 26);
         assert!(!parsed.constrained_intra_pred);
         assert!(!parsed.transform_skip_enabled);
-        assert!(parsed.cu_qp_delta_enabled);
+        // Fixed QP: m_useDQP stays 0 and no depth is written.
+        assert!(!parsed.cu_qp_delta_enabled);
         assert_eq!(parsed.diff_cu_qp_delta_depth, 0);
         assert_eq!(parsed.cb_qp_offset, 0);
         assert_eq!(parsed.cr_qp_offset, 0);
@@ -688,6 +737,38 @@ mod tests {
         assert_eq!(&vps[..4], &[0, 0, 0, 1]);
         assert_eq!(&vps[4..6], &[NAL_VPS << 1, 0x01]);
         assert_eq!(&vps[6..12], &[0x0c, 0x01, 0xff, 0xff, 0x01, 0x60]);
+        // The tail is the oracle's own bytes, from `mpi_enc_test -t 16777220 -n 1
+        // -rc 2 -qc 26:26:26:26:26` on t6 at 320x240: the 44 reserved PTL bits are
+        // zero, so the formatter inserts `03` before the `00`s and the `80`, and
+        // level 120 (`0x78`) lands right after them.
+        assert_eq!(
+            &vps[6..27],
+            &[
+                0x0c, 0x01, 0xff, 0xff, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00, 0x03,
+                0x00, 0x00, 0x03, 0x00, 0x78, 0xbc, 0x09,
+            ]
+        );
+    }
+
+    /// Annex B reserves `00 00 0x` for start codes, `x` in `00..=03`. The escape
+    /// has to be the exact inverse of the parser's strip, including on long zero
+    /// runs where a pair gets a byte but the run does not.
+    #[test]
+    fn the_escape_round_trips_through_the_parser() {
+        assert_eq!(escape_rbsp(&[0, 0, 0]), [0, 0, 3, 0]);
+        assert_eq!(escape_rbsp(&[0, 0, 3]), [0, 0, 3, 3]);
+        assert_eq!(escape_rbsp(&[0, 0, 4]), [0, 0, 4]);
+        // One byte per offending pair: `00 00 03 00 00` leaves no run of two
+        // unescaped zeroes followed by a low byte, which is all the rule asks.
+        assert_eq!(escape_rbsp(&[0, 0, 0, 0]), [0, 0, 3, 0, 0]);
+        assert_eq!(escape_rbsp(&[0, 0, 1, 0, 0, 2]), [0, 0, 3, 1, 0, 0, 3, 2]);
+        assert_eq!(escape_rbsp(&[0; 6]), [0, 0, 3, 0, 0, 3, 0, 0]);
+
+        let rbsp: Vec<u8> = (0u16..=255).map(|b| b as u8).collect();
+        assert_eq!(
+            parser::ebsp_to_rbsp(&escape_rbsp(&rbsp)).as_ref(),
+            &rbsp[..]
+        );
     }
 
     #[test]
@@ -703,23 +784,39 @@ mod tests {
 
     #[test]
     fn pps_matches_the_hand_derived_c_bytes() {
-        // Hand-derived from h265e_set_pps + h265e_pps_write for the 320x240
-        // defaults. The bit string, in order: pps_id ue(0), sps_id ue(0), dependent
-        // 0, output 0, num_extra 000, sign 0, cabac_init 1, refIdxL0 ue(0),
-        // refIdxL1 ue(0), init_qp se(0), const_intra 0, transform_skip 0, dqp_en 1,
-        // diff_cu_qp ue(0), cb se(0), cr se(0), slice_chroma 0, weighted_pred 0,
-        // weighted_bipred 0, transquant 0, tiles 0, entropy_sync 0, lfas 0, dbcp 1,
-        // override 0, disable 0, beta se(0), tc se(0), scaling 0, lists_mod 1,
-        // merge ue(0), hdr_ext 0, pps_ext 0, then the rbsp trailing 1+N zeros.
+        // The bit string, in order: pps_id ue(0), sps_id ue(0), dependent 0, output
+        // 0, num_extra 000, sign 0, cabac_init 1, refIdxL0 ue(0), refIdxL1 ue(0),
+        // init_qp se(0), const_intra 0, transform_skip 0, dqp_en 0 (fixed QP),
+        // cb se(0), cr se(0), slice_chroma 0, weighted_pred 0, weighted_bipred 0,
+        // transquant 0, tiles 0, entropy_sync 0, lfas 0, dbcp 1, override 0,
+        // disable 0, beta se(0), tc se(0), scaling 0, lists_mod 1, merge ue(0),
+        // hdr_ext 0, pps_ext 0, then the rbsp trailing 1+N zeros.
         //
-        //   1 1 0 0 0 0 0 0 | 1 1 1 1 0 0 1 1 | 1 1 0 0 0 0 0 0 | 0 1 0 0 1 1 0 1
-        //   | 1 0 0 1 0 0 0 0
-        // = c0 f3 c0 4d 90, behind a 44 01 NAL header (PPS = 34).
+        //   1 1 0 0 0 0 0 0 | 1 1 1 1 0 0 0 1 | 1 0 0 0 0 0 0 0 | 1 0 0 1 1 0 1 1
+        //   | 0 0 1 0 0 0 0 0
+        // = c0 f1 80 9b 20, behind a 44 01 NAL header (PPS = 34). This is the
+        // oracle's own PPS from the 320x240 board cell; the hand-derived golden
+        // this test used to carry had dqp_en 1 and therefore `c0 f3 c0 4d 90`.
         let pps = build_pps(&EncoderConfig::new(320, 240)).unwrap();
         assert_eq!(
             pps,
-            vec![0, 0, 0, 1, 0x44, 0x01, 0xc0, 0xf3, 0xc0, 0x4d, 0x90]
+            vec![0, 0, 0, 1, 0x44, 0x01, 0xc0, 0xf1, 0x80, 0x9b, 0x20]
         );
+    }
+
+    /// `h265e_set_pps` turns `m_useDQP` on for CBR and VBR and writes
+    /// `diff_cu_qp_delta_depth` after the flag, which inserts the very `ue(0)` bits
+    /// the fixed-QP stream omits. Both modes take the same branch.
+    #[test]
+    fn rate_controlled_pps_enables_cu_qp_delta() {
+        for mode in [RateControl::Cbr, RateControl::Vbr] {
+            let mut config = EncoderConfig::new(320, 240);
+            config.rc_mode = mode;
+            let pps = build_pps(&config).unwrap();
+            let parsed = parser::parse_pps(&parser::ebsp_to_rbsp(&pps[6..])).unwrap();
+            assert!(parsed.cu_qp_delta_enabled, "{mode:?}");
+            assert_eq!(parsed.diff_cu_qp_delta_depth, 0, "{mode:?}");
+        }
     }
 
     #[test]
