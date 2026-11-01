@@ -139,22 +139,27 @@ fn encode_jpeg(
     quality: jpege::Quality,
     input_format: jpege::InputFormat,
     chroma: jpege::ChromaFormat,
+    rotation: jpege::Rotation,
+    split_mcus: Option<u16>,
 ) -> Result<(usize, f64), String> {
     let input = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     let config = jpege::EncoderConfig {
         quality,
         chroma,
+        rotation,
+        split_mcus,
         ..jpege::EncoderConfig::new_for_input(width, height, input_format)
     };
     config.validate()?;
+    let (expected_width, expected_height) = config.output_size();
     let mut encoder = jpege::Vepu2Jpeg::open().map_err(|e| format!("open JPEG encoder: {e}"))?;
     let started = Instant::now();
     let encoded = encoder.encode(&input, config)?;
     let elapsed = started.elapsed();
     let info = jpeg::parse(&encoded).map_err(|e| format!("encoded stream is invalid: {e}"))?;
-    if info.width != width || info.height != height {
+    if info.width != expected_width || info.height != expected_height {
         return Err(format!(
-            "encoded dimensions are {}x{}, expected {width}x{height}",
+            "encoded dimensions are {}x{}, expected {expected_width}x{expected_height}",
             info.width, info.height
         ));
     }
@@ -812,7 +817,7 @@ fn main() {
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         if src.is_empty() || dst.is_empty() {
             eprintln!(
-                "usage: rk-mpp-rs jpeg-enc <in.yuv> <out.jpg> <width> <height> [quant 0..10] [420|422|gray|444] [nv12|yuyv|uyvy]"
+                "usage: rk-mpp-rs jpeg-enc <in.yuv> <out.jpg> <width> <height> [quant 0..10|qf<1..100>] [420|422|gray|444] [nv12|yuyv|uyvy|rgb565|bgr565|rgb555|bgr555|rgb444|bgr444|rgb101010|bgr101010|argb8888|abgr8888|bgra8888|rgba8888] [rst<mcus>] [rot90|rot270]"
             );
             std::process::exit(2);
         }
@@ -820,7 +825,19 @@ fn main() {
             eprintln!("invalid JPEG encoder dimensions");
             std::process::exit(2);
         };
-        let quant = args.get(6).and_then(|s| s.parse::<u8>().ok()).unwrap_or(10);
+        // The sixth field takes the quantization-table index or a qf<1..100>
+        // quality factor, the mode mpi_enc_test drives through jpeg:q_factor.
+        let quant_arg = args.get(6).map(String::as_str).unwrap_or("10");
+        let (quality, quality_label) = if let Some(factor) = quant_arg.strip_prefix("qf") {
+            let factor = factor.parse::<u8>().unwrap_or_else(|_| {
+                eprintln!("invalid JPEG quality factor {quant_arg}");
+                std::process::exit(2);
+            });
+            (jpege::Quality::QFactor(factor), format!("qfactor {factor}"))
+        } else {
+            let quant = quant_arg.parse::<u8>().unwrap_or(10);
+            (jpege::Quality::Quant(quant), format!("quant {quant}"))
+        };
         let chroma = match args.get(7).map(String::as_str).unwrap_or("420") {
             "gray" => jpege::ChromaFormat::Gray,
             "420" => jpege::ChromaFormat::Yuv420,
@@ -835,24 +852,53 @@ fn main() {
             Some("nv12") => jpege::InputFormat::Nv12,
             Some("yuyv") => jpege::InputFormat::Yuyv,
             Some("uyvy") => jpege::InputFormat::Uyvy,
+            Some("rgb565") => jpege::InputFormat::Rgb565,
+            Some("bgr565") => jpege::InputFormat::Bgr565,
+            Some("rgb555") => jpege::InputFormat::Rgb555,
+            Some("bgr555") => jpege::InputFormat::Bgr555,
+            Some("rgb444") => jpege::InputFormat::Rgb444,
+            Some("bgr444") => jpege::InputFormat::Bgr444,
+            Some("rgb101010") => jpege::InputFormat::Rgb101010,
+            Some("bgr101010") => jpege::InputFormat::Bgr101010,
+            Some("argb8888") => jpege::InputFormat::Argb8888,
+            Some("abgr8888") => jpege::InputFormat::Abgr8888,
+            Some("bgra8888") => jpege::InputFormat::Bgra8888,
+            Some("rgba8888") => jpege::InputFormat::Rgba8888,
             Some(value) => {
-                eprintln!("invalid JPEG input format {value}; expected nv12, yuyv, or uyvy");
+                eprintln!("invalid JPEG input format {value}; see the usage line");
                 std::process::exit(2);
             }
             None if chroma == jpege::ChromaFormat::Yuv422 => jpege::InputFormat::Yuyv,
             None => jpege::InputFormat::Nv12,
         };
+        // Trailing order-independent options: restart interval and rotation.
+        let mut rotation = jpege::Rotation::None;
+        let mut split_mcus: Option<u16> = None;
+        for extra in args.get(9..).unwrap_or(&[]) {
+            if let Some(degrees) = extra.strip_prefix("rot") {
+                rotation = match degrees {
+                    "90" => jpege::Rotation::Degree90,
+                    "270" => jpege::Rotation::Degree270,
+                    _ => {
+                        eprintln!("invalid JPEG rotation {extra}; VEPU2 supports rot90 or rot270");
+                        std::process::exit(2);
+                    }
+                };
+            } else if let Some(interval) = extra.strip_prefix("rst") {
+                split_mcus = Some(interval.parse().unwrap_or_else(|_| {
+                    eprintln!("invalid JPEG restart interval {extra}");
+                    std::process::exit(2);
+                }));
+            } else {
+                eprintln!("unknown JPEG encoder option {extra}");
+                std::process::exit(2);
+            }
+        }
         match encode_jpeg(
-            src,
-            dst,
-            width,
-            height,
-            jpege::Quality::Quant(quant),
-            input_format,
-            chroma,
+            src, dst, width, height, quality, input_format, chroma, rotation, split_mcus,
         ) {
             Ok((bytes, ms)) => println!(
-                "encoded {src} -> {dst}: {bytes} bytes, {width}x{height}, quant {quant}, {ms:.3} ms"
+                "encoded {src} -> {dst}: {bytes} bytes, {width}x{height}, {quality_label}, {ms:.3} ms"
             ),
             Err(e) => {
                 eprintln!("JPEG encode failed: {e}");
