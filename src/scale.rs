@@ -134,6 +134,11 @@ impl Scaler {
         self.scratch1.clear();
     }
 
+    /// Bench and test hook: force the scalar rows even where NEON exists.
+    pub fn set_neon_disabled(&mut self, disabled: bool) {
+        self.neon_disabled = disabled;
+    }
+
     /// Resize `src` (sw x sh, RGB888) into `dst` (dw x dh, RGB888), letterboxed
     /// and padded with 114.
     pub fn letterbox(&mut self, src: &[u8], sw: usize, sh: usize, dst: &mut [u8]) -> Geometry {
