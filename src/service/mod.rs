@@ -5,6 +5,7 @@
 //! rockchip-linux/mpp: `osal/inc/mpp_service.h`, `osal/inc/mpp_dev_defs.h`.
 
 pub mod dma_heap;
+pub mod task_queue;
 
 use std::ffi::CString;
 use std::io;
@@ -54,6 +55,13 @@ pub const MPP_CMD_SET_ERR_REF_HACK: u32 = 0x404;
 pub const MPP_FLAGS_MULTI_MSG: u32 = 0x1;
 pub const MPP_FLAGS_LAST_MSG: u32 = 0x2;
 pub const MPP_FLAGS_REG_OFFSET_ALONE: u32 = 0x10;
+/// `MPP_FLAGS_POLL_NON_BLOCK`: let `POLL_HW_FINISH` return `EAGAIN` instead
+/// of waiting for the interrupt. Used by `MppService::poll_hw_finish_try`.
+pub const MPP_FLAGS_POLL_NON_BLOCK: u32 = 0x20;
+/// `MPP_FLAGS_SECURE_MODE`, carried on requests for a secure (TA) session.
+/// Capability survey in `docs/framework-m10.md`: we expose the bit and refuse
+/// secure work, the RK3588 test board has no TA path to verify against.
+pub const MPP_FLAGS_SECURE_MODE: u32 = 0x1_0000;
 pub const MPP_CMD_POLL_HW_FINISH: u32 = 0x300;
 
 /// Client types (MppClientType).
@@ -148,6 +156,31 @@ impl MppService {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// Non-blocking variant of `poll_hw_finish`: carries
+    /// `MPP_FLAGS_POLL_NON_BLOCK` so the driver answers `EAGAIN` when the
+    /// job is still running. `Ok(true)` means finished, `Ok(false)` means
+    /// not yet; other errors propagate. The exact errno contract on this
+    /// kernel is verified by `scripts/board_framework_async_vs_sync.sh`,
+    /// which only uses it as an extra check around the blocking poll.
+    pub fn poll_hw_finish_try(&self) -> io::Result<bool> {
+        let mut req = MppReqV1 {
+            cmd: MPP_CMD_POLL_HW_FINISH,
+            flag: MPP_FLAGS_LAST_MSG | MPP_FLAGS_REG_OFFSET_ALONE | MPP_FLAGS_POLL_NON_BLOCK,
+            size: 0,
+            offset: 0,
+            data_ptr: 0,
+        };
+        let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
+        if r < 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EAGAIN) {
+                return Ok(false);
+            }
+            return Err(err);
+        }
+        Ok(true)
     }
 
     /// Hardware support bitmask (bit N == VPU_CLIENT_* N is present).
