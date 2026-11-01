@@ -991,6 +991,56 @@ mod tests {
         );
     }
 
+    /// The frame tag's three version bits are carried through untouched for all
+    /// eight values. C reads them with the same `(pbase[0] >> 1) & 7` and never
+    /// branches on them in `vp8_header_parser` - the version-conditional code
+    /// lives in the dead `vp7_header_parser` and in the register file - so a
+    /// version value is syntax-opaque here and decides registers only.
+    #[test]
+    fn every_version_value_survives_the_parser_untouched() {
+        let data = std::fs::read("tests/data/vp8_320x240_12_ip.ivf").expect("test fixture");
+        let frames = parse_ivf(&data).expect("parse container");
+        for version in 0..8u8 {
+            let mut packet = frames[0].data.to_vec();
+            packet[0] = (packet[0] & 0xf1) | (version << 1);
+            let picture = Parser::new()
+                .parse_picture(&packet)
+                .expect("patching the version cannot break the syntax")
+                .expect("a key frame is a key frame");
+            assert_eq!(picture.version, version, "version {version} round-trip");
+        }
+    }
+
+    /// Profile 1 and profile 3 streams parsed here produce the same syntax as
+    /// profile 0 - byte-identical pictures except the version field. The two
+    /// fixtures are `vp8_320x240_12_ip.ivf` with every frame tag's version bits
+    /// rewritten; nothing else changes, because VP8's profile is *only* the
+    /// version field: chroma sampling stays 4:2:0 and the header syntax does not
+    /// branch on it, in C or here. Whether the hardware reproduces the profile
+    /// 1/3 IDCT precision is a board question the profile scripts answer; these
+    /// fixtures lock the front end.
+    #[test]
+    fn profile_one_and_three_parse_exactly_like_profile_zero() {
+        let baseline = parse_stream("tests/data/vp8_320x240_12_ip.ivf");
+        for (path, profile) in [
+            ("tests/data/vp8/vp8_p1_320x240_12_ip.ivf", 1u8),
+            ("tests/data/vp8/vp8_p3_320x240_12_ip.ivf", 3u8),
+        ] {
+            let pictures = parse_stream(path);
+            assert_eq!(pictures.len(), baseline.len(), "{path} packet count");
+            for (index, (patched, original)) in pictures.iter().zip(&baseline).enumerate() {
+                assert_eq!(patched.version, profile, "{path} packet {index} version");
+                let mut equal = patched.clone();
+                equal.version = original.version;
+                assert_eq!(
+                    format!("{equal:?}"),
+                    format!("{original:?}"),
+                    "{path} packet {index} must be identical to profile 0 apart from the version"
+                );
+            }
+        }
+    }
+
     /// A truncated packet reports the stream error at the same place the C parser
     /// checks it, instead of reading past the buffer.
     #[test]

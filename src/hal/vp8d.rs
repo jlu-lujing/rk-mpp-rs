@@ -948,6 +948,43 @@ mod tests {
             (0, 0, 0),
             "no taps for a profile this block cannot interpolate with"
         );
+
+        // The full derivation table for every frame-tag version, transcribed
+        // from the three conditions in `hal_vp8d_vdpu2_gen_regs`: the bilinear
+        // filter is on for any set low bit, the tap bank is written only when
+        // the low two bits are clear, and the extra motion-vector range bit is
+        // off for version three alone. Versions four to seven are reserved by
+        // the RFC and C treats them by the same bit tests; version four has to
+        // look exactly like version zero and version five like version one.
+        for (version, bilinear, taps, extra_mv_range) in [
+            (0u8, false, true, true),
+            (1, true, false, true),
+            (2, true, false, true),
+            (3, true, false, false),
+            (4, false, true, true),
+            (5, true, false, true),
+            (6, true, false, true),
+            (7, true, false, true),
+        ] {
+            let mut job = base.clone();
+            job.version = version;
+            let regs = build_registers(&job);
+            assert_eq!(
+                regs[121] & BILINEAR != 0,
+                bilinear,
+                "version {version} bilinear"
+            );
+            assert_eq!(
+                regs[121] & EXTRA_MV_RANGE != 0,
+                extra_mv_range,
+                "version {version} extra motion-vector range"
+            );
+            assert_eq!(
+                regs[59] != 0 || regs[128] != 0 || regs[154] != 0,
+                taps,
+                "version {version} tap bank"
+            );
+        }
     }
 
     /// One dma-buf handle exists per DCT partition beyond the first, and a
