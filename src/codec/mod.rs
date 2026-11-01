@@ -11,6 +11,7 @@
 pub mod av1;
 pub mod h263;
 pub mod h264;
+pub mod h265;
 pub mod hevc;
 pub mod jpeg;
 pub mod m2v;
