@@ -328,7 +328,13 @@ impl RegisterFile {
         )?;
         self.set(
             &vepu580_regs::H264_RDO_CFG_RECT_SIZE,
-            u32::from(config.profile == encoder::PROFILE_BASELINE && config.level_idc <= 30),
+            // C reads `sps->level_idc`, which `h264e_sps_init` has already raised to
+            // what the coded size needs; these fields follow that value, not the raw
+            // request - at 1280x720 a request of 1.1 becomes 3.1 on both sides, which
+            // drops `rect_size` and widens the CIME window.
+            u32::from(
+                config.profile == encoder::PROFILE_BASELINE && config.effective_level_idc() <= 30,
+            ),
         )?;
         self.set(
             &vepu580_regs::H264_RDO_CFG_VLC_LMT,
@@ -1260,12 +1266,14 @@ impl RegisterFile {
             [25, 20, 16, 25, 20, 18, 25, 20, 16]
         };
         self.set_atr_weights(&weights)?;
-        // `setup_vepu580_me` bounds the motion-vector range by the level.
+        // `setup_vepu580_me` bounds the motion-vector range by the level - the
+        // raised one, because the HAL reads the SPS the syntax layer has derived.
+        let level_idc = config.effective_level_idc();
         self.set(
             &vepu580_regs::H264_ME_CFG_MV_LIMIT,
-            if config.level_idc > 20 {
+            if level_idc > 20 {
                 2
-            } else if config.level_idc >= 11 {
+            } else if level_idc >= 11 {
                 1
             } else {
                 0
@@ -1324,7 +1332,7 @@ fn patch_reference_layout(base: &mut [u32; 94], config: &EncoderConfig) -> Resul
     // encodes without it - 861 bytes against the reference's 861-byte... no: see
     // M7 in ROADMAP.md, where the byte counts are recorded from the board.
 
-    base[BASE_ME_RNGE] = build_me_range(width_mbs, height_mbs)?;
+    base[BASE_ME_RNGE] = build_me_range(width_mbs, height_mbs, config.effective_level_idc())?;
     base[BASE_ME_CACH] = build_me_cache(coded_width, base[BASE_ME_RNGE])?;
     Ok(())
 }
@@ -1337,9 +1345,21 @@ fn field(value: usize, bits: u32, name: &str) -> Result<u32, String> {
     Ok(value as u32)
 }
 
-fn build_me_range(width_mbs: usize, height_mbs: usize) -> Result<u32, String> {
+fn build_me_range(width_mbs: usize, height_mbs: usize, level_idc: u8) -> Result<u32, String> {
+    // `calc_cime_parameter` step 1: the level caps the vertical search before the
+    // picture size caps it. Levels 1.0 and 1-b get a 12-block window; every level
+    // from 1.1 up gets the full 28, which is why this only shows a difference at
+    // the two smallest levels - and why `cme_srch_v` is 3 rather than 7 there.
     let mut search_blocks_w = 44usize;
-    let mut search_blocks_h = 28usize;
+    let mut search_blocks_h = if level_idc <= 10 { 12 } else { 28 };
+
+    // Step 1's own clamp by the hardware's CIME window (176x112 quarters).
+    if 176 < search_blocks_w * 4 {
+        search_blocks_w = 176 / 4;
+    }
+    if 112 < search_blocks_h * 4 {
+        search_blocks_h = 112 / 4;
+    }
 
     if search_blocks_w / 4 * 2 > (width_mbs * 2 + 1) / 2 {
         search_blocks_w = (width_mbs * 2 + 1) / 2 / 2 * 4;
@@ -1475,13 +1495,16 @@ fn validate_reference_config(config: &EncoderConfig) -> Result<(), String> {
     if config.qp_init > 51 {
         return Err(format!("H.264 QP {} is outside 0..=51", config.qp_init));
     }
-    if config.level_idc != 30 {
-        return Err(
-            "the VEPU580 register image is recorded at level 3.0; the fields the level does \
-             reach (rect_size, mv_limit) are derived, but the level has not been compared \
-             against the C encoder at any other value"
-                .into(),
-        );
+    // The level is no longer a frozen field: `mv_limit`, the CIME search window and
+    // the SPS's own `level_idc` (including MPP's bump-to-what-the-size-needs rule) are
+    // all derived from it. The values verified against the reference encoder are
+    // listed in ROADMAP; anything outside that set still gets through, because the
+    // derivation covers it, but it is the reference's own behaviour that decides.
+    if !(9..=52).contains(&config.level_idc) {
+        return Err(format!(
+            "H.264 level {} is outside the 1.0..5.2 range the SPS can carry",
+            config.level_idc
+        ));
     }
     Ok(())
 }
@@ -2093,12 +2116,113 @@ mod tests {
             verified_on_board(&gop).is_ok(),
             "a longer GOP is byte-identical to the reference on the board"
         );
+        // The level was the last property frozen into the recorded image; it is a
+        // generator input now, and what it reaches is asserted below rather than
+        // assumed here.
         let mut level = config();
         level.level_idc = 40;
         assert!(
-            build_registers(&job(&level, FrameState::default())).is_err(),
-            "level has no reference at any other value yet"
+            build_registers(&job(&level, FrameState::default())).is_ok(),
+            "a level other than the recorded 3.0 generates"
         );
+    }
+
+    /// The level reaches exactly the fields `setup_vepu580_codec`,
+    /// `calc_cime_parameter` and the SPS writer let it reach - and nothing else.
+    #[test]
+    fn the_level_reaches_the_fields_the_reference_lets_it() {
+        let read = |file: &RegisterFile, field: &vepu580_regs::Field| {
+            file.get(field)
+                .unwrap_or_else(|e| panic!("{}: {e}", field.name))
+        };
+        let at = |level: u8| {
+            let mut cfg = config();
+            cfg.level_idc = level;
+            registers_at(&cfg, FrameState::default())
+        };
+
+        // `rect_size` is "Baseline and level <= 3.0", so 3.1 already drops it.
+        assert_eq!(read(&at(30), &vepu580_regs::H264_RDO_CFG_RECT_SIZE), 1);
+        let mut baseline_31 = config();
+        baseline_31.level_idc = 31;
+        assert_eq!(
+            read(
+                &registers_at(&baseline_31, FrameState::default()),
+                &vepu580_regs::H264_RDO_CFG_RECT_SIZE
+            ),
+            0
+        );
+
+        // `mv_limit` follows the reference's switch. The default 320x240 raises
+        // 1.0 to 1.1, so 1.1 is the first value that reads through untouched.
+        assert_eq!(read(&at(11), &vepu580_regs::H264_ME_CFG_MV_LIMIT), 1);
+        assert_eq!(read(&at(21), &vepu580_regs::H264_ME_CFG_MV_LIMIT), 2);
+        assert_eq!(read(&at(51), &vepu580_regs::H264_ME_CFG_MV_LIMIT), 2);
+
+        // CIME's vertical search window: the generator takes the raised level,
+        // and 1.1 up gets the full 28 blocks (`cme_srch_v` is in quarters).
+        let srch_v = |file: &RegisterFile| (file.base[BASE_ME_RNGE] >> 4) & 0xf;
+        assert_eq!(srch_v(&at(11)), 7, "28 blocks / 4");
+        assert_eq!(srch_v(&at(40)), 7);
+        // The 12-block branch is what the switch gives 1.0 and 1-b before the
+        // size raise can cover it; at a picture small enough not to raise it,
+        // the step-2 clamp is not on either.
+        assert_eq!(
+            (build_me_range(20, 15, 10).unwrap() >> 4) & 0xf,
+            3,
+            "12 blocks / 4"
+        );
+
+        // A level the SPS cannot carry is refused rather than truncated.
+        let mut absurd = config();
+        absurd.level_idc = 60;
+        assert!(build_registers(&job(&absurd, FrameState::default())).is_err());
+    }
+
+    /// The HAL reads the level `h264e_sps_update` has already raised to what the
+    /// coded size needs, not the raw request: a 1.0 request at 320x240 is a 1.1
+    /// stream (mv_limit 1, not 0), and below the 3.1 a 720p picture needs every
+    /// request reads as 3.1.
+    #[test]
+    fn the_hal_fields_follow_the_raised_level_not_the_request() {
+        let mv = |file: &RegisterFile| {
+            file.get(&vepu580_regs::H264_ME_CFG_MV_LIMIT)
+                .expect("mv_limit")
+        };
+        let rect = |file: &RegisterFile| {
+            file.get(&vepu580_regs::H264_RDO_CFG_RECT_SIZE)
+                .expect("rect_size")
+        };
+        let srch_v = |file: &RegisterFile| (file.base[BASE_ME_RNGE] >> 4) & 0xf;
+        let at = |width: usize, height: usize, level: u8| {
+            let mut cfg = EncoderConfig::new(width, height);
+            cfg.level_idc = level;
+            build_registers(&Job {
+                output_capacity: 4_000_000,
+                ..job(&cfg, FrameState::default())
+            })
+            .unwrap()
+        };
+
+        // 320x240 raises 1.0 to 1.1 (board-probed: the reference SPS carries 11),
+        // which lifts mv_limit off zero while keeping `rect_size`.
+        assert_eq!(mv(&at(320, 240, 10)), 1, "1.0 is raised to 1.1");
+        assert_eq!(rect(&at(320, 240, 10)), 1);
+        assert_eq!(
+            srch_v(&at(320, 240, 10)),
+            7,
+            "raised to 1.1, which gets all 28 blocks"
+        );
+
+        // 1280x720 raises everything below 3.1 to 3.1, so the fields there equal
+        // the fields a 3.1 request itself produces.
+        let raised = at(1280, 720, 10);
+        let native = at(1280, 720, 31);
+        assert_eq!(mv(&raised), mv(&native));
+        assert_eq!(rect(&raised), rect(&native));
+        assert_eq!(srch_v(&raised), srch_v(&native));
+        assert_eq!(mv(&raised), 2);
+        assert_eq!(rect(&raised), 0, "3.1 is past the level <= 3.0 condition");
     }
 
     /// Profile and entropy coding are generator inputs now, and the fields

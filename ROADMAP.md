@@ -559,11 +559,11 @@ in what order the evidence gets produced.
       slice type, the P-picture fields, the two SEI NAL units and the whole
       rate-control block are generated now, and the 24-cell matrix plus the GOP and
       CBR/VBR runs are byte-exact because of it.
-      What is still a recorded-image replay: the level (only 3.0 is compared), the
-      `cime_multi` / `rime_multi` corner of section 3 (where the 2024-04 build and
-      master disagree), and the parts of `setup_vepu580_me` and
-      `calc_cime_parameter` whose outputs happen to be constant for every fixture
-      used so far. Those are listed as open work, not presented as ported.
+       What is still a recorded-image replay: the `cime_multi` / `rime_multi` corner
+       of section 3 (where the 2024-04 build and
+       master disagree), and the parts of `calc_cime_parameter` whose outputs happen
+       to be constant for every fixture
+       used so far. Those are listed as open work, not presented as ported.
 - [x] VEPU580 register field map generated from the C struct definitions
       (`tools/gen_vepu580_regs.py` to `src/hal/vepu580_regs.rs`): the absolute word,
       bit position and width of every named field in `Vepu580CtlCommon`,
@@ -990,10 +990,41 @@ in what order the evidence gets produced.
       without `-qc` bounds, so re-encode was never observed here. Whether
       `check_re_enc` fires for a stream that overshoots is still unmeasured; what is
       settled is that it did not fire in the runs used as the rate-control oracle.
-      `check_re_enc` can still raise the QP and ask for the *same* picture again,
-      which the single-shot submit path has no way to express; it did not fire in
-      these runs, but nothing here says it will not fire on a stream that
-      overshoots, so the re-encode loop stays on the list.
+       `check_re_enc` can still raise the QP and ask for the *same* picture again,
+       which the single-shot submit path has no way to express; it did not fire in
+       these runs, but nothing here says it will not fire on a stream that
+       overshoots, so the re-encode loop stays on the list.
+ - [x] **The SPS level is a generator input now, verified against the reference
+       across the level range.** `mv_limit`, the CIME vertical search window,
+       `rect_size` and the SPS's own `level_idc` are all derived from the level the
+       picture needs - `h264e_sps_update` raises a request below the coded size's
+       minimum before `setup_vepu580_me` and the SPS writer read it, and the HAL
+       follows the raised value, which is what a request of 1.0 at 320x240 (raised
+       to 1.1, mv_limit 1) or at 1280x720 (raised to 3.1, mv_limit 2, `rect_size`
+       dropped) exercises. The request is bounded to 9..=52, the range the SPS can
+       carry; 1-b and 5.2 included. `scripts/board_h264_level_vs_mpp.sh` compares
+       both sides NAL by NAL: 1.0 through 5.2 at 320x240 over an IDR plus a P
+       picture (nine cells, byte-identical including the two SEI NAL units), and
+       four cells at 1280x720 over the IDR, where the raise does its work. The C
+       side is `mpi_enc_test` with the level patched into its source the way the
+       profile is patched elsewhere, fixed QP 26. The raised level, not the request,
+       is what `effective_level_idc` exports for the HAL.
+ - [ ] **P pictures diverge from the reference beyond 320x240 - open, and newer
+       than it looks.** The 24-cell matrix compares single IDR pictures at four
+       sizes, and the byte-exact P runs so far were all 320x240, so this was not a
+       known gap. A level-matrix run over two moving frames found it: at 640x480
+       and 1280x720 our P NAL differs from the reference's (at 1280x720, 1900 bytes
+       against 1371), while the IDR in the same access unit is byte-identical and
+       the two decoders agree on the decoded picture to 66 dB - our P spends more
+       bits, not a different picture. The register images are the way to rule
+       things out and they are identical: our job captured through `RKMPP_REG_DUMP`
+       against the reference's ioctl trace, all seven sections, the fourteen
+       differing words being exactly the fourteen cleared dynamic-address slots
+       (which differ per process by design). So the divergence is in what reaches
+       the hardware through those addresses - the source copy, the reference
+       picture or the ME intermediate - not in what the register file says. The
+       level-matrix cells at 1280x720 therefore compare the IDR only, and
+       `board_h264_qp_vs_mpp.sh`'s P cells stay at 320x240 until this is closed.
 - [ ] rkvenc supports one live session per process here. The two ignored encoder
       tests pass serially and disagree with the goldens when cargo runs them as two
       threads, which is `setup_ext_line_bufs` programming a shared system-controller

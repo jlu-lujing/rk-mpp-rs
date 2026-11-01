@@ -54,7 +54,8 @@ int main(int argc, char **argv)
     int bps_target = argc > 6 ? atoi(argv[6]) : 300000;
     int bps_min = argc > 7 ? atoi(argv[7]) : 250000;
     int bps_max = argc > 8 ? atoi(argv[8]) : 350000;
-    int mode = argc > 9 ? atoi(argv[9]) : 1; /* 0: VBR, 1: CBR */
+    int mode = argc > 9 ? atoi(argv[9]) : 1; /* 0: VBR, 1: CBR, 2: AVBR, 3: FIXQP */
+    int level = argc > 10 ? atoi(argv[10]) : 30;
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
@@ -100,7 +101,16 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:mode", mode == 1   ? MPP_ENC_RC_MODE_CBR
                                              : mode == 2 ? MPP_ENC_RC_MODE_AVBR
+                                             : mode == 3 ? MPP_ENC_RC_MODE_FIXQP
                                                          : MPP_ENC_RC_MODE_VBR));
+    if (mode == 3) {
+        /* The same fixed-QP point the crate's matrix is built on. */
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_init", 26));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_min", 26));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max", 26));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", 26));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", 26));
+    }
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_target", bps_target));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_max", bps_max));
@@ -112,7 +122,7 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denom", 1));
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:profile", 66));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:level", 30));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:level", level));
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:trans8x8", 0));
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));

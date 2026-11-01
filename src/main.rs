@@ -36,6 +36,18 @@ fn encode_h264(
     let mut source =
         std::io::BufReader::new(std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?);
     let mut config = h264_syntax::EncoderConfig::new(width, height);
+    // The SPS level is normally derived from the size, which is what MPP's own
+    // `h264e_sps_init` does. This override exists for the level matrix that proves
+    // the derivation against the reference at sizes where the bump would hide it.
+    if let Ok(level) = std::env::var("RKMPP_LEVEL") {
+        match level.parse::<u8>() {
+            Ok(level) => config.level_idc = level,
+            Err(_) => {
+                eprintln!("RKMPP_LEVEL must be an SPS level idc, e.g. 40");
+                std::process::exit(2);
+            }
+        }
+    }
     config.qp_init = qp_init;
     config.gop = gop.max(1);
     // Same mapping `mpi_enc_test` uses: CABAC from Main upwards, transform-8x8
