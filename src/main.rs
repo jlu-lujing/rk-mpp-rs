@@ -677,6 +677,50 @@ fn bench_scale(path: &str, sw: usize, sh: usize, iters: usize) {
     );
 }
 
+/// One IEP2 I5O2 deinterlace: read three source frames (prev, current, next),
+/// run the engine once, and write the two reconstructed frames it produces.
+/// The dma-buf and `/dev/mpp_service` calls only exist on RK3588, so this
+/// helper is reached only through the `iep-dei` subcommand and verified by
+/// `scripts/board_iep_dei_vs_mpp.sh`, never by a host test.
+fn run_iep_dei(
+    data: &[u8],
+    dst: &str,
+    cfg: rk_mpp_rs::service::iep_session::DeinterlaceConfig,
+) -> Result<usize, String> {
+    use rk_mpp_rs::service::iep_session::IepDeinterlace;
+
+    let mut dei = IepDeinterlace::open(cfg).map_err(|e| format!("open IEP client 28: {e}"))?;
+    let frame = dei.src_frame_bytes();
+    if data.len() < frame * 3 {
+        return Err(format!(
+            "input is {} bytes, I5O2 needs 3 frames of {frame}",
+            data.len()
+        ));
+    }
+    // The first iep2_test iteration maps prev -> src[2], current -> src[0],
+    // next -> src[1]; three consecutive input frames reproduce that content.
+    for (i, order) in [(2usize, 0usize), (0, 1), (1, 2)] {
+        let off = order * frame;
+        dei.src_frame_mut(i)
+            .sync_write_begin()
+            .map_err(|e| format!("src{i} write sync: {e}"))?;
+        let n = frame.min(dei.src_frame_mut(i).len());
+        dei.src_frame_mut(i).as_mut_slice()[..n].copy_from_slice(&data[off..off + n]);
+        dei.flush_src(i).map_err(|e| format!("src{i} flush: {e}"))?;
+    }
+
+    dei.run().map_err(|e| format!("IEP deinterlace: {e}"))?;
+
+    let out_len = dei.dst_frame_bytes();
+    let mut out = Vec::with_capacity(out_len * 2);
+    for i in 0..2 {
+        let n = out_len.min(dei.dst_frame(i).len());
+        out.extend_from_slice(&dei.dst_frame(i)[..n]);
+    }
+    std::fs::write(dst, &out).map_err(|e| format!("{dst}: {e}"))?;
+    Ok(2)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "bench-dma" {
@@ -2317,6 +2361,82 @@ fn main() {
         let sh: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1080);
         let iters: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(200);
         bench_scale(path, sw, sh, iters);
+        return;
+    }
+    if args.len() > 1 && args[1] == "iep-probe" {
+        // Client 28 = IEP2 (deinterlace). The client binds per the capability
+        // survey, but no job has ever been driven from this crate, so this is
+        // the first thing to run on-board: does it bind, does it answer.
+        let r = iep_session::probe();
+        println!("IEP client 28:");
+        println!("  kernel present (probe_hw_support bit 28): {}", r.present);
+        println!(
+            "  session init (INIT_CLIENT_TYPE):         {}",
+            if r.binds { "binds" } else { "FAIL" }
+        );
+        if !r.binds {
+            if let Some(e) = r.open_errno {
+                println!("    errno: {e} ({})", std::io::Error::from_raw_os_error(e));
+            }
+        }
+        println!(
+            "  SET_REG_ADDR_OFFSET:                     {}",
+            if r.reg_offset { "yes" } else { "no" }
+        );
+        println!(
+            "  POLL_HW_FINISH:                          {}",
+            if r.poll { "yes" } else { "no" }
+        );
+        println!(
+            "  hw_id: {}",
+            match r.hw_id {
+                Some(id) => id.to_string(),
+                None => "-".to_string(),
+            }
+        );
+        return;
+    }
+    if args.len() > 1 && args[1] == "iep-dei" {
+        // One I5O2 deinterlace: three source frames in, two progressive frames
+        // out. `iep-dei <in.yuv> <out.yuv> <width> <height> [TFF|BFF]`.
+        use rk_mpp_rs::hal::iep::{Iep2DilMode, Iep2FieldOrder, Iep2Fmt, Iep2OutMode};
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        let width: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let height: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let field_order = match args.get(6).map(|s| s.as_str()) {
+            Some("BFF") => Iep2FieldOrder::Bff,
+            _ => Iep2FieldOrder::Tff,
+        };
+        if src.is_empty() || dst.is_empty() || width == 0 || height == 0 {
+            eprintln!("usage: rk-mpp-rs iep-dei <in.yuv> <out.yuv> <width> <height> [TFF|BFF]");
+            std::process::exit(2);
+        }
+        let cfg = iep_session::DeinterlaceConfig {
+            width,
+            height,
+            hor_stride: width,
+            src_fmt: Iep2Fmt::Yuv420,
+            dst_fmt: Iep2Fmt::Yuv420,
+            dil_mode: Iep2DilMode::I5O2,
+            out_mode: Iep2OutMode::Line,
+            field_order,
+            ..iep_session::DeinterlaceConfig::default()
+        };
+        let data = match std::fs::read(src) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("{src}: {e}");
+                std::process::exit(1);
+            }
+        };
+        match run_iep_dei(&data, dst, cfg) {
+            Ok(frames) => println!("iep-dei: wrote {frames} deinterlaced frames to {dst}"),
+            Err(e) => {
+                eprintln!("iep-dei: {e}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
     println!("rk-mpp-rs probe");
