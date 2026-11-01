@@ -15,11 +15,11 @@
 //! `enc_pic.pic_qp`, `rc_qp.rc_min_qp` and `rc_qp.rc_max_qp`, which is exactly
 //! what the reference writes there for fixed QP.
 
-use crate::codec::h264::encoder::{self, EncoderConfig, RcMode};
+use crate::codec::h264::encoder::{self, EncoderConfig, GdrMode, RcMode, SplitMode};
 use crate::codec::h264::sei;
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
-use crate::service::{Batch, Client, MppService, RegOffsetInfo};
+use crate::service::{Batch, Client, MppService, RcbInfo, RegOffsetInfo};
 
 use super::h264e_vepu580_template as template;
 use super::vepu580_regs;
@@ -137,6 +137,14 @@ pub struct FrameState {
     pub frame_num: u32,
     pub idr_pic_id: u32,
     pub poc: i32,
+    /// `EncFrmStatus.is_i_refresh`: this picture carries a GDR force-intra band.
+    pub is_i_refresh: bool,
+    /// `EncFrmStatus.is_i_recovery`: this picture starts a GDR sweep, the frame
+    /// the reference would prefix with a recovery point SEI.
+    pub is_i_recovery: bool,
+    /// `seq_idx % gop`, the index `setup_vepu580_intra_refresh` slides the band
+    /// with. Meaningful only when [`FrameState::is_i_refresh`].
+    pub refresh_idx: u32,
 }
 
 impl Default for FrameState {
@@ -147,6 +155,9 @@ impl Default for FrameState {
             frame_num: 0,
             idr_pic_id: 0,
             poc: 0,
+            is_i_refresh: false,
+            is_i_recovery: false,
+            refresh_idx: 0,
         }
     }
 }
@@ -154,10 +165,24 @@ impl Default for FrameState {
 impl FrameState {
     /// The state of the next picture. `gop` is the IDR interval: picture 0 and
     /// every `gop`-th picture after it opens a new GOP with an IDR.
-    pub fn next(&self, gop: u32) -> FrameState {
+    ///
+    /// `refresh_length` is [`EncoderConfig::gdr_refresh_length`], zero when GDR
+    /// is off. With it set the reference stops closing GOPs with IDRs at all -
+    /// `mpp_enc_refs.cpp` skips `cleanup_cpb` whenever `refresh_length` is set,
+    /// so only picture zero is an IDR and every IGOP boundary is a refresh
+    /// sweep instead. The two flags follow `set_frm_refresh_flag` exactly:
+    ///
+    /// * `is_i_refresh = (seq_idx % igop) < refresh_length && seq_cnt > 1`;
+    /// * `is_i_recovery = !(seq_idx % igop) && seq_cnt > 1`;
+    ///
+    /// with `seq_cnt` the IGOP counter `update_hdr` recomputes as
+    /// `seq_idx / igop + 1` once `seq_idx` reaches the IGOP - so `seq_cnt > 1`
+    /// is `index >= gop`, which is why the refresh window only starts *after*
+    /// the first full IGOP, not inside it.
+    pub fn next(&self, gop: u32, refresh_length: usize) -> FrameState {
         let gop = gop.max(1) as usize;
         let index = self.index + 1;
-        let is_idr = index % gop == 0;
+        let is_idr = refresh_length == 0 && index % gop == 0;
         if is_idr {
             return FrameState {
                 index,
@@ -167,15 +192,21 @@ impl FrameState {
                 // a P picture carries the id of the IDR that opened its GOP.
                 idr_pic_id: (self.idr_pic_id + 1) & 1,
                 poc: 0,
+                ..FrameState::default()
             };
         }
-        let frame_num = if is_idr { 0 } else { self.frame_num + 1 };
+        let frame_num = self.frame_num + 1;
+        let refresh_idx = (index % gop) as u32;
+        let past_first_igop = refresh_length > 0 && index >= gop;
         FrameState {
             index,
             is_idr: false,
             frame_num,
             idr_pic_id: self.idr_pic_id,
             poc: self.poc + 2 * (frame_num - self.frame_num) as i32,
+            is_i_refresh: past_first_igop && (refresh_idx as usize) < refresh_length,
+            is_i_recovery: past_first_igop && refresh_idx == 0,
+            refresh_idx,
         }
     }
 }
@@ -206,6 +237,16 @@ pub struct Job<'a> {
     /// the configuration carries no regions.
     pub roi_fd: i32,
     pub roi_qp_fd: i32,
+    /// The GDR force-intra base table's fd, or -1 when GDR is off. The register
+    /// writes happen only when `state.is_i_refresh` - which is when C runs
+    /// `setup_vepu580_intra_refresh`, after `setup_vepu580_roi` and with its own
+    /// buffer overwriting `roi_addr`.
+    pub gdr_fd: i32,
+    /// The >4096 CIME extension line buffer's fd and the offset its second
+    /// (`ebufb`) read starts at, both zero when the coded width needs no
+    /// extension (`setup_vepu580_ext_line_buf`).
+    pub ext_fd: i32,
+    pub ext_offset: u32,
 }
 
 /// What rate control decided about one picture.
@@ -240,6 +281,9 @@ pub struct RegisterFile {
     pub scl: [u32; 679],
     pub osd: [u32; 288],
     pub offsets: Vec<RegOffsetInfo>,
+    /// The `MPP_DEV_RCB_INFO` entries of `setup_vepu580_ext_line_buf`, empty
+    /// for every width the extension lines do not reach.
+    pub rcb: Vec<RcbInfo>,
 }
 
 impl RegisterFile {
@@ -531,6 +575,22 @@ pub struct Vepu580H264 {
     /// pictures, exactly as in the reference harness that adds the same
     /// regions to every frame's meta.
     roi: Option<(DmaBuf, DmaBuf)>,
+    /// The GDR force-intra base table, rewritten before every refresh picture
+    /// - the band moves, so unlike the ROI tables this one is not static. The
+    /// reference's `ctx->roi_base_cfg_buf`, filled by `setup_vepu580_intra_refresh`
+    /// and cache-flushed with `mpp_buffer_sync_end` on every such frame.
+    gdr_base: Option<DmaBuf>,
+    /// The >4096-pixel CIME extension line buffer and its half size: one
+    /// allocation whose second half the `ebufb` register reaches through the
+    /// offset table, `ctx->ext_line_buf` of the HAL.
+    ext_line: Option<(DmaBuf, usize)>,
+    /// The `MppEncHeaderStatus` added-bits mirror: once the parameter sets and
+    /// SEIs have been emitted, `mpp_enc_impl.cpp` refuses to add them again
+    /// until a forced IDR or a header-affecting reconfiguration clears the bits
+    /// (`HDR_ADDED_MASK`). `mpp_enc_refs.cpp` never clears them on a GDR sweep
+    /// boundary, which is why recovery frames after the opening IDR carry no
+    /// prefix in the reference's own steady state.
+    hdr_added: bool,
 }
 
 impl Vepu580H264 {
@@ -542,6 +602,37 @@ impl Vepu580H264 {
             .checked_add(REFERENCE_OUTPUT_MARGIN)
             .ok_or_else(|| "H.264 output size overflow".to_string())?;
         let (pixel_size, thumb_size) = reconstruction_sizes(&config)?;
+        if config.gdr && config.rc_mode != RcMode::FixedQp {
+            // Under rate control the refresh pictures are a fourth frame type
+            // - `INTRA_RFH_FRAME`, with its own bit-allocation window `i_refresh_bit`
+            // in `rc_model_v2.c`. The register path below is mode-independent,
+            // but the bit budget a refresh picture gets is not, and that part of
+            // `rc_model_v2` is not ported; claiming the pair would hand a refresh
+            // picture the plain-P budget the model does not know it should not
+            // have. Until the window is ported, GDR is a fixed-QP feature.
+            return Err(
+                "GDR is only wired under fixed QP; the i_refresh_bit window \
+                        of rc_model_v2 is not ported"
+                    .into(),
+            );
+        }
+        let gdr_base = if config.gdr {
+            let size = gdr_base_table(&config, 0).len();
+            Some(
+                DmaBuf::alloc("system", size, false)
+                    .map_err(|e| format!("allocate GDR base table: {e}"))?,
+            )
+        } else {
+            None
+        };
+        let ext_line = match ext_line_buf_size(&config) {
+            0 => None,
+            size => Some((
+                DmaBuf::alloc("system", size, false)
+                    .map_err(|e| format!("allocate CIME extension lines: {e}"))?,
+                size,
+            )),
+        };
 
         Ok(Self {
             svc: MppService::open(Client::RkvEnc as u32)
@@ -581,6 +672,9 @@ impl Vepu580H264 {
                     .map_err(|e| format!("ROI qp flush: {e}"))?;
                 Some((base_buf, qp_buf))
             },
+            gdr_base,
+            ext_line,
+            hdr_added: false,
             state: FrameState::default(),
             slot: 0,
             tune: SceneTune::new(false),
@@ -657,7 +751,9 @@ impl Vepu580H264 {
     /// IDR and every `gop`-th picture after it opens a new one.
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
         if self.state.index != 0 || self.started {
-            self.state = self.state.next(self.config.gop);
+            self.state = self
+                .state
+                .next(self.config.gop, self.config.gdr_refresh_length());
             self.slot = self.state.index % 2;
         } else {
             self.started = true;
@@ -720,7 +816,29 @@ impl Vepu580H264 {
             tune: &self.tune,
             roi_fd: self.roi.as_ref().map_or(-1, |b| b.0.fd()),
             roi_qp_fd: self.roi.as_ref().map_or(-1, |b| b.1.fd()),
+            gdr_fd: self.gdr_base.as_ref().map_or(-1, |b| b.fd()),
+            ext_fd: self.ext_line.as_ref().map_or(-1, |b| b.0.fd()),
+            ext_offset: self.ext_line.as_ref().map_or(0, |b| b.1 as u32),
         };
+        // `setup_vepu580_intra_refresh` refills its base table on every refresh
+        // picture - the band slid - and flushes it to DMA before the submit.
+        // Static ROI tables are not touched: a configured region list and the
+        // GDR table share only the `roi_addr` register, and the refresh table
+        // wins there exactly as it does in the C, running after `setup_vepu580_roi`.
+        if self.config.gdr && state.is_i_refresh {
+            let table = gdr_base_table(&self.config, state.refresh_idx);
+            let buffer = self
+                .gdr_base
+                .as_mut()
+                .ok_or_else(|| "GDR enabled without a base table".to_string())?;
+            buffer
+                .sync_write_begin()
+                .map_err(|e| format!("GDR table sync begin: {e}"))?;
+            buffer.as_mut_slice()[..table.len()].copy_from_slice(&table);
+            buffer
+                .sync_write_end()
+                .map_err(|e| format!("GDR table flush: {e}"))?;
+        }
         let registers = build_registers(&job)?;
         dump_job_registers(&job, &registers);
 
@@ -738,6 +856,12 @@ impl Vepu580H264 {
         batch.reg_write(&registers.scl, SCL_OFFSET);
         batch.reg_write(&registers.osd, OSD_OFFSET);
         batch.reg_offsets(&registers.offsets);
+        if !registers.rcb.is_empty() {
+            // The two `MPP_DEV_RCB_INFO` calls the C makes between its offset
+            // setup and its read setup: the extension buffer's size for the
+            // reg183 half, zero for reg182's own.
+            batch.rcb_info(&registers.rcb);
+        }
         batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
         batch.reg_read(&mut status, STATUS_OFFSET);
         self.svc
@@ -780,8 +904,29 @@ impl Vepu580H264 {
 
         // SPS and PPS precede an IDR only; a P picture rides on the parameters it
         // already established, which is what `mpi_enc_test` streams too.
+        //
+        // The GDR exception follows `mpp_enc_proc_encode`: a recovery frame gets
+        // the header prefix and a recovery-point SEI - but only while
+        // `hdr_status` has not recorded a header yet, and nothing in the C clears
+        // that record between the opening IDR and a forced IDR or a reconfigure.
+        // In the steady state a GDR session therefore repeats no prefix at the
+        // sweep boundaries, and neither does this driver; the branch is live only
+        // for a session whose first header is still pending, which on a normal
+        // run the picture-zero IDR has already consumed.
         let headers = if state.is_idr {
+            self.hdr_added = true;
             self.headers()?
+        } else if self.config.gdr
+            && state.is_i_recovery
+            && !self.hdr_added
+            && self.config.gdr_refresh_length() > 0
+        {
+            self.hdr_added = true;
+            let mut out = self.headers()?;
+            out.extend(sei::recovery_point(
+                (self.config.gdr_refresh_length() - 1) as u32,
+            ));
+            out
         } else {
             Vec::new()
         };
@@ -1359,6 +1504,7 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
         scl,
         osd,
         offsets,
+        rcb: Vec::new(),
     };
     // The first piece of the register file that stops being a recording: the QP
     // words of `setup_vepu580_rc_base`. Everything else is still the captured
@@ -1371,6 +1517,40 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     file.apply_deblock(config)?;
     file.apply_picture(job)?;
     file.apply_roi(job)?;
+    // `setup_vepu580_split` runs after the ROI and the recn/reference setup,
+    // before the ME block; `setup_vepu580_intra_refresh` runs after the ME and
+    // overwrites the CIME search fields it leaves; `setup_vepu580_ext_line_buf`
+    // is the last register pass before the tune patch. The order is kept so a
+    // refresh frame's `cme_srch_v` = 1 overwrites `calc_cime_parameter` exactly
+    // where the C's does.
+    file.apply_split(config)?;
+    file.apply_gdr(job)?;
+    // `setup_vepu580_ext_line_buf`: widths above 4096 coded pixels feed the
+    // CIME line store from an extension buffer, top and bottom halves of one
+    // allocation. Both registers carry the same fd and the offset table carries
+    // the second half's start; the RCB sizes belong to the submit batch. The
+    // no-buffer branch of the C leaves both registers at the zero the register
+    // set was cleared to, which is what the recorded image carries.
+    if job.ext_fd >= 0 && job.ext_offset > 0 {
+        file.base[182 - 160] = job.ext_fd as u32;
+        file.base[183 - 160] = job.ext_fd as u32;
+        file.offsets.push(RegOffsetInfo {
+            reg_idx: 182,
+            offset: job.ext_offset,
+        });
+        // The two `MPP_DEV_RCB_INFO` ioctls of the C - the whole buffer size
+        // for the reg183 half, zero for reg182's own - ride the same batch.
+        file.rcb = vec![
+            crate::service::RcbInfo {
+                reg_idx: 183,
+                size: job.ext_offset,
+            },
+            crate::service::RcbInfo {
+                reg_idx: 182,
+                size: 0,
+            },
+        ];
+    }
     // The reference job was captured with a harness that asked for motion
     // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
     // side information needs the MD buffer `setup_hal_bufs` allocates for it,
@@ -1564,6 +1744,84 @@ impl RegisterFile {
         self.base[base_index] = job.roi_fd as u32;
         self.set(&vepu580_regs::H264_ROI_EN_ROI_QP_EN, 1)?;
         self.base[179 - 160] = job.roi_qp_fd as u32;
+        Ok(())
+    }
+
+    /// `setup_vepu580_split`, for `split_out = 0` only - the mode where the
+    /// hardware lays every slice of the picture down contiguously in one
+    /// bitstream buffer and one STATUS length covers the lot, which is what the
+    /// synchronous submit assumes. The per-slice output modes instead arm
+    /// `slen_fifo` and read slice lengths out of a poll-with-slice-info loop,
+    /// a packet-per-slice flow this driver does not run.
+    ///
+    /// The two enabled branches are transcribed statement by statement, the
+    /// magic numbers included: `sli_max_num_m1 = 500` and `sli_flsh = 1` appear
+    /// in both, `slc_done_en` is unconditional for `BY_BYTE` and threshold-gated
+    /// for `BY_CTU` at `VEPU580_SLICE_FIFO_LEN = 32` slices, and `sli_splt_cpst`
+    /// stays 0 in every branch.
+    fn apply_split(&mut self, config: &EncoderConfig) -> Result<(), String> {
+        // `MPP_ENC_SPLIT_NONE` writes zeros to all eight fields; the recorded
+        // image the file starts from carries exactly that (asserted by
+        // `split_none_writes_only_what_the_recorded_image_already_has`), so the
+        // zeros are written to keep the branch honest rather than to change the
+        // quiet picture's bytes.
+        self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT, 0)?;
+        self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT_MODE, 0)?;
+        self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT_CPST, 0)?;
+        self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_MAX_NUM_M1, 0)?;
+        self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_FLSH, 0)?;
+        self.set(&vepu580_regs::BASE_SLI_CNUM_SLI_SPLT_CNUM_M1, 0)?;
+        self.set(&vepu580_regs::BASE_SLI_BYTE_SLI_SPLT_BYTE, 0)?;
+        self.set(&vepu580_regs::BASE_ENC_PIC_SLEN_FIFO, 0)?;
+        self.set(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN, 0)?;
+        match config.split_mode {
+            SplitMode::None => {}
+            SplitMode::ByByte => {
+                self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT, 1)?;
+                self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
+                self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_FLSH, 1)?;
+                self.set(&vepu580_regs::BASE_SLI_BYTE_SLI_SPLT_BYTE, config.split_arg)?;
+                self.set(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN, 1)?;
+            }
+            SplitMode::ByCtu => {
+                let mb_w = (config.coded_width() / 16) as u32;
+                let mb_h = (config.coded_height() / 16) as u32;
+                self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT, 1)?;
+                self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT_MODE, 1)?;
+                self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
+                self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_FLSH, 1)?;
+                self.set(
+                    &vepu580_regs::BASE_SLI_CNUM_SLI_SPLT_CNUM_M1,
+                    config.split_arg - 1,
+                )?;
+                // `slice_num > VEPU580_SLICE_FIFO_LEN` arms the slice interrupt
+                // so the length FIFO cannot fill while nobody drains it.
+                let slice_num = (mb_w * mb_h + config.split_arg - 1) / config.split_arg;
+                if slice_num > 32 {
+                    self.set(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN, 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `setup_vepu580_intra_refresh`, on a picture the frame schedule flagged
+    /// `is_i_refresh`. It turns ROI on over its own force-intra table (`roi_en`
+    /// and `roi_addr`, *without* `roi_qp_en` - the QP table stays whatever the
+    /// ROI pass left it), and it clamps the CIME search window on the refresh
+    /// axis to 1: `cme_srch_v = 1` for row refresh, `cme_srch_h = 1` for column
+    /// refresh, written after `calc_cime_parameter` set the field to the
+    /// picture-derived value.
+    fn apply_gdr(&mut self, job: &Job<'_>) -> Result<(), String> {
+        if job.gdr_fd < 0 || !job.state.is_i_refresh {
+            return Ok(());
+        }
+        self.set(&vepu580_regs::BASE_ENC_PIC_ROI_EN, 1)?;
+        self.base[178 - 160] = job.gdr_fd as u32;
+        match job.config.gdr_mode {
+            GdrMode::Row => self.set(&vepu580_regs::BASE_ME_RNGE_CME_SRCH_V, 1)?,
+            GdrMode::Col => self.set(&vepu580_regs::BASE_ME_RNGE_CME_SRCH_H, 1)?,
+        }
         Ok(())
     }
 
@@ -1905,11 +2163,12 @@ fn validate_reference_config(config: &EncoderConfig) -> Result<(), String> {
             config.width, config.height
         ));
     }
-    if config.coded_width() > 4096 {
-        return Err(
-            "VEPU580 bootstrap does not yet allocate the >4096-pixel CIME extension lines".into(),
-        );
-    }
+    // Widths that need CIME extension lines are no longer refused:
+    // `ext_line_buf_size` sizes the buffer the way `setup_hal_bufs` does and
+    // `setup_vepu580_ext_line_buf`'s registers, reg-offset entry and RCB pair
+    // are wired in `build_registers`. The SPS level and the geometry fields are
+    // derived, not frozen, so a >4K picture reaches the hardware the way the
+    // reference gets it there.
     if config.qp_init > 51 {
         return Err(format!("H.264 QP {} is outside 0..=51", config.qp_init));
     }
@@ -2002,6 +2261,93 @@ fn roi_tables(config: &EncoderConfig) -> (Vec<u8>, Vec<u8>) {
         }
     }
     (base, qp)
+}
+
+/// The force-intra base table of one refresh band, `setup_vepu580_intra_refresh`
+/// plus `vepu580_h264_set_one_roi` in one pass: every record of the
+/// `align(mb, 4)`-strided grid starts at `force_intra = 0, qp_adj_en = 1`, and
+/// the band's records - `refresh_num` macroblock lines tall along the refresh
+/// axis, shifted back by two lines and grown by two on every band but the
+/// first, `refresh_idx * 16 * n - 32` with height `16 * n + 32` against the
+/// first band's `y = 0, h = 16 * n` - are overwritten with `force_intra` set.
+///
+/// `region->quality` and `qp_area_idx` of the C region are dropped along with
+/// the QP table the function never allocates: the refresh path enables
+/// `roi_en`, not `roi_qp_en`, so no QP surface is read and the band records'
+/// `qp_adj_en` bit - left uninitialised by the C's `set_one_roi` local - has
+/// nothing to select. Carrying the base fill's value is the difference between
+/// a defined bit and stack contents, and on this board pair both encode the
+/// force-intra bit the same.
+fn gdr_base_table(config: &EncoderConfig, refresh_idx: u32) -> Vec<u8> {
+    let mb_w = (config.coded_width() / 16).max(1);
+    let mb_h = (config.coded_height() / 16).max(1);
+    let stride_h = align(mb_w, 4);
+    let stride_v = align(mb_h, 4);
+    let _ = stride_v; // the grid is indexed row-strided; padding rows stay at the base fill.
+    let base_fill: u64 = 1 << 62; // qp_adj_en, force_intra clear
+    let band: u64 = (1 << 61) | (1 << 62); // force_intra over the band
+
+    let n = config.gdr_num as i32;
+    let (region_x, region_y, region_w, region_h) = match config.gdr_mode {
+        GdrMode::Row => (
+            0,
+            if refresh_idx > 0 {
+                refresh_idx as i32 * 16 * n - 32
+            } else {
+                0
+            },
+            mb_w as i32 * 16,
+            if refresh_idx > 0 { 16 * n + 32 } else { 16 * n },
+        ),
+        GdrMode::Col => (
+            if refresh_idx > 0 {
+                refresh_idx as i32 * 16 * n - 32
+            } else {
+                0
+            },
+            0,
+            if refresh_idx > 0 { 16 * n + 32 } else { 16 * n },
+            mb_h as i32 * 16,
+        ),
+    };
+
+    // `vepu580_h264_set_one_roi`'s block arithmetic: origin divided by 16 with
+    // C's truncation (so the negative `-32` origin lands on -2 and the clamp
+    // pulls it back to 0), extent rounded up, both ends clipped to the grid.
+    let roi_width = (region_w + 15) / 16;
+    let roi_height = (region_h + 15) / 16;
+    let pos_x_init = region_x / 16;
+    let pos_y_init = region_y / 16;
+    let pos_x_end = (pos_x_init + roi_width).min(mb_w as i32);
+    let pos_y_end = (pos_y_init + roi_height).min(mb_h as i32);
+    let x_start = pos_x_init.max(0) as usize;
+    let y_start = pos_y_init.max(0) as usize;
+
+    let mut table = vec![0u8; stride_h * stride_v * 8];
+    for record in table.chunks_exact_mut(8) {
+        record.copy_from_slice(&base_fill.to_le_bytes());
+    }
+    let x_end = (pos_x_end.max(0) as usize).max(x_start);
+    let y_end = (pos_y_end.max(0) as usize).max(y_start);
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            let index = y * stride_h + x;
+            table[index * 8..index * 8 + 8].copy_from_slice(&band.to_le_bytes());
+        }
+    }
+    table
+}
+
+/// `setup_hal_bufs`' extension-line sizing: 480 bytes per coded 64-pixel column
+/// beyond 3072, allocated whenever the width aligned to 64 clears 4096. The
+/// division before the multiplication is the C's.
+fn ext_line_buf_size(config: &EncoderConfig) -> usize {
+    let aligned_w = align(config.width, 64);
+    if aligned_w > 4096 {
+        (aligned_w - 3 * 1024) / 64 * 480
+    } else {
+        0
+    }
 }
 
 fn reconstruction_sizes(config: &EncoderConfig) -> Result<(usize, usize), String> {
@@ -2112,6 +2458,9 @@ mod tests {
             tune: quiet_tune(),
             roi_fd: -1,
             roi_qp_fd: -1,
+            gdr_fd: -1,
+            ext_fd: -1,
+            ext_offset: 0,
             config,
             input_fd: 7,
             output_fd: 9,
@@ -2255,7 +2604,6 @@ mod tests {
             EncoderConfig::new(16, 15),
             EncoderConfig::new(17, 16),
             EncoderConfig::new(16, 17),
-            EncoderConfig::new(4098, 16),
         ] {
             assert!(build_registers(&job_with_output(
                 &config,
@@ -2263,6 +2611,12 @@ mod tests {
             ))
             .is_err());
         }
+        // Widths above 4096 are no longer on this list: the CIME extension
+        // lines they need are allocated by `Vepu580H264::open` and wired by
+        // `build_registers`, the way `setup_hal_bufs` and
+        // `setup_vepu580_ext_line_buf` do it for the reference.
+        let wide = EncoderConfig::new(4098, 16);
+        assert!(validate_reference_config(&wide).is_ok());
     }
 
     /// The GOP walk the slice header has to report. PocType 20 without B frames
@@ -2277,7 +2631,7 @@ mod tests {
         let mut seen = Vec::new();
         for _ in 0..7 {
             seen.push((state.is_idr, state.frame_num, state.poc, state.idr_pic_id));
-            state = state.next(gop);
+            state = state.next(gop, 0);
         }
         assert_eq!(
             seen,
@@ -2308,6 +2662,7 @@ mod tests {
             frame_num: 1,
             idr_pic_id: 0,
             poc: 2,
+            ..FrameState::default()
         };
         let p = build_registers(&Job {
             tune: quiet_tune(),
@@ -3036,7 +3391,7 @@ mod tests {
     /// 2024-04 build computed for a no-change default-scene session.
     #[test]
     fn tune_default_rows_match_the_captured_image() {
-        let p = registers_at(&config(), FrameState::default().next(60));
+        let p = registers_at(&config(), FrameState::default().next(60, 0));
         for (field, want) in [
             (
                 &vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI0,
@@ -3128,7 +3483,7 @@ mod tests {
         }
         assert_eq!(tune.scene_motion_flag(), SCENE_MOTION_FLAG_DEFAULT);
 
-        let state = FrameState::default().next(60);
+        let state = FrameState::default().next(60, 0);
         let with_fixture_state = build_registers(&Job {
             tune: &tune,
             ..job(&config(), state)
@@ -3199,7 +3554,7 @@ mod tests {
         );
         assert_eq!(tune.scene_motion_flag(), 3);
 
-        let state = FrameState::default().next(60);
+        let state = FrameState::default().next(60, 0);
         let p = build_registers(&Job {
             tune: &tune,
             ..job(&config(), state)
@@ -3254,6 +3609,334 @@ mod tests {
             p.rc_klut[vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word - 1024],
             CHROMA_KLUT_WEIGHT[0],
             "the current-motion row of the chroma weights"
+        );
+    }
+
+    // ---- GDR / progressive intra refresh ----
+
+    fn gdr_config(mode: GdrMode, num: u32, gop: u32) -> EncoderConfig {
+        let mut config = config();
+        config.gdr = true;
+        config.gdr_mode = mode;
+        config.gdr_num = num;
+        config.gop = gop;
+        config
+    }
+
+    /// `h264e_proc_cfg`'s `(mb_lines + n - 1) / n` over the refresh axis,
+    /// capped at the GOP: 320x240 has 15 coded rows and 20 coded columns, so
+    /// row refresh at 4 rows a picture is 4 pictures, column refresh is 5, and
+    /// a GOP shorter than the sweep caps the sweep, not the other way round.
+    #[test]
+    fn gdr_refresh_length_follows_the_derivation_and_the_cap() {
+        assert_eq!(gdr_config(GdrMode::Row, 4, 60).gdr_refresh_length(), 4);
+        assert_eq!(gdr_config(GdrMode::Row, 4, 3).gdr_refresh_length(), 3);
+        assert_eq!(gdr_config(GdrMode::Col, 4, 60).gdr_refresh_length(), 5);
+        // 15 rows divided by 4 is 4 with the round-up the C's form performs.
+        assert_eq!(gdr_config(GdrMode::Row, 5, 60).gdr_refresh_length(), 3);
+        // Off: no sweep at all, whatever the numbers say.
+        assert_eq!(config().gdr_refresh_length(), 0);
+        // A zero count is refused rather than divided by.
+        let mut zero = gdr_config(GdrMode::Row, 0, 60);
+        assert!(zero.validate().is_err());
+    }
+
+    /// The first refresh band sits at row 0 and is `16 * n` tall; every later
+    /// band slides to `refresh_idx * 16 * n - 32` and grows to `16 * n + 32`,
+    /// the two-line overlap `setup_vepu580_intra_refresh` writes unconditionally.
+    /// `set_one_roi` clamps the negative origin to row 0 and rounds the height
+    /// up, so band 1 of a 2-rows-a-picture refresh covers rows 0..4.
+    #[test]
+    fn gdr_row_bands_slide_with_the_two_line_overlap() {
+        let cfg = gdr_config(GdrMode::Row, 2, 60);
+        // 320x240: mb_w 20, stride_h 20, five grid rows.
+        let first = gdr_base_table(&cfg, 0);
+        let record = |table: &[u8], row: usize, col: usize| -> u64 {
+            let index = row * 20 + col;
+            u64::from_le_bytes(table[index * 8..index * 8 + 8].try_into().unwrap())
+        };
+        assert_eq!(record(&first, 0, 0), (1 << 61) | (1 << 62));
+        assert_eq!(record(&first, 1, 19), (1 << 61) | (1 << 62));
+        assert_eq!(record(&first, 2, 0), 1 << 62, "band 0 covers rows 0..2");
+        assert_eq!(record(&first, 4, 10), 1 << 62);
+
+        // Band 1: region y = 1*32 - 32 = 0, h = 32 + 32 = 64 -> rows 0..4.
+        let second = gdr_base_table(&cfg, 1);
+        for row in 0..4 {
+            assert_eq!(record(&second, row, 7), (1 << 61) | (1 << 62), "row {row}");
+        }
+        assert_eq!(record(&second, 4, 7), 1 << 62, "row 4 is below the band");
+
+        // Band 3: y = 96 - 32 = 64 -> row 4; h = 64 -> rows 4..8, clipped by
+        // the five-row grid to row 4 alone, the whole width.
+        let fourth = gdr_base_table(&cfg, 3);
+        assert_eq!(record(&fourth, 3, 15), 1 << 62);
+        assert_eq!(record(&fourth, 4, 0), (1 << 61) | (1 << 62));
+        assert_eq!(record(&fourth, 4, 19), (1 << 61) | (1 << 62));
+    }
+
+    /// Column refresh is the row rule turned on its side: the band spans the
+    /// full height and slides along the columns, the same two-column overlap.
+    #[test]
+    fn gdr_column_bands_span_the_height_and_slide() {
+        let cfg = gdr_config(GdrMode::Col, 2, 60);
+        let table = gdr_base_table(&cfg, 1);
+        let record = |table: &[u8], row: usize, col: usize| -> u64 {
+            let index = row * 20 + col;
+            u64::from_le_bytes(table[index * 8..index * 8 + 8].try_into().unwrap())
+        };
+        // x = 1*32 - 32 = 0 -> columns 0..4 across every grid row.
+        for row in 0..5 {
+            for col in 0..4 {
+                assert_eq!(record(&table, row, col), (1 << 61) | (1 << 62));
+            }
+            assert_eq!(record(&table, row, 4), 1 << 62);
+        }
+    }
+
+    /// The register consequences, `setup_vepu580_intra_refresh` transcribed:
+    /// `roi_en` and the GDR table's `roi_addr`, the search window on the refresh
+    /// axis clamped to 1, and nothing at all on a picture the schedule did not
+    /// flag - the quiet picture must stay the recorded image's picture.
+    #[test]
+    fn gdr_refresh_frame_writes_roi_and_clamps_the_search_axis() {
+        let mut cfg = gdr_config(GdrMode::Row, 4, 60);
+        cfg.gop = 60;
+        let quiet = registers_at(&cfg, FrameState::default().next(60, 4));
+        // Frame 1: inside the first IGOP, not a refresh picture (`seq_cnt > 1`
+        // gates the whole window out of the first GOP).
+        assert_eq!(quiet.get(&vepu580_regs::BASE_ENC_PIC_ROI_EN).unwrap(), 0);
+
+        // The first refresh picture: one full GOP in.
+        let state = (0..60).fold(FrameState::default(), |s, _| s.next(60, 4));
+        assert!(state.is_i_refresh && state.is_i_recovery && state.refresh_idx == 0);
+        let mut j = job(&cfg, state);
+        j.gdr_fd = 44;
+        let file = build_registers(&j).unwrap();
+        assert_eq!(file.get(&vepu580_regs::BASE_ENC_PIC_ROI_EN).unwrap(), 1);
+        assert_eq!(file.base[178 - 160], 44, "roi_addr is the GDR table");
+        assert_eq!(
+            file.get(&vepu580_regs::H264_ROI_EN_ROI_QP_EN).unwrap(),
+            0,
+            "the refresh path never enables the QP table"
+        );
+        // Row refresh clamps the vertical search; the horizontal keeps the
+        // picture-derived value.
+        assert_eq!(file.get(&vepu580_regs::BASE_ME_RNGE_CME_SRCH_V).unwrap(), 1);
+        let v_quiet = quiet.get(&vepu580_regs::BASE_ME_RNGE_CME_SRCH_V).unwrap();
+        assert!(
+            v_quiet > 1,
+            "the quiet picture keeps the derived window ({v_quiet})"
+        );
+
+        // Column refresh clamps the other axis.
+        let mut cfg_col = gdr_config(GdrMode::Col, 4, 60);
+        cfg_col.gop = 60;
+        let mut j = job(&cfg_col, state);
+        j.gdr_fd = 45;
+        let file = build_registers(&j).unwrap();
+        assert_eq!(file.get(&vepu580_regs::BASE_ME_RNGE_CME_SRCH_H).unwrap(), 1);
+        assert!(
+            file.get(&vepu580_regs::BASE_ME_RNGE_CME_SRCH_V).unwrap() > 1,
+            "column refresh leaves the vertical search to `calc_cime_parameter`"
+        );
+    }
+
+    /// The reference's window does not start inside the first IGOP: `seq_cnt`
+    /// is 1 until `seq_idx` reaches the IGOP, so pictures 1..gop-1 code no band,
+    /// and only from picture `gop` on do the sweep pictures appear - recovery
+    /// at the boundary, refresh for `refresh_length` pictures, plain P after.
+    #[test]
+    fn gdr_schedule_defers_the_window_past_the_first_igop() {
+        let mut states = vec![FrameState::default()];
+        for _ in 1..24 {
+            states.push(states.last().unwrap().next(12, 4));
+        }
+        // Picture 0 is the session's only IDR; the IGOP boundary no longer is.
+        assert!(states[0].is_idr);
+        assert!(!states[12].is_idr, "the sweep replaces the IDR");
+        // The first IGOP codes no band at all.
+        for s in &states[1..12] {
+            assert!(!s.is_i_refresh && !s.is_i_recovery);
+        }
+        // The second IGOP starts the sweep: refresh 0..4, recovery at 12.
+        assert!(states[12].is_i_refresh && states[12].is_i_recovery);
+        assert_eq!(states[12].refresh_idx, 0);
+        for idx in 1..4 {
+            assert!(states[12 + idx].is_i_refresh && !states[12 + idx].is_i_recovery);
+            assert_eq!(states[12 + idx].refresh_idx, idx as u32);
+        }
+        assert!(!states[16].is_i_refresh && !states[16].is_i_recovery);
+        // And so on, one full frame_num/poc run per IGOP, no reset.
+        assert_eq!(states[12].frame_num, 12);
+        assert_eq!(states[23].poc, 46);
+        assert!(!states[23].is_i_refresh);
+    }
+
+    // ---- slice split ----
+
+    /// `setup_vepu580_split` with `split_out = 0`: BY_CTU is the cnum rule and
+    /// BY_BYTE the byte rule, both with `sli_max_num_m1 = 500` and `sli_flsh = 1`,
+    /// and `slc_done_en` armed unconditionally for BY_BYTE, only past the
+    /// 32-entry slice FIFO for BY_CTU. `slen_fifo` stays down - that bit feeds
+    /// the per-slice output modes this driver does not run.
+    #[test]
+    fn split_modes_write_the_reference_combinations() {
+        let mut cfg = config();
+        cfg.split_mode = SplitMode::ByCtu;
+        cfg.split_arg = 96;
+        let file = registers_at(&cfg, FrameState::default());
+        assert_eq!(file.get(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT).unwrap(), 1);
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT_MODE)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_SLI_SPLT_SLI_MAX_NUM_M1)
+                .unwrap(),
+            500
+        );
+        assert_eq!(file.get(&vepu580_regs::BASE_SLI_SPLT_SLI_FLSH).unwrap(), 1);
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_SLI_CNUM_SLI_SPLT_CNUM_M1)
+                .unwrap(),
+            95
+        );
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_SLI_BYTE_SLI_SPLT_BYTE)
+                .unwrap(),
+            0
+        );
+        assert_eq!(file.get(&vepu580_regs::BASE_ENC_PIC_SLEN_FIFO).unwrap(), 0);
+        // 300 macroblocks over 96 is 4 slices - under the FIFO, no slice IRQ.
+        assert_eq!(file.get(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN).unwrap(), 0);
+
+        // Past 32 slices the same mode arms the interrupt instead.
+        let mut tight = config();
+        tight.split_mode = SplitMode::ByCtu;
+        tight.split_arg = 8;
+        let file = registers_at(&tight, FrameState::default());
+        assert_eq!(file.get(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN).unwrap(), 1);
+
+        cfg.split_mode = SplitMode::ByByte;
+        cfg.split_arg = 1024;
+        let file = registers_at(&cfg, FrameState::default());
+        assert_eq!(file.get(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT).unwrap(), 1);
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT_MODE)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_SLI_SPLT_SLI_MAX_NUM_M1)
+                .unwrap(),
+            500
+        );
+        assert_eq!(file.get(&vepu580_regs::BASE_SLI_SPLT_SLI_FLSH).unwrap(), 1);
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_SLI_CNUM_SLI_SPLT_CNUM_M1)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            file.get(&vepu580_regs::BASE_SLI_BYTE_SLI_SPLT_BYTE)
+                .unwrap(),
+            1024
+        );
+        assert_eq!(file.get(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN).unwrap(), 1);
+    }
+
+    #[test]
+    fn split_none_writes_only_what_the_recorded_image_already_has() {
+        let file = registers_at(&config(), FrameState::default());
+        for field in [
+            &vepu580_regs::BASE_SLI_SPLT_SLI_SPLT,
+            &vepu580_regs::BASE_SLI_SPLT_SLI_SPLT_MODE,
+            &vepu580_regs::BASE_SLI_SPLT_SLI_SPLT_CPST,
+            &vepu580_regs::BASE_SLI_SPLT_SLI_MAX_NUM_M1,
+            &vepu580_regs::BASE_SLI_SPLT_SLI_FLSH,
+            &vepu580_regs::BASE_SLI_CNUM_SLI_SPLT_CNUM_M1,
+            &vepu580_regs::BASE_SLI_BYTE_SLI_SPLT_BYTE,
+            &vepu580_regs::BASE_ENC_PIC_SLEN_FIFO,
+            &vepu580_regs::CTL_INT_EN_SLC_DONE_EN,
+        ] {
+            assert_eq!(file.get(field).unwrap(), 0, "{}", field.name);
+        }
+    }
+
+    #[test]
+    fn split_arguments_are_bounded_by_their_registers() {
+        let mut cfg = config();
+        cfg.split_mode = SplitMode::ByCtu;
+        for arg in [0u32, 1_048_577] {
+            cfg.split_arg = arg;
+            assert!(cfg.validate().is_err(), "mb count {arg}");
+        }
+        cfg.split_arg = 300;
+        assert!(cfg.validate().is_ok());
+        cfg.split_mode = SplitMode::ByByte;
+        for arg in [0u32, 1_048_576] {
+            cfg.split_arg = arg;
+            assert!(cfg.validate().is_err(), "byte target {arg}");
+        }
+        cfg.split_arg = 1024;
+        assert!(cfg.validate().is_ok());
+    }
+
+    // ---- >4096 CIME extension lines ----
+
+    /// `setup_hal_bufs`: the decision is on the width aligned to 64 clearing
+    /// 4096, but the size counts 480 bytes per 64-pixel column of the *whole*
+    /// width beyond 3072 - `(aligned_w - 3*1024) / 64 * 480`, the C's
+    /// division-first order. 4100 aligns to 4160: seventeen columns past 3072,
+    /// 8160 bytes, even though only one column is past 4096.
+    #[test]
+    fn ext_line_size_is_480_bytes_per_column_beyond_3072() {
+        assert_eq!(ext_line_buf_size(&EncoderConfig::new(4096, 16)), 0);
+        // A width aligned to 64 exactly at 4096 does not reach the buffer.
+        assert_eq!(ext_line_buf_size(&EncoderConfig::new(4090, 16)), 0);
+        assert_eq!(ext_line_buf_size(&EncoderConfig::new(4098, 16)), 8160);
+        assert_eq!(ext_line_buf_size(&EncoderConfig::new(4100, 16)), 8160);
+        assert_eq!(ext_line_buf_size(&EncoderConfig::new(4160, 64)), 8160);
+        // 4608 -> (4608 - 3072) / 64 * 480 = 24 * 480.
+        assert_eq!(ext_line_buf_size(&EncoderConfig::new(4608, 256)), 11_520);
+    }
+
+    /// The register side: both extension registers take the fd, the offset
+    /// table gets the second half's start under reg 182 - `ebuft` and `ebufb`
+    /// share one allocation - and the RCB pair says "183 knows the size, 182
+    /// is the base". A width below 4096 carries none of it.
+    #[test]
+    fn ext_line_registers_offsets_and_rcb_are_wired() {
+        let wide = EncoderConfig::new(4608, 256);
+        // The >4096 refusal is gone: the geometry reaches the register pass.
+        assert!(validate_reference_config(&wide).is_ok());
+        let mut j = job(&wide, FrameState::default());
+        j.ext_fd = 77;
+        j.ext_offset = ext_line_buf_size(&wide) as u32;
+        j.output_capacity = logical_output_size(&wide).unwrap();
+        let file = build_registers(&j).unwrap();
+        assert_eq!(file.base[182 - 160], 77, "ebuft_addr");
+        assert_eq!(file.base[183 - 160], 77, "ebufb_addr");
+        assert!(
+            file.offsets
+                .iter()
+                .any(|o| o.reg_idx == 182 && o.offset == 11_520),
+            "the ebufb half's offset entry"
+        );
+        let rcb: Vec<(u32, u32)> = file.rcb.iter().map(|r| (r.reg_idx, r.size)).collect();
+        assert_eq!(rcb, vec![(183, 11_520), (182, 0)], "the C's two RCB calls");
+
+        let narrow_cfg = config();
+        let narrow = job(&narrow_cfg, FrameState::default());
+        let file = build_registers(&narrow).unwrap();
+        assert_eq!(file.base[182 - 160], 0);
+        assert_eq!(file.base[183 - 160], 0);
+        assert!(file.rcb.is_empty());
+        assert!(
+            !file.offsets.iter().any(|o| o.reg_idx == 182),
+            "no reg182 entry below the threshold"
         );
     }
 }
@@ -3371,12 +4054,15 @@ mod rate_control_registers {
             state: if is_idr {
                 FrameState::default()
             } else {
-                FrameState::default().next(config.gop)
+                FrameState::default().next(config.gop, 0)
             },
             output_capacity: logical_output_size(&config).unwrap(),
             tune: quiet_tune(),
             roi_fd: -1,
             roi_qp_fd: -1,
+            gdr_fd: -1,
+            ext_fd: -1,
+            ext_offset: 0,
         })
         .unwrap();
         file.apply_rate_control(&config, is_idr, &rate).unwrap();
@@ -3457,6 +4143,9 @@ mod rate_control_registers {
             tune: quiet_tune(),
             roi_fd: -1,
             roi_qp_fd: -1,
+            gdr_fd: -1,
+            ext_fd: -1,
+            ext_offset: 0,
         })
         .unwrap();
         let rate = RateControl {

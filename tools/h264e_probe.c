@@ -21,8 +21,15 @@
  * Usage:
  *   h264e_probe in.nv12 out.264 w h frames <0|1|2|3> qp [bps[:min:max]]
  *               [dblk disable alpha beta] [roi x y w h fi qpmode qpval]...
+ *               [gop n] [gdr mode num] [split mode arg]
  *
  *   mode 0 = fixed QP, 1 = CBR, 2 = VBR, 3 = AVBR.
+ *   `gop` overrides the hard-coded intra GOP of 60.
+ *   `gdr 0|1 n` is `rc:refresh_en=1, refresh_mode=0(row)|1(col), refresh_num=n`;
+ *   the reference derives the refresh length itself in `h264e_proc_cfg`.
+ *   `split 1|2 n` is `MPP_ENC_SPLIT_BY_BYTE` with an n-byte cap or
+ *   `MPP_ENC_SPLIT_BY_CTU` with n macroblocks per slice, at the reference
+ *   output mode of zero (one access unit per picture, slices contiguous).
  *   qp: the value written to the initial-quality field; pass -1 under a rate
  *       control to say "the caller left it unset" (written as -1 so the model
  *       takes its derivation branch), ignored beyond that.
@@ -105,6 +112,9 @@ int main(int argc, char **argv)
     int qp = argc > 7 ? atoi(argv[7]) : 26;
     int bps_target = 300000, bps_min = 250000, bps_max = 350000;
     int have_dblk = 0, dblk_disable = 0, dblk_alpha = 0, dblk_beta = 0;
+    int gop = 60;
+    int have_gdr = 0, gdr_mode = 0, gdr_num = 0;
+    int have_split = 0, split_mode = 0, split_arg = 0;
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
@@ -123,10 +133,11 @@ int main(int argc, char **argv)
     int i, arg;
     int tried_qp_ip = 0;
 
-    /* Optional `bps:min:max` or bare bps, then the optional dblk and roi
-     * option groups in any order after it. */
+    /* Optional `bps:min:max` or bare bps - recognised as the only leading
+     * token that starts with a digit - then the optional dblk, roi, gop, gdr
+     * and split option groups in any order after it. */
     arg = 8;
-    if (arg < argc && argv[arg][0] != 'd' && argv[arg][0] != 'r') {
+    if (arg < argc && argv[arg][0] >= '0' && argv[arg][0] <= '9') {
         int parts = sscanf(argv[arg], "%d:%d:%d", &bps_target, &bps_min,
                            &bps_max);
         if (parts < 1) {
@@ -157,6 +168,28 @@ int main(int argc, char **argv)
                 return 2;
             }
             arg--;
+        } else if (!strcmp(argv[arg], "gop")) {
+            if (arg + 1 >= argc) {
+                fprintf(stderr, "gop wants n\n");
+                return 2;
+            }
+            gop = atoi(argv[++arg]);
+        } else if (!strcmp(argv[arg], "gdr")) {
+            if (arg + 2 >= argc) {
+                fprintf(stderr, "gdr wants mode num\n");
+                return 2;
+            }
+            have_gdr = 1;
+            gdr_mode = atoi(argv[++arg]);
+            gdr_num = atoi(argv[++arg]);
+        } else if (!strcmp(argv[arg], "split")) {
+            if (arg + 2 >= argc) {
+                fprintf(stderr, "split wants mode arg\n");
+                return 2;
+            }
+            have_split = 1;
+            split_mode = atoi(argv[++arg]);
+            split_arg = atoi(argv[++arg]);
         }
     }
 
@@ -215,7 +248,22 @@ int main(int argc, char **argv)
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", qp));
         CHECK(set_s32_any(cfg, &tried_qp_ip, "rc:qp_ip", 0));
     }
-    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 60));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", gop));
+    if (have_gdr) {
+        /* The refresh trio of `MppEncRcCfg`, registered as U32 keys.
+         * `h264e_proc_cfg` derives `refresh_length` from these on SET_CFG,
+         * which is exactly why the probe drives the cfg-key path and not a
+         * raw `MPP_ENC_SET_RC_CFG` struct. */
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:refresh_en", 1));
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:refresh_mode", gdr_mode));
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:refresh_num", gdr_num));
+    }
+    if (have_split) {
+        /* `split:mode/split:arg` with the output mode left at its zero: the
+         * comparison is against the one-AU-per-picture layout. */
+        CHECK(mpp_enc_cfg_set_s32(cfg, "split:mode", split_mode));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "split:arg", split_arg));
+    }
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denom", 1));
@@ -271,7 +319,7 @@ int main(int argc, char **argv)
             /* walk past the bps token to the first roi group again;
              * `mpp_enc_roi_setup_meta` resets the pending count itself, so the
              * same init serves every frame, as it does in mpi_enc_test */
-            if (at < argc && argv[at][0] != 'd' && argv[at][0] != 'r')
+            if (at < argc && argv[at][0] >= '0' && argv[at][0] <= '9')
                 at++;
             for (; at < argc; at++) {
                 if (strcmp(argv[at], "roi"))

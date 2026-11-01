@@ -31,6 +31,8 @@ fn encode_h264(
     bps: Option<(h264_syntax::RcMode, i64, i64, i64)>,
     deblock: Option<(u32, i32, i32)>,
     rois: Vec<h264_syntax::RoiRegion>,
+    gdr: Option<(h264_syntax::GdrMode, u32)>,
+    split: Option<(h264_syntax::SplitMode, u32)>,
 ) -> Result<(usize, usize, usize, f64), String> {
     // The frames are read one at a time. slurping the file was fine while the
     // encoder only ever produced a single IDR, but with a GOP it charges the
@@ -97,6 +99,19 @@ fn encode_h264(
         config.deblock_offset_beta = beta;
     }
     config.rois = rois;
+    if let Some((mode, num)) = gdr {
+        // `rc:refresh_en/refresh_mode/refresh_num`; the length the encoder
+        // derives per the `h264e_proc_cfg` rule, not a caller figure.
+        config.gdr = true;
+        config.gdr_mode = mode;
+        config.gdr_num = num;
+    }
+    if let Some((mode, arg)) = split {
+        // `split:mode/split:arg` of `MppEncSliceSplit`; the output mode stays
+        // at the reference's zero, one AU per picture with the slices inside.
+        config.split_mode = mode;
+        config.split_arg = arg;
+    }
     let frame_bytes = h264e::input_size(&config)?;
     let mut encoder = h264e::Vepu580H264::open(config)?;
     let started = Instant::now();
@@ -770,7 +785,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]...");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -806,6 +821,11 @@ fn main() {
         // The `RoiRegionCfg` list `mpi_enc_test` adds per frame, in the same
         // add order.
         let mut rois: Vec<h264_syntax::RoiRegion> = Vec::new();
+        // GDR arrives as `gdr:row:<num>` / `gdr:col:<num>`, the `refresh_mode`
+        // and `refresh_num` of `MppEncRcCfg`; slice split as `split:mb:<arg>`
+        // (BY_CTU, macroblocks per slice) or `split:byte:<arg>` (BY_BYTE).
+        let mut gdr: Option<(h264_syntax::GdrMode, u32)> = None;
+        let mut split: Option<(h264_syntax::SplitMode, u32)> = None;
         for text in args.iter().skip(10) {
             if let Some(rest) = text.strip_prefix("dblk:") {
                 // `dblk:disable:alpha:beta`, the three `MppEncH264Cfg` deblocking
@@ -851,6 +871,66 @@ fn main() {
                         std::process::exit(2);
                     }
                 }
+            } else if let Some(rest) = text.strip_prefix("gdr:") {
+                // `gdr:row:<num>` / `gdr:col:<num>`: the refresh axis and the
+                // macroblock lines per picture, the reference's `refresh_mode`
+                // and `refresh_num`. The GOP keeps its own slot - under GDR it
+                // is the sweep interval, not an IDR interval.
+                let parts: Vec<&str> = rest.split(':').collect();
+                match parts.as_slice() {
+                    [axis, num] => {
+                        let mode = match *axis {
+                            "row" => h264_syntax::GdrMode::Row,
+                            "col" => h264_syntax::GdrMode::Col,
+                            _ => {
+                                eprintln!("bad gdr axis; expected gdr:row:num or gdr:col:num");
+                                std::process::exit(2);
+                            }
+                        };
+                        match num.parse::<u32>() {
+                            Ok(num) => gdr = Some((mode, num)),
+                            Err(_) => {
+                                eprintln!("bad gdr refresh count {num}");
+                                std::process::exit(2);
+                            }
+                        }
+                    }
+                    _ => {
+                        eprintln!("bad gdr; expected gdr:row:num or gdr:col:num");
+                        std::process::exit(2);
+                    }
+                }
+            } else if let Some(rest) = text.strip_prefix("split:") {
+                // `split:mb:<arg>` is `MPP_ENC_SPLIT_BY_CTU` - the name says
+                // CTU, the unit is a macroblock - and `split:byte:<arg>` is
+                // `MPP_ENC_SPLIT_BY_BYTE`. The output mode stays the reference
+                // default of zero: every slice of the picture in one AU.
+                let parts: Vec<&str> = rest.split(':').collect();
+                match parts.as_slice() {
+                    [kind, arg] => {
+                        let mode = match *kind {
+                            "mb" => h264_syntax::SplitMode::ByCtu,
+                            "byte" => h264_syntax::SplitMode::ByByte,
+                            _ => {
+                                eprintln!(
+                                    "bad split kind; expected split:mb:arg or split:byte:arg"
+                                );
+                                std::process::exit(2);
+                            }
+                        };
+                        match arg.parse::<u32>() {
+                            Ok(arg) => split = Some((mode, arg)),
+                            Err(_) => {
+                                eprintln!("bad split argument {arg}");
+                                std::process::exit(2);
+                            }
+                        }
+                    }
+                    _ => {
+                        eprintln!("bad split; expected split:mb:arg or split:byte:arg");
+                        std::process::exit(2);
+                    }
+                }
             } else {
                 let (mode, text) = match text.split_once(':') {
                     Some(("cbr", rest)) => (h264_syntax::RcMode::Cbr, rest),
@@ -864,8 +944,9 @@ fn main() {
                     _ => {
                         eprintln!(
                             "unknown option {text}; expected \
-                             [cbr:|vbr:|avbr:]target:min:max, dblk:disable:alpha:beta \
-                             or roi:x:y:w:h:intra:abs:qp"
+                             [cbr:|vbr:|avbr:]target:min:max, dblk:disable:alpha:beta, \
+                             roi:x:y:w:h:intra:abs:qp, gdr:row:|col:num \
+                             or split:mb:|byte:arg"
                         );
                         std::process::exit(2);
                     }
@@ -873,7 +954,7 @@ fn main() {
             }
         }
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]...");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -894,6 +975,8 @@ fn main() {
             bps,
             deblock,
             rois,
+            gdr,
+            split,
         ) {
             Ok((bytes, header_bytes, payload_bytes, ms)) => println!(
                 "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_desc} gop {gop}, {ms:.3} ms"

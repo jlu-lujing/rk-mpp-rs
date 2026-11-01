@@ -95,6 +95,95 @@ pub fn user_data(uuid: &[u8; 16], payload: &[u8]) -> Vec<u8> {
     nal
 }
 
+/// The recovery-point SEI `h264e_sei_recovery_point_to_packet` writes: payload
+/// type 6 with `recovery_frame_cnt` as the only syntax value, then
+/// `exact_match_flag` 1, `broken_link_flag` 0 and `changing_slice_group_idc` 0,
+/// then the trailing bit padded with zeros the way `mpp_writer_trailing` does.
+///
+/// `mpp_enc_impl.cpp` reaches it through the `uuid_refresh_cfg` prefix on an
+/// intra-refresh recovery frame, with `refresh_length - 1` as the argument. The
+/// uuid is a selector for `h264e_add_sei`, not bytes in the stream: the packet
+/// carries a plain recovery-point SEI, not a user-data one.
+pub fn recovery_point(recovery_frame_cnt: u32) -> Vec<u8> {
+    let mut bits = BitVec::default();
+    bits.put_ue(recovery_frame_cnt);
+    bits.put_bits(1, 1); // exact_match_flag, hard-wired in `write_recovery_point`
+    bits.put_bits(0, 1); // broken_link_flag
+    bits.put_bits(0, 2); // changing_slice_group_idc
+    bits.put_bits(1, 1); // rbsp trailing stop bit
+    bits.pad();
+    let payload = bits.bytes;
+
+    let mut rbsp: Vec<u8> = Vec::with_capacity(2 + payload.len());
+    // forbidden_zero_bit zero, nal_ref_idc disposable, nal_unit_type SEI - the
+    // same header composition `h264e_sei_recovery_point_to_packet` writes.
+    rbsp.push(NAL_PRIORITY_DISPOSABLE << 5 | NAL_UNIT_TYPE_SEI);
+    let mut remaining = SEI_RECOVERY_POINT;
+    while remaining >= 255 {
+        rbsp.push(0xff);
+        remaining -= 255;
+    }
+    rbsp.push(remaining as u8);
+    let mut remaining = payload.len();
+    while remaining >= 255 {
+        rbsp.push(0xff);
+        remaining -= 255;
+    }
+    rbsp.push(remaining as u8);
+    rbsp.extend_from_slice(&payload);
+
+    let mut nal = Vec::with_capacity(rbsp.len() + 8);
+    nal.extend_from_slice(&[0, 0, 0, 1]);
+    let mut zero_run = 0usize;
+    for byte in rbsp {
+        put_escaped(&mut nal, &mut zero_run, byte);
+    }
+    nal
+}
+
+/// `H264_SEI_RECOVERY_POINT`.
+const SEI_RECOVERY_POINT: usize = 6;
+
+/// The `MppWriteCtx` of `mpp_bitwrite.c` in miniature: MSB-first bit insertion
+/// into a byte vector, enough for a payload that never reaches two bytes.
+#[derive(Default)]
+struct BitVec {
+    bytes: Vec<u8>,
+    current: u8,
+    used: u8,
+}
+
+impl BitVec {
+    fn put_bits(&mut self, value: u32, count: u8) {
+        for bit in (0..count).rev() {
+            self.current = (self.current << 1) | ((value >> bit) as u8 & 1);
+            self.used += 1;
+            if self.used == 8 {
+                self.bytes.push(self.current);
+                self.current = 0;
+                self.used = 0;
+            }
+        }
+    }
+
+    fn put_ue(&mut self, value: u32) {
+        let code = u64::from(value) + 1;
+        let bits = 64 - code.leading_zeros() as u8;
+        self.put_bits(0, bits - 1);
+        self.put_bits(code as u32, bits);
+    }
+
+    /// `mpp_writer_trailing`'s zero fill after the caller's stop bit.
+    fn pad(&mut self) {
+        if self.used != 0 {
+            self.current <<= 8 - self.used;
+            self.bytes.push(self.current);
+            self.current = 0;
+            self.used = 0;
+        }
+    }
+}
+
 /// The rate-control configuration line `update_rc_cfg_log` renders into the
 /// `uuid_rc_cfg` SEI: the RC model's name, then the mode, bit rate target and
 /// bounds, the intra GOP, and the QP bounds. Under fixed QP the model collapses
@@ -307,6 +396,44 @@ mod tests {
             nal.iter().filter(|&&b| b == 3).count(),
             1,
             "exactly the inserted prevention byte - this uuid carries no 03 of its own"
+        );
+    }
+
+    /// `write_recovery_point(cnt), mpp_writer_trailing` for cnt=0 is the bits
+    /// `1`(ue) `1`(exact_match) `0`(broken_link) `00`(idc) `1`(stop) + `00`:
+    /// `11000100` = 0xC4, one payload byte. The packet bytes then follow
+    /// `h264e_sei_recovery_point_to_packet`'s framing: NAL 0x06, type 6, size 1.
+    #[test]
+    fn recovery_point_zero_count_is_one_payload_byte() {
+        assert_eq!(
+            recovery_point(0),
+            [0, 0, 0, 1, 0x06, 0x06, 0x01, 0xC4],
+            "recovery_frame_cnt 0"
+        );
+    }
+
+    /// cnt=3: `00100`(ue) `10`(exact,broken) `00`(idc) = `00100100` = 0x24,
+    /// then the stop bit at the head of the second byte: 0x40. This is the
+    /// shape `refresh_length 4` - the 320x240 row refresh at `refresh_num` 4 -
+    /// asks for.
+    #[test]
+    fn recovery_point_three_count_is_two_payload_bytes() {
+        assert_eq!(
+            recovery_point(3),
+            [0, 0, 0, 1, 0x06, 0x06, 0x02, 0x24, 0x40],
+            "recovery_frame_cnt 3"
+        );
+    }
+
+    /// cnt=7, the other hand-computed corner: `0001000`(ue) then `1`(exact)
+    /// fills the first byte to `00010001` = 0x11; `0`(broken) `00`(idc)
+    /// `1`(stop) pads to `00010000` = 0x10.
+    #[test]
+    fn recovery_point_seven_count_pads_the_second_byte() {
+        assert_eq!(
+            recovery_point(7),
+            [0, 0, 0, 1, 0x06, 0x06, 0x02, 0x11, 0x10],
+            "recovery_frame_cnt 7"
         );
     }
 
