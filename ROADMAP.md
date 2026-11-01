@@ -34,7 +34,7 @@ multi-core, secure mode).
 | M3 | H.265 decode: syntax (VPS/SPS/PPS, RPS, scaling lists, tiles, WPP) + rkvdec HAL | 12k | **Main/Main10/scaling-list/long-term hardware path bit-exact; t6 rkvdec rejects 4:2:2/4:4:4; SCC pending** |
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
-| M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4 and H.263 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB and all three H.263 frame sizes. Field-coded PAFF unverified. VP8/AVS todo** |
+| M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
 | M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | todo |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline and parameterized H.264 Baseline IDR done; H.264 inter/SEI/RC and H.265 pending** |
 | M9 | Post-processor: vdpu-pp deinterlace/scale/format, RGA interop | 8k | todo |
@@ -419,7 +419,70 @@ multi-core, secure mode).
       (`sw63`, `sw64`, `sw131`, `sw148`). GOB start codes with a non-zero number
       never end a picture here, in C or in Rust, so a stream that uses them for
       resynchronisation is a shared open case rather than a difference.
-- [ ] VP8, AVS+, AVS2
+- [x] VP8 picture syntax (`src/codec/vp8/parser.rs`): the frame tag, the
+      key-frame start code and its 14-bit size pair, segmentation, the loop filter
+      type / level / sharpness and both delta tables, the six quantiser deltas, the
+      refresh and copy flags, the two sign biases, the coefficient and
+      motion-vector probability updates, `mb_no_coeff_skip`, and the DCT partition
+      offsets of `vp8hwdSetPartitionOffsets`. Three C behaviours are copied rather
+      than corrected, because the register file and the next picture both depend on
+      them: the entropy-probability backup is taken at the moment
+      `refresh_entropy_probs` is read, *before* the update loops, and is restored
+      only after the picture reached the hardware;
+      `prob_mb_skip_false`, `prob_intra`, `prob_ref_last` and `prob_ref_golden` are
+      not part of that set and a key frame does not reset them, so a key frame
+      carries whatever the last inter picture left there; and the header reaches
+      the end-of-stream check at the same three points the C parser checks it.
+      `vp8d_parser_init` fixes `decMode` to `VP8HWD_VP8` and nothing else writes
+      it, so the VP7 and WebP branches - including `vp7_header_parser`, which
+      returns a protocol error for every feature it is offered - are dead code in
+      the decoder being matched. A VP7 stream is refused rather than decoded
+      differently, and so is a key frame scale factor, which C parses into
+      `scaledWidth` and never programs.
+- [x] VP8 decode on vdpu2 (client 1): `src/hal/vp8d.rs` fills the same 159-word
+      window MPEG-2, MPEG-4 and H.263 use, with decode mode 10, the six endian
+      bits, burst 16, `sw_filtering_dis` only when the loop filter level is zero,
+      and `sw_skip_mode` as the complement of `mb_no_coeff_skip`. Two buffers live
+      for the life of the channel: the 64 KiB probability image, of which
+      `hal_vp8hw_asic_probe_update` writes 1208 bytes and the rest reads back zero
+      in C as it does here, and the 3072-byte segment map, which is cleared on a
+      key frame only - an inter picture with segmentation enabled and the map not
+      refreshed continues on what the hardware wrote last time.
+      The reference buffers are aliases rather than copies: `src/codec/vp8/dpb.rs`
+      reproduces `vp8d_ref_update` with a fifteen-slot table and a per-slot owner
+      count, so `copy_buffer_to_golden == 2` and its three siblings share a surface
+      the way the C `VP8Frame` objects do, and the order matters because the
+      alternate buffer is updated first. A key frame points `sw131` at the picture
+      it is writing, one macroblock-count past its start, and the two sign biases
+      are programmed as one-byte address offsets on `sw136` and `sw137`.
+      Each DCT partition past the first gets its own dma-buf offset on the same
+      buffer (`sw140` to `sw144`, then `sw146` and `sw147`), and the interpolation
+      taps need care: `sw_pred_bc_tap_1_1` takes `mcFilter[1][2]`, one column
+      right of its field name, and the eleven words disagree about which tap comes
+      first.
+      `rk-mpp-rs vp8dec <in.ivf> <out.yuv>` is the CLI path and `rk-mpp-rs vp8`
+      prints the frame headers without hardware.
+      On t6 all six fixtures are byte-exact against `mpi_dec_test -t 9` converted
+      from NV12 to planar (`scripts/board_regress_vp8.sh`), covering an I/P
+      stream, a segmented stream, an alternating-quantiser stream, an odd 150x100
+      size, and two auto-alt-ref streams - the 24-display one carries 26 packets,
+      two of which are hidden reference frames that both decoders decode and
+      neither displays. The same script dumps `hal_vp8d_debug=4` and compares every
+      submitted register image: all twelve jobs agree with C on every word except
+      the eight that carry a dma-buf handle. Two probability images, the key frame's
+      and a later inter picture's, are committed under `tests/data/vp8/` and
+      compared byte for byte offline, which is what caught the motion-vector tail
+      of the image being dropped.
+      Shared open cases: no fixture here uses more than one DCT partition, absolute
+      segment features, or segmentation that stays enabled without refreshing the
+      map, so those three register paths are ported and unit-tested from the C
+      source but have no board evidence. Damaged-stream behaviour is untested as
+      well. `mpi_dec_test` ends a VP8 stream by submitting an earlier picture
+      again - the thirteenth job of the twelve-packet stream is the key frame with
+      different buffers attached and it produces no output frame - so the register
+      comparison treats a trailing C job that repeats an earlier one as C's own
+      repeat, the same habit MPEG-2 and H.263 show in their own regressions.
+- [ ] AVS+ and AVS2 decode
 
 ### Encoders
 - [x] H.264 Baseline IDR (rkv-enc/VEPU580): SPS/PPS writer, Annex-B
@@ -475,7 +538,7 @@ multi-core, secure mode).
 
 ## Verification
 
-- Tests: `cargo test --all-targets` (307 unit + 88 integration, eleven ignored
+- Tests: `cargo test --all-targets` (322 unit + 88 integration, eleven ignored
   board-only tests: parsers, AV1 OBU/frame-header/CDF/PicParams snapshots,
   global-motion reconstruction, tile ranges and packet assembly, POC types
   0/1/2, DPB/MMCO/RPS, registers,
@@ -533,6 +596,10 @@ multi-core, secure mode).
   resolution. The C decoder runs a picture or two again after the `-n` cap
   without writing them out, so the compare checks the output length before it
   compares bytes.
+- Board VP8 regression: 6/6 fixtures byte-exact
+  (`scripts/board_regress_vp8.sh`), and twelve of twelve register images identical
+  outside the dma-buf handles. See the checklist entry above for what each fixture
+  covers and which three register paths still have no board evidence.
 - Decode throughput versus the source-built C MPP, from
   `scripts/board_bench_vs_mpp.sh`: five interleaved samples per binary on the
   same stream, medians. Rust covers submit + poll + DPB + NV12-to-planar
@@ -558,6 +625,10 @@ multi-core, secure mode).
   | `h263_cif_12_ip.263` (H.263 CIF) | 12 | 400 fps | 1081 fps | +170 % |
   | `h263_qcif_6_ip.263` (H.263 QCIF) | 6 | 857 fps | 2222 fps | +159 % |
   | `h263_4cif_10_ip.263` (H.263 4CIF) | 10 | 119 fps | 373 fps | +213 % |
+  | `vp8_320x240_12_ip.ivf` (VP8 320x240) | 12 | 600 fps | 1304 fps | +117 % |
+  | `vp8_320x240_12_parts.ivf` (VP8 segmented) | 12 | 571 fps | 984 fps | +72 % |
+  | `vp8_150x100_9_ip.ivf` (VP8 150x100) | 9 | 1000 fps | 3000 fps | +200 % |
+  | `vp8_320x240_24_altref.ivf` (VP8 alt-ref) | 24 | 649 fps | 1004 fps | +55 % |
 
   Every decoder we ship beats the C library on its own stream, which is what the
   performance target asks for. Every row is one five-sample interleaved pass -
@@ -567,7 +638,9 @@ multi-core, secure mode).
   pictures the C side reports whole milliseconds, so a row like QCIF's is really
   "7 ms against 2.7 ms" and can move by tens of percentage points between passes:
   `hevc_multigop_120` has been recorded at 243, 261, 529 and 552 fps across
-  passes of the same script. Non-interleaved single runs are not evidence at all:
+  passes of the same script. The four VP8 rows are their own pass
+  (`BENCH_FILTER=vp8`), measured while the rest of the table's rows were not
+  re-run. Non-interleaved single runs are not evidence at all:
   one lone `mpi_dec_test` pass over `test720.264` printed 1037 fps where the
   interleaved median is 166 fps.
 - Frame readback rule: the decoder output mapping is uncached, so a plane is

@@ -16,4 +16,5 @@ pub mod m2vd;
 pub mod mpg4d;
 pub mod vdpu2;
 pub mod vdpu34x_regs;
+pub mod vp8d;
 pub mod vp9d;

@@ -11,6 +11,7 @@ pub mod hevc;
 pub mod jpeg;
 pub mod m2v;
 pub mod mpg4;
+pub mod vp8;
 pub mod vp9;
 pub mod yuv;
 

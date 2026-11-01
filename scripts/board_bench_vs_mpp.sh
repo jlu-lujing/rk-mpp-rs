@@ -36,6 +36,10 @@ streams=(
   "/tmp/h263_cif_12_ip.263:h263dec:3:352:288:0"
   "/tmp/h263_qcif_6_ip.263:h263dec:3:176:144:0"
   "/tmp/h263_4cif_10_ip.263:h263dec:3:704:576:0"
+  "/tmp/vp8_320x240_12_ip.ivf:vp8dec:9:320:240:0"
+  "/tmp/vp8_320x240_12_parts.ivf:vp8dec:9:320:240:0"
+  "/tmp/vp8_150x100_9_ip.ivf:vp8dec:9:150:100:0"
+  "/tmp/vp8_320x240_24_altref.ivf:vp8dec:9:320:240:0"
 )
 
 median() {
@@ -63,6 +67,11 @@ run_mpp() {
 
 for entry in "${streams[@]}"; do
   IFS=':' read -r stream cmd type width height frames <<<"$entry"
+  # Rows from different passes are not comparable, so a subset can be measured
+  # and reported as its own pass: BENCH_FILTER=vp8 scripts/board_bench_vs_mpp.sh
+  if [[ -n "${BENCH_FILTER:-}" && "$stream" != *"$BENCH_FILTER"* ]]; then
+    continue
+  fi
   if [[ ! -f "$stream" ]]; then
     printf 'SKIP %-34s (stream missing)\n' "$(basename "$stream")"
     continue
