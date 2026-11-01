@@ -10,16 +10,30 @@ multi-core, secure mode).
 
 ## Board capability map (NanoPC-T6-LTS, mask `0x1009321a`)
 
-| block | present | drives |
-|---|---|---|
-| vdpu2 | yes | H.264, MPEG2, MPEG4, H.263, VP8 |
-| vdpu2-pp | yes | deinterlace, scale, format conversion |
-| rkvdec | yes | H.264, H.265, VP9, AVS2/AVS+ |
-| av1d | yes | AV1 |
-| jpegd | yes | baseline/progressive-free JPEG decode |
-| rkv-enc | yes | H.264, H.265 encode |
-| vepu-jpeg | yes | JPEG encode |
-| vepu1/2/22 | no | — |
+Measured with `rk-mpp-rs probe`, which asks two different questions per block:
+whether the kernel's `MPP_CMD_PROBE_HW_SUPPORT` mask has the bit, and whether
+`MPP_CMD_INIT_CLIENT_TYPE` actually binds a session. A block that is in the mask
+but has no driver behind it cannot be driven - the C tools say so as
+"client N driver is not ready!" and the ioctl answers `EINVAL`.
+
+| client | block | mask | session | drives |
+|---:|---|---|---|---|
+| 1 | vdpu2 | yes | binds | H.264, MPEG2, MPEG4, H.263, VP8 |
+| 3 | vdpu2 post-processor | yes | binds | nothing in this source - see M9 |
+| 4 | av1d | yes | binds | AV1 |
+| 9 | rkvdec | yes | binds | H.264, H.265, VP9, AVS2 |
+| 12 | AVS+ decoder | yes | binds | AVS+ (no conformance stream available) |
+| 13 | jpegd | yes | binds | baseline JPEG decode, with its own post-processor |
+| 16 | rkv-enc | yes | binds | H.264, H.265 encode |
+| 19 | vepu JPEG | yes | binds | JPEG encode |
+| 28 | IEP | yes | binds | deinterlace and YUV scale - the M9 engine on this board |
+| 0, 2 | vdpu1 and its PP | no | `EINVAL` | — |
+| 8 | standalone HEVC decoder | no | `EINVAL` | — |
+| 17, 18, 20, 24 | vepu1, vepu2, jpeg_enc, vepu22 | no | `EINVAL` | — |
+| 29 | VDPP | no | `EINVAL` | the scale / rotate / CSC / sharpen engine, absent here |
+
+Every bound client supports `MPP_CMD_SET_REG_ADDR_OFFSET` and
+`MPP_CMD_POLL_HW_FINISH`.
 
 ## Milestones
 
@@ -35,9 +49,9 @@ multi-core, secure mode).
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | todo |
-| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline and parameterized H.264 Baseline IDR done; H.264 inter/SEI/RC and H.265 pending** |
-| M9 | Post-processor: vdpu-pp deinterlace/scale/format, RGA interop | 8k | todo |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **todo - and note that what it builds on is a bootstrap, not a generator** |
+| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 IDR is a size-parameterised replay of a recorded VEPU580 register image (see the encoder note below), so rate control, profile, level, GOP and P slices are all still frozen; H.265 encode pending** |
+| M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | todo |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
 
@@ -520,13 +534,44 @@ multi-core, secure mode).
       produced DC errors; the same input with a 4:2:0 header decoded correctly.
       Those unsupported requests must not be represented by changing only the
       JPEG header
+- **What the H.264 IDR path actually is.** `src/hal/h264e.rs` does not generate
+      the VEPU580 register file; it replays one captured from `mpi_enc_test` over
+      an `MPP_CMD_SET_REG_WRITE` trace, patches the eleven address words, and
+      derives only what a different picture size needs - the macroblock counts,
+      the line-buffer layout, the source plane offsets and the search ranges.
+      `validate_reference_config` is the boundary and it is deliberate: Baseline
+      only, level 3.0, GOP 1, QP 26, CAVLC, no transform-8x8, and nothing past
+      4096 pixels, everything else still coming from the recorded image. Byte-
+      exactness against C across six sizes therefore shows the plumbing and the
+      address arithmetic are right; it says nothing about `setup_vepu580_codec`,
+      `setup_vepu580_rc_base`, `setup_vepu580_me` or `calc_cime_parameter` in
+      `mpp/hal/rkenc/h264e/hal_h264e_vepu580.c`, none of which is ported. M7 is
+      gated on replacing the template with that generator, not on adding features
+      on top of a fixture.
 - [ ] JPEG encoder (vepu): RGB input, 90/270-degree rotation, restart markers,
       low-delay slices and multi-core partitioning
 
 ### Post-processing
 - [x] RGB888 letterbox scaler (own, faster than RGA for our sizes)
-- [ ] vdpu-pp: deinterlace, YUV scale, NV12↔RGB, crop
+- [ ] IEP (`mpp/vproc/iep/iep.c`, `iep2/iep2.c`, client 28): deinterlace, YUV
+      scale, crop. This is the M9 engine that exists on this board.
+- [ ] VDPP (`mpp/vproc/vdpp/vdpp2.c`, client 29): scale, rotate, NV12 to RGB,
+      sharpen, histogram. **Absent on t6** - the kernel refuses the client - so
+      this cannot be ported or verified here at all.
 - [ ] 10-bit ↔ 8-bit conversion, HDR tone mapping
+
+"M9 vdpu-pp" was written against the wrong engine. Three separate things are
+easily conflated in the MPP tree: the legacy per-decoder post-processor window
+(registers inside the decoder's own file), which in this source only
+`hal_jpegd_*.c` programs - `hal_m2vd_vdpu2.c`, `hal_m4vd_vdpu2.c`,
+`hal_h263d_vdpu2.c` and `hal_vp8d_vdpu2.c` never touch it, so there is nothing to
+port for those decoders and our JPEG path already has it with RGB888 and the
+1/2 to 1/8 downscale; the standalone VDPP, which is the general scale / rotate /
+CSC engine and is not present on this SoC; and IEP, which is present and binds.
+Client 3 answers `INIT_CLIENT_TYPE` happily and no decoder HAL in this tree ever
+uses it. Until something drives it, the RGB888 scaler in `src/scale.rs` remains
+the RGA replacement, at 2.9 to 3.8 times RGA's speed on the sizes the inference
+pipeline uses.
 
 ### Framework
 - [x] synchronous submit + poll

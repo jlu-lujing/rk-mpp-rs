@@ -1823,15 +1823,44 @@ fn main() {
             println!("  probe_hw_support: {t_probe:.1} us   hw_id: {t_id:.1} us");
             match probe {
                 Ok(mask) => {
+                    // Two different questions, and only the second one decides
+                    // whether a block can be driven from userspace: does the
+                    // kernel know the hardware exists, and did it bind a driver
+                    // session for it. MPP prints its own version of the second
+                    // answer as "client N driver is not ready!".
                     println!("  hw support mask: 0x{mask:08x}");
+                    println!("    block                                   kernel  session  reg-offset  poll");
                     for (c, name) in Client::all() {
                         let bit = *c as u32;
                         let has = (mask >> bit) & 1 == 1;
+                        let (bind, flags) = match MppService::open(bit) {
+                            Ok(probe_svc) => (
+                                "binds".to_string(),
+                                format!(
+                                    "{:>7}  {:>4}",
+                                    if probe_svc.cmd_supported(MPP_CMD_SET_REG_ADDR_OFFSET) {
+                                        "yes"
+                                    } else {
+                                        "no"
+                                    },
+                                    if probe_svc.cmd_supported(MPP_CMD_POLL_HW_FINISH) {
+                                        "yes"
+                                    } else {
+                                        "no"
+                                    }
+                                ),
+                            ),
+                            Err(error) => (
+                                format!("ENO{}", error.raw_os_error().unwrap_or(0)),
+                                String::new(),
+                            ),
+                        };
                         println!(
-                            "    [{:>5}] {:<40} {}",
-                            bit,
-                            name,
-                            if has { "present" } else { "-" }
+                            "    {:<40} {:>6}  {:<9}{}",
+                            format!("[{:>3}] {name}", bit),
+                            if has { "present" } else { "-" },
+                            bind,
+                            flags
                         );
                     }
                 }

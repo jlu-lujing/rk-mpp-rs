@@ -195,6 +195,10 @@ pub enum Client {
     Vepu2Jpeg = 19,
     JpegEnc = 20,
     Vepu22 = 24,
+    /// `IEP_CLIENT_TYPE`: the image enhance processor, deinterlace and YUV scale.
+    Iep = 28,
+    /// `VDPP_CLIENT_TYPE`: the standalone video post-processor.
+    Vdpp = 29,
 }
 
 impl Client {
@@ -216,6 +220,8 @@ impl Client {
             (Client::Vepu2Jpeg, "vepu JPEG encoder"),
             (Client::JpegEnc, "JPEG encoder"),
             (Client::Vepu22, "vepu22 encoder"),
+            (Client::Iep, "IEP (deinterlace, YUV scale)"),
+            (Client::Vdpp, "VDPP (scale, rotate, CSC, sharpen)"),
         ]
     }
 }
