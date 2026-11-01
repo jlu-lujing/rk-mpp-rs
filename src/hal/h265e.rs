@@ -57,6 +57,19 @@ pub enum Picture {
     P { poc_lsb: u32 },
 }
 
+/// One picture's rate-control decision: what `rc_model::Model::start` returns plus
+/// the HAL's quantiser slack. `bit_target` is bits for the whole picture.
+#[derive(Clone, Copy, Debug)]
+pub struct RateControl {
+    pub bit_target: i32,
+    pub qp_target: u32,
+    pub qp_min: u32,
+    pub qp_max: u32,
+    /// `hw->qp_delta_row` and `hw->qp_delta_row_i`, both 2 by default.
+    pub qp_delta_row: u32,
+    pub qp_delta_row_i: u32,
+}
+
 /// `lamd_modb_qp`, the inter-picture lambda table `global_cfg_set` copies for a P
 /// picture (`vepu5xx_common.c:183`). The IDR keeps the intra table the template
 /// recorded.
@@ -88,6 +101,8 @@ pub struct IdrJob {
     pub qp_min: u32,
     pub qp_max: u32,
     pub picture: Picture,
+    /// Rate control for this picture, `None` for fixed QP.
+    pub rc: Option<RateControl>,
     pub input_fd: i32,
     pub output_fd: i32,
     pub current_fd: i32,
@@ -107,6 +122,7 @@ impl IdrJob {
             qp_min: qp,
             qp_max: qp,
             picture: Picture::Idr,
+            rc: None,
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -249,6 +265,117 @@ impl RegisterFile {
         }
         Err(format!("register word {} is not captured", field.word))
     }
+
+    fn rc_word_mut(&mut self, word: usize) -> Result<&mut u32, String> {
+        if !(1024..1081).contains(&word) {
+            return Err(format!("word {word} is outside the RC window"));
+        }
+        Ok(&mut self.rc_klut[word - 1024])
+    }
+
+    fn set_signed(&mut self, field: &regs::Field, value: i32) -> Result<(), String> {
+        let mask = (1u32 << field.width) - 1;
+        self.set(field, value as u32 & mask)
+    }
+
+    /// `vepu580_h265_set_rc_regs`'s non-FIXQP branch. The two CTU counts are
+    /// 64x64 (`mb_wd64`/`mb_h64`), not H.264's 16x16 macroblocks, and the
+    /// quantiser ladder differs at two points: `aq_mode` is 1 and the first
+    /// difference threshold is doubled (`2 * negative_bits_thd`).
+    fn apply_rate_control(&mut self, job: &IdrJob, rc: &RateControl) -> Result<(), String> {
+        let mb_w = ((job.width + 63) / 64) as i32;
+        let mb_h = ((job.height + 63) / 64) as i32;
+        let mut target_16 = rc.bit_target.wrapping_shl(4) / (mb_w * mb_h);
+        if target_16 >= 0x0010_0000 {
+            target_16 = 0x0005_0000;
+        }
+        let ctu_bits = (target_16 * mb_w) >> 4;
+        let negative = 0 - 5 * ctu_bits / 16;
+        let positive = 5 * ctu_bits / 16;
+
+        self.set(&regs::BASE_ENC_PIC_PIC_QP, rc.qp_target)?;
+        self.set(&regs::H265_REG0240_SYNT_SLI1_SLI_QP, rc.qp_target)?;
+        self.set(&regs::BASE_RC_CFG_RC_EN, 1)?;
+        self.set(&regs::BASE_RC_CFG_AQ_EN, 1)?;
+        self.set(&regs::BASE_RC_CFG_AQ_MODE, 1)?;
+        self.set(&regs::BASE_RC_CFG_RC_CTU_NUM, mb_w as u32)?;
+        self.set(
+            &regs::BASE_RC_QP_RC_QP_RANGE,
+            if matches!(job.picture, Picture::Idr) {
+                rc.qp_delta_row_i
+            } else {
+                rc.qp_delta_row
+            },
+        )?;
+        self.set(&regs::BASE_RC_QP_RC_MAX_QP, rc.qp_max)?;
+        self.set(&regs::BASE_RC_QP_RC_MIN_QP, rc.qp_min)?;
+        self.set(&regs::BASE_RC_TGT_CTU_EBIT, target_16 as u32)?;
+        self.set(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_EN, 1)?;
+
+        let dthd = [
+            2 * negative,
+            negative,
+            positive,
+            2 * positive,
+            i32::MAX,
+            i32::MAX,
+            i32::MAX,
+            i32::MAX,
+            i32::MAX,
+        ];
+        let start = regs::RC_RC_DTHD_0_8.word;
+        for (index, value) in dthd.iter().enumerate() {
+            *self.rc_word_mut(start + index)? = *value as u32;
+        }
+
+        for (field, value) in [
+            (&regs::RC_RC_ADJ0_QP_ADJ0, -2),
+            (&regs::RC_RC_ADJ0_QP_ADJ1, -1),
+            (&regs::RC_RC_ADJ0_QP_ADJ2, 0),
+            (&regs::RC_RC_ADJ0_QP_ADJ3, 1),
+            (&regs::RC_RC_ADJ0_QP_ADJ4, 2),
+            (&regs::RC_RC_ADJ1_QP_ADJ5, 0),
+            (&regs::RC_RC_ADJ1_QP_ADJ6, 0),
+            (&regs::RC_RC_ADJ1_QP_ADJ7, 0),
+            (&regs::RC_RC_ADJ1_QP_ADJ8, 0),
+        ] {
+            self.set_signed(field, value)?;
+        }
+
+        for (field, bound) in [
+            (&regs::RC_ROI_QTHD0_QPMIN_AREA0, rc.qp_min),
+            (&regs::RC_ROI_QTHD0_QPMAX_AREA0, rc.qp_max),
+            (&regs::RC_ROI_QTHD0_QPMIN_AREA1, rc.qp_min),
+            (&regs::RC_ROI_QTHD0_QPMAX_AREA1, rc.qp_max),
+            (&regs::RC_ROI_QTHD0_QPMIN_AREA2, rc.qp_min),
+            (&regs::RC_ROI_QTHD1_QPMAX_AREA2, rc.qp_max),
+            (&regs::RC_ROI_QTHD1_QPMIN_AREA3, rc.qp_min),
+            (&regs::RC_ROI_QTHD1_QPMAX_AREA3, rc.qp_max),
+            (&regs::RC_ROI_QTHD1_QPMIN_AREA4, rc.qp_min),
+            (&regs::RC_ROI_QTHD1_QPMAX_AREA4, rc.qp_max),
+            (&regs::RC_ROI_QTHD2_QPMIN_AREA5, rc.qp_min),
+            (&regs::RC_ROI_QTHD2_QPMAX_AREA5, rc.qp_max),
+            (&regs::RC_ROI_QTHD2_QPMIN_AREA6, rc.qp_min),
+            (&regs::RC_ROI_QTHD2_QPMAX_AREA6, rc.qp_max),
+            (&regs::RC_ROI_QTHD2_QPMIN_AREA7, rc.qp_min),
+            (&regs::RC_ROI_QTHD3_QPMAX_AREA7, rc.qp_max),
+        ] {
+            self.set(field, bound)?;
+        }
+        self.set(&regs::RC_ROI_QTHD3_QPMAP_MODE, 1)?;
+
+        for (field, value) in [
+            (&regs::RC_MD_SAD_THD_MD_SAD_THD0, 4),
+            (&regs::RC_MD_SAD_THD_MD_SAD_THD1, 9),
+            (&regs::RC_MD_SAD_THD_MD_SAD_THD2, 15),
+            (&regs::RC_MADI_THD_MADI_THD0, 4),
+            (&regs::RC_MADI_THD_MADI_THD1, 9),
+            (&regs::RC_MADI_THD_MADI_THD2, 15),
+        ] {
+            self.set(field, value)?;
+        }
+        Ok(())
+    }
 }
 
 /// The `idr_w_radl` NAL unit type the reference's `h265e_get_nal_type` selects for
@@ -383,12 +510,17 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     };
     file.set(&regs::H265_REG0222_ME_CACH_CACH_L2_TAG, l2_tag)?;
 
-    // ---- fixed-QP RC (set_rc_regs FIXQP branch) ----
-    file.set(&regs::BASE_ENC_PIC_PIC_QP, job.qp)?;
-    file.set(&regs::H265_REG0240_SYNT_SLI1_SLI_QP, job.qp)?;
-    file.set(&regs::BASE_RC_QP_RC_MAX_QP, job.qp)?;
-    file.set(&regs::BASE_RC_QP_RC_MIN_QP, job.qp)?;
-    // rc_cfg rc_en/aq_en stay 0 (memset) - the FIXQP branch never sets them.
+    // ---- RC (set_rc_regs) ----
+    match job.rc {
+        Some(rc) => file.apply_rate_control(job, &rc)?,
+        None => {
+            // FIXQP branch: four words, and `rc_cfg`/`aq_cfg` keep their zeroes.
+            file.set(&regs::BASE_ENC_PIC_PIC_QP, job.qp)?;
+            file.set(&regs::H265_REG0240_SYNT_SLI1_SLI_QP, job.qp)?;
+            file.set(&regs::BASE_RC_QP_RC_MAX_QP, job.qp)?;
+            file.set(&regs::BASE_RC_QP_RC_MIN_QP, job.qp)?;
+        }
+    }
 
     // The sixteen `roi_qthd` rows and the `madi`/`md_sad` threshold triples are
     // *not* written here. `vepu580_h265_set_rc_regs` writes them in its else branch,
@@ -841,6 +973,52 @@ mod tests {
                 .unwrap(),
             2
         );
+    }
+
+    /// The traced CBR P job, field for field: `mpi_enc_test -rc 1 -bps
+    /// 300000:250000:350000` at 320x240, second picture. The harness runs its
+    /// quality band 10..51 and that picture is QP 22 with 580 bits, which is what
+    /// the C's own `ctu_ebit = 464` encodes as (464 * 5 >> 4 = 145 bits per CTU
+    /// column, 20 CTUs).
+    #[test]
+    fn the_rate_control_image_matches_the_traced_cbr_job() {
+        let mut job = IdrJob::reference(26);
+        job.picture = Picture::P { poc_lsb: 1 };
+        job.rc = Some(RateControl {
+            bit_target: 580,
+            qp_target: 22,
+            qp_min: 10,
+            qp_max: 51,
+            qp_delta_row: 2,
+            qp_delta_row_i: 2,
+        });
+        let file = build_registers(&job).unwrap();
+        assert_eq!(file.get(&regs::BASE_ENC_PIC_PIC_QP).unwrap(), 22);
+        assert_eq!(file.get(&regs::H265_REG0240_SYNT_SLI1_SLI_QP).unwrap(), 22);
+        assert_eq!(file.base[212 - 160], 0x0000_5007, "rc_cfg");
+        assert_eq!(file.base[213 - 160], 0x2b32_0000, "rc_qp");
+        assert_eq!(file.base[214 - 160], 464, "ctu_ebit");
+        assert_eq!(
+            file.get(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_EN).unwrap(),
+            1
+        );
+        // rc_dthd_0_8: 2*negative, negative, positive, 2*positive, then five max.
+        assert_eq!(
+            &file.rc_klut[1026 - 1024..1035 - 1024],
+            &[
+                0xffff_ffa6,
+                0xffff_ffd3,
+                45,
+                90,
+                0x7fff_ffff,
+                0x7fff_ffff,
+                0x7fff_ffff,
+                0x7fff_ffff,
+                0x7fff_ffff
+            ]
+        );
+        assert_eq!(file.rc_klut[1024 - 1024], 0x0020_83fe, "rc_adj0");
+        assert_eq!(file.rc_klut[1036 - 1024], 0x0acc_acca, "roi rows 0");
     }
 
     #[test]

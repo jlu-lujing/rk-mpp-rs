@@ -189,6 +189,7 @@ impl Vepu580H265 {
             qp_min: self.qp,
             qp_max: self.qp,
             picture,
+            rc: None,
             input_fd: self.input.fd(),
             output_fd: self.output.fd(),
             current_fd: current.pixel.fd(),

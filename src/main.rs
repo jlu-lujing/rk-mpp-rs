@@ -191,6 +191,7 @@ fn encode_h265_headers(
         qp_min: qp,
         qp_max: qp,
         picture: h265e::Picture::Idr,
+        rc: None,
         input_fd: -1,
         output_fd: -1,
         current_fd: -1,
@@ -1131,6 +1132,24 @@ fn main() {
             }
             _ => h265e::Picture::Idr,
         };
+        let rc = args.get(6).map(|s| s.as_str()).and_then(|spec| {
+            let f: Vec<i32> = spec
+                .strip_prefix("rc:")?
+                .split(':')
+                .filter_map(|v| v.parse().ok())
+                .collect();
+            if f.len() != 4 {
+                return None;
+            }
+            Some(h265e::RateControl {
+                bit_target: f[0],
+                qp_target: f[1] as u32,
+                qp_min: f[2] as u32,
+                qp_max: f[3] as u32,
+                qp_delta_row: 2,
+                qp_delta_row_i: 2,
+            })
+        });
         let job = h265e::IdrJob {
             width,
             height,
@@ -1138,6 +1157,7 @@ fn main() {
             qp_min: qp,
             qp_max: qp,
             picture,
+            rc,
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,

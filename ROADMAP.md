@@ -817,9 +817,25 @@ in what order the evidence gets produced.
        5 pictures (883, 904, 946 bytes), 640x480 and 1280x720 at 2 (1643, 3617), and
        a horizontally shifted second frame (1032 bytes) are **byte-identical**.
        `board_gop_matches_the_c_encoder` runs the three-size cell as an ignored test.
-- [ ] H.265 (rkvenc): tiles/WPP/SAO, rate control (CBR/VBR/AVBR), B frames and
-      multiple references, per-slice output. The fixed-QP IDR+P GOP is byte-identical
-      at three sizes; output is one NAL per picture.
+ - [x] **H.265 rate control: the register half.** The non-FIXQP branch of
+       `vepu580_h265_set_rc_regs` is ported and checked against a traced CBR job
+       (`mpi_enc_test -rc 1 -bps 300000:250000:350000`, 320x240, second picture).
+       It is not H.264's branch copied over: the CTU counts are 64x64
+       (`rc_ctu_num = ceil(w/64)`), `aq_mode` is 1, the first difference threshold
+       is `2 * negative_bits_thd` rather than 4x, and `rc_adj1.qp_adj8` stays 0.
+       With the harness's quality band (10..51) and that picture's decision
+       (QP 22, 580 bits) the derived image is word-for-word the traced one - only
+       buffer addresses and `mei_stor` differ, both expected. Units are pinned by
+       `the_rate_control_image_matches_the_traced_cbr_job`: `rc_cfg = 0x5007`,
+       `rc_qp = 0x2b320000`, `ctu_ebit = 464`, and the threshold words
+       `-90/-45/+45/+90` then five `0x7fffffff`.
+- [ ] H.265 (rkvenc): the rate-control loop on top of that register half - wiring
+      `rc_model::Model` into `h265e_session` so CBR/VBR/AVBR track per-picture QP,
+      plus tiles/WPP/SAO, B frames, multiple references and per-slice output. One
+      open number before the loop can be called byte-exact: the C's first-picture
+      QP at 320x240/CBR is **29**, while `cal_first_i_start_qp` with the 16x16
+      macroblock count the H.264 path uses gives **23** (a `total_mb` of 500
+      reproduces 29, but the H.265 rule behind that number is not established).
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,
