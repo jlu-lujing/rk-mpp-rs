@@ -65,6 +65,7 @@ configure_reference_profile() {
   set -- $(profile_args "$1")
   ssh "$BOARD" "cp /tmp/mpi_enc_test.c.orig $mpp_src &&
           sed -i -e 's/\"h264:profile\", [0-9]*/\"h264:profile\", $1/' \
+                 -e 's/\"h264:level\", [0-9]*/\"h264:level\", 30/' \
                  -e 's/\"h264:cabac_en\", [0-9]*/\"h264:cabac_en\", $2/' \
                  -e 's/\"h264:trans8x8\", [0-9]*/\"h264:trans8x8\", $3/' $mpp_src &&
           make -C $mpp_ref/build -j8 mpi_enc_test" >/dev/null 2>&1

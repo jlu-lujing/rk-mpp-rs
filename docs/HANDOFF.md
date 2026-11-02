@@ -43,6 +43,10 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 4. `ffmpeg`/`ffprobe` 需要 `apt-get install`，矩阵脚本的 NV12→planar 依赖它们。
 5. corpus 还没有复制到 t62（原在 t6 的 `~/rk-mpp-oracles/corpus`），全量扫描要等它
    恢复或从别处补上。
+6. **H.264 QP 矩阵需要参考 harness 的 level 补丁。** `mpi_enc_test.c` 把
+   `h264:level` 写死为 40，而 crate 的 Constrained Baseline 是 30；`board_h264_qp_vs_mpp.sh`
+   现在会连同 profile/cabac/trans8x8 一起把 level sed 成 30，所以新板不需要预置打过补丁
+   的 `/tmp/mpi_enc_test.c.orig`。在这之前，t62 上 30 格全部因为 SPS level 不同而失败。
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
