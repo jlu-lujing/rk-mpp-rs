@@ -59,7 +59,7 @@ median() {
 run_rust() {
   local cmd="$1" stream="$2"
   sudo "$rust_bin" "$cmd" "$stream" /dev/null 2>&1 |
-    sed -nE 's/.*decoded [0-9]+ (frames|packets) \(([0-9]+) output\) in ([0-9.]+) ms.*/\2 \3/p' |
+    sed -nE 's/.*decoded [0-9]+ (frames|packets) \(([0-9]+) output(,[^)]*)?\) in ([0-9.]+) ms.*/\2 \4/p' |
     tail -1
 }
 

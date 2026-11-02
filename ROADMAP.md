@@ -1945,6 +1945,14 @@ pipeline uses.
   samples on t62 give Rust speed deltas of +32.6 % (320x240), +37.5 % (tiles),
   +361.9 % (Main10), +23.1 % (60-frame 640x480), +32.7 % (720p) and +7.4 %
   (1080p) relative to native-NV12 C output.
+- A full t62 decoder benchmark over the regenerated corpus keeps every measured
+  path at or above C once short-stream noise is removed. Representative
+  five-sample medians include H.264 720p +148 %, H.265 Main10 +163 %, VP8
+  IP +59 %, MPEG-4 IP +141 %, and progressive MPEG-2 +109 %. Fifteen-sample
+  reruns put AV1 1080p at +13.0 %, VP8 altref at +72.8 %, and interlaced MPEG-2
+  at +191.1 %. `board_bench_vs_mpp.sh` now parses both `(N output)` and
+  `(N output, M packets dropped)` Rust summaries, so VP8/VP9 no longer appear
+  as measurement SKIPs.
 - `rk-mpp-rs m2v <file.m2v>` prints the MPEG-2 header chain,
   `rk-mpp-rs m2vdec <in.m2v> <out.yuv>`, `rk-mpp-rs mp4dec <in.m4v> <out.yuv>` and
   `rk-mpp-rs h263dec <in.263> <out.yuv>` decode MPEG-2, MPEG-4 and H.263 on vdpu2,
