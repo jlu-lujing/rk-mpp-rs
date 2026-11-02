@@ -32,7 +32,7 @@ Dispositions:
 | Case | Disposition | Evidence |
 |---|---|---|
 | H.264 slice split, output packets (`MPP_ENC_SPLIT_OUT_LOWDELAY`) | NOT IMPLEMENTED | Slice batching is byte-identical with `split_out=0`; no per-slice packet API yet. Frozen with the feature frontier. |
-| H.264 P pictures above 4096 width | **NO-ORACLE** so far | Only IDR cells captured at those widths; needs a P capture before claiming. |
+| H.264 P pictures above 4096 width | **FIXED** | `FRAMES=2 board_h264_wide_vs_mpp.sh` encodes IDR+P at 4160x64 and 4608x256: both byte-identical to the C probe, CIME extension lines included. |
 | H.265 GDR / intra refresh | **NO-ORACLE** | The 2024-04 vintage cannot be made to emit `is_i_refresh` through the public config (no ref cfg in the probe path); the crate's table path is opt-in and unverified. |
 | H.265 tiles/WPP/SAO, B frames, multi-reference | NOT IMPLEMENTED | Frozen with the feature frontier. |
 

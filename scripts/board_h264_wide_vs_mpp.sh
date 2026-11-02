@@ -9,13 +9,8 @@
 # the halves' sizes through the two RCB_INFO calls. The crate used to reject
 # this geometry outright; the cells here are the reason for taking it back.
 #
-# The pictures are single IDR encodes. The former reason for keeping P out of
-# scope - "P does not byte-match above 320x240 at any width" - is closed: that
-# gap was the constant FBC body offset (see the ROADMAP entry of that name), not
-# anything about width, and P now matches at eleven sizes across the FBC header
-# threshold. A wide-P cell is therefore a cell that could be added rather than
-# one that would measure an unrelated gap; these cells stay IDR-only because
-# that is what the extension-line path is.
+# The default is one IDR per cell; `FRAMES=2` adds a P picture and is what closes
+# the "P above 4096 width is unverified" item - both wide cells pass with it.
 #
 # The SPS level bumps itself on both sides for the coded size (level 3.0 at
 # 4160x64, 3.2 at 4608x256), which is also under test through the derivation
@@ -26,10 +21,11 @@
 # two sides equivalent - it leaves a one-character difference in the rc-cfg SEI's
 # `-g:` field and a cell that fails for the wrong reason. Pass it on both sides.
 #
-# Usage: scripts/board_h264_wide_vs_mpp.sh
+# Usage: FRAMES=2 scripts/board_h264_wide_vs_mpp.sh   # adds the P picture
+#        scripts/board_h264_wide_vs_mpp.sh           # IDR-only cells
 set -uo pipefail
 
-FRAMES=1
+FRAMES="${FRAMES:-1}"
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
   ssh t6 'tar -xf - -C ~/rk-mpp-rs'
