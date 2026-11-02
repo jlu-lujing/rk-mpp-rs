@@ -256,7 +256,9 @@ H.264/VEPU580 编码已做到：
   `madi/num_b16`、`madp/num_ctu`），CBR 模型环也接上了：首帧决策与 C 一致，
   前缀与 IDR NAL 逐字节。第二帧仍不同（我们 9320 bits/QP27，C 582/QP25）；
   测量 bits 与 C 只差 24，所以问题在模型的 VBV/`calc_ratio` 状态折叠，不在测量。
-- 下一步：tiles/WPP/SAO、RC 的测量环、B 帧/多参考、逐 slice 输出；
+- 三种码控都已逐字节（纯 GOP、模型自选 QP）：CBR/VBR 1163 字节、AVBR 1164；
+  显式决策格 1169 字节。`-rc` 编号以 SEI 实测为准：0:vbr 1:cbr 2:fixqp 3:avbr。
+- 下一步：VI/refresh 的 GOP 调度、tiles/WPP/SAO、B 帧/多参考、逐 slice 输出；
   另一条已知差异：纯推导图刻意不开 `enc_pic.mei_stor`，会话里因为自己拥有 MD 缓冲才置 1。
 
 ### 5.5 M9 后处理（IEP）

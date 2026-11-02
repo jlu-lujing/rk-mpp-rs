@@ -866,11 +866,17 @@ in what order the evidence gets produced.
        (`num_negative_pics` + `used_by_s0_flg`), while the VI/default GOP marks the
        SPS long-term entry (`num_lt_pic` + `used_by_lt_flg0`), and the SPS grows the
        LT entry only in the latter.
-       `scripts/board_h265_cbr_vs_mpp.sh` now runs both cells: the explicit-decision
-       one (1169 bytes) and the model-driven one (1163 bytes).
+ - [x] **VBR and AVBR ride the same path and are byte-identical.** `h265-rate`
+       selects the controller (`RcMode`), the SEI line and the model mode together;
+       the vintage's `-rc` indices were checked from the emitted SEI rather than the
+       usage string (0:vbr, 1:cbr, 2:fixqp, 3:avbr - the help text's order is stale).
+       On the plain-GOP 320x240 cell the model-driven CBR and VBR streams are 1163
+       bytes and AVBR 1164, all byte-identical to the C encoder.
+       `scripts/board_h265_cbr_vs_mpp.sh` runs four cells: explicit decisions (1169)
+       plus model-driven cbr/vbr/avbr.
 - [ ] H.265 (rkvenc): the VI/refresh GOP schedule (`MppEncRefCfg`'s frame modes, which
-      decide when a picture takes the refresh allocation and the LT marking), VBR and
-      AVBR, tiles/WPP/SAO, B frames, multiple references and per-slice output.
+      decide when a picture takes the refresh allocation and the LT marking),
+      tiles/WPP/SAO, B frames, multiple references and per-slice output.
       Note on the harness cell that exposed this: `-g 60` is parsed by
       `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero, so
       it is not one of `mpi_enc_gen_ref_cfg`'s modes 0..3. Its second picture gets

@@ -56,8 +56,32 @@ impl Surface {
     }
 }
 
-/// The values the CBR SEI line prints, and the PPS quality band.
-#[derive(Clone, Copy, Debug)]
+/// Which controller runs, and what the SEI line calls it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RcMode {
+    Cbr,
+    Vbr,
+    Avbr,
+}
+
+impl RcMode {
+    fn name(self) -> &'static str {
+        match self {
+            RcMode::Cbr => "cbr",
+            RcMode::Vbr => "vbr",
+            RcMode::Avbr => "avbr",
+        }
+    }
+
+    fn model(self) -> rc_model::Mode {
+        match self {
+            RcMode::Cbr => rc_model::Mode::Cbr,
+            RcMode::Vbr => rc_model::Mode::Vbr,
+            RcMode::Avbr => rc_model::Mode::Avbr,
+        }
+    }
+}
+
 pub struct RcSei {
     pub target: i64,
     pub min: i64,
@@ -70,6 +94,7 @@ pub struct RcSei {
 pub struct Vepu580H265 {
     /// Present when the session runs rate control.
     rc_sei: Option<RcSei>,
+    rc_mode: RcMode,
     /// The rate-control model, when the session picks QPs itself.
     rc: Option<rc_model::Model>,
     rc_band: (u32, u32),
@@ -106,9 +131,10 @@ impl Vepu580H265 {
     }
 
     /// A CBR session whose model picks the per-picture QP and bit target.
-    pub fn open_cbr(
+    pub fn open_rate(
         width: usize,
         height: usize,
+        mode: RcMode,
         bps_target: i32,
         bps_min: i32,
         bps_max: i32,
@@ -124,7 +150,8 @@ impl Vepu580H265 {
         config.quality_max = qp_max as i32;
         config.i_quality_delta = 2;
         config.total_mb = (mb64 << 6) as i32;
-        config.mode = rc_model::Mode::Cbr;
+        config.mode = mode.model();
+        session.rc_mode = mode;
         session.rc = Some(rc_model::Model::new(config));
         session.rc_band = (qp_min, qp_max);
         session.set_rate_control_sei(RcSei {
@@ -161,6 +188,7 @@ impl Vepu580H265 {
             qp,
             long_term,
             rc_sei: None,
+            rc_mode: RcMode::Cbr,
             rc: None,
             rc_band: (8, 48),
             last_measured: None,
@@ -465,11 +493,14 @@ impl Vepu580H265 {
         }
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.long_term_refs = self.long_term;
-        let mut stream = if let Some(sei) = self.rc_sei {
-            config.rc_mode = crate::codec::h265::encoder::RateControl::Cbr;
+        let mut stream = if let Some(sei) = self.rc_sei.as_ref() {
+            config.rc_mode = match self.rc_mode {
+                RcMode::Cbr => crate::codec::h265::encoder::RateControl::Cbr,
+                RcMode::Vbr | RcMode::Avbr => crate::codec::h265::encoder::RateControl::Vbr,
+            };
             let line = crate::codec::h265::sei::RcCfgLine {
                 model_name: "default",
-                mode_name: "cbr",
+                mode_name: self.rc_mode.name(),
                 bps_target: sei.target,
                 bps_min: sei.min,
                 bps_max: sei.max,

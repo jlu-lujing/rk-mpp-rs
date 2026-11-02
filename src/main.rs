@@ -1383,7 +1383,7 @@ fn main() {
         }
         return;
     }
-    if args.len() > 1 && args[1] == "h265-cbr" {
+    if args.len() > 1 && args[1] == "h265-rate" {
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
@@ -1397,7 +1397,13 @@ fn main() {
                 None
             }
         });
-        let usage = "usage: rk-mpp-rs h265-cbr <in.nv12> <out.265> <w> <h> <frames> <bps:min:max> [init_qp] [qp_min] [qp_max]";
+        let mode_name = args.get(11).map(|s| s.as_str()).unwrap_or("cbr");
+        let mode = match mode_name {
+            "vbr" => h265e_session::RcMode::Vbr,
+            "avbr" => h265e_session::RcMode::Avbr,
+            _ => h265e_session::RcMode::Cbr,
+        };
+        let usage = "usage: rk-mpp-rs h265-rate <in.nv12> <out.265> <w> <h> <frames> <bps:min:max> [init_qp] [qp_min] [qp_max] [cbr|vbr|avbr]";
         let (Some(width), Some(height), Some(frames), Some((target, min, max))) =
             (width, height, frames, bps)
         else {
@@ -1432,8 +1438,8 @@ fn main() {
             eprintln!("{src}: {frames} frames need {} bytes", frame_size * frames);
             std::process::exit(1);
         }
-        let result = h265e_session::Vepu580H265::open_cbr(
-            width, height, target, min, max, init_qp, qp_min, qp_max,
+        let result = h265e_session::Vepu580H265::open_rate(
+            width, height, mode, target, min, max, init_qp, qp_min, qp_max,
         )
         .and_then(|mut encoder| {
             let mut out = Vec::new();
@@ -1450,7 +1456,7 @@ fn main() {
         }) {
             Ok(bytes) => println!("h265-cbr {src} -> {dst}: {bytes} bytes, {frames} pictures"),
             Err(e) => {
-                eprintln!("H.265 CBR encode failed: {e}");
+                eprintln!("H.265 rate-control encode failed: {e}");
                 std::process::exit(1);
             }
         }
