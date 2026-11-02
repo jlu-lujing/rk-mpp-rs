@@ -157,6 +157,18 @@ pub enum Iep2DilMode {
     Dect = 9,
 }
 
+impl Iep2DilMode {
+    /// Destination slots the mode writes, in `dst[0], dst[1]` order.
+    pub const fn output_slots(self) -> (bool, bool) {
+        match self {
+            Self::I5O2 | Self::I2O2 => (true, true),
+            Self::I5O1T | Self::I1O1T | Self::Bypass | Self::Disable => (true, false),
+            Self::I5O1B | Self::I1O1B => (false, true),
+            Self::Pd | Self::Dect => (false, false),
+        }
+    }
+}
+
 /// `enum IEP2_OUT_MODE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]

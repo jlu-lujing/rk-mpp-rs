@@ -854,7 +854,7 @@ fn run_iep_dei(
     data: &[u8],
     dst: &str,
     cfg: rk_mpp_rs::service::iep_session::DeinterlaceConfig,
-) -> Result<usize, String> {
+) -> Result<(usize, usize), String> {
     use rk_mpp_rs::service::iep_session::IepDeinterlace;
 
     let mut dei = IepDeinterlace::open(cfg).map_err(|e| format!("open IEP client 28: {e}"))?;
@@ -893,7 +893,8 @@ fn run_iep_dei(
         out.extend_from_slice(&dei.dst_frame(i)[..n]);
     }
     std::fs::write(dst, &out).map_err(|e| format!("{dst}: {e}"))?;
-    Ok(2)
+    let (top, bottom) = cfg.dil_mode.output_slots();
+    Ok((2, usize::from(top) + usize::from(bottom)))
 }
 
 fn main() {
@@ -3181,19 +3182,36 @@ fn main() {
         return;
     }
     if args.len() > 1 && args[1] == "iep-dei" {
-        // One I5O2 deinterlace: three source frames in, two progressive frames
-        // out. `iep-dei <in.yuv> <out.yuv> <width> <height> [TFF|BFF]`.
+        // One IEP2 deinterlace. The raw output always contains both hardware
+        // destination slots so single-output modes can verify the unused slot is
+        // zero; the active slot count is reported separately.
         use rk_mpp_rs::hal::iep::{Iep2DilMode, Iep2FieldOrder, Iep2Fmt, Iep2OutMode};
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
         let height: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let field_order = match args.get(6).map(|s| s.as_str()) {
-            Some("BFF") => Iep2FieldOrder::Bff,
-            _ => Iep2FieldOrder::Tff,
-        };
+        let mut field_order = Iep2FieldOrder::Tff;
+        let mut dil_mode = Iep2DilMode::I5O2;
+        for text in args.iter().skip(6) {
+            match text.as_str() {
+                "TFF" => field_order = Iep2FieldOrder::Tff,
+                "BFF" => field_order = Iep2FieldOrder::Bff,
+                "I5O2" => dil_mode = Iep2DilMode::I5O2,
+                "I5O1T" => dil_mode = Iep2DilMode::I5O1T,
+                "I5O1B" => dil_mode = Iep2DilMode::I5O1B,
+                "I2O2" => dil_mode = Iep2DilMode::I2O2,
+                "I1O1T" => dil_mode = Iep2DilMode::I1O1T,
+                "I1O1B" => dil_mode = Iep2DilMode::I1O1B,
+                "BYPASS" => dil_mode = Iep2DilMode::Bypass,
+                "DISABLE" => dil_mode = Iep2DilMode::Disable,
+                other => {
+                    eprintln!("unknown IEP mode {other}");
+                    std::process::exit(2);
+                }
+            }
+        }
         if src.is_empty() || dst.is_empty() || width == 0 || height == 0 {
-            eprintln!("usage: rk-mpp-rs iep-dei <in.yuv> <out.yuv> <width> <height> [TFF|BFF]");
+            eprintln!("usage: rk-mpp-rs iep-dei <in.yuv> <out.yuv> <width> <height> [TFF|BFF] [I5O2|I5O1T|I5O1B|I2O2|I1O1T|I1O1B]");
             std::process::exit(2);
         }
         let cfg = iep_session::DeinterlaceConfig {
@@ -3202,7 +3220,7 @@ fn main() {
             hor_stride: width,
             src_fmt: Iep2Fmt::Yuv420,
             dst_fmt: Iep2Fmt::Yuv420,
-            dil_mode: Iep2DilMode::I5O2,
+            dil_mode,
             out_mode: Iep2OutMode::Line,
             field_order,
             ..iep_session::DeinterlaceConfig::default()
@@ -3215,7 +3233,9 @@ fn main() {
             }
         };
         match run_iep_dei(&data, dst, cfg) {
-            Ok(frames) => println!("iep-dei: wrote {frames} deinterlaced frames to {dst}"),
+            Ok((slots, active)) => {
+                println!("iep-dei: wrote {slots} raw slots ({active} active) to {dst}")
+            }
             Err(e) => {
                 eprintln!("iep-dei: {e}");
                 std::process::exit(1);

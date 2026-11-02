@@ -164,6 +164,19 @@ impl IepDeinterlace {
     ///
     /// On return the output dma-bufs are already invalidated for CPU reads.
     pub fn run(&mut self) -> Result<[u32; iep::OUTPUT_WORDS], String> {
+        // `iep2_test` clears both destinations before every job. Single-output
+        // modes leave the unused slot observably zero instead of exposing stale
+        // dma-heap contents.
+        let dst_len = self.dst_frame_bytes();
+        for dst in self.dst.iter_mut() {
+            dst.sync_write_begin()
+                .map_err(|e| format!("dst clear sync: {e}"))?;
+            let len = dst_len.min(dst.len());
+            dst.as_mut_slice()[..len].fill(0);
+            dst.sync_write_end()
+                .map_err(|e| format!("dst clear flush: {e}"))?;
+        }
+
         for i in 0..3 {
             self.src[i]
                 .sync_read_begin()

@@ -115,7 +115,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 629 passed, 26 board-only ignored
+cargo test --all-targets      # 630 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -145,6 +145,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_h265_slice_vs_mpp.sh         # H.265 普通整 AU slice 3/3
 ./scripts/board_h265_lowdelay_vs_mpp.sh      # H.265 逐 slice packet 4/4
 ./scripts/board_h265_roi_vs_mpp.sh           # H.265 ROI/QP map 4/4
+./scripts/board_iep_modes_vs_probe.sh        # IEP2 全模式 + 原始 dst slots 9/9
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
@@ -405,6 +406,9 @@ H.264/VEPU580 编码已做到：
 - VDPP（client 29）在 RK3588 **不存在**，不要照 MPP 的 vdpp2 实现。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
+- `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1。
+  `board_iep_modes_vs_probe.sh` 为 **9/9**：I5O2（TFF/BFF）、I5O1T/B、I2O2、
+  I1O1T/B、DISABLE、BYPASS。T 模式只写 dst0，B 模式只写 dst1，未用槽为零。
 - 现有 `src/scale.rs` 已覆盖推理链路需要的 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×），
   不需要为了 YOLO 去移植 IEP；做完整性再做。
 
@@ -491,7 +495,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 629 通过（26 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 630 通过（26 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

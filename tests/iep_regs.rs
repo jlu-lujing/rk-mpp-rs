@@ -22,6 +22,16 @@ fn register_block_is_the_size_iep2_start_sends() {
 }
 
 #[test]
+fn deinterlace_modes_report_the_destination_slots_the_hardware_writes() {
+    assert_eq!(Iep2DilMode::I5O2.output_slots(), (true, true));
+    assert_eq!(Iep2DilMode::I2O2.output_slots(), (true, true));
+    assert_eq!(Iep2DilMode::I5O1T.output_slots(), (true, false));
+    assert_eq!(Iep2DilMode::I1O1T.output_slots(), (true, false));
+    assert_eq!(Iep2DilMode::I5O1B.output_slots(), (false, true));
+    assert_eq!(Iep2DilMode::I1O1B.output_slots(), (false, true));
+}
+
+#[test]
 fn field_offsets_match_the_c_layout() {
     // src[3] then dst[2] then mv/md pack contiguously after the strides.
     assert_eq!(iep::SRC0_Y, 9);
