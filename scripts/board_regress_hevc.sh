@@ -528,7 +528,8 @@ assert len(groups) == 10, len(groups)
 Path("/tmp/t720_missing_au2.hevc").write_bytes(b"".join(groups[:2] + groups[3:]))
 PY'
 fi
-if ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+if ssh "$BOARD" 'test -f /tmp/t720_missing_au2.hevc &&
+    test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
   ssh "$BOARD" 'sudo rm -f /tmp/t720_missing_au2_mpp.yuv \
     /tmp/t720_missing_au2_mpp_2planar.yuv'
