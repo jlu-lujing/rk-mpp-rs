@@ -12,6 +12,22 @@ Companions: [README.md](README.md) for the current state at a glance, and
 [docs/HANDOFF.md](docs/HANDOFF.md) for how to pick the work up - board toolchain,
 debug switches, traps, and the ordered next steps.
 
+## Scope decision (2026-11-02)
+
+The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
+
+- A result that differs from the C reference is a defect, not an improvement, unless
+  the C behaviour has been separately proven to be a bug.
+- New feature frontier work (tiles/WPP/SAO, B frames, multi-reference scheduling,
+  refresh/GDR allocation, fuzz-only edges) is **frozen** until the implemented paths
+  are closed to byte/pixel equality. `hal::h265e`'s GDR table remains opt-in and
+  explicitly unverified (the C vintage cannot be made to emit a refresh picture
+  through the public config, so there is no oracle).
+- Performance work is allowed only when it does not change one byte of output, and
+  the same stream must be compared before/after.
+- A deliberate divergence is kept only with the C-side evidence that it is wrong,
+  and recorded in this file.
+
 ## Board capability map (NanoPC-T6-LTS, mask `0x1009321a`)
 
 Measured with `rk-mpp-rs probe`, which asks two different questions per block:
