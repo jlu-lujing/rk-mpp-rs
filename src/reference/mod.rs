@@ -10,5 +10,6 @@ pub mod h264;
 pub mod h264_cavlc;
 pub mod h264_mb;
 pub mod h264_pred;
+pub mod h264_recon;
 pub mod h264_residual;
 pub mod transform;
