@@ -28,6 +28,7 @@ streams=(
   "/tmp/vp90_720.ivf:vp9dec:10:1280:720:0"
   "/tmp/p0_320x240_30.ivf:vp9dec:10:320:240:0"
   "/tmp/av1_320x240_10.ivf:av1dec:16777224:320:240:0"
+  "/tmp/av1_tiles_320x240_10.ivf:av1dec:16777224:320:240:0"
   "/tmp/m2v_320x240_12.m2v:m2vdec:2:320:240:0"
   "/tmp/m2v_320x240_ilaced.m2v:m2vdec:2:320:240:0"
   "/tmp/m2v_64x64_3.m2v:m2vdec:2:64:64:0"
@@ -94,7 +95,7 @@ for entry in "${streams[@]}"; do
 
   r=$(median "${rust_ms[@]}")
   m=$(median "${mpp_ms[@]}")
-  printf '%-34s %3s pics | C MPP %8s ms (%7.1f fps) | rust %8s ms (%7.1f fps) | rust %+.1f%%\n' \
+  printf '%-34s %3s pics | C MPP %8s ms (%7.1f fps) | rust %8s ms (%7.1f fps) | rust speed %+.1f%%\n' \
     "$(basename "$stream")" "${rust_n:-?}" "$m" \
     "$(awk -v f="${mpp_n:-1}" -v t="$m" 'BEGIN{print f*1000/t}')" \
     "$r" "$(awk -v f="${rust_n:-1}" -v t="$r" 'BEGIN{print f*1000/t}')" \
