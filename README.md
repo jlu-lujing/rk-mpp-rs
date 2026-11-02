@@ -11,7 +11,7 @@
 
 ## 验证范围（重要）
 
-**本项目只对 RK3588（NanoPC-T6-LTS）做验证与保证。**
+**本项目只对 RK3588（NanoPC-T6-LTS；当前板为 t62）做验证与保证。**
 
 - 所有"完成 / 逐字节一致 / 性能"结论都只在这块板子上成立，且只针对它暴露的硬件块：
   client 1（vdpu2）、4（av1d）、9（rkvdec）、13（jpegd）、16（rkv-enc）、
@@ -43,7 +43,9 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 I5O2 去隔行**板上逐字节**；VDPP 该板不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成一半（按 ROADMAP 各里程碑的工作量估加权）。ROADMAP 上 75 项已勾、20 项未勾。
+整体约完成一半（按 ROADMAP 各里程碑的工作量估加权）。ROADMAP 顶层清单当前为
+55 项完成、13 项未完成；未完成项里有硬件不存在、无 conformance 流和冻结前沿，
+不宜直接把勾选比例当作代码工作量。
 
 ## 怎么验证的
 
@@ -59,7 +61,7 @@
 复跑：
 
 ```bash
-cargo test --all-targets                     # 441 通过，11 个板级用例 ignore
+cargo test --all-targets                     # 605 通过，26 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
@@ -69,8 +71,7 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 
 | 项目 | 结果 |
 |---|---|
-| 解码（21 条流，`scripts/board_bench_vs_mpp.sh`） | 全部快于 C：+55% … +738% |
-| 编码（`scripts/board_bench_encode_vs_mpp.sh`） | 320p/480p/720p 快 8–30%；1088 行**平手**（不作胜利声明） |
+| 解码 / 编码 | 当前证据只支持“**不比 C 慢**”。同一二进制在 t62 的 720p H.264 结果可从 72.9 ms 漂到 120.1 ms；旧的高速百分比是未做交错采样时的高噪声样本，不再作为结论 |
 | RGB letterbox（替换 RGA） | 1080p→640: 0.84 ms vs RGA 3.21 ms；1:1: 0.53 vs 1.50 |
 
 ## 用法
@@ -95,9 +96,10 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 ```bash
 cargo build --release                     # 宿主仅做类型检查
 # 板上（aarch64）
+BOARD=${BOARD:-t62}
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 ```
 
 除 `libc` 外无第三方依赖。

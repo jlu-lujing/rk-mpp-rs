@@ -7,8 +7,9 @@
 提升；结果与 C 不一致即视为缺陷，除非另外证明 C 是 bug。功能前沿（tiles/WPP/SAO、B 帧、
 refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉。
 
-本文以仓库现状为准（`d0e6947`；工作树干净）。`README.md` 是最新状态速览，`ROADMAP.md` 是逐项证据台账（权威），
-本文是"从哪继续、怎么不被坑"的操作手册。
+本文以仓库现状为准；接手时先跑 `git rev-parse --short HEAD` 和
+`git status --short`，不要相信本文记录的历史提交号。`README.md` 是最新状态速览，
+`ROADMAP.md` 是逐项证据台账（权威），本文是"从哪继续、怎么不被坑"的操作手册。
 
 ---
 
@@ -74,13 +75,13 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 2. **cargo 在这台板是 offline + Debian registry**（`~/.cargo/config.toml`），
    registry 里只有 `libc-0.2.169`。复制过来的 `Cargo.lock` 若锁定别的版本会解析
    失败；删掉锁文件让 cargo 就地解析即可。
-3. 现有 39 个脚本把板子写死成 `ssh t6`。在 t62 上放一个指向 `127.0.0.1` 的
-   `Host t6` 别名（本机免密 key），脚本就能原样运行；同时要从**另一个目录**
-   （如 `~/rk-mpp-run`）驱动，因为脚本会 `tar . | ssh t6 'extract 到 ~/rk-mpp-rs'`，
-   在同一目录下会自己吞自己。
+3. 新脚本统一使用 `BOARD="${BOARD:-t62}"`，默认不再写死 t6。驱动脚本时从
+   **另一个目录**（如 `~/rk-mpp-run`）运行，因为有些脚本会打包当前目录并在
+   同一目标解压；在目标目录里运行会自己吞自己。
 4. `ffmpeg`/`ffprobe` 需要 `apt-get install`，矩阵脚本的 NV12→planar 依赖它们。
-5. corpus 还没有复制到 t62（原在 t6 的 `~/rk-mpp-oracles/corpus`），全量扫描要等它
-   恢复或从别处补上。
+5. t62 上已有重新生成的覆盖语料 `~/rk-mpp-oracles/corpus-gen`（59 个文件）。
+   原 t6 的第三方 corpus 无法原样复制；扫描时使用 `CORPUS=.../corpus-gen`，
+   并确保从当前提交重新运行 `scripts/gen_corpus.sh`，不要使用过期的 MPEG-4 容器副本。
 6. **H.264 QP 矩阵需要参考 harness 的 level 补丁。** `mpi_enc_test.c` 把
    `h264:level` 写死为 40，而 crate 的 Constrained Baseline 是 30；`board_h264_qp_vs_mpp.sh`
    现在会连同 profile/cabac/trans8x8 一起把 level sed 成 30，所以新板不需要预置打过补丁
@@ -88,14 +89,14 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 593 passed, 23 board-only ignored
+cargo test --all-targets      # 605 passed, 26 board-only ignored
 cargo fmt --check
 git log --oneline -10
 grep -c '^- \[x\]' ROADMAP.md  # 已完成条目数
 grep -c '^- \[ \]' ROADMAP.md  # 未完成条目数
 ```
 
-板上验证（需要 `ssh t6`，详见第 4 节）：
+板上验证（`BOARD` 默认 t62，详见第 4 节）：
 
 ```bash
 ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 分钟
@@ -108,13 +109,12 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-整体完成度约六成。解码侧基本收口；H.264 编码的 level、deblock、ROI/QP map、
-auto-QP 起始 QP、场景检测、GDR、slice split、>4096 扩展行与 P 帧全部板上逐字节；
-JPEG 编码有 restart/90°/270°/RGB；framework 有异步任务队列 + 引用计数缓冲池。
-**当前主攻 H.265 编码**：固定 QP 的 VPS/SPS/PPS 已 3/3 板上逐字节，寄存器作业已抓取，
-推导图与 C 的六段作业只差 `enc_pic.mei_stor` 一位（见 ROADMAP 的 H.265 条目）。
-下一步是让 H.265 有自己拥有缓冲的提交路径；H.264 那条线剩下的是逐 slice 输出路径
-（`slen_fifo`/low-delay 包）与 >4096 宽度下的 P 格。
+ROADMAP 顶层清单当前为 55 项完成、13 项未完成；未完成项包含硬件不存在、无
+conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
+H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
+**当前阻塞是 t62 上 Rust AV1 tile fixture 的硬件超时。** 恢复顺序固定为：
+物理重启 → `board_av1_presubmit_compare.sh` 输入镜像全同 → 才允许恢复 Rust
+硬件提交实验。其它已知差异和下一步证据见 `docs/DIVERGENCES.md` 与 ROADMAP。
 
 ---
 
@@ -200,23 +200,23 @@ H.264/VEPU580 编码已做到：
 
 ## 4. 板子与工具链（必读）
 
-- 板子：`ssh t6`（NanoPC-T6，RK3588，内核 6.1.57）。动物 `/dev/mpp_service` 需要 `sudo`。
+- 当前板：`BOARD="${BOARD:-t62}"`（NanoPC-T6-LTS，RK3588，内核 6.1.141）。
+  `/dev/mpp_service` 需要 `sudo`。
 - 参考 C MPP：
   - `/tmp/mpp-old`（commit `80957d266`，2024-04-24）＝**编码器字节级预言机**；
     构建在 `/tmp/mpp-old/build`。SONAME 为 `librockchip_mpp.so.1`。
   - `/tmp/mpp-develop`（master）＝解码器基准。
   - `/tmp/mpp_trace.so`＝ioctl tracer（由 `tools/mpp_ioctl_trace.c` 构建）。
   - ⚠️ 它们是 `/tmp` 里的**工作副本**；权威副本在 `~/rk-mpp-oracles`
-    （`mpp-old` 66M、`mpp-develop` 54M、`mpp_trace.so`、`corpus/` 438 个流与参考输出）。
-    实测 t6 的 `/tmp` 不是 tmpfs（根是 overlay，`upperdir=/data/root`），
-    但 `systemd-tmpfiles-clean.timer` 在跑且策略含 `D /tmp 1777 root root -`，
-    所以它是会被清的位置。`scripts/setup_board_refs.sh` 先检查后回填，
-    三样都缺时会 clone `80957d266` / master 并用 cmake 重建。
+    （`mpp-old`、`mpp-develop`、`mpp_trace.so`、`corpus-gen/`）。t62 的 `/tmp`
+    是 tmpfs，重启后依赖 `~/.profile` 重建上述三个 symlink。
+    `scripts/setup_board_refs.sh` 先检查后回填。
 - 同步/构建（脚本里都在用）：
   ```bash
+  BOARD="${BOARD:-t62}"
   COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-    ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-  ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
   ```
 - **MPP 的调试开关是裸小写 env 名**（`mpp_env_get_u32` → `getenv(name)`，无 `MPP_` 前缀）：
   - `rc_debug=0x40`（RC 状态）、`0x80`（QP 项）、`0x20`（bps 行）、`0xf0` 全开；
@@ -362,7 +362,8 @@ buffer 池引用计数 → 多核 → secure（secure 需设备支持，可能�
 
 - 解码吞吐脚本：`scripts/board_bench_vs_mpp.sh`（`BENCH_FILTER=` 选 pass）
 - 编码吞吐：`scripts/board_bench_encode_vs_mpp.sh`（`SAMPLES=5`）
-- 已测：解码全部快于 C（+55%…+738%）；编码 ≤720p 快 8–30%，1088 行**平手**（不要吹成胜利）
+- 当前证据只支持“解码/编码不比 C 慢”。同一二进制在 t62 上 720p H.264 可从
+  72.9 ms 漂到 120.1 ms；未做交错采样的百分比不进入结论。
 - 规则：两侧都**外部计时**、交错采样、给中位数；少于十几帧的流不能单独成结论。
 
 ---
@@ -381,7 +382,7 @@ buffer 池引用计数 → 多核 → secure（secure 需设备支持，可能�
    固定 QP 26 @320x240 → `qp_sum=7800`，7800/300=26。
 6. **`bit_real` 是硬件字节数×8**，不含软件写的前缀（SPS/PPS/SEI）。
 7. **tracer 输出很大**：永远 `grep`，不要 `cat`（曾一次烧掉 4 万 token）。
-8. **`ssh t6 '...'` 单引号内 `$VAR` 不展开**；需要本地展开时用双引号或分支。
+8. **`ssh "$BOARD" '...'` 单引号内 `$VAR` 不展开**；需要本地展开时用双引号或分支。
 9. 板上 `/tmp` 文件由 root 创建时，`scp` 前要 `sudo chmod 644`；删除要 `sudo rm -f`。
 10. **不要用 `cat a b` 造 fixture**（会读到自己）；`cp` 后 `cat >>`。
 11. 复杂嵌套 heredoc 反复出问题：写成 `/tmp/x.py` 再 `python3 /tmp/x.py`。
@@ -389,18 +390,20 @@ buffer 池引用计数 → 多核 → secure（secure 需设备支持，可能�
 13. 编码器每进程单会话；两个 rkvenc 测试并行会互相干扰（GOP 金样会错）。
 14. **残留的编码进程会占住硬件**：板上曾挂着一个 7.5 小时前的 `mpi_enc_test`，
     现象是脚本"卡住不报错"而不是失败。跑编码套件（或编排脚本）前先
-    `ssh t6 'ps -eo pid,etime,comm | grep mpi_'` 看一眼，有残留 `sudo kill -9`；
+    `ssh "$BOARD" 'ps -eo pid,etime,comm | grep mpi_'` 看一眼，有残留 `sudo kill -9`；
     杀掉本地 ssh 会话并不会终止远端仍在跑的测试进程。
 15. 编排脚本里调 `ssh` 要给子任务 `< /dev/null`：`ssh` 不带 `-n` 会继承 stdin，
     当外层标准输入是管道/文件时会永久阻塞（`board_regress_all.sh` 就这么卡过一次）。
     另外 macOS 自带 bash 3.2 + `set -u`：`SKIP` 这类可选变量必须显式 `SKIP="${SKIP:-}"`。
-14. 固定 QP 的 24 格矩阵与 6 格 GOP 是**常回归门**，任何碰编码器的改动都要重跑。
+16. 固定 QP 的 24 格矩阵与 6 格 GOP 是**常回归门**，任何碰编码器的改动都要重跑。
 
 ---
 
 ## 7. 命令速查
 
 ```bash
+BOARD="${BOARD:-t62}"
+
 # 本地
 cargo test --all-targets && cargo fmt --check
 
@@ -412,10 +415,10 @@ ONLY=sizes ./scripts/board_h264_qp_vs_mpp.sh         # 固定 QP 24 格（约 10
 ./scripts/board_h264_status_vs_mpp.sh                # STATUS 字段级对比
 
 # C 侧状态取证（AVBR 会用到）
-scp tools/rc_probe.c t6:/tmp/
-ssh t6 'cc -O2 -w -I/tmp/mpp-old/inc /tmp/rc_probe.c \
+scp tools/rc_probe.c "$BOARD":/tmp/
+ssh "$BOARD" 'cc -O2 -w -I/tmp/mpp-old/inc /tmp/rc_probe.c \
   /tmp/mpp-old/build/mpp/librockchip_mpp.so.1 -o /tmp/rc_probe'
-ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_syslog_perror=1 \
+ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_syslog_perror=1 \
   /tmp/rc_probe /tmp/rk-mpp-rs-move-320x240.nv12 /tmp/out.264 320 240 6 \
   300000 250000 350000 2'            # 最后的 2 = AVBR（1=CBR，0=VBR）
 ```
