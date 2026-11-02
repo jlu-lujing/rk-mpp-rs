@@ -15,6 +15,14 @@ pub struct Intra4x4Neighbors {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Intra8x8Neighbors {
+    pub top: Option<[u16; 8]>,
+    pub left: Option<[u16; 8]>,
+    pub top_right: Option<[u16; 8]>,
+    pub top_left: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PredictionError {
     InvalidMode(u8),
     InvalidBitDepth(u8),
@@ -44,6 +52,13 @@ impl fmt::Display for PredictionError {
 }
 
 impl std::error::Error for PredictionError {}
+
+macro_rules! set {
+    ($output:ident, $index:expr, $value:expr) => {{
+        let value = $value;
+        $output[$index] = value;
+    }};
+}
 
 /// Predict one 4x4 block using modes 0..8.
 pub fn predict_4x4(
@@ -201,6 +216,380 @@ pub fn predict_4x4(
             out[11] = left[3];
             out[14] = left[3];
             out[15] = left[3];
+        }
+        _ => return Err(PredictionError::InvalidMode(mode)),
+    }
+    Ok(out)
+}
+
+/// Predict one filtered luma 8x8 block using modes 0..8.
+pub fn predict_8x8(
+    mode: u8,
+    bit_depth: u8,
+    neighbors: &Intra8x8Neighbors,
+) -> Result<[u16; 64], PredictionError> {
+    validate_depth(bit_depth)?;
+    let top = neighbors
+        .top
+        .map(|top| filtered_top(top, neighbors.top_right, neighbors.top_left));
+    let left = neighbors
+        .left
+        .map(|left| filtered_left(left, neighbors.top_left));
+    let top_right = neighbors
+        .top
+        .map(|top| filtered_top_right(top, neighbors.top_right));
+    let mut out = [0u16; 64];
+    match mode {
+        0 => {
+            let t = top.ok_or(PredictionError::MissingTop)?;
+            for row in 0..8 {
+                out[row * 8..row * 8 + 8].copy_from_slice(&t[..8]);
+            }
+        }
+        1 => {
+            let l = left.ok_or(PredictionError::MissingLeft)?;
+            for (row, &sample) in l.iter().enumerate() {
+                out[row * 8..row * 8 + 8].fill(sample);
+            }
+        }
+        2 => {
+            let dc = match (top, left) {
+                (Some(top), Some(left)) => {
+                    (top[..8]
+                        .iter()
+                        .chain(left.iter())
+                        .map(|&v| u32::from(v))
+                        .sum::<u32>()
+                        + 8)
+                        >> 4
+                }
+                (Some(top), None) => (top[..8].iter().map(|&v| u32::from(v)).sum::<u32>() + 4) >> 3,
+                (None, Some(left)) => (left.iter().map(|&v| u32::from(v)).sum::<u32>() + 4) >> 3,
+                (None, None) => 1 << (bit_depth - 1),
+            };
+            out.fill(dc as u16);
+        }
+        3 => {
+            let top = top.ok_or(PredictionError::MissingTop)?;
+            let top_right = top_right.ok_or(PredictionError::MissingTop)?;
+            let t: [u16; 16] = std::array::from_fn(|index| {
+                if index < 8 {
+                    top[index]
+                } else {
+                    top_right[index - 8]
+                }
+            });
+            for y in 0..8 {
+                for x in 0..8 {
+                    let d = x + y;
+                    out[y * 8 + x] = if d < 14 {
+                        avg3(t[d], t[d + 1], t[d + 2])
+                    } else {
+                        (t[14] + 3 * t[15] + 2) >> 2
+                    };
+                }
+            }
+        }
+        4 => {
+            let top = top.ok_or(PredictionError::MissingTop)?;
+            let left = left.ok_or(PredictionError::MissingLeft)?;
+            let lt = filtered_lt(
+                neighbors.left.unwrap(),
+                neighbors.top.unwrap(),
+                neighbors.top_left,
+            );
+            for y in 0..8 {
+                for x in 0..8 {
+                    let c = x as i32 - y as i32;
+                    out[y * 8 + x] = if c < 0 {
+                        let j = (-c) as usize;
+                        avg3(left[j], left[j - 1], if j >= 2 { left[j - 2] } else { lt })
+                    } else if c == 0 {
+                        avg3(left[0], lt, top[0])
+                    } else {
+                        let c = c as usize;
+                        avg3(if c == 1 { lt } else { top[c - 2] }, top[c - 1], top[c])
+                    };
+                }
+            }
+        }
+        _ => {
+            return predict_8x8_directional(mode, neighbors, top, left, top_right, bit_depth);
+        }
+    }
+    Ok(out)
+}
+
+fn predict_8x8_directional(
+    mode: u8,
+    neighbors: &Intra8x8Neighbors,
+    top: Option<[u16; 8]>,
+    left: Option<[u16; 8]>,
+    top_right: Option<[u16; 8]>,
+    _bit_depth: u8,
+) -> Result<[u16; 64], PredictionError> {
+    let t = top.ok_or(PredictionError::MissingTop)?;
+    let lt = neighbors
+        .left
+        .map(|left| filtered_lt(left, neighbors.top.unwrap(), neighbors.top_left));
+    let mut out = [0u16; 64];
+    match mode {
+        5 => {
+            let l = left.ok_or(PredictionError::MissingLeft)?;
+            let lt = lt.ok_or(PredictionError::MissingTopLeft)?;
+            out[6] = avg3(l[5], l[4], l[3]);
+            out[7] = avg3(l[6], l[5], l[4]);
+            set!(out, 4, avg3(l[3], l[2], l[1]));
+            set!(out, 14, out[4]);
+            set!(out, 5, avg3(l[4], l[3], l[2]));
+            set!(out, 15, out[5]);
+            set!(out, 2, avg3(l[1], l[0], lt));
+            set!(out, 12, out[2]);
+            set!(out, 22, out[2]);
+            set!(out, 3, avg3(l[2], l[1], l[0]));
+            set!(out, 13, out[3]);
+            set!(out, 23, out[3]);
+            set!(out, 1, avg3(l[0], lt, t[0]));
+            set!(out, 11, out[1]);
+            set!(out, 21, out[1]);
+            set!(out, 31, out[1]);
+            set!(out, 0, (lt + t[0] + 1) >> 1);
+            set!(out, 10, out[0]);
+            set!(out, 20, out[0]);
+            set!(out, 30, out[0]);
+            set!(out, 9, avg3(lt, t[0], t[1]));
+            set!(out, 19, out[9]);
+            set!(out, 29, out[9]);
+            set!(out, 39, out[9]);
+            set!(out, 8, (t[0] + t[1] + 1) >> 1);
+            set!(out, 18, out[8]);
+            set!(out, 28, out[8]);
+            set!(out, 38, out[8]);
+            set!(out, 17, avg3(t[0], t[1], t[2]));
+            set!(out, 27, out[17]);
+            set!(out, 37, out[17]);
+            set!(out, 47, out[17]);
+            set!(out, 16, (t[1] + t[2] + 1) >> 1);
+            set!(out, 26, out[16]);
+            set!(out, 36, out[16]);
+            set!(out, 46, out[16]);
+            set!(out, 25, avg3(t[1], t[2], t[3]));
+            set!(out, 35, out[25]);
+            set!(out, 45, out[25]);
+            set!(out, 55, out[25]);
+            set!(out, 24, (t[2] + t[3] + 1) >> 1);
+            set!(out, 34, out[24]);
+            set!(out, 44, out[24]);
+            set!(out, 54, out[24]);
+            set!(out, 33, avg3(t[2], t[3], t[4]));
+            set!(out, 43, out[33]);
+            set!(out, 53, out[33]);
+            set!(out, 63, out[33]);
+            set!(out, 32, (t[3] + t[4] + 1) >> 1);
+            set!(out, 42, out[32]);
+            set!(out, 52, out[32]);
+            set!(out, 62, out[32]);
+            set!(out, 41, avg3(t[3], t[4], t[5]));
+            set!(out, 51, out[41]);
+            set!(out, 61, out[41]);
+            set!(out, 40, (t[4] + t[5] + 1) >> 1);
+            set!(out, 50, out[40]);
+            set!(out, 60, out[40]);
+            set!(out, 49, avg3(t[4], t[5], t[6]));
+            set!(out, 59, out[49]);
+            set!(out, 48, (t[5] + t[6] + 1) >> 1);
+            set!(out, 58, out[48]);
+            out[57] = avg3(t[5], t[6], t[7]);
+            out[56] = (t[6] + t[7] + 1) >> 1;
+        }
+        6 => {
+            let l = left.ok_or(PredictionError::MissingLeft)?;
+            let lt = lt.ok_or(PredictionError::MissingTopLeft)?;
+            out[7] = (l[6] + l[7] + 1) >> 1;
+            out[15] = avg3(l[5], l[6], l[7]);
+            out[6] = (l[5] + l[6] + 1) >> 1;
+            out[23] = out[6];
+            out[14] = avg3(l[4], l[5], l[6]);
+            out[31] = out[14];
+            out[5] = (l[4] + l[5] + 1) >> 1;
+            out[22] = out[5];
+            out[39] = out[5];
+            out[13] = avg3(l[3], l[4], l[5]);
+            out[30] = out[13];
+            out[47] = out[13];
+            out[4] = (l[3] + l[4] + 1) >> 1;
+            out[21] = out[4];
+            out[38] = out[4];
+            out[55] = out[4];
+            out[12] = avg3(l[2], l[3], l[4]);
+            out[29] = out[12];
+            out[46] = out[12];
+            out[63] = out[12];
+            out[3] = (l[2] + l[3] + 1) >> 1;
+            out[20] = out[3];
+            out[37] = out[3];
+            out[54] = out[3];
+            out[11] = avg3(l[1], l[2], l[3]);
+            out[28] = out[11];
+            out[45] = out[11];
+            out[62] = out[11];
+            out[2] = (l[1] + l[2] + 1) >> 1;
+            out[19] = out[2];
+            out[36] = out[2];
+            out[53] = out[2];
+            out[10] = avg3(l[0], l[1], l[2]);
+            out[27] = out[10];
+            out[44] = out[10];
+            out[61] = out[10];
+            out[1] = (l[0] + l[1] + 1) >> 1;
+            out[18] = out[1];
+            out[35] = out[1];
+            out[52] = out[1];
+            out[9] = avg3(lt, l[0], l[1]);
+            out[26] = out[9];
+            out[43] = out[9];
+            out[60] = out[9];
+            out[0] = (lt + l[0] + 1) >> 1;
+            out[17] = out[0];
+            out[34] = out[0];
+            out[51] = out[0];
+            out[8] = avg3(l[0], lt, t[0]);
+            out[25] = out[8];
+            out[42] = out[8];
+            out[59] = out[8];
+            out[16] = avg3(t[1], t[0], lt);
+            out[33] = out[16];
+            out[50] = out[16];
+            out[24] = avg3(t[2], t[1], t[0]);
+            out[41] = out[24];
+            out[58] = out[24];
+            out[32] = avg3(t[3], t[2], t[1]);
+            out[49] = out[32];
+            out[40] = avg3(t[4], t[3], t[2]);
+            out[57] = out[40];
+            out[48] = avg3(t[5], t[4], t[3]);
+            out[56] = avg3(t[6], t[5], t[4]);
+        }
+        7 => {
+            let tr = top_right.ok_or(PredictionError::MissingTop)?;
+            let t: [u16; 16] =
+                std::array::from_fn(|index| if index < 8 { t[index] } else { tr[index - 8] });
+            out[0] = (t[0] + t[1] + 1) >> 1;
+            out[1] = avg3(t[0], t[1], t[2]);
+            set!(out, 2, (t[1] + t[2] + 1) >> 1);
+            set!(out, 8, out[2]);
+            set!(out, 3, avg3(t[1], t[2], t[3]));
+            set!(out, 9, out[3]);
+            set!(out, 4, (t[2] + t[3] + 1) >> 1);
+            set!(out, 10, out[4]);
+            set!(out, 16, out[4]);
+            set!(out, 5, avg3(t[2], t[3], t[4]));
+            set!(out, 11, out[5]);
+            set!(out, 17, out[5]);
+            set!(out, 6, (t[3] + t[4] + 1) >> 1);
+            set!(out, 12, out[6]);
+            set!(out, 18, out[6]);
+            set!(out, 24, out[6]);
+            set!(out, 7, avg3(t[3], t[4], t[5]));
+            set!(out, 13, out[7]);
+            set!(out, 19, out[7]);
+            set!(out, 25, out[7]);
+            set!(out, 14, (t[4] + t[5] + 1) >> 1);
+            set!(out, 20, out[14]);
+            set!(out, 26, out[14]);
+            set!(out, 32, out[14]);
+            set!(out, 15, avg3(t[4], t[5], t[6]));
+            set!(out, 21, out[15]);
+            set!(out, 27, out[15]);
+            set!(out, 33, out[15]);
+            set!(out, 22, (t[5] + t[6] + 1) >> 1);
+            set!(out, 28, out[22]);
+            set!(out, 34, out[22]);
+            set!(out, 40, out[22]);
+            set!(out, 23, avg3(t[5], t[6], t[7]));
+            set!(out, 29, out[23]);
+            set!(out, 35, out[23]);
+            set!(out, 41, out[23]);
+            set!(out, 30, (t[6] + t[7] + 1) >> 1);
+            set!(out, 36, out[30]);
+            set!(out, 42, out[30]);
+            set!(out, 48, out[30]);
+            set!(out, 31, avg3(t[6], t[7], t[8]));
+            set!(out, 37, out[31]);
+            set!(out, 43, out[31]);
+            set!(out, 49, out[31]);
+            set!(out, 38, (t[7] + t[8] + 1) >> 1);
+            set!(out, 44, out[38]);
+            set!(out, 50, out[38]);
+            set!(out, 56, out[38]);
+            set!(out, 39, avg3(t[7], t[8], t[9]));
+            set!(out, 45, out[39]);
+            set!(out, 51, out[39]);
+            set!(out, 57, out[39]);
+            set!(out, 46, (t[8] + t[9] + 1) >> 1);
+            set!(out, 52, out[46]);
+            set!(out, 58, out[46]);
+            set!(out, 47, avg3(t[8], t[9], t[10]));
+            set!(out, 53, out[47]);
+            set!(out, 59, out[47]);
+            set!(out, 54, (t[9] + t[10] + 1) >> 1);
+            set!(out, 60, out[54]);
+            set!(out, 55, avg3(t[9], t[10], t[11]));
+            set!(out, 61, out[55]);
+            out[62] = (t[10] + t[11] + 1) >> 1;
+            out[63] = avg3(t[10], t[11], t[12]);
+        }
+        8 => {
+            let l = left.ok_or(PredictionError::MissingLeft)?;
+            out[0] = (l[0] + l[1] + 1) >> 1;
+            out[8] = avg3(l[0], l[1], l[2]);
+            set!(out, 1, (l[1] + l[2] + 1) >> 1);
+            set!(out, 16, out[1]);
+            set!(out, 9, avg3(l[1], l[2], l[3]));
+            set!(out, 24, out[9]);
+            set!(out, 2, (l[2] + l[3] + 1) >> 1);
+            set!(out, 17, out[2]);
+            set!(out, 32, out[2]);
+            set!(out, 10, avg3(l[2], l[3], l[4]));
+            set!(out, 25, out[10]);
+            set!(out, 40, out[10]);
+            set!(out, 3, (l[3] + l[4] + 1) >> 1);
+            set!(out, 18, out[3]);
+            set!(out, 33, out[3]);
+            set!(out, 48, out[3]);
+            set!(out, 11, avg3(l[3], l[4], l[5]));
+            set!(out, 26, out[11]);
+            set!(out, 41, out[11]);
+            set!(out, 56, out[11]);
+            set!(out, 4, (l[4] + l[5] + 1) >> 1);
+            set!(out, 19, out[4]);
+            set!(out, 34, out[4]);
+            set!(out, 49, out[4]);
+            set!(out, 12, avg3(l[4], l[5], l[6]));
+            set!(out, 27, out[12]);
+            set!(out, 42, out[12]);
+            set!(out, 57, out[12]);
+            set!(out, 5, (l[5] + l[6] + 1) >> 1);
+            set!(out, 20, out[5]);
+            set!(out, 35, out[5]);
+            set!(out, 50, out[5]);
+            set!(out, 13, avg3(l[5], l[6], l[7]));
+            set!(out, 28, out[13]);
+            set!(out, 43, out[13]);
+            set!(out, 58, out[13]);
+            set!(out, 6, (l[6] + l[7] + 1) >> 1);
+            set!(out, 21, out[6]);
+            set!(out, 36, out[6]);
+            set!(out, 51, out[6]);
+            set!(out, 14, avg3(l[6], l[7], l[7]));
+            set!(out, 29, out[14]);
+            set!(out, 44, out[14]);
+            set!(out, 59, out[14]);
+            for index in [
+                7, 15, 22, 23, 30, 31, 37, 38, 39, 45, 46, 47, 52, 53, 54, 55, 60, 61, 62, 63,
+            ] {
+                out[index] = l[7];
+            }
         }
         _ => return Err(PredictionError::InvalidMode(mode)),
     }
@@ -435,6 +824,55 @@ fn avg3(a: u16, b: u16, c: u16) -> u16 {
     ((u32::from(a) + 2 * u32::from(b) + u32::from(c) + 2) >> 2) as u16
 }
 
+fn filtered_top(top: [u16; 8], top_right: Option<[u16; 8]>, top_left: Option<u16>) -> [u16; 8] {
+    let left = top_left.unwrap_or(top[0]);
+    let right = top_right.unwrap_or([top[7]; 8]);
+    [
+        avg3(left, top[0], top[1]),
+        avg3(top[0], top[1], top[2]),
+        avg3(top[1], top[2], top[3]),
+        avg3(top[2], top[3], top[4]),
+        avg3(top[3], top[4], top[5]),
+        avg3(top[4], top[5], top[6]),
+        avg3(top[5], top[6], top[7]),
+        avg3(top[6], top[7], right[0]),
+    ]
+}
+
+fn filtered_left(left: [u16; 8], top_left: Option<u16>) -> [u16; 8] {
+    let above = top_left.unwrap_or(left[0]);
+    [
+        avg3(above, left[0], left[1]),
+        avg3(left[0], left[1], left[2]),
+        avg3(left[1], left[2], left[3]),
+        avg3(left[2], left[3], left[4]),
+        avg3(left[3], left[4], left[5]),
+        avg3(left[4], left[5], left[6]),
+        avg3(left[5], left[6], left[7]),
+        (left[6] + 3 * left[7] + 2) >> 2,
+    ]
+}
+
+fn filtered_top_right(top: [u16; 8], top_right: Option<[u16; 8]>) -> [u16; 8] {
+    let Some(right) = top_right else {
+        return [top[7]; 8];
+    };
+    [
+        avg3(top[7], right[0], right[1]),
+        avg3(right[0], right[1], right[2]),
+        avg3(right[1], right[2], right[3]),
+        avg3(right[2], right[3], right[4]),
+        avg3(right[3], right[4], right[5]),
+        avg3(right[4], right[5], right[6]),
+        avg3(right[5], right[6], right[7]),
+        (right[6] + 3 * right[7] + 2) >> 2,
+    ]
+}
+
+fn filtered_lt(left: [u16; 8], top: [u16; 8], top_left: Option<u16>) -> u16 {
+    avg3(left[0], top_left.unwrap_or(left[0]), top[0])
+}
+
 fn validate_depth(bit_depth: u8) -> Result<(), PredictionError> {
     if (8..=10).contains(&bit_depth) {
         Ok(())
@@ -519,6 +957,46 @@ mod tests {
             [49; 256]
         );
         assert_eq!(predict_16x16(2, 8, None, None, None).unwrap(), [128; 256]);
+    }
+
+    #[test]
+    fn filtered_eight_by_eight_modes_match_reference_edges() {
+        let neighbors = Intra8x8Neighbors {
+            top: Some([10, 20, 30, 40, 50, 60, 70, 80]),
+            left: Some([90, 100, 110, 120, 130, 140, 150, 160]),
+            top_right: Some([90, 100, 110, 120, 130, 140, 150, 160]),
+            top_left: Some(5),
+        };
+        assert_eq!(
+            predict_8x8(0, 8, &neighbors).unwrap()[..8],
+            [11, 20, 30, 40, 50, 60, 70, 80]
+        );
+        assert_eq!(predict_8x8(1, 8, &neighbors).unwrap()[0], 71);
+        assert_eq!(predict_8x8(2, 8, &neighbors).unwrap(), [84; 64]);
+        assert_eq!(
+            predict_8x8(3, 8, &neighbors).unwrap()[..8],
+            [20, 30, 40, 50, 60, 70, 80, 90]
+        );
+        assert_eq!(
+            predict_8x8(4, 8, &neighbors).unwrap()[..8],
+            [35, 18, 20, 30, 40, 50, 60, 70]
+        );
+        assert_eq!(
+            predict_8x8(5, 8, &neighbors).unwrap()[..8],
+            [20, 35, 68, 95, 110, 120, 130, 140]
+        );
+        assert_eq!(
+            predict_8x8(6, 8, &neighbors).unwrap()[..8],
+            [50, 86, 105, 115, 125, 135, 145, 154]
+        );
+        assert_eq!(
+            predict_8x8(7, 8, &neighbors).unwrap()[..8],
+            [16, 20, 25, 30, 35, 40, 45, 50]
+        );
+        assert_eq!(
+            predict_8x8(8, 8, &neighbors).unwrap()[..8],
+            [86, 105, 115, 125, 135, 145, 154, 158]
+        );
     }
 
     #[test]
