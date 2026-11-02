@@ -40,6 +40,68 @@ pub fn inverse_4x4(coeffs: [i32; 16]) -> [i32; 16] {
     out
 }
 
+/// H.264 8.5.10 inverse 8x8 residual transform.
+///
+/// The coefficient block is raster order. As in the specification and FFmpeg's
+/// integer implementation, the DC coefficient gets the rounding offset before
+/// the vertical pass; the horizontal pass performs the final arithmetic shift
+/// by six.
+pub fn inverse_8x8(coeffs: [i32; 64]) -> [i32; 64] {
+    let mut block: [i64; 64] = coeffs.map(i64::from);
+    block[0] += 32;
+
+    for column in 0..8 {
+        let input = std::array::from_fn(|row| block[row * 8 + column]);
+        let output = butterfly8(input);
+        for row in 0..8 {
+            block[row * 8 + column] = output[row];
+        }
+    }
+
+    let mut residual = [0i32; 64];
+    for row in 0..8 {
+        let input = std::array::from_fn(|column| block[row * 8 + column]);
+        let output = butterfly8(input);
+        for column in 0..8 {
+            residual[row * 8 + column] = (output[column] >> 6) as i32;
+        }
+    }
+    residual
+}
+
+fn butterfly8(input: [i64; 8]) -> [i64; 8] {
+    let a0 = input[0] + input[4];
+    let a2 = input[0] - input[4];
+    let a4 = (input[2] >> 1) - input[6];
+    let a6 = (input[6] >> 1) + input[2];
+
+    let b0 = a0 + a6;
+    let b2 = a2 + a4;
+    let b4 = a2 - a4;
+    let b6 = a0 - a6;
+
+    let a1 = -input[3] + input[5] - input[7] - (input[7] >> 1);
+    let a3 = input[1] + input[7] - input[3] - (input[3] >> 1);
+    let a5 = -input[1] + input[7] + input[5] + (input[5] >> 1);
+    let a7 = input[3] + input[5] + input[1] + (input[1] >> 1);
+
+    let b1 = (a7 >> 2) + a1;
+    let b3 = a3 + (a5 >> 2);
+    let b5 = (a3 >> 2) - a5;
+    let b7 = a7 - (a1 >> 2);
+
+    [
+        b0 + b7,
+        b2 + b5,
+        b4 + b3,
+        b6 + b1,
+        b6 - b1,
+        b4 - b3,
+        b2 - b5,
+        b0 - b7,
+    ]
+}
+
 fn butterfly(input: [i32; 4], output: &mut [i32]) {
     let i0 = input[0] + input[2];
     let i1 = input[0] - input[2];
@@ -139,6 +201,68 @@ pub fn add_residual_4x4_u16(
         for column in 0..4 {
             let at = (y + row) * stride + x + column;
             let value = i32::from(plane[at]) + residual[row * 4 + column];
+            plane[at] = value.clamp(0, max) as u16;
+        }
+    }
+    Ok(())
+}
+
+/// Add a transformed residual to an 8-bit 8x8 block and clip to 0..=255.
+pub fn add_residual_8x8(
+    plane: &mut [u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    x: usize,
+    y: usize,
+    residual: &[i32; 64],
+    bit_depth: u8,
+) -> Result<(), &'static str> {
+    if bit_depth != 8 {
+        return Err("use the u16 residual add for high-bit-depth output");
+    }
+    if stride < width || plane.len() < stride * height {
+        return Err("pixel plane is smaller than its stride x height");
+    }
+    if x + 8 > width || y + 8 > height {
+        return Err("8x8 residual block exceeds the visible plane");
+    }
+    let max = ((1u32 << bit_depth) - 1) as i32;
+    for row in 0..8 {
+        for column in 0..8 {
+            let at = (y + row) * stride + x + column;
+            let value = i32::from(plane[at]) + residual[row * 8 + column];
+            plane[at] = value.clamp(0, max) as u8;
+        }
+    }
+    Ok(())
+}
+
+/// Add an 8x8 residual to a 16-bit storage plane for 8/10-bit output.
+pub fn add_residual_8x8_u16(
+    plane: &mut [u16],
+    width: usize,
+    height: usize,
+    stride: usize,
+    x: usize,
+    y: usize,
+    residual: &[i32; 64],
+    bit_depth: u8,
+) -> Result<(), &'static str> {
+    if !(8..=10).contains(&bit_depth) {
+        return Err("H.264 reference add supports 8..=10 bit output");
+    }
+    if stride < width || plane.len() < stride * height {
+        return Err("pixel plane is smaller than its stride x height");
+    }
+    if x + 8 > width || y + 8 > height {
+        return Err("8x8 residual block exceeds the visible plane");
+    }
+    let max = ((1u32 << bit_depth) - 1) as i32;
+    for row in 0..8 {
+        for column in 0..8 {
+            let at = (y + row) * stride + x + column;
+            let value = i32::from(plane[at]) + residual[row * 8 + column];
             plane[at] = value.clamp(0, max) as u16;
         }
     }
@@ -382,6 +506,49 @@ mod tests {
     }
 
     #[test]
+    fn inverse_8x8_dc_spreads_with_the_specification_rounding() {
+        let mut coeffs = [0i32; 64];
+        coeffs[0] = 4096;
+        assert_eq!(inverse_8x8(coeffs), [64; 64]);
+    }
+
+    #[test]
+    fn inverse_8x8_matches_the_ffmpeg_two_pass_integer_transform() {
+        let mut coeffs = [0i32; 64];
+        for (position, value) in [
+            (0, 1024),
+            (1, 700),
+            (7, -300),
+            (8, -500),
+            (9, 400),
+            (14, -250),
+            (16, 300),
+            (18, -200),
+            (23, 125),
+            (27, -90),
+            (32, 160),
+            (35, -70),
+            (40, 210),
+            (45, -45),
+            (49, 180),
+            (54, -120),
+            (56, 95),
+            (63, 150),
+        ] {
+            coeffs[position] = value;
+        }
+        assert_eq!(
+            inverse_8x8(coeffs),
+            [
+                36, 50, 27, 33, 9, -9, -11, -20, 22, 24, 1, 17, -11, -5, -20, -28, 38, 38, 8, 18,
+                1, -3, -10, -23, 29, 39, 7, 29, -9, 15, -9, 2, 27, 25, 21, 21, 0, 11, 3, 12, 25,
+                31, 12, 29, -6, 17, -4, 7, 33, 27, 36, 31, 29, 43, 21, 34, 36, 31, 35, 39, 26, 41,
+                20, 27,
+            ]
+        );
+    }
+
+    #[test]
     fn dc_prediction_uses_the_available_edges() {
         assert_eq!(
             dc_predict(4, Some(&[10, 11, 12, 13]), Some(&[20, 21, 22, 23])),
@@ -429,6 +596,38 @@ mod tests {
         let mut plane = vec![0u8; 16];
         assert!(add_residual_4x4(&mut plane, 4, 4, 4, 1, 0, &[0; 16], 8).is_err());
         assert!(add_residual_4x4(&mut plane, 4, 4, 3, 0, 0, &[0; 16], 8).is_err());
+        assert!(add_residual_8x8(&mut plane, 4, 4, 4, 0, 0, &[0; 64], 8).is_err());
+    }
+
+    #[test]
+    fn eight_by_eight_residual_add_respects_stride_clipping_and_bit_depth() {
+        let mut plane = vec![0u8; 12 * 10];
+        plane.fill(5);
+        let residual: [i32; 64] =
+            std::array::from_fn(|position| if position % 3 == 0 { 255 } else { -10 });
+        let before = plane.clone();
+        add_residual_8x8(&mut plane, 10, 10, 12, 2, 1, &residual, 8).unwrap();
+        for row in 0..8 {
+            for column in 0..8 {
+                let expected = if (row * 8 + column) % 3 == 0 { 255 } else { 0 };
+                assert_eq!(plane[(row + 1) * 12 + column + 2], expected);
+            }
+        }
+        for row in 0..10 {
+            assert_eq!(
+                &plane[row * 12..row * 12 + 2],
+                &before[row * 12..row * 12 + 2]
+            );
+            assert_eq!(
+                &plane[row * 12 + 10..row * 12 + 12],
+                &before[row * 12 + 10..row * 12 + 12]
+            );
+        }
+
+        let mut high = vec![1020u16; 64];
+        add_residual_8x8_u16(&mut high, 8, 8, 8, 0, 0, &[8; 64], 10).unwrap();
+        assert!(high.iter().all(|&sample| sample == 1023));
+        assert!(add_residual_8x8_u16(&mut high, 8, 8, 8, 0, 0, &[0; 64], 11).is_err());
     }
 
     #[test]
