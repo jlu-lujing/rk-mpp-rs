@@ -899,14 +899,17 @@ in what order the evidence gets produced.
        usage string (0:vbr, 1:cbr, 2:fixqp, 3:avbr - the help text's order is stale).
        On the plain-GOP 320x240 cell the model-driven CBR and VBR streams are 1163
        bytes and AVBR 1164, all byte-identical to the C encoder.
-       `scripts/board_h265_cbr_vs_mpp.sh` runs four cells: explicit decisions (1169)
-       plus model-driven cbr/vbr/avbr.
+       The script now runs **thirteen cells**: the explicit-decision path at 320x240
+       (1169 bytes); model-driven cbr/vbr/avbr plus a smart GOP at 320x240
+       (1163/1163/1164/1163); the same four model-driven cells at 640x480
+       (2475/2475/2476/2475); and at 1280x720 (5397/5466/5467/5397). All pass, so
+       the model-driven rate control is byte-identical at three sizes, not just the
+       captured one.
 - [x] **The smart-GOP shape (`vi_len`) and the degenerate `-g 60` cell.** See the
       note above: the documented GOP forms all give the model's own 9320/QP27 second
       decision and match byte for byte, `vi_len = 1` included. Only the invalid bare
       `-g 60` produced 582, and it is not a supported harness input.
-      `scripts/board_h265_cbr_vs_mpp.sh` now has five cells (explicit decisions,
-      cbr/vbr/avbr, smart GOP), all passing.
+      `scripts/board_h265_cbr_vs_mpp.sh` covers the smart GOP at all three sizes.
  - [x] **Every picture of a multi-frame GOP, not just the last.** The register diff
        tool used to compare only the final job of a trace, so an earlier picture
        could drift unnoticed; it now takes `--job=N` and collapses the tracer's

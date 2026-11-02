@@ -239,6 +239,7 @@ fn board_gop_matches_the_c_encoder() {
 #[ignore = "board-only: needs t6, the MPP reference and /dev/mpp_service"]
 fn board_cbr_path_matches_the_c_encoder() {
     let status = std::process::Command::new("scripts/board_h265_cbr_vs_mpp.sh")
+        .env("SIZES", "320x240 640x480 1280x720")
         .status()
         .expect("run scripts/board_h265_cbr_vs_mpp.sh");
     assert!(status.success(), "H.265 board CBR compare failed");
