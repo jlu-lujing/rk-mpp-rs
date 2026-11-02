@@ -321,6 +321,11 @@ pub fn parse_i_macroblock_residual(
             decode_luma_4x4_groups(
                 &mut reader,
                 luma_cbp,
+                if matches!(macroblock.kind, IntraMacroblockKind::I16x16 { .. }) {
+                    15
+                } else {
+                    16
+                },
                 neighbors,
                 &mut result.luma_4x4,
                 &mut result.luma_non_zero,
@@ -379,6 +384,7 @@ pub fn parse_i_macroblock_residual(
 fn decode_luma_4x4_groups(
     reader: &mut CavlcReader<'_>,
     cbp: u8,
+    max_coeff: u8,
     neighbors: &MacroblockNeighbors,
     blocks: &mut [Option<CavlcResidual>; 16],
     non_zero: &mut [u8; 16],
@@ -393,7 +399,7 @@ fn decode_luma_4x4_groups(
             let row = base_row + sub / 2;
             let column = base_column + sub % 2;
             blocks[row * 4 + column] = Some(decode_one_4x4(
-                reader, neighbors, non_zero, row, column, 15,
+                reader, neighbors, non_zero, row, column, max_coeff,
             )?);
         }
     }

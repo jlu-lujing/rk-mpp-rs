@@ -558,6 +558,148 @@ pub fn inverse_chroma_dc_2x2(input: [i32; 4]) -> [i32; 4] {
     ]
 }
 
+/// Map luma QP to chroma QP for the given chroma offset and bit depth.
+pub fn chroma_qp(qp: i32, offset: i32, bit_depth: u8) -> Result<u8, &'static str> {
+    if !(8..=10).contains(&bit_depth) {
+        return Err("H.264 reference QP mapping supports 8..=10 bit");
+    }
+    let max_qp = 51 + 6 * i32::from(bit_depth - 8);
+    if !(0..=max_qp).contains(&qp) {
+        return Err("H.264 luma QP is outside the profile bit-depth limit");
+    }
+    let qpi = (qp + offset).clamp(0, max_qp);
+    let mapped = if qpi < 30 {
+        qpi
+    } else if qpi <= 51 {
+        const HIGH: [i32; 22] = [
+            29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39,
+        ];
+        HIGH[(qpi - 30) as usize] + 6 * i32::from(bit_depth - 8)
+    } else {
+        39 + 6 * i32::from(bit_depth - 8)
+    };
+    Ok(mapped as u8)
+}
+
+fn dc_qmul_4x4(qp: u8, bit_depth: u8, scale: u8) -> Result<i32, &'static str> {
+    if !(8..=10).contains(&bit_depth) {
+        return Err("H.264 reference dequant supports 8..=10 bit");
+    }
+    let max_qp = 51 + 6 * u16::from(bit_depth - 8);
+    if u16::from(qp) > max_qp {
+        return Err("H.264 QP exceeds the profile bit-depth limit");
+    }
+    let shift = qp / 6 + 2;
+    Ok((DEQUANT4[(qp % 6) as usize][0] * i32::from(scale)) << shift)
+}
+
+/// Luma Intra16x16 DC inverse scan, Hadamard, dequantisation and rounding.
+pub fn dequant_luma_dc_4x4(
+    scan: [i32; 16],
+    qp: u8,
+    bit_depth: u8,
+    scaling_dc: u8,
+    layout: CavlcScan4x4,
+) -> Result<[i32; 16], &'static str> {
+    if matches!(layout, CavlcScan4x4::FrameQ0 | CavlcScan4x4::FieldQ0) {
+        return Err("transform-bypass q0 requires direct DC mapping");
+    }
+    let qmul = dc_qmul_4x4(qp, bit_depth, scaling_dc)?;
+    let levels = inverse_scan_4x4_layout(scan, layout);
+    let mut output = [0i32; 16];
+    for (position, value) in inverse_luma_dc_4x4(levels).into_iter().enumerate() {
+        let dequant = (i64::from(value) * i64::from(qmul) + 128) >> 8;
+        output[position] =
+            i32::try_from(dequant).map_err(|_| "luma DC dequantisation overflows i32")?;
+    }
+    Ok(output)
+}
+
+/// 4:2:0 chroma DC inverse Hadamard and dequantisation.
+pub fn dequant_chroma_dc_420(
+    scan: [i32; 4],
+    qp: u8,
+    bit_depth: u8,
+    scaling_dc: u8,
+) -> Result<[i32; 4], &'static str> {
+    let qmul = dc_qmul_4x4(qp, bit_depth, scaling_dc)?;
+    let mut output = [0i32; 4];
+    for (position, value) in inverse_chroma_dc_2x2(scan).into_iter().enumerate() {
+        let dequant = (i64::from(value) * i64::from(qmul)) >> 7;
+        output[position] =
+            i32::try_from(dequant).map_err(|_| "chroma DC dequantisation overflows i32")?;
+    }
+    Ok(output)
+}
+
+/// 4:2:2 chroma DC inverse transform and dequantisation.
+pub fn dequant_chroma_dc_422(
+    scan: [i32; 8],
+    qp: u8,
+    bit_depth: u8,
+    scaling_dc: u8,
+) -> Result<[i32; 8], &'static str> {
+    let qmul = dc_qmul_4x4(qp, bit_depth, scaling_dc)?;
+    const CHROMA422_DC_SCAN: [usize; 8] = [0, 2, 1, 4, 6, 3, 5, 7];
+    let mut levels = [0i32; 8];
+    for (position, value) in scan.into_iter().enumerate() {
+        levels[CHROMA422_DC_SCAN[position]] = value;
+    }
+    let mut temp = [0i32; 8];
+    for row in 0..4 {
+        let a = levels[row * 2];
+        let b = levels[row * 2 + 1];
+        temp[row * 2] = a + b;
+        temp[row * 2 + 1] = a - b;
+    }
+    let mut output = [0i32; 8];
+    for column in 0..2 {
+        let z0 = temp[column] + temp[4 + column];
+        let z1 = temp[column] - temp[4 + column];
+        let z2 = temp[2 + column] - temp[6 + column];
+        let z3 = temp[2 + column] + temp[6 + column];
+        for (row, value) in [z0 + z3, z1 + z2, z1 - z2, z0 - z3].into_iter().enumerate() {
+            let dequant = (i64::from(value) * i64::from(qmul) + 128) >> 8;
+            output[row * 2 + column] =
+                i32::try_from(dequant).map_err(|_| "chroma DC dequantisation overflows i32")?;
+        }
+    }
+    Ok(output)
+}
+
+/// Transform-bypass luma DC levels in sub-block order; no Hadamard is applied.
+pub fn luma_dc_transform_bypass(
+    scan: [i32; 16],
+    layout: CavlcScan4x4,
+) -> Result<[i32; 16], &'static str> {
+    if !matches!(layout, CavlcScan4x4::FrameQ0 | CavlcScan4x4::FieldQ0) {
+        return Err("H.264 bypass luma DC requires a q0 scan");
+    }
+    Ok(inverse_scan_4x4_layout(scan, layout))
+}
+
+/// Transform-bypass chroma DC values in block order; no Hadamard is applied.
+pub fn chroma_dc_transform_bypass(
+    scan: &[i32],
+    layout: CavlcScan8x8,
+) -> Result<Vec<i32>, &'static str> {
+    match layout {
+        CavlcScan8x8::FrameQ0 | CavlcScan8x8::FieldQ0 => match scan.len() {
+            4 => Ok(scan.to_vec()),
+            8 => {
+                const CHROMA422_DC_SCAN: [usize; 8] = [0, 2, 1, 4, 6, 3, 5, 7];
+                let mut levels = vec![0; 8];
+                for (position, &value) in scan.iter().enumerate() {
+                    levels[CHROMA422_DC_SCAN[position]] = value;
+                }
+                Ok(levels)
+            }
+            _ => Err("chroma DC transform bypass expects 4 or 8 coefficients"),
+        },
+        _ => Err("H.264 bypass chroma DC requires a q0 scan"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,6 +898,50 @@ mod tests {
 
         assert_eq!(inverse_chroma_dc_2x2([4; 4]), [16, 0, 0, 0]);
         assert_eq!(inverse_chroma_dc_2x2([1, 0, 0, 0]), [1; 4]);
+    }
+
+    #[test]
+    fn chroma_qp_mapping_matches_the_specification_table() {
+        assert_eq!(chroma_qp(29, 0, 8), Ok(29));
+        assert_eq!(chroma_qp(30, 0, 8), Ok(29));
+        assert_eq!(chroma_qp(31, 0, 8), Ok(30));
+        assert_eq!(chroma_qp(36, 0, 8), Ok(34));
+        assert_eq!(chroma_qp(51, 0, 8), Ok(39));
+        assert_eq!(chroma_qp(63, 0, 10), Ok(51));
+        assert_eq!(chroma_qp(12, -20, 8), Ok(0));
+        assert!(chroma_qp(52, 0, 8).is_err());
+    }
+
+    #[test]
+    fn dc_dequantisation_matches_ffmpeg_rounding() {
+        let mut dc = [0i32; 16];
+        dc[0] = 1;
+        assert_eq!(
+            dequant_luma_dc_4x4(dc, 0, 8, 16, CavlcScan4x4::Frame).unwrap(),
+            [3; 16]
+        );
+        assert_eq!(
+            dequant_chroma_dc_420([1; 4], 0, 8, 16).unwrap(),
+            [20, 0, 0, 0]
+        );
+        assert_eq!(
+            dequant_chroma_dc_422([1; 8], 0, 8, 16).unwrap(),
+            [20, 0, 0, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn transform_bypass_dc_mapping_uses_block_order() {
+        let scan: [i32; 16] = std::array::from_fn(|position| position as i32 + 1);
+        assert_eq!(
+            luma_dc_transform_bypass(scan, CavlcScan4x4::FrameQ0).unwrap(),
+            [1, 3, 4, 10, 2, 5, 9, 11, 6, 8, 12, 15, 7, 13, 14, 16]
+        );
+        let scan = [1i32, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(
+            chroma_dc_transform_bypass(&scan, CavlcScan8x8::FrameQ0).unwrap(),
+            [1, 3, 2, 6, 4, 7, 5, 8]
+        );
     }
 
     #[test]
