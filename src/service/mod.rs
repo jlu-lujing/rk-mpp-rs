@@ -319,10 +319,16 @@ pub struct DevInfoCfg {
 const _: () = assert!(std::mem::size_of::<DevInfoCfg>() == 16);
 
 #[repr(C)]
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SliceInfo {
     pub val: u32,
-    pub last: u32,
+}
+
+impl SliceInfo {
+    /// VEPU580 uses a 25-bit length and the generic `last` flag in bit 31.
+    pub fn vepu580(self) -> (u32, bool) {
+        (self.val & 0x01ff_ffff, self.val & (1 << 31) != 0)
+    }
 }
 
 /// A chain of requests delivered in one ioctl (`MPP_FLAGS_MULTI_MSG`).
@@ -515,7 +521,7 @@ impl MppService {
     }
 
     /// Non-blocking poll with a slice table.
-    pub fn poll_irq(&self, slices: &mut [SliceInfo]) -> io::Result<()> {
+    pub fn poll_irq(&self, slices: &mut [SliceInfo]) -> io::Result<usize> {
         #[repr(C)]
         struct Cfg {
             poll_type: i32,
@@ -523,29 +529,26 @@ impl MppService {
             count_max: i32,
             count_ret: i32,
         }
-        let mut c = Cfg {
+        let c = Cfg {
             poll_type: 0,
             poll_ret: 0,
             count_max: slices.len() as i32,
             count_ret: 0,
         };
-        let mut buf = Vec::with_capacity(std::mem::size_of::<Cfg>() + slices.len() * 8);
+        let cfg_size = std::mem::size_of::<Cfg>();
+        let slice_bytes = slices.len() * std::mem::size_of::<SliceInfo>();
+        let mut buf = vec![0u8; cfg_size + slice_bytes];
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &c as *const Cfg as *const u8,
                 buf.as_mut_ptr(),
-                std::mem::size_of::<Cfg>(),
-            );
-            std::ptr::copy_nonoverlapping(
-                slices.as_ptr() as *const u8,
-                buf.as_mut_ptr().add(std::mem::size_of::<Cfg>()),
-                slices.len() * 8,
+                cfg_size,
             );
         }
         let mut req = MppReqV1 {
             cmd: MPP_CMD_POLL_HW_IRQ,
             flag: MPP_FLAGS_LAST_MSG | MPP_FLAGS_REG_OFFSET_ALONE,
-            size: (std::mem::size_of::<Cfg>() + slices.len() * 8) as u32,
+            size: (cfg_size + slice_bytes) as u32,
             offset: 0,
             data_ptr: buf.as_mut_ptr() as u64,
         };
@@ -553,8 +556,18 @@ impl MppService {
         if r < 0 {
             return Err(io::Error::last_os_error());
         }
-        let _ = &mut c;
-        Ok(())
+        let count = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(12).cast::<i32>()) };
+        if count < 0 || count as usize > slices.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("POLL_HW_IRQ returned invalid slice count {count}"),
+            ));
+        }
+        for (index, slice) in slices.iter_mut().enumerate().take(count as usize) {
+            let offset = cfg_size + index * std::mem::size_of::<SliceInfo>();
+            slice.val = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(offset).cast::<u32>()) };
+        }
+        Ok(count as usize)
     }
 }
 
@@ -617,5 +630,14 @@ mod tests {
                 MPP_FLAGS_MULTI_MSG | MPP_FLAGS_LAST_MSG | MPP_FLAGS_REG_OFFSET_ALONE,
             ]
         );
+    }
+
+    #[test]
+    fn vepu580_slice_info_is_one_word_and_decodes_length_and_last() {
+        assert_eq!(std::mem::size_of::<SliceInfo>(), 4);
+        let middle = SliceInfo { val: 0x0123_4567 };
+        assert_eq!(middle.vepu580(), (0x0123_4567, false));
+        let last = SliceInfo { val: 0x8001_2345 };
+        assert_eq!(last.vepu580(), (0x0001_2345, true));
     }
 }

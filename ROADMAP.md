@@ -674,7 +674,10 @@ in what order the evidence gets produced.
       geometries. `MPP_ENC_SPLIT_OUT_LOWDELAY`, `slen_fifo` and
       poll-with-slice-info are not in the driver, so slice splitting is proved as
       contiguous-in-buffer coding only and no caller gets one packet per slice
-      yet; the rate-control loop beyond fixed QP and the three modes is ported and
+      yet. The service ABI half is now corrected: `SliceInfo` is C's one-word
+      structure, `POLL_HW_IRQ` returns `count_ret`, and the VEPU580 25-bit
+      length/bit-31 last fields have unit coverage; the encoder submission path
+      still needs to consume it. The rate-control loop beyond fixed QP and the three modes is ported and
       byte-exact but `roi`-weighted QP per region and the QP *map* input path are
       proved only at the table level; P pictures are byte-matched at eleven sizes
       across the FBC header threshold and at both widths above 4096 (4160x64 and
