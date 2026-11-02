@@ -32,7 +32,6 @@ fn sixteen_macroblock_luma_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
-#[ignore = "known chroma residual mismatch after the first chroma macroblock pair"]
 fn sixteen_macroblock_yuv_matches_ffmpeg_yuv420p() {
     compare_fixture(
         include_bytes!("../tests/data/h264_i64_cavlc.264"),

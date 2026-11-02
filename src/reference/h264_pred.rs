@@ -687,9 +687,7 @@ pub fn predict_chroma(
     let mut out = vec![0u16; 8 * height];
     match mode {
         0 => {
-            let (Some(top), Some(_left)) = (top, left) else {
-                return predict_chroma(2, bit_depth, top, left, height, top_left);
-            };
+            let top = top.ok_or(PredictionError::MissingTop)?;
             if top.len() < 8 {
                 return Err(PredictionError::MissingTop);
             }
@@ -1051,11 +1049,11 @@ mod tests {
     }
 
     #[test]
-    fn chroma_vertical_without_left_edge_falls_back_to_top_dc() {
+    fn chroma_vertical_without_left_edge_uses_the_top_edge() {
         let top = [10u16, 20, 30, 40, 50, 60, 70, 80];
         let prediction = predict_chroma(0, 8, Some(&top), None, 8, Some(5)).unwrap();
-        assert_eq!(&prediction[..8], [25, 25, 25, 25, 65, 65, 65, 65]);
-        assert_eq!(&prediction[56..], [25, 25, 25, 25, 65, 65, 65, 65]);
+        assert_eq!(&prediction[..8], top);
+        assert_eq!(&prediction[56..], top);
     }
 
     #[test]

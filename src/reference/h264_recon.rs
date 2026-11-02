@@ -378,8 +378,13 @@ fn reconstruct_chroma_plane(
     let top = (y > 0).then(|| read_top_vec(plane, x, y, 8, bit_depth));
     let left = (x > 0).then(|| read_left_vec(plane, x, y, height, bit_depth));
     let top_left = read_top_left(plane, x, y, bit_depth);
+    let prediction_mode = match mode {
+        0 => 2,
+        2 => 0,
+        other => other,
+    };
     let prediction = predict_chroma(
-        mode,
+        prediction_mode,
         bit_depth,
         top.as_deref(),
         left.as_deref(),
@@ -492,7 +497,7 @@ mod tests {
         let mut cb_data = vec![30u16; 16 * 16];
         let mut cr_data = vec![40u16; 16 * 16];
         let residual = empty_residual();
-        let mb = empty_macroblock(IntraMacroblockKind::I4x4, Some(0));
+        let mb = empty_macroblock(IntraMacroblockKind::I4x4, Some(2));
         let mut luma = PlaneMut {
             data: &mut luma_data,
             width: 32,
