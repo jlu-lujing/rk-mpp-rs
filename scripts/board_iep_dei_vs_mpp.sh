@@ -30,7 +30,7 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Car
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 # The IEP2 oracle lives with whichever reference build carries vproc tests.
-for ref in /tmp/mpp-old /tmp/mpp-develop ~/rk-mpp-oracles/mpp-old ~/rk-mpp-oracles/mpp-develop; do
+for ref in /tmp/mpp-old /tmp/mpp-develop '~/rk-mpp-oracles/mpp-old' '~/rk-mpp-oracles/mpp-develop'; do
   for cand in "$ref/build/test/iep2_test" "$ref/build/mpp/vproc/iep2/test/iep2_test"; do
   lib="$ref/build/mpp"
   if ssh "$BOARD" "test -x $cand && test -f $lib/librockchip_mpp.so.0"; then

@@ -29,9 +29,9 @@ async_out=/tmp/rk-mpp-rs-framework-async.rgb
 # A real photograph beats a synthetic frame: jpegd exercises the full
 # chroma path. Falls back to ffmpeg if the corpus image is missing.
 ssh "$BOARD" "test -f ~/projects/rknn-projects-test/baseline/images/bus.jpg" && </dev/null
-  fixture=~/projects/rknn-projects-test/baseline/images/bus.jpg
-if [ "$fixture" != "~/projects/rknn-projects-test/baseline/images/bus.jpg" ]; then
-  ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=640x640:rate=30 -frames:v 1 -q:v 2 $fixture" || {
+  fixture='~/projects/rknn-projects-test/baseline/images/bus.jpg'
+if [ "$fixture" != '~/projects/rknn-projects-test/baseline/images/bus.jpg' ]; then
+  ssh "$BOARD" "mkdir -p ~/projects/rknn-projects-test/baseline/images && ffmpeg -v error -y -f lavfi -i testsrc=size=640x640:rate=30 -frames:v 1 -q:v 2 -pix_fmt yuvj420p $fixture" || {
     echo "FAIL: no JPEG fixture available"
     exit 1
   }

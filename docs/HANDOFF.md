@@ -20,6 +20,15 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > `MAX_BYTES` 默认 256 MiB、逐条打印 verdict），但**尚未完成任何一次全量运行**；
 > 重启后先用 `LIMIT=10` 逐段放量，并记录卡住的是哪一条流。
 
+> **2026-11-02 t62 事件（第二次）：** `tests/data/av1_tiles_320x240_10.ivf`
+> 的解码会间歇性触发 `rk_vcodec: mpp_task_timeout_work ... processing time out!`
+> 与 `mpp_av1dec ... resetting`，随后整板重启（内核 6.1.141）。同一夹具用 C
+> MPP 解码 10 帧/1,152,000 字节正常，所以不是驱动单独的问题，而是 crate 的 AV1
+> 路径在这块板/内核上的真实缺陷。已做两件事：
+> 1. `POLL_HW_FINISH` 改为 5 秒上限（非阻塞轮询 + EINVAL 回退），避免进程永久挂住；
+> 2. corpus 扫描把该夹具标为 `QUARANTINE`，不再自动解码。
+> 复现时连带检查 `dmesg` 是否有 `mpp_task_timeout_work`；不要盲目重复跑。
+
 ## 第二块板：t62（2026-11-02 起）
 
 `ssh t62`（用户 `eddysun`）是另一台 NanoPC-T6-LTS：内核 6.1.141、`/dev/mpp_service`

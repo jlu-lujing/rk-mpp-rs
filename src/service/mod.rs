@@ -12,6 +12,7 @@ pub mod task_queue;
 use std::ffi::CString;
 use std::io;
 use std::os::raw::{c_int, c_ulong};
+use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
 pub const _UNUSED: () = ();
@@ -141,8 +142,37 @@ impl MppService {
         Ok(())
     }
 
-    /// Poll until the job finishes.
+    /// Poll until the job finishes, with a deadline.
+    ///
+    /// The blocking ioctl never returns when the driver's task watchdog fires
+    /// (the 2026-11-02 AV1 tile timeout left the process stuck and the board
+    /// rebooted). This loops on the non-blocking form instead, so a dead task
+    /// becomes a `TimedOut` error. Kernels without `POLL_NON_BLOCK` answer EINVAL
+    /// and get the old blocking behaviour.
     pub fn poll_hw_finish(&self) -> io::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(5);
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            match self.poll_hw_finish_try() {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => {
+                    return self.poll_hw_finish_blocking();
+                }
+                Err(e) => return Err(e),
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "hardware task did not finish within 5 s",
+                ));
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+    }
+
+    /// The unbounded ioctl, kept for kernels without `POLL_NON_BLOCK`.
+    pub fn poll_hw_finish_blocking(&self) -> io::Result<()> {
         // Linux mpp_service uses the no-payload form of POLL_HW_FINISH when
         // HW_IRQ is unavailable.  The driver writes all queued SET_REG_READ
         // destinations before this ioctl returns.
