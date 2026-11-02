@@ -137,7 +137,10 @@ pub fn run_job(
     svc: &mut MppService,
     registers: &[u32; REG_NUM],
     offsets: &[RegOffsetInfo],
+    width: usize,
+    height: usize,
 ) -> io::Result<u32> {
+    super::check_decode_geometry(width, height)?;
     let mut readback = [0u32; REG_NUM];
     let mut batch = Batch::new();
     batch

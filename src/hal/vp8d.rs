@@ -741,7 +741,13 @@ impl Vp8d {
         let registers = build_registers(job);
         self.offsets_scratch.clear();
         write_offsets(job, &mut self.offsets_scratch);
-        self.last_irq = vdpu2::run_job(&mut self.svc, &registers, &self.offsets_scratch)?;
+        self.last_irq = vdpu2::run_job(
+            &mut self.svc,
+            &registers,
+            &self.offsets_scratch,
+            (job.mb_width as usize) * 16,
+            (job.mb_height as usize) * 16,
+        )?;
         self.jobs += 1;
         if std::env::var_os("RFI_VP8_REG_DUMP").is_some() {
             dump_registers(

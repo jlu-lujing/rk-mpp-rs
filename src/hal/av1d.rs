@@ -246,6 +246,7 @@ impl Av1d {
         references: &[Option<&Frame>; AV1_MAX_PIC_BUFFERS],
         state: &mut Av1RegisterState,
     ) -> io::Result<()> {
+        super::check_decode_geometry(current.width, current.height)?;
         let intra = matches!(params.format.frame_type, 0 | 2);
         let probability = build_probability_buffer(cdf, intra);
         let trace_directory = std::env::var_os("RK_MPP_AV1_PROB_DUMP_DIR");

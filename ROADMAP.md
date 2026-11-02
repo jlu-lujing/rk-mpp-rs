@@ -14,6 +14,15 @@ debug switches, traps, and the ordered next steps.
 
 ## Scope decision (2026-11-02)
 
+**Untrusted stream geometry (2026-11-02).** After the first corpus sweep lost the
+board, every decoder now validates the parsed coded size before it writes a
+register or allocates a buffer: zero, or anything above 8192 in either axis, is
+refused with an `InvalidInput` error. The check is shared
+(`hal::check_decode_geometry`), applied in `h264d`, `hevc`, `vp9d`, `av1d` and
+through `vdpu2::run_job` for the VDPU2 codecs, and unit-tested. It does not change
+any valid stream; the board-side re-run of the regression matrix is pending the
+reboot.
+
 The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
 
 - A result that differs from the C reference is a defect, not an improvement, unless

@@ -420,6 +420,7 @@ impl Vp9d {
         stream: &DmaBuf,
         stream_len: usize,
     ) -> io::Result<()> {
+        super::check_decode_geometry(current.width, current.height)?;
         self.write_probability(header, compressed, poc)?;
         // VP9 resets past segmentation state on intra-only and error-resilient
         // frames (libvpx's vp9_setup_past_independence). The old vdpu34x HAL

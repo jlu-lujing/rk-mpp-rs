@@ -558,6 +558,7 @@ impl HevcHw {
         slice_count: u32,
         nal_type: u8,
     ) -> io::Result<()> {
+        super::check_decode_geometry(cur.width, cur.height)?;
         self.prepare_tables(sps, pps);
         let ctu_size = 1usize << (sps.log2_min_cb + sps.log2_diff_max_min_cb);
         let rcb = RcbInfo::compute(

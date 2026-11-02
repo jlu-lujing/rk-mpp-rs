@@ -458,6 +458,7 @@ impl H264d {
         if std::env::var("RFI_DUMP_LEN").is_ok() {
             eprintln!("SUBMIT len={} idr={} fn={}", stream_len, idr, sh.frame_num);
         }
+        super::check_decode_geometry(cur.width, cur.height)?;
         self.prepare_tables(sps, pps, sh, dpb, lists)?;
         if std::env::var("RFI_TABLE_DUMP").is_ok() {
             use std::io::Write;

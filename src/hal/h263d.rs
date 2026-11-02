@@ -247,7 +247,13 @@ impl H263d {
     pub fn decode(&mut self, job: &PictureJob) -> io::Result<u32> {
         let registers = build_registers(job);
         let offsets = build_offsets(job);
-        self.last_irq = vdpu2::run_job(&mut self.svc, &registers, &offsets)?;
+        self.last_irq = vdpu2::run_job(
+            &mut self.svc,
+            &registers,
+            &offsets,
+            (job.mb_width as usize) * 16,
+            (job.mb_height as usize) * 16,
+        )?;
         self.jobs += 1;
         if std::env::var_os("RFI_H263_REG_DUMP").is_some() {
             vdpu2::dump_registers_to(

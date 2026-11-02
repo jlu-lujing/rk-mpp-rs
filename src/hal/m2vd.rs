@@ -315,7 +315,13 @@ impl M2vd {
     pub fn decode(&mut self, job: &PictureJob) -> io::Result<u32> {
         let registers = build_registers(job);
         let offsets = build_offsets(job);
-        self.last_irq = crate::hal::vdpu2::run_job(&mut self.svc, &registers, &offsets)?;
+        self.last_irq = crate::hal::vdpu2::run_job(
+            &mut self.svc,
+            &registers,
+            &offsets,
+            (job.mb_width as usize) * 16,
+            (job.mb_height_p as usize) * 16,
+        )?;
         self.jobs += 1;
         // `RFI_HEVC_REG_DUMP` and `RFI_REG_DUMP` do the same for the other
         // decoders: append the image that was submitted, in the text
