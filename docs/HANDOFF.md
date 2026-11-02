@@ -44,6 +44,17 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > 离线证据：11/11 PicParams 与 C golden 相同，88 个镜像文件尺寸正确；
 > 比较器在模拟一致输入上 11/11 PASS，并能在单字破坏时定位到具体寄存器。
 > 真实 C `DUMP_AV1_DATAS` 对照仍需等 t62 恢复，不能据此放行硬件提交。
+>
+> t62 恢复后先运行安全预检，不要直接跑 `av1dec`：
+>
+> ```bash
+> BOARD=t62 ./scripts/board_av1_presubmit_compare.sh
+> ```
+>
+> 脚本会从当前提交临时打包源码，在独立的
+> `~/rk-mpp-oracles/mpp-av1-dump` 构建 C dump oracle，运行已知正常的 C 解码，
+> 再运行 CPU-only Rust 导出器并比较全部输入镜像。它不会向 Rust AV1 提交硬件
+> 作业；只有打印 `PRE-SUBMIT INPUTS MATCH` 后才恢复板级 AV1 调试。
 
 ## 第二块板：t62（2026-11-02 起）
 

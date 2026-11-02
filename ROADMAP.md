@@ -361,8 +361,12 @@ in what order the evidence gets produced.
         MPP's `DUMP_AV1_DATAS`, normalising process-specific DMA descriptors.
         The host run regenerated all 11 PicParams images identical to the C
         goldens (88 files total); a simulated C/Rust match passed 11/11 and a
-        one-word corruption was reported as `reg[0]`. The real C dump
-        comparison remains pending until t62 returns.
+        one-word corruption was reported as `reg[0]`.
+        `scripts/board_av1_presubmit_compare.sh` packages this into the first
+        post-reboot action: it builds a separate C dump oracle, runs the
+        known-good C decode, runs the CPU-only Rust exporter and refuses to
+        continue unless every input image matches. The real board comparison
+        remains pending until t62 returns.
   - [x] decoder orchestration and DMA lifetime: every hardware-completed frame
         imports its output CDF before the assembler parses the next frame in
         the same temporal unit, matching `av1d_parser_update()`. A regression

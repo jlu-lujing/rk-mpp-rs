@@ -3,3 +3,14 @@
 @@ -48,1 +48,1 @@
 -#define DUMP_AV1_DATAS 0
 +#define DUMP_AV1_DATAS 1
+@@ -1978,7 +1978,9 @@
+ #if DUMP_AV1_DATAS/* dump buffer */
+     {
+         char name[128];
+-        char *path = "/data/video";
++        char *path = getenv("AV1_DATA_DUMP_DIR");
++        if (!path)
++            path = "/data/video";
+         static int g_frame_num = 0;
+         FILE *fp;
+         RK_U32 i;
