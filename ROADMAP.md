@@ -28,14 +28,14 @@ the VDPU2 regressions (VP8 6 fixtures + register images, H.263 3, MPEG-4 3, MPEG
 decode input; the C harness emits a frame from it while the crate refuses, which is
 a fixture-usage difference rather than a decoder result.
 
-**Corpus quarantine ordering (2026-11-02).** The AV1 tile fixture's
-`QUARANTINE` decision now happens before either decode binary is invoked. An
-offline stub run with both binaries pointed at `false` reports
-`named=1, skipped=0` and leaves the Rust log absent, proving the known board-
-wedging fixture cannot be executed by the sweep. The two proven film-grain
-`C-BUG` rows are skipped at the same point instead of being decoded twice.
-The classifier strips the corpus copy's `td_` prefix, so `CORPUS=tests/data`
-cannot bypass quarantine either; a two-name stub run reports `named=2`.
+**Corpus quarantine ordering (2026-11-02).** While the AV1 tile reset was open,
+its `QUARANTINE` decision happened before either decode binary was invoked; an
+offline stub run with both binaries pointed at `false` reported
+`named=1, skipped=0`, and a two-name test proved both corpus and `tests/data`
+spellings were covered. The root cause was subsequently fixed and the tile
+fixture was removed from quarantine to serve as the regular AV1 sweep cell.
+The two proven film-grain `C-BUG` rows are still skipped at the same point
+instead of being decoded twice.
 
 **Corpus integrity before decode (2026-11-02).** `gen_corpus.sh` now writes a
 deterministic `corpus-manifest.json`, and `board_corpus_sweep.sh` validates it
@@ -367,13 +367,15 @@ in what order the evidence gets produced.
         hidden order-hint-8 frame and the later return to physical slot 4.
         `av1_dump_regs` now uses this replay, and its 11 regenerated PicParams
         images are still byte-identical to the C snapshots.
-  - [ ] t62/6.1.141 first-job execution. A one-packet IVF prefix makes C emit
-        one picture, while Rust reports one output with zero bytes and the
-        kernel resets `mpp_av1dec`. Real C dumps show jobs 0-10 match in every
-        deterministic input image, register and address offset; jobs 0-2 also
-        match input CDF. Jobs 3+ are deferred because their CDF comes from the
-        preceding hardware write. The remaining fault is therefore in the
-        runtime submission/lifetime path, not the register/data-plane port.
+  - [x] t62/6.1.141 first-job execution. The root cause was two omitted filter
+        DMA bases: C programs CDEF at `reg[85]` and loop restoration at
+        `reg[91]`; Rust left both zero. The resulting STATUS was `0x2109`
+        (`sw_dec_bus_int`) and reset `mpp_av1dec`. Scheduling both bases, using
+        C's uncached DMA32 tables/frames and DMA32 stream, and matching C's
+        4:2:2-sized display allocation fixed the one-frame prefix (STATUS
+        `0x1100`). The full fixture now emits 10 frames/1,152,000 bytes
+        byte-identical to current C (`9d339ae3…8138`), and the existing
+        8/10-bit film-grain hardware regression passes without reset.
   - [x] non-identity translation/ROTZOOM/AFFINE global-motion conversion,
         primary-reference inheritance, shear quantization and invalid/scaled
         reference fallback match the C MPP integer rules

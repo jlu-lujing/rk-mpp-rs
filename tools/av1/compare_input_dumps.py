@@ -174,6 +174,12 @@ def compare_words(failures: list[str], label: str, c_path: Path, rust_path: Path
         return
     for index, (c_word, rust_word) in enumerate(zip(c_words, rust_words)):
         if index in ADDRESS_REGISTERS:
+            if (c_word == 0) != (rust_word == 0):
+                failures.append(
+                    f"{label}: address reg[{index}] presence differs "
+                    f"C={c_word:08x} Rust={rust_word:08x}"
+                )
+                return
             continue
         if c_word != rust_word:
             failures.append(

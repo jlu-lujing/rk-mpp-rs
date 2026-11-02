@@ -206,6 +206,11 @@ fn av1_register_file_has_the_512_word_c_layout_and_address_offsets() {
     assert_eq!(regs.words()[167], 503);
     assert_eq!(regs.words()[171], 505);
     assert_eq!(regs.words()[173], 504);
+    assert_eq!(regs.words()[85], 506);
+    assert_eq!(regs.words()[89], 506);
+    assert_eq!(regs.words()[91], 506);
+    assert_eq!(regs.words()[179], 506);
+    assert_eq!(regs.words()[183], 506);
     assert_eq!(regs.field(258, 0, 32), 1_792);
     assert_eq!(regs.field(6, 0, 32), 1_792);
     assert_eq!(regs.field(320, 0, 1), 1);

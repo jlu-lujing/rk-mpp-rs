@@ -35,7 +35,7 @@
 | H.264 解码（rkvdec） | 完成：frame/MBAFF/PAFF/长参考/错误路径**逐字节** |
 | H.265 解码（rkvdec） | 完成：Main/Main10/tiles/WPP/DSLICE/LTR/scaling list；4:2:2/4:4:4 被硬件拒收 |
 | VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；720p 分割流经 libvpx 三方判定为 **C 侧 bug**（Rust == libvpx，C 差 213 字节），321x241 亦为 C 丢帧；仅损坏流中止属刻意保留 |
-| AV1 解码（av1d） | t6 上 Main 8/10-bit、film grain 逐字节；t62/6.1.141 的首个 tile 作业会触发 AV1 reset，静态输入已与 C 对齐，执行路径仍在修；更宽 conformance 未完 |
+| AV1 解码（av1d） | Main 8/10-bit、film grain 逐字节；t62/6.1.141 的 2x2 tile fixture 已修复 filter-base 缺失，10 帧输出与 C 逐字节一致；更宽 conformance 未完 |
 | MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 全部逐字节；VP8 profile 1/3（板验，语料仅 p0 故派生流）；损坏/截断流与 C 的行为表 4/6 SAME（scripts/board_vp_corrupt_vs_mpp.sh）；AVS+/AVS2 未做 |
 | H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落），slice split **板上 4/4 逐字节**（BY_CTU 96/8/150 与 BY_BYTE 256；8 块那格 38 个 slice 越过 32 项 slice FIFO，同时钉住 `slc_done_en`），>4096 的 CIME 扩展行 **板上 2/2 逐字节**（4160x64、4608x256）。P 帧另有 11 个尺寸的逐字节扫描（`scripts/board_h264_p_size_probe.sh`，含 FBC 阈值两侧）。编码侧剩下的是**逐 slice 输出路径**（`slen_fifo` / low-delay slice 包）与 >4096 宽度下的 P 格 |
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices / 多核分带见 docs/jpege-slices-multicore.md |

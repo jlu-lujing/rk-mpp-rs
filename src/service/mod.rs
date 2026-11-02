@@ -346,6 +346,24 @@ impl Batch {
         self.reqs.is_empty()
     }
 
+    pub fn requests(&self) -> &[MppReqV1] {
+        &self.reqs
+    }
+
+    pub fn finalize_flags(&mut self, decode: bool) {
+        if self.reqs.is_empty() {
+            return;
+        }
+        let last = self.reqs.len() - 1;
+        for request in &mut self.reqs {
+            request.flag |= MPP_FLAGS_MULTI_MSG;
+        }
+        self.reqs[last].flag |= MPP_FLAGS_LAST_MSG;
+        if decode {
+            self.reqs[last].flag |= MPP_FLAGS_REG_OFFSET_ALONE;
+        }
+    }
+
     pub fn push(&mut self, cmd: u32, flag: u32, size: u32, offset: u32, data: u64) {
         self.reqs.push(MppReqV1 {
             cmd,
@@ -423,14 +441,7 @@ impl MppService {
         if batch.reqs.is_empty() {
             return Ok(());
         }
-        let n = batch.reqs.len();
-        for (i, r) in batch.reqs.iter_mut().enumerate() {
-            if i + 1 < n {
-                r.flag |= MPP_FLAGS_MULTI_MSG;
-            } else {
-                r.flag |= MPP_FLAGS_LAST_MSG;
-            }
-        }
+        batch.finalize_flags(false);
         let r = unsafe {
             libc::ioctl(
                 self.fd,
@@ -450,14 +461,7 @@ impl MppService {
         if batch.reqs.is_empty() {
             return Ok(());
         }
-        let n = batch.reqs.len();
-        for (i, r) in batch.reqs.iter_mut().enumerate() {
-            if i + 1 < n {
-                r.flag |= MPP_FLAGS_MULTI_MSG;
-            } else {
-                r.flag |= MPP_FLAGS_LAST_MSG | MPP_FLAGS_REG_OFFSET_ALONE;
-            }
-        }
+        batch.finalize_flags(true);
         let r = unsafe {
             libc::ioctl(
                 self.fd,
@@ -592,6 +596,26 @@ mod tests {
         assert_eq!(
             batch.reqs[0].size,
             std::mem::size_of::<RegOffsetInfo>() as u32
+        );
+
+        batch.clear();
+        let mut registers = [0u32; 2];
+        batch
+            .reg_write(&registers, 0)
+            .reg_read(&mut registers, 0)
+            .reg_offsets(&offsets);
+        batch.finalize_flags(true);
+        assert_eq!(
+            batch
+                .requests()
+                .iter()
+                .map(|request| request.flag)
+                .collect::<Vec<_>>(),
+            [
+                MPP_FLAGS_MULTI_MSG,
+                MPP_FLAGS_MULTI_MSG,
+                MPP_FLAGS_MULTI_MSG | MPP_FLAGS_LAST_MSG | MPP_FLAGS_REG_OFFSET_ALONE,
+            ]
         );
     }
 }

@@ -23,16 +23,21 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 > **2026-11-02 t62 事件（第二次）：** `tests/data/av1_tiles_320x240_10.ivf`
 > 会触发 `rk_vcodec: mpp_task_timeout_work ... processing time out!` 与
-> `mpp_av1dec ... resetting`，并可导致整板重启（内核 6.1.141）。进一步做
+> `mpp_av1dec ... resetting`，并可导致整板重启（内核 6.1.141）。当时进一步做
 > **只含第一个 2,351-byte coded frame 的 IVF 前缀**后，C 仍能输出一帧；Rust
 > 报告一个输出但 YUV 为 0 字节，内核再次 reset/reboot。这不是 t6 全量结论的
 > 自动延伸：t6 是 6.1.57，t62 是 6.1.141；同一 SoC 不等于同一驱动执行行为。
-> t62 上 VP8/VP9/H.264/H.265/IEP2/VDPU2 回归仍然成立，目前差异集中在 AV1。
-> 已做两件事：
+> 根因是 Rust 少了 C 的 CDEF/loop-restoration filter DMA base：
+> `reg[85]`/`reg[91]` 为 0，STATUS `0x2109` 的 `sw_dec_bus_int` 正是总线错误。
+> 同时对齐 C 的 uncached DMA32 表/帧、DMA32 stream 和 4:2:2 大小的 display
+> allocation。修复后单帧 STATUS `0x1100`，完整 fixture 10 帧/1,152,000 bytes
+> 与当前 C 逐字节一致，8/10-bit film-grain 硬件回归也通过。
+>
+> 修复后 tile fixture 已从 corpus quarantine 移回常规扫描。安全措施保留：
 > 1. `POLL_HW_FINISH` 改为 5 秒上限（非阻塞轮询 + EINVAL 回退），避免进程永久挂住；
-> 2. corpus 扫描把该夹具标为 `QUARANTINE`，并在调用 Rust 或 C 解码器之前
->    直接跳过；离线 stub 验证确认 `RUST_BIN`/`MPP_BIN` 均未被调用，且带
->    `td_` 前缀和直接使用 `tests/data` 的两种文件名都会命中。
+> 2. 修复合入前曾把该夹具在任何解码之前 `QUARANTINE`；stub 验证过带/不带
+>    `td_` 前缀均不会启动解码器。根因修复后该 quarantine 已移除，fixture
+>    重新作为 corpus sweep 的 AV1 tile 覆盖项。
 > 复现时连带检查 `dmesg` 是否有 `mpp_task_timeout_work`；不要盲目重复跑。
 >
 > **安全诊断入口（2026-11-02）：** `examples/av1_dump_regs.rs` 现在可以在

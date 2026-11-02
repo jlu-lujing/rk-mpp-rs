@@ -29,6 +29,13 @@ pub const TILE_BUFFER_SIZE: usize = 4096;
 pub const AV1_REGISTER_COUNT: usize = 512;
 pub const AV1_MAX_PIC_BUFFERS: usize = 24;
 
+/// C's AV1 HAL resolves all table and frame buffers from an uncached DMA32
+/// group. The register interface programs only the low 32 address word.
+const AV1_FRAME_HEAP: &str = "system-uncached-dma32";
+/// The input packet comes from C's cached DMA32 group and is explicitly
+/// flushed around the CPU copy.
+const AV1_STREAM_HEAP: &str = "system-dma32";
+
 const AV1_REF_SCALE_SHIFT: u32 = 14;
 const MAX_FRAME_DISTANCE: i32 = 31;
 static NEXT_TRACE_JOB: AtomicUsize = AtomicUsize::new(0);
@@ -139,8 +146,8 @@ impl Frame {
         let layout = frame_layout(max_width, max_height, bit_depth);
         let display = display_layout(width, height, bit_depth)?;
         Ok(Self {
-            tile_output: DmaBuf::alloc("system", layout.tile_output_size, false)?,
-            display: DmaBuf::alloc("system", display.allocation_size, false)?,
+            tile_output: DmaBuf::alloc(AV1_FRAME_HEAP, layout.tile_output_size, false)?,
+            display: DmaBuf::alloc(AV1_FRAME_HEAP, display.allocation_size, false)?,
             width,
             height,
             display_hor_stride: display.hor_stride,
@@ -172,7 +179,9 @@ pub struct DisplayLayout {
 
 /// MPP's display allocation for AV1's YUV420 semi-planar output. The 10-bit
 /// format is Rockchip's packed layout: samples are contiguous bit fields with
-/// no P010 alignment gap, and each row is padded to eight bytes.
+/// no P010 alignment gap, and each row is padded to eight bytes. C's frame
+/// slots apply `mpp_align_wxh2yuv422`, so the backing allocation is two bytes
+/// per luma sample even though the post-processor writes 4:2:0.
 pub fn display_layout(width: usize, height: usize, bit_depth: u32) -> io::Result<DisplayLayout> {
     if !matches!(bit_depth, 8 | 10) {
         return Err(io::Error::new(
@@ -184,8 +193,7 @@ pub fn display_layout(width: usize, height: usize, bit_depth: u32) -> io::Result
     let ver_stride = align(height, 8);
     let allocation_size = hor_stride
         .checked_mul(ver_stride)
-        .and_then(|luma| luma.checked_mul(3))
-        .map(|bytes| bytes / 2)
+        .and_then(|luma| luma.checked_mul(2))
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "AV1 display overflow"))?;
     Ok(DisplayLayout {
         hor_stride,
@@ -218,12 +226,12 @@ impl Av1d {
     pub fn open() -> io::Result<Self> {
         Ok(Self {
             svc: MppService::open(Client::Av1Dec as u32)?,
-            probability_in: DmaBuf::alloc("system", PROBABILITY_BUFFER_SIZE, false)?,
-            probability_out: DmaBuf::alloc("system", PROBABILITY_BUFFER_SIZE, false)?,
-            global_model: DmaBuf::alloc("system", GLOBAL_MODEL_BUFFER_SIZE, false)?,
-            tile_info: DmaBuf::alloc("system", AV1_TILE_INFO_SIZE, false)?,
-            film_grain: DmaBuf::alloc("system", FILM_GRAIN_BUFFER_SIZE, false)?,
-            tile: DmaBuf::alloc("system", TILE_BUFFER_SIZE, false)?,
+            probability_in: DmaBuf::alloc(AV1_FRAME_HEAP, PROBABILITY_BUFFER_SIZE, false)?,
+            probability_out: DmaBuf::alloc(AV1_FRAME_HEAP, PROBABILITY_BUFFER_SIZE, false)?,
+            global_model: DmaBuf::alloc(AV1_FRAME_HEAP, GLOBAL_MODEL_BUFFER_SIZE, false)?,
+            tile_info: DmaBuf::alloc(AV1_FRAME_HEAP, AV1_TILE_INFO_SIZE, false)?,
+            film_grain: DmaBuf::alloc(AV1_FRAME_HEAP, FILM_GRAIN_BUFFER_SIZE, false)?,
+            tile: DmaBuf::alloc(AV1_FRAME_HEAP, TILE_BUFFER_SIZE, false)?,
             filter: None,
             last_status: (0, 0, 0),
             last_hardware_error: false,
@@ -250,7 +258,8 @@ impl Av1d {
         super::check_decode_geometry(current.width, current.height)?;
         let intra = matches!(params.format.frame_type, 0 | 2);
         let probability = build_probability_buffer(cdf, intra);
-        let trace_directory = std::env::var_os("RK_MPP_AV1_PROB_DUMP_DIR");
+        let trace_directory = std::env::var_os("RK_MPP_AV1_DUMP_DIR")
+            .or_else(|| std::env::var_os("RK_MPP_AV1_PROB_DUMP_DIR"));
         let trace_job = trace_directory
             .as_ref()
             .map(|_| NEXT_TRACE_JOB.fetch_add(1, Ordering::Relaxed));
@@ -282,7 +291,11 @@ impl Av1d {
             .as_ref()
             .is_none_or(|buffer| buffer.len() < filter.allocation_size)
         {
-            self.filter = Some(DmaBuf::alloc("system", filter.allocation_size, false)?);
+            self.filter = Some(DmaBuf::alloc(
+                AV1_FRAME_HEAP,
+                filter.allocation_size,
+                false,
+            )?);
         }
 
         // Reuse and grow the stream packet across jobs the way the VP8
@@ -295,7 +308,7 @@ impl Av1d {
             .is_none_or(|buffer| buffer.len() < padded_stream_len)
         {
             self.stream = None;
-            self.stream = Some(DmaBuf::alloc("system", padded_stream_len, false)?);
+            self.stream = Some(DmaBuf::alloc(AV1_STREAM_HEAP, padded_stream_len, false)?);
         }
         let stream = self
             .stream
@@ -351,6 +364,28 @@ impl Av1d {
             .reg_write(registers.words(), 0)
             .reg_read(&mut readback, 0)
             .reg_offsets(&self.offsets_scratch);
+        self.batch.finalize_flags(true);
+        if let (Some(directory), Some(job)) = (&trace_directory, trace_job) {
+            use std::fmt::Write as _;
+
+            let directory = std::path::PathBuf::from(directory);
+            let mut text = String::new();
+            for (index, request) in self.batch.requests().iter().enumerate() {
+                writeln!(
+                    text,
+                    "req[{index}] cmd={:#05x} flag={:#05x} size={} offset={}",
+                    request.cmd, request.flag, request.size, request.offset
+                )
+                .unwrap();
+            }
+            std::fs::write(directory.join(format!("requests_{job:03}.txt")), text)?;
+        }
+        if std::env::var_os("RK_MPP_AV1_DRY_RUN").is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "AV1 hardware submission skipped by RK_MPP_AV1_DRY_RUN",
+            ));
+        }
         self.svc.submit_batch(&mut self.batch)?;
         self.svc.poll_hw_finish()?;
 
@@ -978,6 +1013,8 @@ impl Av1Registers {
         self.words[171] = buffers.probability_out;
         self.words[173] = buffers.probability;
         self.words[83] = buffers.global_model;
+        self.words[85] = buffers.filter;
+        self.words[91] = buffers.filter;
         self.words[167] = buffers.tile_info;
     }
 
@@ -1538,7 +1575,7 @@ mod tests {
             DisplayLayout {
                 hor_stride: 320,
                 ver_stride: 240,
-                allocation_size: 115_200,
+                allocation_size: 153_600,
             }
         );
         assert_eq!(
@@ -1546,7 +1583,7 @@ mod tests {
             DisplayLayout {
                 hor_stride: 400,
                 ver_stride: 240,
-                allocation_size: 144_000,
+                allocation_size: 192_000,
             }
         );
         assert!(display_layout(320, 240, 12).is_err());

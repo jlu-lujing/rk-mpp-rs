@@ -96,8 +96,23 @@ fn main() {
             u32::from(params.bitdepth),
         )
         .unwrap();
+        let mut reference_fds = [None; 24];
+        for reference in reference_frames.iter().flatten().copied() {
+            reference_fds[reference] = Some(0x1100 + reference as u32);
+        }
         let buffers = Av1DmaBuffers {
+            current_output: 0x1000,
+            references: reference_fds,
             stream_len: coded.stream_len,
+            stream: 0x1200,
+            global_model: 0x1300,
+            tile_info: 0x1301,
+            probability: 0x1302,
+            probability_out: 0x1303,
+            filter: 0x1304,
+            tile: 0x1305,
+            film_grain: 0x1306,
+            display_output: 0x1400,
             display_hor_stride: display.hor_stride as u32,
             display_ver_stride: display.ver_stride as u32,
             display_yuv420sp: params.bitdepth <= 8,

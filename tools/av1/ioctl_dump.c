@@ -132,12 +132,37 @@ static void dump_offsets(const struct mpp_request *request,
     fclose(file);
 }
 
+static void dump_requests(const struct mpp_request *first,
+                          unsigned long sequence)
+{
+    const struct mpp_request *request = first;
+    unsigned index;
+    char name[64];
+    FILE *file;
+
+    snprintf(name, sizeof(name), "requests_%04lu.txt", sequence);
+    file = open_dump(name);
+    if (!file)
+        return;
+    for (index = 0; index < MAX_REQ_NUM; ++index) {
+        fprintf(file, "req[%u] cmd=%#05x flag=%#05x size=%u offset=%u\n",
+                index, request->command, request->flags,
+                request->size, request->offset);
+        if (!(request->flags & MPP_FLAGS_MULTI_MSG) ||
+            (request->flags & MPP_FLAGS_LAST_MSG))
+            break;
+        ++request;
+    }
+    fclose(file);
+}
+
 static void inspect_request(const struct mpp_request *first)
 {
     const struct mpp_request *request = first;
     unsigned long sequence = dump_sequence++;
     unsigned count;
 
+    dump_requests(first, sequence);
     for (count = 0; count < MAX_REQ_NUM; ++count) {
         if (request->command == MPP_CMD_SET_REG_WRITE)
             dump_registers(request, sequence);
