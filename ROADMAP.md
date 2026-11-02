@@ -871,6 +871,14 @@ in what order the evidence gets produced.
 - [ ] H.265 (rkvenc): the VI/refresh GOP schedule (`MppEncRefCfg`'s frame modes, which
       decide when a picture takes the refresh allocation and the LT marking), VBR and
       AVBR, tiles/WPP/SAO, B frames, multiple references and per-slice output.
+      Note on the harness cell that exposed this: `-g 60` is parsed by
+      `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero, so
+      it is not one of `mpi_enc_gen_ref_cfg`'s modes 0..3. Its second picture gets
+      582 bits, and no setting of the documented `bits_model_alloc` branches with the
+      real `gop_total_bits` (600000) produces a target that small; the meaningful
+      comparison is a stated GOP mode (`-g 0:60:0`), where the model already matches
+      byte for byte. A fixed-QP 6-frame run under the same `-g 60` is a plain
+      IDR + five P (no VI slice), so the refresh behaviour is RC-side only.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,
