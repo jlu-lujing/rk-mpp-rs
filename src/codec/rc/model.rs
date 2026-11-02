@@ -279,16 +279,21 @@ impl Model {
     /// `bits_model_init` + `bits_model_param_init` + `bits_frm_init`.
     pub fn new(cfg: Config) -> Model {
         // `bits_model_init`'s normalisation. The all-intra and unbounded GOP cases
-        // rewrite `igop` to 500 in the reference; this driver only ever asks for a
-        // real GOP, and the rewrite would silently change the allocation window.
+        // rewrite `igop` to 500 in the reference - an explicit `igop == 1` also pins
+        // `init_ip_ratio` to 16 - so the allocation window is the same 500-picture
+        // estimate either way.
         let mut cfg = cfg;
         cfg.min_i_bit_prop = clip(cfg.min_i_bit_prop, 10, 100);
         cfg.max_i_bit_prop = clip(cfg.max_i_bit_prop, cfg.min_i_bit_prop, 100);
         cfg.init_ip_ratio = clip(cfg.init_ip_ratio, 160, 640);
-        assert!(
-            cfg.igop > 1,
-            "the all-intra and infinite GOP forms are not ported"
-        );
+        match cfg.igop {
+            i if i <= 0 => cfg.igop = 500,
+            1 => {
+                cfg.init_ip_ratio = 16;
+                cfg.igop = 500;
+            }
+            _ => {}
+        }
 
         // The GOP budget comes from `bps_target` on CBR and from `bps_max` on VBR;
         // `target_bps` - what the controllers steer towards - is `bps_target` either
@@ -1231,6 +1236,23 @@ mod tests {
     /// comes back through the signed `index` below 4 and clamps to QP 15 - where
     /// an i64 transcription would reach the same 15 only by accident, and a
     /// non-wrapping one would reach it at the wrong end of the table.
+    /// `bits_model_init`: an unset or all-intra GOP is measured as 500 pictures,
+    /// and the all-intra form also pins `init_ip_ratio` to 16.
+    #[test]
+    fn unbounded_and_all_intra_gops_normalise_to_500() {
+        let cfg = Config::cbr(300000, 250000, 350000, 0);
+        let model = Model::new(cfg);
+        assert_eq!(model.cfg.igop, 500);
+
+        let mut cfg = Config::cbr(300000, 250000, 350000, 1);
+        let model = Model::new(cfg.clone());
+        assert_eq!(model.cfg.igop, 500);
+        assert_eq!(model.cfg.init_ip_ratio, 16);
+
+        cfg.igop = 60;
+        assert_eq!(Model::new(cfg).cfg.igop, 60);
+    }
+
     #[test]
     fn first_qp_clips_at_both_ends_and_wraps_unsigned_below_zero() {
         // Too little budget to code even at the coarsest row: index 95.

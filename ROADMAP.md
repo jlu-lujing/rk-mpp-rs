@@ -897,6 +897,11 @@ in what order the evidence gets produced.
       branches. The register side is already right for either marking: with
       `long_term` set and the RC numbers supplied, a P/VI image matches the traced
       job word for word, so only the RC frame type and its allocation remain.
+      The model now also accepts the reference's degenerate GOP forms:
+      `igop <= 0` and `igop == 1` both normalise to 500 (the all-intra form also
+      pins `init_ip_ratio` to 16), where it used to refuse them. That is
+      `bits_model_init`'s documented behaviour; it does not by itself reproduce the
+      582-bit cell, which still needs the VI allocation inputs.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,
