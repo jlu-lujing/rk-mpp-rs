@@ -885,6 +885,18 @@ in what order the evidence gets produced.
       comparison is a stated GOP mode (`-g 0:60:0`), where the model already matches
       byte for byte. A fixed-QP 6-frame run under the same `-g 60` is a plain
       IDR + five P (no VI slice), so the refresh behaviour is RC-side only.
+      What the schedule is, from `mpi_enc_gen_smart_gop_ref_cfg`
+      (`utils/mpi_enc_utils.c:854`): one LT entry with `lt_gap = gop_len`, then
+      **`st_ref[0]` is `REF_TO_PREV_INTRA`** - the first P after every IDR is a
+      virtual-intra frame - followed by `vi_len - 2` plain P entries when
+      `vi_len > 1`, then another `REF_TO_PREV_INTRA`. The RC allocates VI frames
+      through the `INTRA_RFI_FRAME` case, but that branch is gated on
+      `usr_cfg.refresh_len`, which comes from `rc:refresh_length`
+      (`mpp_enc_impl.cpp:1302`) and is a different setting from the harness's
+      `-g` `vi_len`; the 582-bit cell is still not explained by the documented
+      branches. The register side is already right for either marking: with
+      `long_term` set and the RC numbers supplied, a P/VI image matches the traced
+      job word for word, so only the RC frame type and its allocation remain.
 - [x] JPEG encoder (vepu): 8-bit NV12 and packed YUYV/UYVY input to baseline
       4:2:0 output, the eleven MPP quantization tables and quality factor
       1-100. Hardware output is byte-identical across repeated NV12 runs,
