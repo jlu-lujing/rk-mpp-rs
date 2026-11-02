@@ -439,10 +439,10 @@ in what order the evidence gets produced.
         instead matches libaom with film grain skipped; this is a C HAL
         defect rather than the Rust acceptance oracle.
   - [ ] wider AV1 conformance and performance matrix: larger resolutions,
-        long GOPs, multiple sequence headers, dynamic resolution, tiles,
-        10-bit where supported and damaged streams still need C/FFmpeg
-        differential fixtures. The current acceptance evidence is one
-        320x240 stream and one 2x2 tile stream, not a general AV1 claim.
+        multiple sequence headers, dynamic resolution and damaged streams
+        still need C/FFmpeg differential fixtures. The generated corpus now
+        covers 640x480 long-GOP, 1280x720, 1920x1080 and Main10; all of them
+        are byte-identical to C in the full corpus sweep.
   - The 320x240 fixture is the initial acceptance baseline: official C MPP
     emits 10/10 frames byte-identical to FFmpeg
     (`2cd9c129…291d29` for the planar YUV output). The 64x64 fixture is not
@@ -1933,6 +1933,13 @@ pipeline uses.
   `scripts/board_bench_vs_mpp.sh`; seven interleaved samples put it at 24.0 ms
   in C and 20.0 ms in Rust (about 20 % higher Rust throughput).
   `BENCH_FILTER=av1` remains the reproducible subset command.
+- The wider generated AV1 matrix is also faster after two output-path fixes:
+  four 10-bit samples are unpacked from each five-byte group into preallocated
+  planar output, and only the CPU-read display surface uses cached DMA32 while
+  tile/reference buffers stay uncached for the hardware. Seven interleaved
+  samples on t62 give Rust speed deltas of +32.6 % (320x240), +37.5 % (tiles),
+  +361.9 % (Main10), +23.1 % (60-frame 640x480), +32.7 % (720p) and +7.4 %
+  (1080p) relative to native-NV12 C output.
 - `rk-mpp-rs m2v <file.m2v>` prints the MPEG-2 header chain,
   `rk-mpp-rs m2vdec <in.m2v> <out.yuv>`, `rk-mpp-rs mp4dec <in.m4v> <out.yuv>` and
   `rk-mpp-rs h263dec <in.263> <out.yuv>` decode MPEG-2, MPEG-4 and H.263 on vdpu2,

@@ -59,6 +59,10 @@ enc vp9_320x240_p2_10bit.ivf       320x240  20 -c:v libvpx-vp9 -deadline realtim
 # ---- AV1 ---------------------------------------------------------------
 enc av1_320x240.ivf                320x240  10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
 enc av1_640x480.ivf                640x480  10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
+enc av1_640x480_long.ivf           640x480  60 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p -g 30
+enc av1_1280x720.ivf               1280x720 20 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
+enc av1_1920x1080.ivf              1920x1080 10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
+enc av1_320x240_p0_10bit.ivf       320x240  10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -profile:v 0 -pix_fmt yuv420p10le
 
 # ---- MPEG-2 / MPEG-4 / H.263 --------------------------------------------
 enc m2v_320x240.m2v                320x240  30 -c:v mpeg2video -q:v 4 -g 15

@@ -66,6 +66,101 @@ pub fn nv12_to_planar(y: &[u8], uv: &[u8], width: usize, height: usize, stride: 
     out
 }
 
+/// Rockchip's packed 10-bit NV12 into planar little-endian 16-bit samples.
+///
+/// Four adjacent samples occupy exactly five input bytes, so the common path
+/// fills four output words with one load and one store instead of decoding
+/// every sample through a dynamic bit-depth helper.
+pub fn packed10_nv12_to_planar(
+    y: &[u8],
+    uv: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+) -> Vec<u8> {
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
+    let luma_samples = width * height;
+    let chroma_samples = chroma_width * chroma_height;
+    let size = (luma_samples + 2 * chroma_samples) * 2;
+    let mut out = Vec::with_capacity(size);
+    // SAFETY: every byte up to `size` is filled below. `u8` needs no drop and
+    // the spare capacity is never exposed as initialized.
+    unsafe { out.set_len(size) };
+
+    for row in 0..height {
+        unpack_packed10_row(
+            &y[row * stride..],
+            &mut out[row * width * 2..][..width * 2],
+            width,
+        );
+    }
+
+    let u_base = luma_samples * 2;
+    let (u_plane, v_plane) = out[u_base..].split_at_mut(chroma_samples * 2);
+    for row in 0..chroma_height {
+        let u_row = &mut u_plane[row * chroma_width * 2..][..chroma_width * 2];
+        let v_row = &mut v_plane[row * chroma_width * 2..][..chroma_width * 2];
+        unpack_packed10_uv_row(&uv[row * stride..], u_row, v_row, chroma_width);
+    }
+    out
+}
+
+fn unpack_packed10_row(src: &[u8], dst: &mut [u8], samples: usize) {
+    let groups = samples / 4;
+    for group in 0..groups {
+        let packed = packed10_word(&src[group * 5..]);
+        let words = (packed & 0x03ff)
+            | ((packed >> 10) & 0x03ff) << 16
+            | ((packed >> 20) & 0x03ff) << 32
+            | ((packed >> 30) & 0x03ff) << 48;
+        dst[group * 8..group * 8 + 8].copy_from_slice(&words.to_le_bytes());
+    }
+    let mut sample = groups * 4;
+    while sample < samples {
+        let value = read_packed10_sample(src, sample);
+        dst[sample * 2..sample * 2 + 2].copy_from_slice(&value.to_le_bytes());
+        sample += 1;
+    }
+}
+
+fn unpack_packed10_uv_row(src: &[u8], u: &mut [u8], v: &mut [u8], samples: usize) {
+    let groups = samples / 2;
+    for group in 0..groups {
+        let packed = packed10_word(&src[group * 5..]);
+        let u_words = ((packed & 0x03ff) | ((packed >> 20) & 0x03ff) << 16) as u32;
+        let v_words = (((packed >> 10) & 0x03ff) | ((packed >> 30) & 0x03ff) << 16) as u32;
+        let offset = group * 4;
+        u[offset..offset + 4].copy_from_slice(&u_words.to_le_bytes());
+        v[offset..offset + 4].copy_from_slice(&v_words.to_le_bytes());
+    }
+    if samples % 2 != 0 {
+        let column = groups * 2;
+        let u_value = read_packed10_sample(src, column * 2);
+        let v_value = read_packed10_sample(src, column * 2 + 1);
+        u[column * 2..column * 2 + 2].copy_from_slice(&u_value.to_le_bytes());
+        v[column * 2..column * 2 + 2].copy_from_slice(&v_value.to_le_bytes());
+    }
+}
+
+fn packed10_word(src: &[u8]) -> u64 {
+    u64::from(src[0])
+        | u64::from(src[1]) << 8
+        | u64::from(src[2]) << 16
+        | u64::from(src[3]) << 24
+        | u64::from(src[4]) << 32
+}
+
+fn read_packed10_sample(src: &[u8], sample: usize) -> u16 {
+    let bit = sample * 10;
+    let byte = bit / 8;
+    let shift = bit % 8;
+    let word = u32::from(src[byte])
+        | u32::from(src.get(byte + 1).copied().unwrap_or(0)) << 8
+        | u32::from(src.get(byte + 2).copied().unwrap_or(0)) << 16;
+    ((word >> shift) & 0x03ff) as u16
+}
+
 /// The even (U) bytes of a little-endian word, packed into four.
 fn even_bytes(word: u64) -> u32 {
     let mut packed = word & 0x00ff_00ff_00ff_00ff;
@@ -151,6 +246,62 @@ mod tests {
         // Row 0 U then row 1 U must be adjacent: that is the whole point of the
         // de-interleave, and the bug the original code almost had.
         assert_eq!(&out[32..40], &reference(&y, &uv, 8, 4, 8)[32..40]);
+    }
+
+    #[test]
+    fn packed10_fast_path_matches_the_planar_sample_order() {
+        for (width, height) in [(8usize, 2usize), (7, 3), (130, 6)] {
+            let chroma_width = width.div_ceil(2);
+            let chroma_height = height.div_ceil(2);
+            let stride = (width * 10).div_ceil(8) + 5;
+            let mut y = vec![0u8; stride * height];
+            let mut uv = vec![0u8; stride * chroma_height];
+            let mut y_samples = Vec::new();
+            let mut uv_samples = Vec::new();
+
+            for row in 0..height {
+                let samples: Vec<u16> = (0..width)
+                    .map(|column| ((row * width + column) * 7 & 0x03ff) as u16)
+                    .collect();
+                pack_packed10(&samples, &mut y[row * stride..]);
+                y_samples.extend_from_slice(&samples);
+            }
+            for row in 0..chroma_height {
+                let samples: Vec<u16> = (0..chroma_width * 2)
+                    .map(|column| ((row * chroma_width + column) * 11 & 0x03ff) as u16)
+                    .collect();
+                pack_packed10(&samples, &mut uv[row * stride..]);
+                uv_samples.push(samples);
+            }
+
+            let actual = packed10_nv12_to_planar(&y, &uv, width, height, stride);
+            let mut expected = Vec::new();
+            for sample in y_samples {
+                expected.extend_from_slice(&sample.to_le_bytes());
+            }
+            for component in 0..2 {
+                for row in &uv_samples {
+                    for sample in row.iter().skip(component).step_by(2) {
+                        expected.extend_from_slice(&sample.to_le_bytes());
+                    }
+                }
+            }
+            assert_eq!(actual, expected, "{width}x{height}");
+        }
+    }
+
+    fn pack_packed10(samples: &[u16], row: &mut [u8]) {
+        for (index, sample) in samples.iter().copied().enumerate() {
+            let bit = index * 10;
+            let byte = bit / 8;
+            let shift = bit % 8;
+            let word = u32::from(sample) << shift;
+            row[byte] |= word as u8;
+            row[byte + 1] |= (word >> 8) as u8;
+            if shift > 6 {
+                row[byte + 2] |= (word >> 16) as u8;
+            }
+        }
     }
 
     #[test]

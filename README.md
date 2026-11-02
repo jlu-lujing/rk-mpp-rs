@@ -61,7 +61,7 @@
 复跑：
 
 ```bash
-cargo test --all-targets                     # 607 通过，26 个板级用例 ignore
+cargo test --all-targets                     # 608 通过，26 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh

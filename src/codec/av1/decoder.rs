@@ -5,6 +5,7 @@
 //! directly with libaom and FFmpeg YUV files.
 
 use std::io;
+use std::time::Instant;
 
 use crate::codec::av1::assembler::{Av1CodedFrame, Av1PacketEvent, Av1PacketParser};
 use crate::codec::av1::parser::{split_obus, SequenceHeader};
@@ -430,6 +431,8 @@ impl Decoder {
 }
 
 fn copy_planar(frame: &Frame) -> Vec<u8> {
+    let traced = std::env::var_os("RK_MPP_AV1_TRACE").is_some();
+    let start = Instant::now();
     let _ = frame.display.sync_read_begin();
     let output = copy_planar_data(
         frame.width,
@@ -440,6 +443,16 @@ fn copy_planar(frame: &Frame) -> Vec<u8> {
         frame.uv_plane(),
     );
     let _ = frame.display.sync_read_end();
+    if traced {
+        eprintln!(
+            "av1-copy {}x{} bitdepth={} bytes={} elapsed_us={}",
+            frame.width,
+            frame.height,
+            frame.bit_depth,
+            output.len(),
+            start.elapsed().as_micros()
+        );
+    }
     output
 }
 
@@ -456,6 +469,9 @@ fn copy_planar_data(
     // size used here.
     if bit_depth == 8 && width % 2 == 0 && height % 2 == 0 {
         return crate::codec::yuv::nv12_to_planar(y, uv, width, height, stride);
+    }
+    if bit_depth == 10 {
+        return crate::codec::yuv::packed10_nv12_to_planar(y, uv, width, height, stride);
     }
     let chroma_width = width.div_ceil(2);
     let chroma_height = height.div_ceil(2);
@@ -475,35 +491,8 @@ fn copy_planar_data(
                 }
             }
         }
-    } else {
-        debug_assert_eq!(bit_depth, 10);
-        for row in 0..height {
-            let row = &y[row * stride..];
-            for column in 0..width {
-                output.extend_from_slice(&read_packed_sample(row, column, bit_depth).to_le_bytes());
-            }
-        }
-        for component in 0..2 {
-            for row in 0..chroma_height {
-                let row = &uv[row * stride..];
-                for column in 0..chroma_width {
-                    let value = read_packed_sample(row, column * 2 + component, bit_depth);
-                    output.extend_from_slice(&value.to_le_bytes());
-                }
-            }
-        }
     }
     output
-}
-
-fn read_packed_sample(row: &[u8], index: usize, bit_depth: u32) -> u16 {
-    let bit = index * bit_depth as usize;
-    let byte = bit / 8;
-    let shift = bit % 8;
-    let word = u32::from(row[byte])
-        | u32::from(row.get(byte + 1).copied().unwrap_or(0)) << 8
-        | u32::from(row.get(byte + 2).copied().unwrap_or(0)) << 16;
-    ((word >> shift) & ((1u32 << bit_depth) - 1)) as u16
 }
 
 fn cdf_hash(cdf: &crate::codec::av1::cdf::Av1Cdf) -> u64 {

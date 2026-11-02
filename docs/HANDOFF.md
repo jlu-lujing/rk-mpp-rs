@@ -98,9 +98,10 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
    解码前校验文件集合、大小、SHA-256、IVF FourCC 和 raw elementary-stream magic；
    `.m4v` 若实际是 MP4 容器会直接失败。验证：`tests/data` 的 142 个文件写/读
    清单均通过，单字节修改和伪 `.m4v` 均被拒绝。
-   当前 `corpus-gen2` 全量结果为 `pass=53 fail=0 named=6 skipped=0`；AV1 tile
-   已是普通 PASS。64×64 AV1 在 C 上也会逐帧自恢复 reset，C/Rust 均输出十帧
-   零图，不能单独归因于 Rust。
+   当前 `corpus-gen3` 有 63 个 payload，AV1 扩展到 640x480 long-GOP、
+   1280x720、1920x1080 和 Main10；全量结果为
+   `pass=57 fail=0 named=6 skipped=0`。AV1 tile 已是普通 PASS。64×64 AV1
+   在 C 上也会逐帧自恢复 reset，C/Rust 均输出十帧零图，不能单独归因于 Rust。
 6. **H.264 QP 矩阵需要参考 harness 的 level 补丁。** `mpi_enc_test.c` 把
    `h264:level` 写死为 40，而 crate 的 Constrained Baseline 是 30；`board_h264_qp_vs_mpp.sh`
    现在会连同 profile/cabac/trans8x8 一起把 level sed 成 30，所以新板不需要预置打过补丁
@@ -108,7 +109,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 607 passed, 26 board-only ignored
+cargo test --all-targets      # 608 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json

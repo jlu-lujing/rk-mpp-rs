@@ -35,6 +35,11 @@ const AV1_FRAME_HEAP: &str = "system-uncached-dma32";
 /// The input packet comes from C's cached DMA32 group and is explicitly
 /// flushed around the CPU copy.
 const AV1_STREAM_HEAP: &str = "system-dma32";
+/// The post-processor output is consumed by the CPU on every displayed frame.
+/// Keep the hardware-written surface in DMA32 memory, but use a cached mapping
+/// so `sync_read_begin()` can invalidate once and the planar copy runs at
+/// cache bandwidth instead of uncached-memory bandwidth.
+const AV1_DISPLAY_HEAP: &str = "system-dma32";
 
 const AV1_REF_SCALE_SHIFT: u32 = 14;
 const MAX_FRAME_DISTANCE: i32 = 31;
@@ -147,7 +152,7 @@ impl Frame {
         let display = display_layout(width, height, bit_depth)?;
         Ok(Self {
             tile_output: DmaBuf::alloc(AV1_FRAME_HEAP, layout.tile_output_size, false)?,
-            display: DmaBuf::alloc(AV1_FRAME_HEAP, display.allocation_size, false)?,
+            display: DmaBuf::alloc(AV1_DISPLAY_HEAP, display.allocation_size, false)?,
             width,
             height,
             display_hor_stride: display.hor_stride,
