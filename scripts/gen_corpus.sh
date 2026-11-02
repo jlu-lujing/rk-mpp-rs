@@ -60,7 +60,7 @@ enc av1_640x480.ivf                640x480  10 -c:v libaom-av1 -cpu-used 8 -crf 
 # ---- MPEG-2 / MPEG-4 / H.263 --------------------------------------------
 enc m2v_320x240.m2v                320x240  30 -c:v mpeg2video -q:v 4 -g 15
 enc m2v_720x576.m2v                720x576  20 -c:v mpeg2video -q:v 4 -g 15
-enc m4v_320x240_bf2.m4v            320x240  30 -c:v mpeg4 -q:v 4 -bf 2 -g 30
+enc m4v_320x240_bf2.m4v            320x240  30 -c:v mpeg4 -q:v 4 -bf 2 -g 30 -f m4v
 enc h263_352x288.263               352x288  30 -c:v h263 -q:v 4 -g 30 -f h263
 
 # ---- stills ------------------------------------------------------------
