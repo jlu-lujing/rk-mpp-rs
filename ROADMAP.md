@@ -47,6 +47,13 @@ rejected a one-byte mutation, and aborted a manifest-backed sweep before any
 decode. Quarantined fixtures still report `named=1, skipped=0`, with the
 manifest itself excluded from decoder counts.
 
+**Full regenerated corpus on t62 (2026-11-02).** `corpus-gen2` contains 59
+validated payloads (5,801,147 bytes) and the complete sweep finished with
+`pass=51 fail=0 named=6 skipped=2`. The named set is the bare P-slice fixture,
+two AV1 film-grain C bugs, two VP9 C bugs and interlaced MPEG-2 C rewind/IDCT
+rounding. The two skips are JPEG files that this decoder sweep does not yet
+normalize for C/RGB comparison. The repaired AV1 tile fixture is a normal PASS.
+
 The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
 
 - A result that differs from the C reference is a defect, not an improvement, unless
@@ -441,7 +448,10 @@ in what order the evidence gets produced.
     (`2cd9c129…291d29` for the planar YUV output). The 64x64 fixture is not
     a valid MPP hardware acceptance case on this board: official C MPP also
     emits ten identical all-zero frames (`fd9243e1…263e` per frame), so a
-    mismatch there must not be attributed to the Rust port
+    mismatch there must not be attributed to the Rust port. On t62/6.1.141,
+    the current C oracle self-recovers through 12 AV1 resets on this fixture;
+    Rust self-recovers through 11 and produces the same ten zero frames, so the
+    reset count is not a Rust-only divergence.
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
       display extension, picture header, picture coding extension, quant matrix
