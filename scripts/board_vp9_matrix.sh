@@ -51,6 +51,20 @@ fi
 
 fail=0
 named=0
+
+# Cells where libvpx (ffmpeg) proved the C side wrong. Their byte compare is
+# expected to fail; recording them here keeps a real regression from hiding.
+known_c_bug() {
+  case "$1" in
+    vp9_p0_720p_errres_seg)
+      printf 'KNOWN-C-BUG %s: Rust matches libvpx on all 6 frames; C differs on frames 4/5 by 213 V-plane bytes (max delta 3)\n' "$1"
+      return 0 ;;
+    vp9_p0_lossless_321x241_2)
+      printf 'KNOWN-C-BUG %s: libvpx and Rust produce 2 frames; the C harness emits 1\n' "$1"
+      return 0 ;;
+  esac
+  return 1
+}
 for entry in "${streams[@]}"; do
   IFS=':' read -r name width height _packets depth <<<"$entry"
   sample_bytes=$((depth > 8 ? 2 : 1))
@@ -97,6 +111,18 @@ for entry in "${streams[@]}"; do
 
   c_frames=$(( c_bytes / frame_bytes ))
   r_frames=$(( r_bytes / frame_bytes ))
+  if known_c_bug "$name"; then
+    lv="/tmp/vpx9_${name}_libvpx.yuv"
+    if ssh t6 "ffmpeg -loglevel error -y -i ~/rk-mpp-rs/tests/data/${name}.ivf \
+        -pix_fmt yuv420p -f rawvideo $lv" >/dev/null 2>&1 &&
+       ssh t6 "cmp -s $lv $rust"; then
+      :
+    else
+      printf 'FAIL %s: Rust no longer matches libvpx (the C verdict is already known)\n' "$name"
+      fail=1
+    fi
+    continue
+  fi
   if [ "$c_rc" != "$r_rc" ]; then
     printf 'NAMED %s: exit code C=%s Rust=%s (bytes C=%s Rust=%s)\n' \
       "$name" "$c_rc" "$r_rc" "$c_bytes" "$r_bytes"

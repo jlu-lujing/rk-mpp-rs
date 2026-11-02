@@ -286,18 +286,27 @@ in what order the evidence gets produced.
        Result: vp8/container, vp8/half-last and vp8/mid-flip SAME (both sides
        rc 0, twelve frames), and vp9/container SAME (both rc 255, nothing). The
        remaining named rows are listed below, not hidden.
- - [ ] The named divergences the damage and boundary tables left open:
-       vp9/half-last and vp9/mid-flip, where the rkvdec harness aborts the whole
-       run (rc 255, zero frames) and Rust recovers the surviving packets (11 or
-       12 frames) - matching C exactly would mean discarding pictures already
-       decoded, which is a worse decoder, so this stays a measured divergence;
-       `vp9_p0_720p_errres_seg`, byte-identical for its first four frames and
-       then 213 bytes of chroma in frames 4 and 5, the register images matching
-       word for word - a state question around error-resilient segmentation to
-       chase; and the odd-dimension matrix cells (321x241), where rkvdec's
-       padded 16-aligned strides make a naive byte compare meaningless - the
-       existing odd-size proof stands on the FFmpeg hash and the padded DMA
-       stride test, not on that compare.
+  - [x] **The VP9 boundary matrix, adjudicated against libvpx.** The remaining VP9
+       cells are no longer "ours to fix": both were decided by decoding the same
+       fixture with FFmpeg's libvpx and comparing three ways.
+       * `vp9_p0_720p_errres_seg` (1280x720, error-resilient temporal segmentation,
+         6 frames): Rust equals libvpx byte-for-byte on every frame (SHA-256
+         `0f0ff0da8e78ff82a7284820e699f942c16a5e38c31e91bee6ace958ba0deb51`); C
+         differs on frames 4 and 5 by **106 + 107 bytes, all in the V plane, max
+         delta 3** (SHA-256
+         `5b737017e39fe105170cfa1dc8039589ea9d48138c0a5918a568c9704b79cac1`). The
+         register images match word for word, so this is a C-side state/filter bug
+         and the crate keeps the libvpx result.
+       * `vp9_p0_lossless_321x241_2`: libvpx and Rust both produce **2** frames; the
+         C harness emits 1. Rust's output hash is the existing libvpx hash
+         `8ac48f11837399790243f67695f8b2b98d637c0f82a5ae7688a16df9be70beca`, so C
+         loses the second picture on this odd-dimension stream.
+       `scripts/board_vp9_matrix.sh` now reports those two cells as
+       `KNOWN-C-BUG` with the reason instead of `FAIL`/`NAMED`, so a real regression
+       cannot hide behind them.
+       The remaining VP9 rows stay as measured divergences with their reasons: the
+       damaged-stream cells where C aborts the run and Rust recovers the surviving
+       pictures (`vp9/half-last`, `vp9/mid-flip`).
 - [ ] AV1 Main, film grain
   - [x] IVF packet boundaries, OBU headers/LEB128 and complete OBU splitting
   - [x] Sequence header, operating points, color config and tool flags
