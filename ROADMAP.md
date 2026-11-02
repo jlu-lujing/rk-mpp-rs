@@ -20,8 +20,13 @@ register or allocates a buffer: zero, or anything above 8192 in either axis, is
 refused with an `InvalidInput` error. The check is shared
 (`hal::check_decode_geometry`), applied in `h264d`, `hevc`, `vp9d`, `av1d` and
 through `vdpu2::run_job` for the VDPU2 codecs, and unit-tested. It does not change
-any valid stream; the board-side re-run of the regression matrix is pending the
-reboot.
+any valid stream. The board-side re-run is done on t62 (same SoC, kernel 6.1.141):
+VP8 profile/scale gate 3/3, VP9 matrix 7 cells (with its two adjudicated C bugs),
+the VDPU2 regressions (VP8 6 fixtures + register images, H.263 3, MPEG-4 3, MPEG-2
+3) and the H.265 rate-control matrix 13/13 all pass, and an HEVC decode matches.
+`p_slice_mmco.264` is a bare P slice with no SPS/PPS, so it is not a standalone
+decode input; the C harness emits a frame from it while the crate refuses, which is
+a fixture-usage difference rather than a decoder result.
 
 The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
 
