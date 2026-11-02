@@ -57,6 +57,16 @@ pub enum Picture {
     P { poc_lsb: u32 },
 }
 
+/// One GDR picture's inputs: the table the session filled, where in the sweep it
+/// is, and how wide the band is.
+#[derive(Clone, Copy, Debug)]
+pub struct RefreshJob {
+    pub table_fd: i32,
+    pub mode: RefreshMode,
+    pub refresh_num: u32,
+    pub refresh_idx: u32,
+}
+
 /// One picture's rate-control decision: what `rc_model::Model::start` returns plus
 /// the HAL's quantiser slack. `bit_target` is bits for the whole picture.
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +78,71 @@ pub struct RateControl {
     /// `hw->qp_delta_row` and `hw->qp_delta_row_i`, both 2 by default.
     pub qp_delta_row: u32,
     pub qp_delta_row_i: u32,
+}
+
+/// Which axis an intra-refresh (GDR) sweep walks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshMode {
+    Row,
+    Col,
+}
+
+/// `setup_intra_refresh`'s ROI base table: 64 bytes per CTU, with the refresh band
+/// forced intra. The byte pattern is the HAL's own - `0x54` at offset 21, twenty
+/// `0x55` bytes from 22, `0x05` at 42 - and the band is
+/// `cal_refresh_area(ctu_w, ctu_h, refresh_idx, mode, refresh_num)`.
+pub fn refresh_base_table(
+    width: usize,
+    height: usize,
+    refresh_idx: u32,
+    mode: RefreshMode,
+    refresh_num: u32,
+) -> Vec<u8> {
+    let ctu_w = ((width + 63) / 64).max(1) as i32;
+    let ctu_h = ((height + 63) / 64).max(1) as i32;
+    let mut table = vec![0u8; ctu_w as usize * ctu_h as usize * 64];
+
+    let (x_sta, x_end, y_sta, y_end) = match mode {
+        RefreshMode::Row => {
+            let h = if refresh_idx > 0 {
+                refresh_num + 1
+            } else {
+                refresh_num
+            };
+            let y0 = if refresh_idx > 0 {
+                refresh_num * refresh_idx - 1
+            } else {
+                0
+            };
+            (0, ctu_w - 1, y0 as i32, (y0 + h) as i32 - 1)
+        }
+        RefreshMode::Col => {
+            let w = if refresh_idx > 0 {
+                refresh_num + 1
+            } else {
+                refresh_num
+            };
+            let x0 = if refresh_idx > 0 {
+                refresh_num * refresh_idx - 1
+            } else {
+                0
+            };
+            (x0 as i32, (x0 + w) as i32 - 1, 0, ctu_h - 1)
+        }
+    };
+    let x_sta = x_sta.max(0);
+    let y_sta = y_sta.max(0);
+    let x_end = x_end.min(ctu_w - 1);
+    let y_end = y_end.min(ctu_h - 1);
+    for j in y_sta..=y_end {
+        for k in x_sta..=x_end {
+            let p = (j * ctu_w + k) as usize * 64;
+            table[p + 22..p + 42].fill(0x55);
+            table[p + 21] = 0x54;
+            table[p + 42] = 0x05;
+        }
+    }
+    table
 }
 
 /// `lamd_modb_qp`, the inter-picture lambda table `global_cfg_set` copies for a P
@@ -106,6 +181,8 @@ pub struct IdrJob {
     pub long_term: bool,
     /// Rate control for this picture, `None` for fixed QP.
     pub rc: Option<RateControl>,
+    /// Intra-refresh (GDR) picture: the base-table fd, its sweep, and the index.
+    pub refresh: Option<RefreshJob>,
     pub input_fd: i32,
     pub output_fd: i32,
     pub current_fd: i32,
@@ -127,6 +204,7 @@ impl IdrJob {
             picture: Picture::Idr,
             long_term: false,
             rc: None,
+            refresh: None,
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -464,6 +542,17 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     let stride = (job.width + 15) & !15;
     file.set(&regs::H265_REG0205_SRC_STRD0_SRC_STRD0, stride as u32)?;
     file.set(&regs::H265_REG0206_SRC_STRD1_SRC_STRD1, stride as u32)?;
+
+    // `setup_intra_refresh` runs after the slice/ref registers in the C, so it
+    // overrides the CIME search axis it uses as the "this picture refreshes" flag.
+    if let Some(refresh) = job.refresh {
+        file.set(&regs::H265_REG0192_ENC_PIC_ROI_EN, 1)?;
+        file.base[178 - 160] = refresh.table_fd as u32;
+        match refresh.mode {
+            RefreshMode::Row => file.set(&regs::H265_REG0220_ME_RNGE_CME_SRCH_V, 1)?,
+            RefreshMode::Col => file.set(&regs::H265_REG0220_ME_RNGE_CME_SRCH_H, 1)?,
+        }
+    }
 
     // ---- motion estimation (set_me_regs) ----
     // CIME starts from an 11x7 CTU window, shrinks to the picture when the picture
@@ -1037,6 +1126,25 @@ mod tests {
         );
         assert_eq!(file.rc_klut[1024 - 1024], 0x0020_83fe, "rc_adj0");
         assert_eq!(file.rc_klut[1036 - 1024], 0x0acc_acca, "roi rows 0");
+    }
+
+    #[test]
+    fn the_refresh_table_marks_the_row_band() {
+        // 5x4 CTUs, refresh_num = 2: frame 0 covers rows 0..1, frame 1 covers 1..3.
+        let first = refresh_base_table(320, 240, 0, RefreshMode::Row, 2);
+        assert_eq!(first.len(), 5 * 4 * 64);
+        let marked = |table: &[u8], j: usize, k: usize| {
+            let p = (j * 5 + k) * 64;
+            table[p + 21] == 0x54
+                && table[p + 42] == 0x05
+                && table[p + 22..p + 42].iter().all(|b| *b == 0x55)
+        };
+        assert!(marked(&first, 0, 0) && marked(&first, 1, 4));
+        assert!(!marked(&first, 2, 0));
+
+        let second = refresh_base_table(320, 240, 1, RefreshMode::Row, 2);
+        assert!(marked(&second, 1, 0) && marked(&second, 3, 4));
+        assert!(!marked(&second, 0, 0));
     }
 
     #[test]

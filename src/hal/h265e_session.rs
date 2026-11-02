@@ -16,7 +16,9 @@ use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
-use super::h265e::{build_registers, IdrJob, Picture, RateControl};
+use super::h265e::{
+    build_registers, refresh_base_table, IdrJob, Picture, RateControl, RefreshJob, RefreshMode,
+};
 use super::h265e_regs as regs;
 
 const CTL_OFFSET: u32 = 0;
@@ -98,6 +100,9 @@ pub struct Vepu580H265 {
     /// The rate-control model, when the session picks QPs itself.
     rc: Option<rc_model::Model>,
     rc_band: (u32, u32),
+    /// Intra-refresh (GDR): the sweep and band size, plus the table it rewrites.
+    refresh: Option<(RefreshMode, u32)>,
+    refresh_buf: Option<DmaBuf>,
     /// The finished picture'sSTATUS measurements, taken by `encode_picture_rc`.
     last_measured: Option<rc_model::Measured>,
     service: MppService,
@@ -128,6 +133,12 @@ impl Vepu580H265 {
     /// writes when it is given an explicit `-g`, and later pictures are P.
     pub fn open_gop(width: usize, height: usize, qp: u32) -> Result<Self, String> {
         Self::open_inner(width, height, qp, true)
+    }
+
+    /// A GOP session whose reference is short-term: the shape a GDR/refresh job
+    /// takes, with no SPS long-term entry.
+    pub fn open_gop_short_term(width: usize, height: usize, qp: u32) -> Result<Self, String> {
+        Self::open_inner(width, height, qp, false)
     }
 
     /// A CBR session whose model picks the per-picture QP and bit target.
@@ -191,6 +202,8 @@ impl Vepu580H265 {
             rc_mode: RcMode::Cbr,
             rc: None,
             rc_band: (8, 48),
+            refresh: None,
+            refresh_buf: None,
             last_measured: None,
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
@@ -277,6 +290,20 @@ impl Vepu580H265 {
     /// One picture with an explicit rate-control decision: the same job the model
     /// would produce, but decided by the caller. This is how the RC *path* is
     /// checked against a traced C stream before the model's own QP choice is.
+    /// Turn on intra refresh. `refresh_num` is the refresh-band width in CTUs per
+    /// picture; every picture after the IDR sweeps one band.
+    pub fn enable_refresh(&mut self, mode: RefreshMode, refresh_num: u32) -> Result<(), String> {
+        let ctu_w = (self.width + 63) / 64;
+        let ctu_h = (self.height + 63) / 64;
+        let size = ctu_w * ctu_h * 64;
+        self.refresh_buf = Some(
+            DmaBuf::alloc("system", size, false)
+                .map_err(|e| format!("allocate H.265 refresh table: {e}"))?,
+        );
+        self.refresh = Some((mode, refresh_num));
+        Ok(())
+    }
+
     pub fn set_rate_control_sei(&mut self, sei: RcSei) {
         self.rc_sei = Some(sei);
     }
@@ -355,6 +382,31 @@ impl Vepu580H265 {
         // The GOP's long-term reference is the opening IDR (`used_by_lt_flg0` and
         // the SPS LT entry): every P predicts from slot 0 and reconstructs into
         // slot 1. An IDR reconstructs into and reads from slot 0.
+        let refresh_job = match (self.refresh, self.refresh_buf.as_mut()) {
+            (Some((mode, refresh_num)), Some(table_buf)) if self.frames > 0 => {
+                let refresh_idx = self.frames % 60;
+                let table =
+                    refresh_base_table(self.width, self.height, refresh_idx, mode, refresh_num);
+                table_buf
+                    .sync_write_begin()
+                    .map_err(|e| format!("refresh table sync: {e}"))?;
+                table_buf
+                    .as_mut_slice()
+                    .get_mut(..table.len())
+                    .ok_or_else(|| "refresh table buffer too small".to_string())?
+                    .copy_from_slice(&table);
+                table_buf
+                    .sync_write_end()
+                    .map_err(|e| format!("refresh table flush: {e}"))?;
+                Some(RefreshJob {
+                    table_fd: table_buf.fd(),
+                    mode,
+                    refresh_num,
+                    refresh_idx,
+                })
+            }
+            _ => None,
+        };
         let (current, reference) = if matches!(picture, Picture::Idr) {
             (&self.surfaces[self.slot], &self.surfaces[self.slot])
         } else {
@@ -369,6 +421,7 @@ impl Vepu580H265 {
             picture,
             long_term: self.long_term,
             rc,
+            refresh: refresh_job,
             input_fd: self.input.fd(),
             output_fd: self.output.fd(),
             current_fd: current.pixel.fd(),

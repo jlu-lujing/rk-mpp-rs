@@ -891,6 +891,21 @@ in what order the evidence gets produced.
 - [ ] H.265 (rkvenc): `rc:refresh_length`-driven refresh pictures (the GDR-style
       `INTRA_RFI_FRAME` allocation), tiles/WPP/SAO, B frames, multiple references and
       per-slice output.
+ - [x] **H.265 intra refresh (GDR): the register path and the sweep.** The HAL's
+       `setup_intra_refresh` builds a 64-byte-per-CTU ROI base table whose band is
+       `cal_refresh_area(ctu_w, ctu_h, refresh_idx, mode, refresh_num)`; a forced
+       CTU gets `0x54` at byte 21, twenty `0x55` bytes from 22 and `0x05` at 42.
+       `refresh_base_table` reproduces that, `h265-gop ... row:N` allocates and
+       rewrites the table per picture, and the register pass sets
+       `enc_pic.roi_en`, `reg0178`, and the CIME search axis the refresh mode
+       overrides. A unit test pins the row bands for indices 0 and 1.
+- [ ] H.265 GDR against the C oracle. With `tools/h265e_probe.c` extended for
+      multiple pictures and `rc:refresh_*` (`REFRESH_EN=1 REFRESH_MODE=0
+      REFRESH_NUM=1 QP_DELTA=0`; note the RC key is `rc:qp_ip`, not
+      `rc:qp_delta_ip`), the two prefixes match but the slice NALs do not: the C
+      writes 912 bytes over four pictures, the crate 1740. Our band is wider on the
+      same indices, so the next step is a trace of the refresh job's `reg0178`,
+      `roi_en` and search-axis writes rather than more table arithmetic.
       Note on the harness cell that exposed this: `-g 60` is parsed by
       `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero -
       an input `mpi_enc_gen_ref_cfg` rejects outright. It is the only input that

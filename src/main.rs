@@ -193,6 +193,7 @@ fn encode_h265_headers(
         picture: h265e::Picture::Idr,
         long_term: false,
         rc: None,
+        refresh: None,
         input_fd: -1,
         output_fd: -1,
         current_fd: -1,
@@ -1161,6 +1162,7 @@ fn main() {
             picture,
             long_term,
             rc,
+            refresh: None,
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -1267,15 +1269,29 @@ fn main() {
             );
             std::process::exit(1);
         }
-        let result =
-            h265e_session::Vepu580H265::open_gop(width, height, qp).and_then(|mut encoder| {
-                let mut out = Vec::new();
-                for index in 0..frames {
-                    let frame = &input[index * frame_size..(index + 1) * frame_size];
-                    out.extend_from_slice(&encoder.encode_frame(frame)?);
-                }
-                Ok(out)
-            });
+        let refresh = args.get(8).map(|s| s.as_str());
+        let opened = if refresh.is_some() {
+            h265e_session::Vepu580H265::open_gop_short_term(width, height, qp)
+        } else {
+            h265e_session::Vepu580H265::open_gop(width, height, qp)
+        };
+        let result = opened.and_then(|mut encoder| {
+            if let Some(spec) = refresh {
+                let (mode, num) = spec.split_once(':').unwrap_or(("row", "1"));
+                let mode = if mode == "col" {
+                    h265e::RefreshMode::Col
+                } else {
+                    h265e::RefreshMode::Row
+                };
+                encoder.enable_refresh(mode, num.parse().unwrap_or(1))?;
+            }
+            let mut out = Vec::new();
+            for index in 0..frames {
+                let frame = &input[index * frame_size..(index + 1) * frame_size];
+                out.extend_from_slice(&encoder.encode_frame(frame)?);
+            }
+            Ok(out)
+        });
         match result.and_then(|stream| {
             std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
             Ok(stream.len())

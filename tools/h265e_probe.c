@@ -122,7 +122,19 @@ int main(int argc, char **argv)
     } else {
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_init", qp));
     }
-    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 60));
+    int gop = getenv("GOP") ? atoi(getenv("GOP")) : 60;
+    int frames = getenv("FRAMES") ? atoi(getenv("FRAMES")) : 1;
+    if (frames < 1) frames = 1;
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", gop));
+    if (getenv("QP_DELTA"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_ip", atoi(getenv("QP_DELTA"))));
+    if (getenv("REFRESH_EN")) {
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:refresh_en", 1));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:refresh_mode",
+                                  getenv("REFRESH_MODE") ? atoi(getenv("REFRESH_MODE")) : 0));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:refresh_num",
+                                  getenv("REFRESH_NUM") ? atoi(getenv("REFRESH_NUM")) : 1));
+    }
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denom", 1));
@@ -134,7 +146,7 @@ int main(int argc, char **argv)
      * must come from the same defaults. */
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));
 
-    {
+    for (int picture = 0; picture < frames; picture++) {
         MppFrame frame = NULL;
         MppPacket packet = NULL;
         MppMeta meta = NULL;
@@ -171,7 +183,7 @@ int main(int argc, char **argv)
         {
             void *data = mpp_packet_get_pos(packet);
             size_t len = mpp_packet_get_length(packet);
-            fprintf(stderr, "picture: %zu bytes\n", len);
+            fprintf(stderr, "picture %d: %zu bytes\n", picture, len);
             if (data && len)
                 fwrite(data, 1, len, output);
         }
