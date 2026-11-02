@@ -79,9 +79,13 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
    **另一个目录**（如 `~/rk-mpp-run`）运行，因为有些脚本会打包当前目录并在
    同一目标解压；在目标目录里运行会自己吞自己。
 4. `ffmpeg`/`ffprobe` 需要 `apt-get install`，矩阵脚本的 NV12→planar 依赖它们。
-5. t62 上已有重新生成的覆盖语料 `~/rk-mpp-oracles/corpus-gen`（59 个文件）。
-   原 t6 的第三方 corpus 无法原样复制；扫描时使用 `CORPUS=.../corpus-gen`，
-   并确保从当前提交重新运行 `scripts/gen_corpus.sh`，不要使用过期的 MPEG-4 容器副本。
+5. t62 上已有重新生成的覆盖语料 `~/rk-mpp-oracles/corpus-gen`（59 个 payload；
+   从当前提交重跑后会再写一个 `corpus-manifest.json`）。原 t6 的第三方 corpus
+   无法原样复制；扫描时使用 `CORPUS=.../corpus-gen`，并确保从当前提交重新运行
+   `scripts/gen_corpus.sh`，不要使用过期的 MPEG-4 容器副本。manifest 会在任何
+   解码前校验文件集合、大小、SHA-256、IVF FourCC 和 raw elementary-stream magic；
+   `.m4v` 若实际是 MP4 容器会直接失败。验证：`tests/data` 的 142 个文件写/读
+   清单均通过，单字节修改和伪 `.m4v` 均被拒绝。
 6. **H.264 QP 矩阵需要参考 harness 的 level 补丁。** `mpi_enc_test.c` 把
    `h264:level` 写死为 40，而 crate 的 Constrained Baseline 是 30；`board_h264_qp_vs_mpp.sh`
    现在会连同 profile/cabac/trans8x8 一起把 level sed 成 30，所以新板不需要预置打过补丁
@@ -91,6 +95,10 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 cd ~/workspace/rknn-test/rk-mpp-rs
 cargo test --all-targets      # 605 passed, 26 board-only ignored
 cargo fmt --check
+python3 scripts/check_corpus_manifest.py --write tests/data \
+  --manifest /tmp/tests-data-manifest.json
+python3 scripts/check_corpus_manifest.py --check tests/data \
+  --manifest /tmp/tests-data-manifest.json
 git log --oneline -10
 grep -c '^- \[x\]' ROADMAP.md  # 已完成条目数
 grep -c '^- \[ \]' ROADMAP.md  # 未完成条目数

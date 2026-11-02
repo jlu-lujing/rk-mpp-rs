@@ -2,6 +2,8 @@
 # Decode every stream in the oracle corpus with the C reference and this crate,
 # and compare the output bytes. Runs ON the board - the corpus and both binaries
 # live there - and prints one verdict per stream plus a summary.
+# If corpus-manifest.json is present, validate every file and container before
+# invoking either decoder.
 #
 #   CORPUS=~/rk-mpp-oracles/corpus LIMIT=0 ~/rk-mpp-rs/scripts/board_corpus_sweep.sh
 #
@@ -24,6 +26,15 @@ mpp_bin="${MPP_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
 mpp_lib="${MPP_LIB:-/tmp/mpp-develop/build/mpp}"
 work="${WORK:-/tmp/corpus_sweep}"
 mkdir -p "$work"
+
+if [ -f "$corpus/corpus-manifest.json" ]; then
+  python3 "$here/check_corpus_manifest.py" --check "$corpus" || {
+    printf 'ABORT corpus manifest validation failed before any decode\n' >&2
+    exit 1
+  }
+else
+  printf 'WARNING corpus has no corpus-manifest.json; regenerate it with gen_corpus.sh\n'
+fi
 
 pass=0; fail=0; named=0; skipped=0
 count=0
@@ -53,6 +64,7 @@ codec_for() {
 
 for f in "$corpus"/*; do
   [ -f "$f" ] || continue
+  [ "$(basename "$f")" = corpus-manifest.json ] && continue
   size=$(stat -c %s "$f" 2>/dev/null || echo 0)
   if [ "$size" -gt "$max_bytes" ]; then
     printf 'NAMED:%s skipped (%s bytes > MAX_BYTES)\n' "$(basename "$f")" "$size"

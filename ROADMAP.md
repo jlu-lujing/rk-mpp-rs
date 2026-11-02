@@ -37,6 +37,16 @@ wedging fixture cannot be executed by the sweep. The two proven film-grain
 The classifier strips the corpus copy's `td_` prefix, so `CORPUS=tests/data`
 cannot bypass quarantine either; a two-name stub run reports `named=2`.
 
+**Corpus integrity before decode (2026-11-02).** `gen_corpus.sh` now writes a
+deterministic `corpus-manifest.json`, and `board_corpus_sweep.sh` validates it
+before either decoder is invoked. The checker records size/SHA-256/codec/
+container for every file and rejects malformed IVF FourCCs, Annex-B streams
+without a start code, MP4 containers masquerading as `.m4v`, and damaged H.263/
+MPEG-2 headers. It wrote and rechecked the 142 tracked `tests/data` files,
+rejected a one-byte mutation, and aborted a manifest-backed sweep before any
+decode. Quarantined fixtures still report `named=1, skipped=0`, with the
+manifest itself excluded from decoder counts.
+
 The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
 
 - A result that differs from the C reference is a defect, not an improvement, unless

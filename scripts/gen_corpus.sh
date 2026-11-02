@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build a coverage-equivalent decoder corpus with ffmpeg plus the repo fixtures.
+# Build a coverage-equivalent decoder corpus with ffmpeg plus the repo fixtures,
+# then write and validate a SHA-256/container manifest.
 # Runs ON the board (it only needs ffmpeg and the repo's tests/data).
 #
 #   OUT=~/rk-mpp-oracles/corpus-gen ~/rk-mpp-rs/scripts/gen_corpus.sh
@@ -13,6 +14,7 @@ set -uo pipefail
 out="${OUT:-$HOME/rk-mpp-oracles/corpus-gen}"
 here="$(cd "$(dirname "$0")" && pwd)"
 data="$here/../tests/data"
+failures=0
 mkdir -p "$out"
 printf 'writing %s\n' "$out"
 
@@ -24,6 +26,7 @@ enc() {
     printf 'ok   %s\n' "$name"
   else
     printf 'FAIL %s\n' "$name"
+    failures=$((failures+1))
   fi
 }
 
@@ -70,7 +73,15 @@ enc jpeg_640x480.jpg               640x480  1 -frames:v 1 -q:v 3
 # ---- repo edge fixtures -------------------------------------------------
 for f in "$data"/*.264 "$data"/*.265 "$data"/*.ivf "$data"/*.m2v "$data"/*.m4v "$data"/*.263; do
   [ -f "$f" ] || continue
-  cp -f "$f" "$out/td_$(basename "$f")"
+  if ! cp -f "$f" "$out/td_$(basename "$f")"; then
+    printf 'FAIL copying %s\n' "$f"
+    failures=$((failures+1))
+  fi
 done
 printf 'fixtures copied: %s\n' "$(ls "$out" | grep -c '^td_')"
-printf 'corpus files: %s\n' "$(ls "$out" | wc -l)"
+printf 'corpus files: %s\n' "$(find "$out" -maxdepth 1 -type f | wc -l)"
+if ! python3 "$here/check_corpus_manifest.py" --write "$out"; then
+  failures=$((failures+1))
+fi
+printf 'SUMMARY failures=%s\n' "$failures"
+[ "$failures" -eq 0 ]
