@@ -49,10 +49,10 @@ manifest itself excluded from decoder counts.
 
 **Full regenerated corpus on t62 (2026-11-02).** `corpus-gen2` contains 59
 validated payloads (5,801,147 bytes) and the complete sweep finished with
-`pass=51 fail=0 named=6 skipped=2`. The named set is the bare P-slice fixture,
+`pass=53 fail=0 named=6 skipped=0`. The named set is the bare P-slice fixture,
 two AV1 film-grain C bugs, two VP9 C bugs and interlaced MPEG-2 C rewind/IDCT
-rounding. The two skips are JPEG files that this decoder sweep does not yet
-normalize for C/RGB comparison. The repaired AV1 tile fixture is a normal PASS.
+rounding. JPEG is decoded with `-t 8 -w/-h -f RGB888` and compared directly,
+so the repaired AV1 tile fixture and both JPEG stills are normal PASS rows.
 
 The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
 

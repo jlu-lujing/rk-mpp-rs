@@ -49,6 +49,7 @@ codec_for() {
     m4v) printf 'mp4dec 4' ;;
     m2v) printf 'm2vdec 2' ;;
     263) printf 'h263dec 3' ;;
+    jpg|jpeg) printf 'decode 8' ;;
     ivf)
       local fourcc
       fourcc="$(dd if="$f" bs=1 skip=8 count=4 2>/dev/null)"
@@ -78,6 +79,8 @@ for f in "$corpus"/*; do
 
   name="$(basename "$f")"
   fixture_name="${name#td_}"
+  is_jpeg=0
+  case "$name" in *.jpg|*.jpeg) is_jpeg=1 ;; esac
   case "$fixture_name" in
     av1_film_grain_320x240_10.ivf|film_grain_10bit.ivf)
       printf 'KNOWN-C-BUG %s: Rust matches libaom with grain applied; C leaves sw_apply_grain clear\n' "$name"
@@ -106,7 +109,11 @@ for f in "$corpus"/*; do
   rm -f "$r_out" "$c_out" "$c_planar"
   r_log="$work/r.log"
   sudo timeout "$timeout_s" "$rust_bin" "$cmd" "$f" "$r_out" >"$r_log" 2>&1; r_rc=$?
-  frames="$(sed -nE 's/.*decoded ([0-9]+) (frames|packets).*/\1/p' "$r_log" | tail -1)"
+  if [ "$is_jpeg" = 1 ]; then
+    frames=1
+  else
+    frames="$(sed -nE 's/.*decoded ([0-9]+) (frames|packets).*/\1/p' "$r_log" | tail -1)"
+  fi
   r_bytes=$(stat -c %s "$r_out" 2>/dev/null || echo 0)
 
   if [ "$r_rc" != 0 ] || [ -z "$frames" ] || [ "$frames" = 0 ]; then
@@ -114,14 +121,22 @@ for f in "$corpus"/*; do
     named=$((named+1)); continue
   fi
 
-  sudo env LD_LIBRARY_PATH="$mpp_lib" timeout "$timeout_s" \
-    "$mpp_bin" -i "$f" -t "$type" -n "$frames" -o "$c_out" -v q \
-    >"$work/c.log" 2>&1; c_rc=$?
+  if [ "$is_jpeg" = 1 ]; then
+    sudo env LD_LIBRARY_PATH="$mpp_lib" timeout "$timeout_s" \
+      "$mpp_bin" -i "$f" -t "$type" -w "$width" -h "$height" -f 65542 \
+      -n 1 -o "$c_out" -v q >"$work/c.log" 2>&1; c_rc=$?
+  else
+    sudo env LD_LIBRARY_PATH="$mpp_lib" timeout "$timeout_s" \
+      "$mpp_bin" -i "$f" -t "$type" -n "$frames" -o "$c_out" -v q \
+      >"$work/c.log" 2>&1; c_rc=$?
+  fi
   if [ "$c_rc" != 0 ] || [ ! -s "$c_out" ]; then
     printf 'NAMED:%s rust ok (%s frames) C rc=%s\n' "$name" "$frames" "$c_rc"
     named=$((named+1)); continue
   fi
-  if [ "$depth" = 10 ]; then
+  if [ "$is_jpeg" = 1 ]; then
+    c_planar="$c_out"
+  elif [ "$depth" = 10 ]; then
     # The sweep runs on the board; convert rkvdec's LSB-aligned P010 locally.
     python3 "$here/p010_to_planar.py" "$c_out" "$c_planar" "$width" "$height" \
       >/dev/null 2>&1 || true
