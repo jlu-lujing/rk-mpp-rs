@@ -14,6 +14,12 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ## 0. 五分钟了解现状
 
+> **2026-11-02 事件：** 第一次尝试 `scripts/board_corpus_sweep.sh`（corpus 全量
+> 解码对照）时，t6 在跑完不到 10 条流后从网络消失，连续约 3 分钟 ssh 超时，疑似
+> 内核/驱动被某条流挂住，需要物理冷启动。脚本已加固（`TIMEOUT_S` 默认 30 秒、
+> `MAX_BYTES` 默认 256 MiB、逐条打印 verdict），但**尚未完成任何一次全量运行**；
+> 重启后先用 `LIMIT=10` 逐段放量，并记录卡住的是哪一条流。
+
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
 cargo test --all-targets      # 593 passed, 23 board-only ignored
