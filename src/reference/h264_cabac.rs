@@ -1,8 +1,8 @@
 //! H.264 CABAC I-slice reconstruction.
 //!
-//! The current gate covers one I16x16 macroblock through luma DC/AC and 4:2:0
-//! chroma DC/AC residual syntax. Larger pictures, I4x4 residual syntax and
-//! 8x8 transforms remain open.
+//! The current gates cover I16x16 luma/chroma DC+AC residual syntax and
+//! two-macroblock propagation along one slice row. Multi-row pictures, I4x4
+//! residual syntax and 8x8 transforms remain open.
 
 use std::fmt;
 
@@ -43,6 +43,27 @@ pub struct DecodedCabacSlice {
     pub deblock: DeblockMap,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CabacMbNeighbors {
+    left_decoded: bool,
+    top_decoded: bool,
+    left_flags: u16,
+    top_flags: u16,
+    left_chroma_mode: u8,
+    top_chroma_mode: u8,
+    left_luma: [u8; 4],
+    top_luma: [u8; 4],
+    left_chroma: [[u8; 4]; 2],
+    top_chroma: [[u8; 4]; 2],
+}
+
+struct DecodedCabacMacroblock {
+    macroblock: ParsedIMacroblock,
+    residual: ParsedMacroblockResidual,
+    chroma_prediction_mode: u8,
+    coded_flags: u16,
+}
+
 pub fn decode_cabac_i_slice(
     rbsp: &[u8],
     slice: &SliceHeader,
@@ -56,16 +77,21 @@ pub fn decode_cabac_i_slice(
         .map_err(|_| H264CabacError::Malformed("macroblock width"))?;
     let mb_height = usize::try_from(sps.coded_height / 16)
         .map_err(|_| H264CabacError::Malformed("macroblock height"))?;
-    if mb_width != 1 || mb_height != 1 {
-        return Err(H264CabacError::Unsupported(
-            "CABAC gate currently covers one macroblock",
-        ));
-    }
     if !slice.is_i() || !pps.entropy_coding {
         return Err(H264CabacError::Unsupported("non-CABAC-I slice"));
     }
     if slice.data_offset_bits % 8 != 0 {
         return Err(H264CabacError::Malformed("CABAC byte alignment"));
+    }
+    if mb_width * mb_height != 1 {
+        if mb_height != 1 {
+            return Err(H264CabacError::Unsupported(
+                "CABAC multi-row macroblock propagation",
+            ));
+        }
+        return decode_cabac_i_slice_multi(
+            rbsp, slice, sps, pps, mb_width, mb_height, luma, chroma_cb, chroma_cr,
+        );
     }
     let offset = slice.data_offset_bits / 8;
     let data = rbsp
@@ -333,6 +359,385 @@ pub fn decode_cabac_i_slice(
         final_qp: qp as u8,
         deblock,
     })
+}
+
+fn decode_cabac_i_slice_multi(
+    rbsp: &[u8],
+    slice: &SliceHeader,
+    sps: &Sps,
+    pps: &Pps,
+    mb_width: usize,
+    mb_height: usize,
+    luma: &mut [u16],
+    chroma_cb: Option<&mut [u16]>,
+    chroma_cr: Option<&mut [u16]>,
+) -> Result<DecodedCabacSlice, H264CabacError> {
+    if sps.coded_width % 16 != 0 || sps.coded_height % 16 != 0 || mb_width == 0 || mb_height == 0 {
+        return Err(H264CabacError::Malformed("macroblock geometry"));
+    }
+    if slice.first_mb != 0 {
+        return Err(H264CabacError::Unsupported(
+            "CABAC multi-macroblock non-zero first_mb_in_slice",
+        ));
+    }
+    let context =
+        MacroblockContext::from_sps_pps(sps, pps).map_err(|_| H264CabacError::Malformed("SPS"))?;
+    if context.chroma_format_idc != 1 {
+        return Err(H264CabacError::Unsupported(
+            "CABAC multi-macroblock non-4:2:0 chroma",
+        ));
+    }
+    let offset = slice.data_offset_bits / 8;
+    let data = rbsp
+        .get(offset..)
+        .ok_or(H264CabacError::Malformed("CABAC data offset"))?;
+    let mut decoder = CabacDecoder::new_h264(data);
+    let slice_qp = pps.pic_init_qp + slice.qp_delta;
+    let mut contexts = init_i_contexts(slice_qp);
+    let mut qp = slice_qp;
+
+    let total_mbs = mb_width * mb_height;
+    let mut decoded = vec![false; total_mbs];
+    let mut luma_counts = vec![[0u8; 16]; total_mbs];
+    let mut chroma_counts: [Vec<Vec<u8>>; 2] =
+        [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]];
+    let mut chroma_modes = vec![0u8; total_mbs];
+    let mut coded_flags = vec![0u16; total_mbs];
+    let mut qp_map = vec![0u8; total_mbs];
+
+    let width = sps.coded_width as usize;
+    let height = sps.coded_height as usize;
+    let chroma_width = width / 2;
+    let chroma_height = height / 2;
+    let mut luma_plane = PlaneMut {
+        data: luma,
+        width,
+        height,
+        stride: width,
+    };
+    let mut cb_plane = chroma_cb.map(|data| PlaneMut {
+        data,
+        width: chroma_width,
+        height: chroma_height,
+        stride: chroma_width,
+    });
+    let mut cr_plane = chroma_cr.map(|data| PlaneMut {
+        data,
+        width: chroma_width,
+        height: chroma_height,
+        stride: chroma_width,
+    });
+
+    let mut macroblocks = 0;
+    for mb_index in 0..total_mbs {
+        let neighbors = collect_cabac_neighbors(
+            mb_index,
+            mb_width,
+            &decoded,
+            &luma_counts,
+            &chroma_counts,
+            &chroma_modes,
+            &coded_flags,
+        );
+        let decoded_mb =
+            decode_cabac_i16_macroblock(&mut decoder, &mut contexts, context, neighbors)?;
+        qp += decoded_mb.macroblock.qp_delta;
+        let options = super::h264_residual::ResidualPlaneOptions {
+            qp: qp as u8,
+            chroma_qp_offset: [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
+            bit_depth_luma: context.bit_depth_luma,
+            bit_depth_chroma: context.bit_depth_chroma,
+            transform_bypass: false,
+            scan4: super::h264::CavlcScan4x4::Frame,
+            scan8: super::h264::CavlcScan8x8::Frame,
+            luma_4x4_scaling: None,
+            luma_8x8_scaling: None,
+            chroma_4x4_scaling: [None, None],
+        };
+        let residual_planes = assemble_i_macroblock_residual(
+            &decoded_mb.macroblock,
+            &decoded_mb.residual,
+            context,
+            &options,
+        )
+        .map_err(|_| H264CabacError::Malformed("empty residual"))?;
+        let mb_x = (mb_index % mb_width) * 16;
+        let mb_y = (mb_index / mb_width) * 16;
+        reconstruct_i_macroblock(
+            &decoded_mb.macroblock,
+            &residual_planes,
+            context.bit_depth_luma.min(context.bit_depth_chroma),
+            &mut luma_plane,
+            cb_plane.as_mut(),
+            cr_plane.as_mut(),
+            mb_x,
+            mb_y,
+        )
+        .map_err(|_| H264CabacError::Malformed("macroblock reconstruction"))?;
+
+        decoded[mb_index] = true;
+        luma_counts[mb_index] = decoded_mb.residual.luma_non_zero;
+        chroma_counts[0][mb_index].copy_from_slice(&decoded_mb.residual.chroma_non_zero[0]);
+        chroma_counts[1][mb_index].copy_from_slice(&decoded_mb.residual.chroma_non_zero[1]);
+        chroma_modes[mb_index] = decoded_mb.chroma_prediction_mode;
+        coded_flags[mb_index] = decoded_mb.coded_flags;
+        qp_map[mb_index] = qp as u8;
+        macroblocks += 1;
+
+        let end_of_slice = decoder.decode_terminate();
+        if end_of_slice {
+            break;
+        }
+        if mb_index + 1 == total_mbs {
+            return Err(H264CabacError::Malformed("missing end_of_slice_flag"));
+        }
+    }
+
+    let deblock = DeblockMap {
+        mb_width,
+        mb_height,
+        decoded,
+        qp: qp_map,
+        luma_non_zero: luma_counts,
+        chroma_non_zero: chroma_counts,
+    };
+    deblock_i_picture(
+        &mut luma_plane,
+        cb_plane.as_mut(),
+        cr_plane.as_mut(),
+        &deblock,
+        context.bit_depth_luma.min(context.bit_depth_chroma),
+        slice.deblocking_alpha * 2,
+        slice.deblocking_beta * 2,
+        [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
+    )
+    .map_err(|_| H264CabacError::Malformed("deblocking"))?;
+
+    Ok(DecodedCabacSlice {
+        macroblocks,
+        end_bit: slice.data_offset_bits + decoder.bit_pos(),
+        final_qp: qp as u8,
+        deblock,
+    })
+}
+
+fn collect_cabac_neighbors(
+    index: usize,
+    width: usize,
+    decoded: &[bool],
+    luma_counts: &[[u8; 16]],
+    chroma_counts: &[Vec<Vec<u8>>; 2],
+    chroma_modes: &[u8],
+    coded_flags: &[u16],
+) -> CabacMbNeighbors {
+    let left = index
+        .checked_sub(1)
+        .filter(|_| index % width != 0)
+        .filter(|&left| decoded[left]);
+    let top = index.checked_sub(width).filter(|&top| decoded[top]);
+    let mut neighbors = CabacMbNeighbors {
+        left_decoded: left.is_some(),
+        top_decoded: top.is_some(),
+        left_flags: left.map_or(0x7cf, |left| coded_flags[left]),
+        top_flags: top.map_or(0x7cf, |top| coded_flags[top]),
+        left_chroma_mode: left.map_or(0, |left| chroma_modes[left]),
+        top_chroma_mode: top.map_or(0, |top| chroma_modes[top]),
+        left_luma: [0; 4],
+        top_luma: [0; 4],
+        left_chroma: [[0; 4]; 2],
+        top_chroma: [[0; 4]; 2],
+    };
+    if let Some(left) = left {
+        neighbors.left_luma = std::array::from_fn(|row| luma_counts[left][row * 4 + 3]);
+        for plane in 0..2 {
+            for row in 0..2 {
+                neighbors.left_chroma[plane][row] = chroma_counts[plane][left][row * 2 + 1];
+            }
+        }
+    }
+    if let Some(top) = top {
+        neighbors.top_luma = std::array::from_fn(|column| luma_counts[top][12 + column]);
+        for plane in 0..2 {
+            for column in 0..2 {
+                neighbors.top_chroma[plane][column] = chroma_counts[plane][top][2 + column];
+            }
+        }
+    }
+    neighbors
+}
+
+fn decode_cabac_i16_macroblock(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    context: MacroblockContext,
+    neighbors: CabacMbNeighbors,
+) -> Result<DecodedCabacMacroblock, H264CabacError> {
+    let mb_type_context =
+        3 + usize::from(neighbors.left_decoded) + usize::from(neighbors.top_decoded);
+    if decoder.decode_bin(&mut contexts[mb_type_context]) == 0 {
+        return Err(H264CabacError::Unsupported("CABAC I4x4 macroblock"));
+    }
+    if decoder.decode_terminate() {
+        return Err(H264CabacError::Unsupported("I_PCM macroblock"));
+    }
+    let mut type_index = 1usize;
+    type_index += 12 * decoder.decode_bin(&mut contexts[6]) as usize;
+    if decoder.decode_bin(&mut contexts[7]) != 0 {
+        type_index += 4 + 4 * decoder.decode_bin(&mut contexts[8]) as usize;
+    }
+    type_index += 2 * decoder.decode_bin(&mut contexts[9]) as usize;
+    type_index += decoder.decode_bin(&mut contexts[10]) as usize;
+    let decoded_prediction_mode = [2, 1, 0, 3][(type_index - 1) & 3];
+    let prediction_mode = check_i16_prediction_mode(
+        decoded_prediction_mode,
+        neighbors.top_decoded,
+        neighbors.left_decoded,
+    );
+    let cbp = match type_index {
+        1..=4 => 0,
+        5..=8 => 16,
+        9..=12 => 32,
+        13..=16 => 15,
+        17..=20 => 31,
+        21..=24 => 47,
+        _ => return Err(H264CabacError::Malformed("intra macroblock type")),
+    };
+
+    let chroma_context = 64
+        + usize::from(neighbors.left_decoded && neighbors.left_chroma_mode != 0)
+        + 2 * usize::from(neighbors.top_decoded && neighbors.top_chroma_mode != 0);
+    let decoded_chroma_prediction_mode = if decoder.decode_bin(&mut contexts[chroma_context]) == 0 {
+        0
+    } else if decoder.decode_bin(&mut contexts[67]) == 0 {
+        1
+    } else if decoder.decode_bin(&mut contexts[67]) == 0 {
+        2
+    } else {
+        3
+    };
+    let chroma_prediction_mode = check_chroma_prediction_mode(
+        decoded_chroma_prediction_mode,
+        neighbors.top_decoded,
+        neighbors.left_decoded,
+    );
+
+    let qp_delta = if decoder.decode_bin(&mut contexts[60]) != 0 {
+        return Err(H264CabacError::Unsupported("CABAC mb_qp_delta"));
+    } else {
+        0
+    };
+    let mut residual = ParsedMacroblockResidual {
+        luma_dc: None,
+        luma_4x4: std::array::from_fn(|_| None),
+        luma_8x8: std::array::from_fn(|_| None),
+        chroma_dc: std::array::from_fn(|_| None),
+        chroma_ac: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+        luma_dc_non_zero: 0,
+        luma_non_zero: [0; 16],
+        chroma_non_zero: [vec![0; 4], vec![0; 4]],
+        end_bit: 0,
+    };
+
+    let luma_dc_context = coded_block_flag_context(85, 0x100, neighbors);
+    let luma_dc = if decoder.decode_bin(&mut contexts[luma_dc_context]) == 0 {
+        super::h264_cavlc::CavlcResidual {
+            scan: [0; 16],
+            total_coeff: 0,
+            trailing_ones: 0,
+            bits_consumed: 0,
+        }
+    } else {
+        decode_cabac_residual(decoder, contexts, ResidualCategory::LumaDc, 16)?
+    };
+    residual.luma_dc_non_zero = luma_dc.total_coeff as u8;
+    residual.luma_dc = Some(luma_dc);
+
+    if cbp & 0x0f != 0 {
+        for block in 0..16 {
+            let cbf_context =
+                luma_ac_cbf_context_with_neighbors(&residual.luma_non_zero, block, neighbors);
+            if let Some(block_residual) = decode_cabac_block(
+                decoder,
+                contexts,
+                ResidualCategory::Luma4x4,
+                15,
+                cbf_context,
+            )? {
+                residual.luma_non_zero[block] = block_residual.total_coeff as u8;
+                residual.luma_4x4[block] = Some(block_residual);
+            }
+        }
+    }
+
+    if cbp & 0x30 != 0 && context.chroma_format_idc == 1 {
+        for plane in 0..2 {
+            let cbf_context = coded_block_flag_context(97, 0x40u16 << plane, neighbors);
+            residual.chroma_dc[plane] = decode_cabac_block(
+                decoder,
+                contexts,
+                ResidualCategory::ChromaDc,
+                4,
+                cbf_context,
+            )?;
+        }
+        if cbp & 0x20 != 0 {
+            for plane in 0..2 {
+                for block in 0..4 {
+                    let cbf_context = chroma_ac_cbf_context_with_neighbors(
+                        &residual.chroma_non_zero[plane],
+                        block,
+                        plane,
+                        neighbors,
+                    );
+                    if let Some(block_residual) = decode_cabac_block(
+                        decoder,
+                        contexts,
+                        ResidualCategory::ChromaAc,
+                        15,
+                        cbf_context,
+                    )? {
+                        residual.chroma_non_zero[plane][block] = block_residual.total_coeff as u8;
+                        residual.chroma_ac[plane][block] = Some(block_residual);
+                    }
+                }
+            }
+        }
+    }
+    residual.end_bit = decoder.bit_pos();
+
+    let mut coded_flags = u16::from(cbp);
+    if residual.luma_dc_non_zero != 0 {
+        coded_flags |= 0x100;
+    }
+    for plane in 0..2 {
+        if residual.chroma_dc[plane]
+            .as_ref()
+            .is_some_and(|residual| residual.total_coeff != 0)
+        {
+            coded_flags |= 0x40u16 << plane;
+        }
+    }
+
+    Ok(DecodedCabacMacroblock {
+        macroblock: ParsedIMacroblock {
+            kind: IntraMacroblockKind::I16x16 { prediction_mode },
+            luma_prediction_modes: vec![prediction_mode; 16],
+            chroma_prediction_mode: Some(chroma_prediction_mode),
+            coded_block_pattern: cbp,
+            qp_delta,
+            pcm_planes: Vec::new(),
+            residual_bit_offset: 0,
+        },
+        residual,
+        chroma_prediction_mode,
+        coded_flags,
+    })
+}
+
+fn coded_block_flag_context(base: usize, mask: u16, neighbors: CabacMbNeighbors) -> usize {
+    let left = !neighbors.left_decoded || neighbors.left_flags & mask != 0;
+    let top = !neighbors.top_decoded || neighbors.top_flags & mask != 0;
+    base + usize::from(left) + 2 * usize::from(top)
 }
 
 fn init_i_contexts(slice_qp: i32) -> [Context; 276] {
@@ -719,6 +1124,47 @@ fn luma_ac_cbf_context(non_zero: &[u8; 16], block: usize) -> usize {
 fn chroma_ac_cbf_context(non_zero: &[u8], block: usize) -> usize {
     let left = block % 2 == 0 || non_zero[block - 1] != 0;
     let top = block / 2 == 0 || non_zero[block - 2] != 0;
+    101 + usize::from(left) + 2 * usize::from(top)
+}
+
+fn luma_ac_cbf_context_with_neighbors(
+    non_zero: &[u8; 16],
+    block: usize,
+    neighbors: CabacMbNeighbors,
+) -> usize {
+    let row = block / 4;
+    let column = block % 4;
+    let left = if column == 0 {
+        !neighbors.left_decoded || neighbors.left_luma[row] != 0
+    } else {
+        non_zero[block - 1] != 0
+    };
+    let top = if row == 0 {
+        !neighbors.top_decoded || neighbors.top_luma[column] != 0
+    } else {
+        non_zero[block - 4] != 0
+    };
+    89 + usize::from(left) + 2 * usize::from(top)
+}
+
+fn chroma_ac_cbf_context_with_neighbors(
+    non_zero: &[u8],
+    block: usize,
+    plane: usize,
+    neighbors: CabacMbNeighbors,
+) -> usize {
+    let row = block / 2;
+    let column = block % 2;
+    let left = if column == 0 {
+        !neighbors.left_decoded || neighbors.left_chroma[plane][row] != 0
+    } else {
+        non_zero[block - 1] != 0
+    };
+    let top = if row == 0 {
+        !neighbors.top_decoded || neighbors.top_chroma[plane][column] != 0
+    } else {
+        non_zero[block - 2] != 0
+    };
     101 + usize::from(left) + 2 * usize::from(top)
 }
 
