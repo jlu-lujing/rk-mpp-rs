@@ -8,4 +8,5 @@
 pub mod cabac;
 pub mod h264;
 pub mod h264_cavlc;
+pub mod h264_residual;
 pub mod transform;

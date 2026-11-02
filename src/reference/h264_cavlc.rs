@@ -62,6 +62,7 @@ pub enum CavlcError {
     InvalidLevelPrefix,
     InvalidTotalZeros,
     InvalidRunBefore,
+    InvalidNeighborNonZeroCount,
     TotalCoeffExceedsBlock,
     ZeroCountExceedsBlock,
 }
@@ -78,6 +79,9 @@ impl fmt::Display for CavlcError {
             CavlcError::InvalidLevelPrefix => write!(f, "invalid CAVLC level_prefix"),
             CavlcError::InvalidTotalZeros => write!(f, "invalid CAVLC total_zeros"),
             CavlcError::InvalidRunBefore => write!(f, "invalid CAVLC run_before"),
+            CavlcError::InvalidNeighborNonZeroCount => {
+                write!(f, "CAVLC neighbour non-zero count is outside 0..=16")
+            }
             CavlcError::TotalCoeffExceedsBlock => {
                 write!(f, "CAVLC total_coeff exceeds the block capacity")
             }
@@ -89,6 +93,22 @@ impl fmt::Display for CavlcError {
 }
 
 impl std::error::Error for CavlcError {}
+
+/// Predict CAVLC `nC` from the available left and top non-zero counts.
+///
+/// An unavailable neighbour is represented by `None` and contributes no count.
+/// With both neighbours present, H.264 rounds their average upward.
+pub fn predict_non_zero_count(left: Option<u8>, top: Option<u8>) -> Result<i16, CavlcError> {
+    if left.is_some_and(|count| count > 16) || top.is_some_and(|count| count > 16) {
+        return Err(CavlcError::InvalidNeighborNonZeroCount);
+    }
+    Ok(match (left, top) {
+        (Some(left), Some(top)) => (i16::from(left) + i16::from(top) + 1) >> 1,
+        (Some(left), None) => i16::from(left),
+        (None, Some(top)) => i16::from(top),
+        (None, None) => 0,
+    })
+}
 
 /// Decode one CAVLC residual block from `data`.
 ///
@@ -607,6 +627,19 @@ mod tests {
         let chroma422 = decode_residual_4x4(&[0b1000_0000], CavlcBlockKind::ChromaDc422).unwrap();
         assert_eq!(chroma422.total_coeff, 0);
         assert_eq!(chroma422.bits_consumed, 1);
+    }
+
+    #[test]
+    fn predicted_non_zero_count_handles_unavailable_neighbours_and_rounding() {
+        assert_eq!(predict_non_zero_count(None, None), Ok(0));
+        assert_eq!(predict_non_zero_count(Some(4), None), Ok(4));
+        assert_eq!(predict_non_zero_count(None, Some(11)), Ok(11));
+        assert_eq!(predict_non_zero_count(Some(4), Some(8)), Ok(6));
+        assert_eq!(predict_non_zero_count(Some(15), Some(16)), Ok(16));
+        assert_eq!(
+            predict_non_zero_count(Some(17), None),
+            Err(CavlcError::InvalidNeighborNonZeroCount)
+        );
     }
 
     #[test]
