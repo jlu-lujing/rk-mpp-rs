@@ -29,9 +29,15 @@ SECTIONS = {
 }
 
 
-def traced_sections(log: Path) -> dict[str, list[int]]:
+def traced_passes(log: Path) -> list[dict[str, list[int]]]:
+    """Every register write broken into one dict per job.
+
+    The tracer prints each section twice per job, so adjacent identical passes are
+    collapsed; `--job N` then names a picture rather than a duplicate.
+    """
     lines = log.read_text(errors="replace").splitlines()
-    found: dict[str, list[int]] = {}
+    passes: list[dict[str, list[int]]] = []
+    current: dict[str, list[int]] = {}
     for index, line in enumerate(lines):
         if "mpp_trace before cmd=200" not in line or "size=" not in line:
             continue
@@ -49,8 +55,27 @@ def traced_sections(log: Path) -> dict[str, list[int]]:
         if "mpp_trace write words=" not in words_line:
             continue
         words = [int(value, 16) for value in words_line.split()[3:]]
-        found[SECTIONS[offset][0]] = words
-    return found
+        name = SECTIONS[offset][0]
+        if name == "CTL" and "CTL" in current:
+            passes.append(current)
+            current = {}
+        current[name] = words
+    if current:
+        passes.append(current)
+    deduped: list[dict[str, list[int]]] = []
+    for entry in passes:
+        if not deduped or deduped[-1] != entry:
+            deduped.append(entry)
+    return deduped
+
+
+def traced_sections(log: Path, job: int | None = None) -> dict[str, list[int]]:
+    passes = traced_passes(log)
+    if job is None:
+        return passes[-1] if passes else {}
+    if job >= len(passes):
+        return {}
+    return passes[job]
 
 
 def derived_sections() -> dict[str, list[int]]:
@@ -86,10 +111,15 @@ def field_names() -> dict[tuple[int, int, int], str]:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    args = [a for a in sys.argv[1:] if not a.startswith("--job=")]
+    job = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("--job="):
+            job = int(arg.split("=", 1)[1])
+    if len(args) != 1:
         print(__doc__)
         return 2
-    traced = traced_sections(Path(sys.argv[1]))
+    traced = traced_sections(Path(args[0]), job)
     if not traced:
         print("no VEPU580 register writes in the trace")
         return 1
@@ -126,7 +156,7 @@ def main() -> int:
             print(
                 f"   sw{word:<5} derived={before:#010x} traced={after:#010x}  {label}"
             )
-    print(f"total differing words: {total}")
+    print(f"job: {'last' if job is None else job}, total differing words: {total}")
     return 0 if total == 0 else 1
 
 

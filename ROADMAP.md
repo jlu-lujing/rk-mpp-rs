@@ -880,6 +880,14 @@ in what order the evidence gets produced.
       `-g 60` produced 582, and it is not a supported harness input.
       `scripts/board_h265_cbr_vs_mpp.sh` now has five cells (explicit decisions,
       cbr/vbr/avbr, smart GOP), all passing.
+ - [x] **Every picture of a multi-frame GOP, not just the last.** The register diff
+       tool used to compare only the final job of a trace, so an earlier picture
+       could drift unnoticed; it now takes `--job=N` and collapses the tracer's
+       double print. `h265-regs` gained an `lt` token for the GOP-form image. On a
+       six-picture fixed-QP capture (`-g 60 -rc 2 -qc 26`, note that this vintage's
+       `-rc 2` is FIXQP and `-rc 4` is not) the derived images check out frame by
+       frame: the IDR differs only in `mei_stor`, and each P in exactly four buffer
+       addresses plus `mei_stor`.
 - [ ] H.265 (rkvenc): `rc:refresh_length`-driven refresh pictures (the GDR-style
       `INTRA_RFI_FRAME` allocation), tiles/WPP/SAO, B frames, multiple references and
       per-slice output.

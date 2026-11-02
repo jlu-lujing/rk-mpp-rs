@@ -1126,6 +1126,7 @@ fn main() {
             .get(4)
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(26);
+        let long_term = args.iter().skip(5).any(|a| a == "lt");
         let picture = match args.get(5).map(|s| s.as_str()) {
             Some(mode) if mode.starts_with('p') => {
                 let poc = mode[1..].parse::<u32>().unwrap_or(0);
@@ -1158,7 +1159,7 @@ fn main() {
             qp_min: qp,
             qp_max: qp,
             picture,
-            long_term: false,
+            long_term,
             rc,
             input_fd: -1,
             output_fd: -1,
