@@ -1872,10 +1872,11 @@ pipeline uses.
   hash differs from libaom with grain skipped, proving the hardware grain
   path and the packed 10-bit unpack path are both active. The C MPP build
   emits the same stream without grain because its HAL never sets
-  `sw_apply_grain=1`. This remains a small fixture matrix, not full AV1
-  closure. The dedicated ignored integration test passes on t6, so a future
-  regression in either the 8-bit NV12 or 10-bit packed output path fails with
-  an explicit hash mismatch.
+  `sw_apply_grain=1`; the corpus sweep now labels both fixture names as
+  `KNOWN-C-BUG` instead of `FAIL`, using the recorded libaom hashes. This
+  remains a small fixture matrix, not full AV1 closure. The dedicated ignored
+  integration test passes on t6, so a future regression in either the 8-bit
+  NV12 or 10-bit packed output path fails with an explicit hash mismatch.
 - `rk-mpp-rs m2v <file.m2v>` prints the MPEG-2 header chain,
   `rk-mpp-rs m2vdec <in.m2v> <out.yuv>`, `rk-mpp-rs mp4dec <in.m4v> <out.yuv>` and
   `rk-mpp-rs h263dec <in.263> <out.yuv>` decode MPEG-2, MPEG-4 and H.263 on vdpu2,
