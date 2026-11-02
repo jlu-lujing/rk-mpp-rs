@@ -377,9 +377,6 @@ impl EncoderConfig {
                     .into(),
             );
         }
-        if self.multi_core_plan().is_some() && self.rotation != Rotation::None {
-            return Err("rotated JPEG multi-core offsets are not implemented yet".into());
-        }
         Ok(())
     }
 
@@ -904,10 +901,9 @@ fn encode_multi_core(
         &prepared.bytes,
         &prepared.quant,
     )?;
-    let (mcu_hor, _) = config.mcu_counts();
-    let width_align = align(config.width, 16);
-    let x_fill = (width_align - config.width) / 4;
-    let y_fill = config.coded_height() - config.height;
+    let (mcu_hor, mcu_ver) = config.mcu_counts();
+    let base_x_fill = (align(config.width, 16) - config.width) / 4;
+    let base_y_fill = config.coded_height() - config.height;
     let luma_size = config.hor_stride * config.ver_stride;
 
     let mut registers = Vec::with_capacity(plan.bands.len());
@@ -918,27 +914,48 @@ fn encode_multi_core(
 
     for (index, rows) in plan.bands.iter().copied().enumerate() {
         let last = index + 1 == plan.bands.len();
+        let mut part_x_fill = base_x_fill;
+        let mut part_y_fill = base_y_fill;
+        match config.rotation {
+            Rotation::None => {
+                if !last {
+                    part_y_fill = 0;
+                }
+            }
+            Rotation::Degree90 => {
+                if !last {
+                    part_x_fill = 0;
+                }
+            }
+            Rotation::Degree270 => {
+                if index > 0 {
+                    part_x_fill = 0;
+                }
+            }
+        }
         let mut words = base.words;
         if index == 0 {
             words[OUTPUT_ADDR] = output.fd() as u32;
             words[STREAM_CAPACITY] = (config.output_capacity - prepared.bytes.len()) as u32;
             words[STREAM_START] = (((prepared.bytes.len() & 7) * 8) as u32) << 16
-                | (x_fill as u32) << 4
-                | if last { y_fill as u32 } else { 0 };
+                | (part_x_fill as u32) << 4
+                | part_y_fill as u32;
         } else {
             let buffer = &scratch[index - 1];
             words[OUTPUT_ADDR] = buffer.fd() as u32;
             words[STREAM_CAPACITY] = scratch_size as u32;
-            words[STREAM_START] = (x_fill as u32) << 4 | if last { y_fill as u32 } else { 0 };
+            words[STREAM_START] = (part_x_fill as u32) << 4 | part_y_fill as u32;
         }
-        words[ENCODE_CONFIG] =
-            ((mcu_hor as u32) << 8) | ((rows as u32) << 20) | (1 << 6) | (2 << 4) | 1;
+        words[ENCODE_CONFIG] = if config.rotation.transposes_output() {
+            (rows as u32) << 8 | (mcu_hor as u32) << 20 | (1 << 6) | (2 << 4) | 1
+        } else {
+            (mcu_hor as u32) << 8 | (rows as u32) << 20 | (1 << 6) | (2 << 4) | 1
+        };
         words[PART_CONFIG] = ((!last as u32) << 24)
             | ((plan.reg_part_rows as u32) << 16)
             | RESTART_MARKERS[marker_index & 7];
         marker_index += plan.ecs_counts[index];
 
-        let band_y = mcu_y * 16;
         let mut band_offsets = Vec::with_capacity(4);
         if index == 0 && prepared.bytes.len() != 0 {
             band_offsets.push(RegOffsetInfo {
@@ -946,19 +963,47 @@ fn encode_multi_core(
                 offset: prepared.bytes.len() as u32,
             });
         }
-        band_offsets.push(RegOffsetInfo {
-            reg_idx: INPUT_Y as u32,
-            offset: (band_y * config.hor_stride) as u32,
-        });
-        if config.input == InputFormat::Nv12 {
+        if config.rotation.transposes_output() {
+            let x = if config.rotation == Rotation::Degree270 {
+                mcu_ver.wrapping_sub(plan.bands[0]).wrapping_sub(mcu_y) * 16
+            } else {
+                mcu_y * 16
+            };
             band_offsets.push(RegOffsetInfo {
-                reg_idx: INPUT_U as u32,
-                offset: (luma_size + band_y / 2 * config.hor_stride) as u32,
+                reg_idx: INPUT_Y as u32,
+                offset: x as u32,
             });
+            if config.input == InputFormat::Nv12 {
+                let (u, v) = if x == 0 {
+                    (luma_size as u32, luma_size as u32)
+                } else {
+                    ((luma_size + x) as u32, 0)
+                };
+                band_offsets.push(RegOffsetInfo {
+                    reg_idx: INPUT_U as u32,
+                    offset: u,
+                });
+                band_offsets.push(RegOffsetInfo {
+                    reg_idx: INPUT_V as u32,
+                    offset: v,
+                });
+            }
+        } else {
+            let band_y = mcu_y * 16;
             band_offsets.push(RegOffsetInfo {
-                reg_idx: INPUT_V as u32,
-                offset: if band_y == 0 { luma_size as u32 } else { 0 },
+                reg_idx: INPUT_Y as u32,
+                offset: (band_y * config.hor_stride) as u32,
             });
+            if config.input == InputFormat::Nv12 {
+                band_offsets.push(RegOffsetInfo {
+                    reg_idx: INPUT_U as u32,
+                    offset: (luma_size + band_y / 2 * config.hor_stride) as u32,
+                });
+                band_offsets.push(RegOffsetInfo {
+                    reg_idx: INPUT_V as u32,
+                    offset: if band_y == 0 { luma_size as u32 } else { 0 },
+                });
+            }
         }
 
         registers.push(words);
@@ -1582,6 +1627,14 @@ mod tests {
         let edge = EncoderConfig::new(1281, 721);
         assert_eq!(edge.multi_core_plan().unwrap().bands, vec![12, 12, 12, 10]);
         assert!(EncoderConfig::new(1280, 720).multi_core_plan().is_none());
+
+        let rotated = EncoderConfig {
+            rotation: Rotation::Degree90,
+            ..EncoderConfig::new(1920, 1080)
+        };
+        let plan = rotated.multi_core_plan().unwrap();
+        assert_eq!(plan.bands, vec![30, 30, 30, 30]);
+        assert_eq!(plan.restart_interval, 68 * 30);
     }
 
     #[test]

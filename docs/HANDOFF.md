@@ -139,7 +139,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_h264_lowdelay_vs_mpp.sh      # 逐 slice packet 5/5
 ./scripts/board_jpege_restart_vs_mpp.sh      # JPEG restart（-t 8 + split env）
 ./scripts/board_jpege_lowdelay_vs_mpp.sh     # JPEG 逐 band packet 2/2
-./scripts/board_jpege_multicore_vs_mpp.sh    # JPEG 默认多核 3/3
+./scripts/board_jpege_multicore_vs_mpp.sh    # JPEG 默认多核 + 旋转 5/5
 ./scripts/board_jpege_stride_vs_mpp.sh       # JPEG stride 2/2
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
@@ -341,8 +341,8 @@ H.264/VEPU580 编码已做到：
   JPEG 多核分带已单独关闭下面一行。
 - JPEG 默认四 band 多核路径已闭合：GOP 无关的 streaming `MULTI_MSG` 提交、
   `SET_SESSION_FD` delimiter、scratch band 和 reg53 拼接均按 C 实现；
-  1920x1080 qf50/qf90 + 1288x722 为 3/3，322x242/1366x768 stride 为 2/2。
-  旋转多核仍明确拒绝；显式 split 产生超出画面的 band 时 C 会输出无 EOI 的无效
+  1920x1080 qf50/qf90 + 1288x722 + rot90/rot270 为 5/5，
+  322x242/1366x768 stride 为 2/2。显式 split 产生超出画面的 band 时 C 会输出无 EOI 的无效
   JPEG，记录为 C-BUG，Rust 保留有效流。
 
 ### 5.4 H.265 编码（M8，12k）

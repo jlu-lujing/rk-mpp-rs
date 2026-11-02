@@ -1,7 +1,7 @@
 # JPEG slice and multi-core partitioning on VEPU2 (research)
 
-Status: low-delay packet output and the default multi-core partition path are
-implemented and board-verified; rotated multi-core remains. Both mechanisms live in
+Status: low-delay packet output and the default multi-core partition path,
+including 90/270-degree rotation, are implemented and board-verified. Both mechanisms live in
 `hal_jpege_vepu2_v2.c` for RK3588's client-19 (`VPU_CLIENT_VEPU2_JPEG`),
 the same client `rk-mpp-rs` opens. Line numbers refer to the develop
 reference under `refs/mpp`. Everything the *single-job* restart path needs
@@ -126,14 +126,16 @@ band). Explicit BY_CTU uses the same ECS balance table. Input allocation keeps
 the C 64-row DMA tail while logical NV12 data uses `ver_stride = align(height,
 2)`, which matters for 1080p.
 
-`scripts/board_jpege_multicore_vs_mpp.sh` is 3/3: 1920x1080 at qfactor 50 and
-90, plus 1288x722 with a 12+12+12+10 band split. All complete JPEGs are
-byte-identical. The 1280x720 boundary is also byte-identical, and
+`scripts/board_jpege_multicore_vs_mpp.sh` is 5/5: 1920x1080 at qfactor 50 and
+90, 1288x722 with a 12+12+12+10 band split, and 1920x1080 rotated 90/270.
+All complete JPEGs are byte-identical. The 1280x720 boundary is also byte-identical, and
 `scripts/board_jpege_stride_vs_mpp.sh` covers 322x242 and 1366x768.
 Seven alternating whole-process 1080p/qf50 samples had medians of 64.7 ms for
 C and 60.7 ms for Rust; this is a regression guard, not a stable microbenchmark.
 
-Rotated multi-core is still rejected explicitly. An explicit split whose
-balance table makes the final band read beyond the coded picture can make the
+Rotated band plans use the post-rotation MCU grid while reg103's high field
+keeps C's `mcu_hor` value; input offsets run along x and 270-degree bands use
+the reverse order. An explicit split whose balance table makes the final band
+read beyond the coded picture can make the
 C harness emit a JPEG without EOI while returning success; Rust emits a valid
 EOI-terminated stream. That case is recorded as a C bug rather than imitated.
