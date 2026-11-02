@@ -20,6 +20,30 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > `MAX_BYTES` 默认 256 MiB、逐条打印 verdict），但**尚未完成任何一次全量运行**；
 > 重启后先用 `LIMIT=10` 逐段放量，并记录卡住的是哪一条流。
 
+## 第二块板：t62（2026-11-02 起）
+
+`ssh t62`（用户 `eddysun`）是另一台 NanoPC-T6-LTS：内核 6.1.141、`/dev/mpp_service`
+可用、`hw_support mask = 0x1009321a`，与 t6 相同。已在这台机器上复验：VP8 profile 1/3
+与缩放关键帧、VP9 六格矩阵、H.265 三尺寸 13 格码控，结果与 t6 一致。
+
+搭建要点（新板照做即可）：
+
+1. **oracle 必须用 git checkout 构建，不能用源码 tarball。** 版本 SEI 由
+   `CMakeLists.txt` 在 `${PROJECT_SOURCE_DIR}/.git` 存在时用
+   `git log -1 --pretty=format:"%h author: %<|(30)%an %cd %s"` 生成；没有 `.git`
+   时会写 `unknown mpp version for missing VCS info`，整条 H.265 码流就会在第 ~90
+   字节差一个 SEI 文本。用 `git bundle` 传仓库再 `git checkout 80957d266` 即可。
+2. **cargo 在这台板是 offline + Debian registry**（`~/.cargo/config.toml`），
+   registry 里只有 `libc-0.2.169`。复制过来的 `Cargo.lock` 若锁定别的版本会解析
+   失败；删掉锁文件让 cargo 就地解析即可。
+3. 现有 39 个脚本把板子写死成 `ssh t6`。在 t62 上放一个指向 `127.0.0.1` 的
+   `Host t6` 别名（本机免密 key），脚本就能原样运行；同时要从**另一个目录**
+   （如 `~/rk-mpp-run`）驱动，因为脚本会 `tar . | ssh t6 'extract 到 ~/rk-mpp-rs'`，
+   在同一目录下会自己吞自己。
+4. `ffmpeg`/`ffprobe` 需要 `apt-get install`，矩阵脚本的 NV12→planar 依赖它们。
+5. corpus 还没有复制到 t62（原在 t6 的 `~/rk-mpp-oracles/corpus`），全量扫描要等它
+   恢复或从别处补上。
+
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
 cargo test --all-targets      # 593 passed, 23 board-only ignored
