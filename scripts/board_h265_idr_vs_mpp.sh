@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # H.265 (M8): the first *submitted* IDR against the C encoder, byte for byte.
 #
 # `h265-idr` owns every surface the job points at and goes through the same

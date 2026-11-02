@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Hot-path performance record: decode throughput + RGB scale rows.
 #
 # Runs on the board (`bash scripts/board_perf_hotpaths_vs_mpp.sh`, or from

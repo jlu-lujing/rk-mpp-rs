@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # JPEG RGB input: our VEPU2 JPEG encoder vs the C encoder.
 #
 # VEPU2 converts RGB to YCbCr in hardware (colour-conversion coefficients

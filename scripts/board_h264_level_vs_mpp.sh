@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # SPS level: our encoder against the reference library, NAL by NAL.
 #
 # The level is the last encoder property that used to be frozen into the recorded

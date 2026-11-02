@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Drive one IEP2 (client 28) I5O2 deinterlace and compare it against the C
 # `iep2_test` that ships in the reference MPP build.
 #

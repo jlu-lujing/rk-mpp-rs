@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # JPEG restart markers: our VEPU2 JPEG encoder vs the C encoder, byte by byte.
 #
 # The restart interval is C's MPP_ENC_SPLIT_BY_CTU knob: split_arg counts

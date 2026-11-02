@@ -7,6 +7,12 @@
 提升；结果与 C 不一致即视为缺陷，除非另外证明 C 是 bug。功能前沿（tiles/WPP/SAO、B 帧、
 refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉。
 
+**当前板（用户 2026-11-02 再次决定）：t6。** t62 只保留为历史证据；后续同步、
+构建和板级验证全部在 t6（NanoPC-T6-LTS，内核 6.1.57）执行。t6 重启后
+`/tmp/mpp-old`、`/tmp/mpp-develop`、`/tmp/mpp_trace.so` 会被清理，权威副本仍在
+`~/rk-mpp-oracles`，先运行 `scripts/setup_board_refs.sh` 回填。所有板级脚本默认
+`BOARD="${BOARD:-t6}"`。
+
 本文以仓库现状为准；接手时先跑 `git rev-parse --short HEAD` 和
 `git status --short`，不要相信本文记录的历史提交号。`README.md` 是最新状态速览，
 `ROADMAP.md` 是逐项证据台账（权威），本文是"从哪继续、怎么不被坑"的操作手册。
@@ -109,7 +115,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 608 passed, 26 board-only ignored
+cargo test --all-targets      # 612 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -120,7 +126,7 @@ grep -c '^- \[x\]' ROADMAP.md  # 已完成条目数
 grep -c '^- \[ \]' ROADMAP.md  # 未完成条目数
 ```
 
-板上验证（`BOARD` 默认 t62，详见第 4 节）：
+板上验证（`BOARD` 默认 t6，详见第 4 节）：
 
 ```bash
 ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 分钟
@@ -129,6 +135,8 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_h264_deblock_vs_mpp.sh       # deblock 3 格 + auto-QP 2 格
 ./scripts/board_h264_roi_vs_mpp.sh           # ROI/QP map 2 格
 ./scripts/board_h264_scene_vs_mpp.sh         # 硬切场景检测
+./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU slice split 4/4
+./scripts/board_h264_lowdelay_vs_mpp.sh      # 逐 slice packet 5/5
 ./scripts/board_jpege_restart_vs_mpp.sh      # JPEG restart（-t 8 + split env）
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
@@ -136,9 +144,9 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ROADMAP 顶层清单当前为 55 项完成、13 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
-**当前阻塞是 t62 上 Rust AV1 tile fixture 的硬件超时。** 恢复顺序固定为：
-物理重启 → `board_av1_presubmit_compare.sh` 输入镜像全同 → 才允许恢复 Rust
-硬件提交实验。其它已知差异和下一步证据见 `docs/DIVERGENCES.md` 与 ROADMAP。
+AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
+H.264 普通 slice split 与低延迟逐 slice packet 都已在 t6 上通过。其它已知差异和
+下一步证据见 `docs/DIVERGENCES.md` 与 ROADMAP。
 
 ---
 
@@ -224,7 +232,7 @@ H.264/VEPU580 编码已做到：
 
 ## 4. 板子与工具链（必读）
 
-- 当前板：`BOARD="${BOARD:-t62}"`（NanoPC-T6-LTS，RK3588，内核 6.1.141）。
+- 当前板：`BOARD="${BOARD:-t6}"`（NanoPC-T6-LTS，RK3588，内核 6.1.57）。
   `/dev/mpp_service` 需要 `sudo`。
 - 参考 C MPP：
   - `/tmp/mpp-old`（commit `80957d266`，2024-04-24）＝**编码器字节级预言机**；
@@ -233,11 +241,11 @@ H.264/VEPU580 编码已做到：
   - `/tmp/mpp_trace.so`＝ioctl tracer（由 `tools/mpp_ioctl_trace.c` 构建）。
   - ⚠️ 它们是 `/tmp` 里的**工作副本**；权威副本在 `~/rk-mpp-oracles`
     （`mpp-old`、`mpp-develop`、`mpp_trace.so`、`corpus-gen/`）。t62 的 `/tmp`
-    是 tmpfs，重启后依赖 `~/.profile` 重建上述三个 symlink。
-    `scripts/setup_board_refs.sh` 先检查后回填。
+    是 tmpfs；t6 即使不是 tmpfs 也会被 tmpfiles 清理，两者重启后都应先运行
+    `scripts/setup_board_refs.sh` 检查并从 oracle home 回填。
 - 同步/构建（脚本里都在用）：
   ```bash
-  BOARD="${BOARD:-t62}"
+  BOARD="${BOARD:-t6}"
   COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
     ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
   ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
@@ -316,13 +324,14 @@ H.264/VEPU580 编码已做到：
   捕获观察 ATR 字段是否切换；确认触发条件后再移植。
 - 验收：硬切序列上与 C 逐字节相同（目前所有 fixture 都没触发它）。
 
-### 5.3 H.264 编码其余
+### 5.3 H.264 编码当前边界
 
-- ROI / QP map（`roi_qthd*` 目前填的是整幅的 `qp_min/qp_max`）
-- GDR / intra refresh（`INTRA_RFH_FRAME` 分支、`i_refresh_bit` 窗口）
-- deblock 细调、slice split（多 slice 一行一条）
-- 宽度 > 4096（CIME extension lines，当前 `validate_reference_config` 拒绝）
-- `cal_first_i_start_qp`：仅在调用方不设初始 quality 时使用；照抄并补单测即可
+- 已闭合的路径包括固定 QP / CBR / VBR / AVBR、ROI/QP map、GDR、deblock、
+  `cal_first_i_start_qp`、场景检测、普通 slice split、逐 slice low-delay packet、
+  宽度 >4096 的 CIME 扩展行以及 P 帧。证据入口分别是
+  `board_h264_slice_vs_mpp.sh`（4/4）与 `board_h264_lowdelay_vs_mpp.sh`（5/5）。
+- 尚未开始的新功能：hier QP / SMART_P、重编码 / 多 pass、super frame 和相应
+  drop/pskip 策略。它们仍属于冻结的功能前沿，不与当前等价性回归混提。
 
 ### 5.4 H.265 编码（M8，12k）
 
@@ -426,7 +435,7 @@ buffer 池引用计数 → 多核 → secure（secure 需设备支持，可能�
 ## 7. 命令速查
 
 ```bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 
 # 本地
 cargo test --all-targets && cargo fmt --check
@@ -451,7 +460,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 586 通过（23 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 612 通过（26 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

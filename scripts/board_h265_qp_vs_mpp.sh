@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # H.265 (M8): our parameter-set writer vs the C encoder, byte for byte.
 #
 # M8 opens with a fixed-QP single IDR. The byte-comparable part today is the

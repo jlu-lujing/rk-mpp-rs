@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Compare this driver's STATUS read-back against the C encoder's, field by field.
 #
 # `Statistics` takes its positions from `Vepu580Status_t`, but the check that

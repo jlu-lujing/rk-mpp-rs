@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # H.265 rate-control board gate: the C encoder against the crate, whole streams.
 #
 # Two kinds of cell:

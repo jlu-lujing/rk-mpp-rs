@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # CBR, VBR and AVBR: our encoder against the reference library, NAL by NAL.
 #
 # The reference is driven through `tools/rc_probe.c` rather than `mpi_enc_test`,
@@ -37,14 +37,12 @@ fi
 
 # The probe is part of this repository; build it against the reference, not the
 # installed library, so both sides run the same code the crate is compared with.
+scp -q tools/rc_probe.c "$BOARD":/tmp/
 ssh "$BOARD" "cc -O2 -w -I$mpp_ref/inc /tmp/rc_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/rc_probe 2>/dev/null ||
         cc -O2 -w -I$mpp_ref/inc /tmp/rc_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/rc_probe" || true
-scp -q tools/rc_probe.c "$BOARD":/tmp/ 2>/dev/null
 
 ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
-
-ssh "$BOARD" "cc -O2 -w -I$mpp_ref/inc /tmp/rc_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/rc_probe" || true
 
 fail=0
 for entry in cbr:1 vbr:0 avbr:2; do

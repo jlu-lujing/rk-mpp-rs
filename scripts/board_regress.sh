@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # H.264 regression: sync, build on the board, decode every stream, compare
 # with the reference decoder output.
 # Usage: scripts/board_regress.sh

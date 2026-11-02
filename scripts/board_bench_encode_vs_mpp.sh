@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Encode throughput: this crate vs the C encoder, on the same input frames.
 #
 # Nothing has ever measured the encoder against MPP, which leaves "never slower

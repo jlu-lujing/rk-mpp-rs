@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Ask the board corpus which VP8 profiles actually exist before deciding
 # how far the profile 1/3 implementation has to reach.
 #

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Generate a reproducible 10-bit HEVC stream with the board's libx265.
 set -euo pipefail
 

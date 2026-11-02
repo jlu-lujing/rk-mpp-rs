@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Put the board's C reference builds somewhere a cleanup cannot reach.
 #
 # The oracles - the 2024-04 MPP the encoder is byte-compared against, the master

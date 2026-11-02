@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Decode throughput: this crate vs the source-built C MPP, on the same stream.
 #
 # Runs on the board (`bash scripts/board_bench_vs_mpp.sh`, or from the host with

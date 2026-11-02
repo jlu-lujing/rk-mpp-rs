@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Generate the H.265 tile fixture with MPP's encoder. This board's libx265
 # build does not expose tile-columns/tile-rows.
 set -euo pipefail

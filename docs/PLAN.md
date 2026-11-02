@@ -183,7 +183,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       两个只有上板才能定的行为：sweep 处参考重发 SPS/PPS + recovery-point SEI；
       `refresh_num == 1` 时 band 起点经 `RK_U16` 截断为 0xFFF0 → 该帧不强制 intra。
 - [x] W1-14 deblock 细调 —— 含「参考不写 beta」这个 quirk；板级三格逐字节。
-- [~] W1-15 slice split —— 3 条宿主单测；`board_h264_slice_vs_mpp.sh` 结果未记录。
+- [x] W1-15 slice split 与逐 slice 输出 —— 普通整 AU 在
+      `board_h264_slice_vs_mpp.sh` 为 4/4；低延迟 packet 在
+      `board_h264_lowdelay_vs_mpp.sh` 为 5/5（BY_CTU 96/150/8、BY_BYTE 256、
+      6 帧 IDR+P）。38-slice 格跨 32 项硬件 FIFO，所有实际 slice 边界与拼接码流一致。
 - [ ] W1-16 hier QP / SMART_P（`hier_qp_cfg`、`vgop`、`vi_bit` 窗口）
 - [ ] W1-17 重编码与多 pass：`check_re_enc`、`reenc_calc_*_ratio`、super frame、
       `-n` 超发时的 drop/pskip 策略；补"同帧重编"路径

@@ -36,7 +36,8 @@ fn encode_h264(
     rois: Vec<h264_syntax::RoiRegion>,
     gdr: Option<(h264_syntax::GdrMode, u32)>,
     split: Option<(h264_syntax::SplitMode, u32)>,
-) -> Result<(usize, usize, usize, f64), String> {
+    split_out: u32,
+) -> Result<(usize, usize, usize, usize, f64), String> {
     // The frames are read one at a time. slurping the file was fine while the
     // encoder only ever produced a single IDR, but with a GOP it charges the
     // whole clip to the encode: 12 frames of 1920x1088 is 37 MB read and held
@@ -115,6 +116,7 @@ fn encode_h264(
         config.split_mode = mode;
         config.split_arg = arg;
     }
+    config.split_out = split_out;
     let frame_bytes = h264e::input_size(&config)?;
     let mut encoder = h264e::Vepu580H264::open(config)?;
     let started = Instant::now();
@@ -143,6 +145,8 @@ fn encode_h264(
     let mut annex_b = Vec::new();
     let mut headers = 0usize;
     let mut payload = 0usize;
+    let mut packets = 0usize;
+    let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
     for index in 0..wanted {
         if !read_frame(&mut frame)? {
             return Err(format!(
@@ -154,11 +158,30 @@ fn encode_h264(
         let encoded = encoder.encode_frame(&frame)?;
         headers += encoded.headers.len();
         payload += encoded.payload.len();
+        packets += encoded.packets.len();
+        if trace_packets {
+            let sizes = encoded
+                .packets
+                .iter()
+                .map(|packet| packet.len().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!(
+                "h264 frame {index}: {} packet(s): {sizes}",
+                encoded.packets.len()
+            );
+        }
         annex_b.extend_from_slice(&encoded.annex_b);
     }
     let elapsed = started.elapsed();
     std::fs::write(out_path, &annex_b).map_err(|e| format!("{out_path}: {e}"))?;
-    Ok((annex_b.len(), headers, payload, us(elapsed) / 1000.0))
+    Ok((
+        annex_b.len(),
+        headers,
+        payload,
+        packets,
+        us(elapsed) / 1000.0,
+    ))
 }
 
 /// Write the H.265 VPS/SPS/PPS a fixed-QP IDR carries, and report the QP that the
@@ -886,7 +909,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -927,6 +950,7 @@ fn main() {
         // (BY_CTU, macroblocks per slice) or `split:byte:<arg>` (BY_BYTE).
         let mut gdr: Option<(h264_syntax::GdrMode, u32)> = None;
         let mut split: Option<(h264_syntax::SplitMode, u32)> = None;
+        let mut split_out = 0u32;
         for text in args.iter().skip(10) {
             if let Some(rest) = text.strip_prefix("dblk:") {
                 // `dblk:disable:alpha:beta`, the three `MppEncH264Cfg` deblocking
@@ -1032,6 +1056,16 @@ fn main() {
                         std::process::exit(2);
                     }
                 }
+            } else if text == "splitout:lowdelay" {
+                split_out = h264_syntax::MPP_ENC_SPLIT_OUT_LOWDELAY;
+            } else if let Some(value) = text.strip_prefix("splitout:") {
+                match value.parse::<u32>() {
+                    Ok(value) => split_out = value,
+                    Err(_) => {
+                        eprintln!("bad splitout value {value}");
+                        std::process::exit(2);
+                    }
+                }
             } else {
                 let (mode, text) = match text.split_once(':') {
                     Some(("cbr", rest)) => (h264_syntax::RcMode::Cbr, rest),
@@ -1055,7 +1089,7 @@ fn main() {
             }
         }
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -1078,9 +1112,10 @@ fn main() {
             rois,
             gdr,
             split,
+            split_out,
         ) {
-            Ok((bytes, header_bytes, payload_bytes, ms)) => println!(
-                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {width}x{height} {profile} qp {qp_desc} gop {gop}, {ms:.3} ms"
+            Ok((bytes, header_bytes, payload_bytes, packets, ms)) => println!(
+                "encoded {src} -> {dst}: {bytes} bytes ({header_bytes} header + {payload_bytes} payload), {packets} packet(s), {width}x{height} {profile} qp {qp_desc} gop {gop}, {ms:.3} ms"
             ),
             Err(e) => {
                 eprintln!("H.264 encode failed: {e}");

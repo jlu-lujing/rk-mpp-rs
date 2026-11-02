@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # Damaged-stream comparison against the C decoder, on the selected board.
 #
 # The damage is built ON THE BOARD from the repo fixtures, per the plan: the

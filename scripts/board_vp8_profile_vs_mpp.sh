@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # VP8 profile 1/3 board question: does vdpu2 reproduce the profile 1/3 IDCT
 # precision, and does C behave the same way?
 #

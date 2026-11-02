@@ -19,7 +19,7 @@ use crate::codec::h264::encoder::{self, EncoderConfig, GdrMode, RcMode, SplitMod
 use crate::codec::h264::sei;
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
-use crate::service::{Batch, Client, MppService, RcbInfo, RegOffsetInfo};
+use crate::service::{Batch, Client, MppService, RcbInfo, RegOffsetInfo, SliceInfo};
 
 use super::h264e_vepu580_template as template;
 use super::vepu580_regs;
@@ -82,6 +82,10 @@ const HW_ERROR_MASK: u32 = 0x3f0;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedFrame {
     pub annex_b: Vec<u8>,
+    /// Output packets in emission order. Normally one complete access unit;
+    /// with low-delay slicing, one packet per completed hardware slice and the
+    /// first also carries `headers`.
+    pub packets: Vec<Vec<u8>>,
     pub payload: Vec<u8>,
     pub headers: Vec<u8>,
     pub is_idr: bool,
@@ -98,6 +102,51 @@ pub struct EncodedIdr {
     /// Hardware-produced NAL, including its start code.
     pub payload: Vec<u8>,
     pub headers: Vec<u8>,
+}
+
+/// Lay out a completed picture the way `mpp_enc_impl.c` emits low-delay
+/// partitions: headers ride with the first packet, every hardware slice gets an
+/// entry, and a zero-length slice remains a zero-length packet because the
+/// kernel can use it to carry the last flag.
+fn output_packets(
+    headers: &[u8],
+    payload: &[u8],
+    slice_lengths: &[usize],
+) -> Result<Vec<Vec<u8>>, String> {
+    if slice_lengths.is_empty() {
+        let mut packet = Vec::with_capacity(headers.len() + payload.len());
+        packet.extend_from_slice(headers);
+        packet.extend_from_slice(payload);
+        return Ok(vec![packet]);
+    }
+
+    let total = slice_lengths
+        .iter()
+        .try_fold(0usize, |total, length| total.checked_add(*length));
+    match total {
+        Some(total) if total == payload.len() => {}
+        Some(total) => {
+            return Err(format!(
+                "H.264 slice lengths sum to {total}, STATUS says {}",
+                payload.len()
+            ))
+        }
+        None => return Err("H.264 slice length sum overflowed usize".into()),
+    }
+
+    let mut packets = Vec::with_capacity(slice_lengths.len());
+    let mut offset = 0;
+    for (index, length) in slice_lengths.iter().copied().enumerate() {
+        let mut packet = if index == 0 {
+            headers.to_vec()
+        } else {
+            Vec::new()
+        };
+        packet.extend_from_slice(&payload[offset..offset + length]);
+        packets.push(packet);
+        offset += length;
+    }
+    Ok(packets)
 }
 
 /// One reconstruction slot. VEPU580 writes the FBC-compressed reconstruction and
@@ -866,9 +915,32 @@ impl Vepu580H264 {
         self.svc
             .submit_batch(&mut batch)
             .map_err(|e| format!("H.264 register submit: {e}"))?;
-        self.svc
-            .poll_hw_finish()
-            .map_err(|e| format!("H.264 poll: {e}"))?;
+        let mut slice_lengths = Vec::new();
+        if self.config.split_out & encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            let mut complete = false;
+            for _ in 0..=4096 {
+                let mut info = [SliceInfo::default()];
+                let count = self
+                    .svc
+                    .poll_irq(&mut info)
+                    .map_err(|e| format!("H.264 slice poll: {e}"))?;
+                for slice in &info[..count] {
+                    let (length, last) = slice.vepu580();
+                    slice_lengths.push(length as usize);
+                    complete |= last;
+                }
+                if complete {
+                    break;
+                }
+            }
+            if !complete {
+                return Err("H.264 slice FIFO did not report the last slice".into());
+            }
+        } else {
+            self.svc
+                .poll_hw_finish()
+                .map_err(|e| format!("H.264 poll: {e}"))?;
+        }
 
         let errors = hw_status[0] & HW_ERROR_MASK;
         if errors != 0 {
@@ -933,6 +1005,7 @@ impl Vepu580H264 {
         let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
         annex_b.extend_from_slice(&headers);
         annex_b.extend_from_slice(&payload);
+        let packets = output_packets(&headers, &payload, &slice_lengths)?;
         let statistics = Statistics::from_words(&status);
         dump_statistics(&state, &status);
         // Copy the rate-control decision out before the update below so the job
@@ -971,6 +1044,7 @@ impl Vepu580H264 {
         }
         Ok(EncodedFrame {
             annex_b,
+            packets,
             payload,
             headers,
             is_idr: state.is_idr,
@@ -1748,12 +1822,11 @@ impl RegisterFile {
         Ok(())
     }
 
-    /// `setup_vepu580_split`, for `split_out = 0` only - the mode where the
-    /// hardware lays every slice of the picture down contiguously in one
-    /// bitstream buffer and one STATUS length covers the lot, which is what the
-    /// synchronous submit assumes. The per-slice output modes instead arm
-    /// `slen_fifo` and read slice lengths out of a poll-with-slice-info loop,
-    /// a packet-per-slice flow this driver does not run.
+    /// `setup_vepu580_split`. With `split_out = 0` the hardware lays every
+    /// slice down contiguously and one STATUS length covers the picture. The
+    /// low-delay output bit arms `slen_fifo`; the submission path then drains
+    /// slice lengths through `POLL_HW_IRQ` instead of the normal completion
+    /// poll.
     ///
     /// The two enabled branches are transcribed statement by statement, the
     /// magic numbers included: `sli_max_num_m1 = 500` and `sli_flsh = 1` appear
@@ -1782,6 +1855,8 @@ impl RegisterFile {
                 self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
                 self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_FLSH, 1)?;
                 self.set(&vepu580_regs::BASE_SLI_BYTE_SLI_SPLT_BYTE, config.split_arg)?;
+                let split_out = config.split_out != 0;
+                self.set(&vepu580_regs::BASE_ENC_PIC_SLEN_FIFO, split_out as u32)?;
                 self.set(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN, 1)?;
             }
             SplitMode::ByCtu => {
@@ -1798,7 +1873,9 @@ impl RegisterFile {
                 // `slice_num > VEPU580_SLICE_FIFO_LEN` arms the slice interrupt
                 // so the length FIFO cannot fill while nobody drains it.
                 let slice_num = (mb_w * mb_h + config.split_arg - 1) / config.split_arg;
-                if slice_num > 32 {
+                let split_out = config.split_out != 0;
+                self.set(&vepu580_regs::BASE_ENC_PIC_SLEN_FIFO, split_out as u32)?;
+                if split_out || slice_num > 32 {
                     self.set(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN, 1)?;
                 }
             }
@@ -3967,6 +4044,46 @@ mod tests {
     }
 
     #[test]
+    fn low_delay_split_arms_the_slice_fifo_for_both_byte_and_ctu_modes() {
+        for (mode, arg) in [(SplitMode::ByCtu, 96), (SplitMode::ByByte, 1024)] {
+            let mut cfg = config();
+            cfg.split_mode = mode;
+            cfg.split_arg = arg;
+            cfg.split_out = encoder::MPP_ENC_SPLIT_OUT_LOWDELAY;
+            let file = registers_at(&cfg, FrameState::default());
+            assert_eq!(file.get(&vepu580_regs::BASE_ENC_PIC_SLEN_FIFO).unwrap(), 1);
+            assert_eq!(file.get(&vepu580_regs::CTL_INT_EN_SLC_DONE_EN).unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn output_packets_preserve_low_delay_slice_layout() {
+        let payload: Vec<u8> = (0..9).collect();
+        let packets = output_packets(&[0xaa, 0xbb], &payload, &[4, 5, 0]).unwrap();
+        assert_eq!(
+            packets,
+            vec![
+                vec![0xaa, 0xbb, 0, 1, 2, 3],
+                vec![4, 5, 6, 7, 8],
+                Vec::<u8>::new(),
+            ]
+        );
+
+        let whole = output_packets(&[0xaa], &payload, &[]).unwrap();
+        assert_eq!(whole.len(), 1);
+        assert_eq!(whole[0].len(), payload.len() + 1);
+        assert_eq!(whole[0][0], 0xaa);
+        assert_eq!(&whole[0][1..], payload);
+    }
+
+    #[test]
+    fn output_packets_reject_a_partial_slice_sum() {
+        let error = output_packets(&[], &[0; 9], &[4, 4]).unwrap_err();
+        assert!(error.contains("sum to 8"));
+        assert!(error.contains("STATUS says 9"));
+    }
+
+    #[test]
     fn split_none_writes_only_what_the_recorded_image_already_has() {
         let file = registers_at(&config(), FrameState::default());
         for field in [
@@ -4001,6 +4118,14 @@ mod tests {
         }
         cfg.split_arg = 1024;
         assert!(cfg.validate().is_ok());
+
+        cfg.split_out = encoder::MPP_ENC_SPLIT_OUT_LOWDELAY;
+        assert!(cfg.validate().is_ok());
+        cfg.split_out = 1 << 1;
+        assert!(cfg.validate().is_err(), "SEGMENT output is not implemented");
+        cfg.split_out = encoder::MPP_ENC_SPLIT_OUT_LOWDELAY;
+        cfg.split_mode = SplitMode::None;
+        assert!(cfg.validate().is_err(), "split_out needs a split mode");
     }
 
     // ---- >4096 CIME extension lines ----

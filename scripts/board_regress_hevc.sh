@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # HEVC regression: the CLI output must already be in display order.
 set -euo pipefail
 

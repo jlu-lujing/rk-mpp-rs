@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # H.264: our VEPU580 driver vs the C encoder, NAL by NAL, over QP and profile.
 #
 # The reference is MPP built from source at the vintage of the library installed

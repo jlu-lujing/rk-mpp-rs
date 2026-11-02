@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t62}"
+BOARD="${BOARD:-t6}"
 # H.265 (M8): an opening IDR plus one P picture against the C encoder, byte for byte.
 #
 # The second frame of the input is the same picture as the first, so the P is a

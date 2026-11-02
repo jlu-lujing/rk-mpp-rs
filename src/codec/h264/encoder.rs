@@ -9,6 +9,7 @@ use std::fmt;
 pub const PROFILE_BASELINE: u8 = 66;
 pub const PROFILE_MAIN: u8 = 77;
 pub const PROFILE_HIGH: u8 = 100;
+pub const MPP_ENC_SPLIT_OUT_LOWDELAY: u32 = 1 << 0;
 
 const NAL_SPS: u8 = 7;
 const NAL_PPS: u8 = 8;
@@ -114,6 +115,9 @@ pub struct EncoderConfig {
     /// STATUS length already read back.
     pub split_mode: SplitMode,
     pub split_arg: u32,
+    /// `MppEncSliceSplit::split_out`. Bit 0 requests one output packet per slice
+    /// as each slice interrupt arrives. Zero returns one complete access unit.
+    pub split_out: u32,
 }
 
 /// `MppEncRcRefreshMode`, minus `BUTT`: the axis the GDR band advances along.
@@ -232,6 +236,7 @@ impl EncoderConfig {
             gdr_num: 0,
             split_mode: SplitMode::None,
             split_arg: 0,
+            split_out: 0,
         }
     }
 
@@ -348,6 +353,17 @@ impl EncoderConfig {
                 )));
             }
             _ => {}
+        }
+        if self.split_out & !MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            return Err(Error(format!(
+                "unsupported slice output bits 0x{:x}; only LOWDELAY is implemented",
+                self.split_out
+            )));
+        }
+        if self.split_out != 0 && self.split_mode == SplitMode::None {
+            return Err(Error(
+                "split_out requires a BY_CTU or BY_BYTE slice split".into(),
+            ));
         }
         Ok(())
     }

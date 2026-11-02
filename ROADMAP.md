@@ -116,7 +116,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M4 | VP9 decode (segmentation, loop filter, superframes) | 8k | **partial; profile 0/2 320x240 and 720p error-resilient temporal-segmentation streams are bit-exact to libvpx; edge-case matrix and conformance pending** |
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
-| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 only (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split is byte-identical over four cells (BY_CTU at 96/8/150 blocks and BY_BYTE at 256, the 8-block cell putting 38 slices past the 32-entry FIFO) and the >4096 CIME extension lines over two (4160x64, 4608x256). P pictures match at eleven sizes spanning the FBC-header threshold - the divergence past 640x480 was the constant FBC body offset, since fixed. What is left: the per-slice output path (`slen_fifo`, low-delay slice packets)** |
+| M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR, slice output | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split is byte-identical over four cells (BY_CTU at 96/8/150 blocks and BY_BYTE at 256, the 8-block cell putting 38 slices past the 32-entry FIFO), per-slice low-delay packet output is byte-identical over five cells (including that 38-slice FIFO crossing and a six-picture IDR+P stream), and the >4096 CIME extension lines over two (4160x64, 4608x256). P pictures match at eleven sizes spanning the FBC-header threshold - the divergence past 640x480 was the constant FBC body offset, since fixed. The implemented H.264 encode surface is closed; new scheduling/recoding modes remain frozen feature work.** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode started - VPS/SPS/PPS written and parsed back, and a derived (not replayed) IDR register image, 23 host tests, one ignored board test; not submit-capable until a reference H.265 job is captured** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 I5O2 deinterlace is byte-identical to the C `iep2_test` on t6 (720x480, 1,036,800 bytes); scale/crop and the other modes are untouched. VDPP (client 29) is absent on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
@@ -670,14 +670,12 @@ in what order the evidence gets produced.
       including non-16-aligned crops. Every SPS/PPS/IDR NAL is byte-identical
       to a freshly generated C MPP golden, deterministic across repeated runs,
       and independently decodes with at least 45 dB plane PSNR
-- [ ] H.264 (rkvenc): what is left is the per-slice *output* path and a few
-      geometries. `MPP_ENC_SPLIT_OUT_LOWDELAY`, `slen_fifo` and
-      poll-with-slice-info are not in the driver, so slice splitting is proved as
-      contiguous-in-buffer coding only and no caller gets one packet per slice
-      yet. The service ABI half is now corrected: `SliceInfo` is C's one-word
-      structure, `POLL_HW_IRQ` returns `count_ret`, and the VEPU580 25-bit
-      length/bit-31 last fields have unit coverage; the encoder submission path
-      still needs to consume it. The rate-control loop beyond fixed QP and the three modes is ported and
+- [x] H.264 (rkvenc): the implemented encode surface, including per-slice
+      low-delay output, is closed. `MPP_ENC_SPLIT_OUT_LOWDELAY`, `slen_fifo` and
+      poll-with-slice-info are now consumed by the encoder rather than only
+      present in the service ABI. `SliceInfo` is C's one-word structure,
+      `POLL_HW_IRQ` returns `count_ret`, and the VEPU580 25-bit length/bit-31
+      last fields have host coverage. The rate-control loop beyond fixed QP and the three modes is ported and
       byte-exact but `roi`-weighted QP per region and the QP *map* input path are
       proved only at the table level; P pictures are byte-matched at eleven sizes
       across the FBC header threshold and at both widths above 4096 (4160x64 and
@@ -771,10 +769,25 @@ in what order the evidence gets produced.
        320x240 picture, past the 32-entry slice FIFO, so it also pins the
        `slc_done_en` decision - had the interrupt arming been wrong the encoder
        would not have finished the picture at all, let alone matched it.
-       What remains unported is the *output* half: `MPP_ENC_SPLIT_OUT_LOWDELAY`,
-       `slen_fifo` and poll-with-slice-info are not in the driver, so a caller
-       wanting one packet per slice does not have it yet (see the open item under
-       the encoder checklist).
+ - [x] **Low-delay slice packets are byte-identical to the reference, five
+       cells.** `split_out=1` arms `slen_fifo`, enables the slice interrupt, and
+       drains `POLL_HW_IRQ` one entry at a time until VEPU580 reports `last`.
+       `scripts/board_h264_lowdelay_vs_mpp.sh` compares both concatenated
+       streams and per-packet offsets for BY_CTU 96/150/8, BY_BYTE 256 and a
+       six-picture IDR+P stream: **5/5**. The 8-block cell crosses the 32-entry
+       hardware FIFO and emits 38 data packets; the P stream has four packets in
+       each picture. The first packet differs in total length only by the
+       deliberately different version-SEI text; every slice boundary and every
+       following packet length is equal.
+
+       The C probe originally deadlocked above eight slices because it called
+       `encode_put_frame` synchronously and only then drained packets. MPP has a
+       fixed output-task pool, so the corrected probe reads packets on a worker
+       thread. Rust itself drains the hardware FIFO before materializing packet
+       views. The kernel may attach `last` to the final non-empty slice or emit a
+       trailing zero-length EOI entry depending on timing; both representations
+       end at the same byte offset and the comparator normalizes only that final
+       zero.
  - [x] **Widths above 4096 encode byte-identically - the CIME extension lines
        work.** The path is `setup_hal_bufs` plus `setup_vepu580_ext_line_buf`:
        once the width aligned to 64 clears 4096 the encoder allocates
