@@ -477,7 +477,9 @@ in what order the evidence gets produced.
       `m2v_320x240_ilaced.m2v` matches FFmpeg within the 2-unit IDCT rounding
       hardware MPEG-2 allows; C MPP is the outlier there, disagreeing with
       FFmpeg on whole pictures and emitting 40 frames for a 6-picture stream once
-      it rewinds its own input. `scripts/board_regress_m2v.sh` locks all three.
+      it rewinds its own input. `scripts/board_regress_m2v.sh` locks all three,
+      and the corpus sweep classifies this fixture as `KNOWN-C-BUG` instead of
+      `FAIL`.
       `RFI_M2V_REG_DUMP=1` appends the register image that was submitted to
       `/tmp/our_m2v_regs.txt`, in the text `hal_m2vd_debug=2` prints. Diffed that
       way on `m2v_320x240_12.m2v` all ten jobs agree with C on every word except

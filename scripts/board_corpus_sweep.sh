@@ -85,6 +85,9 @@ for f in "$corpus"/*; do
     vp9_p0_720p_errres_seg.ivf|vp9_p0_lossless_321x241_2.ivf)
       printf 'KNOWN-C-BUG %s: Rust matches libvpx; C differs (see ROADMAP)\n' "$name"
       named=$((named+1)); continue ;;
+    m2v_320x240_ilaced.m2v)
+      printf 'KNOWN-C-BUG %s: C rewinds input and emits extra frames; Rust matches FFmpeg IDCT rounding\n' "$name"
+      named=$((named+1)); continue ;;
   esac
 
   dims="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
