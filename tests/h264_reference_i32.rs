@@ -13,7 +13,6 @@ fn black_idr_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
-#[ignore = "known textured-CAVLC mismatch; retained as the next differential fixture"]
 fn textured_idr_matches_ffmpeg_yuv420p() {
     compare_fixture(
         include_bytes!("../tests/data/h264_i32_cavlc.264"),
@@ -116,9 +115,29 @@ fn compare_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {
     if differences.is_empty() {
         Ok(())
     } else {
+        let planes = [y.len(), u.len(), v.len()];
+        let plane_differences: Vec<_> = planes
+            .iter()
+            .scan(0usize, |offset, &length| {
+                let start = *offset;
+                *offset += length;
+                Some(
+                    actual[start..*offset]
+                        .iter()
+                        .zip(&expected[start..*offset])
+                        .enumerate()
+                        .filter(|(_, (actual, expected))| actual != expected)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
         Err(format!(
-            "{} differing samples; first: {:?}",
+            "{} differing samples; planes: {:?}; first: {:?}",
             differences.len(),
+            plane_differences
+                .iter()
+                .map(|differences| (differences.len(), differences.first()))
+                .collect::<Vec<_>>(),
             differences.first()
         ))
     }

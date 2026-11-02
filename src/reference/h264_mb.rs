@@ -9,6 +9,9 @@ use std::fmt;
 use super::h264_cavlc::{Cavlc8x8Residual, CavlcBlockKind, CavlcError, CavlcReader, CavlcResidual};
 use crate::codec::h264::parser::{BitReader, Pps, Sps};
 
+pub(super) const I4X4_BLOCK_ORDER: [usize; 16] =
+    [0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntraMacroblockKind {
     I4x4,
@@ -39,6 +42,21 @@ pub struct MacroblockNeighbors {
     pub luma_top: [Option<u8>; 4],
     pub chroma_left: [[Option<u8>; 4]; 2],
     pub chroma_top: [[Option<u8>; 4]; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntraModeNeighbors {
+    pub left: [Option<u8>; 4],
+    pub top: [Option<u8>; 4],
+}
+
+impl IntraModeNeighbors {
+    pub const fn unavailable() -> Self {
+        Self {
+            left: [None; 4],
+            top: [None; 4],
+        }
+    }
 }
 
 impl MacroblockNeighbors {
@@ -171,8 +189,7 @@ impl From<CavlcError> for MacroblockError {
 pub fn predict_intra_mode(left: Option<u8>, top: Option<u8>) -> u8 {
     match (left, top) {
         (Some(left), Some(top)) => left.min(top),
-        (Some(mode), None) | (None, Some(mode)) => mode,
-        (None, None) => 2,
+        _ => 2,
     }
 }
 
@@ -181,6 +198,15 @@ pub fn parse_i_macroblock(
     data: &[u8],
     bit_offset: usize,
     context: MacroblockContext,
+) -> Result<ParsedIMacroblock, MacroblockError> {
+    parse_i_macroblock_with_modes(data, bit_offset, context, IntraModeNeighbors::unavailable())
+}
+
+pub fn parse_i_macroblock_with_modes(
+    data: &[u8],
+    bit_offset: usize,
+    context: MacroblockContext,
+    mode_neighbors: IntraModeNeighbors,
 ) -> Result<ParsedIMacroblock, MacroblockError> {
     context.validate()?;
     let offset = u32::try_from(bit_offset)
@@ -211,9 +237,9 @@ pub fn parse_i_macroblock(
     let (kind, luma_prediction_modes, mut cbp) = if mb_type == 0 {
         let transform_8x8 = context.transform_8x8 && read_bit(&mut reader)? == 1;
         let modes = if transform_8x8 {
-            parse_intra_modes(&mut reader, 2)?
+            parse_i8x8_modes(&mut reader, mode_neighbors)?
         } else {
-            parse_intra_modes(&mut reader, 4)?
+            parse_i4x4_modes(&mut reader, mode_neighbors)?
         };
         (
             if transform_8x8 {
@@ -267,7 +293,6 @@ pub fn parse_i_macroblock(
     } else {
         0
     };
-
     Ok(ParsedIMacroblock {
         kind,
         luma_prediction_modes,
@@ -556,12 +581,23 @@ fn chroma_grid(chroma_format_idc: u8) -> Option<(usize, usize)> {
     }
 }
 
-fn parse_intra_modes(reader: &mut BitReader<'_>, grid: usize) -> Result<Vec<u8>, MacroblockError> {
-    let mut modes = vec![0u8; grid * grid];
-    for row in 0..grid {
-        for column in 0..grid {
-            let left = column.checked_sub(1).map(|left| modes[row * grid + left]);
-            let top = row.checked_sub(1).map(|top| modes[top * grid + column]);
+fn parse_i8x8_modes(
+    reader: &mut BitReader<'_>,
+    mode_neighbors: IntraModeNeighbors,
+) -> Result<Vec<u8>, MacroblockError> {
+    let mut modes = [0u8; 4];
+    for row in 0..2 {
+        for column in 0..2 {
+            let left = if column == 0 {
+                mode_neighbors.left[row * 2]
+            } else {
+                Some(modes[row * 2 + column - 1])
+            };
+            let top = if row == 0 {
+                mode_neighbors.top[column * 2]
+            } else {
+                Some(modes[(row - 1) * 2 + column])
+            };
             let predicted = predict_intra_mode(left, top);
             let mode = if read_bit(reader)? == 1 {
                 predicted
@@ -572,10 +608,61 @@ fn parse_intra_modes(reader: &mut BitReader<'_>, grid: usize) -> Result<Vec<u8>,
             if mode > 8 {
                 return Err(MacroblockError::InvalidIntraMode(u32::from(mode)));
             }
-            modes[row * grid + column] = mode;
+            modes[row * 2 + column] = mode;
         }
     }
-    Ok(modes)
+    Ok(modes.to_vec())
+}
+
+fn parse_i4x4_modes(
+    reader: &mut BitReader<'_>,
+    mode_neighbors: IntraModeNeighbors,
+) -> Result<Vec<u8>, MacroblockError> {
+    let mut modes = [0u8; 16];
+    for block in I4X4_BLOCK_ORDER {
+        let row = block / 4;
+        let column = block % 4;
+        let left = if column == 0 {
+            mode_neighbors.left[row]
+        } else {
+            Some(modes[row * 4 + column - 1])
+        };
+        let top = if row == 0 {
+            mode_neighbors.top[column]
+        } else {
+            Some(modes[(row - 1) * 4 + column])
+        };
+        let predicted = predict_intra_mode(left, top);
+        let previous = read_bit(reader)? == 1;
+        let mode = if previous {
+            predicted
+        } else {
+            let remainder = read_bits(reader, 3)?;
+            (remainder + u32::from(remainder >= u32::from(predicted))) as u8
+        };
+        if mode > 8 {
+            return Err(MacroblockError::InvalidIntraMode(u32::from(mode)));
+        }
+        modes[block] = mode;
+    }
+    Ok(modes.to_vec())
+}
+
+pub(crate) fn intra_mode_grid(macroblock: &ParsedIMacroblock) -> [u8; 16] {
+    match macroblock.kind {
+        IntraMacroblockKind::I4x4 => macroblock
+            .luma_prediction_modes
+            .as_slice()
+            .try_into()
+            .unwrap(),
+        IntraMacroblockKind::I8x8 => std::array::from_fn(|position| {
+            let row = position / 4;
+            let column = position % 4;
+            macroblock.luma_prediction_modes[(row / 2) * 2 + column / 2]
+        }),
+        IntraMacroblockKind::I16x16 { prediction_mode } => [prediction_mode; 16],
+        IntraMacroblockKind::IPcm => [0; 16],
+    }
 }
 
 fn read_pcm_planes(
@@ -702,10 +789,10 @@ mod tests {
     }
 
     #[test]
-    fn intra_mode_prediction_uses_available_neighbours() {
+    fn intra_mode_prediction_requires_both_neighbours() {
         assert_eq!(predict_intra_mode(None, None), 2);
-        assert_eq!(predict_intra_mode(Some(5), None), 5);
-        assert_eq!(predict_intra_mode(None, Some(7)), 7);
+        assert_eq!(predict_intra_mode(Some(5), None), 2);
+        assert_eq!(predict_intra_mode(None, Some(7)), 2);
         assert_eq!(predict_intra_mode(Some(5), Some(3)), 3);
     }
 
@@ -744,6 +831,25 @@ mod tests {
         assert_eq!(mb.chroma_prediction_mode, Some(0));
         assert_eq!(mb.coded_block_pattern, 47);
         assert_eq!(mb.qp_delta, -1);
+    }
+
+    #[test]
+    fn i4x4_modes_follow_the_eight_by_eight_transmission_order() {
+        let mut writer = BitWriter::new();
+        writer.ue(0); // I4x4
+        writer.put(0, 1); // transform_size_8x8_flag
+        writer.put(1, 1); // block 0: predicted DC
+        writer.put(1, 1); // block 1: predicted DC
+        writer.put(0, 1); // transmitted block 2
+        writer.put(0b011, 3); // remainder 3 -> mode 4
+        for _ in 3..16 {
+            writer.put(1, 1);
+        }
+        writer.ue(0); // chroma prediction mode
+        writer.ue(0); // coded_block_pattern code for CBP 47
+        writer.se(0);
+        let mb = parse_i_macroblock(&writer.finish(), 0, context(1)).unwrap();
+        assert_eq!(mb.luma_prediction_modes[4], 4);
     }
 
     #[test]

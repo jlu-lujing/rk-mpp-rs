@@ -60,7 +60,7 @@ pub fn i_boundary_strength(
     if macroblock_edge {
         4
     } else if p_has_coefficients || q_has_coefficients {
-        2
+        3
     } else {
         0
     }
@@ -647,8 +647,8 @@ mod tests {
     #[test]
     fn boundary_strength_distinguishes_macroblock_and_internal_edges() {
         assert_eq!(i_boundary_strength(true, false, false), 4);
-        assert_eq!(i_boundary_strength(false, true, false), 2);
-        assert_eq!(i_boundary_strength(false, false, true), 2);
+        assert_eq!(i_boundary_strength(false, true, false), 3);
+        assert_eq!(i_boundary_strength(false, false, true), 3);
         assert_eq!(i_boundary_strength(false, false, false), 0);
     }
 

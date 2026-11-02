@@ -322,11 +322,7 @@ fn decode_levels(
         return Ok(levels);
     }
 
-    let mut suffix_length = if total_coeff > 10 && trailing_ones < 3 {
-        0usize
-    } else {
-        1usize
-    };
+    let mut suffix_length = usize::from(total_coeff > 10 && trailing_ones < 3);
 
     for index in trailing_ones..total_coeff {
         let level_prefix = read_level_prefix(reader)?;
@@ -347,7 +343,6 @@ fn decode_levels(
                 first_level_code_with_prefix(reader, level_prefix)?
             };
             let code = if trailing_ones < 3 { code + 2 } else { code };
-            suffix_length = 2;
             code
         } else if level_prefix < 15 {
             let suffix = read_bits(reader, suffix_length as u32)?;
@@ -357,9 +352,15 @@ fn decode_levels(
         };
         levels[index] = signed_level(&mut level_code)?;
 
-        if index != trailing_ones {
+        if index == trailing_ones {
+            // Match FFmpeg's fast-table update, including unsigned wrapping
+            // for negative levels: 1 + (level + 3U > 6U).
+            suffix_length = 1 + usize::from((levels[index] as u32).wrapping_add(3) > 6);
+        } else {
             let limit = SUFFIX_LIMIT[suffix_length];
-            if u64::from(levels[index].unsigned_abs()) > limit {
+            let lhs = (limit as u32).wrapping_add(levels[index] as u32);
+            let rhs = 2u32.wrapping_mul(limit as u32);
+            if lhs > rhs {
                 suffix_length += 1;
             }
         }
@@ -492,7 +493,7 @@ fn read_bits(reader: &mut BitReader<'_>, count: u32) -> Result<u32, CavlcError> 
     reader.read_bits(count).map_err(|_| CavlcError::Truncated)
 }
 
-const SUFFIX_LIMIT: [u64; 7] = [0, 3, 6, 12, 24, 48, u64::MAX];
+const SUFFIX_LIMIT: [u64; 7] = [0, 3, 6, 12, 24, 48, i32::MAX as u64];
 
 const CHROMA_DC_COEFF_TOKEN_LEN: [u8; 20] =
     [2, 0, 0, 0, 6, 1, 0, 0, 6, 6, 3, 0, 6, 7, 7, 6, 6, 8, 8, 7];
@@ -766,20 +767,70 @@ mod tests {
     #[test]
     fn level_suffix_adapts_after_the_first_non_trailing_level() {
         let mut writer = BitWriter::new();
-        writer.push(0b10, 2); // first level +2 at suffix_length=1
-        writer.push(0b110, 3); // second level +2 at suffix_length=2
+        writer.push(0b00001, 5); // first level +4 at suffix_length=0
+        writer.push(0b0101, 4); // second level -3 at suffix_length=2
         writer.push(0b0101, 4); // third level -3 at suffix_length=2
         let bits = writer.finish();
         let mut reader = BitReader::new(&bits);
         let levels = decode_levels(&mut reader, 3, 0).unwrap();
-        assert_eq!(levels[..3], [2, 2, -3]);
+        assert_eq!(levels[..3], [4, -3, -3]);
+    }
+
+    #[test]
+    fn first_small_positive_level_keeps_suffix_length_one() {
+        let mut writer = BitWriter::new();
+        writer.push(0b1, 1); // first level +2
+        writer.push(0b0011, 4); // second level -3 at suffix_length=1
+        let bits = writer.finish();
+        let mut reader = BitReader::new(&bits);
+        let levels = decode_levels(&mut reader, 2, 0).unwrap();
+        assert_eq!(levels[..2], [2, -3]);
+        assert_eq!(reader.bit_pos(), 5);
+    }
+
+    #[test]
+    fn first_large_positive_level_advances_suffix_length_to_two() {
+        let mut writer = BitWriter::new();
+        writer.push(0b00001, 5); // first level +4
+        writer.push(0b0101, 4); // second level -3 at suffix_length=2
+        let bits = writer.finish();
+        let mut reader = BitReader::new(&bits);
+        let levels = decode_levels(&mut reader, 2, 0).unwrap();
+        assert_eq!(levels[..2], [4, -3]);
+        assert_eq!(reader.bit_pos(), 9);
+    }
+
+    #[test]
+    fn first_minus_two_level_keeps_suffix_length_one() {
+        let mut writer = BitWriter::new();
+        writer.push(0b01, 2); // first level -2 at the initial suffix_length=0
+        writer.push(0b0011, 4); // second level -3 at suffix_length=1
+        let bits = writer.finish();
+        let mut reader = BitReader::new(&bits);
+        let levels = decode_levels(&mut reader, 2, 0).unwrap();
+        assert_eq!(levels[..2], [-2, -3]);
+        assert_eq!(reader.bit_pos(), 6);
+    }
+
+    #[test]
+    fn many_coefficients_start_with_suffix_length_one() {
+        let mut writer = BitWriter::new();
+        writer.push(0b10, 2); // first level +2 at the initial suffix_length=1
+        for _ in 1..11 {
+            writer.push(0b010, 3); // each following level +2 at suffix_length=1
+        }
+        let bits = writer.finish();
+        let mut reader = BitReader::new(&bits);
+        let levels = decode_levels(&mut reader, 11, 0).unwrap();
+        assert_eq!(levels[..11], [2; 11]);
+        assert_eq!(reader.bit_pos(), 32);
     }
 
     #[test]
     fn chroma_dc_uses_its_shorter_total_zeros_table() {
         let mut writer = BitWriter::new();
         writer.push(0b000111, 6); // 4:2:0 total_coeff=1, trailing_ones=0
-        writer.push(0b10, 2); // first level +2 at suffix_length=1
+        writer.push(0b1, 1); // first level +2 at suffix_length=0
         writer.push(0b01, 2); // total_zeros=1
         let residual = decode_residual_4x4(&writer.finish(), CavlcBlockKind::ChromaDc420).unwrap();
         assert_eq!(residual.total_coeff, 1);
@@ -888,14 +939,14 @@ mod tests {
         writer.push(1, 1); // run_before=0
         writer.push(1, 1); // block 2: empty
         writer.push(0b000101, 6); // block 3: total_coeff=1, trailing_ones=0
-        writer.push(0b10, 2); // level +2 at suffix_length=1
+        writer.push(0b1, 1); // level +2 at suffix_length=0
         writer.push(1, 1); // total_zeros=0
 
         let residual = decode_residual_8x8(&writer.finish(), [0; 4]).unwrap();
         assert_eq!(residual.total_coeff, [1, 2, 0, 1]);
         assert_eq!(residual.trailing_ones, [1, 2, 0, 0]);
-        assert_eq!(residual.block_bits, [4, 9, 1, 9]);
-        assert_eq!(residual.bits_consumed, 23);
+        assert_eq!(residual.block_bits, [4, 9, 1, 8]);
+        assert_eq!(residual.bits_consumed, 22);
         assert_eq!(residual.scan[0], -1);
         assert_eq!(residual.scan[17], -1);
         assert_eq!(residual.scan[18], 1);

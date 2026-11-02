@@ -67,11 +67,34 @@ pub fn predict_4x4(
     neighbors: &Intra4x4Neighbors,
 ) -> Result<[u16; 16], PredictionError> {
     validate_depth(bit_depth)?;
-    let top = *neighbors.top.as_ref().ok_or(PredictionError::MissingTop)?;
-    let left = *neighbors
-        .left
-        .as_ref()
-        .ok_or(PredictionError::MissingLeft)?;
+    if mode == 2 {
+        let dc = match (neighbors.top, neighbors.left) {
+            (Some(top), Some(left)) => {
+                (top.iter()
+                    .chain(left.iter())
+                    .map(|&v| u32::from(v))
+                    .sum::<u32>()
+                    + 4)
+                    >> 3
+            }
+            (Some(top), None) => (top.iter().map(|&v| u32::from(v)).sum::<u32>() + 2) >> 2,
+            (None, Some(left)) => (left.iter().map(|&v| u32::from(v)).sum::<u32>() + 2) >> 2,
+            (None, None) => 1 << (bit_depth - 1),
+        };
+        return Ok([dc as u16; 16]);
+    }
+    if matches!(mode, 0 | 3 | 7) && neighbors.top.is_none() {
+        return Err(PredictionError::MissingTop);
+    }
+    if matches!(mode, 1 | 8) && neighbors.left.is_none() {
+        return Err(PredictionError::MissingLeft);
+    }
+    if matches!(mode, 4 | 5 | 6) {
+        neighbors.top.ok_or(PredictionError::MissingTop)?;
+        neighbors.left.ok_or(PredictionError::MissingLeft)?;
+    }
+    let top = neighbors.top.unwrap_or([0; 4]);
+    let left = neighbors.left.unwrap_or([0; 4]);
     let top_right = neighbors.top_right.unwrap_or([top[3]; 4]);
     let top_left = neighbors.top_left.ok_or(PredictionError::MissingTopLeft)?;
     let mut out = [0u16; 16];
@@ -85,9 +108,6 @@ pub fn predict_4x4(
             for (row, &sample) in left.iter().enumerate() {
                 out[row * 4..row * 4 + 4].fill(sample);
             }
-        }
-        2 => {
-            out.fill(dc_value(&top, &left, bit_depth));
         }
         3 => {
             let t = [
@@ -137,39 +157,39 @@ pub fn predict_4x4(
         }
         5 => {
             out[0] = (top_left + top[0] + 1) >> 1;
-            out[4] = out[0];
             out[1] = (top[0] + top[1] + 1) >> 1;
-            out[5] = out[1];
             out[2] = (top[1] + top[2] + 1) >> 1;
-            out[6] = out[2];
             out[3] = (top[2] + top[3] + 1) >> 1;
-            out[8] = avg3(left[0], top_left, top[0]);
-            out[12] = out[8];
-            out[9] = avg3(top_left, top[0], top[1]);
-            out[13] = out[9];
-            out[10] = avg3(top[0], top[1], top[2]);
-            out[14] = out[10];
+            out[4] = avg3(left[0], top_left, top[0]);
+            out[5] = avg3(top_left, top[0], top[1]);
+            out[6] = avg3(top[0], top[1], top[2]);
             out[7] = avg3(top[1], top[2], top[3]);
-            out[11] = avg3(top_left, left[0], left[1]);
-            out[15] = avg3(left[0], left[1], left[2]);
+            out[8] = avg3(top_left, left[0], left[1]);
+            out[9] = out[0];
+            out[10] = out[1];
+            out[11] = out[2];
+            out[12] = avg3(left[0], left[1], left[2]);
+            out[13] = out[4];
+            out[14] = out[5];
+            out[15] = out[6];
         }
         6 => {
             out[0] = (top_left + left[0] + 1) >> 1;
-            out[8] = out[0];
+            out[6] = out[0];
             out[1] = avg3(left[0], top_left, top[0]);
-            out[9] = out[1];
+            out[7] = out[1];
             out[2] = avg3(top_left, top[0], top[1]);
             out[3] = avg3(top[0], top[1], top[2]);
             out[4] = (left[0] + left[1] + 1) >> 1;
-            out[12] = out[4];
+            out[10] = out[4];
             out[5] = avg3(top_left, left[0], left[1]);
-            out[13] = out[5];
-            out[6] = (left[1] + left[2] + 1) >> 1;
-            out[10] = out[6];
-            out[7] = avg3(left[0], left[1], left[2]);
-            out[14] = out[7];
-            out[11] = (left[2] + left[3] + 1) >> 1;
-            out[15] = avg3(left[1], left[2], left[3]);
+            out[11] = out[5];
+            out[8] = (left[1] + left[2] + 1) >> 1;
+            out[9] = avg3(left[0], left[1], left[2]);
+            out[12] = (left[2] + left[3] + 1) >> 1;
+            out[13] = avg3(left[1], left[2], left[3]);
+            out[14] = out[8];
+            out[15] = out[9];
         }
         7 => {
             let t = [
@@ -183,37 +203,37 @@ pub fn predict_4x4(
                 top_right[3],
             ];
             out[0] = (t[0] + t[1] + 1) >> 1;
-            out[4] = (t[1] + t[2] + 1) >> 1;
-            out[2] = out[4];
-            out[8] = (t[2] + t[3] + 1) >> 1;
-            out[6] = out[8];
-            out[12] = (t[3] + t[4] + 1) >> 1;
-            out[10] = out[12];
-            out[3] = out[12];
-            out[14] = (t[4] + t[5] + 1) >> 1;
-            out[1] = avg3(t[0], t[1], t[2]);
+            out[1] = (t[1] + t[2] + 1) >> 1;
+            out[8] = out[1];
+            out[2] = (t[2] + t[3] + 1) >> 1;
+            out[9] = out[2];
+            out[3] = (t[3] + t[4] + 1) >> 1;
+            out[10] = out[3];
+            out[11] = (t[4] + t[5] + 1) >> 1;
+            out[4] = avg3(t[0], t[1], t[2]);
             out[5] = avg3(t[1], t[2], t[3]);
-            out[9] = avg3(t[2], t[3], t[4]);
-            out[7] = out[9];
-            out[13] = avg3(t[3], t[4], t[5]);
-            out[11] = out[13];
+            out[12] = out[5];
+            out[6] = avg3(t[2], t[3], t[4]);
+            out[13] = out[6];
+            out[7] = avg3(t[3], t[4], t[5]);
+            out[14] = out[7];
             out[15] = avg3(t[4], t[5], t[6]);
         }
         8 => {
             out[0] = (left[0] + left[1] + 1) >> 1;
-            out[4] = avg3(left[0], left[1], left[2]);
-            out[8] = (left[1] + left[2] + 1) >> 1;
-            out[1] = out[8];
-            out[12] = avg3(left[1], left[2], left[3]);
-            out[5] = out[12];
-            out[9] = (left[2] + left[3] + 1) >> 1;
-            out[2] = out[9];
-            out[13] = avg3(left[2], left[3], left[3]);
-            out[6] = out[13];
-            out[3] = left[3];
-            out[7] = left[3];
+            out[1] = avg3(left[0], left[1], left[2]);
+            out[2] = (left[1] + left[2] + 1) >> 1;
+            out[4] = out[2];
+            out[3] = avg3(left[1], left[2], left[3]);
+            out[5] = out[3];
+            out[6] = (left[2] + left[3] + 1) >> 1;
+            out[8] = out[6];
+            out[7] = avg3(left[2], left[3], left[3]);
+            out[9] = out[7];
             out[10] = left[3];
             out[11] = left[3];
+            out[12] = left[3];
+            out[13] = left[3];
             out[14] = left[3];
             out[15] = left[3];
         }
@@ -667,7 +687,9 @@ pub fn predict_chroma(
     let mut out = vec![0u16; 8 * height];
     match mode {
         0 => {
-            let top = top.ok_or(PredictionError::MissingTop)?;
+            let (Some(top), Some(_left)) = (top, left) else {
+                return predict_chroma(2, bit_depth, top, left, height, top_left);
+            };
             if top.len() < 8 {
                 return Err(PredictionError::MissingTop);
             }
@@ -676,7 +698,9 @@ pub fn predict_chroma(
             }
         }
         1 => {
-            let left = left.ok_or(PredictionError::MissingLeft)?;
+            let Some(left) = left else {
+                return predict_chroma(2, bit_depth, top, None, height, top_left);
+            };
             if left.len() < height {
                 return Err(PredictionError::MissingLeft);
             }
@@ -732,10 +756,6 @@ pub fn predict_chroma(
         _ => return Err(PredictionError::InvalidMode(mode)),
     }
     Ok(out)
-}
-
-fn dc_value(top: &[u16; 4], left: &[u16; 4], _bit_depth: u8) -> u16 {
-    ((top.iter().chain(left).map(|&v| u32::from(v)).sum::<u32>() + 4) >> 3) as u16
 }
 
 fn chroma_dc_8x8(
@@ -912,6 +932,25 @@ mod tests {
     }
 
     #[test]
+    fn four_by_four_dc_uses_only_the_available_edge() {
+        let top_only = Intra4x4Neighbors {
+            top: Some([10, 20, 30, 40]),
+            left: None,
+            top_right: None,
+            top_left: Some(5),
+        };
+        assert_eq!(predict_4x4(2, 8, &top_only).unwrap(), [25; 16]);
+
+        let left_only = Intra4x4Neighbors {
+            top: None,
+            left: Some([50, 60, 70, 80]),
+            top_right: None,
+            top_left: Some(5),
+        };
+        assert_eq!(predict_4x4(2, 8, &left_only).unwrap(), [65; 16]);
+    }
+
+    #[test]
     fn four_by_four_diagonal_modes_are_deterministic() {
         let diagonal_left = predict_4x4(3, 8, &neighbors()).unwrap();
         assert_eq!(diagonal_left[..4], [20, 30, 50, 80]);
@@ -919,20 +958,20 @@ mod tests {
         assert_eq!(diagonal_right[..4], [18, 11, 20, 30]);
         assert_ne!(diagonal_left, diagonal_right);
         assert_eq!(
-            predict_4x4(5, 8, &neighbors()).unwrap()[..4],
-            [8, 15, 25, 35]
+            predict_4x4(5, 8, &neighbors()).unwrap(),
+            [8, 15, 25, 35, 18, 11, 20, 30, 41, 8, 15, 25, 60, 18, 11, 20,]
         );
         assert_eq!(
-            predict_4x4(6, 8, &neighbors()).unwrap()[..4],
-            [28, 18, 11, 20]
+            predict_4x4(6, 8, &neighbors()).unwrap(),
+            [28, 18, 11, 20, 55, 41, 28, 18, 65, 60, 55, 41, 75, 70, 65, 60,]
         );
         assert_eq!(
-            predict_4x4(7, 8, &neighbors()).unwrap()[..4],
-            [15, 20, 25, 65]
+            predict_4x4(7, 8, &neighbors()).unwrap(),
+            [15, 25, 35, 65, 20, 30, 50, 80, 25, 35, 65, 95, 30, 50, 80, 100,]
         );
         assert_eq!(
-            predict_4x4(8, 8, &neighbors()).unwrap()[..4],
-            [55, 65, 75, 80]
+            predict_4x4(8, 8, &neighbors()).unwrap(),
+            [55, 60, 65, 70, 65, 70, 75, 78, 75, 78, 80, 80, 80, 80, 80, 80,]
         );
     }
 
@@ -1014,6 +1053,14 @@ mod tests {
             predict_chroma(3, 10, Some(&top16), Some(&left16), 16, Some(64)).unwrap(),
             [65; 128]
         );
+    }
+
+    #[test]
+    fn chroma_vertical_without_left_edge_falls_back_to_top_dc() {
+        let top = [10u16, 20, 30, 40, 50, 60, 70, 80];
+        let prediction = predict_chroma(0, 8, Some(&top), None, 8, Some(5)).unwrap();
+        assert_eq!(&prediction[..8], [25, 25, 25, 25, 65, 65, 65, 65]);
+        assert_eq!(&prediction[56..], [25, 25, 25, 25, 65, 65, 65, 65]);
     }
 
     #[test]

@@ -377,8 +377,8 @@ pub fn assemble_i_macroblock_residual(
                 place_4x4(
                     &mut planes.luma,
                     16,
-                    (block / 4) * 4,
                     (block % 4) * 4,
+                    (block / 4) * 4,
                     samples,
                 );
             }
@@ -549,8 +549,8 @@ pub fn assemble_i_macroblock_residual(
                 place_4x4(
                     &mut planes.chroma[plane],
                     8,
-                    (block / grid_width) * 4,
                     (block % grid_width) * 4,
+                    (block / grid_width) * 4,
                     samples,
                 );
             }
@@ -600,10 +600,10 @@ mod tests {
     #[test]
     fn regular_4x4_dc_runs_through_dequant_and_transform() {
         // total_coeff=1, trailing_ones=0, level=+2, total_zeros=0
-        let data = [0b0001_0110, 0b1000_0000];
+        let data = [0b0001_0111];
         let block = reconstruct_regular_4x4(&data, 0, 16, 24, 8, None).unwrap();
         assert_eq!(block.syntax.total_coeff, 1);
-        assert_eq!(block.syntax.bits_consumed, 9);
+        assert_eq!(block.syntax.bits_consumed, 8);
         assert_eq!(block.coefficients[0], 320);
         assert_eq!(block.residual, [5; 16]);
     }
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn ac_only_4x4_inserts_the_implicit_zero_dc() {
         // Same residual syntax, but max_coeff=15 places the level at AC scan 1.
-        let data = [0b0001_0110, 0b1000_0000];
+        let data = [0b0001_0111];
         let block = reconstruct_regular_4x4(&data, 0, 15, 24, 8, None).unwrap();
         assert_eq!(block.syntax.scan[0], 2);
         assert_eq!(block.coefficients[1], 416);
@@ -762,6 +762,36 @@ mod tests {
     }
 
     #[test]
+    fn assembles_i4x4_block_two_at_the_top_right_position() {
+        let mut residual = empty_residual();
+        let mut scan = [0i32; 16];
+        scan[0] = 4096;
+        residual.luma_4x4[2] = Some(CavlcResidual {
+            scan,
+            total_coeff: 1,
+            trailing_ones: 0,
+            bits_consumed: 0,
+        });
+        let macroblock = i_macroblock(crate::reference::h264_mb::IntraMacroblockKind::I4x4, 15);
+        let planes = assemble_i_macroblock_residual(
+            &macroblock,
+            &residual,
+            plane_context(1),
+            &plane_options(0, false),
+        )
+        .unwrap();
+        for row in 0..4 {
+            for column in 0..4 {
+                assert_eq!(planes.luma[row * 16 + column + 8], 640);
+            }
+        }
+        assert_eq!(
+            planes.luma.iter().filter(|&&sample| sample != 0).count(),
+            16
+        );
+    }
+
+    #[test]
     fn assembles_i8x8_dc_at_the_first_eight_by_eight_group() {
         let mut residual = empty_residual();
         let mut scan = [0i32; 64];
@@ -815,6 +845,36 @@ mod tests {
         .unwrap();
         assert_eq!(planes.luma, [0; 256]);
         assert_eq!(planes.chroma, [vec![1; 64], vec![1; 64]]);
+    }
+
+    #[test]
+    fn assembles_chroma_ac_block_one_at_the_top_right_position() {
+        let mut residual = empty_residual();
+        for block in &mut residual.chroma_dc {
+            *block = Some(CavlcResidual {
+                scan: [0; 16],
+                total_coeff: 0,
+                trailing_ones: 0,
+                bits_consumed: 0,
+            });
+        }
+        let mut scan = [0i32; 16];
+        scan[1] = 7;
+        residual.chroma_ac[0][1] = Some(CavlcResidual {
+            scan,
+            total_coeff: 1,
+            trailing_ones: 0,
+            bits_consumed: 0,
+        });
+        let macroblock = i_macroblock(crate::reference::h264_mb::IntraMacroblockKind::I4x4, 0x20);
+        let planes = assemble_i_macroblock_residual(
+            &macroblock,
+            &residual,
+            plane_context(1),
+            &plane_options(0, true),
+        )
+        .unwrap();
+        assert_eq!(planes.chroma[0][5], 7);
     }
 
     #[test]

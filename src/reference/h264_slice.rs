@@ -12,8 +12,8 @@ use super::h264::CavlcScan4x4;
 use super::h264::CavlcScan8x8;
 use super::h264_deblock::DeblockMap;
 use super::h264_mb::{
-    parse_i_macroblock, parse_i_macroblock_residual, MacroblockContext, MacroblockError,
-    MacroblockNeighbors,
+    intra_mode_grid, parse_i_macroblock_residual, parse_i_macroblock_with_modes,
+    IntraModeNeighbors, MacroblockContext, MacroblockError, MacroblockNeighbors,
 };
 use super::h264_recon::{reconstruct_i_macroblock, PlaneMut, ReconstructionError};
 use super::h264_residual::{
@@ -135,6 +135,7 @@ pub fn decode_i_slice(
     let mut luma_counts = vec![[0u8; 16]; total_mbs];
     let mut luma_dc_counts = vec![0u8; total_mbs];
     let mut qp_map = vec![0u8; total_mbs];
+    let mut intra_modes: Vec<Option<[u8; 16]>> = vec![None; total_mbs];
     let chroma_block_count = chroma_width * chroma_height;
     let mut chroma_counts: [Vec<Vec<u8>>; 2] = [
         vec![vec![0; chroma_block_count]; total_mbs],
@@ -170,13 +171,24 @@ pub fn decode_i_slice(
         if !more_rbsp_data(rbsp, bit_offset)? {
             break;
         }
-        let macroblock = parse_i_macroblock(rbsp, bit_offset, context).map_err(|error| {
-            SliceDecodeError::MacroblockAt {
-                index: mb_index,
-                bit: bit_offset,
-                error,
-            }
+        let left_modes = mb_index
+            .checked_sub(1)
+            .filter(|_| mb_index % mb_width != 0)
+            .and_then(|left| intra_modes[left]);
+        let top_modes = mb_index
+            .checked_sub(mb_width)
+            .and_then(|top| intra_modes[top]);
+        let mode_neighbors = IntraModeNeighbors {
+            left: std::array::from_fn(|row| left_modes.map(|modes| modes[row * 4 + 3])),
+            top: std::array::from_fn(|column| top_modes.map(|modes| modes[3 * 4 + column])),
+        };
+        let macroblock = parse_i_macroblock_with_modes(rbsp, bit_offset, context, mode_neighbors)
+            .map_err(|error| SliceDecodeError::MacroblockAt {
+            index: mb_index,
+            bit: bit_offset,
+            error,
         })?;
+        intra_modes[mb_index] = Some(intra_mode_grid(&macroblock));
         let neighbors = macroblock_neighbors(
             mb_index,
             mb_width,

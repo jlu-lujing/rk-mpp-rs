@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use super::h264_mb::{IntraMacroblockKind, ParsedIMacroblock};
+use super::h264_mb::{IntraMacroblockKind, ParsedIMacroblock, I4X4_BLOCK_ORDER};
 use super::h264_pred::{
     predict_16x16, predict_4x4, predict_8x8, predict_chroma, Intra4x4Neighbors, Intra8x8Neighbors,
     PredictionError,
@@ -78,7 +78,7 @@ pub fn reconstruct_i_macroblock(
 
     match macroblock.kind {
         IntraMacroblockKind::I4x4 => {
-            for block in 0..16 {
+            for block in I4X4_BLOCK_ORDER {
                 let bx = mb_x + (block % 4) * 4;
                 let by = mb_y + (block / 4) * 4;
                 let neighbors = gather_4x4(luma, bx, by, bit_depth);
@@ -167,9 +167,9 @@ fn validate_plane(plane: &PlaneMut<'_>) -> Result<(), ReconstructionError> {
 }
 
 fn gather_4x4(plane: &PlaneMut<'_>, x: usize, y: usize, bit_depth: u8) -> Intra4x4Neighbors {
-    let top = read_top(plane, x, y, 4, bit_depth);
-    let left = read_left(plane, x, y, 4, bit_depth);
-    let top_right = if y > 0 && x + 8 <= plane.width {
+    let top = (y > 0).then(|| read_top(plane, x, y, 4, bit_depth));
+    let left = (x > 0).then(|| read_left(plane, x, y, 4, bit_depth));
+    let top_right = if top.is_some() && x + 8 <= plane.width {
         Some(std::array::from_fn(|index| {
             plane.data[(y - 1) * plane.stride + x + 4 + index]
         }))
@@ -177,17 +177,17 @@ fn gather_4x4(plane: &PlaneMut<'_>, x: usize, y: usize, bit_depth: u8) -> Intra4
         None
     };
     Intra4x4Neighbors {
-        top: Some(top),
-        left: Some(left),
+        top,
+        left,
         top_right,
         top_left: read_top_left(plane, x, y, bit_depth),
     }
 }
 
 fn gather_8x8(plane: &PlaneMut<'_>, x: usize, y: usize, bit_depth: u8) -> Intra8x8Neighbors {
-    let top = read_top(plane, x, y, 8, bit_depth);
-    let left = read_left(plane, x, y, 8, bit_depth);
-    let top_right = if y > 0 && x + 16 <= plane.width {
+    let top = (y > 0).then(|| read_top(plane, x, y, 8, bit_depth));
+    let left = (x > 0).then(|| read_left(plane, x, y, 8, bit_depth));
+    let top_right = if top.is_some() && x + 16 <= plane.width {
         Some(std::array::from_fn(|index| {
             plane.data[(y - 1) * plane.stride + x + 8 + index]
         }))
@@ -195,8 +195,8 @@ fn gather_8x8(plane: &PlaneMut<'_>, x: usize, y: usize, bit_depth: u8) -> Intra8
         None
     };
     Intra8x8Neighbors {
-        top: Some(top),
-        left: Some(left),
+        top,
+        left,
         top_right,
         top_left: read_top_left(plane, x, y, bit_depth),
     }
@@ -375,10 +375,17 @@ fn reconstruct_chroma_plane(
     if x + 8 > plane.width || y + height > plane.height {
         return Err(ReconstructionError::MacroblockOutOfBounds);
     }
-    let top = read_top_vec(plane, x, y, 8, bit_depth);
-    let left = read_left_vec(plane, x, y, height, bit_depth);
+    let top = (y > 0).then(|| read_top_vec(plane, x, y, 8, bit_depth));
+    let left = (x > 0).then(|| read_left_vec(plane, x, y, height, bit_depth));
     let top_left = read_top_left(plane, x, y, bit_depth);
-    let prediction = predict_chroma(mode, bit_depth, Some(&top), Some(&left), height, top_left)?;
+    let prediction = predict_chroma(
+        mode,
+        bit_depth,
+        top.as_deref(),
+        left.as_deref(),
+        height,
+        top_left,
+    )?;
     write_rectangle(plane, x, y, 8, height, &prediction, residual, 8, bit_depth);
     Ok(())
 }
