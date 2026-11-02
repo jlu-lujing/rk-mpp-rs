@@ -15,6 +15,7 @@ use super::encoder::annex_b;
 
 /// Payload type `user_data_unregistered`.
 const SEI_TYPE_USER_DATA_UNREGISTERED: u8 = 5;
+const SEI_TYPE_RECOVERY_POINT: u8 = 6;
 
 /// The uuid ahead of the version string, from the oracle's first SEI.
 pub const VERSION_UUID: [u8; 16] = [
@@ -47,6 +48,42 @@ pub fn user_data_unregistered(uuid: &[u8; 16], text: &[u8]) -> Vec<u8> {
     rbsp.extend_from_slice(text);
     rbsp.push(0x80); // rbsp_trailing_bits
     annex_b(39, rbsp) // PREFIX_SEI_NUT
+}
+
+/// Recovery-point prefix SEI. The H.265 writer's `se(v)` implementation is not
+/// the generic Exp-Golomb code: it maps the value to `2*|v|` (or `1-v*2` when
+/// positive) and writes that value in `ue_size_tab` bits. Keep that quirk.
+pub fn recovery_point(recovery_frame_cnt: i32) -> Vec<u8> {
+    let mut bits = Vec::new();
+    let coded = if recovery_frame_cnt > 0 {
+        recovery_frame_cnt * 2
+    } else {
+        1 - recovery_frame_cnt * 2
+    };
+    let floor_log2 = usize::BITS - 1 - (coded as usize).leading_zeros();
+    let width = (floor_log2 * 2 + 1) as usize;
+    for shift in (0..width).rev() {
+        bits.push(((coded >> shift) & 1) as u8);
+    }
+    bits.extend_from_slice(&[1, 0]);
+    bits.push(1);
+    while bits.len() & 7 != 0 {
+        bits.push(0);
+    }
+    let payload: Vec<u8> = bits
+        .chunks(8)
+        .map(|chunk| chunk.iter().fold(0u8, |value, bit| (value << 1) | bit))
+        .collect();
+
+    let mut rbsp = Vec::with_capacity(2 + payload.len());
+    rbsp.push(SEI_TYPE_RECOVERY_POINT);
+    assert!(
+        payload.len() < 255,
+        "recovery SEI payload needs ff continuation"
+    );
+    rbsp.push(payload.len() as u8);
+    rbsp.extend_from_slice(&payload);
+    annex_b(39, rbsp)
 }
 
 /// The values `update_rc_cfg_log` prints, in the same order as the H.264 SEI.
@@ -140,5 +177,13 @@ mod tests {
         assert_eq!(nal[7] as usize, 16 + VERSION_TEXT.len());
         assert_eq!(&nal[8..24], &VERSION_UUID);
         assert_eq!(nal.last(), Some(&0x80));
+    }
+
+    #[test]
+    fn recovery_point_matches_the_c_gdr_prefix() {
+        assert_eq!(
+            recovery_point(3),
+            vec![0, 0, 0, 1, 0x4e, 0x01, SEI_TYPE_RECOVERY_POINT, 1, 0x35]
+        );
     }
 }

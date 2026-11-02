@@ -103,6 +103,8 @@ pub struct Vepu580H265 {
     /// Intra-refresh (GDR): the sweep and band size, plus the table it rewrites.
     refresh: Option<(RefreshMode, u32)>,
     refresh_buf: Option<DmaBuf>,
+    gop: u32,
+    refresh_length: u32,
     /// The finished picture'sSTATUS measurements, taken by `encode_picture_rc`.
     last_measured: Option<rc_model::Measured>,
     service: MppService,
@@ -204,6 +206,8 @@ impl Vepu580H265 {
             rc_band: (8, 48),
             refresh: None,
             refresh_buf: None,
+            gop: DEFAULT_IGOP,
+            refresh_length: 0,
             last_measured: None,
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
@@ -234,6 +238,8 @@ impl Vepu580H265 {
                     self.frames, bit_target, qp
                 );
             }
+            let recovery_prefix =
+                self.frames > 0 && self.refresh_length != 0 && self.frames % self.gop == 0;
             let (picture, prefix) = if self.frames == 0 {
                 (Picture::Idr, true)
             } else {
@@ -252,7 +258,8 @@ impl Vepu580H265 {
                 qp_delta_row: 2,
                 qp_delta_row_i: 2,
             };
-            let stream = self.encode_picture_rc(nv12, picture, prefix, Some(rc))?;
+            let stream =
+                self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, Some(rc))?;
             if let Some(measured) = self.last_measured.take() {
                 if std::env::var_os("H265_RC_DEBUG").is_some() {
                     eprintln!("h265 rc measured: {:?}", measured);
@@ -266,13 +273,15 @@ impl Vepu580H265 {
             self.frames += 1;
             return Ok(stream);
         }
+        let recovery_prefix =
+            self.frames > 0 && self.refresh_length != 0 && self.frames % self.gop == 0;
         let (picture, prefix) = if self.frames == 0 {
             (Picture::Idr, true)
         } else {
             let poc = self.frames;
             (Picture::P { poc_lsb: poc }, false)
         };
-        let stream = self.encode_picture_rc(nv12, picture, prefix, None)?;
+        let stream = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, None)?;
         self.slot = 1 - self.slot;
         self.frames += 1;
         Ok(stream)
@@ -284,7 +293,7 @@ impl Vepu580H265 {
         picture: Picture,
         with_prefix: bool,
     ) -> Result<Vec<u8>, String> {
-        self.encode_picture_rc(nv12, picture, with_prefix, None)
+        self.encode_picture_rc(nv12, picture, with_prefix, false, None)
     }
 
     /// One picture with an explicit rate-control decision: the same job the model
@@ -293,6 +302,9 @@ impl Vepu580H265 {
     /// Turn on intra refresh. `refresh_num` is the refresh-band width in CTUs per
     /// picture; every picture after the IDR sweeps one band.
     pub fn enable_refresh(&mut self, mode: RefreshMode, refresh_num: u32) -> Result<(), String> {
+        if refresh_num == 0 {
+            return Err("H.265 refresh_num must be non-zero".into());
+        }
         let ctu_w = (self.width + 63) / 64;
         let ctu_h = (self.height + 63) / 64;
         let size = ctu_w * ctu_h * 64;
@@ -301,6 +313,26 @@ impl Vepu580H265 {
                 .map_err(|e| format!("allocate H.265 refresh table: {e}"))?,
         );
         self.refresh = Some((mode, refresh_num));
+        let lines = match mode {
+            RefreshMode::Row => (self.height + 31) / 32,
+            RefreshMode::Col => (self.width + 31) / 32,
+        } as u32;
+        self.refresh_length = lines.div_ceil(refresh_num).min(self.gop);
+        Ok(())
+    }
+
+    pub fn set_gop(&mut self, gop: u32) -> Result<(), String> {
+        if gop == 0 {
+            return Err("H.265 GOP must be non-zero".into());
+        }
+        self.gop = gop;
+        if let Some((mode, refresh_num)) = self.refresh {
+            let lines = match mode {
+                RefreshMode::Row => (self.height + 31) / 32,
+                RefreshMode::Col => (self.width + 31) / 32,
+            } as u32;
+            self.refresh_length = lines.div_ceil(refresh_num).min(self.gop);
+        }
         Ok(())
     }
 
@@ -316,6 +348,8 @@ impl Vepu580H265 {
         qp_min: u32,
         qp_max: u32,
     ) -> Result<Vec<u8>, String> {
+        let recovery_prefix =
+            self.frames > 0 && self.refresh_length != 0 && self.frames % self.gop == 0;
         let (picture, prefix) = if self.frames == 0 {
             (Picture::Idr, true)
         } else {
@@ -334,7 +368,7 @@ impl Vepu580H265 {
             qp_delta_row: 2,
             qp_delta_row_i: 2,
         };
-        let stream = self.encode_picture_rc(nv12, picture, prefix, Some(rc))?;
+        let stream = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, Some(rc))?;
         self.slot = 1 - self.slot;
         self.frames += 1;
         Ok(stream)
@@ -353,6 +387,7 @@ impl Vepu580H265 {
         nv12: &[u8],
         picture: Picture,
         with_prefix: bool,
+        recovery_prefix: bool,
         rc: Option<RateControl>,
     ) -> Result<Vec<u8>, String> {
         // dma-heap rounds the allocation up to a page, so the usable picture is
@@ -382,9 +417,12 @@ impl Vepu580H265 {
         // The GOP's long-term reference is the opening IDR (`used_by_lt_flg0` and
         // the SPS LT entry): every P predicts from slot 0 and reconstructs into
         // slot 1. An IDR reconstructs into and reads from slot 0.
+        let refresh_due = self.refresh_length != 0
+            && self.frames / self.gop > 0
+            && self.frames % self.gop < self.refresh_length;
         let refresh_job = match (self.refresh, self.refresh_buf.as_mut()) {
-            (Some((mode, refresh_num)), Some(table_buf)) if self.frames > 0 => {
-                let refresh_idx = self.frames % 60;
+            (Some((mode, refresh_num)), Some(table_buf)) if refresh_due => {
+                let refresh_idx = self.frames % self.gop;
                 let table =
                     refresh_base_table(self.width, self.height, refresh_idx, mode, refresh_num);
                 table_buf
@@ -409,8 +447,12 @@ impl Vepu580H265 {
         };
         let (current, reference) = if matches!(picture, Picture::Idr) {
             (&self.surfaces[self.slot], &self.surfaces[self.slot])
-        } else {
+        } else if self.long_term {
+            // The regular LT GOP always predicts from the opening IDR.
             (&self.surfaces[1], &self.surfaces[0])
+        } else {
+            // REF_TO_PREV_REF_FRM: alternate the two DPB surfaces.
+            (&self.surfaces[self.slot], &self.surfaces[1 - self.slot])
         };
         let job = IdrJob {
             width: self.width,
@@ -541,12 +583,19 @@ impl Vepu580H265 {
         // The hardware writes the slice NAL; the parameter sets and the two SEIs are
         // software output, exactly as `mpp_enc_impl.cpp` prepends them - once, ahead
         // of the opening IDR.
-        if !with_prefix {
+        if !with_prefix && !recovery_prefix {
             return Ok(slice);
         }
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.long_term_refs = self.long_term;
-        let mut stream = if let Some(sei) = self.rc_sei.as_ref() {
+        let mut stream = if recovery_prefix {
+            let mut out = crate::codec::h265::encoder::build_headers(&config)
+                .map_err(|e| format!("H.265 recovery headers: {e:?}"))?;
+            out.extend(crate::codec::h265::sei::recovery_point(
+                self.refresh_length as i32 - 1,
+            ));
+            out
+        } else if let Some(sei) = self.rc_sei.as_ref() {
             config.rc_mode = match self.rc_mode {
                 RcMode::Cbr => crate::codec::h265::encoder::RateControl::Cbr,
                 RcMode::Vbr | RcMode::Avbr => crate::codec::h265::encoder::RateControl::Vbr,
@@ -557,7 +606,7 @@ impl Vepu580H265 {
                 bps_target: sei.target,
                 bps_min: sei.min,
                 bps_max: sei.max,
-                igop: DEFAULT_IGOP as i64,
+                igop: self.gop as i64,
                 init_quality: sei.init_quality,
                 min_quality: sei.qp_min as i32,
                 max_quality: sei.qp_max as i32,
@@ -568,7 +617,7 @@ impl Vepu580H265 {
             crate::codec::h265::encoder::build_prefix_line(&config, &line)
                 .map_err(|e| format!("H.265 prefix: {e:?}"))?
         } else {
-            crate::codec::h265::encoder::build_prefix(&config, self.qp, DEFAULT_IGOP)
+            crate::codec::h265::encoder::build_prefix(&config, self.qp, self.gop)
                 .map_err(|e| format!("H.265 prefix: {e:?}"))?
         };
         stream.extend_from_slice(&slice);

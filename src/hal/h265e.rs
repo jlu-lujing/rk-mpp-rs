@@ -543,17 +543,6 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     file.set(&regs::H265_REG0205_SRC_STRD0_SRC_STRD0, stride as u32)?;
     file.set(&regs::H265_REG0206_SRC_STRD1_SRC_STRD1, stride as u32)?;
 
-    // `setup_intra_refresh` runs after the slice/ref registers in the C, so it
-    // overrides the CIME search axis it uses as the "this picture refreshes" flag.
-    if let Some(refresh) = job.refresh {
-        file.set(&regs::H265_REG0192_ENC_PIC_ROI_EN, 1)?;
-        file.base[178 - 160] = refresh.table_fd as u32;
-        match refresh.mode {
-            RefreshMode::Row => file.set(&regs::H265_REG0220_ME_RNGE_CME_SRCH_V, 1)?,
-            RefreshMode::Col => file.set(&regs::H265_REG0220_ME_RNGE_CME_SRCH_H, 1)?,
-        }
-    }
-
     // ---- motion estimation (set_me_regs) ----
     // CIME starts from an 11x7 CTU window, shrinks to the picture when the picture
     // is small, then trims the search to a 4-pixel grid.
@@ -704,12 +693,10 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         // traced job states the list explicitly: `ref_pic_lst_mdf_l0`,
         // `lst_entry_l0` and `num_negative_pics` all carry 1 where the first P
         // leaves them clear.
-        if poc_lsb >= 2 {
+        if poc_lsb >= 2 && job.long_term {
             file.set(&regs::H265_REG0239_SYNT_SLI0_REF_PIC_LST_MDF_L0, 1)?;
             file.set(&regs::H265_REG0240_SYNT_SLI1_LST_ENTRY_L0, 1)?;
-            if job.long_term {
-                file.set(&regs::H265_REG0243_SYNT_REFM1_NUM_NEGATIVE_PICS, 1)?;
-            }
+            file.set(&regs::H265_REG0243_SYNT_REFM1_NUM_NEGATIVE_PICS, 1)?;
         }
         let start = IPRD_WGT_QP_WORD - 1472;
         file.wgt[start..start + MODB_LAMBDA.len()].copy_from_slice(&MODB_LAMBDA);
@@ -721,6 +708,17 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     // (`vepu580_h265_set_hw_address`), which is the case for a driver that requests
     // no motion info.
     file.set(&regs::BASE_ENC_PIC_MEI_STOR, 0)?;
+
+    // `setup_intra_refresh` runs after the syntax/slice/ref and ME setup in C.
+    // It overlays only the refresh table, roi_en and one CIME search axis.
+    if let Some(refresh) = job.refresh {
+        file.set(&regs::H265_REG0192_ENC_PIC_ROI_EN, 1)?;
+        file.base[178 - 160] = refresh.table_fd as u32;
+        match refresh.mode {
+            RefreshMode::Row => file.set(&regs::H265_REG0220_ME_RNGE_CME_SRCH_V, 1)?,
+            RefreshMode::Col => file.set(&regs::H265_REG0220_ME_RNGE_CME_SRCH_H, 1)?,
+        }
+    }
 
     Ok(file)
 }
@@ -1020,6 +1018,7 @@ mod tests {
     #[test]
     fn a_p_picture_sets_the_traced_delta_fields() {
         let mut job = IdrJob::reference(26);
+        job.long_term = true;
         job.picture = Picture::P { poc_lsb: 1 };
         let first = build_registers(&job).unwrap();
         assert_eq!(first.get(&regs::CTL_DTRNS_CFG_DSPR_OTSD).unwrap(), 1);

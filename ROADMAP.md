@@ -60,10 +60,9 @@ The project is in **pixel/byte-exact imitation + output-preserving performance**
 - A result that differs from the C reference is a defect, not an improvement, unless
   the C behaviour has been separately proven to be a bug.
 - New feature frontier work (tiles/WPP/SAO, B frames, multi-reference scheduling,
-  refresh/GDR allocation, fuzz-only edges) is **frozen** until the implemented paths
-  are closed to byte/pixel equality. `hal::h265e`'s GDR table remains opt-in and
-  explicitly unverified (the C vintage cannot be made to emit a refresh picture
-  through the public config, so there is no oracle).
+  fuzz-only edges) is **frozen** until the implemented paths are closed to
+  byte/pixel equality. H.265 GDR is now outside that frozen set: the explicit
+  ref-cfg oracle closes it 4/4.
 - Performance work is allowed only when it does not change one byte of output, and
   the same stream must be compared before/after.
 - A deliberate divergence is kept only with the C-side evidence that it is wrong,
@@ -117,7 +116,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
 | M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR, slice output | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split is byte-identical over four cells (BY_CTU at 96/8/150 blocks and BY_BYTE at 256, the 8-block cell putting 38 slices past the 32-entry FIFO), per-slice low-delay packet output is byte-identical over five cells (including that 38-slice FIFO crossing and a six-picture IDR+P stream), and the >4096 CIME extension lines over two (4160x64, 4608x256). P pictures match at eleven sizes spanning the FBC-header threshold - the divergence past 640x480 was the constant FBC body offset, since fixed. The implemented H.264 encode surface is closed; new scheduling/recoding modes remain frozen feature work.** |
-| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP and CBR/VBR/AVBR are board-byte-exact. VI/refresh scheduling, tiles/WPP/SAO, B frames and multi-reference scheduling remain feature work.** |
+| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR and GDR/intra-refresh are board-byte-exact. tiles/WPP/SAO, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 I5O2 deinterlace is byte-identical to the C `iep2_test` on t6 (720x480, 1,036,800 bytes); scale/crop and the other modes are untouched. VDPP (client 29) is absent on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
@@ -1013,9 +1012,8 @@ in what order the evidence gets produced.
        `-rc 2` is FIXQP and `-rc 4` is not) the derived images check out frame by
        frame: the IDR differs only in `mei_stor`, and each P in exactly four buffer
        addresses plus `mei_stor`.
-- [ ] H.265 (rkvenc): `rc:refresh_length`-driven refresh pictures (the GDR-style
-      `INTRA_RFI_FRAME` allocation), tiles/WPP/SAO, B frames, multiple references and
-      per-slice output.
+- [x] H.265 `rc:refresh_length`-driven refresh pictures (the GDR-style
+      `INTRA_RFI_FRAME` allocation).
  - [x] **H.265 intra refresh (GDR): the register path and the sweep.** The HAL's
        `setup_intra_refresh` builds a 64-byte-per-CTU ROI base table whose band is
        `cal_refresh_area(ctu_w, ctu_h, refresh_idx, mode, refresh_num)`; a forced
@@ -1024,7 +1022,16 @@ in what order the evidence gets produced.
        rewrites the table per picture, and the register pass sets
        `enc_pic.roi_en`, `reg0178`, and the CIME search axis the refresh mode
        overrides. A unit test pins the row bands for indices 0 and 1.
-- [ ] H.265 GDR against the C oracle. With `tools/h265e_probe.c` extended for
+- [x] **H.265 GDR is byte-identical to the C oracle, four cells.**
+      `tools/h265e_probe.c` now supplies the explicit short-term
+      `MPP_ENC_SET_REF_CFG` that makes the C refs scheduler actually set
+      `is_i_refresh`/`is_i_recovery`; the old no-ref probe could never reach the
+      refresh HAL. `scripts/board_h265_gdr_vs_mpp.sh` covers 320x240 and 640x480,
+      row and column refresh, eight pictures per cell. All complete streams,
+      including the IGOP boundary's repeated parameter sets and recovery-point
+      SEI, are byte-identical **4/4**.
+
+      Historical investigation follows. With `tools/h265e_probe.c` extended for
       multiple pictures and `rc:refresh_*` (`REFRESH_EN=1 REFRESH_MODE=0
       REFRESH_NUM=1 QP_DELTA=0`; note the RC key is `rc:qp_ip`, not
       `rc:qp_delta_ip`), the two prefixes match but the slice NALs do not: the C
@@ -1037,10 +1044,8 @@ in what order the evidence gets produced.
       should (`h265e_api.c:600`), every job still has `roi_en = 0` and the stream is
       the 912-byte no-refresh one. `set_frm_refresh_flag` is only reached while the
       ref-config generator walks its `st_cfg` list (`mpp_enc_refs.cpp:612`), and the
-      probe sets no ref cfg, so `is_i_refresh` stays 0. Producing a C GDR oracle
-      therefore needs an explicit `MPP_ENC_SET_REF_CFG` in the probe, not more rc
-      keys; until then the crate's GDR path has no oracle and must not be called
-      verified.
+      probe sets no ref cfg, so `is_i_refresh` stays 0. That was the blocker now
+      closed above.
       Note on the harness cell that exposed this: `-g 60` is parsed by
       `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero -
       an input `mpi_enc_gen_ref_cfg` rejects outright. It is the only input that
@@ -1061,9 +1066,8 @@ in what order the evidence gets produced.
       accepts the reference's degenerate GOP forms: `igop <= 0` and `igop == 1`
       normalise to 500 (the all-intra form pins `init_ip_ratio` to 16), where it used
       to refuse them.
-- [ ] H.265 (rkvenc): the VI/refresh GOP schedule (`MppEncRefCfg`'s frame modes, which
-      decide when a picture takes the refresh allocation and the LT marking),
-      tiles/WPP/SAO, B frames, multiple references and per-slice output.
+- [ ] H.265 (rkvenc): tiles/WPP/SAO, B frames, multiple references and
+      per-slice output.
       Note on the harness cell that exposed this: `-g 60` is parsed by
       `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero, so
       it is not one of `mpi_enc_gen_ref_cfg`'s modes 0..3. Its second picture gets

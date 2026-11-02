@@ -14,9 +14,9 @@
  *   h265e_probe in.nv12 out.265 w h <0|1> qp [bps[:min:max]]
  *     mode 0 = fixed QP, 1 = CBR. qp is written to rc:qp_init.
  *
- * Only a single IDR picture is requested (gop big, -n 1), so the output is the
- * VPS + SPS + PPS prefix plus one IDR NAL - exactly the parameter sets the Rust
- * codec::h265::encoder writer must reproduce byte for byte.
+ * FRAMES/GOP enable multi-picture runs. REF_CFG=1 installs a short-term ref
+ * config so C's scheduler reaches the GDR refresh path; REFRESH_EN/MODE/NUM
+ * configure the refresh keys.
  */
 #include <errno.h>
 #include <stdint.h>
@@ -57,9 +57,11 @@ int main(int argc, char **argv)
     MppCtx ctx = NULL;
     MppApi *mpi = NULL;
     MppEncCfg cfg = NULL;
+    MppEncRefCfg ref_cfg = NULL;
     MppBufferGroup group = NULL;
     MppBuffer frame_buf = NULL;
     MppBuffer packet_buf = NULL;
+    MppBuffer md_info = NULL;
     FILE *input = NULL;
     FILE *output = NULL;
     MPP_RET ret = MPP_NOK;
@@ -92,6 +94,8 @@ int main(int argc, char **argv)
                                 MPP_BUFFER_FLAGS_CACHABLE)));
     CHECK(mpp_buffer_get(group, &frame_buf, frame_size));
     CHECK(mpp_buffer_get(group, &packet_buf, frame_size + 4096));
+    CHECK(mpp_buffer_get(group, &md_info,
+                         (hor_stride + 63) / 64 * ((ver_stride + 63) / 64) * 32));
 
     CHECK(mpp_create(&ctx, &mpi));
     CHECK(mpp_init(ctx, MPP_CTX_ENC, MPP_VIDEO_CodingHEVC));
@@ -119,6 +123,11 @@ int main(int argc, char **argv)
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max", qp));
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", qp));
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", qp));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_ip", 0));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_i", qp));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_i", qp));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_p", qp));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_p", qp));
     } else {
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_init", qp));
     }
@@ -148,6 +157,22 @@ int main(int argc, char **argv)
      * must come from the same defaults. */
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));
 
+    if (getenv("REF_CFG")) {
+        MppEncRefStFrmCfg st_ref;
+        memset(&st_ref, 0, sizeof(st_ref));
+        st_ref.is_non_ref = 0;
+        st_ref.temporal_id = 0;
+        st_ref.ref_mode = REF_TO_PREV_REF_FRM;
+        st_ref.ref_arg = 0;
+        st_ref.repeat = frames > 1 ? frames - 1 : 0;
+
+        CHECK(mpp_enc_ref_cfg_init(&ref_cfg));
+        CHECK(mpp_enc_ref_cfg_set_cfg_cnt(ref_cfg, 0, 1));
+        CHECK(mpp_enc_ref_cfg_add_st_cfg(ref_cfg, 1, &st_ref));
+        CHECK(mpp_enc_ref_cfg_check(ref_cfg));
+        CHECK(mpi->control(ctx, MPP_ENC_SET_REF_CFG, ref_cfg));
+    }
+
     for (int picture = 0; picture < frames; picture++) {
         MppFrame frame = NULL;
         MppPacket packet = NULL;
@@ -174,6 +199,7 @@ int main(int argc, char **argv)
         CHECK(mpp_packet_init_with_buffer(&packet, packet_buf));
         mpp_packet_set_length(packet, 0);
         mpp_meta_set_packet(meta, KEY_OUTPUT_PACKET, packet);
+        mpp_meta_set_buffer(meta, KEY_MOTION_INFO, md_info);
 
         CHECK(mpi->encode_put_frame(ctx, frame));
         mpp_frame_deinit(&frame);
@@ -202,10 +228,14 @@ cleanup:
         mpp_destroy(ctx);
     if (cfg)
         mpp_enc_cfg_deinit(cfg);
+    if (ref_cfg)
+        mpp_enc_ref_cfg_deinit(&ref_cfg);
     if (frame_buf)
         mpp_buffer_put(frame_buf);
     if (packet_buf)
         mpp_buffer_put(packet_buf);
+    if (md_info)
+        mpp_buffer_put(md_info);
     if (group)
         mpp_buffer_group_put(group);
     return ret;

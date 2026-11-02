@@ -1334,6 +1334,12 @@ fn main() {
             h265e_session::Vepu580H265::open_gop(width, height, qp)
         };
         let result = opened.and_then(|mut encoder| {
+            if let Ok(gop) = std::env::var("H265_GOP") {
+                let gop = gop
+                    .parse::<u32>()
+                    .map_err(|_| format!("invalid H265_GOP {gop}"))?;
+                encoder.set_gop(gop)?;
+            }
             if let Some(spec) = refresh {
                 let (mode, num) = spec.split_once(':').unwrap_or(("row", "1"));
                 let mode = if mode == "col" {

@@ -217,7 +217,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W2-6 复用 `codec::rc::model`（C/H.265 用同一 RC 模型）：CBR→VBR→AVBR 逐字节
 - [ ] W2-7 tiles/WPP 编码、slice 切分、多 slice 一行
 - [ ] W2-8 10-bit 编码（若硬件支持；先 probe 确认）
-- [ ] W2-9 ROI/QP map、deblock/SAO 细调、GDR
+- [x] W2-9 GDR / intra refresh —— C ref-cfg oracle 已建立；
+      320x240/640x480 × row/column 为 4/4 整条逐字节。
+- [ ] W2-9b ROI/QP map、deblock/SAO 细调
 - [ ] W2-10 吞吐测量并对齐 H.264 的门槛（不低于 C，1080p 允许平手）
 
 验收：至少 4 尺寸 × 2 QP 的固定 QP 矩阵、6 帧 GOP、CBR/VBR 各一条逐 NAL；

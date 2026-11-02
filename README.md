@@ -39,12 +39,12 @@
 | MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 渐进 MPEG-2、MPEG-4、H.263、VP8 逐字节；隔行 MPEG-2 使用 FFmpeg 为 oracle（C 会错误回绕输入）；VP8 profile 1/3（板验，语料仅 p0 故派生流）；AVS+/AVS2 未做 |
 | H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落），slice split **板上 4/4 逐字节**（BY_CTU 96/8/150 与 BY_BYTE 256；8 块那格 38 个 slice 越过 32 项 slice FIFO，同时钉住 `slc_done_en`）。逐 slice 输出也已接通：`MPP_ENC_SPLIT_OUT_LOWDELAY` 的 BY_CTU 96/150/8、BY_BYTE 256 和 6 帧 IDR+P **5/5** 通过，32 项 FIFO 之外仍是 38 个数据 packet，所有实际 slice 边界逐项相同。>4096 的 CIME 扩展行与 P 帧 **板上逐字节**（4160x64、4608x256）。P 帧另有 11 个尺寸的扫描（`scripts/board_h264_p_size_probe.sh`，含 FBC 阈值两侧）。 |
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices 的 5-packet 与 10-packet 矩阵**逐 packet 一致**。RK3588 默认四 band 多核路径已实现，1920x1080/1288x722、旋转 90/270 以及 322x242/1366x768 stride 矩阵**逐字节** |
-| H.265 编码 | 固定 QP 的 **IDR + P GOP**（最多 5 帧、含动画面）与 **CBR/VBR/AVBR**（模型自选 QP）均**板上整条逐字节**；VI/refresh 调度、tiles/WPP/SAO、B 帧未做 |
+| H.265 编码 | 固定 QP 的 **IDR + P GOP**（最多 5 帧、含动画面）、**CBR/VBR/AVBR** 和 **GDR/intra-refresh** 均**板上整条逐字节**；GDR 覆盖 320x240/640x480 × row/column 4/4。tiles/WPP/SAO、B 帧和多参考仍未做 |
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 I5O2 去隔行**板上逐字节**；VDPP 该板不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
 整体约完成一半（按 ROADMAP 各里程碑的工作量估加权）。ROADMAP 顶层清单当前为
-56 项完成、12 项未完成；未完成项里有硬件不存在、无 conformance 流和冻结前沿，
+58 项完成、10 项未完成；未完成项里有硬件不存在、无 conformance 流和冻结前沿，
 不宜直接把勾选比例当作代码工作量。
 
 ## 怎么验证的
@@ -61,7 +61,7 @@
 复跑：
 
 ```bash
-cargo test --all-targets                     # 618 通过，26 个板级用例 ignore
+cargo test --all-targets                     # 619 通过，26 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -69,6 +69,7 @@ ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_jpege_lowdelay_vs_mpp.sh      # JPEG 逐 band packet：2/2
 ./scripts/board_jpege_multicore_vs_mpp.sh     # JPEG 多核：5/5
 ./scripts/board_jpege_stride_vs_mpp.sh        # JPEG stride：2/2
+./scripts/board_h265_gdr_vs_mpp.sh           # H.265 GDR：4/4
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 ```
 
@@ -148,9 +149,7 @@ tests/data/       C 侧真实输出构成的 golden / fixture
   根因是 FBC 体偏移写死 8192，而 `align(w·h/64, 8K)` 在编码面积超过 524288 像素后是 16384，
   参考面因此被从错误位置读取；IDR 不读参考，所以完全无感。现在 P 的证明在
   `scripts/board_h264_p_size_probe.sh`（11 个尺寸，阈值两侧各有格子），它应当并进矩阵，而不是与矩阵平行存在。
-- 证据分级：**H.265 编码**目前只有宿主级字段/单测证据——板级脚本
-  已就位，但结果没有写进台账，所以不按"已逐字节验证"记账。一条特性从"代码写完"到
-  "已验证"之间隔着的正是这一次板级运行。
+- **H.265 编码**的 IDR、P GOP、CBR/VBR/AVBR 与 GDR 都已有板上整条码流逐字节证据。
 - IEP2 去隔行**已逐字节**：720x480 I5O2 TFF 与 C `iep2_test` 的 1,036,800 字节完全相同。
   之前"像素不同"的根因不是场配对，而是提交批次最后一个请求多带了
   `MPP_FLAGS_REG_OFFSET_ALONE`，驱动没有真正执行作业（`iep2_output` 全 0）；IEP 走

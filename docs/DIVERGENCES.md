@@ -42,7 +42,7 @@ Dispositions:
 | JPEG explicit split with rows beyond the picture | **C-BUG** | At 1920x1080 `split_arg=1200`, C returns success but emits a 173,668-byte JPEG with no EOI; the marker audit and FFmpeg reject it. Rust uses the same registers/fixture and emits a valid EOI-terminated JPEG. Default/equal-band C paths remain byte-identical. |
 | JPEG rotated multi-core | **FIXED** | Rust now uses the post-rotation MCU grid, C's reg103 `mcu_hor` field, x-axis input offsets and 270-degree reverse band order. `board_jpege_multicore_vs_mpp.sh` adds 1920x1080 rot90 and rot270; both are byte-identical. |
 | H.264 P pictures above 4096 width | **FIXED** | `FRAMES=2 board_h264_wide_vs_mpp.sh` encodes IDR+P at 4160x64 and 4608x256: both byte-identical to the C probe, CIME extension lines included. |
-| H.265 GDR / intra refresh | **NO-ORACLE** | The 2024-04 vintage cannot be made to emit `is_i_refresh` through the public config (no ref cfg in the probe path); the crate's table path is opt-in and unverified. |
+| H.265 GDR / intra refresh | **FIXED** | `h265e_probe` now supplies an explicit short-term `MPP_ENC_SET_REF_CFG`, activating C's refresh scheduler. Rust matches IGOP scheduling, dual-DPB alternation, refresh tables, search-axis override and recovery-point prefixes. `board_h265_gdr_vs_mpp.sh` passes 320x240/640x480 × row/column, 4/4 byte-identical. |
 | H.265 tiles/WPP/SAO, B frames, multi-reference | NOT IMPLEMENTED | Frozen with the feature frontier. |
 
 ## Post-processing
