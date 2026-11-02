@@ -353,6 +353,16 @@ in what order the evidence gets produced.
         bit-15 field layout shifted by one, superres scaling overwrote warped
         motion, `comp_pred_mode` used the wrong source, and the stream length
         used the whole IVF packet instead of MPP's split frame
+  - [x] pre-submit diagnosis no longer requires opening `/dev/mpp_service`.
+        `examples/av1_dump_regs.rs` exports all 11 jobs' PicParams, global
+        model, tile-info, input CDF, split stream, padded film-grain image,
+        512-word register image and address-offset map;
+        `tools/av1/compare_input_dumps.py` compares that directory with C
+        MPP's `DUMP_AV1_DATAS`, normalising process-specific DMA descriptors.
+        The host run regenerated all 11 PicParams images identical to the C
+        goldens (88 files total); a simulated C/Rust match passed 11/11 and a
+        one-word corruption was reported as `reg[0]`. The real C dump
+        comparison remains pending until t62 returns.
   - [x] decoder orchestration and DMA lifetime: every hardware-completed frame
         imports its output CDF before the assembler parses the next frame in
         the same temporal unit, matching `av1d_parser_update()`. A regression

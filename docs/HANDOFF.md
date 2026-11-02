@@ -28,6 +28,22 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > 1. `POLL_HW_FINISH` 改为 5 秒上限（非阻塞轮询 + EINVAL 回退），避免进程永久挂住；
 > 2. corpus 扫描把该夹具标为 `QUARANTINE`，不再自动解码。
 > 复现时连带检查 `dmesg` 是否有 `mpp_task_timeout_work`；不要盲目重复跑。
+>
+> **安全诊断入口（2026-11-02）：** `examples/av1_dump_regs.rs` 现在可以在
+> **不打开 `/dev/mpp_service`** 的情况下，为 tile fixture 的 11 个作业导出
+> PicParams、输入 CDF、global model、tile-info、stream、film-grain 和 512-word
+> 寄存器/地址偏移镜像。配套的 `tools/av1/compare_input_dumps.py` 与 C
+> `DUMP_AV1_DATAS` 逐字节及逐字段比较，并归一化两边不同的 DMA fd：
+>
+> ```bash
+> cargo run --example av1_dump_regs -- \
+>   tests/data/av1_tiles_320x240_10.ivf 11 /tmp/av1-rust
+> python3 tools/av1/compare_input_dumps.py /data/video /tmp/av1-rust
+> ```
+>
+> 离线证据：11/11 PicParams 与 C golden 相同，88 个镜像文件尺寸正确；
+> 比较器在模拟一致输入上 11/11 PASS，并能在单字破坏时定位到具体寄存器。
+> 真实 C `DUMP_AV1_DATAS` 对照仍需等 t62 恢复，不能据此放行硬件提交。
 
 ## 第二块板：t62（2026-11-02 起）
 
