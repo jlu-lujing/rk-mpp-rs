@@ -144,6 +144,68 @@ pub fn add_residual_4x4_u16(
     Ok(())
 }
 
+/// Scan order to raster position for a residual 4x4 block (`scan4x4`).
+const ZIGZAG_4X4: [usize; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
+
+/// Place quantised 4x4 levels from scan order into the raster coefficient block.
+pub fn inverse_scan_4x4(scan: [i32; 16]) -> [i32; 16] {
+    let mut raster = [0i32; 16];
+    for (position, value) in scan.into_iter().enumerate() {
+        raster[ZIGZAG_4X4[position]] = value;
+    }
+    raster
+}
+
+/// Inverse 4x4 luma DC Hadamard transform before QP-dependent scaling.
+pub fn inverse_luma_dc_4x4(input: [i32; 16]) -> [i32; 16] {
+    let mut tmp = [0i32; 16];
+    for row in 0..4 {
+        hadamard4(
+            [
+                input[row * 4],
+                input[row * 4 + 1],
+                input[row * 4 + 2],
+                input[row * 4 + 3],
+            ],
+            &mut tmp[row * 4..row * 4 + 4],
+        );
+    }
+    let mut output = [0i32; 16];
+    for column in 0..4 {
+        let mut values = [0i32; 4];
+        hadamard4(
+            [
+                tmp[column],
+                tmp[4 + column],
+                tmp[8 + column],
+                tmp[12 + column],
+            ],
+            &mut values,
+        );
+        for row in 0..4 {
+            output[row * 4 + column] = values[row];
+        }
+    }
+    output
+}
+
+fn hadamard4(input: [i32; 4], output: &mut [i32]) {
+    output[0] = input[0] + input[1] + input[2] + input[3];
+    output[1] = input[0] + input[1] - input[2] - input[3];
+    output[2] = input[0] - input[1] - input[2] + input[3];
+    output[3] = input[0] - input[1] + input[2] - input[3];
+}
+
+/// Inverse chroma DC 2x2 Hadamard transform before chroma QP scaling.
+pub fn inverse_chroma_dc_2x2(input: [i32; 4]) -> [i32; 4] {
+    [
+        input[0] + input[1] + input[2] + input[3],
+        input[0] - input[1] + input[2] - input[3],
+        input[0] + input[1] - input[2] - input[3],
+        input[0] - input[1] - input[2] + input[3],
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +276,29 @@ mod tests {
         let mut plane = vec![0u8; 16];
         assert!(add_residual_4x4(&mut plane, 4, 4, 4, 1, 0, &[0; 16], 8).is_err());
         assert!(add_residual_4x4(&mut plane, 4, 4, 3, 0, 0, &[0; 16], 8).is_err());
+    }
+
+    #[test]
+    fn inverse_scan_places_levels_at_the_zigzag_raster_positions() {
+        let scan: [i32; 16] = std::array::from_fn(|index| index as i32 + 1);
+        let raster = inverse_scan_4x4(scan);
+        assert_eq!(
+            raster,
+            [1, 2, 6, 7, 3, 5, 8, 13, 4, 9, 12, 14, 10, 11, 15, 16]
+        );
+    }
+
+    #[test]
+    fn inverse_dc_hadamard_matches_constant_and_impulse_vectors() {
+        assert_eq!(
+            inverse_luma_dc_4x4([16; 16]),
+            [256, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        let mut impulse = [0i32; 16];
+        impulse[0] = 1;
+        assert_eq!(inverse_luma_dc_4x4(impulse), [1; 16]);
+
+        assert_eq!(inverse_chroma_dc_2x2([4; 4]), [16, 0, 0, 0]);
+        assert_eq!(inverse_chroma_dc_2x2([1, 0, 0, 0]), [1; 4]);
     }
 }
