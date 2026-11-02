@@ -1693,7 +1693,7 @@ fn main() {
                             dec.status().2
                         );
                     }
-                    if i < 3 && !pic.yuv.is_empty() {
+                    if i < 3 && !pic.yuv.is_empty() && std::env::var_os("RKMPP_TRACE").is_some() {
                         let y = &pic.yuv[..pic.width * pic.height];
                         let sum: u64 = y.iter().map(|v| *v as u64).sum();
                         println!(
@@ -1939,7 +1939,7 @@ fn main() {
             match dec.decode_access_unit(au) {
                 _ if false => {}
                 Ok(Some(pic)) => {
-                    if i < 3 {
+                    if i < 3 && std::env::var_os("RKMPP_TRACE").is_some() {
                         println!(
                             "    frame {i} submit+poll: {:.2} ms",
                             t0.elapsed().as_secs_f64() * 1000.0

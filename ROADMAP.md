@@ -1718,6 +1718,28 @@ pipeline uses.
   | `m2v_320x240_12.m2v` (MPEG-2 320x240) | 10 | 476 fps | 1250 fps | +163 % |
   | `m2v_320x240_ilaced.m2v` (MPEG-2 interlaced) | 6 | 400 fps | 1154 fps | +285 % |
   | `m2v_64x64_3.m2v` (MPEG-2 64x64) | 3 | 750 fps | 3000 fps | +300 % |
+
+  **Where the 720p time goes (performance audit, 2026-11-02).** Before optimizing
+  code, profile the path: `perf stat` on `h264dec` over `test720.264` with the
+  benchmark's `/dev/null` sink shows 92.9 ms wall for 30 pictures, of which 18.6 ms
+  is user time, 29.8 ms sys time and ~45 ms is the blocking `POLL_HW_FINISH` wait.
+  `strace -c` counts only 359 ioctls (about 12 per picture) plus the DMA syncs; the
+  single-threaded CPU work is therefore under a fifth of the wall clock and the
+  decoder is already at the hardware-plus-syscall floor. Micro-optimising the
+  planar conversion or the parsers can move at most that 20 %, so any larger gain
+  would need fewer ioctls or overlapping jobs - both framework changes, which the
+  current scope freezes. This is recorded so future performance work starts from
+  the split rather than from a guess.
+
+  **Timing noise on this board is larger than most of the deltas above.** Ten
+  back-to-back runs of *the same binary* on the same stream with the same
+  `/dev/null` sink produced 72.9, 83.9, 84.0, 110.7, 117.6, 117.9, 118.1, 118.2,
+  118.2 and 120.1 ms - a 1.65x spread. The published H.264 720p row (177 vs 248
+  fps) is inside that band, so it should be read as "not slower than C", not as a
+  measured 40 % win. Any future performance claim needs interleaved sampling with
+  more than five samples (or a pinned frequency), and a change smaller than the
+  spread is not evidence. Removing the CLI's three per-frame debug prints
+  (`RKMPP_TRACE` now gates them) is a cleanliness change, not a claimed speedup.
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |
