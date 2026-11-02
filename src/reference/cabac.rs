@@ -118,6 +118,16 @@ impl<'a> CabacDecoder<'a> {
         d
     }
 
+    /// H.264 initialises `codIOffset` with nine bits and `codIRange=510`.
+    pub fn new_h264(data: &'a [u8]) -> CabacDecoder<'a> {
+        let mut bits = Bits::new(data);
+        CabacDecoder {
+            offset: bits.bits(9),
+            bits,
+            range: 510,
+        }
+    }
+
     fn renorm(&mut self) {
         while self.range < 256 {
             self.range <<= 1;

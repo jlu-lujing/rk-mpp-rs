@@ -10,6 +10,7 @@ use crate::codec::h264::parser::{BitReader, Pps, SliceHeader, Sps};
 
 use super::h264::CavlcScan4x4;
 use super::h264::CavlcScan8x8;
+use super::h264_cabac::decode_cabac_i_slice;
 use super::h264_deblock::DeblockMap;
 use super::h264_mb::{
     intra_mode_grid, parse_i_macroblock_residual, parse_i_macroblock_with_modes,
@@ -27,6 +28,7 @@ pub enum SliceDecodeError {
     Reconstruction(ReconstructionError),
     InvalidGeometry,
     InvalidQp,
+    Cabac(String),
     MacroblockAt {
         index: usize,
         bit: usize,
@@ -49,6 +51,7 @@ impl fmt::Display for SliceDecodeError {
             SliceDecodeError::Reconstruction(error) => error.fmt(f),
             SliceDecodeError::InvalidGeometry => write!(f, "invalid H.264 slice geometry"),
             SliceDecodeError::InvalidQp => write!(f, "invalid H.264 macroblock QP"),
+            SliceDecodeError::Cabac(error) => write!(f, "H.264 CABAC decode failed: {error}"),
             SliceDecodeError::MacroblockAt { index, bit, error } => {
                 write!(f, "H.264 macroblock {index} at bit {bit}: {error}")
             }
@@ -103,7 +106,14 @@ pub fn decode_i_slice(
         return Err(SliceDecodeError::Unsupported("non-I slice"));
     }
     if pps.entropy_coding {
-        return Err(SliceDecodeError::Unsupported("CABAC slice"));
+        let decoded = decode_cabac_i_slice(rbsp, slice, sps, pps, luma, chroma_cb, chroma_cr)
+            .map_err(|error| SliceDecodeError::Cabac(error.to_string()))?;
+        return Ok(DecodedSlice {
+            macroblocks: decoded.macroblocks,
+            end_bit: decoded.end_bit,
+            final_qp: decoded.final_qp,
+            deblock: decoded.deblock,
+        });
     }
     let mb_width =
         usize::try_from(sps.coded_width / 16).map_err(|_| SliceDecodeError::InvalidGeometry)?;
@@ -494,13 +504,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_cabac_and_out_of_range_qp_before_parsing() {
+    fn reports_cabac_failure_and_rejects_out_of_range_qp() {
         let (sps, mut pps, slice) = parameters();
         let mut luma = vec![0u16; 256];
         pps.entropy_coding = true;
         assert!(matches!(
             decode_i_slice(&[], &slice, &sps, &pps, &mut luma, None, None),
-            Err(SliceDecodeError::Unsupported("CABAC slice"))
+            Err(SliceDecodeError::Cabac(_))
         ));
 
         pps.entropy_coding = false;

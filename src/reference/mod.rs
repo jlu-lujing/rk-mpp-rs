@@ -7,6 +7,7 @@
 
 pub mod cabac;
 pub mod h264;
+pub mod h264_cabac;
 pub mod h264_cavlc;
 pub mod h264_deblock;
 pub mod h264_mb;
