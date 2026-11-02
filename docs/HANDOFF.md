@@ -115,7 +115,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 619 passed, 26 board-only ignored
+cargo test --all-targets      # 624 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -142,14 +142,16 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_jpege_multicore_vs_mpp.sh    # JPEG 默认多核 + 旋转 5/5
 ./scripts/board_jpege_stride_vs_mpp.sh       # JPEG stride 2/2
 ./scripts/board_h265_gdr_vs_mpp.sh           # H.265 GDR row/column 4/4
+./scripts/board_h265_slice_vs_mpp.sh         # H.265 普通整 AU slice 3/3
+./scripts/board_h265_lowdelay_vs_mpp.sh      # H.265 逐 slice packet 4/4
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 58 项完成、10 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 59 项完成、10 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
-H.264 普通 slice split 与低延迟逐 slice packet 都已在 t6 上通过。其它已知差异和
+H.264/H.265 普通 slice split 与低延迟逐 slice packet 都已在 t6 上通过。其它已知差异和
 下一步证据见 `docs/DIVERGENCES.md` 与 ROADMAP。
 
 ---
@@ -383,7 +385,15 @@ H.264/VEPU580 编码已做到：
 - H.265 GDR 已闭合：C probe 通过显式 short-term ref cfg 真正触发 `is_i_refresh`；
   Rust 按 IGOP 边界调度 refresh、交替双 DPB、在边界重发 VPS/SPS/PPS +
   recovery-point SEI。320x240/640x480 × row/column 为 **4/4 整条逐字节**。
-- 下一步：tiles/WPP/SAO、B 帧/多参考、逐 slice 输出。
+- slice split 已闭合：普通整 AU 的 `board_h265_slice_vs_mpp.sh` 为 **3/3**
+  （CTU 8、BY_BYTE 256、640x480 的 40-slice 格）。
+  `SliceSplit` 覆盖 `MPP_ENC_SPLIT_BY_BYTE/BY_CTU`，
+  `EncodedFrame.packets` 把 VPS/SPS/PPS+SEI 放在首 packet，并按
+  `POLL_HW_IRQ` 的 slice length 切分。`board_h265_lowdelay_vs_mpp.sh` 为
+  **4/4**：320x240 CTU 8（3 packet）、BY_BYTE 256（9 packet）、640x480 CTU 2
+  （40 packet，跨 32 项 FIFO）和 6 帧 short-term IDR+P（18 packet）。完整码流
+  和每个 packet 长度均与 C probe 相同；默认 IDR/GOP/GDR/三模式码控回归均通过。
+- 下一步：tiles/WPP/SAO、B 帧/多参考。
 
 ### 5.5 M9 后处理（IEP）
 
@@ -475,7 +485,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 619 通过（26 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 624 通过（26 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

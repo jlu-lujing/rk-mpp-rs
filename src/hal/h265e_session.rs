@@ -12,9 +12,10 @@
 //! header length), 165/166 the reference, 167..170 the motion-vector and display
 //! thumbs, 171 the motion-info buffer, and 172..175 the bitstream buffer.
 
+use crate::codec::h265::encoder::{SliceSplit, MPP_ENC_SPLIT_OUT_LOWDELAY};
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
-use crate::service::{Batch, Client, MppService, RegOffsetInfo};
+use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
 
 use super::h265e::{
     build_registers, refresh_base_table, IdrJob, Picture, RateControl, RefreshJob, RefreshMode,
@@ -36,6 +37,18 @@ const OUTPUT_MARGIN: usize = 4096;
 /// `h265e_init`'s intra GOP default, which the harness keeps. The rate-control SEI
 /// prints it as `-g:60`, so a different value would change the prefix bytes.
 const DEFAULT_IGOP: u32 = 60;
+
+/// One encoded H.265 picture with both its complete Annex-B access unit and the
+/// low-delay packet view MPP exposes through `encode_get_packet`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedFrame {
+    pub annex_b: Vec<u8>,
+    pub packets: Vec<Vec<u8>>,
+    pub payload: Vec<u8>,
+    pub headers: Vec<u8>,
+    pub is_idr: bool,
+    pub frame_num: u32,
+}
 
 /// The three buffers of one DPB slot: the FBC pixel surface (header + body), the
 /// display thumb, and the motion-vector thumb.
@@ -107,6 +120,8 @@ pub struct Vepu580H265 {
     refresh_length: u32,
     /// The finished picture'sSTATUS measurements, taken by `encode_picture_rc`.
     last_measured: Option<rc_model::Measured>,
+    /// `MppEncSliceSplit`, fixed for the session before the first picture.
+    split: SliceSplit,
     service: MppService,
     width: usize,
     height: usize,
@@ -209,6 +224,7 @@ impl Vepu580H265 {
             gop: DEFAULT_IGOP,
             refresh_length: 0,
             last_measured: None,
+            split: SliceSplit::default(),
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
             output: DmaBuf::alloc("system", output_size, false)
@@ -225,6 +241,13 @@ impl Vepu580H265 {
     /// Only the opening IDR carries the VPS/SPS/PPS and the two SEIs, which is what
     /// `MppEncHeaderStatus` makes the C do once per sequence.
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(self.encode_frame_packets(nv12)?.annex_b)
+    }
+
+    /// Encode the next picture and retain MPP's packet view. With low-delay
+    /// slicing this has one packet per completed slice; otherwise it is one
+    /// complete access unit.
+    pub fn encode_frame_packets(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
         if self.rc.is_some() {
             let frame = if self.frames == 0 {
                 rc_model::FrameType::Intra
@@ -258,7 +281,7 @@ impl Vepu580H265 {
                 qp_delta_row: 2,
                 qp_delta_row_i: 2,
             };
-            let stream =
+            let encoded =
                 self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, Some(rc))?;
             if let Some(measured) = self.last_measured.take() {
                 if std::env::var_os("H265_RC_DEBUG").is_some() {
@@ -271,7 +294,7 @@ impl Vepu580H265 {
             }
             self.slot = 1 - self.slot;
             self.frames += 1;
-            return Ok(stream);
+            return Ok(encoded);
         }
         let recovery_prefix =
             self.frames > 0 && self.refresh_length != 0 && self.frames % self.gop == 0;
@@ -281,18 +304,18 @@ impl Vepu580H265 {
             let poc = self.frames;
             (Picture::P { poc_lsb: poc }, false)
         };
-        let stream = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, None)?;
+        let encoded = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, None)?;
         self.slot = 1 - self.slot;
         self.frames += 1;
-        Ok(stream)
+        Ok(encoded)
     }
 
-    fn encode_picture(
+    fn encode_picture_packets(
         &mut self,
         nv12: &[u8],
         picture: Picture,
         with_prefix: bool,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<EncodedFrame, String> {
         self.encode_picture_rc(nv12, picture, with_prefix, false, None)
     }
 
@@ -336,6 +359,20 @@ impl Vepu580H265 {
         Ok(())
     }
 
+    /// Set `MppEncSliceSplit` before the opening picture. Low-delay output uses
+    /// one-entry `POLL_HW_IRQ` batches, matching the C HAL when
+    /// `MPP_ENC_SPLIT_OUT_LOWDELAY` is set.
+    pub fn set_slice_split(&mut self, split: SliceSplit) -> Result<(), String> {
+        if self.frames != 0 {
+            return Err("H.265 slice split must be configured before the first picture".into());
+        }
+        split
+            .validate()
+            .map_err(|error| format!("H.265 slice split: {error}"))?;
+        self.split = split;
+        Ok(())
+    }
+
     pub fn set_rate_control_sei(&mut self, sei: RcSei) {
         self.rc_sei = Some(sei);
     }
@@ -348,6 +385,19 @@ impl Vepu580H265 {
         qp_min: u32,
         qp_max: u32,
     ) -> Result<Vec<u8>, String> {
+        Ok(self
+            .encode_frame_with_rc_packets(nv12, bit_target, qp_target, qp_min, qp_max)?
+            .annex_b)
+    }
+
+    pub fn encode_frame_with_rc_packets(
+        &mut self,
+        nv12: &[u8],
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<EncodedFrame, String> {
         let recovery_prefix =
             self.frames > 0 && self.refresh_length != 0 && self.frames % self.gop == 0;
         let (picture, prefix) = if self.frames == 0 {
@@ -368,18 +418,22 @@ impl Vepu580H265 {
             qp_delta_row: 2,
             qp_delta_row_i: 2,
         };
-        let stream = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, Some(rc))?;
+        let encoded = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, Some(rc))?;
         self.slot = 1 - self.slot;
         self.frames += 1;
-        Ok(stream)
+        Ok(encoded)
     }
 
     /// One IDR and nothing else: the board gate's entry point.
     pub fn encode_idr(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(self.encode_idr_packets(nv12)?.annex_b)
+    }
+
+    pub fn encode_idr_packets(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
         assert_eq!(self.frames, 0, "encode_idr is the opening picture");
-        let stream = self.encode_picture(nv12, Picture::Idr, true)?;
+        let encoded = self.encode_picture_packets(nv12, Picture::Idr, true)?;
         self.frames = 1;
-        Ok(stream)
+        Ok(encoded)
     }
 
     fn encode_picture_rc(
@@ -389,7 +443,7 @@ impl Vepu580H265 {
         with_prefix: bool,
         recovery_prefix: bool,
         rc: Option<RateControl>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<EncodedFrame, String> {
         // dma-heap rounds the allocation up to a page, so the usable picture is
         // the logical size, not `self.input.len()`.
         let input_size = luma_bytes(self.width, self.height) * 3 / 2;
@@ -464,6 +518,7 @@ impl Vepu580H265 {
             long_term: self.long_term,
             rc,
             refresh: refresh_job,
+            split: self.split,
             input_fd: self.input.fd(),
             output_fd: self.output.fd(),
             current_fd: current.pixel.fd(),
@@ -543,9 +598,32 @@ impl Vepu580H265 {
         self.service
             .submit_batch(&mut batch)
             .map_err(|e| format!("H.265 register submit: {e}"))?;
-        self.service
-            .poll_hw_finish()
-            .map_err(|e| format!("H.265 poll: {e}"))?;
+        let mut slice_lengths = Vec::new();
+        if self.split.out & MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            let mut complete = false;
+            for _ in 0..=4096 {
+                let mut info = [SliceInfo::default()];
+                let count = self
+                    .service
+                    .poll_irq(&mut info)
+                    .map_err(|e| format!("H.265 slice poll: {e}"))?;
+                for slice in &info[..count] {
+                    let (length, last) = slice.vepu580();
+                    slice_lengths.push(length as usize);
+                    complete |= last;
+                }
+                if complete {
+                    break;
+                }
+            }
+            if !complete {
+                return Err("H.265 slice FIFO did not report the last slice".into());
+            }
+        } else {
+            self.service
+                .poll_hw_finish()
+                .map_err(|e| format!("H.265 poll: {e}"))?;
+        }
 
         let errors = hw_status[0] & HW_ERROR_MASK;
         if errors != 0 {
@@ -576,25 +654,24 @@ impl Vepu580H265 {
         self.output
             .sync_read_begin()
             .map_err(|e| format!("H.265 output invalidate: {e}"))?;
-        let slice = self.output.as_slice()[..length].to_vec();
+        let payload = self.output.as_slice()[..length].to_vec();
         self.output
             .sync_read_end()
             .map_err(|e| format!("H.265 output sync end: {e}"))?;
         // The hardware writes the slice NAL; the parameter sets and the two SEIs are
         // software output, exactly as `mpp_enc_impl.cpp` prepends them - once, ahead
         // of the opening IDR.
-        if !with_prefix && !recovery_prefix {
-            return Ok(slice);
-        }
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.long_term_refs = self.long_term;
-        let mut stream = if recovery_prefix {
+        let headers = if recovery_prefix {
             let mut out = crate::codec::h265::encoder::build_headers(&config)
                 .map_err(|e| format!("H.265 recovery headers: {e:?}"))?;
             out.extend(crate::codec::h265::sei::recovery_point(
                 self.refresh_length as i32 - 1,
             ));
             out
+        } else if !with_prefix {
+            Vec::new()
         } else if let Some(sei) = self.rc_sei.as_ref() {
             config.rc_mode = match self.rc_mode {
                 RcMode::Cbr => crate::codec::h265::encoder::RateControl::Cbr,
@@ -620,9 +697,63 @@ impl Vepu580H265 {
             crate::codec::h265::encoder::build_prefix(&config, self.qp, self.gop)
                 .map_err(|e| format!("H.265 prefix: {e:?}"))?
         };
-        stream.extend_from_slice(&slice);
-        Ok(stream)
+        let packets = output_packets(&headers, &payload, &slice_lengths)?;
+        let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
+        annex_b.extend_from_slice(&headers);
+        annex_b.extend_from_slice(&payload);
+        Ok(EncodedFrame {
+            annex_b,
+            packets,
+            payload,
+            headers,
+            is_idr: matches!(picture, Picture::Idr),
+            frame_num: self.frames,
+        })
     }
+}
+
+/// Lay out a completed picture like `mpp_enc_impl.c`: the software prefix rides
+/// with the first slice, every hardware slice becomes one packet, and a trailing
+/// zero-length FIFO entry remains an empty EOI packet.
+fn output_packets(
+    headers: &[u8],
+    payload: &[u8],
+    slice_lengths: &[usize],
+) -> Result<Vec<Vec<u8>>, String> {
+    if slice_lengths.is_empty() {
+        let mut packet = Vec::with_capacity(headers.len() + payload.len());
+        packet.extend_from_slice(headers);
+        packet.extend_from_slice(payload);
+        return Ok(vec![packet]);
+    }
+
+    let total = slice_lengths
+        .iter()
+        .try_fold(0usize, |total, length| total.checked_add(*length));
+    match total {
+        Some(total) if total == payload.len() => {}
+        Some(total) => {
+            return Err(format!(
+                "H.265 slice lengths sum to {total}, STATUS says {}",
+                payload.len()
+            ))
+        }
+        None => return Err("H.265 slice length sum overflowed usize".into()),
+    }
+
+    let mut packets = Vec::with_capacity(slice_lengths.len());
+    let mut offset = 0;
+    for (index, length) in slice_lengths.iter().copied().enumerate() {
+        let mut packet = if index == 0 {
+            headers.to_vec()
+        } else {
+            Vec::new()
+        };
+        packet.extend_from_slice(&payload[offset..offset + length]);
+        packets.push(packet);
+        offset += length;
+    }
+    Ok(packets)
 }
 
 /// `vepu580_h265_set_feedback`'s STATUS translation. The divisor for `quality_real`
@@ -727,5 +858,24 @@ mod tests {
         assert_eq!(md_info_size(322, 242), (352 >> 5) * (256 >> 5) * 16);
         // 11x13 blocks = 143; 143*64 = 9152 -> 16384.
         assert_eq!(fbc_header_len(640, 736), 16384);
+    }
+
+    #[test]
+    fn low_delay_packets_keep_headers_with_the_first_slice() {
+        let packets =
+            output_packets(&[0xaa, 0xbb], &[1, 2, 3, 4, 5, 6, 7, 8, 9], &[4, 5, 0]).unwrap();
+        assert_eq!(
+            packets,
+            vec![
+                vec![0xaa, 0xbb, 1, 2, 3, 4],
+                vec![5, 6, 7, 8, 9],
+                Vec::new()
+            ]
+        );
+    }
+
+    #[test]
+    fn slice_length_sum_must_match_status() {
+        assert!(output_packets(&[], &[0; 9], &[4, 4]).is_err());
     }
 }

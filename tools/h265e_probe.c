@@ -12,17 +12,23 @@
  *
  * Usage:
  *   h265e_probe in.nv12 out.265 w h <0|1> qp [bps[:min:max]]
+ *               [split mode arg] [splitout value]
  *     mode 0 = fixed QP, 1 = CBR. qp is written to rc:qp_init.
+ *   `split 1|2 arg` is MPP_ENC_SPLIT_BY_BYTE with a byte cap or
+ *   MPP_ENC_SPLIT_BY_CTU with 64x64 CTUs per slice. `splitout 1` enables
+ *   MPP_ENC_SPLIT_OUT_LOWDELAY; packets are then drained through EOI.
  *
  * FRAMES/GOP enable multi-picture runs. REF_CFG=1 installs a short-term ref
  * config so C's scheduler reaches the GDR refresh path; REFRESH_EN/MODE/NUM
  * configure the refresh keys.
  */
 #include <errno.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "mpp_buffer.h"
 #include "mpp_err.h"
@@ -41,6 +47,58 @@
         }                                                                       \
     } while (0)
 
+typedef struct PacketReaderCtx_t {
+    MppCtx ctx;
+    MppApi *mpi;
+    FILE *output;
+    int frame;
+    int low_delay;
+    MPP_RET ret;
+    unsigned packets;
+} PacketReaderCtx;
+
+static void *read_packets(void *opaque)
+{
+    PacketReaderCtx *reader = (PacketReaderCtx *)opaque;
+    unsigned eoi = 0;
+
+    reader->ret = MPP_NOK;
+    reader->packets = 0;
+    do {
+        MppPacket packet = NULL;
+        void *data;
+        size_t len;
+        MPP_RET ret;
+
+        do {
+            ret = reader->mpi->encode_get_packet(reader->ctx, &packet);
+            if (ret || packet)
+                break;
+            usleep(1000);
+        } while (1);
+
+        if (ret || !packet) {
+            fprintf(stderr, "no packet for frame %d part %u: ret=%d\n",
+                    reader->frame, reader->packets, ret);
+            return NULL;
+        }
+
+        data = mpp_packet_get_pos(packet);
+        len = mpp_packet_get_length(packet);
+        eoi = mpp_packet_is_eoi(packet);
+        fprintf(stderr, "picture %d packet %u: %zu bytes eoi=%u\n",
+                reader->frame, reader->packets, len, eoi);
+        if (data && len)
+            fwrite(data, 1, len, reader->output);
+
+        mpp_packet_deinit(&packet);
+        reader->packets++;
+    } while (reader->low_delay && !eoi);
+
+    reader->ret = MPP_OK;
+    return NULL;
+}
+
 int main(int argc, char **argv)
 {
     const char *input_path = argc > 1 ? argv[1] : "";
@@ -50,6 +108,7 @@ int main(int argc, char **argv)
     int mode = argc > 5 ? atoi(argv[5]) : 0; /* 0 fixqp 1 cbr */
     int qp = argc > 6 ? atoi(argv[6]) : 26;
     int bps_target = 300000, bps_min = 250000, bps_max = 350000;
+    int have_split = 0, split_mode = 0, split_arg = 0, split_out = 0;
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
@@ -66,15 +125,37 @@ int main(int argc, char **argv)
     FILE *output = NULL;
     MPP_RET ret = MPP_NOK;
 
-    if (argc > 7 && argv[7][0] >= '0' && argv[7][0] <= '9') {
-        int parts = sscanf(argv[7], "%d:%d:%d", &bps_target, &bps_min, &bps_max);
+    int arg = 7;
+    if (arg < argc && argv[arg][0] >= '0' && argv[arg][0] <= '9') {
+        int parts = sscanf(argv[arg], "%d:%d:%d", &bps_target, &bps_min, &bps_max);
         if (parts < 1) {
-            fprintf(stderr, "bad bps %s\n", argv[7]);
+            fprintf(stderr, "bad bps %s\n", argv[arg]);
             return 2;
         }
         if (parts == 1) {
             bps_min = bps_target * 3 / 4;
             bps_max = bps_target * 5 / 4;
+        }
+        arg++;
+    }
+    for (; arg < argc; arg++) {
+        if (!strcmp(argv[arg], "split")) {
+            if (arg + 2 >= argc) {
+                fprintf(stderr, "split wants mode arg\n");
+                return 2;
+            }
+            have_split = 1;
+            split_mode = atoi(argv[++arg]);
+            split_arg = atoi(argv[++arg]);
+        } else if (!strcmp(argv[arg], "splitout")) {
+            if (arg + 1 >= argc) {
+                fprintf(stderr, "splitout wants value\n");
+                return 2;
+            }
+            split_out = atoi(argv[++arg]);
+        } else {
+            fprintf(stderr, "unknown option %s\n", argv[arg]);
+            return 2;
         }
     }
 
@@ -146,6 +227,11 @@ int main(int argc, char **argv)
         CHECK(mpp_enc_cfg_set_u32(cfg, "rc:refresh_num",
                                   getenv("REFRESH_NUM") ? atoi(getenv("REFRESH_NUM")) : 1));
     }
+    if (have_split) {
+        CHECK(mpp_enc_cfg_set_s32(cfg, "split:mode", split_mode));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "split:arg", split_arg));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "split:out", split_out));
+    }
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denom", 1));
@@ -177,6 +263,10 @@ int main(int argc, char **argv)
         MppFrame frame = NULL;
         MppPacket packet = NULL;
         MppMeta meta = NULL;
+        PacketReaderCtx reader;
+        pthread_t reader_thread;
+        int reader_started = 0;
+        MPP_RET put_ret;
         size_t read;
 
         mpp_buffer_sync_begin(frame_buf);
@@ -201,21 +291,42 @@ int main(int argc, char **argv)
         mpp_meta_set_packet(meta, KEY_OUTPUT_PACKET, packet);
         mpp_meta_set_buffer(meta, KEY_MOTION_INFO, md_info);
 
-        CHECK(mpi->encode_put_frame(ctx, frame));
+        reader.ctx = ctx;
+        reader.mpi = mpi;
+        reader.output = output;
+        reader.frame = picture;
+        reader.low_delay = (split_out & 1) != 0;
+        reader.ret = MPP_NOK;
+        reader.packets = 0;
+        if (reader.low_delay) {
+            int thread_ret = pthread_create(&reader_thread, NULL, read_packets,
+                                            &reader);
+            if (thread_ret) {
+                fprintf(stderr, "pthread_create failed: %d\n", thread_ret);
+                goto cleanup;
+            }
+            reader_started = 1;
+        }
+
+        put_ret = mpi->encode_put_frame(ctx, frame);
         mpp_frame_deinit(&frame);
-        CHECK(mpi->encode_get_packet(ctx, &packet));
-        if (!packet) {
-            fprintf(stderr, "no packet\n");
+        if (reader_started) {
+            int thread_ret = pthread_join(reader_thread, NULL);
+            if (thread_ret) {
+                fprintf(stderr, "pthread_join failed: %d\n", thread_ret);
+                goto cleanup;
+            }
+        } else {
+            read_packets(&reader);
+        }
+        if (put_ret) {
+            fprintf(stderr, "encode_put_frame failed: %d\n", put_ret);
             goto cleanup;
         }
-        {
-            void *data = mpp_packet_get_pos(packet);
-            size_t len = mpp_packet_get_length(packet);
-            fprintf(stderr, "picture %d: %zu bytes\n", picture, len);
-            if (data && len)
-                fwrite(data, 1, len, output);
+        if (reader.ret) {
+            fprintf(stderr, "packet reader failed for frame %d\n", picture);
+            goto cleanup;
         }
-        mpp_packet_deinit(&packet);
     }
     ret = MPP_OK;
 

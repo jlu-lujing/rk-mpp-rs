@@ -43,6 +43,7 @@ Dispositions:
 | JPEG rotated multi-core | **FIXED** | Rust now uses the post-rotation MCU grid, C's reg103 `mcu_hor` field, x-axis input offsets and 270-degree reverse band order. `board_jpege_multicore_vs_mpp.sh` adds 1920x1080 rot90 and rot270; both are byte-identical. |
 | H.264 P pictures above 4096 width | **FIXED** | `FRAMES=2 board_h264_wide_vs_mpp.sh` encodes IDR+P at 4160x64 and 4608x256: both byte-identical to the C probe, CIME extension lines included. |
 | H.265 GDR / intra refresh | **FIXED** | `h265e_probe` now supplies an explicit short-term `MPP_ENC_SET_REF_CFG`, activating C's refresh scheduler. Rust matches IGOP scheduling, dual-DPB alternation, refresh tables, search-axis override and recovery-point prefixes. `board_h265_gdr_vs_mpp.sh` passes 320x240/640x480 × row/column, 4/4 byte-identical. |
+| H.265 slice split and low-delay packets | **FIXED** | `vepu580_setup_split` is matched for BY_BYTE and BY_CTU, including `slen_fifo`, `slc_done_en` and the 32-entry FIFO rule. Ordinary one-AU output is 3/3 (`board_h265_slice_vs_mpp.sh`), including a 40-slice 640x480 picture. `board_h265_lowdelay_vs_mpp.sh` passes 4/4: 3 CTU slices, a 9-packet byte split, the same FIFO crossing and six short-term IDR+P pictures. Complete streams and every packet length are identical; the C probe drains through EOI on a worker thread. |
 | H.265 tiles/WPP/SAO, B frames, multi-reference | NOT IMPLEMENTED | Frozen with the feature frontier. |
 
 ## Post-processing

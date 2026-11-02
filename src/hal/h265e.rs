@@ -40,6 +40,7 @@
 
 use super::h265e_regs as regs;
 use super::h265e_vepu580_template as template;
+use crate::codec::h265::encoder::{SliceSplit, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY};
 use crate::service::RegOffsetInfo;
 
 pub const REFERENCE_WIDTH: usize = 320;
@@ -183,6 +184,8 @@ pub struct IdrJob {
     pub rc: Option<RateControl>,
     /// Intra-refresh (GDR) picture: the base-table fd, its sweep, and the index.
     pub refresh: Option<RefreshJob>,
+    /// `MppEncSliceSplit`: one slice per picture by default.
+    pub split: SliceSplit,
     pub input_fd: i32,
     pub output_fd: i32,
     pub current_fd: i32,
@@ -205,6 +208,7 @@ impl IdrJob {
             long_term: false,
             rc: None,
             refresh: None,
+            split: SliceSplit::default(),
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -535,6 +539,9 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     // src_proc: txa_en 1; mirr/rot 0; afbcd_en 0 (no FBC input).
     file.set(&regs::BASE_SRC_PROC_TXA_EN, 1)?;
 
+    // ---- slice split (vepu580_setup_split) ----
+    apply_split(&mut file, job)?;
+
     // ---- source strides (set_pp_regs) ----
     // `stridey`/`stridec` are the 16-aligned luma stride; a 4:2:0 semi-planar
     // frame uses it for both. The template carries 320, which is why a 640-wide
@@ -723,6 +730,56 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     Ok(file)
 }
 
+/// `vepu580_setup_split`. Tiles are not implemented, so the CTU count is the
+/// full 64x64 grid rather than the C's halved `title_en` width.
+fn apply_split(file: &mut RegisterFile, job: &IdrJob) -> Result<(), String> {
+    file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT, 0)?;
+    file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT_MODE, 0)?;
+    file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT_CPST, 0)?;
+    file.set(&regs::H265_REG0216_SLI_SPLT_SLI_MAX_NUM_M1, 0)?;
+    file.set(&regs::H265_REG0216_SLI_SPLT_SLI_FLSH, 0)?;
+    file.set(&regs::H265_REG0217_SLI_BYTE_SLI_SPLT_BYTE, 0)?;
+    file.set(&regs::H265_REG0218_SLI_CNUM_SLI_SPLT_CNUM_M1, 0)?;
+    file.set(&regs::BASE_ENC_PIC_SLEN_FIFO, 0)?;
+    file.set(&regs::CTL_INT_EN_SLC_DONE_EN, 0)?;
+
+    let split = job.split;
+    split
+        .validate()
+        .map_err(|error| format!("H.265 slice split: {error}"))?;
+    match split.mode {
+        SplitMode::None => {}
+        SplitMode::ByByte => {
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT, 1)?;
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT_MODE, 0)?;
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT_CPST, 0)?;
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_FLSH, 1)?;
+            file.set(&regs::H265_REG0218_SLI_CNUM_SLI_SPLT_CNUM_M1, 0)?;
+            file.set(&regs::H265_REG0217_SLI_BYTE_SLI_SPLT_BYTE, split.arg)?;
+            let fifo = u32::from(split.out != 0);
+            file.set(&regs::BASE_ENC_PIC_SLEN_FIFO, fifo)?;
+            file.set(&regs::CTL_INT_EN_SLC_DONE_EN, fifo)?;
+        }
+        SplitMode::ByCtu => {
+            let slice_num = split.slice_count(job.width, job.height);
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT, 1)?;
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT_MODE, 1)?;
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT_CPST, 0)?;
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
+            file.set(&regs::H265_REG0216_SLI_SPLT_SLI_FLSH, 1)?;
+            file.set(&regs::H265_REG0218_SLI_CNUM_SLI_SPLT_CNUM_M1, split.arg - 1)?;
+            file.set(&regs::H265_REG0217_SLI_BYTE_SLI_SPLT_BYTE, 0)?;
+            let fifo = u32::from(split.out != 0);
+            file.set(&regs::BASE_ENC_PIC_SLEN_FIFO, fifo)?;
+            if split.out & MPP_ENC_SPLIT_OUT_LOWDELAY != 0 || (fifo != 0 && slice_num > 32) {
+                file.set(&regs::CTL_INT_EN_SLC_DONE_EN, 1)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `enc_pic.log2_ctu_num = ceil(log2(pic_wd64 * pic_h64))`, the C uses
 /// `ceil(log2((double)area))`.
 fn ctu_num_log2(area: usize) -> u32 {
@@ -891,6 +948,53 @@ mod tests {
         assert_eq!(file.get(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE).unwrap(), 2);
         // Tiles off.
         assert_eq!(file.get(&regs::H265_REG0252_TILE_CFG_TILE_EN).unwrap(), 0);
+    }
+
+    #[test]
+    fn by_ctu_low_delay_arms_the_slice_fifo_and_interrupt() {
+        let mut job = IdrJob::reference(26);
+        job.split = SliceSplit {
+            mode: SplitMode::ByCtu,
+            arg: 8,
+            out: MPP_ENC_SPLIT_OUT_LOWDELAY,
+        };
+        let file = build_registers(&job).unwrap();
+        assert_eq!(file.get(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT).unwrap(), 1);
+        assert_eq!(
+            file.get(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT_MODE)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0218_SLI_CNUM_SLI_SPLT_CNUM_M1)
+                .unwrap(),
+            7
+        );
+        assert_eq!(file.get(&regs::BASE_ENC_PIC_SLEN_FIFO).unwrap(), 1);
+        assert_eq!(file.get(&regs::CTL_INT_EN_SLC_DONE_EN).unwrap(), 1);
+    }
+
+    #[test]
+    fn by_byte_without_split_out_keeps_the_fifo_off() {
+        let mut job = IdrJob::reference(26);
+        job.split = SliceSplit {
+            mode: SplitMode::ByByte,
+            arg: 256,
+            out: 0,
+        };
+        let file = build_registers(&job).unwrap();
+        assert_eq!(
+            file.get(&regs::H265_REG0216_SLI_SPLT_SLI_SPLT_MODE)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0217_SLI_BYTE_SLI_SPLT_BYTE)
+                .unwrap(),
+            256
+        );
+        assert_eq!(file.get(&regs::BASE_ENC_PIC_SLEN_FIFO).unwrap(), 0);
+        assert_eq!(file.get(&regs::CTL_INT_EN_SLC_DONE_EN).unwrap(), 0);
     }
 
     #[test]

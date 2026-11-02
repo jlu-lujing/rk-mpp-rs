@@ -6,7 +6,7 @@ import sys
 
 C_PACKET = re.compile(r"^picture (\d+) packet (\d+): (\d+) bytes eoi=(\d+)$")
 RUST_FRAME = re.compile(
-    r"^(?:h264|jpeg) frame (\d+): (\d+) packet\(s\): ([\d,]*)$"
+    r"^(?:h264|h265|jpeg) frame (\d+): (\d+) packet\(s\): ([\d,]*)$"
 )
 
 

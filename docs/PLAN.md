@@ -213,9 +213,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       （13 条宿主单测）；tiles/WPP/SAO、RPS、profile/level 变化未做。
 - [ ] W2-3 CTU/CU 编码参数、MVP、SAO 表：照 C 生成，逐字段
 - [ ] W2-4 参考帧与 DPB：与 H.264 共用 `FrameState` 思路，H.265 有 RPS
-- [ ] W2-5 固定 QP 的 I + P 帧逐 NAL 相同（先 320x240，再 640x480/720p）
-- [ ] W2-6 复用 `codec::rc::model`（C/H.265 用同一 RC 模型）：CBR→VBR→AVBR 逐字节
-- [ ] W2-7 tiles/WPP 编码、slice 切分、多 slice 一行
+- [x] W2-5 固定 QP 的 I + P 帧逐 NAL 相同（320x240 多格，640x480/720p 已补）
+- [x] W2-6 复用 `codec::rc::model`（C/H.265 用同一 RC 模型）：CBR/VBR/AVBR 与
+      smart GOP 均逐字节
+- [~] W2-7 slice 切分与逐 slice 输出已闭合（BY_CTU/BY_BYTE、32 项 FIFO 跨越、
+      6 帧 IDR+P；普通整 AU 3/3，low-delay 4/4）；tiles/WPP 未做
 - [ ] W2-8 10-bit 编码（若硬件支持；先 probe 确认）
 - [x] W2-9 GDR / intra refresh —— C ref-cfg oracle 已建立；
       320x240/640x480 × row/column 为 4/4 整条逐字节。

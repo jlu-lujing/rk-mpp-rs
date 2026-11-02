@@ -217,6 +217,7 @@ fn encode_h265_headers(
         long_term: false,
         rc: None,
         refresh: None,
+        split: h265_syntax::SliceSplit::default(),
         input_fd: -1,
         output_fd: -1,
         current_fd: -1,
@@ -229,6 +230,37 @@ fn encode_h265_headers(
         .get(&rk_mpp_rs::hal::h265e_regs::BASE_ENC_PIC_PIC_QP)
         .map_err(|e| e.to_string())?;
     Ok((headers.len(), pic_qp))
+}
+
+fn parse_h265_split_option(
+    text: &str,
+    split: &mut h265_syntax::SliceSplit,
+) -> Result<bool, String> {
+    if let Some(rest) = text.strip_prefix("split:") {
+        let Some((kind, arg)) = rest.split_once(':') else {
+            return Err("expected split:ctu:<arg> or split:byte:<arg>".into());
+        };
+        split.mode = match kind {
+            "ctu" => h265_syntax::SplitMode::ByCtu,
+            "byte" => h265_syntax::SplitMode::ByByte,
+            _ => return Err("expected split:ctu:<arg> or split:byte:<arg>".into()),
+        };
+        split.arg = arg
+            .parse()
+            .map_err(|_| format!("invalid H.265 slice split argument {arg}"))?;
+        return Ok(true);
+    }
+    if text == "splitout:lowdelay" {
+        split.out = h265_syntax::MPP_ENC_SPLIT_OUT_LOWDELAY;
+        return Ok(true);
+    }
+    if let Some(value) = text.strip_prefix("splitout:") {
+        split.out = value
+            .parse()
+            .map_err(|_| format!("invalid H.265 splitout value {value}"))?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn encode_jpeg(
@@ -1221,6 +1253,7 @@ fn main() {
             long_term,
             rc,
             refresh: None,
+            split: h265_syntax::SliceSplit::default(),
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -1252,7 +1285,7 @@ fn main() {
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
-        let usage = "usage: rk-mpp-rs h265-idr <in.nv12> <out.265> <width> <height> [qp]";
+        let usage = "usage: rk-mpp-rs h265-idr <in.nv12> <out.265> <width> <height> [qp] [split:ctu:|split:byte:arg] [splitout:lowdelay]";
         let (Some(width), Some(height)) = (width, height) else {
             eprintln!("{usage}");
             std::process::exit(2);
@@ -1265,6 +1298,20 @@ fn main() {
             .get(6)
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(26);
+        let mut split = h265_syntax::SliceSplit::default();
+        for text in args.iter().skip(7) {
+            match parse_h265_split_option(text, &mut split) {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!("unknown H.265 option {text}");
+                    std::process::exit(2);
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            }
+        }
         let input = std::fs::read(src).map_err(|e| format!("{src}: {e}"));
         let input = match input {
             Ok(input) => input,
@@ -1273,14 +1320,25 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let result = h265e_session::Vepu580H265::open(width, height, qp)
-            .and_then(|mut encoder| encoder.encode_idr(&input));
-        match result.and_then(|stream| {
-            std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
-            Ok(stream.len())
+        let result = h265e_session::Vepu580H265::open(width, height, qp).and_then(|mut encoder| {
+            encoder.set_slice_split(split)?;
+            encoder.encode_idr_packets(&input)
+        });
+        match result.and_then(|encoded| {
+            std::fs::write(dst, &encoded.annex_b).map_err(|e| format!("{dst}: {e}"))?;
+            if std::env::var_os("RK_MPP_TRACE_PACKETS").is_some() {
+                let sizes = encoded
+                    .packets
+                    .iter()
+                    .map(|packet| packet.len().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                eprintln!("h265 frame 0: {} packet(s): {sizes}", encoded.packets.len());
+            }
+            Ok((encoded.annex_b.len(), encoded.packets.len()))
         }) {
-            Ok(bytes) => {
-                println!("h265-idr {src} -> {dst}: {bytes} bytes, {width}x{height} fixed qp {qp}")
+            Ok((bytes, packets)) => {
+                println!("h265-idr {src} -> {dst}: {bytes} bytes, {packets} packet(s), {width}x{height} fixed qp {qp}")
             }
             Err(e) => {
                 eprintln!("H.265 IDR encode failed: {e}");
@@ -1294,7 +1352,7 @@ fn main() {
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
-        let usage = "usage: rk-mpp-rs h265-gop <in.nv12> <out.265> <width> <height> [frames] [qp]";
+        let usage = "usage: rk-mpp-rs h265-gop <in.nv12> <out.265> <width> <height> [frames] [qp] [row:|col:num] [shortterm] [split:ctu:|split:byte:arg] [splitout:lowdelay]";
         let (Some(width), Some(height)) = (width, height) else {
             eprintln!("{usage}");
             std::process::exit(2);
@@ -1327,8 +1385,27 @@ fn main() {
             );
             std::process::exit(1);
         }
-        let refresh = args.get(8).map(|s| s.as_str());
-        let opened = if refresh.is_some() {
+        let mut split = h265_syntax::SliceSplit::default();
+        let mut refresh = None;
+        let mut short_term = false;
+        for text in args.iter().skip(8) {
+            match parse_h265_split_option(text, &mut split) {
+                Ok(true) => continue,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+                Ok(false) if text.starts_with("row:") || text.starts_with("col:") => {
+                    refresh = Some(text.as_str());
+                }
+                Ok(false) if text == "shortterm" => short_term = true,
+                Ok(false) => {
+                    eprintln!("unknown H.265 option {text}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        let opened = if refresh.is_some() || short_term {
             h265e_session::Vepu580H265::open_gop_short_term(width, height, qp)
         } else {
             h265e_session::Vepu580H265::open_gop(width, height, qp)
@@ -1349,19 +1426,36 @@ fn main() {
                 };
                 encoder.enable_refresh(mode, num.parse().unwrap_or(1))?;
             }
+            encoder.set_slice_split(split)?;
             let mut out = Vec::new();
+            let mut packets = 0;
+            let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
             for index in 0..frames {
                 let frame = &input[index * frame_size..(index + 1) * frame_size];
-                out.extend_from_slice(&encoder.encode_frame(frame)?);
+                let encoded = encoder.encode_frame_packets(frame)?;
+                packets += encoded.packets.len();
+                if trace_packets {
+                    let sizes = encoded
+                        .packets
+                        .iter()
+                        .map(|packet| packet.len().to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    eprintln!(
+                        "h265 frame {index}: {} packet(s): {sizes}",
+                        encoded.packets.len()
+                    );
+                }
+                out.extend_from_slice(&encoded.annex_b);
             }
-            Ok(out)
+            Ok((out, packets))
         });
-        match result.and_then(|stream| {
+        match result.and_then(|(stream, packets)| {
             std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
-            Ok(stream.len())
+            Ok((stream.len(), packets))
         }) {
-            Ok(bytes) => println!(
-                "h265-gop {src} -> {dst}: {bytes} bytes, {frames} frames {width}x{height} fixed qp {qp}"
+            Ok((bytes, packets)) => println!(
+                "h265-gop {src} -> {dst}: {bytes} bytes, {packets} packet(s), {frames} frames {width}x{height} fixed qp {qp}"
             ),
             Err(e) => {
                 eprintln!("H.265 GOP encode failed: {e}");
@@ -1484,7 +1578,7 @@ fn main() {
             "avbr" => h265e_session::RcMode::Avbr,
             _ => h265e_session::RcMode::Cbr,
         };
-        let usage = "usage: rk-mpp-rs h265-rate <in.nv12> <out.265> <w> <h> <frames> <bps:min:max> [init_qp] [qp_min] [qp_max] [cbr|vbr|avbr]";
+        let usage = "usage: rk-mpp-rs h265-rate <in.nv12> <out.265> <w> <h> <frames> <bps:min:max> [init_qp] [qp_min] [qp_max] [cbr|vbr|avbr] [split:ctu:|split:byte:arg] [splitout:lowdelay]";
         let (Some(width), Some(height), Some(frames), Some((target, min, max))) =
             (width, height, frames, bps)
         else {
@@ -1507,6 +1601,20 @@ fn main() {
             .get(10)
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(51);
+        let mut split = h265_syntax::SliceSplit::default();
+        for text in args.iter().skip(12) {
+            match parse_h265_split_option(text, &mut split) {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!("unknown H.265 option {text}");
+                    std::process::exit(2);
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            }
+        }
         let input = match std::fs::read(src) {
             Ok(input) => input,
             Err(e) => {
@@ -1523,19 +1631,37 @@ fn main() {
             width, height, mode, target, min, max, init_qp, qp_min, qp_max,
         )
         .and_then(|mut encoder| {
+            encoder.set_slice_split(split)?;
             let mut out = Vec::new();
+            let mut packets = 0;
+            let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
             for index in 0..frames {
-                out.extend_from_slice(
-                    &encoder.encode_frame(&input[index * frame_size..(index + 1) * frame_size])?,
-                );
+                let encoded = encoder
+                    .encode_frame_packets(&input[index * frame_size..(index + 1) * frame_size])?;
+                packets += encoded.packets.len();
+                if trace_packets {
+                    let sizes = encoded
+                        .packets
+                        .iter()
+                        .map(|packet| packet.len().to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    eprintln!(
+                        "h265 frame {index}: {} packet(s): {sizes}",
+                        encoded.packets.len()
+                    );
+                }
+                out.extend_from_slice(&encoded.annex_b);
             }
-            Ok(out)
+            Ok((out, packets))
         });
-        match result.and_then(|stream| {
+        match result.and_then(|(stream, packets)| {
             std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
-            Ok(stream.len())
+            Ok((stream.len(), packets))
         }) {
-            Ok(bytes) => println!("h265-cbr {src} -> {dst}: {bytes} bytes, {frames} pictures"),
+            Ok((bytes, packets)) => println!(
+                "h265-cbr {src} -> {dst}: {bytes} bytes, {packets} packet(s), {frames} pictures"
+            ),
             Err(e) => {
                 eprintln!("H.265 rate-control encode failed: {e}");
                 std::process::exit(1);

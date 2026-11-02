@@ -21,7 +21,7 @@ if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1"; then
 fi
 
 scp -q tools/h265e_probe.c "$BOARD":/tmp/h265e_probe_gdr.c
-ssh "$BOARD" "cc -O2 -w -I$mpp_ref/inc /tmp/h265e_probe_gdr.c \
+ssh "$BOARD" "cc -O2 -w -pthread -I$mpp_ref/inc /tmp/h265e_probe_gdr.c \
     $mpp_lib/librockchip_mpp.so.1 -o /tmp/h265e_probe_gdr"
 
 frames=8

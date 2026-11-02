@@ -45,6 +45,9 @@ pub const NAL_PPS: u8 = 34;
 /// hardware stamps on a fixed-QP IDR access unit.
 pub const NAL_IDR_W_RADL: u8 = 19;
 
+/// `MPP_ENC_SPLIT_OUT_LOWDELAY`: publish one output packet per completed slice.
+pub const MPP_ENC_SPLIT_OUT_LOWDELAY: u32 = 1 << 0;
+
 /// The largest reference count the DPB caps `max_dec_pic_buffering` at. The C
 /// `MAX_REFS` is 16; with `num_ref` defaulting to 1 it never binds, but the clip
 /// is what the reference applies, so it is what we apply.
@@ -282,6 +285,72 @@ pub enum RateControl {
     FixQp,
     Cbr,
     Vbr,
+}
+
+/// `MppEncSplitMode`: what cuts an H.265 picture into more than one slice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SplitMode {
+    /// `MPP_ENC_SPLIT_NONE`, one slice per picture.
+    #[default]
+    None,
+    /// `MPP_ENC_SPLIT_BY_BYTE`, the `sli_splt_byte` cap.
+    ByByte,
+    /// `MPP_ENC_SPLIT_BY_CTU`, where the unit is a 64x64 CTU on VEPU580.
+    ByCtu,
+}
+
+/// The `MppEncSliceSplit` fields used by VEPU580.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SliceSplit {
+    pub mode: SplitMode,
+    /// Byte cap for [`SplitMode::ByByte`], CTU count for [`SplitMode::ByCtu`].
+    pub arg: u32,
+    /// `MppEncSliceSplit::split_out`; bit 0 is low-delay packet output.
+    pub out: u32,
+}
+
+impl SliceSplit {
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.out & !MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            return Err(Error(format!(
+                "unsupported H.265 slice output bits 0x{:x}; only LOWDELAY is implemented",
+                self.out
+            )));
+        }
+        if self.out != 0 && self.mode == SplitMode::None {
+            return Err(Error(
+                "H.265 split_out requires BY_CTU or BY_BYTE slice split".into(),
+            ));
+        }
+        match self.mode {
+            SplitMode::None => {}
+            SplitMode::ByByte if self.arg == 0 || self.arg > 0x000f_ffff => {
+                return Err(Error(format!(
+                    "H.265 slice byte target {} is outside 1..=1048575",
+                    self.arg
+                )));
+            }
+            SplitMode::ByCtu if self.arg == 0 || self.arg > 0x0010_0000 => {
+                return Err(Error(format!(
+                    "H.265 CTUs per slice {} is outside 1..=1048576",
+                    self.arg
+                )));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `vepu580_setup_split`'s CTU count. Tiles are disabled on the paths this
+    /// crate implements, so the C's `title_en` halving is not applied.
+    pub fn slice_count(&self, width: usize, height: usize) -> u32 {
+        if self.mode != SplitMode::ByCtu || self.arg == 0 {
+            return 1;
+        }
+        let ctu_w = width.div_ceil(64) as u32;
+        let ctu_h = height.div_ceil(64) as u32;
+        ctu_w.saturating_mul(ctu_h).div_ceil(self.arg).max(1)
+    }
 }
 
 /// Serialise the VPS, SPS and PPS, in that order, each with a four-byte Annex-B
@@ -648,6 +717,43 @@ mod tests {
     fn coded_size_pads_to_the_minimum_cu() {
         assert_eq!(EncoderConfig::new(320, 240).coded_size(), (320, 240));
         assert_eq!(EncoderConfig::new(322, 242).coded_size(), (328, 248));
+    }
+
+    #[test]
+    fn slice_split_validation_matches_the_vepu580_fields() {
+        assert!(SliceSplit::default().validate().is_ok());
+        assert_eq!(
+            SliceSplit {
+                mode: SplitMode::ByCtu,
+                arg: 96,
+                out: MPP_ENC_SPLIT_OUT_LOWDELAY,
+            }
+            .slice_count(320, 240),
+            1
+        );
+        assert_eq!(
+            SliceSplit {
+                mode: SplitMode::ByCtu,
+                arg: 8,
+                out: MPP_ENC_SPLIT_OUT_LOWDELAY,
+            }
+            .slice_count(320, 240),
+            3
+        );
+        assert!(SliceSplit {
+            mode: SplitMode::ByByte,
+            arg: 0,
+            out: 0,
+        }
+        .validate()
+        .is_err());
+        assert!(SliceSplit {
+            mode: SplitMode::None,
+            arg: 0,
+            out: MPP_ENC_SPLIT_OUT_LOWDELAY,
+        }
+        .validate()
+        .is_err());
     }
 
     /// Round-trip the VPS and SPS through the independent decoder parser and
