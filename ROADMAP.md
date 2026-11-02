@@ -439,8 +439,12 @@ in what order the evidence gets produced.
         does not set `sw_apply_grain=1` in `vdpu_av1d_set_fgs()`, so C output
         instead matches libaom with film grain skipped; this is a C HAL
         defect rather than the Rust acceptance oracle.
-  - [ ] wider AV1 conformance and performance matrix: damaged streams still
-        need C/FFmpeg differential fixtures. The generated corpus covers
+  - [ ] wider AV1 conformance and performance matrix: more damaged-stream
+        shapes still need differential fixtures. The damaged matrix now covers
+        a torn container, a half-last packet and a mid-packet bit flip: Rust
+        bounds the first two where C hangs after eight pictures, while the
+        bit-flip case produces the same ten pictures and byte-identical planar
+        output. The generated corpus covers
         640x480 long-GOP, 1280x720, 1920x1080, Main10, repeated sequence
         headers and 320<->640 dynamic resolution; all are byte-identical to C
         in the full corpus sweep.

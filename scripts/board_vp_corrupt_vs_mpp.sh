@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 BOARD="${BOARD:-t62}"
-# Damaged-stream comparison against the C decoder, on t6.
+# Damaged-stream comparison against the C decoder, on the selected board.
 #
 # The damage is built ON THE BOARD from the repo fixtures, per the plan: the
-# corpus itself is not modified. Three shapes per codec:
+# corpus itself is not modified. Three shapes are run for VP8, VP9 and AV1:
 #   container  - the file ends mid-frame
 #   half-last  - the final packet is cut in half (missing tail data)
 #   mid-flip   - one byte inside a middle packet is inverted (partition damage)
@@ -69,7 +69,19 @@ run_pair() { # codec-type frame_bytes label stream
   r_msg=$(ssh "$BOARD" "cd ~/rk-mpp-rs && sudo timeout 60 \
     $rust_cmd $stream /tmp/vpd_r_msg.yuv 2>&1 >/dev/null | head -1" | tr -d '\r' || true)
   if [ "$((c_rc != 0))" = "$((r_rc != 0))" ] && [ "$c_frames" = "$r_frames" ]; then
-    printf 'SAME  %-18s rc both %s, frames both %s\n' "$label" "$c_rc" "$c_frames"
+    if [[ "$label" == av1/* ]]; then
+      if ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+          -video_size 320x240 -i /tmp/vpd_c.yuv -pix_fmt yuv420p -f rawvideo \
+          /tmp/vpd_c_planar.yuv && cmp -s /tmp/vpd_c_planar.yuv /tmp/vpd_r.yuv'; then
+        printf 'SAME-PIXELS %-13s rc both %s, frames both %s\n' \
+          "$label" "$c_rc" "$c_frames"
+      else
+        printf 'NAMED %-18s rc both %s, frames both %s, pixels differ\n' \
+          "$label" "$c_rc" "$c_frames"
+      fi
+    else
+      printf 'SAME  %-18s rc both %s, frames both %s\n' "$label" "$c_rc" "$c_frames"
+    fi
   else
     printf 'NAMED %-18s rc C=%s Rust=%s | frames C=%s Rust=%s | rust said: %s\n' \
       "$label" "$c_rc" "$r_rc" "$c_frames" "$r_frames" "$r_msg"
@@ -90,6 +102,11 @@ for damage in container half-last mid-flip; do
   ssh "$BOARD" "python3 /tmp/vp_damage.py $damage ~/rk-mpp-rs/tests/data/vp9_p0_64x64.ivf /tmp/vpd_vp9_$damage.ivf"
   run_pair 11 6144 "vp9/$damage" "/tmp/vpd_vp9_$damage.ivf" \
     "./target/release/rk-mpp-rs vp9dec"
+done
+for damage in container half-last mid-flip; do
+  ssh "$BOARD" "python3 /tmp/vp_damage.py $damage ~/rk-mpp-rs/tests/data/av1_320x240_10.ivf /tmp/vpd_av1_$damage.ivf"
+  run_pair 16777224 115200 "av1/$damage" "/tmp/vpd_av1_$damage.ivf" \
+    "./target/release/rk-mpp-rs av1dec"
 done
 
 printf '\n(cells are evidence: file them under the ROADMAP damaged-stream entry)\n'

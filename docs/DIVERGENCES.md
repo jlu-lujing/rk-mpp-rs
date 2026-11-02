@@ -26,7 +26,9 @@ Dispositions:
 | AV1 8-bit film grain (`av1_film_grain_320x240_10`) | **C-BUG** | Rust applies grain and matches libaom byte-for-byte (`bdd74ace…f632afb`). C's `vdpu_av1d_set_fgs()` never sets `sw_apply_grain`, so C emits the skip-grain image. |
 | AV1 10-bit film grain (`film_grain_10bit`) | **C-BUG** | Rust matches libaom's grain-applied `yuv420p10le` output (`b75e6172…fe904d`); C emits libaom's skip-grain image (`f3b69b61…49b8`). |
 | VP8 key-frame scale bits | **FIXED** | The two bits are display-only: libvpx (FFmpeg) and C both decode at the coded size. The parser no longer refuses them; `board_vp8_profile_vs_mpp.sh` derives a scaled key frame and compares 12 frames, byte-identical to C. |
-| AV1 damaged streams / VP9 profile edge matrix | **NO-ORACLE** | Damaged AV1 and the remaining VP9 profile edges have no differential fixture in the corpus. |
+| AV1 damaged container / half-last OBU | **BY-DESIGN** | C emits eight pictures and then blocks until the 60-second timeout. Rust rejects the truncated container before decode or names the oversized OBU after nine pictures, keeping both operations bounded. |
+| AV1 mid-packet bit flip | **FIXED** | C and Rust both complete ten pictures and the planar outputs are byte-identical (`af41ab70…01bc`). |
+| VP9 profile edge matrix | **NO-ORACLE** | The remaining VP9 profile edges have no differential fixture in the corpus. |
 | H.263 field-coded PAFF | **NO-ORACLE** | No stream in the corpus. |
 | AVS+ / AVS2 | **NO-ORACLE** | No conformance stream and no hardware on t6. |
 
