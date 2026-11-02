@@ -380,6 +380,9 @@ impl Batch {
     }
 
     pub fn reg_offsets(&mut self, offs: &[RegOffsetInfo]) -> &mut Self {
+        if offs.is_empty() {
+            return self;
+        }
         self.push(
             MPP_CMD_SET_REG_ADDR_OFFSET,
             MPP_FLAGS_REG_OFFSET_ALONE,
@@ -570,5 +573,25 @@ mod tests {
         assert!(command_supported(MPP_CMD_SET_REG_ADDR_OFFSET, &caps));
         assert!(!command_supported(MPP_CMD_SET_RCB_INFO, &caps));
         assert!(command_supported(MPP_CMD_POLL_HW_FINISH, &caps));
+    }
+
+    #[test]
+    fn empty_offsets_do_not_add_a_zero_length_service_request() {
+        let mut batch = Batch::new();
+        batch.reg_offsets(&[]);
+        assert!(batch.is_empty());
+
+        let offsets = [RegOffsetInfo {
+            reg_idx: 169,
+            offset: 32,
+        }];
+        batch.reg_offsets(&offsets);
+        assert_eq!(batch.reqs.len(), 1);
+        assert_eq!(batch.reqs[0].cmd, MPP_CMD_SET_REG_ADDR_OFFSET);
+        assert_eq!(batch.reqs[0].flag, MPP_FLAGS_REG_OFFSET_ALONE);
+        assert_eq!(
+            batch.reqs[0].size,
+            std::mem::size_of::<RegOffsetInfo>() as u32
+        );
     }
 }
