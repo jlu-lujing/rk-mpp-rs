@@ -228,6 +228,7 @@ pub struct Sps {
     pub sps_id: u32,
     pub chroma_format_idc: u32,
     pub separate_colour_plane: bool,
+    pub transform_bypass: bool,
     pub bit_depth_luma: u32,
     pub bit_depth_chroma: u32,
     pub log2_max_frame_num: u32,
@@ -286,7 +287,7 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, SpsError> {
         if sps.bit_depth_luma > 10 || sps.bit_depth_chroma > 10 {
             return Err(SpsError::Unsupported("bit depth > 10"));
         }
-        r.skip(1)?; // qpprime_y_zero_transform_bypass
+        sps.transform_bypass = r.read_bit()? == 1;
         if r.read_bit()? == 1 {
             // scaling matrices
             let count = if sps.chroma_format_idc != 3 { 8 } else { 12 };

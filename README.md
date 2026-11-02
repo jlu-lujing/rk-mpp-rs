@@ -44,7 +44,7 @@
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
 整体约完成一半（按 ROADMAP 各里程碑的工作量估加权）。ROADMAP 顶层清单当前为
-68 项完成、10 项未完成；未完成项里有硬件不存在、无 conformance 流和冻结前沿，
+69 项完成、10 项未完成；未完成项里有硬件不存在、无 conformance 流和冻结前沿，
 不宜直接把勾选比例当作代码工作量。
 
 ## 怎么验证的
@@ -61,7 +61,7 @@
 复跑：
 
 ```bash
-cargo test --all-targets                     # 702 通过，26 个板级用例 ignore
+cargo test --all-targets                     # 704 通过，26 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
