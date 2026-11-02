@@ -44,7 +44,7 @@
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
 整体约完成一半（按 ROADMAP 各里程碑的工作量估加权）。ROADMAP 顶层清单当前为
-60 项完成、10 项未完成；未完成项里有硬件不存在、无 conformance 流和冻结前沿，
+61 项完成、10 项未完成；未完成项里有硬件不存在、无 conformance 流和冻结前沿，
 不宜直接把勾选比例当作代码工作量。
 
 ## 怎么验证的
@@ -61,7 +61,7 @@
 复跑：
 
 ```bash
-cargo test --all-targets                     # 630 通过，26 个板级用例 ignore
+cargo test --all-targets                     # 635 通过，26 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -125,7 +125,7 @@ src/codec/        各格式语法解析（h264 hevc vp9 av1 m2v mpg4 h263 vp8 jp
 src/codec/rc/     码率控制移植（MppDataV2 + rc_model_v2 的 CBR/VBR）
 src/hal/          各硬件块寄存器生成（h264d hevc av1d vp9d vp8d jpegd jpege h264e）
 src/scale.rs      RGB 缩放 / letterbox（替代 RGA）
-src/reference/    自研软件参考解码器（M11）
+src/reference/    自研软件参考解码器（M11；CABAC、HEVC 变换、H.264 4×4 残差/DC）
 scripts/          板上回归、吞吐、取证脚本
 tools/            寄存器字段生成器、ioctl tracer、C 侧探针、diff 工具
 tests/data/       C 侧真实输出构成的 golden / fixture

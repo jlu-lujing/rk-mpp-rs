@@ -29,6 +29,7 @@ Dispositions:
 | AV1 damaged container / half-last OBU | **BY-DESIGN** | C emits eight pictures and then blocks until the 60-second timeout. Rust rejects the truncated container before decode or names the oversized OBU after nine pictures, keeping both operations bounded. |
 | AV1 mid-packet bit flip | **FIXED** | C and Rust both complete ten pictures and the planar outputs are byte-identical (`af41ab70…01bc`). |
 | VP9 profile edge matrix | **NO-ORACLE** | The remaining VP9 profile edges have no differential fixture in the corpus. |
+| VP9 profile 1/3 hardware | **NO-ORACLE** | A vpxenc 1.9 profile-1 I422 stream is accepted by ffmpeg, but t6's C MPP reports `Invalid frame marker`, emits 0 frames and loops until timeout. The installed vpxenc build cannot emit profile 3. Rust still rejects profile 1/3 explicitly instead of inventing an unverified layout. |
 | H.263 field-coded PAFF | **NO-ORACLE** | No stream in the corpus. |
 | AVS+ / AVS2 | **NO-ORACLE** | No conformance stream and no hardware on t6. |
 

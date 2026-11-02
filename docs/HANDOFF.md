@@ -115,7 +115,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 630 passed, 26 board-only ignored
+cargo test --all-targets      # 635 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -150,7 +150,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 60 项完成、10 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 61 项完成、10 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
@@ -169,7 +169,7 @@ H.264/H.265 普通 slice split 与低延迟逐 slice packet 都已在 t6 上通�
 | `src/hal/h264e.rs` | VEPU580 H.264 编码器：缓冲、寄存器、提交、STATUS 读取 |
 | `src/codec/rc/` | 码率控制移植（`data.rs` = MppDataV2，`model.rs` = rc_model_v2 的 CBR/VBR） |
 | `src/scale.rs` | 自研 RGB 缩放/letterbox（替代 RGA，比 RGA 快 2.9–3.8×） |
-| `src/reference/` | 自研软件参考解码器（M11，CABAC/反变换起步） |
+| `src/reference/` | 自研软件参考解码器（M11：CABAC、HEVC 反变换、H.264 4×4 残差/DC 原语） |
 | `scripts/board_*.sh` | 板上验证脚本（回归、吞吐、寄存器捕获） |
 | `tools/` | 取证工具：ioctl tracer、C 探针、寄存器 diff、字段生成器 |
 | `tests/data/` | 所有 golden/fixture（C 侧真实输出） |
@@ -498,7 +498,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 630 通过（26 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 635 通过（26 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

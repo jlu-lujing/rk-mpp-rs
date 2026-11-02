@@ -6,4 +6,5 @@
 //! synthetic source we generate ourselves), so nothing external is needed.
 
 pub mod cabac;
+pub mod h264;
 pub mod transform;
