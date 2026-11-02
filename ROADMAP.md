@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. tiles/WPP/SAO, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: CABAC core; HEVC 4/8/16/32 transforms; H.264 CAVLC residual syntax, inverse 4x4, inverse zigzag/dequant, luma/chroma DC Hadamard, DC prediction and clipped residual add** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: CABAC core; HEVC 4/8/16/32 transforms; H.264 CAVLC 4x4 and 8x8 residual syntax, inverse scans/dequant, inverse 4x4, luma/chroma DC Hadamard, DC prediction and clipped residual add** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -130,19 +130,23 @@ in what order the evidence gets produced.
       integer butterfly, inverse 4x4 zigzag and QP-dependent dequantisation,
       luma 4x4/chroma 2x2 inverse DC Hadamard, constant DC prediction for 4/8/16
       blocks, and clipped residual add for 8-bit and 8/10-bit 16-bit storage
-      planes. Ten focused tests cover the DC/AC butterflies, scan placement,
-      position-class/QP bands, custom scaling matrices, Hadamard
-      constants/impulses, edge availability, stride clipping and high-bit-depth
-      saturation.
+      planes. The same module has the dedicated frame and field CAVLC 8x8 scan
+      tables and their separate QP-dependent `LevelScale8` dequantisation.
+      Sixteen focused tests cover the DC/AC butterflies, 4x4/8x8 scan
+      placement, frame/field partitions, position-class/QP bands, raster-order
+      custom scaling matrices, Hadamard constants/impulses, edge availability,
+      stride clipping and high-bit-depth saturation.
 - [x] H.264 software-reference CAVLC residual syntax: table-driven
       `coeff_token` contexts for every predicted non-zero count, trailing-one
       signs, the complete adaptive `level_prefix`/suffix state machine,
       `total_zeros` and `run_before`, and scan-order placement for regular
-      4x4/AC-15 and 4:2:0/4:2:2 chroma-DC blocks. Nine focused tests cover
-      short and large level prefixes, every CAVLC table entry, sign/zero/run
-      placement, suffix adaptation, chroma-DC tables and malformed-input
-      rejection. The exact consumed-bit count is returned so a caller can
-      continue at the next block without guessing.
+      4x4/AC-15 and 4:2:0/4:2:2 chroma-DC blocks. An 8x8 wrapper decodes its
+      four residual partitions through one shared bit cursor, including
+      partitions that begin mid-byte. Eleven focused tests cover short and
+      large level prefixes, every CAVLC table entry, sign/zero/run placement,
+      suffix adaptation, chroma-DC tables, four-partition continuity and
+      malformed-input rejection. The exact consumed-bit count is returned so a
+      caller can continue at the next block without guessing.
 
 ## Feature checklist (per official capability)
 

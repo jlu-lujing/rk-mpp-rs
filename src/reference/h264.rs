@@ -1,9 +1,10 @@
 //! H.264 software-reference primitives.
 //!
 //! This starts the decoder ground-truth path with the specification's inverse
-//! 4x4 residual transform, constant DC prediction and clipped residual add. The
-//! functions operate on already dequantised coefficients and integer pixel
-//! planes; syntax decoding and reference-picture scheduling build on them.
+//! 4x4 residual transform, CAVLC 8x8 scan/dequantisation, constant DC
+//! prediction and clipped residual add. The functions operate on quantised or
+//! already dequantised coefficients and integer pixel planes; syntax decoding
+//! and reference-picture scheduling build on them.
 
 /// H.264 8.5.12 inverse 4x4 residual transform.
 ///
@@ -165,6 +166,11 @@ const DEQUANT4: [[i32; 3]; 6] = [
     [18, 23, 29],
 ];
 
+#[cfg(test)]
+fn inverse_dequant_position_4x4(position: usize) -> usize {
+    (position >> 2) | ((position << 2) & 0xf)
+}
+
 /// H.264 8.5.9 inverse quantisation for one scanned 4x4 residual block.
 ///
 /// `scaling` is a raster-order 4x4 matrix factor. `None` is the flat matrix of
@@ -189,16 +195,113 @@ pub fn dequant_4x4(
     let index = qp % 6;
     let scaling = scaling.map(|matrix| matrix.map(i32::from));
     let mut qmul = [0i32; 16];
-    for x in 0..16 {
-        let scale = scaling.unwrap_or([16; 16])[x];
-        let class = ((x & 1) + ((x >> 2) & 1)) as usize;
-        let destination = (x >> 2) | ((x << 2) & 0xf);
-        qmul[destination] = (DEQUANT4[index as usize][class] * scale) << shift;
+    for position in 0..16 {
+        let scale = scaling.unwrap_or([16; 16])[position];
+        let class = (position & 1) + ((position >> 2) & 1);
+        qmul[position] = (DEQUANT4[index as usize][class] * scale) << shift;
     }
 
     let mut output = [0i32; 16];
     for (scan_pos, level) in scan.into_iter().enumerate() {
         let raster = ZIGZAG_4X4[scan_pos];
+        let value = (i64::from(level) * i64::from(qmul[raster]) + 32) >> 6;
+        output[raster] =
+            i32::try_from(value).map_err(|_| "dequantised H.264 coefficient overflows i32")?;
+    }
+    Ok(output)
+}
+
+/// The frame and field 8x8 CAVLC scan orders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CavlcScan8x8 {
+    Frame,
+    Field,
+}
+
+/// CAVLC 8x8 scan order to raster position. This is deliberately not an
+/// ordinary 8x8 zigzag: each group of four positions follows one 4x4
+/// sub-block, as specified by H.264 Table 8-13.
+const ZIGZAG_8X8_CAVLC: [usize; 64] = [
+    0, 9, 17, 18, 12, 40, 27, 7, 35, 57, 29, 30, 58, 38, 53, 47, 1, 2, 24, 11, 19, 48, 20, 14, 42,
+    50, 22, 37, 59, 31, 60, 55, 8, 3, 32, 4, 26, 41, 13, 21, 49, 43, 15, 44, 52, 39, 61, 62, 16,
+    10, 25, 5, 33, 34, 6, 28, 56, 36, 23, 51, 45, 46, 54, 63,
+];
+
+const FIELD_8X8_CAVLC: [usize; 64] = [
+    0, 9, 2, 56, 18, 26, 34, 27, 35, 28, 36, 29, 45, 7, 54, 39, 8, 24, 25, 33, 41, 11, 42, 12, 43,
+    13, 44, 14, 53, 15, 62, 47, 16, 32, 40, 10, 49, 4, 50, 5, 51, 6, 52, 22, 61, 38, 23, 55, 1, 17,
+    48, 3, 57, 19, 58, 20, 59, 21, 60, 37, 30, 46, 31, 63,
+];
+
+/// Place CAVLC 8x8 levels into a raster-order coefficient block.
+///
+/// This is the normal CAVLC path. Transform-bypass streams use a separate q0
+/// scan and are intentionally not conflated with this table.
+pub fn inverse_scan_8x8_cavlc(scan: [i32; 64], layout: CavlcScan8x8) -> [i32; 64] {
+    let table = match layout {
+        CavlcScan8x8::Frame => &ZIGZAG_8X8_CAVLC,
+        CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
+    };
+    let mut raster = [0i32; 64];
+    for (position, value) in scan.into_iter().enumerate() {
+        raster[table[position]] = value;
+    }
+    raster
+}
+
+const DEQUANT8: [[i32; 6]; 6] = [
+    [20, 18, 32, 19, 25, 24],
+    [22, 19, 35, 21, 28, 26],
+    [26, 23, 42, 24, 33, 31],
+    [28, 25, 45, 26, 35, 33],
+    [32, 28, 51, 30, 40, 38],
+    [36, 32, 58, 34, 46, 43],
+];
+
+const DEQUANT8_SCAN: [usize; 16] = [0, 3, 4, 3, 3, 1, 5, 1, 4, 5, 2, 5, 3, 1, 5, 1];
+
+#[cfg(test)]
+fn inverse_dequant_position_8x8(position: usize) -> usize {
+    (position >> 3) | ((position & 7) << 3)
+}
+
+/// H.264 8.5.9 inverse quantisation for one CAVLC-scanned 8x8 residual block.
+///
+/// `scaling` is a raster-order 8x8 matrix factor. `None` is the flat matrix of
+/// sixty-four used by High-profile streams without a custom 8x8 matrix.
+pub fn dequant_8x8_cavlc(
+    scan: [i32; 64],
+    qp: u8,
+    bit_depth: u8,
+    scaling: Option<&[u8; 64]>,
+    layout: CavlcScan8x8,
+) -> Result<[i32; 64], &'static str> {
+    if !(8..=10).contains(&bit_depth) {
+        return Err("H.264 reference dequant supports 8..=10 bit");
+    }
+    let max_qp = 51 + 6 * (bit_depth as u16 - 8);
+    if u16::from(qp) > max_qp {
+        return Err("H.264 QP exceeds the profile bit-depth limit");
+    }
+
+    let shift = qp / 6;
+    let index = qp % 6;
+    let scaling = scaling.map(|matrix| matrix.map(i32::from));
+    let mut qmul = [0i32; 64];
+    for position in 0..64 {
+        let scale = scaling.unwrap_or([16; 64])[position];
+        let class_position = ((position >> 1) & 12) | (position & 3);
+        let class = DEQUANT8_SCAN[class_position];
+        qmul[position] = (DEQUANT8[index as usize][class] * scale) << shift;
+    }
+
+    let table = match layout {
+        CavlcScan8x8::Frame => &ZIGZAG_8X8_CAVLC,
+        CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
+    };
+    let mut output = [0i32; 64];
+    for (scan_pos, level) in scan.into_iter().enumerate() {
+        let raster = table[scan_pos];
         let value = (i64::from(level) * i64::from(qmul[raster]) + 32) >> 6;
         output[raster] =
             i32::try_from(value).map_err(|_| "dequantised H.264 coefficient overflows i32")?;
@@ -385,5 +488,136 @@ mod tests {
         levels[0] = 1;
         let output = dequant_4x4(levels, 0, 8, Some(&scaling)).unwrap();
         assert_eq!(output[0], 1);
+    }
+
+    #[test]
+    fn dequant_4x4_keeps_custom_scaling_in_raster_order() {
+        let levels: [i32; 16] = std::array::from_fn(|position| position as i32 - 8);
+        let scaling: [u8; 16] = std::array::from_fn(|position| position as u8 + 1);
+        for qp in [0, 5, 6, 7, 51] {
+            let actual = dequant_4x4(levels, qp, 8, Some(&scaling)).unwrap();
+            let expected = reference_dequant_4x4(levels, qp, &scaling);
+            assert_eq!(actual, expected, "QP {qp}");
+        }
+    }
+
+    #[test]
+    fn cavlc_8x8_frame_scan_is_not_the_regular_zigzag() {
+        let scan: [i32; 64] = std::array::from_fn(|position| position as i32 + 1);
+        let raster = inverse_scan_8x8_cavlc(scan, CavlcScan8x8::Frame);
+        assert_eq!(
+            raster[..20],
+            [1, 17, 18, 34, 36, 52, 55, 8, 33, 2, 50, 20, 5, 39, 24, 43, 49, 3, 4, 21]
+        );
+        let mut seen = [false; 64];
+        for &position in &ZIGZAG_8X8_CAVLC {
+            assert!(!seen[position]);
+            seen[position] = true;
+        }
+        assert!(seen.into_iter().all(|present| present));
+    }
+
+    #[test]
+    fn cavlc_8x8_field_scan_covers_the_other_macroblock_layout() {
+        let scan: [i32; 64] = std::array::from_fn(|position| position as i32 + 1);
+        let raster = inverse_scan_8x8_cavlc(scan, CavlcScan8x8::Field);
+        assert_eq!(
+            raster[..16],
+            [1, 49, 3, 52, 38, 40, 42, 14, 17, 2, 36, 22, 24, 26, 28, 30]
+        );
+        let mut seen = [false; 64];
+        for &position in &FIELD_8X8_CAVLC {
+            assert!(!seen[position]);
+            seen[position] = true;
+        }
+        assert!(seen.into_iter().all(|present| present));
+    }
+
+    #[test]
+    fn cavlc_8x8_dequant_matches_the_ffmpeg_internal_transposed_layout() {
+        let levels: [i32; 64] = std::array::from_fn(|position| position as i32 - 32);
+        let scaling: [u8; 64] = std::array::from_fn(|position| position as u8 + 1);
+        for qp in [0, 5, 6, 7, 51] {
+            for layout in [CavlcScan8x8::Frame, CavlcScan8x8::Field] {
+                let actual = dequant_8x8_cavlc(levels, qp, 8, Some(&scaling), layout).unwrap();
+                let expected = reference_dequant_8x8(levels, qp, &scaling, layout);
+                assert_eq!(actual, expected, "QP {qp}, layout {layout:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn cavlc_8x8_dequant_keeps_custom_scaling_in_raster_order() {
+        let mut scaling = [16u8; 64];
+        scaling[37] = 3;
+        let mut levels = [0i32; 64];
+        levels[27] = 64; // frame scan index 27 maps to raster position 37.
+        let output = dequant_8x8_cavlc(levels, 7, 8, Some(&scaling), CavlcScan8x8::Frame).unwrap();
+        assert_eq!(output[37], 126);
+        assert!(output
+            .iter()
+            .enumerate()
+            .all(|(position, &value)| position == 37 || value == 0));
+    }
+
+    #[test]
+    fn cavlc_8x8_dequant_checks_qp_depth_and_overflows() {
+        let levels = [1i32; 64];
+        assert!(dequant_8x8_cavlc(levels, 51, 8, None, CavlcScan8x8::Frame).is_ok());
+        assert!(dequant_8x8_cavlc(levels, 52, 8, None, CavlcScan8x8::Frame).is_err());
+        assert!(dequant_8x8_cavlc(levels, 63, 10, None, CavlcScan8x8::Frame).is_ok());
+        assert!(dequant_8x8_cavlc(levels, 64, 10, None, CavlcScan8x8::Frame).is_err());
+    }
+
+    fn reference_dequant_8x8(
+        levels: [i32; 64],
+        qp: u8,
+        scaling: &[u8; 64],
+        layout: CavlcScan8x8,
+    ) -> [i32; 64] {
+        let shift = qp / 6;
+        let index = qp % 6;
+        let mut internal_qmul = [0i32; 64];
+        for position in 0..64 {
+            let class_position = ((position >> 1) & 12) | (position & 3);
+            let class = DEQUANT8_SCAN[class_position];
+            internal_qmul[inverse_dequant_position_8x8(position)] =
+                (DEQUANT8[index as usize][class] * i32::from(scaling[position])) << shift;
+        }
+        let mut qmul = [0i32; 64];
+        for position in 0..64 {
+            qmul[position] = internal_qmul[inverse_dequant_position_8x8(position)];
+        }
+        let table = match layout {
+            CavlcScan8x8::Frame => &ZIGZAG_8X8_CAVLC,
+            CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
+        };
+        let mut output = [0i32; 64];
+        for (scan_position, level) in levels.into_iter().enumerate() {
+            let raster = table[scan_position];
+            output[raster] = (level * qmul[raster] + 32) >> 6;
+        }
+        output
+    }
+
+    fn reference_dequant_4x4(levels: [i32; 16], qp: u8, scaling: &[u8; 16]) -> [i32; 16] {
+        let shift = qp / 6 + 2;
+        let index = qp % 6;
+        let mut internal_qmul = [0i32; 16];
+        for position in 0..16 {
+            let class = (position & 1) + ((position >> 2) & 1);
+            internal_qmul[inverse_dequant_position_4x4(position)] =
+                (DEQUANT4[index as usize][class] * i32::from(scaling[position])) << shift;
+        }
+        let mut qmul = [0i32; 16];
+        for position in 0..16 {
+            qmul[position] = internal_qmul[inverse_dequant_position_4x4(position)];
+        }
+        let mut output = [0i32; 16];
+        for (scan_position, level) in levels.into_iter().enumerate() {
+            let raster = ZIGZAG_4X4[scan_position];
+            output[raster] = (level * qmul[raster] + 32) >> 6;
+        }
+        output
     }
 }

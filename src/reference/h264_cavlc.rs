@@ -43,6 +43,16 @@ pub struct CavlcResidual {
     pub bits_consumed: usize,
 }
 
+/// Four consecutive CAVLC residual partitions that form one 8x8 transform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cavlc8x8Residual {
+    pub scan: [i32; 64],
+    pub total_coeff: [usize; 4],
+    pub trailing_ones: [usize; 4],
+    pub block_bits: [usize; 4],
+    pub bits_consumed: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CavlcError {
     Truncated,
@@ -86,8 +96,49 @@ impl std::error::Error for CavlcError {}
 /// syntax; `bits_consumed` identifies the exact boundary.
 pub fn decode_residual_4x4(data: &[u8], kind: CavlcBlockKind) -> Result<CavlcResidual, CavlcError> {
     let mut reader = BitReader::new(data);
+    decode_residual(&mut reader, kind)
+}
+
+/// Decode the four CAVLC residual partitions belonging to one 8x8 transform.
+///
+/// H.264 still codes each partition with the 4x4 coefficient-token syntax.
+/// They are concatenated at the bit level in `n_c` order; the returned scan is
+/// ready for [`super::h264::inverse_scan_8x8_cavlc`].
+pub fn decode_residual_8x8(data: &[u8], n_c: [i16; 4]) -> Result<Cavlc8x8Residual, CavlcError> {
+    let mut reader = BitReader::new(data);
+    let mut scan = [0i32; 64];
+    let mut total_coeff = [0usize; 4];
+    let mut trailing_ones = [0usize; 4];
+    let mut block_bits = [0usize; 4];
+    for (partition, predicted) in n_c.into_iter().enumerate() {
+        let block = decode_residual(
+            &mut reader,
+            CavlcBlockKind::Regular {
+                n_c: predicted,
+                max_coeff: 16,
+            },
+        )?;
+        scan[partition * 16..partition * 16 + 16].copy_from_slice(&block.scan);
+        total_coeff[partition] = block.total_coeff;
+        trailing_ones[partition] = block.trailing_ones;
+        block_bits[partition] = block.bits_consumed;
+    }
+    Ok(Cavlc8x8Residual {
+        scan,
+        total_coeff,
+        trailing_ones,
+        block_bits,
+        bits_consumed: reader.bit_pos(),
+    })
+}
+
+fn decode_residual(
+    reader: &mut BitReader<'_>,
+    kind: CavlcBlockKind,
+) -> Result<CavlcResidual, CavlcError> {
+    let start = reader.bit_pos();
     let max_coeff = kind.max_coeff()?;
-    let (total_coeff, trailing_ones) = decode_coeff_token(&mut reader, kind)?;
+    let (total_coeff, trailing_ones) = decode_coeff_token(reader, kind)?;
     if total_coeff > max_coeff {
         return Err(CavlcError::TotalCoeffExceedsBlock);
     }
@@ -96,15 +147,15 @@ pub fn decode_residual_4x4(data: &[u8], kind: CavlcBlockKind) -> Result<CavlcRes
             scan: [0; 16],
             total_coeff,
             trailing_ones,
-            bits_consumed: reader.bit_pos(),
+            bits_consumed: reader.bit_pos() - start,
         });
     }
 
-    let levels = decode_levels(&mut reader, total_coeff, trailing_ones)?;
+    let levels = decode_levels(reader, total_coeff, trailing_ones)?;
     let total_zeros = if total_coeff == max_coeff {
         0
     } else {
-        decode_total_zeros(&mut reader, kind, total_coeff)?
+        decode_total_zeros(reader, kind, total_coeff)?
     };
     if total_zeros + total_coeff > max_coeff {
         return Err(CavlcError::ZeroCountExceedsBlock);
@@ -117,7 +168,7 @@ pub fn decode_residual_4x4(data: &[u8], kind: CavlcBlockKind) -> Result<CavlcRes
 
     let mut coefficient = 1;
     while coefficient < total_coeff && zeros_left > 0 {
-        let run_before = decode_run_before(&mut reader, zeros_left)?;
+        let run_before = decode_run_before(reader, zeros_left)?;
         if run_before > zeros_left {
             return Err(CavlcError::InvalidRunBefore);
         }
@@ -141,7 +192,7 @@ pub fn decode_residual_4x4(data: &[u8], kind: CavlcBlockKind) -> Result<CavlcRes
         scan,
         total_coeff,
         trailing_ones,
-        bits_consumed: reader.bit_pos(),
+        bits_consumed: reader.bit_pos() - start,
     })
 }
 
@@ -712,6 +763,46 @@ mod tests {
         {
             check_vlc_table(120 + table, lengths, bits);
         }
+    }
+
+    #[test]
+    fn four_empty_8x8_partitions_consume_four_bits() {
+        let mut writer = BitWriter::new();
+        for _ in 0..4 {
+            writer.push(1, 1); // context 0 total_coeff=0
+        }
+        let residual = decode_residual_8x8(&writer.finish(), [-1; 4]).unwrap();
+        assert_eq!(residual.scan, [0; 64]);
+        assert_eq!(residual.total_coeff, [0; 4]);
+        assert_eq!(residual.trailing_ones, [0; 4]);
+        assert_eq!(residual.block_bits, [1; 4]);
+        assert_eq!(residual.bits_consumed, 4);
+    }
+
+    #[test]
+    fn eight_by_eight_partitions_continue_at_the_same_bit_cursor() {
+        let mut writer = BitWriter::new();
+        writer.push(0b01, 2); // block 0: one trailing one
+        writer.push(1, 1); // -1
+        writer.push(1, 1); // total_zeros=0
+        writer.push(0b001, 3); // block 1: two trailing ones
+        writer.push(0b01, 2); // +1, -1
+        writer.push(0b110, 3); // total_zeros=1
+        writer.push(1, 1); // run_before=0
+        writer.push(1, 1); // block 2: empty
+        writer.push(0b000101, 6); // block 3: total_coeff=1, trailing_ones=0
+        writer.push(0b10, 2); // level +2 at suffix_length=1
+        writer.push(1, 1); // total_zeros=0
+
+        let residual = decode_residual_8x8(&writer.finish(), [0; 4]).unwrap();
+        assert_eq!(residual.total_coeff, [1, 2, 0, 1]);
+        assert_eq!(residual.trailing_ones, [1, 2, 0, 0]);
+        assert_eq!(residual.block_bits, [4, 9, 1, 9]);
+        assert_eq!(residual.bits_consumed, 23);
+        assert_eq!(residual.scan[0], -1);
+        assert_eq!(residual.scan[17], -1);
+        assert_eq!(residual.scan[18], 1);
+        assert_eq!(residual.scan[48], 2);
     }
 
     fn check_vlc_table(table: usize, lengths: &[u8], bits: &[u8]) {
