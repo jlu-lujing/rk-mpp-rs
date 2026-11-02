@@ -94,6 +94,62 @@ impl fmt::Display for CavlcError {
 
 impl std::error::Error for CavlcError {}
 
+/// Stateful CAVLC reader over one RBSP.
+pub struct CavlcReader<'a> {
+    inner: BitReader<'a>,
+}
+
+impl<'a> CavlcReader<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self {
+            inner: BitReader::new(data),
+        }
+    }
+
+    pub fn at_bit_offset(data: &'a [u8], bit_offset: usize) -> Result<Self, CavlcError> {
+        let mut reader = Self::new(data);
+        let offset = u32::try_from(bit_offset).map_err(|_| CavlcError::Truncated)?;
+        reader
+            .inner
+            .skip(offset)
+            .map_err(|_| CavlcError::Truncated)?;
+        Ok(reader)
+    }
+
+    pub fn bit_pos(&self) -> usize {
+        self.inner.bit_pos()
+    }
+
+    pub fn bits_left(&self) -> usize {
+        self.inner.bits_left()
+    }
+
+    pub fn read_bits(&mut self, count: u32) -> Result<u32, CavlcError> {
+        self.inner
+            .read_bits(count)
+            .map_err(|_| CavlcError::Truncated)
+    }
+
+    pub fn read_ue(&mut self) -> Result<u32, CavlcError> {
+        self.inner.read_ue().map_err(|_| CavlcError::Truncated)
+    }
+
+    pub fn read_se(&mut self) -> Result<i32, CavlcError> {
+        self.inner.read_se().map_err(|_| CavlcError::Truncated)
+    }
+
+    pub fn decode_residual_4x4(
+        &mut self,
+        kind: CavlcBlockKind,
+    ) -> Result<CavlcResidual, CavlcError> {
+        decode_residual(&mut self.inner, kind)
+    }
+
+    pub fn decode_residual_8x8(&mut self, n_c: [i16; 4]) -> Result<Cavlc8x8Residual, CavlcError> {
+        decode_residual_8x8_from(&mut self.inner, n_c)
+    }
+}
+
 /// Predict CAVLC `nC` from the available left and top non-zero counts.
 ///
 /// An unavailable neighbour is represented by `None` and contributes no count.
@@ -126,13 +182,21 @@ pub fn decode_residual_4x4(data: &[u8], kind: CavlcBlockKind) -> Result<CavlcRes
 /// ready for [`super::h264::inverse_scan_8x8_cavlc`].
 pub fn decode_residual_8x8(data: &[u8], n_c: [i16; 4]) -> Result<Cavlc8x8Residual, CavlcError> {
     let mut reader = BitReader::new(data);
+    decode_residual_8x8_from(&mut reader, n_c)
+}
+
+fn decode_residual_8x8_from(
+    reader: &mut BitReader<'_>,
+    n_c: [i16; 4],
+) -> Result<Cavlc8x8Residual, CavlcError> {
+    let start = reader.bit_pos();
     let mut scan = [0i32; 64];
     let mut total_coeff = [0usize; 4];
     let mut trailing_ones = [0usize; 4];
     let mut block_bits = [0usize; 4];
     for (partition, predicted) in n_c.into_iter().enumerate() {
         let block = decode_residual(
-            &mut reader,
+            reader,
             CavlcBlockKind::Regular {
                 n_c: predicted,
                 max_coeff: 16,
@@ -148,7 +212,7 @@ pub fn decode_residual_8x8(data: &[u8], n_c: [i16; 4]) -> Result<Cavlc8x8Residua
         total_coeff,
         trailing_ones,
         block_bits,
-        bits_consumed: reader.bit_pos(),
+        bits_consumed: reader.bit_pos() - start,
     })
 }
 

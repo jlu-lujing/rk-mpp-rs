@@ -1,11 +1,12 @@
 //! H.264 I-slice macroblock syntax.
 //!
-//! This layer parses one intra macroblock through the start of its residual
-//! syntax. Pixel prediction and residual block traversal intentionally remain
-//! separate so both can be validated independently.
+//! This layer parses one intra macroblock header and traverses its CAVLC
+//! residual blocks through one bit cursor. Pixel prediction remains separate
+//! so syntax and reconstruction can be validated independently.
 
 use std::fmt;
 
+use super::h264_cavlc::{Cavlc8x8Residual, CavlcBlockKind, CavlcError, CavlcReader, CavlcResidual};
 use crate::codec::h264::parser::{BitReader, Pps, Sps};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,43 @@ pub struct ParsedIMacroblock {
     /// First residual bit for coded macroblocks, or the first bit after the PCM
     /// payload for `I_PCM`.
     pub residual_bit_offset: usize,
+}
+
+/// Non-zero counts immediately above and left of this macroblock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroblockNeighbors {
+    pub luma_dc_left: Option<u8>,
+    pub luma_dc_top: Option<u8>,
+    pub luma_left: [Option<u8>; 4],
+    pub luma_top: [Option<u8>; 4],
+    pub chroma_left: [[Option<u8>; 4]; 2],
+    pub chroma_top: [[Option<u8>; 4]; 2],
+}
+
+impl MacroblockNeighbors {
+    pub const fn unavailable() -> Self {
+        Self {
+            luma_dc_left: None,
+            luma_dc_top: None,
+            luma_left: [None; 4],
+            luma_top: [None; 4],
+            chroma_left: [[None; 4]; 2],
+            chroma_top: [[None; 4]; 2],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedMacroblockResidual {
+    pub luma_dc: Option<CavlcResidual>,
+    pub luma_4x4: [Option<CavlcResidual>; 16],
+    pub luma_8x8: [Option<Cavlc8x8Residual>; 4],
+    pub chroma_dc: [Option<CavlcResidual>; 2],
+    pub chroma_ac: [[Option<CavlcResidual>; 8]; 2],
+    pub luma_dc_non_zero: u8,
+    pub luma_non_zero: [u8; 16],
+    pub chroma_non_zero: [Vec<u8>; 2],
+    pub end_bit: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +116,7 @@ pub enum MacroblockError {
     InvalidIntraMode(u32),
     InvalidChromaPredictionMode(u32),
     NonZeroPcmAlignment,
+    Cavlc(CavlcError),
     Unsupported(&'static str),
 }
 
@@ -100,12 +139,19 @@ impl fmt::Display for MacroblockError {
             MacroblockError::NonZeroPcmAlignment => {
                 write!(f, "H.264 I_PCM alignment bits must be zero")
             }
+            MacroblockError::Cavlc(error) => error.fmt(f),
             MacroblockError::Unsupported(what) => write!(f, "unsupported H.264 macroblock: {what}"),
         }
     }
 }
 
 impl std::error::Error for MacroblockError {}
+
+impl From<CavlcError> for MacroblockError {
+    fn from(error: CavlcError) -> Self {
+        MacroblockError::Cavlc(error)
+    }
+}
 
 /// H.264 intra mode prediction from the available left and top modes.
 pub fn predict_intra_mode(left: Option<u8>, top: Option<u8>) -> u8 {
@@ -217,6 +263,239 @@ pub fn parse_i_macroblock(
         pcm_planes: Vec::new(),
         residual_bit_offset: reader.bit_pos(),
     })
+}
+
+/// Parse the residual syntax following an already parsed I macroblock.
+pub fn parse_i_macroblock_residual(
+    data: &[u8],
+    macroblock: &ParsedIMacroblock,
+    context: MacroblockContext,
+    neighbors: &MacroblockNeighbors,
+) -> Result<ParsedMacroblockResidual, MacroblockError> {
+    context.validate()?;
+    if context.chroma_format_idc == 3 {
+        return Err(MacroblockError::Unsupported(
+            "4:4:4 macroblock residual traversal",
+        ));
+    }
+    let mut reader = CavlcReader::at_bit_offset(data, macroblock.residual_bit_offset)?;
+    let mut result = ParsedMacroblockResidual {
+        luma_dc: None,
+        luma_4x4: std::array::from_fn(|_| None),
+        luma_8x8: std::array::from_fn(|_| None),
+        chroma_dc: std::array::from_fn(|_| None),
+        chroma_ac: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+        luma_dc_non_zero: 0,
+        luma_non_zero: [0; 16],
+        chroma_non_zero: [Vec::new(), Vec::new()],
+        end_bit: macroblock.residual_bit_offset,
+    };
+    if let Some((width, height)) = chroma_grid(context.chroma_format_idc) {
+        result.chroma_non_zero = [vec![0; width * height], vec![0; width * height]];
+    }
+
+    if macroblock.kind == IntraMacroblockKind::IPcm {
+        result.luma_dc_non_zero = 16;
+        result.luma_non_zero.fill(16);
+        let (width, height) = chroma_grid(context.chroma_format_idc).unwrap_or((0, 0));
+        for plane in 0..2 {
+            result.chroma_non_zero[plane] = vec![16; width * height];
+        }
+        result.end_bit = macroblock.residual_bit_offset;
+        return Ok(result);
+    }
+
+    let luma_cbp = macroblock.coded_block_pattern & 0x0f;
+    if matches!(macroblock.kind, IntraMacroblockKind::I16x16 { .. }) {
+        let n_c = super::h264_cavlc::predict_non_zero_count(
+            neighbors.luma_dc_left,
+            neighbors.luma_dc_top,
+        )?;
+        let dc = reader.decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 16 })?;
+        result.luma_dc_non_zero = dc.total_coeff as u8;
+        result.luma_dc = Some(dc);
+    }
+
+    match macroblock.kind {
+        IntraMacroblockKind::I4x4 | IntraMacroblockKind::I16x16 { .. } => {
+            decode_luma_4x4_groups(
+                &mut reader,
+                luma_cbp,
+                neighbors,
+                &mut result.luma_4x4,
+                &mut result.luma_non_zero,
+            )?;
+        }
+        IntraMacroblockKind::I8x8 => {
+            decode_luma_8x8_groups(
+                &mut reader,
+                luma_cbp,
+                neighbors,
+                &mut result.luma_8x8,
+                &mut result.luma_non_zero,
+            )?;
+        }
+        IntraMacroblockKind::IPcm => unreachable!(),
+    }
+
+    if context.decode_chroma() && macroblock.coded_block_pattern & 0x30 != 0 {
+        let (width, height) = chroma_grid(context.chroma_format_idc).unwrap();
+        for plane in 0..2 {
+            let kind = if context.chroma_format_idc == 1 {
+                CavlcBlockKind::ChromaDc420
+            } else {
+                CavlcBlockKind::ChromaDc422
+            };
+            result.chroma_dc[plane] = Some(reader.decode_residual_4x4(kind)?);
+        }
+
+        if macroblock.coded_block_pattern & 0x20 != 0 {
+            for plane in 0..2 {
+                for row in 0..height {
+                    for column in 0..width {
+                        let n_c = predict_block_nc(
+                            &result.chroma_non_zero[plane],
+                            width,
+                            row,
+                            column,
+                            neighbors.chroma_left[plane][row],
+                            neighbors.chroma_top[plane][column],
+                        )?;
+                        let block = reader
+                            .decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 15 })?;
+                        let position = row * width + column;
+                        result.chroma_non_zero[plane][position] = block.total_coeff as u8;
+                        result.chroma_ac[plane][position] = Some(block);
+                    }
+                }
+            }
+        }
+    }
+
+    result.end_bit = reader.bit_pos();
+    Ok(result)
+}
+
+fn decode_luma_4x4_groups(
+    reader: &mut CavlcReader<'_>,
+    cbp: u8,
+    neighbors: &MacroblockNeighbors,
+    blocks: &mut [Option<CavlcResidual>; 16],
+    non_zero: &mut [u8; 16],
+) -> Result<(), MacroblockError> {
+    for group in 0..4 {
+        let base_row = (group / 2) * 2;
+        let base_column = (group % 2) * 2;
+        if cbp & (1 << group) == 0 {
+            continue;
+        }
+        for sub in 0..4 {
+            let row = base_row + sub / 2;
+            let column = base_column + sub % 2;
+            blocks[row * 4 + column] = Some(decode_one_4x4(
+                reader, neighbors, non_zero, row, column, 15,
+            )?);
+        }
+    }
+    Ok(())
+}
+
+fn decode_luma_8x8_groups(
+    reader: &mut CavlcReader<'_>,
+    cbp: u8,
+    neighbors: &MacroblockNeighbors,
+    blocks: &mut [Option<Cavlc8x8Residual>; 4],
+    non_zero: &mut [u8; 16],
+) -> Result<(), MacroblockError> {
+    for group in 0..4 {
+        let base_row = (group / 2) * 2;
+        let base_column = (group % 2) * 2;
+        if cbp & (1 << group) == 0 {
+            continue;
+        }
+        let start = reader.bit_pos();
+        let mut scan = [0i32; 64];
+        let mut total_coeff = [0usize; 4];
+        let mut trailing_ones = [0usize; 4];
+        let mut block_bits = [0usize; 4];
+        for sub in 0..4 {
+            let row = base_row + sub / 2;
+            let column = base_column + sub % 2;
+            let n_c = predict_block_nc(
+                non_zero,
+                4,
+                row,
+                column,
+                neighbors.luma_left[row],
+                neighbors.luma_top[column],
+            )?;
+            let block =
+                reader.decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 16 })?;
+            scan[sub * 16..sub * 16 + 16].copy_from_slice(&block.scan);
+            total_coeff[sub] = block.total_coeff;
+            trailing_ones[sub] = block.trailing_ones;
+            block_bits[sub] = block.bits_consumed;
+            non_zero[row * 4 + column] = block.total_coeff as u8;
+        }
+        blocks[group] = Some(Cavlc8x8Residual {
+            scan,
+            total_coeff,
+            trailing_ones,
+            block_bits,
+            bits_consumed: reader.bit_pos() - start,
+        });
+    }
+    Ok(())
+}
+
+fn decode_one_4x4(
+    reader: &mut CavlcReader<'_>,
+    neighbors: &MacroblockNeighbors,
+    non_zero: &mut [u8; 16],
+    row: usize,
+    column: usize,
+    max_coeff: u8,
+) -> Result<CavlcResidual, MacroblockError> {
+    let n_c = predict_block_nc(
+        non_zero,
+        4,
+        row,
+        column,
+        neighbors.luma_left[row],
+        neighbors.luma_top[column],
+    )?;
+    let block = reader.decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff })?;
+    non_zero[row * 4 + column] = block.total_coeff as u8;
+    Ok(block)
+}
+
+fn predict_block_nc(
+    non_zero: &[u8],
+    width: usize,
+    row: usize,
+    column: usize,
+    external_left: Option<u8>,
+    external_top: Option<u8>,
+) -> Result<i16, MacroblockError> {
+    let left = if column == 0 {
+        external_left
+    } else {
+        Some(non_zero[row * width + column - 1])
+    };
+    let top = if row == 0 {
+        external_top
+    } else {
+        Some(non_zero[(row - 1) * width + column])
+    };
+    super::h264_cavlc::predict_non_zero_count(left, top).map_err(Into::into)
+}
+
+fn chroma_grid(chroma_format_idc: u8) -> Option<(usize, usize)> {
+    match chroma_format_idc {
+        1 => Some((2, 2)),
+        2 => Some((2, 4)),
+        _ => None,
+    }
 }
 
 fn parse_intra_modes(reader: &mut BitReader<'_>, grid: usize) -> Result<Vec<u8>, MacroblockError> {
@@ -469,6 +748,153 @@ mod tests {
         );
         assert_eq!(mb.pcm_planes[0][255], 255);
         assert_eq!(mb.pcm_planes[1][63], 63);
+    }
+
+    #[test]
+    fn parses_complete_i16x16_residual_in_c_order() {
+        let mut writer = BitWriter::new();
+        writer.ue(21); // I16x16 DC, CBP 47
+        writer.ue(0); // chroma vertical
+        writer.se(0);
+        writer.put(0b01, 2); // luma DC: one trailing one
+        writer.put(0, 1); // +1
+        writer.put(1, 1); // no total zeros
+        for _ in 0..16 {
+            writer.put(1, 1); // empty luma AC blocks
+        }
+        writer.put(0b01, 2); // empty Cb DC
+        writer.put(0b01, 2); // empty Cr DC
+        for _ in 0..8 {
+            writer.put(1, 1); // empty chroma AC blocks
+        }
+        let data = writer.finish();
+        let header = parse_i_macroblock(&data, 0, context(1)).unwrap();
+        let residual = parse_i_macroblock_residual(
+            &data,
+            &header,
+            context(1),
+            &MacroblockNeighbors::unavailable(),
+        )
+        .unwrap();
+        assert_eq!(
+            header.kind,
+            IntraMacroblockKind::I16x16 { prediction_mode: 2 }
+        );
+        assert_eq!(residual.luma_dc.as_ref().unwrap().total_coeff, 1);
+        assert!(residual
+            .luma_4x4
+            .iter()
+            .all(|block| { block.as_ref().is_some_and(|block| block.total_coeff == 0) }));
+        assert!(residual
+            .chroma_dc
+            .iter()
+            .all(|block| { block.as_ref().is_some_and(|block| block.total_coeff == 0) }));
+        assert!(residual.chroma_ac[0][..4].iter().all(Option::is_some));
+        assert!(residual.chroma_ac[1][..4].iter().all(Option::is_some));
+        assert_eq!(residual.end_bit, 43);
+    }
+
+    #[test]
+    fn traverses_i4x4_groups_and_updates_the_non_zero_grid() {
+        let mut writer = BitWriter::new();
+        writer.put(0b11, 2); // block 0 is empty in context 1 (nC=3)
+        for _ in 1..16 {
+            writer.put(1, 1);
+        }
+        let data = writer.finish();
+        let mb = ParsedIMacroblock {
+            kind: IntraMacroblockKind::I4x4,
+            luma_prediction_modes: vec![2; 16],
+            chroma_prediction_mode: Some(0),
+            coded_block_pattern: 15,
+            qp_delta: 0,
+            pcm_planes: Vec::new(),
+            residual_bit_offset: 0,
+        };
+        let mut neighbors = MacroblockNeighbors::unavailable();
+        neighbors.luma_left[0] = Some(4);
+        neighbors.luma_top[0] = Some(2);
+        let residual = parse_i_macroblock_residual(&data, &mb, context(1), &neighbors).unwrap();
+        assert!(residual.luma_4x4.iter().all(Option::is_some));
+        assert_eq!(residual.luma_non_zero, [0; 16]);
+        assert_eq!(residual.end_bit, 17);
+    }
+
+    #[test]
+    fn i16_luma_dc_uses_its_own_neighbour_context() {
+        let mb = ParsedIMacroblock {
+            kind: IntraMacroblockKind::I16x16 { prediction_mode: 2 },
+            luma_prediction_modes: vec![2; 16],
+            chroma_prediction_mode: Some(0),
+            coded_block_pattern: 0,
+            qp_delta: 0,
+            pcm_planes: Vec::new(),
+            residual_bit_offset: 0,
+        };
+        let mut neighbors = MacroblockNeighbors::unavailable();
+        neighbors.luma_dc_left = Some(4);
+        neighbors.luma_dc_top = Some(2);
+        // nC=3 selects context 1, whose empty coeff_token is 11.
+        let residual =
+            parse_i_macroblock_residual(&[0b1100_0000], &mb, context(1), &neighbors).unwrap();
+        assert_eq!(residual.luma_dc.as_ref().unwrap().total_coeff, 0);
+        assert_eq!(residual.luma_dc_non_zero, 0);
+        assert_eq!(residual.end_bit, 2);
+    }
+
+    #[test]
+    fn traverses_four_i8x8_groups_through_one_bit_cursor() {
+        let mut writer = BitWriter::new();
+        for _ in 0..16 {
+            writer.put(1, 1);
+        }
+        let data = writer.finish();
+        let mb = ParsedIMacroblock {
+            kind: IntraMacroblockKind::I8x8,
+            luma_prediction_modes: vec![2; 4],
+            chroma_prediction_mode: Some(0),
+            coded_block_pattern: 15,
+            qp_delta: 0,
+            pcm_planes: Vec::new(),
+            residual_bit_offset: 0,
+        };
+        let residual = parse_i_macroblock_residual(
+            &data,
+            &mb,
+            context(1),
+            &MacroblockNeighbors::unavailable(),
+        )
+        .unwrap();
+        assert!(residual.luma_8x8.iter().all(Option::is_some));
+        assert_eq!(residual.end_bit, 16);
+    }
+
+    #[test]
+    fn chroma_dc_only_cbp_does_not_consume_chroma_ac_blocks() {
+        let mut writer = BitWriter::new();
+        writer.put(0b01, 2); // Cb DC total_coeff=0
+        writer.put(0b01, 2); // Cr DC total_coeff=0
+        let data = writer.finish();
+        let mb = ParsedIMacroblock {
+            kind: IntraMacroblockKind::I4x4,
+            luma_prediction_modes: vec![2; 16],
+            chroma_prediction_mode: Some(0),
+            coded_block_pattern: 0x10,
+            qp_delta: 0,
+            pcm_planes: Vec::new(),
+            residual_bit_offset: 0,
+        };
+        let residual = parse_i_macroblock_residual(
+            &data,
+            &mb,
+            context(1),
+            &MacroblockNeighbors::unavailable(),
+        )
+        .unwrap();
+        assert!(residual.luma_4x4.iter().all(Option::is_none));
+        assert!(residual.chroma_dc.iter().all(Option::is_some));
+        assert!(residual.chroma_ac.iter().flatten().all(Option::is_none));
+        assert_eq!(residual.end_bit, 4);
     }
 
     #[test]
