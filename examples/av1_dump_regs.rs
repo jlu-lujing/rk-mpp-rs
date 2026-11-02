@@ -8,10 +8,6 @@ use rk_mpp_rs::hal::av1d::{
     display_layout, Av1DmaBuffers, Av1RegisterState, Av1Registers, FILM_GRAIN_BUFFER_SIZE,
 };
 
-fn u16_at(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap())
-}
-
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
@@ -55,31 +51,22 @@ fn main() {
     }
 
     let mut state = Av1RegisterState::default();
+    let mut reference_frames: [Option<usize>; 8] = [None; 8];
+    let mut allocated_frames = 0usize;
     for (job_index, (coded, packet)) in jobs.iter().enumerate() {
         let expected = std::fs::read(format!(
             "tests/data/av1_picparams/picparams_{job_index:03}.bin"
         ))
         .ok();
-        let current_slot = expected
-            .as_ref()
-            .map(|bytes| u16_at(bytes, offset_of!(Av1PicParams, curr_pic_texture_index)) as u8)
-            .unwrap_or(job_index as u8);
-        let mut reference_texture_slots = [0x7f; 8];
-        for logical in 0..7 {
-            let source = coded.header.ref_frame_idx[logical] as usize;
-            reference_texture_slots[source] = expected
-                .as_ref()
-                .map(|bytes| bytes[offset_of!(Av1PicParams, frame_refs) + logical * 108 + 48] as u8)
-                .unwrap_or(job_index as u8);
+        let live: Vec<usize> = reference_frames.iter().flatten().copied().collect();
+        let current_slot = (0..allocated_frames)
+            .find(|index| !live.contains(index))
+            .unwrap_or(allocated_frames);
+        if current_slot == allocated_frames {
+            allocated_frames += 1;
         }
-        if let Some(expected) = &expected {
-            for (slot, value) in reference_texture_slots.iter_mut().enumerate() {
-                let mapped = expected[offset_of!(Av1PicParams, ref_frame_map_texture_index) + slot];
-                if mapped != 0xff {
-                    *value = mapped;
-                }
-            }
-        }
+        let reference_texture_slots =
+            reference_frames.map(|reference| reference.map_or(0x7f, |index| index as u8));
 
         let params = Av1PicParams::build(
             parser.sequence().unwrap(),
@@ -89,7 +76,7 @@ fn main() {
             &coded.tile_ranges,
             coded.frame_start,
             coded.frame_tag_size,
-            current_slot,
+            current_slot as u8,
             &reference_texture_slots,
             PicParamsPointers {
                 cdfs: expected
@@ -174,6 +161,11 @@ fn main() {
                 offsets,
             )
             .unwrap();
+        }
+        for (slot, reference) in reference_frames.iter_mut().enumerate() {
+            if coded.header.refresh_frame_flags & (1 << slot) != 0 {
+                *reference = Some(current_slot);
+            }
         }
 
         eprintln!(

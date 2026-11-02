@@ -25,6 +25,20 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
 
+fn choose_texture_slot(
+    reference_frames: &[Option<usize>; 8],
+    allocated_frames: &mut usize,
+) -> usize {
+    let live: Vec<usize> = reference_frames.iter().flatten().copied().collect();
+    let current = (0..*allocated_frames)
+        .find(|index| !live.contains(index))
+        .unwrap_or(*allocated_frames);
+    if current == *allocated_frames {
+        *allocated_frames += 1;
+    }
+    current
+}
+
 #[test]
 fn picparams_layout_matches_the_c_board_abi() {
     assert_eq!(PIC_PARAMS_SIZE, 3_240);
@@ -51,6 +65,8 @@ fn every_multi_tile_hardware_job_matches_the_c_picparams_snapshot() {
     let data = std::fs::read("tests/data/av1_tiles_320x240_10.ivf").unwrap();
     let ivf = rk_mpp_rs::codec::av1::parser::parse_ivf(&data).unwrap();
     let mut parser = Av1PacketParser::new();
+    let mut reference_frames: [Option<usize>; 8] = [None; 8];
+    let mut allocated_frames = 0usize;
     let mut coded_index = 0;
 
     for packet in &ivf.frames {
@@ -59,20 +75,9 @@ fn every_multi_tile_hardware_job_matches_the_c_picparams_snapshot() {
                 continue;
             };
             let expected = snapshot(coded_index);
-            let current_slot =
-                u16_at(&expected, offset_of!(Av1PicParams, curr_pic_texture_index)) as u8;
-            let mut reference_texture_slots = [0x7f; 8];
-            for logical in 0..7 {
-                let source = frame.header.ref_frame_idx[logical] as usize;
-                reference_texture_slots[source] =
-                    expected[offset_of!(Av1PicParams, frame_refs) + logical * 108 + 48] as u8;
-            }
-            for (slot, value) in reference_texture_slots.iter_mut().enumerate() {
-                let mapped = expected[offset_of!(Av1PicParams, ref_frame_map_texture_index) + slot];
-                if mapped != 0xff {
-                    *value = mapped;
-                }
-            }
+            let current_slot = choose_texture_slot(&reference_frames, &mut allocated_frames);
+            let reference_texture_slots =
+                reference_frames.map(|reference| reference.map_or(0x7f, |index| index as u8));
             let pointers = PicParamsPointers {
                 cdfs: u64_at(&expected, offset_of!(Av1PicParams, cdfs)),
                 intrabc_cdfs: u64_at(&expected, offset_of!(Av1PicParams, cdfs_ndvc)),
@@ -86,7 +91,7 @@ fn every_multi_tile_hardware_job_matches_the_c_picparams_snapshot() {
                 &frame.tile_ranges,
                 frame.frame_start,
                 frame.frame_tag_size,
-                current_slot,
+                current_slot as u8,
                 &reference_texture_slots,
                 pointers,
             );
@@ -107,10 +112,75 @@ fn every_multi_tile_hardware_job_matches_the_c_picparams_snapshot() {
                     frame.tile_ranges[0],
                 );
             }
+            for (slot, reference) in reference_frames.iter_mut().enumerate() {
+                if frame.header.refresh_frame_flags & (1 << slot) != 0 {
+                    *reference = Some(current_slot);
+                }
+            }
             coded_index += 1;
         }
     }
 
+    assert_eq!(coded_index, 11);
+}
+
+#[test]
+fn decoder_texture_slot_reuse_matches_c_for_every_tile_job() {
+    let data = std::fs::read("tests/data/av1_tiles_320x240_10.ivf").unwrap();
+    let ivf = rk_mpp_rs::codec::av1::parser::parse_ivf(&data).unwrap();
+    let mut parser = Av1PacketParser::new();
+    let mut reference_frames: [Option<usize>; 8] = [None; 8];
+    let mut allocated_frames = 0usize;
+    let mut coded_index = 0usize;
+
+    for packet in &ivf.frames {
+        for event in parser.parse_packet(packet.data).unwrap() {
+            let Av1PacketEvent::Coded(frame) = event else {
+                continue;
+            };
+            let expected = snapshot(coded_index);
+            let expected_current =
+                u16_at(&expected, offset_of!(Av1PicParams, curr_pic_texture_index)) as usize;
+            let current = choose_texture_slot(&reference_frames, &mut allocated_frames);
+            assert_eq!(
+                current, expected_current,
+                "coded frame {coded_index}, order_hint={}",
+                frame.header.order_hint
+            );
+
+            for logical in 0..7 {
+                let source = frame.header.ref_frame_idx[logical] as usize;
+                let actual = frame.references_at_header[logical]
+                    .valid
+                    .then_some(reference_frames[source])
+                    .flatten()
+                    .map(|index| index as i8)
+                    .unwrap_or(0x7f);
+                let expected_index =
+                    expected[offset_of!(Av1PicParams, frame_refs) + logical * 108 + 48] as i8;
+                assert_eq!(
+                    actual, expected_index,
+                    "coded frame {coded_index}, reference {logical}, slot {source}"
+                );
+            }
+
+            for (slot, reference) in reference_frames.iter().enumerate() {
+                let actual = reference.map(|index| index as u8).unwrap_or(0xff);
+                let expected =
+                    expected[offset_of!(Av1PicParams, ref_frame_map_texture_index) + slot];
+                assert_eq!(
+                    actual, expected,
+                    "coded frame {coded_index}, reference-map slot {slot}"
+                );
+            }
+            for (slot, reference) in reference_frames.iter_mut().enumerate() {
+                if frame.header.refresh_frame_flags & (1 << slot) != 0 {
+                    *reference = Some(current);
+                }
+            }
+            coded_index += 1;
+        }
+    }
     assert_eq!(coded_index, 11);
 }
 

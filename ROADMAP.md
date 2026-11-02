@@ -361,6 +361,12 @@ in what order the evidence gets produced.
         jobs in the 2x2 tile fixture byte-identical to C MPP, including RK3588
         reference remapping, skip-mode references, split-frame offsets and
         ABI padding
+  - [x] Rust's own AV1 texture-slot replay, rather than C's texture indices,
+        independently reproduces all 11 jobs' current slot, seven logical
+        reference mappings and pre-refresh reference map. It includes the
+        hidden order-hint-8 frame and the later return to physical slot 4.
+        `av1_dump_regs` now uses this replay, and its 11 regenerated PicParams
+        images are still byte-identical to the C snapshots.
   - [x] non-identity translation/ROTZOOM/AFFINE global-motion conversion,
         primary-reference inheritance, shear quantization and invalid/scaled
         reference fallback match the C MPP integer rules

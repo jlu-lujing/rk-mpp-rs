@@ -44,7 +44,8 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > python3 tools/av1/compare_input_dumps.py /data/video /tmp/av1-rust
 > ```
 >
-> 离线证据：11/11 PicParams 与 C golden 相同，88 个镜像文件尺寸正确；
+> 离线证据：导出器自行重放 Rust 的 DPB 槽位分配，不从 C snapshot 抄 current/
+> reference slot；11/11 PicParams 仍与 C golden 相同，88 个镜像文件尺寸正确。
 > 比较器在模拟一致输入上 11/11 PASS，并能在单字破坏时定位到具体寄存器。
 > 真实 C `DUMP_AV1_DATAS` 对照仍需等 t62 恢复，不能据此放行硬件提交。
 >
@@ -93,7 +94,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 605 passed, 26 board-only ignored
+cargo test --all-targets      # 606 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
