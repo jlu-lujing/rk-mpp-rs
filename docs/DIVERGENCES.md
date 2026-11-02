@@ -51,7 +51,7 @@ Dispositions:
 
 | Case | Disposition | Evidence |
 |---|---|---|
-| IEP2 deinterlace modes | **FIXED** | The original 720x480 I5O2 job is byte-identical to `iep2_test`. A parameterized C client-28 probe then covers I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B/DISABLE/BYPASS: `board_iep_modes_vs_probe.sh` is 9/9 over both raw dst slots, including TFF/BFF and 1280x720. T modes write dst0, B modes write dst1, and the unused slot remains zero. |
+| IEP2 deinterlace modes and formats | **FIXED** | The original 720x480 I5O2 job is byte-identical to `iep2_test`. A parameterized C client-28 probe covers I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B/DISABLE/BYPASS: `board_iep_modes_vs_probe.sh` is 9/9 over both raw dst slots, including TFF/BFF and 1280x720. The 420/422 x SP/planar x UV/VU matrix is 6/6. T modes write dst0, B modes write dst1, and the unused slot remains zero. |
 | IEP legacy YUV scale/crop | **NO-ORACLE** | The scale API belongs to the legacy `/dev/iep` backend. t6 has no `/dev/iep` node and the legacy client/driver does not bind; IEP2 client 28 has no scale/crop fields. No C hardware output exists here to compare against. |
 | VDPP (client 29) | **NO-ORACLE** | The engine does not exist on RK3588; M9's original engine cannot be imitated on this board. |
 

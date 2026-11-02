@@ -2,11 +2,12 @@
  * Minimal IEP2 client-28 probe for deinterlace mode comparisons.
  *
  * Usage:
- *   iep2_probe in.yuv out.yuv width height mode field_order
+ *   iep2_probe in.yuv out.yuv width height mode field_order [fmt swap]
  *
  * mode is the numeric enum IEP2_DIL_MODE; field_order is 0 (TFF) or 1 (BFF).
- * The input must contain three NV12/YUV420SP frames. Both destination buffers
- * are zeroed before the job and written verbatim afterwards, so an unused slot
+ * fmt/swap are the numeric IEP2_FMT/IEP2_YUV_SWAP values and default to
+ * 420SP_UV. The input must contain three frames. Both destination buffers are
+ * zeroed before the job and written verbatim afterwards, so an unused slot
  * remains observable instead of being inferred from the selected mode.
  */
 #include <stdint.h>
@@ -22,30 +23,35 @@
 #include "iep2_api.h"
 
 #define ADD_OFFSET(base, offset) ((RK_U32)(base) + ((RK_U32)(offset) << 10))
-static size_t frame_size(int w, int h)
+static size_t frame_size(int w, int h, int fmt)
 {
-    return (size_t)w * h * 3 / 2;
+    if (fmt == IEP2_FMT_YUV422)
+        return (size_t)w * h * 2;
+    if (fmt == IEP2_FMT_YUV420)
+        return (size_t)w * h * 3 / 2;
+    return 0;
 }
 
-static void set_image(IepImg *img, int w, int h, RK_U32 base)
+static void set_image(IepImg *img, int w, int h, int fmt, RK_U32 base)
 {
     size_t y_size = (size_t)w * h;
+    size_t chroma = fmt == IEP2_FMT_YUV422 ? y_size / 2 : y_size / 4;
     img->mem_addr = base;
     img->uv_addr = ADD_OFFSET(base, y_size);
-    img->v_addr = ADD_OFFSET(base, y_size + y_size / 4);
+    img->v_addr = ADD_OFFSET(base, y_size + chroma);
     img->act_w = w;
     img->act_h = h;
     img->x_off = 0;
     img->y_off = 0;
     img->vir_w = w;
     img->vir_h = h;
-    img->format = IEP2_FMT_YUV420;
+    img->format = fmt;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc != 7) {
-        fprintf(stderr, "usage: %s in.yuv out.yuv width height mode field_order\n",
+    if (argc != 7 && argc != 9) {
+        fprintf(stderr, "usage: %s in.yuv out.yuv width height mode field_order [fmt swap]\n",
                 argv[0]);
         return 2;
     }
@@ -55,7 +61,9 @@ int main(int argc, char **argv)
     int height = atoi(argv[4]);
     int mode = atoi(argv[5]);
     int field_order = atoi(argv[6]);
-    size_t size = frame_size(width, height);
+    int fmt = argc == 9 ? atoi(argv[7]) : IEP2_FMT_YUV420;
+    int swap = argc == 9 ? atoi(argv[8]) : IEP2_YUV_SWAP_SP_UV;
+    size_t size = frame_size(width, height, fmt);
     MppBufferGroup group = NULL;
     MppBuffer src[3] = { NULL, NULL, NULL };
     MppBuffer dst[2] = { NULL, NULL };
@@ -64,7 +72,7 @@ int main(int argc, char **argv)
     iep_com_ctx *ctx = NULL;
     MPP_RET ret = MPP_NOK;
 
-    if (width <= 0 || height <= 0 || width & 1 || height & 1)
+    if (width <= 0 || height <= 0 || width & 1 || height & 1 || !size)
         return 2;
 
     input = fopen(input_path, "rb");
@@ -105,10 +113,10 @@ int main(int argc, char **argv)
 
     memset(&params, 0, sizeof(params));
     params.ptype = IEP2_PARAM_TYPE_COM;
-    params.param.com.sfmt = IEP2_FMT_YUV420;
-    params.param.com.sswap = IEP2_YUV_SWAP_SP_UV;
-    params.param.com.dfmt = IEP2_FMT_YUV420;
-    params.param.com.dswap = IEP2_YUV_SWAP_SP_UV;
+    params.param.com.sfmt = fmt;
+    params.param.com.sswap = swap;
+    params.param.com.dfmt = fmt;
+    params.param.com.dswap = swap;
     params.param.com.width = width;
     params.param.com.height = height;
     params.param.com.hor_stride = width;
@@ -121,7 +129,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < 3; i++) {
         IepImg image;
         memset(&image, 0, sizeof(image));
-        set_image(&image, width, height, mpp_buffer_get_fd(src[i]));
+        set_image(&image, width, height, fmt, mpp_buffer_get_fd(src[i]));
         IepCmd cmd = i == 0 ? IEP_CMD_SET_SRC :
                      (i == 1 ? IEP_CMD_SET_DEI_SRC1 : IEP_CMD_SET_DEI_SRC2);
         if (ctx->ops->control(ctx->priv, cmd, &image))
@@ -130,7 +138,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < 2; i++) {
         IepImg image;
         memset(&image, 0, sizeof(image));
-        set_image(&image, width, height, mpp_buffer_get_fd(dst[i]));
+        set_image(&image, width, height, fmt, mpp_buffer_get_fd(dst[i]));
         IepCmd cmd = i == 0 ? IEP_CMD_SET_DST : IEP_CMD_SET_DEI_DST1;
         if (ctx->ops->control(ctx->priv, cmd, &image))
             goto cleanup;

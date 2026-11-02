@@ -3185,13 +3185,15 @@ fn main() {
         // One IEP2 deinterlace. The raw output always contains both hardware
         // destination slots so single-output modes can verify the unused slot is
         // zero; the active slot count is reported separately.
-        use rk_mpp_rs::hal::iep::{Iep2DilMode, Iep2FieldOrder, Iep2Fmt, Iep2OutMode};
+        use rk_mpp_rs::hal::iep::{Iep2DilMode, Iep2FieldOrder, Iep2Fmt, Iep2OutMode, Iep2YuvSwap};
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
         let height: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
         let mut field_order = Iep2FieldOrder::Tff;
         let mut dil_mode = Iep2DilMode::I5O2;
+        let mut format = Iep2Fmt::Yuv420;
+        let mut swap = Iep2YuvSwap::SpUv;
         for text in args.iter().skip(6) {
             match text.as_str() {
                 "TFF" => field_order = Iep2FieldOrder::Tff,
@@ -3204,6 +3206,30 @@ fn main() {
                 "I1O1B" => dil_mode = Iep2DilMode::I1O1B,
                 "BYPASS" => dil_mode = Iep2DilMode::Bypass,
                 "DISABLE" => dil_mode = Iep2DilMode::Disable,
+                "420sp" => {
+                    format = Iep2Fmt::Yuv420;
+                    swap = Iep2YuvSwap::SpUv;
+                }
+                "420spvu" => {
+                    format = Iep2Fmt::Yuv420;
+                    swap = Iep2YuvSwap::SpVu;
+                }
+                "420p" => {
+                    format = Iep2Fmt::Yuv420;
+                    swap = Iep2YuvSwap::P;
+                }
+                "422sp" => {
+                    format = Iep2Fmt::Yuv422;
+                    swap = Iep2YuvSwap::SpUv;
+                }
+                "422spvu" => {
+                    format = Iep2Fmt::Yuv422;
+                    swap = Iep2YuvSwap::SpVu;
+                }
+                "422p" => {
+                    format = Iep2Fmt::Yuv422;
+                    swap = Iep2YuvSwap::P;
+                }
                 other => {
                     eprintln!("unknown IEP mode {other}");
                     std::process::exit(2);
@@ -3211,15 +3237,17 @@ fn main() {
             }
         }
         if src.is_empty() || dst.is_empty() || width == 0 || height == 0 {
-            eprintln!("usage: rk-mpp-rs iep-dei <in.yuv> <out.yuv> <width> <height> [TFF|BFF] [I5O2|I5O1T|I5O1B|I2O2|I1O1T|I1O1B]");
+            eprintln!("usage: rk-mpp-rs iep-dei <in.yuv> <out.yuv> <width> <height> [TFF|BFF] [I5O2|I5O1T|I5O1B|I2O2|I1O1T|I1O1B] [420sp|420spvu|420p|422sp|422spvu|422p]");
             std::process::exit(2);
         }
         let cfg = iep_session::DeinterlaceConfig {
             width,
             height,
             hor_stride: width,
-            src_fmt: Iep2Fmt::Yuv420,
-            dst_fmt: Iep2Fmt::Yuv420,
+            src_fmt: format,
+            dst_fmt: format,
+            src_swap: swap,
+            dst_swap: swap,
             dil_mode,
             out_mode: Iep2OutMode::Line,
             field_order,

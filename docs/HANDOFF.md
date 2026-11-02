@@ -146,6 +146,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_h265_lowdelay_vs_mpp.sh      # H.265 逐 slice packet 4/4
 ./scripts/board_h265_roi_vs_mpp.sh           # H.265 ROI/QP map 4/4
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 全模式 + 原始 dst slots 9/9
+./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar 6/6
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
@@ -409,6 +410,8 @@ H.264/VEPU580 编码已做到：
 - `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1。
   `board_iep_modes_vs_probe.sh` 为 **9/9**：I5O2（TFF/BFF）、I5O1T/B、I2O2、
   I1O1T/B、DISABLE、BYPASS。T 模式只写 dst0，B 模式只写 dst1，未用槽为零。
+- 格式矩阵已闭合：420/422 × SP/Planar × UV/VU 为 **6/6**，输入 fixture、
+  C probe 和 Rust 两侧同一格式，两个 raw dst slot 逐字节一致。
 - 现有 `src/scale.rs` 已覆盖推理链路需要的 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×），
   不需要为了 YOLO 去移植 IEP；做完整性再做。
 
