@@ -94,3 +94,26 @@ for mode in cbr vbr avbr; do
     exit 1
   fi
 done
+
+# ---- smart-GOP cell ---------------------------------------------------------
+# `vi_len = 1` asks the harness for a smart GOP. The RC budget on this cell is the
+# same 7456 as the plain GOP, and our model reproduces the whole stream; the only
+# input that produced the tiny 582 target was the invalid bare `-g 60`.
+vi_c="/tmp/rk-mpp-rs-h265-vi-${size}-c.265"
+vi_r="/tmp/rk-mpp-rs-h265-vi-${size}-r.265"
+ssh t6 "sudo rm -f $vi_c $vi_r"
+if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $seq -o $vi_c \
+    -w $width -h $height -t $hevc_type -f 0 -n 2 -g 0:60:1 -rc 1 -bps $bps \
+    -qc 26:$qp_min:$qp_max:$qp_min:$qp_max -v q" >/dev/null 2>&1; then
+  printf 'FAIL %-12s vi (reference encode failed)\n' "$size"; exit 1
+fi
+if ! ssh t6 "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs h265-rate \
+    $seq $vi_r $width $height 2 $bps 26 $qp_min $qp_max cbr" >/tmp/h265-vi-${size}.log 2>&1; then
+  printf 'FAIL %-12s vi (our encode failed: %s)\n' "$size" "$(tail -1 /tmp/h265-vi-${size}.log)"
+  exit 1
+fi
+if ssh t6 "cmp -s $vi_c $vi_r"; then
+  printf 'PASS %-12s vi   (%s bytes, smart GOP, model picked both QPs)\n' "$size" "$(ssh t6 "stat -c%s $vi_c")"
+else
+  printf 'FAIL %-12s vi (streams differ)\n' "$size"; exit 1
+fi

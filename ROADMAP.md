@@ -874,6 +874,35 @@ in what order the evidence gets produced.
        bytes and AVBR 1164, all byte-identical to the C encoder.
        `scripts/board_h265_cbr_vs_mpp.sh` runs four cells: explicit decisions (1169)
        plus model-driven cbr/vbr/avbr.
+- [x] **The smart-GOP shape (`vi_len`) and the degenerate `-g 60` cell.** See the
+      note above: the documented GOP forms all give the model's own 9320/QP27 second
+      decision and match byte for byte, `vi_len = 1` included. Only the invalid bare
+      `-g 60` produced 582, and it is not a supported harness input.
+      `scripts/board_h265_cbr_vs_mpp.sh` now has five cells (explicit decisions,
+      cbr/vbr/avbr, smart GOP), all passing.
+- [ ] H.265 (rkvenc): `rc:refresh_length`-driven refresh pictures (the GDR-style
+      `INTRA_RFI_FRAME` allocation), tiles/WPP/SAO, B frames, multiple references and
+      per-slice output.
+      Note on the harness cell that exposed this: `-g 60` is parsed by
+      `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero -
+      an input `mpi_enc_gen_ref_cfg` rejects outright. It is the only input that
+      produced the tiny 582-bit second picture; the documented forms all agree with
+      the model. `-g 0:60:0` (plain GOP), `-g 0:60:1` (smart GOP with `vi_len = 1`)
+      and `-g 0:0:0` (unset GOP) each give the same 7456 `ctu_ebit`, i.e. 9320 bits
+      / QP 27, and our model-driven stream is byte-identical on the `vi_len = 1`
+      cell too (1163 bytes). A fixed-QP 6-frame run under `-g 60` is a plain
+      IDR + five P, so the refresh behaviour is RC-side only.
+      The schedule itself is `mpi_enc_gen_smart_gop_ref_cfg`
+      (`utils/mpi_enc_utils.c:854`): one LT entry with `lt_gap = gop_len`, then
+      `st_ref[0]` as `REF_TO_PREV_INTRA` (the first P after every IDR is a
+      virtual-intra frame), `vi_len - 2` plain Ps when `vi_len > 1`, then another VI.
+      The RC's refresh allocation branch is gated on `rc:refresh_length`
+      (`mpp_enc_impl.cpp:1302`), which is separate from the harness's `vi_len` and is
+      not exercised by these cells.
+      The register side already supports both markings, and the model now also
+      accepts the reference's degenerate GOP forms: `igop <= 0` and `igop == 1`
+      normalise to 500 (the all-intra form pins `init_ip_ratio` to 16), where it used
+      to refuse them.
 - [ ] H.265 (rkvenc): the VI/refresh GOP schedule (`MppEncRefCfg`'s frame modes, which
       decide when a picture takes the refresh allocation and the LT marking),
       tiles/WPP/SAO, B frames, multiple references and per-slice output.
