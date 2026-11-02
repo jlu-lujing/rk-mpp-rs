@@ -241,30 +241,46 @@ fn encode_jpeg(
     chroma: jpege::ChromaFormat,
     rotation: jpege::Rotation,
     split_mcus: Option<u16>,
-) -> Result<(usize, f64), String> {
+    low_delay: bool,
+) -> Result<(usize, usize, f64), String> {
     let input = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
     let config = jpege::EncoderConfig {
         quality,
         chroma,
         rotation,
         split_mcus,
+        low_delay,
         ..jpege::EncoderConfig::new_for_input(width, height, input_format)
     };
     config.validate()?;
     let (expected_width, expected_height) = config.output_size();
     let mut encoder = jpege::Vepu2Jpeg::open().map_err(|e| format!("open JPEG encoder: {e}"))?;
     let started = Instant::now();
-    let encoded = encoder.encode(&input, config)?;
+    let encoded = encoder.encode_packets(&input, config)?;
     let elapsed = started.elapsed();
-    let info = jpeg::parse(&encoded).map_err(|e| format!("encoded stream is invalid: {e}"))?;
+    if std::env::var_os("RK_MPP_TRACE_PACKETS").is_some() {
+        let sizes = encoded
+            .packets
+            .iter()
+            .map(|packet| packet.len().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        eprintln!("jpeg frame 0: {} packet(s): {sizes}", encoded.packets.len());
+    }
+    let info =
+        jpeg::parse(&encoded.bytes).map_err(|e| format!("encoded stream is invalid: {e}"))?;
     if info.width != expected_width || info.height != expected_height {
         return Err(format!(
             "encoded dimensions are {}x{}, expected {expected_width}x{expected_height}",
             info.width, info.height
         ));
     }
-    std::fs::write(out_path, &encoded).map_err(|e| format!("{out_path}: {e}"))?;
-    Ok((encoded.len(), us(elapsed) / 1000.0))
+    std::fs::write(out_path, &encoded.bytes).map_err(|e| format!("{out_path}: {e}"))?;
+    Ok((
+        encoded.bytes.len(),
+        encoded.packets.len(),
+        us(elapsed) / 1000.0,
+    ))
 }
 
 fn bench_encode_nv12(
@@ -1528,7 +1544,7 @@ fn main() {
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         if src.is_empty() || dst.is_empty() {
             eprintln!(
-                "usage: rk-mpp-rs jpeg-enc <in.yuv> <out.jpg> <width> <height> [quant 0..10|qf<1..100>] [420|422|gray|444] [nv12|yuyv|uyvy|rgb565|bgr565|rgb555|bgr555|rgb444|bgr444|rgb101010|bgr101010|argb8888|abgr8888|bgra8888|rgba8888] [rst<mcus>] [rot90|rot270]"
+                "usage: rk-mpp-rs jpeg-enc <in.yuv> <out.jpg> <width> <height> [quant 0..10|qf<1..100>] [420|422|gray|444] [nv12|yuyv|uyvy|rgb565|bgr565|rgb555|bgr555|rgb444|bgr444|rgb101010|bgr101010|argb8888|abgr8888|bgra8888|rgba8888] [rst<mcus>] [rot90|rot270] [splitout:lowdelay]"
             );
             std::process::exit(2);
         }
@@ -1585,6 +1601,7 @@ fn main() {
         // Trailing order-independent options: restart interval and rotation.
         let mut rotation = jpege::Rotation::None;
         let mut split_mcus: Option<u16> = None;
+        let mut low_delay = false;
         for extra in args.get(9..).unwrap_or(&[]) {
             if let Some(degrees) = extra.strip_prefix("rot") {
                 rotation = match degrees {
@@ -1600,16 +1617,27 @@ fn main() {
                     eprintln!("invalid JPEG restart interval {extra}");
                     std::process::exit(2);
                 }));
+            } else if extra == "splitout:lowdelay" || extra == "lowdelay" {
+                low_delay = true;
             } else {
                 eprintln!("unknown JPEG encoder option {extra}");
                 std::process::exit(2);
             }
         }
         match encode_jpeg(
-            src, dst, width, height, quality, input_format, chroma, rotation, split_mcus,
+            src,
+            dst,
+            width,
+            height,
+            quality,
+            input_format,
+            chroma,
+            rotation,
+            split_mcus,
+            low_delay,
         ) {
-            Ok((bytes, ms)) => println!(
-                "encoded {src} -> {dst}: {bytes} bytes, {width}x{height}, {quality_label}, {ms:.3} ms"
+            Ok((bytes, packets, ms)) => println!(
+                "encoded {src} -> {dst}: {bytes} bytes, {packets} packet(s), {width}x{height}, {quality_label}, {ms:.3} ms"
             ),
             Err(e) => {
                 eprintln!("JPEG encode failed: {e}");

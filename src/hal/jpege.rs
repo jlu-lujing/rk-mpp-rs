@@ -16,6 +16,7 @@
 //! `hal_jpege_vepu2_gen_regs()`.
 
 use std::io;
+use std::ops::Range;
 
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
@@ -272,6 +273,10 @@ pub struct EncoderConfig {
     /// MCUs per band, the `MPP_ENC_SPLIT_BY_CTU` `split_arg`. `None` or an
     /// argument that yields no band disables the restart interval.
     pub split_mcus: Option<u16>,
+    /// Expose each restart band as its own packet. The assembled JPEG is the
+    /// same single-job stream; this is the output view C's low-delay part loop
+    /// produces.
+    pub low_delay: bool,
 }
 
 impl EncoderConfig {
@@ -292,6 +297,7 @@ impl EncoderConfig {
             chroma: ChromaFormat::default(),
             rotation: Rotation::default(),
             split_mcus: None,
+            low_delay: false,
         }
     }
 
@@ -344,6 +350,18 @@ impl EncoderConfig {
                     plan.restart_interval
                 ));
             }
+        }
+        if self.low_delay && self.split_plan().is_none() {
+            return Err("JPEG low-delay output requires a valid MCU split".into());
+        }
+        if self.low_delay && self.rotation != Rotation::None {
+            return Err("C's VEPU2 JPEG part path does not apply rotated band offsets".into());
+        }
+        if self.low_delay && self.width.saturating_mul(self.height) > 1280 * 720 {
+            return Err(
+                "VEPU2 JPEG above 720p enters C's multi-core partition path, not the sequential part path"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -462,6 +480,15 @@ pub struct PreparedHeader {
     pub quant: QuantTables,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedJpeg {
+    /// Complete JPEG stream.
+    pub bytes: Vec<u8>,
+    /// Packet byte ranges. There is one full-stream range unless low-delay
+    /// output is enabled.
+    pub packets: Vec<Range<usize>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RegisterFile {
     pub words: [u32; REG_COUNT],
@@ -485,13 +512,31 @@ impl Vepu2Jpeg {
     }
 
     pub fn encode_nv12(&mut self, input: &[u8], config: EncoderConfig) -> Result<Vec<u8>, String> {
+        self.encode_nv12_packets(input, config)
+            .map(|encoded| encoded.bytes)
+    }
+
+    pub fn encode_nv12_packets(
+        &mut self,
+        input: &[u8],
+        config: EncoderConfig,
+    ) -> Result<EncodedJpeg, String> {
         if config.input != InputFormat::Nv12 || config.chroma != ChromaFormat::Yuv420 {
             return Err("encode_nv12 requires NV12 input and 4:2:0 output".into());
         }
-        self.encode(input, config)
+        self.encode_packets(input, config)
     }
 
     pub fn encode(&mut self, input: &[u8], config: EncoderConfig) -> Result<Vec<u8>, String> {
+        self.encode_packets(input, config)
+            .map(|encoded| encoded.bytes)
+    }
+
+    pub fn encode_packets(
+        &mut self,
+        input: &[u8],
+        config: EncoderConfig,
+    ) -> Result<EncodedJpeg, String> {
         let input_size = config.input_size()?;
         if input.len() < input_size {
             return Err(format!(
@@ -516,8 +561,7 @@ impl Vepu2Jpeg {
             input_buf.fd()
         };
 
-        let output = self.encode_fd(input_fd, config)?;
-        Ok(output)
+        self.encode_fd_packets(input_fd, config)
     }
 
     /// Encode an externally allocated input dma-buf. The output is still owned
@@ -526,6 +570,15 @@ impl Vepu2Jpeg {
     /// The caller must finish CPU writes and flush the input dma-buf before
     /// calling this method.
     pub fn encode_fd(&mut self, input_fd: i32, config: EncoderConfig) -> Result<Vec<u8>, String> {
+        self.encode_fd_packets(input_fd, config)
+            .map(|encoded| encoded.bytes)
+    }
+
+    pub fn encode_fd_packets(
+        &mut self,
+        input_fd: i32,
+        config: EncoderConfig,
+    ) -> Result<EncodedJpeg, String> {
         config.validate()?;
         let prepared = prepare_header(config)?;
         if self.output.as_ref().map(DmaBuf::len).unwrap_or(0) < config.output_capacity {
@@ -595,8 +648,86 @@ impl Vepu2Jpeg {
         output
             .sync_read_end()
             .map_err(|e| format!("output dma-buf read sync end: {e}"))?;
-        Ok(result)
+        let packets = packet_ranges(&result, config)?;
+        Ok(EncodedJpeg {
+            bytes: result,
+            packets,
+        })
     }
+}
+
+/// C's low-delay part loop emits the JPEG header and first band together, then
+/// one packet per following restart band. The bytes are identical to the
+/// single-job stream, so derive the packet views from its RST markers instead
+/// of submitting the picture again band by band.
+fn packet_ranges(stream: &[u8], config: EncoderConfig) -> Result<Vec<Range<usize>>, String> {
+    if !config.low_delay {
+        return Ok(vec![0..stream.len()]);
+    }
+    let plan = config
+        .split_plan()
+        .ok_or_else(|| "JPEG low-delay output requires a valid MCU split".to_string())?;
+    let (_, mcu_ver) = config.mcu_counts();
+    let expected_packets = (mcu_ver + plan.part_rows - 1) / plan.part_rows;
+
+    let sos = find_marker(stream, SOS)
+        .ok_or_else(|| "JPEG low-delay stream has no SOS marker".to_string())?;
+    let sos_len = stream
+        .get(sos + 2..sos + 4)
+        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]) as usize)
+        .ok_or_else(|| "JPEG low-delay stream has a truncated SOS segment".to_string())?;
+    let entropy = sos
+        .checked_add(2 + sos_len)
+        .filter(|&start| start <= stream.len())
+        .ok_or_else(|| "JPEG low-delay SOS length exceeds the stream".to_string())?;
+
+    let mut boundaries = Vec::with_capacity(expected_packets - 1);
+    let mut at = entropy;
+    while at + 1 < stream.len() {
+        if stream[at] != 0xff {
+            at += 1;
+            continue;
+        }
+        let marker = stream[at + 1];
+        if (0xd0..=0xd7).contains(&marker) {
+            boundaries.push(at + 2);
+            at += 2;
+        } else if marker == 0xd9 {
+            break;
+        } else {
+            at += 2;
+        }
+    }
+
+    if boundaries.len() + 1 != expected_packets {
+        return Err(format!(
+            "JPEG low-delay stream has {} restart markers, expected {}",
+            boundaries.len(),
+            expected_packets - 1
+        ));
+    }
+    if stream.last_chunk::<2>() != Some(&[0xff, 0xd9]) {
+        return Err("JPEG low-delay stream does not end with EOI".into());
+    }
+    boundaries.push(stream.len());
+
+    let mut start = 0;
+    let mut packets = Vec::with_capacity(boundaries.len());
+    for end in boundaries {
+        if end <= start {
+            return Err("JPEG low-delay produced an empty packet".into());
+        }
+        packets.push(start..end);
+        start = end;
+    }
+    Ok(packets)
+}
+
+fn find_marker(stream: &[u8], marker: u16) -> Option<usize> {
+    let marker = marker.to_be_bytes();
+    stream
+        .windows(2)
+        .position(|window| window == marker.as_slice())
 }
 
 fn prepare_header(config: EncoderConfig) -> Result<PreparedHeader, String> {
@@ -1099,6 +1230,54 @@ mod tests {
                 "split_mcus {arg:?}"
             );
         }
+    }
+
+    #[test]
+    fn low_delay_packets_end_at_the_restart_markers() {
+        let stream = [
+            0xff, 0xd8, // SOI
+            0xff, 0xda, 0x00, 0x02, // SOS, then entropy starts at byte 6
+            1, 2, 0xff, 0xd0, 3, 0xff, 0xd1, 4, 0xff, 0xd2, 5, 0xff, 0xd3, 6, 7, 0xff, 0xd9,
+        ];
+        let config = EncoderConfig {
+            split_mcus: Some(60),
+            low_delay: true,
+            ..EncoderConfig::new(320, 240)
+        };
+        assert_eq!(
+            packet_ranges(&stream, config).unwrap(),
+            vec![0..10, 10..13, 13..16, 16..19, 19..23]
+        );
+    }
+
+    #[test]
+    fn low_delay_packet_count_must_match_the_split_plan() {
+        let short = [
+            0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 1, 0xff, 0xd0, 2, 0xff, 0xd9,
+        ];
+        let config = EncoderConfig {
+            split_mcus: Some(60),
+            low_delay: true,
+            ..EncoderConfig::new(320, 240)
+        };
+        assert!(packet_ranges(&short, config).is_err());
+    }
+
+    #[test]
+    fn low_delay_output_needs_a_valid_split() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.low_delay = true;
+        assert!(config.validate().is_err());
+        config.split_mcus = Some(60);
+        assert!(config.validate().is_ok());
+        config.rotation = Rotation::Degree90;
+        assert!(config.validate().is_err());
+        config.rotation = Rotation::None;
+        config.width = 1920;
+        config.height = 1080;
+        config.hor_stride = 1920;
+        config.ver_stride = 1080;
+        assert!(config.validate().is_err());
     }
 
     #[test]

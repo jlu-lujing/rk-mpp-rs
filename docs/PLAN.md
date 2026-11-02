@@ -230,7 +230,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W3-1 RGB / RGBX 输入（VEPU2 的输入格式寄存器路径）
 - [ ] W3-2 90/270 旋转
 - [ ] W3-3 restart markers（间隔、DRI）
-- [ ] W3-4 low-delay slices / 多 slice
+- [x] W3-4 low-delay slices —— `board_jpege_lowdelay_vs_mpp.sh` 2/2；
+      320x240 5 packet、640x480 10 packet 均与 C 的完整码流和逐 packet 长度一致。
+      旋转和 >720p 因 C 走其它路径而明确拒绝。
 - [ ] W3-5 多核切分（若 CCU 可用，依赖 W5）
 - [ ] W3-6 4:2:2/4:4:4/gray：记录为硬件不支持（已验），不实现伪支持
 

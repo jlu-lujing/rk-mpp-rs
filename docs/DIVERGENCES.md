@@ -37,6 +37,7 @@ Dispositions:
 | Case | Disposition | Evidence |
 |---|---|---|
 | H.264 slice split, output packets (`MPP_ENC_SPLIT_OUT_LOWDELAY`) | **FIXED** | `split_out=1`, `slen_fifo` and one-entry `POLL_HW_IRQ` drain now emit per-slice packets. `board_h264_lowdelay_vs_mpp.sh` passes BY_CTU 96/150/8, BY_BYTE 256 and six IDR+P pictures (5/5): concatenated streams and every slice boundary match. The 38-slice cell crosses the 32-entry FIFO. C may represent the final header/EOI as a trailing zero-length entry; both layouts end at the same offset. |
+| JPEG low-delay slices | **FIXED** | `jpeg-enc ... rst<mcus> splitout:lowdelay` exposes byte ranges ending after each RST marker. `board_jpege_lowdelay_vs_mpp.sh` is 2/2: 320x240/5 packets and 640x480/10 packets match C in complete bytes and every packet length. Rotation and >720p are explicitly rejected because C selects different paths there. |
 | H.264 P pictures above 4096 width | **FIXED** | `FRAMES=2 board_h264_wide_vs_mpp.sh` encodes IDR+P at 4160x64 and 4608x256: both byte-identical to the C probe, CIME extension lines included. |
 | H.265 GDR / intra refresh | **NO-ORACLE** | The 2024-04 vintage cannot be made to emit `is_i_refresh` through the public config (no ref cfg in the probe path); the crate's table path is opt-in and unverified. |
 | H.265 tiles/WPP/SAO, B frames, multi-reference | NOT IMPLEMENTED | Frozen with the feature frontier. |

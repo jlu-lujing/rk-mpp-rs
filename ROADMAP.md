@@ -117,7 +117,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
 | M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR, slice output | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split is byte-identical over four cells (BY_CTU at 96/8/150 blocks and BY_BYTE at 256, the 8-block cell putting 38 slices past the 32-entry FIFO), per-slice low-delay packet output is byte-identical over five cells (including that 38-slice FIFO crossing and a six-picture IDR+P stream), and the >4096 CIME extension lines over two (4160x64, 4608x256). P pictures match at eleven sizes spanning the FBC-header threshold - the divergence past 640x480 was the constant FBC body offset, since fixed. The implemented H.264 encode surface is closed; new scheduling/recoding modes remain frozen feature work.** |
-| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode started - VPS/SPS/PPS written and parsed back, and a derived (not replayed) IDR register image, 23 host tests, one ignored board test; not submit-capable until a reference H.265 job is captured** |
+| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input and low-delay packet output are board-byte-exact; multi-core band partitioning remains. H.265 fixed-QP IDR/P GOP and CBR/VBR/AVBR are board-byte-exact. VI/refresh scheduling, tiles/WPP/SAO, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 I5O2 deinterlace is byte-identical to the C `iep2_test` on t6 (720x480, 1,036,800 bytes); scale/crop and the other modes are untouched. VDPP (client 29) is absent on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
@@ -1629,11 +1629,20 @@ in what order the evidence gets produced.
       through the colour path) - all byte-identical, all at sizes <= 480p
       because the reference's own default for client-19 work above 720p is a
       four-band partition the single-job path cannot byte-match by design.
- - [ ] JPEG encoder (vepu): low-delay slices and multi-core partitioning,
-      researched in `docs/jpege-slices-multicore.md`: the per-band register
-      table, the fact that `base.low_delay` arms only through the `-cfg` event
-      file, the `MPP_DEV_DELIMIT` slot being NULL under the vcodec protocol
-      (a tracer study on the board decides it), and the >720p caveat above.
+ - [x] **JPEG low-delay packet output is byte-identical to C.** Rust keeps the
+       already-ported single hardware job and exposes packet byte ranges ending
+       after each RST marker, matching C's sequential band loop without paying
+       for one submission per band. `tools/jpege_probe.c` supplies the C oracle
+       because the pinned `mpi_enc_test` cannot set `base:low_delay`.
+       `scripts/board_jpege_lowdelay_vs_mpp.sh` covers 320x240/5 packets and
+       640x480/10 packets: **2/2 byte-identical with identical packet lengths**.
+       The ten-packet cell also crosses MPP's eight-slot output-task pool.
+       Rotated low-delay output and pictures above the 1280x720 area gate are
+       refused because C routes those through different paths.
+ - [ ] JPEG multi-core band partitioning, researched in
+       `docs/jpege-slices-multicore.md`: the per-band register table, the
+       `MPP_DEV_DELIMIT` slot being NULL under the vcodec protocol (a tracer
+       study on the board decides it), and the >720p caveat above.
 
 ### Post-processing
 - [x] RGB888 letterbox scaler (own, faster than RGA for our sizes)

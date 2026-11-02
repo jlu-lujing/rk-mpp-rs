@@ -1,6 +1,7 @@
 # JPEG slice and multi-core partitioning on VEPU2 (research)
 
-Status: investigated, not implemented. Both mechanisms live in
+Status: low-delay packet output is implemented and board-verified; multi-core
+partitioning is investigated but not implemented. Both mechanisms live in
 `hal_jpege_vepu2_v2.c` for RK3588's client-19 (`VPU_CLIENT_VEPU2_JPEG`),
 the same client `rk-mpp-rs` opens. Line numbers refer to the develop
 reference under `refs/mpp`. Everything the *single-job* restart path needs
@@ -26,14 +27,11 @@ restart_ri = mcu_hor * part_rows                (RK3588 branch)
 low_delay  = base.low_delay && part_rows
 ```
 
-`mpi_enc_test` exposes none of these through flags; the env names
-`split_mode` / `split_arg` / `split_out` exist
-(`utils/mpi_enc_utils.c:1388-1395`) but `base.low_delay` has only the
-`MppEncCfg` key `base:low_delay` (`mpp/base/mpp_enc_cfg.c:45`), reachable
-through the `-cfg` event file (`test/cfg/enc/base_jpg_1920x1080.json`
-contains `base.low_delay` and `split.mode/arg/out`). A board script for
-the C oracle therefore needs `-cfg` with that file edited, and it must be
-verified that the pinned oracle vintage's `-cfg` applies these keys.
+The pinned 2024-04 `mpi_enc_test` does not expose these keys: its env names
+cover `split_mode` / `split_arg` / `split_out`, but `base:low_delay` is only a
+`MppEncCfg` key. `tools/jpege_probe.c` therefore drives the reference library
+directly and drains low-delay packets with EOI, using a worker thread so MPP's
+fixed output-task pool cannot deadlock above eight bands.
 
 ### Register derivation per band
 
@@ -60,21 +58,26 @@ readback; the next band continues the stream at that byte.
 `part_start` never applies the 90/270 offset swap (only `multi_core_start`
 does, `:661-679`), so C's part path is effectively rotation-free.
 
-### Why this was not implemented here
+### Rust implementation
 
-The full stream a part loop produces is byte-equivalent to the already
-ported single job with the same split, because `restart_ri` is *defined*
-as one band of MCUs: the hardware inserts the RST marker at every band
-boundary either way, and the part marker index (`rst_marker_idx++` per
-band) coincides with the DRI restart cycle modulo 8. The single-job form
-is what `scripts/board_jpege_restart_vs_mpp.sh` compares byte-for-byte
-against the C encoder. What the part loop adds beyond those bytes is
-incremental packet output per band — the framework-level async plumbing
-(M10), not something the synchronous `submit_batch + poll_hw_finish`
-client can expose. The loop itself (N batches with the table above) has
-one known C-oracle dependency: pinning `-cfg low_delay` on the board.
-`EncoderConfig::split_plan()` already yields `part_rows`, so the
-implementation cost when M10 lands is confined to `encode_fd`.
+The full stream a part loop produces is byte-equivalent to the ported single
+job with the same split, because `restart_ri` is *defined* as one band of
+MCUs: the hardware inserts the RST marker at every band boundary either way,
+and the part marker index (`rst_marker_idx++` per band) coincides with the DRI
+restart cycle modulo 8.
+
+Rust therefore keeps one hardware job and exposes `EncodedJpeg::packets` as
+byte ranges over the completed stream. Packet 0 contains the JPEG header and
+first band; each following range ends immediately after the next RST marker.
+This produces the same packet bytes and boundaries without resubmitting the
+picture once per band.
+
+`scripts/board_jpege_lowdelay_vs_mpp.sh` verifies 320x240 / five packets and
+640x480 / ten packets: both complete streams and every packet length are
+identical to C. The old restart matrix remains 12/12 byte-identical. Rotated
+low-delay output is rejected because C's part path does not apply the rotation
+offset rules, and pictures above the 1280x720 area gate are rejected because C
+enters the separate multi-core path below.
 
 ## 2. Multi-core partitioning (RK3588 default above 720p)
 
