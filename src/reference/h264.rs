@@ -156,6 +156,56 @@ pub fn inverse_scan_4x4(scan: [i32; 16]) -> [i32; 16] {
     raster
 }
 
+const DEQUANT4: [[i32; 3]; 6] = [
+    [10, 13, 16],
+    [11, 14, 18],
+    [13, 16, 20],
+    [14, 18, 23],
+    [16, 20, 25],
+    [18, 23, 29],
+];
+
+/// H.264 8.5.9 inverse quantisation for one scanned 4x4 residual block.
+///
+/// `scaling` is a raster-order 4x4 matrix factor. `None` is the flat matrix of
+/// sixteen used by the baseline streams. The level at scan position zero is
+/// treated like every other level; luma/chroma DC streams use their separate
+/// DC transform path before this function.
+pub fn dequant_4x4(
+    scan: [i32; 16],
+    qp: u8,
+    bit_depth: u8,
+    scaling: Option<&[u8; 16]>,
+) -> Result<[i32; 16], &'static str> {
+    if !(8..=10).contains(&bit_depth) {
+        return Err("H.264 reference dequant supports 8..=10 bit");
+    }
+    let max_qp = 51 + 6 * (bit_depth as u16 - 8);
+    if u16::from(qp) > max_qp {
+        return Err("H.264 QP exceeds the profile bit-depth limit");
+    }
+
+    let shift = qp / 6 + 2;
+    let index = qp % 6;
+    let scaling = scaling.map(|matrix| matrix.map(i32::from));
+    let mut qmul = [0i32; 16];
+    for x in 0..16 {
+        let scale = scaling.unwrap_or([16; 16])[x];
+        let class = ((x & 1) + ((x >> 2) & 1)) as usize;
+        let destination = (x >> 2) | ((x << 2) & 0xf);
+        qmul[destination] = (DEQUANT4[index as usize][class] * scale) << shift;
+    }
+
+    let mut output = [0i32; 16];
+    for (scan_pos, level) in scan.into_iter().enumerate() {
+        let raster = ZIGZAG_4X4[scan_pos];
+        let value = (i64::from(level) * i64::from(qmul[raster]) + 32) >> 6;
+        output[raster] =
+            i32::try_from(value).map_err(|_| "dequantised H.264 coefficient overflows i32")?;
+    }
+    Ok(output)
+}
+
 /// Inverse 4x4 luma DC Hadamard transform before QP-dependent scaling.
 pub fn inverse_luma_dc_4x4(input: [i32; 16]) -> [i32; 16] {
     let mut tmp = [0i32; 16];
@@ -300,5 +350,40 @@ mod tests {
 
         assert_eq!(inverse_chroma_dc_2x2([4; 4]), [16, 0, 0, 0]);
         assert_eq!(inverse_chroma_dc_2x2([1, 0, 0, 0]), [1; 4]);
+    }
+
+    #[test]
+    fn dequant_flat_4x4_uses_the_position_classes_for_both_qp_bands() {
+        let levels = [1i32; 16];
+        assert_eq!(
+            dequant_4x4(levels, 0, 8, None).unwrap(),
+            [10, 13, 10, 13, 13, 16, 13, 16, 10, 13, 10, 13, 13, 16, 13, 16,]
+        );
+        assert_eq!(
+            dequant_4x4(levels, 24, 8, None).unwrap(),
+            [160, 208, 160, 208, 208, 256, 208, 256, 160, 208, 160, 208, 208, 256, 208, 256,]
+        );
+    }
+
+    #[test]
+    fn dequant_rounds_negative_levels_like_ffmpeg_and_checks_qp_depth() {
+        let mut levels = [0i32; 16];
+        levels[0] = -1;
+        let output = dequant_4x4(levels, 0, 8, None).unwrap();
+        assert_eq!(output[0], -10);
+
+        assert!(dequant_4x4(levels, 63, 10, None).is_ok());
+        assert!(dequant_4x4(levels, 64, 10, None).is_err());
+        assert!(dequant_4x4(levels, 52, 8, None).is_err());
+    }
+
+    #[test]
+    fn dequant_uses_the_supplied_scaling_matrix() {
+        let mut scaling = [16u8; 16];
+        scaling[0] = 1;
+        let mut levels = [0i32; 16];
+        levels[0] = 1;
+        let output = dequant_4x4(levels, 0, 8, Some(&scaling)).unwrap();
+        assert_eq!(output[0], 1);
     }
 }

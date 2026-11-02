@@ -61,7 +61,7 @@
 复跑：
 
 ```bash
-cargo test --all-targets                     # 637 通过，26 个板级用例 ignore
+cargo test --all-targets                     # 640 通过，26 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -125,7 +125,7 @@ src/codec/        各格式语法解析（h264 hevc vp9 av1 m2v mpg4 h263 vp8 jp
 src/codec/rc/     码率控制移植（MppDataV2 + rc_model_v2 的 CBR/VBR）
 src/hal/          各硬件块寄存器生成（h264d hevc av1d vp9d vp8d jpegd jpege h264e）
 src/scale.rs      RGB 缩放 / letterbox（替代 RGA）
-src/reference/    自研软件参考解码器（M11；CABAC、HEVC 变换、H.264 4×4 残差/DC/扫描）
+src/reference/    自研软件参考解码器（M11；CABAC、HEVC 变换、H.264 4×4 扫描/反量化/残差/DC）
 scripts/          板上回归、吞吐、取证脚本
 tools/            寄存器字段生成器、ioctl tracer、C 侧探针、diff 工具
 tests/data/       C 侧真实输出构成的 golden / fixture
