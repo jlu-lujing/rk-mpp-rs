@@ -906,6 +906,16 @@ in what order the evidence gets produced.
       writes 912 bytes over four pictures, the crate 1740. Our band is wider on the
       same indices, so the next step is a trace of the refresh job's `reg0178`,
       `roi_en` and search-axis writes rather than more table arithmetic.
+      The trace answered it, but from the other side: the C never refreshed at all.
+      With the trio set through `mpp_enc_cfg_set_u32` (the key type matters) and
+      `h265e_proc_cfg` deriving `refresh_length = ceil(mb_rows / refresh_num)` as it
+      should (`h265e_api.c:600`), every job still has `roi_en = 0` and the stream is
+      the 912-byte no-refresh one. `set_frm_refresh_flag` is only reached while the
+      ref-config generator walks its `st_cfg` list (`mpp_enc_refs.cpp:612`), and the
+      probe sets no ref cfg, so `is_i_refresh` stays 0. Producing a C GDR oracle
+      therefore needs an explicit `MPP_ENC_SET_REF_CFG` in the probe, not more rc
+      keys; until then the crate's GDR path has no oracle and must not be called
+      verified.
       Note on the harness cell that exposed this: `-g 60` is parsed by
       `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero -
       an input `mpi_enc_gen_ref_cfg` rejects outright. It is the only input that
