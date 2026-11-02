@@ -34,6 +34,8 @@ offline stub run with both binaries pointed at `false` reports
 `named=1, skipped=0` and leaves the Rust log absent, proving the known board-
 wedging fixture cannot be executed by the sweep. The two proven film-grain
 `C-BUG` rows are skipped at the same point instead of being decoded twice.
+The classifier strips the corpus copy's `td_` prefix, so `CORPUS=tests/data`
+cannot bypass quarantine either; a two-name stub run reports `named=2`.
 
 The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
 

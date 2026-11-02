@@ -27,7 +27,8 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > 路径在这块板/内核上的真实缺陷。已做两件事：
 > 1. `POLL_HW_FINISH` 改为 5 秒上限（非阻塞轮询 + EINVAL 回退），避免进程永久挂住；
 > 2. corpus 扫描把该夹具标为 `QUARANTINE`，并在调用 Rust 或 C 解码器之前
->    直接跳过；离线 stub 验证确认 `RUST_BIN`/`MPP_BIN` 均未被调用。
+>    直接跳过；离线 stub 验证确认 `RUST_BIN`/`MPP_BIN` 均未被调用，且带
+>    `td_` 前缀和直接使用 `tests/data` 的两种文件名都会命中。
 > 复现时连带检查 `dmesg` 是否有 `mpp_task_timeout_work`；不要盲目重复跑。
 >
 > **安全诊断入口（2026-11-02）：** `examples/av1_dump_regs.rs` 现在可以在
