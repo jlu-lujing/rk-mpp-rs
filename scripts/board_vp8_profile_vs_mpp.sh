@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # VP8 profile 1/3 board question: does vdpu2 reproduce the profile 1/3 IDCT
 # precision, and does C behave the same way?
 #
@@ -18,12 +19,12 @@
 # Usage: scripts/board_vp8_profile_vs_mpp.sh [corpus-dir]
 set -euo pipefail
 
-corpus="${1:-/home/user/rk-mpp-oracles/corpus}"
+corpus="${1:-~/rk-mpp-oracles/corpus}"
 here="$(cd "$(dirname "$0")" && pwd)"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 mpp_bin=/tmp/mpp-develop/build/test/mpi_dec_test
 mpp_lib=/tmp/mpp-develop/build/mpp
@@ -34,11 +35,11 @@ frames=12
 
 # Stage 0: ask the corpus first. Anything not profile 0 there outranks the
 # derived fixture because it came out of a real encoder.
-scp -q "$here/board_vp8_profile_probe.py" t6:/tmp/board_vp8_profile_probe.py </dev/null
-ssh t6 "python3 /tmp/board_vp8_profile_probe.py $corpus" </dev/null |
+scp -q "$here/board_vp8_profile_probe.py" "$BOARD":/tmp/board_vp8_profile_probe.py </dev/null
+ssh "$BOARD" "python3 /tmp/board_vp8_profile_probe.py $corpus" </dev/null |
   grep -E 'v[1-7]:' || printf 'corpus carries profile 0 only; using derived fixtures\n'
 
-ssh t6 "cat > /tmp/vp8_patch_profile.py" <<'PY'
+ssh "$BOARD" "cat > /tmp/vp8_patch_profile.py" <<'PY'
 import struct, sys
 src, dst, version = sys.argv[1], sys.argv[2], int(sys.argv[3])
 data = open(src, 'rb').read()
@@ -59,7 +60,7 @@ fail=0
 for profile in 1 3; do
   name="vp8_p${profile}_320x240_12_ip"
   stream="/tmp/${name}.ivf"
-  ssh t6 "python3 /tmp/vp8_patch_profile.py \
+  ssh "$BOARD" "python3 /tmp/vp8_patch_profile.py \
     ~/rk-mpp-rs/tests/data/vp8_320x240_12_ip.ivf $stream $profile"
 
   mpp_out="/tmp/${name}_mpp.nv12"
@@ -68,16 +69,16 @@ for profile in 1 3; do
   mpp_log="/tmp/${name}_mpp.log"
   rust_log="/tmp/${name}_rust.log"
 
-  ssh t6 "sudo rm -f $mpp_out; sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 \
+  ssh "$BOARD" "sudo rm -f $mpp_out; sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 \
     $mpp_bin -i $stream -t 9 -n $frames -o $mpp_out -v q >$mpp_log 2>&1" && mpp_rc=0 || mpp_rc=$?
-  ssh t6 "sudo rm -f $rust; cd ~/rk-mpp-rs && sudo timeout 120 \
+  ssh "$BOARD" "sudo rm -f $rust; cd ~/rk-mpp-rs && sudo timeout 120 \
     ./target/release/rk-mpp-rs vp8dec $stream $rust >$rust_log 2>&1" && rust_rc=0 || rust_rc=$?
 
-  ssh t6 "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
     -video_size ${width}x${height} -i $mpp_out -pix_fmt yuv420p -f rawvideo $planar" \
     >/dev/null 2>&1 || true
-  mpp_frames=$(ssh t6 "stat -c %s $planar 2>/dev/null || echo 0" | awk '{print int($1/115200)}')
-  rust_frames=$(ssh t6 "test -f $rust && stat -c %s $rust || echo 0" | awk '{print int($1/115200)}')
+  mpp_frames=$(ssh "$BOARD" "stat -c %s $planar 2>/dev/null || echo 0" | awk '{print int($1/115200)}')
+  rust_frames=$(ssh "$BOARD" "test -f $rust && stat -c %s $rust || echo 0" | awk '{print int($1/115200)}')
 
   if [ "$mpp_rc" != "$rust_rc" ]; then
     printf 'FAIL profile %s: exit code differs (C %s, Rust %s)\n' "$profile" "$mpp_rc" "$rust_rc"
@@ -87,7 +88,7 @@ for profile in 1 3; do
     fail=1
   elif [ "$mpp_frames" = 0 ]; then
     printf 'NOTE profile %s: both decoders produced no output (rc %s)\n' "$profile" "$mpp_rc"
-  elif ssh t6 "cmp -s $planar $rust"; then
+  elif ssh "$BOARD" "cmp -s $planar $rust"; then
     printf 'PASS profile %s: %s frames byte-identical to C\n' "$profile" "$rust_frames"
   else
     printf 'DIFF profile %s: %s frames each but bytes differ (record, hardware question)\n' \
@@ -98,7 +99,7 @@ done
 # Derived key-frame scale-factor check: the two scale fields are display-only.
 # libvpx (FFmpeg) and the C MPP both decode such a stream at the coded size, and so
 # does this crate since the refusal was removed - the judge is byte identity.
-ssh t6 "python3 - /tmp/vp8_scaled_key.ivf ~/rk-mpp-rs/tests/data/vp8_320x240_12_ip.ivf" <<'PY'
+ssh "$BOARD" "python3 - /tmp/vp8_scaled_key.ivf ~/rk-mpp-rs/tests/data/vp8_320x240_12_ip.ivf" <<'PY'
 import struct, sys
 dst, src = sys.argv[1], sys.argv[2]
 data = open(src, 'rb').read()
@@ -115,15 +116,15 @@ PY
 scaled_c=/tmp/vp8_scaled_key_c.nv12
 scaled_cp=/tmp/vp8_scaled_key_c.yuv
 scaled_r=/tmp/vp8_scaled_key_r.yuv
-ssh t6 "sudo rm -f $scaled_c $scaled_cp $scaled_r"
-ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i /tmp/vp8_scaled_key.ivf \
+ssh "$BOARD" "sudo rm -f $scaled_c $scaled_cp $scaled_r"
+ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i /tmp/vp8_scaled_key.ivf \
   -t 9 -n $frames -o $scaled_c -v q" >/dev/null 2>&1 || true
-ssh t6 "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs vp8dec \
+ssh "$BOARD" "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs vp8dec \
   /tmp/vp8_scaled_key.ivf $scaled_r" >/dev/null 2>&1 || true
-ssh t6 "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
   -video_size ${width}x${height} -i $scaled_c -pix_fmt yuv420p -f rawvideo $scaled_cp" \
   >/dev/null 2>&1 || true
-if ssh t6 "test -s $scaled_cp && test -s $scaled_r && cmp -s $scaled_cp $scaled_r"; then
+if ssh "$BOARD" "test -s $scaled_cp && test -s $scaled_r && cmp -s $scaled_cp $scaled_r"; then
   printf 'PASS key-frame scale: %s frames byte-identical to C at the coded size\n' "$frames"
 else
   printf 'FAIL key-frame scale: exit or bytes differ from C\n'

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # Drive one IEP2 (client 28) I5O2 deinterlace and compare it against the C
 # `iep2_test` that ships in the reference MPP build.
 #
@@ -24,18 +25,18 @@ set -uo pipefail
 W="${1:-720}"
 H="${2:-480}"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 # The IEP2 oracle lives with whichever reference build carries vproc tests.
-for ref in /tmp/mpp-old /tmp/mpp-develop /home/user/rk-mpp-oracles/mpp-old /home/user/rk-mpp-oracles/mpp-develop; do
+for ref in /tmp/mpp-old /tmp/mpp-develop ~/rk-mpp-oracles/mpp-old ~/rk-mpp-oracles/mpp-develop; do
   for cand in "$ref/build/test/iep2_test" "$ref/build/mpp/vproc/iep2/test/iep2_test"; do
   lib="$ref/build/mpp"
-  if ssh t6 "test -x $cand && test -f $lib/librockchip_mpp.so.0"; then
+  if ssh "$BOARD" "test -x $cand && test -f $lib/librockchip_mpp.so.0"; then
     MPP_BIN="$cand"; MPP_LIB="$lib"; break
   fi
-  if ssh t6 "test -x $cand && test -f $lib/librockchip_mpp.so.1"; then
+  if ssh "$BOARD" "test -x $cand && test -f $lib/librockchip_mpp.so.1"; then
     MPP_BIN="$cand"; MPP_LIB="$lib"; break
   fi
   if [ -n "${MPP_BIN:-}" ]; then break; fi
@@ -56,29 +57,29 @@ out_r=/tmp/rk-mpp-rs-iep-rust.yuv
 # A heredoc inside a double-quoted ssh argument is a bash 3.2 trap (HANDOFF
 # 6.11): ship the generator as its own file instead.
 here="$(cd "$(dirname "$0")" && pwd)"
-scp -q "$here/gen_iep_fixture.py" t6:/tmp/gen_iep_fixture.py
-ssh t6 "python3 /tmp/gen_iep_fixture.py $in $W $H 3"
+scp -q "$here/gen_iep_fixture.py" "$BOARD":/tmp/gen_iep_fixture.py
+ssh "$BOARD" "python3 /tmp/gen_iep_fixture.py $in $W $H 3"
 
 # Reference: TFF source, three frames in, two frames out.
-ssh t6 "cd ~/rk-mpp-rs && sudo env LD_LIBRARY_PATH=$MPP_LIB timeout 180 \
+ssh "$BOARD" "cd ~/rk-mpp-rs && sudo env LD_LIBRARY_PATH=$MPP_LIB timeout 180 \
     $MPP_BIN -w $W -h $H -c yuv420sp -i $in -C yuv420sp -o $out_c -f TFF >/dev/null 2>&1"
-ssh t6 "sudo chmod 644 $out_c 2>/dev/null || true"
+ssh "$BOARD" "sudo chmod 644 $out_c 2>/dev/null || true"
 
 # This driver, same picture.
-ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs iep-dei $in $out_r $W $H TFF"
+ssh "$BOARD" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs iep-dei $in $out_r $W $H TFF"
 
-c_size=$(ssh t6 "stat -c %s $out_c 2>/dev/null" || echo missing)
-r_size=$(ssh t6 "stat -c %s $out_r 2>/dev/null" || echo missing)
+c_size=$(ssh "$BOARD" "stat -c %s $out_c 2>/dev/null" || echo missing)
+r_size=$(ssh "$BOARD" "stat -c %s $out_r 2>/dev/null" || echo missing)
 if [ -z "$c_size" ] || [ "$c_size" = 0 ] || [ -z "$r_size" ] || [ "$r_size" = 0 ]; then
   printf 'FAIL IEP (one side produced no output; C=%s rust=%s)\n' "$c_size" "$r_size"
   exit 1
 fi
 
-if ssh t6 "cmp -s $out_c $out_r"; then
+if ssh "$BOARD" "cmp -s $out_c $out_r"; then
   printf 'PASS IEP deinterlace (both reconstruct %sx%s, %s bytes identical)\n' \
     "$W" "$H" "$c_size"
 else
   printf 'FAIL IEP deinterlace (Rust output differs from C iep2_test)\n'
-  ssh t6 "cmp -l $out_c $out_r | head -20"
+  ssh "$BOARD" "cmp -l $out_c $out_r | head -20"
   exit 1
 fi

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # SPS level: our encoder against the reference library, NAL by NAL.
 #
 # The level is the last encoder property that used to be frozen into the recorded
@@ -28,18 +29,18 @@ mpp_bin="$mpp_ref/build/test/mpi_enc_test"
 mpp_lib="$mpp_ref/build/mpp"
 fail=0
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
 
-if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f $mpp_src"; then
+if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f $mpp_src"; then
   printf 'SKIP level matrix (reference build missing at %s)\n' "$mpp_ref"
   exit 0
 fi
-ssh t6 "test -f /tmp/mpi_enc_test.c.orig || cp $mpp_src /tmp/mpi_enc_test.c.orig"
+ssh "$BOARD" "test -f /tmp/mpi_enc_test.c.orig || cp $mpp_src /tmp/mpi_enc_test.c.orig"
 
 configure_reference_level() {
-  ssh t6 "cp /tmp/mpi_enc_test.c.orig $mpp_src &&
+  ssh "$BOARD" "cp /tmp/mpi_enc_test.c.orig $mpp_src &&
           sed -i -e 's/\"h264:profile\", [0-9]*/\"h264:profile\", 66/' \
                  -e 's/\"h264:cabac_en\", [0-9]*/\"h264:cabac_en\", 0/' \
                  -e 's/\"h264:trans8x8\", [0-9]*/\"h264:trans8x8\", 0/' \
@@ -48,8 +49,8 @@ configure_reference_level() {
 }
 
 compare() {
-  scp -q scripts/compare_streams.py t6:/tmp/ 2>/dev/null
-  ssh t6 "python3 /tmp/compare_streams.py /tmp/$1 /tmp/$2"
+  scp -q scripts/compare_streams.py "$BOARD":/tmp/ 2>/dev/null
+  ssh "$BOARD" "python3 /tmp/compare_streams.py /tmp/$1 /tmp/$2"
 }
 
 # size:frames:levels - 320x240 raises to 1.1, so rows below it exercise the
@@ -60,7 +61,7 @@ compare() {
 run_size() {
   local width="$1" height="$2" frames="$3" levels="$4"
   local frame="/tmp/rk-mpp-rs-lvl-move-${width}x${height}.nv12"
-  if ! ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=${width}x${height}:rate=30 \
+  if ! ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=${width}x${height}:rate=30 \
       -frames:v "$frames" -pix_fmt nv12 -f rawvideo -an $frame" >/dev/null 2>&1; then
     printf 'FAIL %sx%s (could not build the moving fixture)\n' "$width" "$height"
     fail=1
@@ -72,19 +73,19 @@ run_size() {
     local rust_out="/tmp/lvl-${tag}-rust.264"
     configure_reference_level "$level" ||
       { printf 'FAIL %-20s (could not configure reference)\n' "$tag"; fail=1; continue; }
-    ssh t6 "sudo rm -f $c_out $rust_out"
-    if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $frame -o $c_out \
+    ssh "$BOARD" "sudo rm -f $c_out $rust_out"
+    if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $frame -o $c_out \
         -w $width -h $height -t 7 -f 0 -n "$frames" -rc 2 -qc 26:26:26:26:26 -v q" \
         >/dev/null 2>&1; then
       printf 'FAIL %-20s (reference encode failed)\n' "$tag"; fail=1; continue
     fi
-    if ! ssh t6 "cd ~/rk-mpp-rs && timeout 120 sudo env RKMPP_LEVEL=$level \
+    if ! ssh "$BOARD" "cd ~/rk-mpp-rs && timeout 120 sudo env RKMPP_LEVEL=$level \
         ./target/release/rk-mpp-rs h264-enc $frame $rust_out $width $height 26 baseline "$frames" 60" \
         >/dev/null 2>&1; then
       printf 'FAIL %-20s (our encode failed)\n' "$tag"; fail=1; continue
     fi
-    ssh t6 "sudo chmod 644 $c_out $rust_out"
-    scp -q t6:"$c_out" t6:"$rust_out" /tmp/ 2>/dev/null
+    ssh "$BOARD" "sudo chmod 644 $c_out $rust_out"
+    scp -q "$BOARD":"$c_out" "$BOARD":"$rust_out" /tmp/ 2>/dev/null
     if compare "${c_out##*/}" "${rust_out##*/}"; then
       if [ "$frames" -gt 1 ]; then
         printf 'PASS %-20s (SPS, PPS, SEI, IDR and P byte-identical)\n' "$tag"
@@ -97,7 +98,7 @@ run_size() {
   done
 }
 
-if ssh t6 'ps -eo comm | grep -q "^mpi_"'; then
+if ssh "$BOARD" 'ps -eo comm | grep -q "^mpi_"'; then
   printf 'ABORT: a leftover mpi_* process holds the encoder (see HANDOFF 6.14)\n'
   exit 1
 fi

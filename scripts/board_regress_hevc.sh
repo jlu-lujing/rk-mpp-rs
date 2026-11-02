@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # HEVC regression: the CLI output must already be in display order.
 set -euo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 fail=0
 
 decode_component() {
   local input="$1"
   local output="$2"
-  if ! ssh t6 "test -f $input"; then
+  if ! ssh "$BOARD" "test -f $input"; then
     printf 'SKIP %s (stream missing)\n' "$input"
     return
   fi
-  ssh t6 "sudo rm -f $output"
-  if ! ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs hevcdec $input $output" >/dev/null 2>&1; then
+  ssh "$BOARD" "sudo rm -f $output"
+  if ! ssh "$BOARD" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs hevcdec $input $output" >/dev/null 2>&1; then
     printf 'FAIL %s (decoder exited non-zero)\n' "$input"
     fail=1
     return
@@ -24,8 +25,8 @@ decode_component() {
 }
 
 decode_component /tmp/t720_nob.hevc /tmp/t720_nob_rust_display.yuv
-if ssh t6 'test -f /tmp/mpp_hevc_nob_planar.yuv'; then
-  if ssh t6 'cmp -s /tmp/mpp_hevc_nob_planar.yuv /tmp/t720_nob_rust_display.yuv'; then
+if ssh "$BOARD" 'test -f /tmp/mpp_hevc_nob_planar.yuv'; then
+  if ssh "$BOARD" 'cmp -s /tmp/mpp_hevc_nob_planar.yuv /tmp/t720_nob_rust_display.yuv'; then
     printf 'PASS /tmp/t720_nob.hevc\n'
   else
     printf 'FAIL /tmp/t720_nob.hevc\n'
@@ -36,9 +37,9 @@ else
 fi
 
 decode_component /tmp/t720.hevc /tmp/t720_rust_display.yuv
-if ssh t6 'test -f /tmp/mpp_hevc_b.yuv'; then
-  if ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 -video_size 1280x720 -i /tmp/mpp_hevc_b.yuv -pix_fmt yuv420p -f rawvideo /tmp/t720_mpp_display_planar.yuv'; then
-    if ssh t6 'cmp -s /tmp/t720_mpp_display_planar.yuv /tmp/t720_rust_display.yuv'; then
+if ssh "$BOARD" 'test -f /tmp/mpp_hevc_b.yuv'; then
+  if ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 -video_size 1280x720 -i /tmp/mpp_hevc_b.yuv -pix_fmt yuv420p -f rawvideo /tmp/t720_mpp_display_planar.yuv'; then
+    if ssh "$BOARD" 'cmp -s /tmp/t720_mpp_display_planar.yuv /tmp/t720_rust_display.yuv'; then
       printf 'PASS /tmp/t720.hevc\n'
     else
       printf 'FAIL /tmp/t720.hevc\n'
@@ -53,9 +54,9 @@ else
 fi
 
 decode_component /tmp/t1080.hevc /tmp/t1080_rust_display.yuv
-if ssh t6 'test -f /tmp/t1080_mpp_ref.yuv'; then
-  if ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 -video_size 1920x1080 -i /tmp/t1080_mpp_ref.yuv -pix_fmt yuv420p -f rawvideo /tmp/t1080_mpp_display_planar.yuv'; then
-    if ssh t6 'cmp -s /tmp/t1080_mpp_display_planar.yuv /tmp/t1080_rust_display.yuv'; then
+if ssh "$BOARD" 'test -f /tmp/t1080_mpp_ref.yuv'; then
+  if ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 -video_size 1920x1080 -i /tmp/t1080_mpp_ref.yuv -pix_fmt yuv420p -f rawvideo /tmp/t1080_mpp_display_planar.yuv'; then
+    if ssh "$BOARD" 'cmp -s /tmp/t1080_mpp_display_planar.yuv /tmp/t1080_rust_display.yuv'; then
       printf 'PASS /tmp/t1080.hevc\n'
     else
       printf 'FAIL /tmp/t1080.hevc\n'
@@ -72,37 +73,37 @@ fi
 if ! ./scripts/gen_hevc_tiles.sh; then
   printf 'FAIL /tmp/hevc_tiles_720p.hevc (could not generate MPP tiled stream)\n'
   fail=1
-elif ! ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
   printf 'SKIP /tmp/hevc_tiles_720p.hevc (MPP decoder binary or library missing)\n'
 else
-  ssh t6 'sudo rm -f /tmp/hevc_tiles_mpp.yuv \
+  ssh "$BOARD" 'sudo rm -f /tmp/hevc_tiles_mpp.yuv \
     /tmp/hevc_tiles_mpp_planar.yuv /tmp/hevc_tiles_rust.yuv'
-  ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+  ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
     /tmp/mpp-develop/build/test/mpi_dec_test \
     -i /tmp/hevc_tiles_720p.hevc -t 16777220 \
     -o /tmp/hevc_tiles_mpp.yuv -w 1280 -h 720 -n 30 -v q \
     >/tmp/hevc_tiles_mpp.log 2>&1'
-  if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
       -video_size 1280x720 -i /tmp/hevc_tiles_mpp.yuv \
       -pix_fmt yuv420p -f rawvideo /tmp/hevc_tiles_mpp_planar.yuv'; then
     printf 'FAIL /tmp/hevc_tiles_720p.hevc (could not convert MPP output)\n'
     fail=1
   else
     expected_bytes=$((1280 * 720 * 3 / 2 * 30))
-    if ! ssh t6 "test \"\$(stat -c %s /tmp/hevc_tiles_mpp_planar.yuv)\" -eq $expected_bytes"; then
+    if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/hevc_tiles_mpp_planar.yuv)\" -eq $expected_bytes"; then
       printf 'FAIL /tmp/hevc_tiles_720p.hevc (unexpected MPP output frame count)\n'
       fail=1
-    elif ! ssh t6 'cd ~/rk-mpp-rs &&
+    elif ! ssh "$BOARD" 'cd ~/rk-mpp-rs &&
         sudo ./target/release/rk-mpp-rs hevcdec \
         /tmp/hevc_tiles_720p.hevc /tmp/hevc_tiles_rust.yuv \
         >/tmp/hevc_tiles_rust.log 2>&1'; then
       printf 'FAIL /tmp/hevc_tiles_720p.hevc (Rust decode failed)\n'
       fail=1
-    elif ! ssh t6 'grep -q "decoded 30 frames (30 output) in" /tmp/hevc_tiles_rust.log'; then
+    elif ! ssh "$BOARD" 'grep -q "decoded 30 frames (30 output) in" /tmp/hevc_tiles_rust.log'; then
       printf 'FAIL /tmp/hevc_tiles_720p.hevc (Rust dropped pictures)\n'
       fail=1
-    elif ! ssh t6 'cmp -s /tmp/hevc_tiles_mpp_planar.yuv /tmp/hevc_tiles_rust.yuv'; then
+    elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_tiles_mpp_planar.yuv /tmp/hevc_tiles_rust.yuv'; then
       printf 'FAIL /tmp/hevc_tiles_720p.hevc (picture bytes differ)\n'
       fail=1
     else
@@ -114,18 +115,18 @@ fi
 if ! ./scripts/gen_hevc_main10.sh; then
   printf 'FAIL /tmp/hevc_main10_256.hevc (could not generate Main10 stream)\n'
   fail=1
-elif ! ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
   printf 'SKIP /tmp/hevc_main10_256.hevc (MPP decoder binary or library missing)\n'
 else
-  ssh t6 'sudo rm -f /tmp/hevc_main10_mpp.yuv \
+  ssh "$BOARD" 'sudo rm -f /tmp/hevc_main10_mpp.yuv \
     /tmp/hevc_main10_mpp_planar.yuv /tmp/hevc_main10_rust.yuv'
-  ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+  ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
     /tmp/mpp-develop/build/test/mpi_dec_test \
     -i /tmp/hevc_main10_256.hevc -t 16777220 \
     -o /tmp/hevc_main10_mpp.yuv -w 256 -h 256 -n 30 -v q \
     >/tmp/hevc_main10_mpp.log 2>&1'
-  if ! ssh t6 'python3 - <<"PY"
+  if ! ssh "$BOARD" 'python3 - <<"PY"
 from pathlib import Path
 
 w, h, frames = 256, 256, 30
@@ -163,20 +164,20 @@ Path("/tmp/hevc_main10_mpp_planar.yuv").write_bytes(out)
 PY'; then
     printf 'FAIL /tmp/hevc_main10_256.hevc (could not convert MPP 16-bit dump)\n'
     fail=1
-  elif ! ssh t6 'cd ~/rk-mpp-rs &&
+  elif ! ssh "$BOARD" 'cd ~/rk-mpp-rs &&
       sudo env RFI_HEVC_TRACE=1 ./target/release/rk-mpp-rs hevcdec \
       /tmp/hevc_main10_256.hevc /tmp/hevc_main10_rust.yuv \
       >/tmp/hevc_main10_rust.log 2>&1'; then
     printf 'FAIL /tmp/hevc_main10_256.hevc (Rust decode failed)\n'
     fail=1
-  elif ! ssh t6 'grep -q "decoded 30 frames (30 output) in" /tmp/hevc_main10_rust.log'; then
+  elif ! ssh "$BOARD" 'grep -q "decoded 30 frames (30 output) in" /tmp/hevc_main10_rust.log'; then
     printf 'FAIL /tmp/hevc_main10_256.hevc (Rust dropped pictures)\n'
     fail=1
-  elif ! ssh t6 'test "$(grep -c "err=0x0 output=true status=00000107/" \
+  elif ! ssh "$BOARD" 'test "$(grep -c "err=0x0 output=true status=00000107/" \
       /tmp/hevc_main10_rust.log)" -eq 30'; then
     printf 'FAIL /tmp/hevc_main10_256.hevc (hardware status or frame error)\n'
     fail=1
-  elif ! ssh t6 'cmp -s /tmp/hevc_main10_mpp_planar.yuv /tmp/hevc_main10_rust.yuv'; then
+  elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_main10_mpp_planar.yuv /tmp/hevc_main10_rust.yuv'; then
     printf 'FAIL /tmp/hevc_main10_256.hevc (picture bytes differ)\n'
     fail=1
   else
@@ -184,12 +185,12 @@ PY'; then
   fi
 fi
 
-if ssh t6 'command -v ffmpeg >/dev/null &&
+if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     test -x /tmp/mpp-develop/build/test/mpi_enc_test &&
     test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
     test -f /tmp/mpp-develop/test/cfg/enc/base_h265_1920x1080.json'; then
-  if ! ssh t6 'set -e
+  if ! ssh "$BOARD" 'set -e
       sed "0,/\"scaling_list\" : 0/s//\"scaling_list\" : 1/" \
         /tmp/mpp-develop/test/cfg/enc/base_h265_1920x1080.json \
         > /tmp/mpp-develop/scaling_list_h265.json
@@ -209,34 +210,34 @@ if ssh t6 'command -v ffmpeg >/dev/null &&
     printf 'FAIL /tmp/hevc_scaling.hevc (could not generate scaling-list stream)\n'
     fail=1
   else
-    ssh t6 'sudo rm -f /tmp/hevc_scaling_mpp.yuv \
+    ssh "$BOARD" 'sudo rm -f /tmp/hevc_scaling_mpp.yuv \
       /tmp/hevc_scaling_mpp_planar.yuv /tmp/hevc_scaling_rust.yuv'
-    ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
       /tmp/mpp-develop/build/test/mpi_dec_test \
       -i /tmp/hevc_scaling.hevc -t 16777220 \
       -o /tmp/hevc_scaling_mpp.yuv -w 1920 -h 1080 -n 10 -v q \
       >/tmp/hevc_scaling_mpp.log 2>&1'
-    if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+    if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 1920x1080 -i /tmp/hevc_scaling_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_scaling_mpp_planar.yuv'; then
       printf 'FAIL /tmp/hevc_scaling.hevc (could not convert MPP output)\n'
       fail=1
     else
       expected_bytes=$((1920 * 1080 * 3 / 2 * 10))
-      if ! ssh t6 "test \"\$(stat -c %s /tmp/hevc_scaling_mpp_planar.yuv)\" -eq $expected_bytes"; then
+      if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/hevc_scaling_mpp_planar.yuv)\" -eq $expected_bytes"; then
         printf 'FAIL /tmp/hevc_scaling.hevc (unexpected MPP output frame count)\n'
         fail=1
-      elif ! ssh t6 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
+      elif ! ssh "$BOARD" 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
           sudo -E ./target/release/rk-mpp-rs hevcdec \
           /tmp/hevc_scaling.hevc /tmp/hevc_scaling_rust.yuv \
           >/tmp/hevc_scaling_rust.log 2>&1'; then
         printf 'FAIL /tmp/hevc_scaling.hevc (Rust decode failed)\n'
         fail=1
-      elif ! ssh t6 'test "$(grep -c "err=0x0 output=true status=00000107/" \
+      elif ! ssh "$BOARD" 'test "$(grep -c "err=0x0 output=true status=00000107/" \
           /tmp/hevc_scaling_rust.log)" -eq 10'; then
         printf 'FAIL /tmp/hevc_scaling.hevc (hardware status or frame error)\n'
         fail=1
-      elif ! ssh t6 'cmp -s /tmp/hevc_scaling_mpp_planar.yuv /tmp/hevc_scaling_rust.yuv'; then
+      elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_scaling_mpp_planar.yuv /tmp/hevc_scaling_rust.yuv'; then
         printf 'FAIL /tmp/hevc_scaling.hevc (picture bytes differ)\n'
         fail=1
       else
@@ -248,11 +249,11 @@ else
   printf 'SKIP /tmp/hevc_scaling.hevc (MPP scaling-list fixture unavailable)\n'
 fi
 
-if ssh t6 'command -v ffmpeg >/dev/null &&
+if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
     test -f ~/rk-mpp-rs/scripts/hevc_explicit_scalinglist.txt'; then
-  if ! ssh t6 'set -e
+  if ! ssh "$BOARD" 'set -e
       ffmpeg -loglevel error -y -f lavfi \
         -i testsrc2=size=256x256:rate=30 -frames:v 10 \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_explicit_scaling_src.yuv
@@ -269,36 +270,36 @@ if ssh t6 'command -v ffmpeg >/dev/null &&
     printf 'FAIL /tmp/hevc_explicit_scaling.hevc (could not generate explicit scaling-list stream)\n'
     fail=1
   else
-    ssh t6 'sudo rm -f /tmp/hevc_explicit_scaling_mpp.yuv \
+    ssh "$BOARD" 'sudo rm -f /tmp/hevc_explicit_scaling_mpp.yuv \
       /tmp/hevc_explicit_scaling_mpp_planar.yuv \
       /tmp/hevc_explicit_scaling_rust.yuv /tmp/hevc_explicit_scaling_rust.log'
-    ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
       /tmp/mpp-develop/build/test/mpi_dec_test \
       -i /tmp/hevc_explicit_scaling.hevc -t 16777220 \
       -o /tmp/hevc_explicit_scaling_mpp.yuv -w 256 -h 256 -n 10 -v q \
       >/tmp/hevc_explicit_scaling_mpp.log 2>&1'
-    if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+    if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 256x256 -i /tmp/hevc_explicit_scaling_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_explicit_scaling_mpp_planar.yuv'; then
       printf 'FAIL /tmp/hevc_explicit_scaling.hevc (could not convert MPP output)\n'
       fail=1
     else
       expected_bytes=$((256 * 256 * 3 / 2 * 10))
-      if ! ssh t6 "test \"\$(stat -c %s /tmp/hevc_explicit_scaling_mpp_planar.yuv)\" -eq $expected_bytes"; then
+      if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/hevc_explicit_scaling_mpp_planar.yuv)\" -eq $expected_bytes"; then
         printf 'FAIL /tmp/hevc_explicit_scaling.hevc (unexpected MPP output frame count)\n'
         fail=1
-      elif ! ssh t6 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
+      elif ! ssh "$BOARD" 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
           sudo -E ./target/release/rk-mpp-rs hevcdec \
           /tmp/hevc_explicit_scaling.hevc \
           /tmp/hevc_explicit_scaling_rust.yuv \
           >/tmp/hevc_explicit_scaling_rust.log 2>&1'; then
         printf 'FAIL /tmp/hevc_explicit_scaling.hevc (Rust decode failed)\n'
         fail=1
-      elif ! ssh t6 'test "$(grep -c "err=0x0 output=true status=00000107/" \
+      elif ! ssh "$BOARD" 'test "$(grep -c "err=0x0 output=true status=00000107/" \
           /tmp/hevc_explicit_scaling_rust.log)" -eq 10'; then
         printf 'FAIL /tmp/hevc_explicit_scaling.hevc (hardware status or frame error)\n'
         fail=1
-      elif ! ssh t6 'cmp -s /tmp/hevc_explicit_scaling_mpp_planar.yuv \
+      elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_explicit_scaling_mpp_planar.yuv \
           /tmp/hevc_explicit_scaling_rust.yuv'; then
         printf 'FAIL /tmp/hevc_explicit_scaling.hevc (picture bytes differ)\n'
         fail=1
@@ -311,12 +312,12 @@ else
   printf 'SKIP /tmp/hevc_explicit_scaling.hevc (explicit scaling-list fixture unavailable)\n'
 fi
 
-if ssh t6 'command -v ffmpeg >/dev/null && command -v python3 >/dev/null &&
+if ssh "$BOARD" 'command -v ffmpeg >/dev/null && command -v python3 >/dev/null &&
     test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
     test -f ~/rk-mpp-rs/scripts/hevc_explicit_scalinglist.txt &&
     test -f ~/rk-mpp-rs/scripts/make_hevc_pps_scaling.py'; then
-  if ! ssh t6 'set -e
+  if ! ssh "$BOARD" 'set -e
       ffmpeg -loglevel error -y -f lavfi \
         -i testsrc2=size=256x256:rate=30 -frames:v 10 \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_pps_scaling_src.yuv
@@ -335,35 +336,35 @@ if ssh t6 'command -v ffmpeg >/dev/null && command -v python3 >/dev/null &&
     printf 'FAIL /tmp/hevc_pps_scaling.hevc (could not generate explicit PPS scaling-list stream)\n'
     fail=1
   else
-    ssh t6 'sudo rm -f /tmp/hevc_pps_scaling_mpp.yuv \
+    ssh "$BOARD" 'sudo rm -f /tmp/hevc_pps_scaling_mpp.yuv \
       /tmp/hevc_pps_scaling_mpp_planar.yuv \
       /tmp/hevc_pps_scaling_rust.yuv /tmp/hevc_pps_scaling_rust.log'
-    ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
       /tmp/mpp-develop/build/test/mpi_dec_test \
       -i /tmp/hevc_pps_scaling.hevc -t 16777220 \
       -o /tmp/hevc_pps_scaling_mpp.yuv -w 256 -h 256 -n 10 -v q \
       >/tmp/hevc_pps_scaling_mpp.log 2>&1'
-    if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+    if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 256x256 -i /tmp/hevc_pps_scaling_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_pps_scaling_mpp_planar.yuv'; then
       printf 'FAIL /tmp/hevc_pps_scaling.hevc (could not convert MPP output)\n'
       fail=1
     else
       expected_bytes=$((256 * 256 * 3 / 2 * 10))
-      if ! ssh t6 "test \"\$(stat -c %s /tmp/hevc_pps_scaling_mpp_planar.yuv)\" -eq $expected_bytes"; then
+      if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/hevc_pps_scaling_mpp_planar.yuv)\" -eq $expected_bytes"; then
         printf 'FAIL /tmp/hevc_pps_scaling.hevc (unexpected MPP output frame count)\n'
         fail=1
-      elif ! ssh t6 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
+      elif ! ssh "$BOARD" 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
           sudo -E ./target/release/rk-mpp-rs hevcdec \
           /tmp/hevc_pps_scaling.hevc /tmp/hevc_pps_scaling_rust.yuv \
           >/tmp/hevc_pps_scaling_rust.log 2>&1'; then
         printf 'FAIL /tmp/hevc_pps_scaling.hevc (Rust decode failed)\n'
         fail=1
-      elif ! ssh t6 'test "$(grep -c "err=0x0 output=true status=00000107/" \
+      elif ! ssh "$BOARD" 'test "$(grep -c "err=0x0 output=true status=00000107/" \
           /tmp/hevc_pps_scaling_rust.log)" -eq 10'; then
         printf 'FAIL /tmp/hevc_pps_scaling.hevc (hardware status or frame error)\n'
         fail=1
-      elif ! ssh t6 'cmp -s /tmp/hevc_pps_scaling_mpp_planar.yuv \
+      elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_pps_scaling_mpp_planar.yuv \
           /tmp/hevc_pps_scaling_rust.yuv'; then
         printf 'FAIL /tmp/hevc_pps_scaling.hevc (picture bytes differ)\n'
         fail=1
@@ -376,8 +377,8 @@ else
   printf 'SKIP /tmp/hevc_pps_scaling.hevc (explicit PPS scaling-list fixture unavailable)\n'
 fi
 
-if ssh t6 'command -v ffmpeg >/dev/null'; then
-  if ! ssh t6 'set -e
+if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
+  if ! ssh "$BOARD" 'set -e
       ffmpeg -loglevel error -y -f lavfi \
         -i testsrc2=size=256x256:rate=30 -frames:v 30 \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_slices_src.yuv
@@ -389,18 +390,18 @@ if ssh t6 'command -v ffmpeg >/dev/null'; then
         >/tmp/hevc_slices_encode.log 2>&1'; then
     printf 'FAIL /tmp/hevc_slices_open.hevc (could not generate multi-slice stream)\n'
     fail=1
-  elif ! ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+  elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
       test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
     printf 'SKIP /tmp/hevc_slices_open.hevc (MPP decoder binary or library missing)\n'
   else
-    ssh t6 'sudo rm -f /tmp/hevc_slices_mpp.yuv /tmp/hevc_slices_mpp_planar.yuv \
+    ssh "$BOARD" 'sudo rm -f /tmp/hevc_slices_mpp.yuv /tmp/hevc_slices_mpp_planar.yuv \
       /tmp/hevc_slices_rust.yuv /tmp/hevc_slices_rust.log'
-    ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
       /tmp/mpp-develop/build/test/mpi_dec_test \
       -i /tmp/hevc_slices_open.hevc -t 16777220 \
       -o /tmp/hevc_slices_mpp.yuv -w 256 -h 256 -n 30 \
       >/tmp/hevc_slices_mpp.log 2>&1'
-    if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+    if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 256x256 -i /tmp/hevc_slices_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_slices_mpp_planar.yuv'; then
       printf 'FAIL /tmp/hevc_slices_open.hevc (could not convert MPP output)\n'
@@ -409,19 +410,19 @@ if ssh t6 'command -v ffmpeg >/dev/null'; then
       # MPP marks seven damaged pictures in the first GOP and emits the same
       # 23 clean pictures as Rust.
       expected_bytes=$((256 * 256 * 3 / 2 * 23))
-      if ! ssh t6 "test \"\$(stat -c %s /tmp/hevc_slices_mpp_planar.yuv)\" -eq $expected_bytes"; then
+      if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/hevc_slices_mpp_planar.yuv)\" -eq $expected_bytes"; then
         printf 'FAIL /tmp/hevc_slices_open.hevc (unexpected MPP clean-frame count)\n'
         fail=1
-      elif ! ssh t6 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
+      elif ! ssh "$BOARD" 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
           sudo -E ./target/release/rk-mpp-rs hevcdec \
           /tmp/hevc_slices_open.hevc /tmp/hevc_slices_rust.yuv \
           >/tmp/hevc_slices_rust.log 2>&1'; then
         printf 'FAIL /tmp/hevc_slices_open.hevc (Rust decode failed)\n'
         fail=1
-      elif ! ssh t6 'grep -Fqx "output pocs: [0, 1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]" /tmp/hevc_slices_rust.log'; then
+      elif ! ssh "$BOARD" 'grep -Fqx "output pocs: [0, 1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]" /tmp/hevc_slices_rust.log'; then
         printf 'FAIL /tmp/hevc_slices_open.hevc (unexpected clean POC set)\n'
         fail=1
-      elif ! ssh t6 'cmp -s /tmp/hevc_slices_mpp_planar.yuv /tmp/hevc_slices_rust.yuv'; then
+      elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_slices_mpp_planar.yuv /tmp/hevc_slices_rust.yuv'; then
         printf 'FAIL /tmp/hevc_slices_open.hevc (clean picture bytes differ)\n'
         fail=1
       else
@@ -433,8 +434,8 @@ else
   printf 'SKIP /tmp/hevc_slices_open.hevc (ffmpeg/libx265 unavailable)\n'
 fi
 
-if ssh t6 'command -v ffmpeg >/dev/null'; then
-  if ! ssh t6 'ffmpeg -loglevel error -y -f lavfi \
+if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
+  if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f lavfi \
       -i testsrc2=size=1280x720:rate=30 -frames:v 120 \
       -c:v libx265 \
       -x265-params "keyint=30:min-keyint=30:open-gop=0:bframes=3:b-pyramid=1:scenecut=0:repeat-headers=1:log-level=warning" \
@@ -442,37 +443,37 @@ if ssh t6 'command -v ffmpeg >/dev/null'; then
       >/tmp/hevc_multigop_encode.log 2>&1'; then
     printf 'FAIL /tmp/hevc_multigop_120.hevc (could not generate stream)\n'
     fail=1
-  elif ! ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+  elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
       test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
     printf 'SKIP /tmp/hevc_multigop_120.hevc (MPP decoder binary or library missing)\n'
   else
-    ssh t6 'sudo rm -f /tmp/hevc_multigop_mpp.yuv \
+    ssh "$BOARD" 'sudo rm -f /tmp/hevc_multigop_mpp.yuv \
       /tmp/hevc_multigop_mpp_planar.yuv /tmp/hevc_multigop_rust.yuv'
-    ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
       /tmp/mpp-develop/build/test/mpi_dec_test \
       -i /tmp/hevc_multigop_120.hevc -t 16777220 \
       -o /tmp/hevc_multigop_mpp.yuv -w 1280 -h 720 -n 120 -v q \
       >/tmp/hevc_multigop_mpp.log 2>&1'
-    if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+    if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 1280x720 -i /tmp/hevc_multigop_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_multigop_mpp_planar.yuv'; then
       printf 'FAIL /tmp/hevc_multigop_120.hevc (could not convert MPP output)\n'
       fail=1
     else
       expected_bytes=$((1280 * 720 * 3 / 2 * 120))
-      if ! ssh t6 "test \"\$(stat -c %s /tmp/hevc_multigop_mpp_planar.yuv)\" -eq $expected_bytes"; then
+      if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/hevc_multigop_mpp_planar.yuv)\" -eq $expected_bytes"; then
         printf 'FAIL /tmp/hevc_multigop_120.hevc (unexpected MPP output frame count)\n'
         fail=1
-      elif ! ssh t6 'cd ~/rk-mpp-rs &&
+      elif ! ssh "$BOARD" 'cd ~/rk-mpp-rs &&
           sudo ./target/release/rk-mpp-rs hevcdec \
           /tmp/hevc_multigop_120.hevc /tmp/hevc_multigop_rust.yuv \
           >/tmp/hevc_multigop_rust.log 2>&1'; then
         printf 'FAIL /tmp/hevc_multigop_120.hevc (Rust decode failed)\n'
         fail=1
-      elif ! ssh t6 'grep -q "decoded 120 frames (120 output) in" /tmp/hevc_multigop_rust.log'; then
+      elif ! ssh "$BOARD" 'grep -q "decoded 120 frames (120 output) in" /tmp/hevc_multigop_rust.log'; then
         printf 'FAIL /tmp/hevc_multigop_120.hevc (Rust dropped pictures)\n'
         fail=1
-      elif ! ssh t6 'cmp -s /tmp/hevc_multigop_mpp_planar.yuv /tmp/hevc_multigop_rust.yuv'; then
+      elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_multigop_mpp_planar.yuv /tmp/hevc_multigop_rust.yuv'; then
         printf 'FAIL /tmp/hevc_multigop_120.hevc (picture bytes differ)\n'
         fail=1
       else
@@ -484,8 +485,8 @@ else
   printf 'SKIP /tmp/hevc_multigop_120.hevc (ffmpeg/libx265 unavailable)\n'
 fi
 
-if ssh t6 'test -f /tmp/t720.hevc'; then
-  ssh t6 'test -f /tmp/t720_missing_au2.hevc || python3 - <<"PY"
+if ssh "$BOARD" 'test -f /tmp/t720.hevc'; then
+  ssh "$BOARD" 'test -f /tmp/t720_missing_au2.hevc || python3 - <<"PY"
 from pathlib import Path
 
 data = Path("/tmp/t720.hevc").read_bytes()
@@ -527,16 +528,16 @@ assert len(groups) == 10, len(groups)
 Path("/tmp/t720_missing_au2.hevc").write_bytes(b"".join(groups[:2] + groups[3:]))
 PY'
 fi
-if ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+if ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
-  ssh t6 'sudo rm -f /tmp/t720_missing_au2_mpp.yuv \
+  ssh "$BOARD" 'sudo rm -f /tmp/t720_missing_au2_mpp.yuv \
     /tmp/t720_missing_au2_mpp_2planar.yuv'
-  ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+  ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
     /tmp/mpp-develop/build/test/mpi_dec_test \
     -i /tmp/t720_missing_au2.hevc -t 16777220 \
     -o /tmp/t720_missing_au2_mpp.yuv -v q \
     >/tmp/t720_missing_au2_mpp.log 2>&1'
-  if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
       -video_size 1280x720 -i /tmp/t720_missing_au2_mpp.yuv \
       -pix_fmt yuv420p -f rawvideo \
       /tmp/t720_missing_au2_mpp_2planar.yuv'; then
@@ -544,19 +545,19 @@ if ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     fail=1
   else
     expected_bytes=$((1280 * 720 * 3 / 2 * 2))
-    if ! ssh t6 "test \"\$(stat -c %s /tmp/t720_missing_au2_mpp_2planar.yuv)\" -eq $expected_bytes"; then
+    if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/t720_missing_au2_mpp_2planar.yuv)\" -eq $expected_bytes"; then
       printf 'FAIL /tmp/t720_missing_au2.hevc (unexpected MPP output frame count)\n'
       fail=1
-    elif ! ssh t6 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
+    elif ! ssh "$BOARD" 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
         sudo -E ./target/release/rk-mpp-rs hevcdec \
         /tmp/t720_missing_au2.hevc /tmp/t720_missing2_rust.yuv \
         >/tmp/t720_missing2_rust.log 2>&1'; then
       printf 'FAIL /tmp/t720_missing_au2.hevc (Rust trace failed)\n'
       fail=1
-    elif ! ssh t6 'grep -Fqx "output pocs: [0, 4]" /tmp/t720_missing2_rust.log'; then
+    elif ! ssh "$BOARD" 'grep -Fqx "output pocs: [0, 4]" /tmp/t720_missing2_rust.log'; then
       printf 'FAIL /tmp/t720_missing_au2.hevc (unexpected clean POC set)\n'
       fail=1
-    elif ! ssh t6 'cmp -s /tmp/t720_missing_au2_mpp_2planar.yuv /tmp/t720_missing2_rust.yuv'; then
+    elif ! ssh "$BOARD" 'cmp -s /tmp/t720_missing_au2_mpp_2planar.yuv /tmp/t720_missing2_rust.yuv'; then
       printf 'FAIL /tmp/t720_missing_au2.hevc (clean picture bytes differ)\n'
       fail=1
     else
@@ -567,8 +568,8 @@ else
   printf 'SKIP /tmp/t720_missing_au2.hevc (MPP decoder binary or library missing)\n'
 fi
 
-if ssh t6 'command -v ffmpeg >/dev/null'; then
-  if ! ssh t6 'set -e
+if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
+  if ! ssh "$BOARD" 'set -e
       ffmpeg -loglevel error -y -f lavfi \
         -i testsrc2=size=128x128:rate=30 -frames:v 30 \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_cra_src.yuv
@@ -602,37 +603,37 @@ assert {8, 9, 21}.issubset(types), sorted(types)
 PY'; then
     printf 'FAIL /tmp/hevc_cra_open.hevc (could not generate CRA/RASL stream)\n'
     fail=1
-  elif ! ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+  elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
       test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
     printf 'SKIP /tmp/hevc_cra_open.hevc (MPP decoder binary or library missing)\n'
   else
-    ssh t6 'sudo rm -f /tmp/hevc_cra_mpp.yuv /tmp/hevc_cra_mpp_planar.yuv \
+    ssh "$BOARD" 'sudo rm -f /tmp/hevc_cra_mpp.yuv /tmp/hevc_cra_mpp_planar.yuv \
       /tmp/hevc_cra_rust.yuv'
-    ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
       /tmp/mpp-develop/build/test/mpi_dec_test \
       -i /tmp/hevc_cra_open.hevc -t 16777220 \
       -o /tmp/hevc_cra_mpp.yuv -v q \
       >/tmp/hevc_cra_mpp.log 2>&1'
-    if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+    if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 128x128 -i /tmp/hevc_cra_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_cra_mpp_planar.yuv'; then
       printf 'FAIL /tmp/hevc_cra_open.hevc (could not convert MPP output)\n'
       fail=1
     else
       expected_bytes=$((128 * 128 * 3 / 2 * 30))
-      if ! ssh t6 "test \"\$(stat -c %s /tmp/hevc_cra_mpp_planar.yuv)\" -eq $expected_bytes"; then
+      if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/hevc_cra_mpp_planar.yuv)\" -eq $expected_bytes"; then
         printf 'FAIL /tmp/hevc_cra_open.hevc (unexpected MPP output frame count)\n'
         fail=1
-      elif ! ssh t6 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
+      elif ! ssh "$BOARD" 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
           sudo -E ./target/release/rk-mpp-rs hevcdec \
           /tmp/hevc_cra_open.hevc /tmp/hevc_cra_rust.yuv \
           >/tmp/hevc_cra_rust.log 2>&1'; then
         printf 'FAIL /tmp/hevc_cra_open.hevc (Rust trace failed)\n'
         fail=1
-      elif ! ssh t6 'grep -Fqx "output pocs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]" /tmp/hevc_cra_rust.log'; then
+      elif ! ssh "$BOARD" 'grep -Fqx "output pocs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]" /tmp/hevc_cra_rust.log'; then
         printf 'FAIL /tmp/hevc_cra_open.hevc (unexpected display POC order)\n'
         fail=1
-      elif ! ssh t6 'cmp -s /tmp/hevc_cra_mpp_planar.yuv /tmp/hevc_cra_rust.yuv'; then
+      elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_cra_mpp_planar.yuv /tmp/hevc_cra_rust.yuv'; then
         printf 'FAIL /tmp/hevc_cra_open.hevc (picture bytes differ)\n'
         fail=1
       else
@@ -644,13 +645,13 @@ else
   printf 'SKIP /tmp/hevc_cra_open.hevc (ffmpeg/libx265 unavailable)\n'
 fi
 
-if ssh t6 'command -v ffmpeg >/dev/null &&
+if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     test -x /tmp/mpp-develop/build/test/mpi_enc_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
     test -f /tmp/mpp-develop/test/cfg/enc/ref_cfg_gop3_tsvc4.json &&
     test -f /tmp/mpp-develop/test/cfg/enc/frm_ltr_mark.json &&
     test -f /tmp/mpp-develop/test/cfg/enc/frm_ltr_use.json'; then
-  if ! ssh t6 'set -e
+  if ! ssh "$BOARD" 'set -e
       ffmpeg -loglevel error -y -f lavfi \
         -i testsrc2=size=320x320:rate=30 -frames:v 30 \
         -pix_fmt nv12 -f rawvideo /tmp/hevc_ltr_src.yuv
@@ -667,43 +668,43 @@ if ssh t6 'command -v ffmpeg >/dev/null &&
         >/tmp/hevc_ltr_dpb.log' ; then
     printf 'FAIL /tmp/hevc_ltr_320.hevc (could not generate MPP LTR stream)\n'
     fail=1
-  elif ! ssh t6 'grep -q "lt_present=true" /tmp/hevc_ltr_dpb.log &&
+  elif ! ssh "$BOARD" 'grep -q "lt_present=true" /tmp/hevc_ltr_dpb.log &&
       grep -q "LongTermRefPic { poc_lsb: 4, used: true" /tmp/hevc_ltr_dpb.log'; then
     printf 'FAIL /tmp/hevc_ltr_320.hevc (stream does not exercise LTR)\n'
     fail=1
-  elif ! ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+  elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
       test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
     printf 'SKIP /tmp/hevc_ltr_320.hevc (MPP decoder binary or library missing)\n'
   else
-    ssh t6 'sudo rm -f /tmp/hevc_ltr_mpp.yuv \
+    ssh "$BOARD" 'sudo rm -f /tmp/hevc_ltr_mpp.yuv \
       /tmp/hevc_ltr_mpp_planar.yuv /tmp/hevc_ltr_rust.yuv'
-    ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
       /tmp/mpp-develop/build/test/mpi_dec_test \
       -i /tmp/hevc_ltr_320.hevc -t 16777220 \
       -o /tmp/hevc_ltr_mpp.yuv -w 320 -h 320 -n 30 -v q \
       >/tmp/hevc_ltr_mpp.log 2>&1'
-    if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+    if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 320x320 -i /tmp/hevc_ltr_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_ltr_mpp_planar.yuv'; then
       printf 'FAIL /tmp/hevc_ltr_320.hevc (could not convert MPP output)\n'
       fail=1
     else
       expected_bytes=$((320 * 320 * 3 / 2 * 30))
-      if ! ssh t6 "test \"\$(stat -c %s /tmp/hevc_ltr_mpp_planar.yuv)\" -eq $expected_bytes"; then
+      if ! ssh "$BOARD" "test \"\$(stat -c %s /tmp/hevc_ltr_mpp_planar.yuv)\" -eq $expected_bytes"; then
         printf 'FAIL /tmp/hevc_ltr_320.hevc (unexpected MPP output frame count)\n'
         fail=1
-      elif ! ssh t6 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
+      elif ! ssh "$BOARD" 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
           sudo -E ./target/release/rk-mpp-rs hevcdec \
           /tmp/hevc_ltr_320.hevc /tmp/hevc_ltr_rust.yuv \
           >/tmp/hevc_ltr_rust.log 2>&1'; then
         printf 'FAIL /tmp/hevc_ltr_320.hevc (Rust decode failed)\n'
         fail=1
-      elif ! ssh t6 'grep -q "decoded 30 frames (30 output) in" /tmp/hevc_ltr_rust.log &&
+      elif ! ssh "$BOARD" 'grep -q "decoded 30 frames (30 output) in" /tmp/hevc_ltr_rust.log &&
           test "$(grep -c "err=0x0 output=true status=00000107/" \
           /tmp/hevc_ltr_rust.log)" -eq 30'; then
         printf 'FAIL /tmp/hevc_ltr_320.hevc (hardware status or frame count)\n'
         fail=1
-      elif ! ssh t6 'cmp -s /tmp/hevc_ltr_mpp_planar.yuv /tmp/hevc_ltr_rust.yuv'; then
+      elif ! ssh "$BOARD" 'cmp -s /tmp/hevc_ltr_mpp_planar.yuv /tmp/hevc_ltr_rust.yuv'; then
         printf 'FAIL /tmp/hevc_ltr_320.hevc (picture bytes differ)\n'
         fail=1
       else
@@ -723,37 +724,37 @@ if [[ ! -s "$dslice_fixture" ]]; then
 fi
 if [[ ! -s "$dslice_fixture" ]]; then
   printf 'SKIP dependent slices (conformance stream unavailable)\n'
-elif ! ssh t6 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
+elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
     command -v ffmpeg >/dev/null'; then
   printf 'SKIP dependent slices (MPP decoder or ffmpeg unavailable)\n'
 else
-  scp -q "$dslice_fixture" t6:/tmp/DSLICE_A_HHI_5.bit
-  ssh t6 'sudo rm -f /tmp/dslice_mpp.yuv /tmp/dslice_mpp_planar.yuv \
+  scp -q "$dslice_fixture" "$BOARD":/tmp/DSLICE_A_HHI_5.bit
+  ssh "$BOARD" 'sudo rm -f /tmp/dslice_mpp.yuv /tmp/dslice_mpp_planar.yuv \
     /tmp/dslice_rust.yuv /tmp/dslice_rust.log /tmp/dslice_mpp.log'
-  ssh t6 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+  ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
     /tmp/mpp-develop/build/test/mpi_dec_test \
     -i /tmp/DSLICE_A_HHI_5.bit -t 16777220 \
     -o /tmp/dslice_mpp.yuv -w 1920 -h 1080 -n 50 -v q \
     >/tmp/dslice_mpp.log 2>&1'
-  if ! ssh t6 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
       -video_size 1920x1080 -i /tmp/dslice_mpp.yuv \
       -pix_fmt yuv420p -f rawvideo /tmp/dslice_mpp_planar.yuv'; then
     printf 'FAIL dependent slices (could not convert MPP output)\n'
     fail=1
-  elif ! ssh t6 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
+  elif ! ssh "$BOARD" 'export RFI_HEVC_TRACE=1; cd ~/rk-mpp-rs &&
       sudo -E ./target/release/rk-mpp-rs hevcdec \
       /tmp/DSLICE_A_HHI_5.bit /tmp/dslice_rust.yuv \
       >/tmp/dslice_rust.log 2>&1'; then
     printf 'FAIL dependent slices (Rust decode failed)\n'
     fail=1
-  elif ! ssh t6 'grep -q "decoded 50 frames (50 output) in" /tmp/dslice_rust.log &&
+  elif ! ssh "$BOARD" 'grep -q "decoded 50 frames (50 output) in" /tmp/dslice_rust.log &&
       test "$(grep -c "err=0x0 output=true status=00000107/" \
       /tmp/dslice_rust.log)" -eq 50 &&
       ! grep -q "err=0x10 output=false" /tmp/dslice_rust.log'; then
     printf 'FAIL dependent slices (unexpected frame error set)\n'
     fail=1
-  elif ! ssh t6 'cmp -s /tmp/dslice_mpp_planar.yuv /tmp/dslice_rust.yuv'; then
+  elif ! ssh "$BOARD" 'cmp -s /tmp/dslice_mpp_planar.yuv /tmp/dslice_rust.yuv'; then
     printf 'FAIL dependent slices (picture bytes differ)\n'
     fail=1
   else

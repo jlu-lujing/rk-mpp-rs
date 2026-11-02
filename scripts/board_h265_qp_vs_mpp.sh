@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # H.265 (M8): our parameter-set writer vs the C encoder, byte for byte.
 #
 # M8 opens with a fixed-QP single IDR. The byte-comparable part today is the
@@ -51,7 +52,7 @@ frame_w=320
 frame_h=240
 fail=0
 
-if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.1"; then
+if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.1"; then
   printf 'SKIP H.265 vs MPP (reference build missing at %s)\n' "$mpp_ref"
   exit 0
 fi
@@ -59,9 +60,9 @@ fi
 # Build the crate on the board (the header path is pure host code but the compare
 # runs our release binary against the reference stream).
 if [ -z "$SKIP" ]; then
-  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-    ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-  ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 fi
 
 # ---- tracer template capture (REFRESH=1) -----------------------------------
@@ -72,10 +73,10 @@ fi
 if [ -n "$REFRESH" ]; then
   out="/tmp/rk-mpp-rs-h265-template-trace.txt"
   src="/tmp/rk-mpp-rs-h265-probe-${frame_w}x${frame_h}.nv12"
-  ssh t6 "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $src $frame_w $frame_h" >/dev/null
+  ssh "$BOARD" "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $src $frame_w $frame_h" >/dev/null
   # The tracer writes each register-write block twice (before cmd=200 and a
   # standalone line); count jobs by the `write words=` lines, not the raw dump.
-  ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=$tracer timeout 120 \
+  ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=$tracer timeout 120 \
     $mpp_bin -i $src -o /tmp/rk-mpp-rs-h265-template.265 \
     -w $frame_w -h $frame_h -t $hevc_type -f 0 -n 1 -rc 2 \
     -qc 26:26:26:26:26 -v q" >"$out" 2>&1
@@ -88,29 +89,29 @@ fi
 # reference stream against the Rust file, robust to the unescaped `00 00 01` the
 # SPS carries), then report the IDR as pending.
 compare_headers() {
-  scp -q scripts/h265_hdr_cmp.py t6:/tmp/ 2>/dev/null
-  ssh t6 "python3 /tmp/h265_hdr_cmp.py /tmp/$1 /tmp/$2"
+  scp -q scripts/h265_hdr_cmp.py "$BOARD":/tmp/ 2>/dev/null
+  ssh "$BOARD" "python3 /tmp/h265_hdr_cmp.py /tmp/$1 /tmp/$2"
 }
 
 for size in 320x240 640x480 1280x720; do
   width="${size%%x*}"; height="${size##*x}"
   frame="/tmp/rk-mpp-rs-h265-probe-${size}.nv12"
-  ssh t6 "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $frame $width $height" >/dev/null
+  ssh "$BOARD" "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $frame $width $height" >/dev/null
   for qp in 26; do
     tag="${size}-qp${qp}"
     c_out="/tmp/rk-mpp-rs-h265-${tag}-c.265"
     rust_out="/tmp/rk-mpp-rs-h265-${tag}-rust.265"
-    ssh t6 "sudo rm -f $c_out $rust_out"
-    if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $frame -o $c_out \
+    ssh "$BOARD" "sudo rm -f $c_out $rust_out"
+    if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $frame -o $c_out \
         -w $width -h $height -t $hevc_type -f 0 -n 1 -rc 2 -qc ${qp}:${qp}:${qp}:${qp}:${qp} -v q" \
         >/dev/null 2>&1; then
       printf 'FAIL %-24s (reference encode failed)\n' "$tag"; fail=1; continue
     fi
-    if ! ssh t6 "cd ~/rk-mpp-rs && timeout 120 ./target/release/rk-mpp-rs h265-enc $frame $rust_out $width $height $qp" \
+    if ! ssh "$BOARD" "cd ~/rk-mpp-rs && timeout 120 ./target/release/rk-mpp-rs h265-enc $frame $rust_out $width $height $qp" \
         >/dev/null 2>&1; then
       printf 'FAIL %-24s (our encode failed)\n' "$tag"; fail=1; continue
     fi
-    scp -q t6:"$c_out" t6:"$rust_out" /tmp/ 2>/dev/null
+    scp -q "$BOARD":"$c_out" "$BOARD":"$rust_out" /tmp/ 2>/dev/null
     if compare_headers "${c_out##*/}" "${rust_out##*/}"; then
       printf 'PASS %-24s (VPS, SPS and PPS byte-identical to the C encoder)\n' "$tag"
     else

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # Generate a reproducible 10-bit HEVC stream with the board's libx265.
 set -euo pipefail
 
-if ! ssh t6 'command -v ffmpeg >/dev/null'; then
+if ! ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
   printf 'ffmpeg is unavailable on t6\n' >&2
   exit 1
 fi
 
-ssh t6 'ffmpeg -loglevel error -y -f lavfi \
+ssh "$BOARD" 'ffmpeg -loglevel error -y -f lavfi \
   -i testsrc2=size=256x256:rate=30:duration=1 \
   -pix_fmt yuv420p10le \
   -c:v libx265 \

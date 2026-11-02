@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # H.265 rate-control board gate: the C encoder against the crate, whole streams.
 #
 # Two kinds of cell:
@@ -25,41 +26,41 @@ qp_min=10
 qp_max=51
 fail=0
 
-if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.1"; then
+if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.1"; then
   printf 'SKIP H.265 CBR vs MPP (reference build missing at %s)\n' "$mpp_ref"
   exit 0
 fi
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 for size in $sizes; do
   width="${size%%x*}"
   height="${size##*x}"
   one="/tmp/rk-mpp-rs-h265-cbr-${size}-1.nv12"
   seq="/tmp/rk-mpp-rs-h265-cbr-${size}.nv12"
-  ssh t6 "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $one $width $height" >/dev/null
-  ssh t6 "sudo rm -f $seq; cat $one $one > $seq"
+  ssh "$BOARD" "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $one $width $height" >/dev/null
+  ssh "$BOARD" "sudo rm -f $seq; cat $one $one > $seq"
 
   # ---- explicit-decision cell ------------------------------------------------
   if [ "$size" = "320x240" ]; then
     c_out="/tmp/rk-mpp-rs-h265-cbr-${size}-c.265"
     rust_out="/tmp/rk-mpp-rs-h265-cbr-${size}-rust.265"
-    ssh t6 "sudo rm -f $c_out $rust_out"
-    if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $seq -o $c_out \
+    ssh "$BOARD" "sudo rm -f $c_out $rust_out"
+    if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $seq -o $c_out \
         -w $width -h $height -t $hevc_type -f 0 -n 2 -g 60 -rc 1 -bps $bps \
         -qc 26:$qp_min:$qp_max:$qp_min:$qp_max -v q" >/dev/null 2>&1; then
       printf 'FAIL %-12s (reference encode failed)\n' "$size"; fail=1
-    elif ! ssh t6 "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs h265-gop-rc \
+    elif ! ssh "$BOARD" "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs h265-gop-rc \
         $seq $rust_out $width $height $steps $qp_min $qp_max $bps 26" >/tmp/h265-cbr-${size}.log 2>&1; then
       printf 'FAIL %-12s (our encode failed: %s)\n' "$size" "$(tail -1 /tmp/h265-cbr-${size}.log)"
       fail=1
-    elif ssh t6 "cmp -s $c_out $rust_out"; then
+    elif ssh "$BOARD" "cmp -s $c_out $rust_out"; then
       printf 'PASS %-12s (%s bytes, CBR stream byte-identical with the C decisions)\n' \
-        "$size" "$(ssh t6 "stat -c%s $c_out")"
+        "$size" "$(ssh "$BOARD" "stat -c%s $c_out")"
     else
-      first=$(ssh t6 "cmp -l $c_out $rust_out 2>/dev/null | head -1")
+      first=$(ssh "$BOARD" "cmp -l $c_out $rust_out 2>/dev/null | head -1")
       printf 'FAIL %-12s (first difference: %s)\n' "$size" "${first:-length}"
       fail=1
     fi
@@ -76,23 +77,23 @@ for size in $sizes; do
     esac
     model_c="/tmp/rk-mpp-rs-h265-${mode}-${size}-c.265"
     model_r="/tmp/rk-mpp-rs-h265-${mode}-${size}-r.265"
-    ssh t6 "sudo rm -f $model_c $model_r"
-    if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $seq -o $model_c \
+    ssh "$BOARD" "sudo rm -f $model_c $model_r"
+    if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $seq -o $model_c \
         -w $width -h $height -t $hevc_type -f 0 -n 2 -g 0:60:0 -rc $rc_index -bps $bps \
         -qc 26:$qp_min:$qp_max:$qp_min:$qp_max -v q" >/dev/null 2>&1; then
       printf 'FAIL %-12s %-4s (reference encode failed)\n' "$size" "$mode"; fail=1; continue
     fi
-    if ! ssh t6 "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs h265-rate \
+    if ! ssh "$BOARD" "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs h265-rate \
         $seq $model_r $width $height 2 $bps 26 $qp_min $qp_max $mode" \
         >/tmp/h265-${mode}-${size}.log 2>&1; then
       printf 'FAIL %-12s %-4s (our encode failed: %s)\n' "$size" "$mode" \
         "$(tail -1 /tmp/h265-${mode}-${size}.log)"; fail=1; continue
     fi
-    if ssh t6 "cmp -s $model_c $model_r"; then
+    if ssh "$BOARD" "cmp -s $model_c $model_r"; then
       printf 'PASS %-12s %-4s (%s bytes, the model picked both QPs)\n' \
-        "$size" "$mode" "$(ssh t6 "stat -c%s $model_c")"
+        "$size" "$mode" "$(ssh "$BOARD" "stat -c%s $model_c")"
     else
-      first=$(ssh t6 "cmp -l $model_c $model_r 2>/dev/null | head -1")
+      first=$(ssh "$BOARD" "cmp -l $model_c $model_r 2>/dev/null | head -1")
       printf 'FAIL %-12s %-4s (first difference: %s)\n' "$size" "$mode" "${first:-length}"
       fail=1
     fi
@@ -101,20 +102,20 @@ for size in $sizes; do
   # ---- smart-GOP cell -----------------------------------------------------------
   vi_c="/tmp/rk-mpp-rs-h265-vi-${size}-c.265"
   vi_r="/tmp/rk-mpp-rs-h265-vi-${size}-r.265"
-  ssh t6 "sudo rm -f $vi_c $vi_r"
-  if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $seq -o $vi_c \
+  ssh "$BOARD" "sudo rm -f $vi_c $vi_r"
+  if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i $seq -o $vi_c \
       -w $width -h $height -t $hevc_type -f 0 -n 2 -g 0:60:1 -rc 1 -bps $bps \
       -qc 26:$qp_min:$qp_max:$qp_min:$qp_max -v q" >/dev/null 2>&1; then
     printf 'FAIL %-12s vi   (reference encode failed)\n' "$size"; fail=1
-  elif ! ssh t6 "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs h265-rate \
+  elif ! ssh "$BOARD" "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs h265-rate \
       $seq $vi_r $width $height 2 $bps 26 $qp_min $qp_max cbr" >/tmp/h265-vi-${size}.log 2>&1; then
     printf 'FAIL %-12s vi   (our encode failed: %s)\n' "$size" "$(tail -1 /tmp/h265-vi-${size}.log)"
     fail=1
-  elif ssh t6 "cmp -s $vi_c $vi_r"; then
+  elif ssh "$BOARD" "cmp -s $vi_c $vi_r"; then
     printf 'PASS %-12s vi   (%s bytes, smart GOP, model picked both QPs)\n' \
-      "$size" "$(ssh t6 "stat -c%s $vi_c")"
+      "$size" "$(ssh "$BOARD" "stat -c%s $vi_c")"
   else
-    first=$(ssh t6 "cmp -l $vi_c $vi_r 2>/dev/null | head -1")
+    first=$(ssh "$BOARD" "cmp -l $vi_c $vi_r 2>/dev/null | head -1")
     printf 'FAIL %-12s vi   (first difference: %s)\n' "$size" "${first:-length}"
     fail=1
   fi

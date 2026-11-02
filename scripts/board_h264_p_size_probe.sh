@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # Where does the P picture stop matching the reference? A size sweep, not a guess.
 #
 # `board_h264_qp_vs_mpp.sh` proves the P path byte-exact at 320x240 and
@@ -25,15 +26,15 @@ set -uo pipefail
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
 
-if ! ssh t6 "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
+if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
   printf 'SKIP P-size probe (reference build missing at %s)\n' "$mpp_ref"; exit 0
 fi
-scp -q tools/h264e_probe.c t6:/tmp/ 2>/dev/null
-ssh t6 "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
+scp -q tools/h264e_probe.c "$BOARD":/tmp/ 2>/dev/null
+ssh "$BOARD" "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
         cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
@@ -47,15 +48,15 @@ for size in 320x240 384x288 448x352 512x384 576x416 640x480 640x256 320x512 800x
   w="${size%%x*}"; h="${size##*x}"
   fixture=/tmp/rk-mpp-rs-psize-$size.nv12
   # Two copies of one synthetic picture: a still clip with a well-defined reference.
-  ssh t6 "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame /tmp/psize-1f.nv12 $w $h >/dev/null \
+  ssh "$BOARD" "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame /tmp/psize-1f.nv12 $w $h >/dev/null \
           && cp /tmp/psize-1f.nv12 $fixture && cat /tmp/psize-1f.nv12 >> $fixture"
-  ssh t6 "sudo rm -f /tmp/psize_ours.264 /tmp/psize_c.264 &&
+  ssh "$BOARD" "sudo rm -f /tmp/psize_ours.264 /tmp/psize_c.264 &&
           cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
             /tmp/psize_ours.264 $w $h 26 baseline 2 60 >/dev/null &&
           sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/h264e_probe $fixture /tmp/psize_c.264 \
             $w $h 2 0 26 gop 60 >/dev/null 2>&1 &&
           sudo chmod 644 /tmp/psize_ours.264 /tmp/psize_c.264"
-  scp -q t6:/tmp/psize_ours.264 /tmp/ 2>/dev/null; scp -q t6:/tmp/psize_c.264 /tmp/ 2>/dev/null
+  scp -q "$BOARD":/tmp/psize_ours.264 /tmp/ 2>/dev/null; scp -q "$BOARD":/tmp/psize_c.264 /tmp/ 2>/dev/null
   sizes=$(python3 - "$w" "$h" <<'PY'
 import re, sys
 def p_sizes(path):

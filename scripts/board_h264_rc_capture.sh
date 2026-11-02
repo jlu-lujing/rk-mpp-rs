@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # Capture what the C encoder's rate control writes, as the target for the port.
 #
 # Nothing here compares anything yet - this crate cannot produce a rate-controlled
@@ -25,23 +26,23 @@ fixture=/tmp/rk-mpp-rs-move-320x240.nv12
 out=tests/data/vepu580_rc_c_move6_cbr.txt
 regs=tests/data/vepu580_rc_c_move6_cbr_regs.txt
 
-if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f /tmp/mpp_trace.so"; then
+if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f /tmp/mpp_trace.so"; then
   printf 'SKIP rate-control capture (reference build or ioctl tracer missing)\n'
   exit 0
 fi
 
 # The moving fixture the GOP matrix already uses, so one source serves both.
-ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v 6 \
+ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v 6 \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
 
 run() { # <name> <extra mpi_enc_test args...>
   local name="$1"; shift
-  ssh t6 "sudo rm -f /tmp/rc_$name.log"
-  ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=/tmp/mpp_trace.so timeout 180 $mpp_bin \
+  ssh "$BOARD" "sudo rm -f /tmp/rc_$name.log"
+  ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=/tmp/mpp_trace.so timeout 180 $mpp_bin \
       -i $fixture -o /tmp/rk-mpp-rs-rc-$name.264 -w 320 -h 240 -t 7 -f 0 -n 6 -v q $*" \
       >/tmp/rc_$name.log 2>&1
-  ssh t6 "sudo chmod 644 /tmp/rc_$name.log"
-  scp -q t6:"/tmp/rc_$name.log" /tmp/ 2>/dev/null
+  ssh "$BOARD" "sudo chmod 644 /tmp/rc_$name.log"
+  scp -q "$BOARD":"/tmp/rc_$name.log" /tmp/ 2>/dev/null
 }
 
 run fix "-rc 2 -qc 26:26:26:26:26"

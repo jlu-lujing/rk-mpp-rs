@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # JPEG RGB input: our VEPU2 JPEG encoder vs the C encoder.
 #
 # VEPU2 converts RGB to YCbCr in hardware (colour-conversion coefficients
@@ -19,16 +20,16 @@
 # Usage: scripts/board_jpege_rgb_vs_mpp.sh
 set -uo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
 mpp_lib="$mpp_ref/build/mpp"
 fail=0
 
-if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f $mpp_lib/librockchip_mpp.so.1"; then
+if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f $mpp_lib/librockchip_mpp.so.1"; then
   printf 'SKIP JPEG RGB vs MPP (reference build missing at %s)\n' "$mpp_ref"
   exit 0
 fi
@@ -43,26 +44,26 @@ for fmt in "rgb565:0x10000" "argb8888:0x1000A" "bgra8888:0x1000C"; do
       *)      stride=$((width * 4));;
     esac
     frame="/tmp/rk-mpp-rs-probe-${size}-${name}.bin"
-    ssh t6 "python3 ~/rk-mpp-rs/scripts/gen_rgb_fixture.py $frame $width $height $name" >/dev/null
+    ssh "$BOARD" "python3 ~/rk-mpp-rs/scripts/gen_rgb_fixture.py $frame $width $height $name" >/dev/null
     for qf in 50 90; do
       tag="${size}-${name}-qf${qf}"
       c_out="/tmp/rk-mpp-rs-jpeg-${tag}-c.jpg"
       rust_out="/tmp/rk-mpp-rs-jpeg-${tag}-rust.jpg"
-      ssh t6 "sudo rm -f $c_out $rust_out"
-      if ! ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib \
+      ssh "$BOARD" "sudo rm -f $c_out $rust_out"
+      if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
           timeout 120 $mpp_bin -i $frame -o $c_out \
           -w $width -h $height -f $fmt_hex -t 8 -n 1 -qc ${qf}:1:99:0:0" \
           >/dev/null 2>&1; then
         printf 'FAIL %-28s (reference encode failed)\n' "$tag"; fail=1; continue
       fi
-      if ! ssh t6 "cd ~/rk-mpp-rs && timeout 120 sudo ./target/release/rk-mpp-rs \
+      if ! ssh "$BOARD" "cd ~/rk-mpp-rs && timeout 120 sudo ./target/release/rk-mpp-rs \
           jpeg-enc $frame $rust_out $width $height qf${qf} 420 $name" \
           >/dev/null 2>&1; then
         printf 'FAIL %-28s (our encode failed)\n' "$tag"; fail=1; continue
       fi
-      if ! ssh t6 "sudo cmp -s $c_out $rust_out"; then
+      if ! ssh "$BOARD" "sudo cmp -s $c_out $rust_out"; then
         printf 'FAIL %-28s (streams differ; stride used was %d)\n' "$tag" "$stride"
-        ssh t6 "ls -l $c_out $rust_out" 2>/dev/null
+        ssh "$BOARD" "ls -l $c_out $rust_out" 2>/dev/null
         fail=1
         continue
       fi

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # One command that answers "did anything regress?".
 #
 # Every suite below is an existing gate with its own evidence; this script only
@@ -17,7 +18,7 @@ set -uo pipefail
 
 logdir=/tmp/rk-mpp-rs-regress
 SKIP="${SKIP:-}"   # set -u: an unset SKIP is "skip nothing", not an error
-ssh t6 "mkdir -p $logdir" 2>/dev/null
+ssh "$BOARD" "mkdir -p $logdir" 2>/dev/null
 mkdir -p /tmp/rk-mpp-rs-regress
 fail=0
 summary=()

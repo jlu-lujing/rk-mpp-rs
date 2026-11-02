@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # Hot-path performance record: decode throughput + RGB scale rows.
 #
 # Runs on the board (`bash scripts/board_perf_hotpaths_vs_mpp.sh`, or from
-# the host with `ssh t6 'bash ~/rk-mpp-rs/scripts/board_perf_hotpaths_vs_mpp.sh' < /dev/null`).
+# the host with `ssh "$BOARD" 'bash ~/rk-mpp-rs/scripts/board_perf_hotpaths_vs_mpp.sh' < /dev/null`).
 #
 # Timing discipline (HANDOFF section 5.8):
 #   * Decode passes are delegated to scripts/board_bench_vs_mpp.sh, which

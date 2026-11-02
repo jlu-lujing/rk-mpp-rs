@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # M10 framework: the async task queue + buffer pool against the sync path.
 #
 # The claim under test is semantic, not byte-vs-C: N JPEG decodes submitted
@@ -17,9 +18,9 @@ set -uo pipefail
 JOBS="${JOBS:-6}"
 WORKERS="${WORKERS:-3}"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
 
 fixture=/tmp/rk-mpp-rs-framework.jpg
 sync_out=/tmp/rk-mpp-rs-framework-sync.rgb
@@ -27,10 +28,10 @@ async_out=/tmp/rk-mpp-rs-framework-async.rgb
 
 # A real photograph beats a synthetic frame: jpegd exercises the full
 # chroma path. Falls back to ffmpeg if the corpus image is missing.
-ssh t6 "test -f /home/user/projects/rknn-projects-test/baseline/images/bus.jpg" && </dev/null
-  fixture=/home/user/projects/rknn-projects-test/baseline/images/bus.jpg
-if [ "$fixture" != "/home/user/projects/rknn-projects-test/baseline/images/bus.jpg" ]; then
-  ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=640x640:rate=30 -frames:v 1 -q:v 2 $fixture" || {
+ssh "$BOARD" "test -f ~/projects/rknn-projects-test/baseline/images/bus.jpg" && </dev/null
+  fixture=~/projects/rknn-projects-test/baseline/images/bus.jpg
+if [ "$fixture" != "~/projects/rknn-projects-test/baseline/images/bus.jpg" ]; then
+  ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=640x640:rate=30 -frames:v 1 -q:v 2 $fixture" || {
     echo "FAIL: no JPEG fixture available"
     exit 1
   }
@@ -39,11 +40,11 @@ fi
 fail=0
 
 # 1. sync path, the incumbent
-ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs decode $fixture $sync_out" || fail=1
-sync_md5=$(ssh t6 "md5sum $sync_out" | cut -d' ' -f1)
+ssh "$BOARD" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs decode $fixture $sync_out" || fail=1
+sync_md5=$(ssh "$BOARD" "md5sum $sync_out" | cut -d' ' -f1)
 
 # 2. async path through the queue + pool
-async_log=$(ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs async-demo $fixture $JOBS $WORKERS $async_out"; echo "RC=$?")
+async_log=$(ssh "$BOARD" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs async-demo $fixture $JOBS $WORKERS $async_out"; echo "RC=$?")
 echo "$async_log"
 async_rc=$(printf '%s' "$async_log" | sed -n 's/.*RC=\([0-9]*\)$/\1/p')
 if [ "$async_rc" != "0" ] || ! printf '%s' "$async_log" | grep -q 'async-demo: PASS'; then
@@ -53,7 +54,7 @@ fi
 
 # 3. external byte comparison of the async frame vs the sync frame
 if [ -n "$sync_md5" ]; then
-  async_md5=$(ssh t6 "md5sum $async_out" 2>/dev/null | cut -d' ' -f1)
+  async_md5=$(ssh "$BOARD" "md5sum $async_out" 2>/dev/null | cut -d' ' -f1)
   if [ "$async_md5" = "$sync_md5" ]; then
     echo "PASS async job-0 md5 $async_md5 equals sync decode"
   else
@@ -88,7 +89,7 @@ fi
 #    One decode is already byte-checked against the golden md5 below when
 #    ASYNC_MD5_GOLDEN is supplied by the orchestrator; otherwise compare
 #    two consecutive sync decodes for stability.
-sync_md5_b=$(ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs decode $fixture $sync_out >/dev/null && md5sum $sync_out" | cut -d' ' -f1)
+sync_md5_b=$(ssh "$BOARD" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs decode $fixture $sync_out >/dev/null && md5sum $sync_out" | cut -d' ' -f1)
 if [ "$sync_md5_b" = "$sync_md5" ]; then
   echo "PASS sync decode repeatable: $sync_md5"
 else

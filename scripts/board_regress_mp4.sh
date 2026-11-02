@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # MPEG-4 Part 2 regression: the vdpu2 path must reproduce the C HAL byte for byte.
 #
 # mpi_dec_test -t 4 dumps NV12, which goes through ffmpeg before the compare.
@@ -14,9 +15,9 @@
 # Usage: scripts/board_regress_mp4.sh
 set -euo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 fail=0
 mpp_bin=/tmp/mpp-develop/build/test/mpi_dec_test
@@ -34,20 +35,20 @@ streams=(
 # the file and keeps decoding, which no compare can line up with.
 mpp_decode() {
   local stream="$1" frames="$2" output="$3"
-  ssh t6 "sudo rm -f $output"
-  ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib $mpp_bin \
+  ssh "$BOARD" "sudo rm -f $output"
+  ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib $mpp_bin \
     -i $stream -t 4 -n $frames -o $output -v q" >/dev/null 2>&1
 }
 
 rust_decode() {
   local stream="$1" output="$2" frames="$3" log="$4"
-  ssh t6 "sudo rm -f $output $log"
-  ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs mp4dec $stream $output \
+  ssh "$BOARD" "sudo rm -f $output $log"
+  ssh "$BOARD" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs mp4dec $stream $output \
     >$log 2>&1"
-  ssh t6 "grep -q 'decoded $frames frames ($frames output) in' $log"
+  ssh "$BOARD" "grep -q 'decoded $frames frames ($frames output) in' $log"
 }
 
-if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
   printf 'SKIP MPEG-4 (MPP decoder binary or library missing)\n'
 else
   for entry in "${streams[@]}"; do
@@ -61,7 +62,7 @@ else
       fail=1
       continue
     fi
-    if ! ssh t6 "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+    if ! ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size ${width}x${height} -i $mpp_out \
         -pix_fmt yuv420p -f rawvideo $planar"; then
       printf 'FAIL %s.m4v (could not convert MPP output)\n' "$name"
@@ -69,7 +70,7 @@ else
       continue
     fi
     expected_bytes=$((width * height * 3 / 2 * frames))
-    if ! ssh t6 "test \"\$(stat -c %s $planar)\" -eq $expected_bytes"; then
+    if ! ssh "$BOARD" "test \"\$(stat -c %s $planar)\" -eq $expected_bytes"; then
       printf 'FAIL %s.m4v (unexpected MPP output frame count)\n' "$name"
       fail=1
       continue
@@ -79,7 +80,7 @@ else
       fail=1
       continue
     fi
-    if ssh t6 "cmp -s $planar $rust"; then
+    if ssh "$BOARD" "cmp -s $planar $rust"; then
       printf 'PASS %s.m4v (%s frames, byte-exact vs MPP)\n' "$name" "$frames"
     else
       printf 'FAIL %s.m4v (picture bytes differ)\n' "$name"

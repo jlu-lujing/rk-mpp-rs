@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # Deblocking and the unset initial quality: our encoder against the reference.
 #
 # Both features are configuration the existing harnesses never touch:
@@ -21,41 +22,41 @@ SIZE="320 240"
 FRAMES=6
 BPS="300000:250000:350000"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh t6 'tar -xf - -C ~/rk-mpp-rs'
-ssh t6 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
 fixture=/tmp/rk-mpp-rs-move-320x240.nv12
 
-if ! ssh t6 "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
+if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
   printf 'SKIP deblock (reference build missing at %s)\n' "$mpp_ref"
   exit 0
 fi
 
 # The probe links the reference's own ROI helper only for symbol availability;
 # these cells do not use it. Build once, tolerate either library SONAME.
-scp -q tools/h264e_probe.c t6:/tmp/ 2>/dev/null
-ssh t6 "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
+scp -q tools/h264e_probe.c "$BOARD":/tmp/ 2>/dev/null
+ssh "$BOARD" "cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
         cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
 
-ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
+ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
 
 fail=0
 run_cell() {
   local name="$1" ours_args="$2" probe_args="$3"
-  ssh t6 "sudo rm -f /tmp/dblk_ours_$name.264 /tmp/dblk_c_$name.264 &&
+  ssh "$BOARD" "sudo rm -f /tmp/dblk_ours_$name.264 /tmp/dblk_c_$name.264 &&
           cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
             /tmp/dblk_ours_$name.264 $SIZE $ours_args >/dev/null &&
           sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/h264e_probe $fixture \
             /tmp/dblk_c_$name.264 320 240 $probe_args >/dev/null 2>&1 &&
           sudo chmod 644 /tmp/dblk_ours_$name.264 /tmp/dblk_c_$name.264"
-  if ! ssh t6 "test -s /tmp/dblk_ours_$name.264 && test -s /tmp/dblk_c_$name.264"; then
+  if ! ssh "$BOARD" "test -s /tmp/dblk_ours_$name.264 && test -s /tmp/dblk_c_$name.264"; then
     printf 'FAIL %s (one side produced no stream)\n' "$name"; fail=1; return
   fi
-  scp -q t6:"/tmp/dblk_ours_$name.264" t6:"/tmp/dblk_c_$name.264" /tmp/ 2>/dev/null
+  scp -q "$BOARD":"/tmp/dblk_ours_$name.264" "$BOARD":"/tmp/dblk_c_$name.264" /tmp/ 2>/dev/null
   if python3 scripts/compare_streams.py "/tmp/dblk_c_$name.264" "/tmp/dblk_ours_$name.264"; then
     printf 'PASS %s\n' "$name"
   else

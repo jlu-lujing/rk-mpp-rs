@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # Encode throughput: this crate vs the C encoder, on the same input frames.
 #
 # Nothing has ever measured the encoder against MPP, which leaves "never slower
@@ -37,7 +38,7 @@ frames=12
 # width x height pairs, all multiples of 16
 sizes=(320x240 640x480 1280x720 1920x1088)
 
-if ! ssh t6 "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
   printf 'SKIP encode bench (reference encoder missing at %s)\n' "$mpp_ref"
   exit 0
 fi
@@ -55,7 +56,7 @@ timed() { # command... -> "frames ms"
   # The command's own report is discarded: it is text, and letting it through
   # into the same line as the elapsed time is what made the first pass of this
   # script print the encoder's summary where the millisecond figure belonged.
-  ssh t6 "start=\$(date +%s%N); $1 >/dev/null 2>&1; end=\$(date +%s%N); \
+  ssh "$BOARD" "start=\$(date +%s%N); $1 >/dev/null 2>&1; end=\$(date +%s%N); \
           echo $frames \$(( (end - start) / 1000000 ))" 2>/dev/null
 }
 
@@ -73,11 +74,11 @@ printf '%-12s %3s pics | %-22s | %-22s | rust\n' 'size' 'pics' 'C MPP' 'this cra
 for entry in "${sizes[@]}"; do
   width="${entry%%x*}"; height="${height#*}"; height="${entry##*x}"
   file="/tmp/enc_${width}x${height}_${frames}.nv12"
-  if ! ssh t6 "test -s $file"; then
-    ssh t6 "ffmpeg -v error -y -f lavfi -i testsrc2=size=${width}x${height}:rate=30 \
+  if ! ssh "$BOARD" "test -s $file"; then
+    ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=${width}x${height}:rate=30 \
         -frames:v $frames -pix_fmt nv12 -f rawvideo $file" >/dev/null 2>&1
   fi
-  if ! ssh t6 "test -s $file"; then
+  if ! ssh "$BOARD" "test -s $file"; then
     printf 'SKIP %-12s (no input frames)\n' "$entry"
     continue
   fi

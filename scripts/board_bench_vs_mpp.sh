@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+BOARD="${BOARD:-t62}"
 # Decode throughput: this crate vs the source-built C MPP, on the same stream.
 #
 # Runs on the board (`bash scripts/board_bench_vs_mpp.sh`, or from the host with
-# `ssh t6 bash ~/rk-mpp-rs/scripts/board_bench_vs_mpp.sh`). The two binaries are
+# `ssh "$BOARD" bash ~/rk-mpp-rs/scripts/board_bench_vs_mpp.sh`). The two binaries are
 # interleaved sample by sample because the clock and thermal state drift; only
 # medians over interleaved samples are comparable. A single unsplit run is not
 # evidence: one lone mpi_dec_test pass printed 1037 fps where the interleaved
