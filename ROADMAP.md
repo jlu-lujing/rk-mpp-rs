@@ -77,7 +77,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
 | M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 only (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split is byte-identical over four cells (BY_CTU at 96/8/150 blocks and BY_BYTE at 256, the 8-block cell putting 38 slices past the 32-entry FIFO) and the >4096 CIME extension lines over two (4160x64, 4608x256). P pictures match at eleven sizes spanning the FBC-header threshold - the divergence past 640x480 was the constant FBC body offset, since fixed. What is left: the per-slice output path (`slen_fifo`, low-delay slice packets) and P cells above 4096 width** |
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG 4:2:0 baseline done; H.264 encode generates its QP, profile, GOP, slice-type and P-picture fields rather than replaying them, and is still a recorded-image replay for the level and the CIME/RIME corner of section 3, on top of which the QP, profile, GOP, slice-type, P-picture and rate-control fields are generated (see the encoder notes below); H.265 encode started - VPS/SPS/PPS written and parsed back, and a derived (not replayed) IDR register image, 23 host tests, one ignored board test; not submit-capable until a reference H.265 job is captured** |
-| M9 | Post-processor: deinterlace, scale, format conversion | 8k | **not available as written - the engine MPP uses for this is VDPP (client 29), absent on this board; IEP (client 28) binds and is the M9 engine here - its deinterlace HAL, session and CLI have landed on host field evidence, with no recorded board run, and scale/crop are untouched. See the note below** |
+| M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 I5O2 deinterlace is byte-identical to the C `iep2_test` on t6 (720x480, 1,036,800 bytes); scale/crop and the other modes are untouched. VDPP (client 29) is absent on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
 
@@ -1558,12 +1558,20 @@ in what order the evidence gets produced.
       frame contributes no rows at all; ours interleaves rows from the previous and
       current fields. So C's I5O2 chose same-frame pairing on this fixture - the
       motion-history decision `iep2_test` runs with its default thresholds - and
-      this driver pairs fields unconditionally. Byte-exactness needs that decision,
-      not a register fix: the pairing is the open piece, and it is why M9 stays
-      open here.
+      this driver pairs fields unconditionally.
+      **That reading was wrong, and the real cause is now fixed.** The 164-word
+      `iep2_params` image was word-for-word identical to the C's (only the buffer
+      fds differed), and the hardware's `iep2_output` came back all zeros: the job
+      never ran. Our batch marked its last request
+      `MPP_FLAGS_REG_OFFSET_ALONE` (`0x12`), where the C's last request is
+      `MULTI_MSG | LAST_MSG` (`0x03`); with `submit_batch_plain` the IEP job runs
+      and `scripts/board_iep_dei_vs_mpp.sh` reports the full **1,036,800 bytes
+      identical** at 720x480 I5O2 TFF. The pairing was never ours to change - the
+      engine produced the same output as soon as it was actually started.
 - [ ] IEP (`mpp/vproc/iep/iep.c`, `iep2/iep2.c`, client 28): YUV scale and crop,
-      and the recorded board run of the deinterlace path above. This is the M9
-      engine that exists on this board.
+      other deinterlace modes and field orders, and the scale/crop register paths.
+      The I5O2 deinterlace path is byte-exact against the C `iep2_test`. This is the
+      M9 engine that exists on this board.
 - [ ] VDPP (`mpp/vproc/vdpp/vdpp2.c`, client 29): scale, rotate, NV12 to RGB,
       sharpen, histogram. **Absent on t6** - the kernel refuses the client - so
       this cannot be ported or verified here at all.

@@ -118,7 +118,8 @@ impl IepDeinterlace {
         let svc = MppService::open(IEP_CLIENT)?;
         let frame = cfg.src_fmt.frame_bytes(cfg.width, cfg.height);
         let dst_frame = cfg.dst_fmt.frame_bytes(cfg.width, cfg.height);
-        let alloc = |len: usize| DmaBuf::alloc("system", len, false);
+        let heap = std::env::var("IEP_HEAP").unwrap_or_else(|_| "system".to_string());
+        let alloc = |len: usize| DmaBuf::alloc(&heap, len, false);
         Ok(Self {
             svc,
             src: [alloc(frame)?, alloc(frame)?, alloc(frame)?],
@@ -198,7 +199,7 @@ impl IepDeinterlace {
         batch.reg_write(&params, 0);
         batch.reg_read(&mut output, 0);
         self.svc
-            .submit_batch(&mut batch)
+            .submit_batch_plain(&mut batch)
             .map_err(|e| format!("IEP submit: {e}"))?;
         self.svc
             .poll_hw_finish()

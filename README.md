@@ -40,7 +40,7 @@
 | H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落），slice split **板上 4/4 逐字节**（BY_CTU 96/8/150 与 BY_BYTE 256；8 块那格 38 个 slice 越过 32 项 slice FIFO，同时钉住 `slc_done_en`），>4096 的 CIME 扩展行 **板上 2/2 逐字节**（4160x64、4608x256）。P 帧另有 11 个尺寸的逐字节扫描（`scripts/board_h264_p_size_probe.sh`，含 FBC 阈值两侧）。编码侧剩下的是**逐 slice 输出路径**（`slen_fifo` / low-delay slice 包）与 >4096 宽度下的 P 格 |
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices / 多核分带见 docs/jpege-slices-multicore.md |
 | H.265 编码 | 固定 QP 的 **IDR + P GOP**（最多 5 帧、含动画面）与 **CBR/VBR/AVBR**（模型自选 QP）均**板上整条逐字节**；VI/refresh 调度、tiles/WPP/SAO、B 帧未做 |
-| 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP 未移植，VDPP 该板不存在 |
+| 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 I5O2 去隔行**板上逐字节**；VDPP 该板不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
 整体约完成一半（按 ROADMAP 各里程碑的工作量估加权）。ROADMAP 上 75 项已勾、20 项未勾。
@@ -144,8 +144,7 @@ tests/data/       C 侧真实输出构成的 golden / fixture
 - 证据分级：**H.265 编码**目前只有宿主级字段/单测证据——板级脚本
   已就位，但结果没有写进台账，所以不按"已逐字节验证"记账。一条特性从"代码写完"到
   "已验证"之间隔着的正是这一次板级运行。
-- IEP2 去隔行**已跑通硬件**：720x480 一个 I5O2 作业，两边都出 2 帧、尺寸相同（session、
-  寄存器读写、`POLL_HW_FINISH` 全部工作）。但像素与 C `iep2_test` 不同 —— 1,036,800 字节里
-  差 1,035,360。分歧形状是：C 每帧所有行来自同一输入帧（首帧甚至不含输入 0），我们按
-  prev/cur 混场 ⇒ C 的 I5O2 依 motion-history 在此夹具上选了同帧配对。要逐字节就得把那个
-  配对决策做出来，不是改寄存器。
+- IEP2 去隔行**已逐字节**：720x480 I5O2 TFF 与 C `iep2_test` 的 1,036,800 字节完全相同。
+  之前"像素不同"的根因不是场配对，而是提交批次最后一个请求多带了
+  `MPP_FLAGS_REG_OFFSET_ALONE`，驱动没有真正执行作业（`iep2_output` 全 0）；IEP 走
+  `submit_batch_plain`（只带 MULTI_MSG|LAST_MSG）后硬件开始工作，输出立即与 C 一致。

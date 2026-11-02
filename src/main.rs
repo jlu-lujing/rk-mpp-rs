@@ -774,7 +774,14 @@ fn run_iep_dei(
         dei.flush_src(i).map_err(|e| format!("src{i} flush: {e}"))?;
     }
 
-    dei.run().map_err(|e| format!("IEP deinterlace: {e}"))?;
+    let output = dei.run().map_err(|e| format!("IEP deinterlace: {e}"))?;
+    if std::env::var_os("IEP_DEBUG").is_some() {
+        eprintln!("iep output[0..8]: {:?}", &output[..8]);
+        eprintln!(
+            "iep output nonzero: {}",
+            output.iter().filter(|w| **w != 0).count()
+        );
+    }
 
     let out_len = dei.dst_frame_bytes();
     let mut out = Vec::with_capacity(out_len * 2);

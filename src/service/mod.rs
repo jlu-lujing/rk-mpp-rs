@@ -384,6 +384,34 @@ impl Batch {
 }
 
 impl MppService {
+    /// One ioctl carrying the whole request chain, with the last-message flags.
+    /// Encode/decode add `MPP_FLAGS_REG_OFFSET_ALONE`; the IEP2 job does not.
+    pub fn submit_batch_plain(&self, batch: &mut Batch) -> io::Result<()> {
+        if batch.reqs.is_empty() {
+            return Ok(());
+        }
+        let n = batch.reqs.len();
+        for (i, r) in batch.reqs.iter_mut().enumerate() {
+            if i + 1 < n {
+                r.flag |= MPP_FLAGS_MULTI_MSG;
+            } else {
+                r.flag |= MPP_FLAGS_LAST_MSG;
+            }
+        }
+        let r = unsafe {
+            libc::ioctl(
+                self.fd,
+                MPP_IOC_CFG_V1,
+                batch.reqs.as_mut_ptr() as *mut MppReqV1,
+            )
+        };
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
     /// One ioctl carrying the whole request chain.
     pub fn submit_batch(&self, batch: &mut Batch) -> io::Result<()> {
         if batch.reqs.is_empty() {

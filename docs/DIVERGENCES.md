@@ -40,7 +40,7 @@ Dispositions:
 
 | Case | Disposition | Evidence |
 |---|---|---|
-| IEP2 deinterlace, 720x480 I5O2 | **FIX** | Both sides produce two frames; 1,035,360 of 1,036,800 bytes differ. C pairs fields within the same input frame via motion history on this fixture; the crate pairs prev/cur. This is the next pixel-exactness target. |
+| IEP2 deinterlace, 720x480 I5O2 | **FIXED** | The 164-word params image already matched the C word for word (only fds differed); the job never ran because our batch set `MPP_FLAGS_REG_OFFSET_ALONE` on its last request (`0x12` vs the C's `0x03`). `submit_batch_plain` fixed it: 1,036,800 bytes identical to `iep2_test`. |
 | VDPP (client 29) | **NO-ORACLE** | The engine does not exist on RK3588; M9's original engine cannot be imitated on this board. |
 
 ## Framework
