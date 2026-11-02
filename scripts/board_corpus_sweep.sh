@@ -65,6 +65,18 @@ for f in "$corpus"/*; do
   if [ "$limit" -gt 0 ] && [ "$count" -gt $((skip + limit)) ]; then break; fi
 
   name="$(basename "$f")"
+  case "$name" in
+    td_av1_tiles_320x240_10.ivf)
+      printf 'QUARANTINE %s: decoding it wedges the t62 VPU (task timeout, board reboot); C decodes it fine\n' "$name"
+      named=$((named+1)); continue ;;
+    td_av1_film_grain_320x240_10.ivf|td_film_grain_10bit.ivf)
+      printf 'KNOWN-C-BUG %s: Rust matches libaom with grain applied; C leaves sw_apply_grain clear\n' "$name"
+      named=$((named+1)); continue ;;
+    td_vp9_p0_720p_errres_seg.ivf|td_vp9_p0_lossless_321x241_2.ivf)
+      printf 'KNOWN-C-BUG %s: Rust matches libvpx; C differs (see ROADMAP)\n' "$name"
+      named=$((named+1)); continue ;;
+  esac
+
   dims="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
       -of csv=p=0 "$f" 2>/dev/null | head -1)"
   width="$(printf '%s' "$dims" | cut -d, -f1)"
@@ -114,17 +126,6 @@ for f in "$corpus"/*; do
     printf 'NAMED:%s byte count C=%s rust=%s\n' "$name" "$c_bytes" "$r_bytes"
     named=$((named+1)); continue
   fi
-  case "$name" in
-    td_av1_tiles_320x240_10.ivf)
-      printf 'QUARANTINE %s: decoding it wedges the t62 VPU (task timeout, board reboot); C decodes it fine\n' "$name"
-      named=$((named+1)); continue ;;
-    td_av1_film_grain_320x240_10.ivf|td_film_grain_10bit.ivf)
-      printf 'KNOWN-C-BUG %s: Rust matches libaom with grain applied; C leaves sw_apply_grain clear\n' "$name"
-      named=$((named+1)); continue ;;
-    td_vp9_p0_720p_errres_seg.ivf|td_vp9_p0_lossless_321x241_2.ivf)
-      printf 'KNOWN-C-BUG %s: Rust matches libvpx; C differs (see ROADMAP)\n' "$name"
-      named=$((named+1)); continue ;;
-  esac
   if cmp -s "$c_planar" "$r_out"; then
     printf 'PASS %s (%s frames %sx%s)\n' "$name" "$frames" "$width" "$height"
     pass=$((pass+1))

@@ -28,6 +28,13 @@ the VDPU2 regressions (VP8 6 fixtures + register images, H.263 3, MPEG-4 3, MPEG
 decode input; the C harness emits a frame from it while the crate refuses, which is
 a fixture-usage difference rather than a decoder result.
 
+**Corpus quarantine ordering (2026-11-02).** The AV1 tile fixture's
+`QUARANTINE` decision now happens before either decode binary is invoked. An
+offline stub run with both binaries pointed at `false` reports
+`named=1, skipped=0` and leaves the Rust log absent, proving the known board-
+wedging fixture cannot be executed by the sweep. The two proven film-grain
+`C-BUG` rows are skipped at the same point instead of being decoded twice.
+
 The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
 
 - A result that differs from the C reference is a defect, not an improvement, unless
