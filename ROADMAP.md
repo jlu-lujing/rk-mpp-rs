@@ -367,6 +367,13 @@ in what order the evidence gets produced.
         hidden order-hint-8 frame and the later return to physical slot 4.
         `av1_dump_regs` now uses this replay, and its 11 regenerated PicParams
         images are still byte-identical to the C snapshots.
+  - [ ] t62/6.1.141 first-job execution. A one-packet IVF prefix makes C emit
+        one picture, while Rust reports one output with zero bytes and the
+        kernel resets `mpp_av1dec`. Real C dumps show jobs 0-10 match in every
+        deterministic input image, register and address offset; jobs 0-2 also
+        match input CDF. Jobs 3+ are deferred because their CDF comes from the
+        preceding hardware write. The remaining fault is therefore in the
+        runtime submission/lifetime path, not the register/data-plane port.
   - [x] non-identity translation/ROTZOOM/AFFINE global-motion conversion,
         primary-reference inheritance, shear quantization and invalid/scaled
         reference fallback match the C MPP integer rules

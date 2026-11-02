@@ -43,7 +43,7 @@ set -euo pipefail
 
 repo="$REMOTE_ROOT/rk-mpp-rs"
 oracle_src="${ORACLE_SRC:-$HOME/rk-mpp-oracles/mpp-develop}"
-dump_oracle="${DUMP_ORACLE:-$HOME/rk-mpp-oracles/mpp-av1-dump}"
+dump_oracle="${DUMP_ORACLE:-$HOME/rk-mpp-oracles/mpp-av1-dump-v2}"
 fixture="$repo/tests/data/av1_tiles_320x240_10.ivf"
 
 mkdir "$repo"
@@ -83,7 +83,7 @@ cmake -S "$dump_oracle" -B "$dump_oracle/build-dump" \
 cmake --build "$dump_oracle/build-dump" -j"$(nproc)" >/dev/null
 
 c_dir="$(mktemp -d /tmp/av1-c-dump.XXXXXX)"
-c_out="$(mktemp /tmp/av1-c-output.XXXXXX)"
+c_out="$REMOTE_ROOT/c.nv12"
 c_log="$REMOTE_ROOT/c.log"
 printf 'running the known-good C decode; dump=%s\n' "$c_dir"
 sudo timeout 60 env \
@@ -94,10 +94,14 @@ sudo timeout 60 env \
   >"$c_log" 2>&1
 
 c_jobs="$(find "$c_dir" -maxdepth 1 -name 'reg_*_in.txt' | wc -l)"
-if [ "$c_jobs" -ne "$JOBS" ]; then
-  printf 'C produced %s register images, expected %s; see %s\n' \
+if [ "$c_jobs" -lt "$JOBS" ]; then
+  printf 'C produced %s register images, fewer than the %s compared jobs; see %s\n' \
     "$c_jobs" "$JOBS" "$c_log" >&2
   exit 1
+fi
+if [ "$c_jobs" -gt "$JOBS" ]; then
+  printf 'C produced %s register images; comparing the first %s and leaving %s extra job(s) for audit\n' \
+    "$c_jobs" "$JOBS" "$((c_jobs - JOBS))"
 fi
 
 r_dir="$(mktemp -d /tmp/av1-rust-dump.XXXXXX)"
@@ -112,7 +116,8 @@ if ! (
   exit 1
 fi
 
-python3 "$REMOTE_ROOT/compare_input_dumps.py" "$c_dir" "$r_dir" --jobs "$JOBS"
-printf '\nPRE-SUBMIT INPUTS MATCH\nC dump:    %s\nRust dump: %s\nC log:     %s\nRust log:  %s\n' \
+python3 "$REMOTE_ROOT/compare_input_dumps.py" "$c_dir" "$r_dir" \
+  --jobs "$JOBS" --allow-stateful-probability
+printf '\nPRE-SUBMIT DETERMINISTIC INPUTS MATCH\nC dump:    %s\nRust dump: %s\nC log:     %s\nRust log:  %s\n' \
   "$c_dir" "$r_dir" "$c_log" "$REMOTE_ROOT/rust.log"
 REMOTE

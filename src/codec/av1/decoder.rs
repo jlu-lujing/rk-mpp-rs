@@ -215,6 +215,12 @@ impl Decoder {
                 .map_err(|error| error.to_string())?;
                 hw.last_hardware_error
             };
+            if std::env::var_os("RK_MPP_AV1_TRACE").is_some() {
+                eprintln!(
+                    "av1-status frame={frame_index} status={:?} hardware_error={hardware_error}",
+                    self.hw.last_status
+                );
+            }
             if !hardware_error && !coded.header.disable_frame_end_update_cdf {
                 if std::env::var_os("RK_MPP_AV1_TRACE").is_some() {
                     eprintln!(

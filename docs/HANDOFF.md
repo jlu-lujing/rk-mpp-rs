@@ -22,10 +22,13 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > 重启后先用 `LIMIT=10` 逐段放量，并记录卡住的是哪一条流。
 
 > **2026-11-02 t62 事件（第二次）：** `tests/data/av1_tiles_320x240_10.ivf`
-> 的解码会间歇性触发 `rk_vcodec: mpp_task_timeout_work ... processing time out!`
-> 与 `mpp_av1dec ... resetting`，随后整板重启（内核 6.1.141）。同一夹具用 C
-> MPP 解码 10 帧/1,152,000 字节正常，所以不是驱动单独的问题，而是 crate 的 AV1
-> 路径在这块板/内核上的真实缺陷。已做两件事：
+> 会触发 `rk_vcodec: mpp_task_timeout_work ... processing time out!` 与
+> `mpp_av1dec ... resetting`，并可导致整板重启（内核 6.1.141）。进一步做
+> **只含第一个 2,351-byte coded frame 的 IVF 前缀**后，C 仍能输出一帧；Rust
+> 报告一个输出但 YUV 为 0 字节，内核再次 reset/reboot。这不是 t6 全量结论的
+> 自动延伸：t6 是 6.1.57，t62 是 6.1.141；同一 SoC 不等于同一驱动执行行为。
+> t62 上 VP8/VP9/H.264/H.265/IEP2/VDPU2 回归仍然成立，目前差异集中在 AV1。
+> 已做两件事：
 > 1. `POLL_HW_FINISH` 改为 5 秒上限（非阻塞轮询 + EINVAL 回退），避免进程永久挂住；
 > 2. corpus 扫描把该夹具标为 `QUARANTINE`，并在调用 Rust 或 C 解码器之前
 >    直接跳过；离线 stub 验证确认 `RUST_BIN`/`MPP_BIN` 均未被调用，且带
@@ -47,7 +50,10 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > 离线证据：导出器自行重放 Rust 的 DPB 槽位分配，不从 C snapshot 抄 current/
 > reference slot；11/11 PicParams 仍与 C golden 相同，88 个镜像文件尺寸正确。
 > 比较器在模拟一致输入上 11/11 PASS，并能在单字破坏时定位到具体寄存器。
-> 真实 C `DUMP_AV1_DATAS` 对照仍需等 t62 恢复，不能据此放行硬件提交。
+> t62 实际 C dump 已证明：作业 0-10 的 PicParams、global model、tile-info、
+> split stream、film-grain、512-word 寄存器和地址偏移全部相同。作业 0-2 的输入
+> CDF 也相同；作业 3+ 的 CDF 依赖上一硬件作业写回，普通 CPU 导出无法独立复现，
+> 比较器将其记作 `DEFERRED`，不会掩盖其它镜像或寄存器差异。
 >
 > t62 恢复后先运行安全预检，不要直接跑 `av1dec`：
 >
@@ -56,9 +62,9 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 > ```
 >
 > 脚本会从当前提交临时打包源码，在独立的
-> `~/rk-mpp-oracles/mpp-av1-dump` 构建 C dump oracle，运行已知正常的 C 解码，
+> `~/rk-mpp-oracles/mpp-av1-dump-v2` 构建 C dump oracle，运行已知正常的 C 解码，
 > 再运行 CPU-only Rust 导出器并比较全部输入镜像。它不会向 Rust AV1 提交硬件
-> 作业；只有打印 `PRE-SUBMIT INPUTS MATCH` 后才恢复板级 AV1 调试。
+> 作业；只有打印 `PRE-SUBMIT DETERMINISTIC INPUTS MATCH` 后才恢复板级 AV1 调试。
 
 ## 第二块板：t62（2026-11-02 起）
 
@@ -94,7 +100,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 606 passed, 26 board-only ignored
+cargo test --all-targets      # 607 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json

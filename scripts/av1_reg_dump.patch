@@ -14,3 +14,13 @@
          static int g_frame_num = 0;
          FILE *fp;
          RK_U32 i;
+@@ -2255,1 +2257,3 @@
+-        sprintf(fname, "/data/video/reg_%d_in.txt", g_frame_no++);
++        const char *path = getenv("AV1_DATA_DUMP_DIR");
++        if (!path) path = "/data/video";
++        sprintf(fname, "%s/reg_%d_in.txt", path, g_frame_no++);
+@@ -2325,1 +2329,3 @@
+-        sprintf(fname, "/data/video/reg_%d_out.txt", g_frame_no++);
++        const char *path = getenv("AV1_DATA_DUMP_DIR");
++        if (!path) path = "/data/video";
++        sprintf(fname, "%s/reg_%d_out.txt", path, g_frame_no++);
