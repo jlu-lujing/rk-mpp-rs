@@ -124,14 +124,14 @@ pub fn reconstruct_i_macroblock(
             }
         }
         IntraMacroblockKind::I16x16 { prediction_mode } => {
-            let top = read_top(luma, mb_x, mb_y, 16, bit_depth);
-            let left = read_left(luma, mb_x, mb_y, 16, bit_depth);
+            let top = (mb_y > 0).then(|| read_top(luma, mb_x, mb_y, 16, bit_depth));
+            let left = (mb_x > 0).then(|| read_left(luma, mb_x, mb_y, 16, bit_depth));
             let top_left = read_top_left(luma, mb_x, mb_y, bit_depth);
             let prediction = predict_16x16(
                 prediction_mode,
                 bit_depth,
-                Some(&top),
-                Some(&left),
+                top.as_ref(),
+                left.as_ref(),
                 top_left,
             )?;
             write_rectangle(

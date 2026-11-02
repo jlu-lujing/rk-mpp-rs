@@ -133,7 +133,6 @@ pub fn decode_i_slice(
     let total_mbs = mb_width * mb_height;
     let mut decoded = vec![false; total_mbs];
     let mut luma_counts = vec![[0u8; 16]; total_mbs];
-    let mut luma_dc_counts = vec![0u8; total_mbs];
     let mut qp_map = vec![0u8; total_mbs];
     let mut intra_modes: Vec<Option<[u8; 16]>> = vec![None; total_mbs];
     let chroma_block_count = chroma_width * chroma_height;
@@ -194,7 +193,6 @@ pub fn decode_i_slice(
             mb_width,
             &decoded,
             &luma_counts,
-            &luma_dc_counts,
             &chroma_counts,
             context,
         );
@@ -263,7 +261,6 @@ pub fn decode_i_slice(
         decoded[mb_index] = true;
         qp_map[mb_index] = qp as u8;
         luma_counts[mb_index] = residual.luma_non_zero;
-        luma_dc_counts[mb_index] = residual.luma_dc_non_zero;
         chroma_counts[0][mb_index].copy_from_slice(&residual.chroma_non_zero[0]);
         chroma_counts[1][mb_index].copy_from_slice(&residual.chroma_non_zero[1]);
         bit_offset = residual.end_bit;
@@ -290,7 +287,6 @@ fn macroblock_neighbors(
     width: usize,
     decoded: &[bool],
     luma_counts: &[[u8; 16]],
-    luma_dc_counts: &[u8],
     chroma_counts: &[Vec<Vec<u8>>; 2],
     context: MacroblockContext,
 ) -> MacroblockNeighbors {
@@ -300,13 +296,13 @@ fn macroblock_neighbors(
     let top = index.checked_sub(width).filter(|&top| decoded[top]);
     let mut neighbors = MacroblockNeighbors::unavailable();
     if let Some(left) = left {
-        neighbors.luma_dc_left = Some(luma_dc_counts[left]);
+        neighbors.luma_dc_left = Some(luma_counts[left][3]);
         for row in 0..4 {
             neighbors.luma_left[row] = Some(luma_counts[left][row * 4 + 3]);
         }
     }
     if let Some(top) = top {
-        neighbors.luma_dc_top = Some(luma_dc_counts[top]);
+        neighbors.luma_dc_top = Some(luma_counts[top][12]);
         for column in 0..4 {
             neighbors.luma_top[column] = Some(luma_counts[top][3 * 4 + column]);
         }
@@ -440,7 +436,7 @@ mod tests {
     #[test]
     fn reconstructs_a_minimal_i_slice_and_stops_at_the_rbsp_tail() {
         let mut writer = BitWriter::new();
-        writer.ue(1); // I16x16 DC, CBP zero
+        writer.ue(3); // I16x16 DC, CBP zero
         writer.ue(0); // chroma vertical
         writer.se(0); // mb_qp_delta
         writer.put(1, 1); // empty luma DC coeff_token

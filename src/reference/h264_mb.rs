@@ -252,7 +252,7 @@ pub fn parse_i_macroblock_with_modes(
         )
     } else {
         let type_index = (mb_type - 1) as usize;
-        let prediction_mode = [2, 1, 0, 3][type_index % 4];
+        let prediction_mode = (type_index % 4) as u8;
         let cbp = [0, 16, 32, 15, 31, 47][type_index / 4];
         (
             IntraMacroblockKind::I16x16 { prediction_mode },
@@ -797,13 +797,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_i16x16_dc_chroma_mode_and_qp_delta() {
+    fn parses_i16x16_vertical_chroma_mode_and_qp_delta() {
         let mut writer = BitWriter::new();
-        writer.ue(1); // I16x16, DC mode, luma/chroma CBP zero
+        writer.ue(1); // I16x16, vertical mode, luma/chroma CBP zero
         writer.ue(2); // chroma DC
         writer.se(0); // mb_qp_delta
         let mb = parse_i_macroblock(&writer.finish(), 0, context(1)).unwrap();
-        assert_eq!(mb.kind, IntraMacroblockKind::I16x16 { prediction_mode: 2 });
+        assert_eq!(mb.kind, IntraMacroblockKind::I16x16 { prediction_mode: 0 });
         assert_eq!(mb.chroma_prediction_mode, Some(2));
         assert_eq!(mb.coded_block_pattern, 0);
         assert_eq!(mb.qp_delta, 0);
@@ -942,7 +942,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             header.kind,
-            IntraMacroblockKind::I16x16 { prediction_mode: 2 }
+            IntraMacroblockKind::I16x16 { prediction_mode: 0 }
         );
         assert_eq!(residual.luma_dc.as_ref().unwrap().total_coeff, 1);
         assert!(residual

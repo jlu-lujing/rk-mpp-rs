@@ -658,10 +658,10 @@ pub fn predict_16x16(
             let v = plane_v16(left, top_left);
             let b = (5 * h + 32) >> 6;
             let c = (5 * v + 32) >> 6;
-            let a = 16 * (i32::from(top[15]) + i32::from(left[15]) + 1) - 7 * (v + h);
+            let a = 16 * (i32::from(top[15]) + i32::from(left[15]) + 1) - 7 * (c + b);
             for row in 0..16 {
                 for column in 0..16 {
-                    let value = (a + (column as i32 - 7) * b + (row as i32 - 7) * c + 16) >> 5;
+                    let value = (a + column as i32 * b + row as i32 * c) >> 5;
                     out[row * 16 + column] = clip(value, bit_depth);
                 }
             }
@@ -738,17 +738,12 @@ pub fn predict_chroma(
             } else {
                 (5 * v + 32) >> 6
             };
-            let (anchor_v, anchor_h, v_coeff) = if height == 8 { (4, 4, 3) } else { (8, 4, 7) };
+            let v_coeff = if height == 8 { 3 } else { 7 };
             let a =
-                16 * (i32::from(left[height - 1]) + i32::from(top[7]) + 1) - v_coeff * v - 3 * h;
-            let middle = i32::try_from(anchor_v + anchor_h).unwrap() * 0;
+                16 * (i32::from(left[height - 1]) + i32::from(top[7]) + 1) - v_coeff * c - 3 * b;
             for row in 0..height {
                 for column in 0..8 {
-                    let value = (a
-                        + (column as i32 - anchor_h as i32 + middle) * b
-                        + (row as i32 - anchor_v as i32) * c
-                        + 16)
-                        >> 5;
+                    let value = (a + column as i32 * b + row as i32 * c) >> 5;
                     out[row * 8 + column] = clip(value, bit_depth);
                 }
             }
@@ -993,7 +988,7 @@ mod tests {
         );
         assert_eq!(
             predict_16x16(3, 8, Some(&top), Some(&left), Some(48)).unwrap(),
-            [49; 256]
+            [48; 256]
         );
         assert_eq!(predict_16x16(2, 8, None, None, None).unwrap(), [128; 256]);
     }
@@ -1051,7 +1046,7 @@ mod tests {
         let left16 = [64u16; 16];
         assert_eq!(
             predict_chroma(3, 10, Some(&top16), Some(&left16), 16, Some(64)).unwrap(),
-            [65; 128]
+            [64; 128]
         );
     }
 
