@@ -221,7 +221,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W2-8 10-bit 编码（若硬件支持；先 probe 确认）
 - [x] W2-9 GDR / intra refresh —— C ref-cfg oracle 已建立；
       320x240/640x480 × row/column 为 4/4 整条逐字节。
-- [ ] W2-9b ROI/QP map、deblock/SAO 细调
+- [~] W2-9b ROI/QP map 已闭合（相对/绝对 QP、force-intra、多 region、
+      640x480，`board_h265_roi_vs_mpp.sh` 4/4）；deblock/SAO 细调未做
 - [ ] W2-10 吞吐测量并对齐 H.264 的门槛（不低于 C，1080p 允许平手）
 
 验收：至少 4 尺寸 × 2 QP 的固定 QP 矩阵、6 帧 GOP、CBR/VBR 各一条逐 NAL；
@@ -248,10 +249,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 8. W4 后处理（L，约 8–12 天）
 
-- [~] W4-1 IEP（client 28）：去隔行 HAL + session + CLI 已落地并**跑通硬件**；板级首跑
-      记录到真实分歧（尺寸相同、1,035,360/1,036,800 字节不同：C 依 motion-history 选同帧
-      配对，我们无条件混场），下一步实现配对决策；YUV 缩放与裁剪未做。
-      2 条 `#[ignore]` 板级断言），板级无记录运行；YUV 缩放与裁剪未做。
+- [~] W4-1 IEP2（client 28）：I5O2 去隔行 HAL + session + CLI 已板上逐字节。
+      client 28 的 `iep2_params` 只有 deinterlace，没有 YUV scale/crop 字段；
+      legacy `/dev/iep` scale 后端在 t6 无节点、driver 不绑定，因此板上无法实现或验证。
 - [ ] W4-2 IEP 与解码器联动（NV12 直通、零拷贝）
 - [ ] W4-3 8/10-bit 互转（打包/planar、位深扩展）
 - [ ] W4-4 HDR tone mapping（若硬件块支持；先 probe）

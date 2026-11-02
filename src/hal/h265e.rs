@@ -186,6 +186,9 @@ pub struct IdrJob {
     pub refresh: Option<RefreshJob>,
     /// `MppEncSliceSplit`: one slice per picture by default.
     pub split: SliceSplit,
+    /// Static ROI base and QP table fds, or -1 when no ROI is configured.
+    pub roi_fd: i32,
+    pub roi_qp_fd: i32,
     pub input_fd: i32,
     pub output_fd: i32,
     pub current_fd: i32,
@@ -209,6 +212,8 @@ impl IdrJob {
             rc: None,
             refresh: None,
             split: SliceSplit::default(),
+            roi_fd: -1,
+            roi_qp_fd: -1,
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -716,6 +721,11 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     // no motion info.
     file.set(&regs::BASE_ENC_PIC_MEI_STOR, 0)?;
 
+    // `vepu580_h265_set_roi_regs` runs before the refresh overlay. Both features
+    // use roi_addr; the C order lets a refresh band replace the base table while
+    // the optional QP surface keeps its address.
+    apply_roi(&mut file, job)?;
+
     // `setup_intra_refresh` runs after the syntax/slice/ref and ME setup in C.
     // It overlays only the refresh table, roi_en and one CIME search axis.
     if let Some(refresh) = job.refresh {
@@ -728,6 +738,23 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     }
 
     Ok(file)
+}
+
+fn apply_roi(file: &mut RegisterFile, job: &IdrJob) -> Result<(), String> {
+    file.base[178 - 160] = 0;
+    file.base[179 - 160] = 0;
+    file.set(&regs::H265_REG0192_ENC_PIC_ROI_EN, 0)?;
+    file.set(&regs::H265_REG0228_ROI_EN_ROI_QP_EN, 0)?;
+    if job.roi_fd < 0 {
+        return Ok(());
+    }
+    file.set(&regs::H265_REG0192_ENC_PIC_ROI_EN, 1)?;
+    file.base[178 - 160] = job.roi_fd as u32;
+    if job.roi_qp_fd >= 0 {
+        file.base[179 - 160] = job.roi_qp_fd as u32;
+        file.set(&regs::H265_REG0228_ROI_EN_ROI_QP_EN, 1)?;
+    }
+    Ok(())
 }
 
 /// `vepu580_setup_split`. Tiles are not implemented, so the CTU count is the
@@ -995,6 +1022,18 @@ mod tests {
         );
         assert_eq!(file.get(&regs::BASE_ENC_PIC_SLEN_FIFO).unwrap(), 0);
         assert_eq!(file.get(&regs::CTL_INT_EN_SLC_DONE_EN).unwrap(), 0);
+    }
+
+    #[test]
+    fn roi_registers_use_the_base_and_qp_surfaces() {
+        let mut job = IdrJob::reference(26);
+        job.roi_fd = 31;
+        job.roi_qp_fd = 32;
+        let file = build_registers(&job).unwrap();
+        assert_eq!(file.get(&regs::H265_REG0192_ENC_PIC_ROI_EN).unwrap(), 1);
+        assert_eq!(file.get(&regs::H265_REG0228_ROI_EN_ROI_QP_EN).unwrap(), 1);
+        assert_eq!(file.base[178 - 160], 31);
+        assert_eq!(file.base[179 - 160], 32);
     }
 
     #[test]

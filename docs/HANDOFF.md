@@ -115,7 +115,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 624 passed, 26 board-only ignored
+cargo test --all-targets      # 629 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -144,10 +144,11 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_h265_gdr_vs_mpp.sh           # H.265 GDR row/column 4/4
 ./scripts/board_h265_slice_vs_mpp.sh         # H.265 普通整 AU slice 3/3
 ./scripts/board_h265_lowdelay_vs_mpp.sh      # H.265 逐 slice packet 4/4
+./scripts/board_h265_roi_vs_mpp.sh           # H.265 ROI/QP map 4/4
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 59 项完成、10 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 60 项完成、10 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
@@ -393,12 +394,17 @@ H.264/VEPU580 编码已做到：
   **4/4**：320x240 CTU 8（3 packet）、BY_BYTE 256（9 packet）、640x480 CTU 2
   （40 packet，跨 32 项 FIFO）和 6 帧 short-term IDR+P（18 packet）。完整码流
   和每个 packet 长度均与 C probe 相同；默认 IDR/GOP/GDR/三模式码控回归均通过。
+- ROI/QP map 已闭合：`codec::h265::roi` 复刻参考 helper 的 16×16 区域填充、
+  HEVC CTU 标记、CU64/32/16/8 展开、force-split 和 base/QP 两张 DMA 表。
+  `board_h265_roi_vs_mpp.sh` 为 **4/4**：相对 QP、绝对 QP+force-intra、多 region、
+  640x480；六帧 short-term GOP 整条码流逐字节一致。
 - 下一步：tiles/WPP/SAO、B 帧/多参考。
 
 ### 5.5 M9 后处理（IEP）
 
 - VDPP（client 29）在 RK3588 **不存在**，不要照 MPP 的 vdpp2 实现。
-- IEP（client 28）可绑定：去隔行、YUV 缩放、裁剪。入口 `mpp/vproc/iep/iep.c`、`iep2/iep2.c`。
+- IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
+  通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
 - 现有 `src/scale.rs` 已覆盖推理链路需要的 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×），
   不需要为了 YOLO 去移植 IEP；做完整性再做。
 
@@ -485,7 +491,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 624 通过（26 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 629 通过（26 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

@@ -13,6 +13,7 @@
 //! thumbs, 171 the motion-info buffer, and 172..175 the bitstream buffer.
 
 use crate::codec::h265::encoder::{SliceSplit, MPP_ENC_SPLIT_OUT_LOWDELAY};
+use crate::codec::h265::roi::{build_tables as build_roi_tables, RoiRegion};
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
@@ -122,6 +123,8 @@ pub struct Vepu580H265 {
     last_measured: Option<rc_model::Measured>,
     /// `MppEncSliceSplit`, fixed for the session before the first picture.
     split: SliceSplit,
+    /// Static ROI base and QP tables, allocated when the first frame is encoded.
+    roi: Option<(DmaBuf, DmaBuf)>,
     service: MppService,
     width: usize,
     height: usize,
@@ -225,6 +228,7 @@ impl Vepu580H265 {
             refresh_length: 0,
             last_measured: None,
             split: SliceSplit::default(),
+            roi: None,
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
             output: DmaBuf::alloc("system", output_size, false)
@@ -370,6 +374,36 @@ impl Vepu580H265 {
             .validate()
             .map_err(|error| format!("H.265 slice split: {error}"))?;
         self.split = split;
+        Ok(())
+    }
+
+    /// Configure the same regions on every picture, like the reference harness's
+    /// `mpp_enc_roi_setup_meta`. The two tables are static for this session.
+    pub fn set_roi_regions(&mut self, regions: &[RoiRegion]) -> Result<(), String> {
+        if self.frames != 0 {
+            return Err("H.265 ROI must be configured before the first picture".into());
+        }
+        if regions.is_empty() {
+            self.roi = None;
+            return Ok(());
+        }
+        let tables =
+            build_roi_tables(self.width, self.height, regions).map_err(|e| e.to_string())?;
+        let mut base = DmaBuf::alloc("system", tables.base.len(), false)
+            .map_err(|e| format!("allocate H.265 ROI base: {e}"))?;
+        let mut qp = DmaBuf::alloc("system", tables.qp.len(), false)
+            .map_err(|e| format!("allocate H.265 ROI QP: {e}"))?;
+        base.sync_write_begin()
+            .map_err(|e| format!("H.265 ROI base sync: {e}"))?;
+        base.as_mut_slice()[..tables.base.len()].copy_from_slice(&tables.base);
+        base.sync_write_end()
+            .map_err(|e| format!("H.265 ROI base flush: {e}"))?;
+        qp.sync_write_begin()
+            .map_err(|e| format!("H.265 ROI QP sync: {e}"))?;
+        qp.as_mut_slice()[..tables.qp.len()].copy_from_slice(&tables.qp);
+        qp.sync_write_end()
+            .map_err(|e| format!("H.265 ROI QP flush: {e}"))?;
+        self.roi = Some((base, qp));
         Ok(())
     }
 
@@ -519,6 +553,8 @@ impl Vepu580H265 {
             rc,
             refresh: refresh_job,
             split: self.split,
+            roi_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.0.fd()),
+            roi_qp_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.1.fd()),
             input_fd: self.input.fd(),
             output_fd: self.output.fd(),
             current_fd: current.pixel.fd(),

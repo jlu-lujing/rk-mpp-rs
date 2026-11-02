@@ -44,6 +44,7 @@ Dispositions:
 | H.264 P pictures above 4096 width | **FIXED** | `FRAMES=2 board_h264_wide_vs_mpp.sh` encodes IDR+P at 4160x64 and 4608x256: both byte-identical to the C probe, CIME extension lines included. |
 | H.265 GDR / intra refresh | **FIXED** | `h265e_probe` now supplies an explicit short-term `MPP_ENC_SET_REF_CFG`, activating C's refresh scheduler. Rust matches IGOP scheduling, dual-DPB alternation, refresh tables, search-axis override and recovery-point prefixes. `board_h265_gdr_vs_mpp.sh` passes 320x240/640x480 × row/column, 4/4 byte-identical. |
 | H.265 slice split and low-delay packets | **FIXED** | `vepu580_setup_split` is matched for BY_BYTE and BY_CTU, including `slen_fifo`, `slc_done_en` and the 32-entry FIFO rule. Ordinary one-AU output is 3/3 (`board_h265_slice_vs_mpp.sh`), including a 40-slice 640x480 picture. `board_h265_lowdelay_vs_mpp.sh` passes 4/4: 3 CTU slices, a 9-packet byte split, the same FIFO crossing and six short-term IDR+P pictures. Complete streams and every packet length are identical; the C probe drains through EOI on a worker thread. |
+| H.265 ROI / QP map | **FIXED** | Rust reproduces the reference ROI helper's 16x16 region pass, HEVC CTU map, CU64/CU32/CU16/CU8 records, force-split and both base/QP tables. `board_h265_roi_vs_mpp.sh` is 4/4 over relative QP, absolute QP+force-intra, multiple regions and 640x480; all six-picture GOP streams are byte-identical. |
 | H.265 tiles/WPP/SAO, B frames, multi-reference | NOT IMPLEMENTED | Frozen with the feature frontier. |
 
 ## Post-processing
@@ -51,6 +52,7 @@ Dispositions:
 | Case | Disposition | Evidence |
 |---|---|---|
 | IEP2 deinterlace, 720x480 I5O2 | **FIXED** | The 164-word params image already matched the C word for word (only fds differed); the job never ran because our batch set `MPP_FLAGS_REG_OFFSET_ALONE` on its last request (`0x12` vs the C's `0x03`). `submit_batch_plain` fixed it: 1,036,800 bytes identical to `iep2_test`. |
+| IEP legacy YUV scale/crop | **NO-ORACLE** | The scale API belongs to the legacy `/dev/iep` backend. t6 has no `/dev/iep` node and the legacy client/driver does not bind; IEP2 client 28 has no scale/crop fields. No C hardware output exists here to compare against. |
 | VDPP (client 29) | **NO-ORACLE** | The engine does not exist on RK3588; M9's original engine cannot be imitated on this board. |
 
 ## Framework

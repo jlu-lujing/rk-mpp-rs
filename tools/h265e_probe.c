@@ -12,11 +12,13 @@
  *
  * Usage:
  *   h265e_probe in.nv12 out.265 w h <0|1> qp [bps[:min:max]]
- *               [split mode arg] [splitout value]
+ *               [split mode arg] [splitout value] [roi x y w h intra qpmode qp]...
  *     mode 0 = fixed QP, 1 = CBR. qp is written to rc:qp_init.
  *   `split 1|2 arg` is MPP_ENC_SPLIT_BY_BYTE with a byte cap or
  *   MPP_ENC_SPLIT_BY_CTU with 64x64 CTUs per slice. `splitout 1` enables
  *   MPP_ENC_SPLIT_OUT_LOWDELAY; packets are then drained through EOI.
+ *   Build with -DH265E_ROI and link mpp_enc_roi_utils.c to enable the ROI
+ *   arguments using the reference helper's VEPU580 H.265 table generation.
  *
  * FRAMES/GOP enable multi-picture runs. REF_CFG=1 installs a short-term ref
  * config so C's scheduler reaches the GDR refresh path; REFRESH_EN/MODE/NUM
@@ -36,6 +38,10 @@
 #include "mpp_packet.h"
 #include "rk_mpi.h"
 #include "rk_venc_cfg.h"
+
+#ifdef H265E_ROI
+#include "mpp_enc_roi_utils.h"
+#endif
 
 #define CHECK(call)                                                             \
     do {                                                                        \
@@ -121,6 +127,10 @@ int main(int argc, char **argv)
     MppBuffer frame_buf = NULL;
     MppBuffer packet_buf = NULL;
     MppBuffer md_info = NULL;
+#ifdef H265E_ROI
+    MppEncRoiCtx roi_ctx = NULL;
+    int roi_regions = 0;
+#endif
     FILE *input = NULL;
     FILE *output = NULL;
     MPP_RET ret = MPP_NOK;
@@ -153,6 +163,15 @@ int main(int argc, char **argv)
                 return 2;
             }
             split_out = atoi(argv[++arg]);
+#ifdef H265E_ROI
+        } else if (!strcmp(argv[arg], "roi")) {
+            roi_regions++;
+            if (arg + 7 >= argc) {
+                fprintf(stderr, "roi wants x y w h fi qpmode qpval\n");
+                return 2;
+            }
+            arg += 7;
+#endif
         } else {
             fprintf(stderr, "unknown option %s\n", argv[arg]);
             return 2;
@@ -259,6 +278,12 @@ int main(int argc, char **argv)
         CHECK(mpi->control(ctx, MPP_ENC_SET_REF_CFG, ref_cfg));
     }
 
+#ifdef H265E_ROI
+    if (roi_regions)
+        CHECK(mpp_enc_roi_init(&roi_ctx, width, height, MPP_VIDEO_CodingHEVC,
+                               roi_regions));
+#endif
+
     for (int picture = 0; picture < frames; picture++) {
         MppFrame frame = NULL;
         MppPacket packet = NULL;
@@ -290,6 +315,29 @@ int main(int argc, char **argv)
         mpp_packet_set_length(packet, 0);
         mpp_meta_set_packet(meta, KEY_OUTPUT_PACKET, packet);
         mpp_meta_set_buffer(meta, KEY_MOTION_INFO, md_info);
+
+#ifdef H265E_ROI
+        if (roi_ctx) {
+            int at = 7;
+            if (at < argc && argv[at][0] >= '0' && argv[at][0] <= '9')
+                at++;
+            for (; at < argc; at++) {
+                RoiRegionCfg region;
+                if (strcmp(argv[at], "roi"))
+                    continue;
+                region.x = (RK_U16)atoi(argv[at + 1]);
+                region.y = (RK_U16)atoi(argv[at + 2]);
+                region.w = (RK_U16)atoi(argv[at + 3]);
+                region.h = (RK_U16)atoi(argv[at + 4]);
+                region.force_intra = atoi(argv[at + 5]);
+                region.qp_mode = atoi(argv[at + 6]);
+                region.qp_val = atoi(argv[at + 7]);
+                CHECK(mpp_enc_roi_add_region(roi_ctx, &region));
+                at += 7;
+            }
+            CHECK(mpp_enc_roi_setup_meta(roi_ctx, meta));
+        }
+#endif
 
         reader.ctx = ctx;
         reader.mpi = mpi;
@@ -331,6 +379,10 @@ int main(int argc, char **argv)
     ret = MPP_OK;
 
 cleanup:
+#ifdef H265E_ROI
+    if (roi_ctx)
+        mpp_enc_roi_deinit(roi_ctx);
+#endif
     if (output)
         fclose(output);
     if (input)

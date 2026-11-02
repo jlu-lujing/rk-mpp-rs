@@ -86,7 +86,7 @@ but has no driver behind it cannot be driven - the C tools say so as
 | 13 | jpegd | yes | binds | baseline JPEG decode, with its own post-processor |
 | 16 | rkv-enc | yes | binds | H.264, H.265 encode |
 | 19 | vepu JPEG | yes | binds | JPEG encode |
-| 28 | IEP | yes | binds | deinterlace and YUV scale - the M9 engine on this board |
+| 28 | IEP2 | yes | binds | deinterlace only; its register block has no scale/crop fields. The legacy `/dev/iep` scale node is absent on t6 |
 | 0, 2 | vdpu1 and its PP | no | `EINVAL` | — |
 | 8 | standalone HEVC decoder | no | `EINVAL` | — |
 | 17, 18, 20, 24 | vepu1, vepu2, jpeg_enc, vepu22 | no | `EINVAL` | — |
@@ -116,8 +116,8 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
 | M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR, slice output | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split is byte-identical over four cells (BY_CTU at 96/8/150 blocks and BY_BYTE at 256, the 8-block cell putting 38 slices past the 32-entry FIFO), per-slice low-delay packet output is byte-identical over five cells (including that 38-slice FIFO crossing and a six-picture IDR+P stream), and the >4096 CIME extension lines over two (4160x64, 4608x256). P pictures match at eleven sizes spanning the FBC-header threshold - the divergence past 640x480 was the constant FBC body offset, since fixed. The implemented H.264 encode surface is closed; new scheduling/recoding modes remain frozen feature work.** |
-| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures. tiles/WPP/SAO, B frames and multi-reference scheduling remain feature work.** |
-| M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 I5O2 deinterlace is byte-identical to the C `iep2_test` on t6 (720x480, 1,036,800 bytes); scale/crop and the other modes are untouched. VDPP (client 29) is absent on this board. See the note below** |
+| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. tiles/WPP/SAO, B frames and multi-reference scheduling remain feature work.** |
+| M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 I5O2 deinterlace is byte-identical to the C `iep2_test` on t6 (720x480, 1,036,800 bytes). IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress** |
 
@@ -1079,6 +1079,13 @@ in what order the evidence gets produced.
       Complete streams and every packet length are identical to the C probe.
       Existing H.265 IDR, GOP, GDR and CBR/VBR/AVBR/smart-GOP regressions remain
       byte-identical after the change.
+- [x] H.265 ROI and QP map. The reference `mpp_enc_roi_utils.c` path is ported:
+      16x16 region setup, HEVC CTU marking, 64-byte CU64/CU32/CU16/CU8 base
+      records, 256-byte QP records, force-split, force-intra, relative and
+      absolute QP. `board_h265_roi_vs_mpp.sh` is **4/4** against a C probe linked
+      to the reference ROI helper: partial relative-QP region, absolute-QP
+      force-intra region, two disconnected regions, and 640x480. Complete six
+      picture short-term GOP streams are byte-identical.
 - [ ] H.265 (rkvenc): tiles/WPP/SAO, B frames and multiple references.
       Note on the harness cell that exposed this: `-g 60` is parsed by
       `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero, so
@@ -1699,10 +1706,10 @@ in what order the evidence gets produced.
       and `scripts/board_iep_dei_vs_mpp.sh` reports the full **1,036,800 bytes
       identical** at 720x480 I5O2 TFF. The pairing was never ours to change - the
       engine produced the same output as soon as it was actually started.
-- [ ] IEP (`mpp/vproc/iep/iep.c`, `iep2/iep2.c`, client 28): YUV scale and crop,
-      other deinterlace modes and field orders, and the scale/crop register paths.
-      The I5O2 deinterlace path is byte-exact against the C `iep2_test`. This is the
-      M9 engine that exists on this board.
+- [ ] IEP (`mpp/vproc/iep/iep.c`, `iep2/iep2.c`, client 28): other deinterlace
+      modes and field orders. The I5O2 deinterlace path is byte-exact against the
+      C `iep2_test`. Client 28's `iep2_params` has no scale/crop fields; the
+      separate legacy `/dev/iep` scale API has no node or bound driver on t6.
 - [ ] VDPP (`mpp/vproc/vdpp/vdpp2.c`, client 29): scale, rotate, NV12 to RGB,
       sharpen, histogram. **Absent on t6** - the kernel refuses the client - so
       this cannot be ported or verified here at all.
@@ -1715,7 +1722,8 @@ easily conflated in the MPP tree: the legacy per-decoder post-processor window
 `hal_h263d_vdpu2.c` and `hal_vp8d_vdpu2.c` never touch it, so there is nothing to
 port for those decoders and our JPEG path already has it with RGB888 and the
 1/2 to 1/8 downscale; the standalone VDPP, which is the general scale / rotate /
-CSC engine and is not present on this SoC; and IEP, which is present and binds.
+CSC engine and is not present on this SoC; and IEP2, whose client-28 path is
+present but provides deinterlace, not a general scaler.
 Client 3 answers `INIT_CLIENT_TYPE` happily and no decoder HAL in this tree ever
 uses it. Until something drives it, the RGB888 scaler in `src/scale.rs` remains
 the RGA replacement, at 2.9 to 3.8 times RGA's speed on the sizes the inference

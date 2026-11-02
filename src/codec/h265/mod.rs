@@ -4,4 +4,5 @@
 //! decoder side of the same format lives beside it under `codec::hevc`.
 
 pub mod encoder;
+pub mod roi;
 pub mod sei;

@@ -218,6 +218,8 @@ fn encode_h265_headers(
         rc: None,
         refresh: None,
         split: h265_syntax::SliceSplit::default(),
+        roi_fd: -1,
+        roi_qp_fd: -1,
         input_fd: -1,
         output_fd: -1,
         current_fd: -1,
@@ -261,6 +263,36 @@ fn parse_h265_split_option(
         return Ok(true);
     }
     Ok(false)
+}
+
+fn parse_h265_roi_option(
+    text: &str,
+    regions: &mut Vec<rk_mpp_rs::codec::h265::roi::RoiRegion>,
+) -> Result<bool, String> {
+    let Some(rest) = text.strip_prefix("roi:") else {
+        return Ok(false);
+    };
+    let parts: Vec<i64> = rest
+        .split(':')
+        .filter_map(|value| value.parse().ok())
+        .collect();
+    let [x, y, w, h, intra, absolute, qp] = parts.as_slice() else {
+        return Err("expected roi:x:y:w:h:intra:abs:qp".into());
+    };
+    if *x < 0 || *y < 0 || *w <= 0 || *h <= 0 || *w > u16::MAX as i64 || *h > u16::MAX as i64 {
+        return Err("H.265 ROI geometry is outside the unsigned region fields".into());
+    }
+    let qp = i16::try_from(*qp).map_err(|_| format!("H.265 ROI QP {qp} is outside i16"))?;
+    regions.push(rk_mpp_rs::codec::h265::roi::RoiRegion {
+        x: *x as u16,
+        y: *y as u16,
+        w: *w as u16,
+        h: *h as u16,
+        force_intra: *intra != 0,
+        qp_absolute: *absolute != 0,
+        qp_val: qp,
+    });
+    Ok(true)
 }
 
 fn encode_jpeg(
@@ -1254,6 +1286,8 @@ fn main() {
             rc,
             refresh: None,
             split: h265_syntax::SliceSplit::default(),
+            roi_fd: -1,
+            roi_qp_fd: -1,
             input_fd: -1,
             output_fd: -1,
             current_fd: -1,
@@ -1285,7 +1319,7 @@ fn main() {
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
-        let usage = "usage: rk-mpp-rs h265-idr <in.nv12> <out.265> <width> <height> [qp] [split:ctu:|split:byte:arg] [splitout:lowdelay]";
+        let usage = "usage: rk-mpp-rs h265-idr <in.nv12> <out.265> <width> <height> [qp] [roi:x:y:w:h:intra:abs:qp]... [split:ctu:|split:byte:arg] [splitout:lowdelay]";
         let (Some(width), Some(height)) = (width, height) else {
             eprintln!("{usage}");
             std::process::exit(2);
@@ -1299,17 +1333,25 @@ fn main() {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(26);
         let mut split = h265_syntax::SliceSplit::default();
+        let mut rois = Vec::new();
         for text in args.iter().skip(7) {
             match parse_h265_split_option(text, &mut split) {
                 Ok(true) => {}
-                Ok(false) => {
-                    eprintln!("unknown H.265 option {text}");
-                    std::process::exit(2);
-                }
                 Err(error) => {
                     eprintln!("{error}");
                     std::process::exit(2);
                 }
+                Ok(false) => match parse_h265_roi_option(text, &mut rois) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        eprintln!("unknown H.265 option {text}");
+                        std::process::exit(2);
+                    }
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(2);
+                    }
+                },
             }
         }
         let input = std::fs::read(src).map_err(|e| format!("{src}: {e}"));
@@ -1322,6 +1364,7 @@ fn main() {
         };
         let result = h265e_session::Vepu580H265::open(width, height, qp).and_then(|mut encoder| {
             encoder.set_slice_split(split)?;
+            encoder.set_roi_regions(&rois)?;
             encoder.encode_idr_packets(&input)
         });
         match result.and_then(|encoded| {
@@ -1352,7 +1395,7 @@ fn main() {
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
-        let usage = "usage: rk-mpp-rs h265-gop <in.nv12> <out.265> <width> <height> [frames] [qp] [row:|col:num] [shortterm] [split:ctu:|split:byte:arg] [splitout:lowdelay]";
+        let usage = "usage: rk-mpp-rs h265-gop <in.nv12> <out.265> <width> <height> [frames] [qp] [row:|col:num] [shortterm] [roi:x:y:w:h:intra:abs:qp]... [split:ctu:|split:byte:arg] [splitout:lowdelay]";
         let (Some(width), Some(height)) = (width, height) else {
             eprintln!("{usage}");
             std::process::exit(2);
@@ -1388,6 +1431,7 @@ fn main() {
         let mut split = h265_syntax::SliceSplit::default();
         let mut refresh = None;
         let mut short_term = false;
+        let mut rois = Vec::new();
         for text in args.iter().skip(8) {
             match parse_h265_split_option(text, &mut split) {
                 Ok(true) => continue,
@@ -1399,10 +1443,17 @@ fn main() {
                     refresh = Some(text.as_str());
                 }
                 Ok(false) if text == "shortterm" => short_term = true,
-                Ok(false) => {
-                    eprintln!("unknown H.265 option {text}");
-                    std::process::exit(2);
-                }
+                Ok(false) => match parse_h265_roi_option(text, &mut rois) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        eprintln!("unknown H.265 option {text}");
+                        std::process::exit(2);
+                    }
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(2);
+                    }
+                },
             }
         }
         let opened = if refresh.is_some() || short_term {
@@ -1427,6 +1478,7 @@ fn main() {
                 encoder.enable_refresh(mode, num.parse().unwrap_or(1))?;
             }
             encoder.set_slice_split(split)?;
+            encoder.set_roi_regions(&rois)?;
             let mut out = Vec::new();
             let mut packets = 0;
             let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
