@@ -1,8 +1,9 @@
 //! H.264 CABAC I-slice reconstruction.
 //!
-//! The current gate covers one I16x16/CBP0 macroblock with no residual. Context
-//! tables beyond the header/CBP subset are intentionally absent until residual
-//! syntax has a differential fixture.
+//! The current gate covers one I16x16/CBP0 macroblock with the luma-DC residual
+//! syntax. Context tables beyond the header/CBP and luma-DC subset are
+//! intentionally absent until the remaining residual categories have
+//! differential fixtures.
 
 use std::fmt;
 
@@ -72,7 +73,8 @@ pub fn decode_cabac_i_slice(
         .get(offset..)
         .ok_or(H264CabacError::Malformed("CABAC data offset"))?;
     let mut decoder = CabacDecoder::new_h264(data);
-    let mut contexts = init_i_contexts(pps.pic_init_qp + slice.qp_delta);
+    let slice_qp = pps.pic_init_qp + slice.qp_delta;
+    let mut contexts = init_i_contexts(slice_qp);
 
     let (kind, luma_prediction_modes, cbp) = if decoder.decode_bin(&mut contexts[3]) == 0 {
         let mut modes = vec![0u8; 16];
@@ -153,20 +155,23 @@ pub fn decode_cabac_i_slice(
     } else {
         0
     };
-    let qp = pps.pic_init_qp + qp_delta;
+    let qp = slice_qp + qp_delta;
     let (luma_dc, luma_dc_non_zero) = if matches!(kind, IntraMacroblockKind::I16x16 { .. }) {
-        if decoder.decode_bin(&mut contexts[85]) != 0 {
-            return Err(H264CabacError::Unsupported("CABAC luma-DC residual"));
-        }
-        (
-            Some(super::h264_cavlc::CavlcResidual {
+        let start = decoder.bit_pos();
+        let residual = if decoder.decode_bin(&mut contexts[85]) == 0 {
+            super::h264_cavlc::CavlcResidual {
                 scan: [0; 16],
                 total_coeff: 0,
                 trailing_ones: 0,
                 bits_consumed: 0,
-            }),
-            0,
-        )
+            }
+        } else {
+            decode_luma_dc_residual(&mut decoder, &mut contexts)?
+        };
+        let non_zero = residual.total_coeff as u8;
+        let mut residual = residual;
+        residual.bits_consumed = decoder.bit_pos() - start;
+        (Some(residual), non_zero)
     } else {
         (None, 0)
     };
@@ -268,7 +273,7 @@ pub fn decode_cabac_i_slice(
     })
 }
 
-fn init_i_contexts(slice_qp: i32) -> [Context; 86] {
+fn init_i_contexts(slice_qp: i32) -> [Context; 237] {
     const HEAD: [[i8; 2]; 11] = [
         [20, -15],
         [2, 54],
@@ -310,9 +315,58 @@ fn init_i_contexts(slice_qp: i32) -> [Context; 86] {
         [-30, 127],
         [-17, 123],
     ];
-    let mut init = [[0i8; 2]; 86];
+    const SIG_LUMA_DC: [[i8; 2]; 15] = [
+        [-7, 93],
+        [-11, 87],
+        [-3, 77],
+        [-5, 71],
+        [-4, 63],
+        [-4, 68],
+        [-12, 84],
+        [-7, 62],
+        [-7, 65],
+        [8, 61],
+        [5, 56],
+        [-2, 66],
+        [1, 64],
+        [0, 61],
+        [-2, 78],
+    ];
+    const LAST_LUMA_DC: [[i8; 2]; 15] = [
+        [24, 0],
+        [15, 9],
+        [8, 25],
+        [13, 18],
+        [15, 9],
+        [13, 19],
+        [10, 37],
+        [12, 18],
+        [6, 29],
+        [20, 33],
+        [15, 30],
+        [4, 45],
+        [1, 58],
+        [0, 62],
+        [7, 61],
+    ];
+    const ABS_LUMA_DC: [[i8; 2]; 10] = [
+        [-3, 71],
+        [-6, 42],
+        [-5, 50],
+        [-3, 54],
+        [-2, 62],
+        [0, 58],
+        [1, 63],
+        [-2, 72],
+        [-1, 74],
+        [-9, 91],
+    ];
+    let mut init = [[0i8; 2]; 237];
     init[..HEAD.len()].copy_from_slice(&HEAD);
-    init[60..].copy_from_slice(&TAIL);
+    init[60..86].copy_from_slice(&TAIL);
+    init[105..120].copy_from_slice(&SIG_LUMA_DC);
+    init[166..181].copy_from_slice(&LAST_LUMA_DC);
+    init[227..237].copy_from_slice(&ABS_LUMA_DC);
     std::array::from_fn(|index| {
         let [m, n] = init[index];
         let mut pre = 2 * (((i32::from(m) * slice_qp) >> 4) + i32::from(n)) - 127;
@@ -321,5 +375,88 @@ fn init_i_contexts(slice_qp: i32) -> [Context; 86] {
             pre = 124 + (pre & 1);
         }
         Context::new((pre >> 1) as u8, (pre & 1) as u8)
+    })
+}
+
+const SIG_LUMA_DC_CONTEXT: usize = 105;
+const LAST_LUMA_DC_CONTEXT: usize = 166;
+const ABS_LUMA_DC_CONTEXT: usize = 227;
+
+fn decode_luma_dc_residual(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+) -> Result<super::h264_cavlc::CavlcResidual, H264CabacError> {
+    const MAX_COEFFICIENT: usize = 16;
+    const LEVEL_ONE_CONTEXT: [usize; 8] = [1, 2, 3, 4, 0, 0, 0, 0];
+    const LEVEL_GT_ONE_CONTEXT: [usize; 8] = [5, 5, 5, 5, 6, 7, 8, 9];
+    const LEVEL_ONE_TRANSITION: [usize; 8] = [1, 2, 3, 3, 4, 5, 6, 7];
+    const LEVEL_GT_ONE_TRANSITION: [usize; 8] = [4, 4, 4, 4, 5, 6, 7, 7];
+
+    let mut positions = [0usize; MAX_COEFFICIENT];
+    let mut coefficient_count = 0;
+    let mut last = 0;
+    while last < MAX_COEFFICIENT - 1 {
+        if decoder.decode_bin(&mut contexts[SIG_LUMA_DC_CONTEXT + last]) != 0 {
+            positions[coefficient_count] = last;
+            coefficient_count += 1;
+            if decoder.decode_bin(&mut contexts[LAST_LUMA_DC_CONTEXT + last]) != 0 {
+                last = MAX_COEFFICIENT;
+                break;
+            }
+        }
+        last += 1;
+    }
+    if last == MAX_COEFFICIENT - 1 {
+        positions[coefficient_count] = last;
+        coefficient_count += 1;
+    }
+    if coefficient_count == 0 {
+        return Err(H264CabacError::Malformed(
+            "residual block has no significant coefficient",
+        ));
+    }
+
+    let mut scan = [0i32; 16];
+    let mut node_context = 0;
+    for position in positions[..coefficient_count].iter().rev() {
+        let one_context = ABS_LUMA_DC_CONTEXT + LEVEL_ONE_CONTEXT[node_context];
+        let mut magnitude = if decoder.decode_bin(&mut contexts[one_context]) == 0 {
+            node_context = LEVEL_ONE_TRANSITION[node_context];
+            1
+        } else {
+            let gt_one_context = ABS_LUMA_DC_CONTEXT + LEVEL_GT_ONE_CONTEXT[node_context];
+            node_context = LEVEL_GT_ONE_TRANSITION[node_context];
+            let mut value = 2;
+            while value < 15 && decoder.decode_bin(&mut contexts[gt_one_context]) != 0 {
+                value += 1;
+            }
+            if value >= 15 {
+                let mut suffix_length = 0;
+                loop {
+                    let more = decoder.decode_bypass() != 0;
+                    if !more || suffix_length == 23 {
+                        break;
+                    }
+                    suffix_length += 1;
+                }
+                value = 1;
+                for _ in 0..suffix_length {
+                    value = value * 2 + decoder.decode_bypass() as i32;
+                }
+                value += 14;
+            }
+            value
+        };
+        if decoder.decode_bypass() != 0 {
+            magnitude = -magnitude;
+        }
+        scan[*position] = magnitude;
+    }
+
+    Ok(super::h264_cavlc::CavlcResidual {
+        scan,
+        total_coeff: coefficient_count,
+        trailing_ones: 0,
+        bits_consumed: 0,
     })
 }

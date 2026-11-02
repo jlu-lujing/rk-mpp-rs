@@ -31,6 +31,15 @@ fn cabac_midpoint_idr_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
+fn cabac_luma_dc_residual_matches_ffmpeg_yuv420p() {
+    compare_fixture(
+        include_bytes!("../tests/data/h264_i16_cabac_dc.264"),
+        include_bytes!("../tests/data/h264_i16_cabac_dc.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
 fn sixteen_macroblock_luma_matches_ffmpeg_yuv420p() {
     compare_fixture_planes(
         include_bytes!("../tests/data/h264_i64_cavlc.264"),
