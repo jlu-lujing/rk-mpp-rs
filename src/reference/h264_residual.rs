@@ -7,7 +7,10 @@
 
 use std::fmt;
 
-use super::h264::{dequant_4x4, dequant_8x8_cavlc, inverse_4x4, inverse_8x8, CavlcScan8x8};
+use super::h264::{
+    dequant_4x4_layout, dequant_8x8_cavlc, inverse_4x4, inverse_8x8, inverse_scan_4x4_layout,
+    inverse_scan_8x8_cavlc, CavlcScan4x4, CavlcScan8x8,
+};
 use super::h264_cavlc::{
     decode_residual_4x4, decode_residual_8x8, Cavlc8x8Residual, CavlcError, CavlcResidual,
 };
@@ -16,6 +19,9 @@ use super::h264_cavlc::{
 pub enum H264ResidualError {
     Cavlc(CavlcError),
     InvalidMaxCoeff(u8),
+    InvalidLosslessScan,
+    TransformPathRequiresQScaleScan,
+    InvalidBitDepth(u8),
     Dequant(&'static str),
 }
 
@@ -28,6 +34,15 @@ impl fmt::Display for H264ResidualError {
                     f,
                     "regular H.264 residual max_coeff must be 15 or 16, got {max_coeff}"
                 )
+            }
+            H264ResidualError::InvalidLosslessScan => {
+                write!(f, "H.264 lossless reconstruction requires a q0 scan")
+            }
+            H264ResidualError::TransformPathRequiresQScaleScan => {
+                write!(f, "H.264 transform reconstruction cannot use a q0 scan")
+            }
+            H264ResidualError::InvalidBitDepth(bit_depth) => {
+                write!(f, "H.264 residual supports 8..=10 bit, got {bit_depth}")
             }
             H264ResidualError::Dequant(error) => write!(f, "H.264 dequantisation failed: {error}"),
         }
@@ -68,6 +83,70 @@ pub fn reconstruct_regular_4x4(
     bit_depth: u8,
     scaling: Option<&[u8; 16]>,
 ) -> Result<Reconstructed4x4, H264ResidualError> {
+    reconstruct_regular_4x4_with_scan(
+        data,
+        n_c,
+        max_coeff,
+        qp,
+        bit_depth,
+        scaling,
+        CavlcScan4x4::Frame,
+    )
+}
+
+/// Transform-path 4x4 reconstruction with an explicit frame/field scan.
+pub fn reconstruct_regular_4x4_with_scan(
+    data: &[u8],
+    n_c: i16,
+    max_coeff: u8,
+    qp: u8,
+    bit_depth: u8,
+    scaling: Option<&[u8; 16]>,
+    scan_layout: CavlcScan4x4,
+) -> Result<Reconstructed4x4, H264ResidualError> {
+    if !matches!(max_coeff, 15 | 16) {
+        return Err(H264ResidualError::InvalidMaxCoeff(max_coeff));
+    }
+    if matches!(scan_layout, CavlcScan4x4::FrameQ0 | CavlcScan4x4::FieldQ0) {
+        return Err(H264ResidualError::TransformPathRequiresQScaleScan);
+    }
+    let syntax = decode_residual_4x4(
+        data,
+        super::h264_cavlc::CavlcBlockKind::Regular { n_c, max_coeff },
+    )?;
+    let mut scan = [0i32; 16];
+    if max_coeff == 15 {
+        scan[1..].copy_from_slice(&syntax.scan[..15]);
+    } else {
+        scan = syntax.scan;
+    }
+    let coefficients = dequant_4x4_layout(scan, qp, bit_depth, scaling, scan_layout)
+        .map_err(H264ResidualError::Dequant)?;
+    let residual = inverse_4x4(coefficients);
+    Ok(Reconstructed4x4 {
+        syntax,
+        coefficients,
+        residual,
+    })
+}
+
+/// Reconstruct a transform-bypass 4x4 block at `qscale == 0`.
+///
+/// H.264 replaces the dequant factors with 64 in bypass mode, so the stored
+/// coefficients are exactly the signed residual samples after the q0 scan.
+pub fn reconstruct_regular_4x4_lossless(
+    data: &[u8],
+    n_c: i16,
+    max_coeff: u8,
+    bit_depth: u8,
+    scan_layout: CavlcScan4x4,
+) -> Result<Reconstructed4x4, H264ResidualError> {
+    if !(8..=10).contains(&bit_depth) {
+        return Err(H264ResidualError::InvalidBitDepth(bit_depth));
+    }
+    if !matches!(scan_layout, CavlcScan4x4::FrameQ0 | CavlcScan4x4::FieldQ0) {
+        return Err(H264ResidualError::InvalidLosslessScan);
+    }
     if !matches!(max_coeff, 15 | 16) {
         return Err(H264ResidualError::InvalidMaxCoeff(max_coeff));
     }
@@ -81,13 +160,11 @@ pub fn reconstruct_regular_4x4(
     } else {
         scan = syntax.scan;
     }
-    let coefficients =
-        dequant_4x4(scan, qp, bit_depth, scaling).map_err(H264ResidualError::Dequant)?;
-    let residual = inverse_4x4(coefficients);
+    let coefficients = inverse_scan_4x4_layout(scan, scan_layout);
     Ok(Reconstructed4x4 {
         syntax,
         coefficients,
-        residual,
+        residual: coefficients,
     })
 }
 
@@ -100,6 +177,9 @@ pub fn reconstruct_8x8_cavlc(
     scaling: Option<&[u8; 64]>,
     layout: CavlcScan8x8,
 ) -> Result<Reconstructed8x8, H264ResidualError> {
+    if matches!(layout, CavlcScan8x8::FrameQ0 | CavlcScan8x8::FieldQ0) {
+        return Err(H264ResidualError::TransformPathRequiresQScaleScan);
+    }
     let syntax = decode_residual_8x8(data, n_c)?;
     let coefficients = dequant_8x8_cavlc(syntax.scan, qp, bit_depth, scaling, layout)
         .map_err(H264ResidualError::Dequant)?;
@@ -108,6 +188,28 @@ pub fn reconstruct_8x8_cavlc(
         syntax,
         coefficients,
         residual,
+    })
+}
+
+/// Reconstruct a transform-bypass CAVLC 8x8 block at `qscale == 0`.
+pub fn reconstruct_8x8_cavlc_lossless(
+    data: &[u8],
+    n_c: [i16; 4],
+    bit_depth: u8,
+    layout: CavlcScan8x8,
+) -> Result<Reconstructed8x8, H264ResidualError> {
+    if !(8..=10).contains(&bit_depth) {
+        return Err(H264ResidualError::InvalidBitDepth(bit_depth));
+    }
+    if !matches!(layout, CavlcScan8x8::FrameQ0 | CavlcScan8x8::FieldQ0) {
+        return Err(H264ResidualError::InvalidLosslessScan);
+    }
+    let syntax = decode_residual_8x8(data, n_c)?;
+    let coefficients = inverse_scan_8x8_cavlc(syntax.scan, layout);
+    Ok(Reconstructed8x8 {
+        syntax,
+        coefficients,
+        residual: coefficients,
     })
 }
 
@@ -136,6 +238,61 @@ mod tests {
         assert_eq!(
             block.residual,
             [7, 3, -3, -6, 7, 3, -3, -6, 7, 3, -3, -6, 7, 3, -3, -6]
+        );
+    }
+
+    #[test]
+    fn lossless_4x4_uses_the_q0_scan_without_dequant_or_transform() {
+        // One +1 coefficient at CAVLC scan position 1.
+        let block =
+            reconstruct_regular_4x4_lossless(&[0b0100_1100], 0, 16, 8, CavlcScan4x4::FrameQ0)
+                .unwrap();
+        assert_eq!(block.syntax.bits_consumed, 6);
+        assert_eq!(block.coefficients[4], 1);
+        assert_eq!(block.residual, block.coefficients);
+        assert_eq!(
+            block.residual.iter().filter(|&&sample| sample != 0).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn lossless_8x8_places_scan_four_at_the_transposed_raster_position() {
+        // Partition 0 has one +1 at scan position 4; the other partitions are empty.
+        let block = reconstruct_8x8_cavlc_lossless(
+            &[0b0100_0101, 0b1100_0000],
+            [0; 4],
+            8,
+            CavlcScan8x8::FrameQ0,
+        )
+        .unwrap();
+        assert_eq!(block.syntax.bits_consumed, 10);
+        assert_eq!(block.syntax.total_coeff, [1, 0, 0, 0]);
+        assert_eq!(block.coefficients[33], 1);
+        assert_eq!(block.residual, block.coefficients);
+        assert_eq!(
+            block.residual.iter().filter(|&&sample| sample != 0).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn lossless_entry_points_reject_transformed_scans_and_bit_depths() {
+        assert_eq!(
+            reconstruct_regular_4x4_lossless(&[], 0, 16, 8, CavlcScan4x4::Frame),
+            Err(H264ResidualError::InvalidLosslessScan)
+        );
+        assert_eq!(
+            reconstruct_8x8_cavlc_lossless(&[], [0; 4], 11, CavlcScan8x8::FrameQ0),
+            Err(H264ResidualError::InvalidBitDepth(11))
+        );
+        assert_eq!(
+            reconstruct_regular_4x4_with_scan(&[], 0, 16, 24, 8, None, CavlcScan4x4::FrameQ0),
+            Err(H264ResidualError::TransformPathRequiresQScaleScan)
+        );
+        assert_eq!(
+            reconstruct_8x8_cavlc(&[], [0; 4], 24, 8, None, CavlcScan8x8::FrameQ0),
+            Err(H264ResidualError::TransformPathRequiresQScaleScan)
         );
     }
 

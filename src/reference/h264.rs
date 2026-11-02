@@ -271,12 +271,47 @@ pub fn add_residual_8x8_u16(
 
 /// Scan order to raster position for a residual 4x4 block (`scan4x4`).
 const ZIGZAG_4X4: [usize; 16] = [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
+const FIELD_4X4: [usize; 16] = [0, 4, 1, 8, 12, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15];
+
+/// Frame/field scans used by ordinary transformed and transform-bypass blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CavlcScan4x4 {
+    Frame,
+    Field,
+    FrameQ0,
+    FieldQ0,
+}
+
+const fn transpose_scan4(scan: [usize; 16]) -> [usize; 16] {
+    let mut output = [0usize; 16];
+    let mut position = 0;
+    while position < 16 {
+        let value = scan[position];
+        output[position] = (value >> 2) | ((value << 2) & 0xf);
+        position += 1;
+    }
+    output
+}
+
+const ZIGZAG_4X4_Q0: [usize; 16] = transpose_scan4(ZIGZAG_4X4);
+const FIELD_4X4_Q0: [usize; 16] = transpose_scan4(FIELD_4X4);
 
 /// Place quantised 4x4 levels from scan order into the raster coefficient block.
 pub fn inverse_scan_4x4(scan: [i32; 16]) -> [i32; 16] {
+    inverse_scan_4x4_layout(scan, CavlcScan4x4::Frame)
+}
+
+/// Place 4x4 levels from the selected frame/field and transformed/q0 scan.
+pub fn inverse_scan_4x4_layout(scan: [i32; 16], layout: CavlcScan4x4) -> [i32; 16] {
+    let table = match layout {
+        CavlcScan4x4::Frame => &ZIGZAG_4X4,
+        CavlcScan4x4::Field => &FIELD_4X4,
+        CavlcScan4x4::FrameQ0 => &ZIGZAG_4X4_Q0,
+        CavlcScan4x4::FieldQ0 => &FIELD_4X4_Q0,
+    };
     let mut raster = [0i32; 16];
     for (position, value) in scan.into_iter().enumerate() {
-        raster[ZIGZAG_4X4[position]] = value;
+        raster[table[position]] = value;
     }
     raster
 }
@@ -307,6 +342,17 @@ pub fn dequant_4x4(
     bit_depth: u8,
     scaling: Option<&[u8; 16]>,
 ) -> Result<[i32; 16], &'static str> {
+    dequant_4x4_layout(scan, qp, bit_depth, scaling, CavlcScan4x4::Frame)
+}
+
+/// H.264 4x4 dequantisation with an explicit frame/field scan.
+pub fn dequant_4x4_layout(
+    scan: [i32; 16],
+    qp: u8,
+    bit_depth: u8,
+    scaling: Option<&[u8; 16]>,
+    layout: CavlcScan4x4,
+) -> Result<[i32; 16], &'static str> {
     if !(8..=10).contains(&bit_depth) {
         return Err("H.264 reference dequant supports 8..=10 bit");
     }
@@ -325,9 +371,16 @@ pub fn dequant_4x4(
         qmul[position] = (DEQUANT4[index as usize][class] * scale) << shift;
     }
 
+    let table = match layout {
+        CavlcScan4x4::Frame => &ZIGZAG_4X4,
+        CavlcScan4x4::Field => &FIELD_4X4,
+        CavlcScan4x4::FrameQ0 | CavlcScan4x4::FieldQ0 => {
+            return Err("transform-bypass q0 requires lossless reconstruction");
+        }
+    };
     let mut output = [0i32; 16];
     for (scan_pos, level) in scan.into_iter().enumerate() {
-        let raster = ZIGZAG_4X4[scan_pos];
+        let raster = table[scan_pos];
         let value = (i64::from(level) * i64::from(qmul[raster]) + 32) >> 6;
         output[raster] =
             i32::try_from(value).map_err(|_| "dequantised H.264 coefficient overflows i32")?;
@@ -340,6 +393,8 @@ pub fn dequant_4x4(
 pub enum CavlcScan8x8 {
     Frame,
     Field,
+    FrameQ0,
+    FieldQ0,
 }
 
 /// CAVLC 8x8 scan order to raster position. This is deliberately not an
@@ -357,14 +412,31 @@ const FIELD_8X8_CAVLC: [usize; 64] = [
     48, 3, 57, 19, 58, 20, 59, 21, 60, 37, 30, 46, 31, 63,
 ];
 
+const fn transpose_scan8(scan: [usize; 64]) -> [usize; 64] {
+    let mut output = [0usize; 64];
+    let mut position = 0;
+    while position < 64 {
+        let value = scan[position];
+        output[position] = (value >> 3) | ((value & 7) << 3);
+        position += 1;
+    }
+    output
+}
+
+const ZIGZAG_8X8_CAVLC_Q0: [usize; 64] = transpose_scan8(ZIGZAG_8X8_CAVLC);
+const FIELD_8X8_CAVLC_Q0: [usize; 64] = transpose_scan8(FIELD_8X8_CAVLC);
+
 /// Place CAVLC 8x8 levels into a raster-order coefficient block.
 ///
-/// This is the normal CAVLC path. Transform-bypass streams use a separate q0
-/// scan and are intentionally not conflated with this table.
+/// `FrameQ0`/`FieldQ0` are the transform-bypass scans; they are kept distinct
+/// from the qscale scans because FFmpeg selects a different internal table at
+/// `qscale == 0`.
 pub fn inverse_scan_8x8_cavlc(scan: [i32; 64], layout: CavlcScan8x8) -> [i32; 64] {
     let table = match layout {
         CavlcScan8x8::Frame => &ZIGZAG_8X8_CAVLC,
         CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
+        CavlcScan8x8::FrameQ0 => &ZIGZAG_8X8_CAVLC_Q0,
+        CavlcScan8x8::FieldQ0 => &FIELD_8X8_CAVLC_Q0,
     };
     let mut raster = [0i32; 64];
     for (position, value) in scan.into_iter().enumerate() {
@@ -422,6 +494,9 @@ pub fn dequant_8x8_cavlc(
     let table = match layout {
         CavlcScan8x8::Frame => &ZIGZAG_8X8_CAVLC,
         CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
+        CavlcScan8x8::FrameQ0 | CavlcScan8x8::FieldQ0 => {
+            return Err("transform-bypass q0 requires lossless reconstruction")
+        }
     };
     let mut output = [0i32; 64];
     for (scan_pos, level) in scan.into_iter().enumerate() {
@@ -641,6 +716,35 @@ mod tests {
     }
 
     #[test]
+    fn transform_bypass_4x4_scans_use_the_q0_frame_and_field_tables() {
+        assert_eq!(
+            ZIGZAG_4X4_Q0,
+            [0, 4, 1, 2, 5, 8, 12, 9, 6, 3, 7, 10, 13, 14, 11, 15]
+        );
+        assert_eq!(
+            FIELD_4X4_Q0,
+            [0, 1, 4, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        );
+        let scan: [i32; 16] = std::array::from_fn(|position| position as i32 + 1);
+        let frame = inverse_scan_4x4_layout(scan, CavlcScan4x4::FrameQ0);
+        let field = inverse_scan_4x4_layout(scan, CavlcScan4x4::FieldQ0);
+        assert_eq!(frame[..8], [1, 3, 4, 10, 2, 5, 9, 11]);
+        assert_eq!(field[..8], [1, 2, 4, 5, 3, 6, 7, 8]);
+    }
+
+    #[test]
+    fn transform_bypass_8x8_scan_is_distinct_from_the_qscale_scan() {
+        let scan: [i32; 64] = std::array::from_fn(|position| position as i32 + 1);
+        let qscale = inverse_scan_8x8_cavlc(scan, CavlcScan8x8::Frame);
+        let q0 = inverse_scan_8x8_cavlc(scan, CavlcScan8x8::FrameQ0);
+        assert_eq!(qscale[12], 5);
+        assert_eq!(qscale[33], 53);
+        assert_eq!(q0[12], 53);
+        assert_eq!(q0[33], 5);
+        assert_ne!(qscale, q0);
+    }
+
+    #[test]
     fn inverse_dc_hadamard_matches_constant_and_impulse_vectors() {
         assert_eq!(
             inverse_luma_dc_4x4([16; 16]),
@@ -694,9 +798,11 @@ mod tests {
         let levels: [i32; 16] = std::array::from_fn(|position| position as i32 - 8);
         let scaling: [u8; 16] = std::array::from_fn(|position| position as u8 + 1);
         for qp in [0, 5, 6, 7, 51] {
-            let actual = dequant_4x4(levels, qp, 8, Some(&scaling)).unwrap();
-            let expected = reference_dequant_4x4(levels, qp, &scaling);
-            assert_eq!(actual, expected, "QP {qp}");
+            for layout in [CavlcScan4x4::Frame, CavlcScan4x4::Field] {
+                let actual = dequant_4x4_layout(levels, qp, 8, Some(&scaling), layout).unwrap();
+                let expected = reference_dequant_4x4(levels, qp, &scaling, layout);
+                assert_eq!(actual, expected, "QP {qp}, layout {layout:?}");
+            }
         }
     }
 
@@ -766,6 +872,8 @@ mod tests {
         assert!(dequant_8x8_cavlc(levels, 52, 8, None, CavlcScan8x8::Frame).is_err());
         assert!(dequant_8x8_cavlc(levels, 63, 10, None, CavlcScan8x8::Frame).is_ok());
         assert!(dequant_8x8_cavlc(levels, 64, 10, None, CavlcScan8x8::Frame).is_err());
+        assert!(dequant_8x8_cavlc(levels, 0, 8, None, CavlcScan8x8::FrameQ0).is_err());
+        assert!(dequant_4x4_layout([1; 16], 0, 8, None, CavlcScan4x4::FrameQ0).is_err());
     }
 
     fn reference_dequant_8x8(
@@ -790,6 +898,7 @@ mod tests {
         let table = match layout {
             CavlcScan8x8::Frame => &ZIGZAG_8X8_CAVLC,
             CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
+            CavlcScan8x8::FrameQ0 | CavlcScan8x8::FieldQ0 => unreachable!("test uses qscale"),
         };
         let mut output = [0i32; 64];
         for (scan_position, level) in levels.into_iter().enumerate() {
@@ -799,7 +908,12 @@ mod tests {
         output
     }
 
-    fn reference_dequant_4x4(levels: [i32; 16], qp: u8, scaling: &[u8; 16]) -> [i32; 16] {
+    fn reference_dequant_4x4(
+        levels: [i32; 16],
+        qp: u8,
+        scaling: &[u8; 16],
+        layout: CavlcScan4x4,
+    ) -> [i32; 16] {
         let shift = qp / 6 + 2;
         let index = qp % 6;
         let mut internal_qmul = [0i32; 16];
@@ -812,9 +926,14 @@ mod tests {
         for position in 0..16 {
             qmul[position] = internal_qmul[inverse_dequant_position_4x4(position)];
         }
+        let table = match layout {
+            CavlcScan4x4::Frame => &ZIGZAG_4X4,
+            CavlcScan4x4::Field => &FIELD_4X4,
+            CavlcScan4x4::FrameQ0 | CavlcScan4x4::FieldQ0 => unreachable!("test uses qscale"),
+        };
         let mut output = [0i32; 16];
         for (scan_position, level) in levels.into_iter().enumerate() {
-            let raster = ZIGZAG_4X4[scan_position];
+            let raster = table[scan_position];
             output[raster] = (level * qmul[raster] + 32) >> 6;
         }
         output
