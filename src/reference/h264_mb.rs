@@ -117,6 +117,12 @@ pub enum MacroblockError {
     InvalidChromaPredictionMode(u32),
     NonZeroPcmAlignment,
     Cavlc(CavlcError),
+    CavlcAt {
+        block: usize,
+        bit: usize,
+        n_c: i16,
+        error: CavlcError,
+    },
     Unsupported(&'static str),
 }
 
@@ -140,6 +146,14 @@ impl fmt::Display for MacroblockError {
                 write!(f, "H.264 I_PCM alignment bits must be zero")
             }
             MacroblockError::Cavlc(error) => error.fmt(f),
+            MacroblockError::CavlcAt {
+                block,
+                bit,
+                n_c,
+                error,
+            } => {
+                write!(f, "CAVLC block {block} at bit {bit} (nC={n_c}): {error}")
+            }
             MacroblockError::Unsupported(what) => write!(f, "unsupported H.264 macroblock: {what}"),
         }
     }
@@ -311,7 +325,15 @@ pub fn parse_i_macroblock_residual(
             neighbors.luma_dc_left,
             neighbors.luma_dc_top,
         )?;
-        let dc = reader.decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 16 })?;
+        let bit = reader.bit_pos();
+        let dc = reader
+            .decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 16 })
+            .map_err(|error| MacroblockError::CavlcAt {
+                block: 100,
+                bit,
+                n_c,
+                error,
+            })?;
         result.luma_dc_non_zero = dc.total_coeff as u8;
         result.luma_dc = Some(dc);
     }
@@ -351,7 +373,15 @@ pub fn parse_i_macroblock_residual(
             } else {
                 CavlcBlockKind::ChromaDc422
             };
-            result.chroma_dc[plane] = Some(reader.decode_residual_4x4(kind)?);
+            let bit = reader.bit_pos();
+            result.chroma_dc[plane] = Some(reader.decode_residual_4x4(kind).map_err(|error| {
+                MacroblockError::CavlcAt {
+                    block: 200 + plane,
+                    bit,
+                    n_c: -1,
+                    error,
+                }
+            })?);
         }
 
         if macroblock.coded_block_pattern & 0x20 != 0 {
@@ -366,8 +396,15 @@ pub fn parse_i_macroblock_residual(
                             neighbors.chroma_left[plane][row],
                             neighbors.chroma_top[plane][column],
                         )?;
+                        let bit = reader.bit_pos();
                         let block = reader
-                            .decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 15 })?;
+                            .decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 15 })
+                            .map_err(|error| MacroblockError::CavlcAt {
+                                block: 300 + plane * 8 + row * width + column,
+                                bit,
+                                n_c,
+                                error,
+                            })?;
                         let position = row * width + column;
                         result.chroma_non_zero[plane][position] = block.total_coeff as u8;
                         result.chroma_ac[plane][position] = Some(block);
@@ -435,8 +472,15 @@ fn decode_luma_8x8_groups(
                 neighbors.luma_left[row],
                 neighbors.luma_top[column],
             )?;
-            let block =
-                reader.decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 16 })?;
+            let bit = reader.bit_pos();
+            let block = reader
+                .decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff: 16 })
+                .map_err(|error| MacroblockError::CavlcAt {
+                    block: 400 + group * 4 + sub,
+                    bit,
+                    n_c,
+                    error,
+                })?;
             scan[sub * 16..sub * 16 + 16].copy_from_slice(&block.scan);
             total_coeff[sub] = block.total_coeff;
             trailing_ones[sub] = block.trailing_ones;
@@ -470,7 +514,15 @@ fn decode_one_4x4(
         neighbors.luma_left[row],
         neighbors.luma_top[column],
     )?;
-    let block = reader.decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff })?;
+    let bit = reader.bit_pos();
+    let block = reader
+        .decode_residual_4x4(CavlcBlockKind::Regular { n_c, max_coeff })
+        .map_err(|error| MacroblockError::CavlcAt {
+            block: row * 4 + column,
+            bit,
+            n_c,
+            error,
+        })?;
     non_zero[row * 4 + column] = block.total_coeff as u8;
     Ok(block)
 }

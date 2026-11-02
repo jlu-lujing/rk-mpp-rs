@@ -411,8 +411,8 @@ pub fn assemble_i_macroblock_residual(
                 place_8x8(
                     &mut planes.luma,
                     16,
-                    (group / 2) * 8,
                     (group % 2) * 8,
+                    (group / 2) * 8,
                     samples,
                 );
             }
@@ -467,8 +467,8 @@ pub fn assemble_i_macroblock_residual(
                 place_4x4(
                     &mut planes.luma,
                     16,
-                    (block / 4) * 4,
                     (block % 4) * 4,
+                    (block / 4) * 4,
                     samples,
                 );
             }

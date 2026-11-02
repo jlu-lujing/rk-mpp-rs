@@ -27,6 +27,17 @@ pub enum SliceDecodeError {
     Reconstruction(ReconstructionError),
     InvalidGeometry,
     InvalidQp,
+    MacroblockAt {
+        index: usize,
+        bit: usize,
+        error: MacroblockError,
+    },
+    ReconstructionAt {
+        index: usize,
+        x: usize,
+        y: usize,
+        error: ReconstructionError,
+    },
     Unsupported(&'static str),
 }
 
@@ -38,6 +49,13 @@ impl fmt::Display for SliceDecodeError {
             SliceDecodeError::Reconstruction(error) => error.fmt(f),
             SliceDecodeError::InvalidGeometry => write!(f, "invalid H.264 slice geometry"),
             SliceDecodeError::InvalidQp => write!(f, "invalid H.264 macroblock QP"),
+            SliceDecodeError::MacroblockAt { index, bit, error } => {
+                write!(f, "H.264 macroblock {index} at bit {bit}: {error}")
+            }
+            SliceDecodeError::ReconstructionAt { index, x, y, error } => write!(
+                f,
+                "H.264 macroblock {index} reconstruction at ({x},{y}): {error}"
+            ),
             SliceDecodeError::Unsupported(what) => write!(f, "unsupported H.264 slice: {what}"),
         }
     }
@@ -137,22 +155,28 @@ pub fn decode_i_slice(
     };
     let mut cb_plane = chroma_cb.map(|data| PlaneMut {
         data,
-        width: chroma_width * 4,
+        width: chroma_width * 4 * mb_width,
         height: chroma_height * 4 * mb_height,
-        stride: chroma_width * 4,
+        stride: chroma_width * 4 * mb_width,
     });
     let mut cr_plane = chroma_cr.map(|data| PlaneMut {
         data,
-        width: chroma_width * 4,
+        width: chroma_width * 4 * mb_width,
         height: chroma_height * 4 * mb_height,
-        stride: chroma_width * 4,
+        stride: chroma_width * 4 * mb_width,
     });
 
     for mb_index in first_mb..total_mbs {
         if !more_rbsp_data(rbsp, bit_offset)? {
             break;
         }
-        let macroblock = parse_i_macroblock(rbsp, bit_offset, context)?;
+        let macroblock = parse_i_macroblock(rbsp, bit_offset, context).map_err(|error| {
+            SliceDecodeError::MacroblockAt {
+                index: mb_index,
+                bit: bit_offset,
+                error,
+            }
+        })?;
         let neighbors = macroblock_neighbors(
             mb_index,
             mb_width,
@@ -162,7 +186,12 @@ pub fn decode_i_slice(
             &chroma_counts,
             context,
         );
-        let residual = parse_i_macroblock_residual(rbsp, &macroblock, context, &neighbors)?;
+        let residual = parse_i_macroblock_residual(rbsp, &macroblock, context, &neighbors)
+            .map_err(|error| SliceDecodeError::MacroblockAt {
+                index: mb_index,
+                bit: macroblock.residual_bit_offset,
+                error,
+            })?;
         qp = add_qp(qp, macroblock.qp_delta, max_qp)?;
         let transform_bypass = sps.transform_bypass && qp == 0;
         let field = slice.field_pic;
@@ -212,8 +241,13 @@ pub fn decode_i_slice(
             cr_plane.as_mut(),
             mb_x,
             mb_y,
-        )?;
-
+        )
+        .map_err(|error| SliceDecodeError::ReconstructionAt {
+            index: mb_index,
+            x: mb_x,
+            y: mb_y,
+            error,
+        })?;
         decoded[mb_index] = true;
         qp_map[mb_index] = qp as u8;
         luma_counts[mb_index] = residual.luma_non_zero;

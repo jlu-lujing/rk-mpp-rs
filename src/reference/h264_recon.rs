@@ -210,7 +210,11 @@ fn read_top<const N: usize>(
     bit_depth: u8,
 ) -> [u16; N] {
     if y == 0 {
-        return [mid(bit_depth); N];
+        return [if x > 0 {
+            plane.data[x - 1]
+        } else {
+            mid(bit_depth)
+        }; N];
     }
     std::array::from_fn(|index| plane.data[(y - 1) * plane.stride + x + index])
 }
@@ -223,14 +227,25 @@ fn read_left<const N: usize>(
     bit_depth: u8,
 ) -> [u16; N] {
     if x == 0 {
-        return [mid(bit_depth); N];
+        return [if y > 0 {
+            plane.data[(y - 1) * plane.stride]
+        } else {
+            mid(bit_depth)
+        }; N];
     }
     std::array::from_fn(|index| plane.data[(y + index) * plane.stride + x - 1])
 }
 
 fn read_top_vec(plane: &PlaneMut<'_>, x: usize, y: usize, count: usize, bit_depth: u8) -> Vec<u16> {
     if y == 0 {
-        vec![mid(bit_depth); count]
+        vec![
+            if x > 0 {
+                plane.data[x - 1]
+            } else {
+                mid(bit_depth)
+            };
+            count
+        ]
     } else {
         plane.data[(y - 1) * plane.stride + x..(y - 1) * plane.stride + x + count].to_vec()
     }
@@ -244,7 +259,14 @@ fn read_left_vec(
     bit_depth: u8,
 ) -> Vec<u16> {
     if x == 0 {
-        vec![mid(bit_depth); count]
+        vec![
+            if y > 0 {
+                plane.data[(y - 1) * plane.stride]
+            } else {
+                mid(bit_depth)
+            };
+            count
+        ]
     } else {
         (0..count)
             .map(|row| plane.data[(y + row) * plane.stride + x - 1])
@@ -255,6 +277,10 @@ fn read_left_vec(
 fn read_top_left(plane: &PlaneMut<'_>, x: usize, y: usize, bit_depth: u8) -> Option<u16> {
     if x > 0 && y > 0 {
         Some(plane.data[(y - 1) * plane.stride + x - 1])
+    } else if y > 0 {
+        Some(plane.data[(y - 1) * plane.stride])
+    } else if x > 0 {
+        Some(plane.data[x - 1])
     } else {
         Some(mid(bit_depth))
     }
