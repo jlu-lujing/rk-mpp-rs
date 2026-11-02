@@ -134,6 +134,15 @@ for f in "$corpus"/*; do
     printf 'NAMED:%s rust ok (%s frames) C rc=%s\n' "$name" "$frames" "$c_rc"
     named=$((named+1)); continue
   fi
+  case "$name" in
+    av1_resize_320_to_640.ivf|av1_resize_640_to_320.ivf)
+      if python3 "$here/compare_av1_resize.py" "$c_out" "$r_out" "$name"; then
+        pass=$((pass+1))
+      else
+        fail=$((fail+1))
+      fi
+      continue ;;
+  esac
   if [ "$is_jpeg" = 1 ]; then
     c_planar="$c_out"
   elif [ "$depth" = 10 ]; then

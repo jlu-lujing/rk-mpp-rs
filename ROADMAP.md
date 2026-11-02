@@ -47,12 +47,13 @@ rejected a one-byte mutation, and aborted a manifest-backed sweep before any
 decode. Quarantined fixtures still report `named=1, skipped=0`, with the
 manifest itself excluded from decoder counts.
 
-**Full regenerated corpus on t62 (2026-11-02).** `corpus-gen2` contains 59
-validated payloads (5,801,147 bytes) and the complete sweep finished with
-`pass=53 fail=0 named=6 skipped=0`. The named set is the bare P-slice fixture,
+**Full regenerated corpus on t62 (2026-11-02).** `corpus-gen4` contains 66
+validated payloads (6,160,351 bytes) and the complete sweep finished with
+`pass=60 fail=0 named=6 skipped=0`. The named set is the bare P-slice fixture,
 two AV1 film-grain C bugs, two VP9 C bugs and interlaced MPEG-2 C rewind/IDCT
-rounding. JPEG is decoded with `-t 8 -w/-h -f RGB888` and compared directly,
-so the repaired AV1 tile fixture and both JPEG stills are normal PASS rows.
+rounding. JPEG is decoded with `-t 8 -w/-h -f RGB888` and compared directly.
+AV1 includes long GOP, 720p, 1080p, Main10, a repeated sequence header and
+320->640 / 640->320 resolution changes; all are normal PASS rows.
 
 The project is in **pixel/byte-exact imitation + output-preserving performance** mode:
 
@@ -438,11 +439,11 @@ in what order the evidence gets produced.
         does not set `sw_apply_grain=1` in `vdpu_av1d_set_fgs()`, so C output
         instead matches libaom with film grain skipped; this is a C HAL
         defect rather than the Rust acceptance oracle.
-  - [ ] wider AV1 conformance and performance matrix: larger resolutions,
-        multiple sequence headers, dynamic resolution and damaged streams
-        still need C/FFmpeg differential fixtures. The generated corpus now
-        covers 640x480 long-GOP, 1280x720, 1920x1080 and Main10; all of them
-        are byte-identical to C in the full corpus sweep.
+  - [ ] wider AV1 conformance and performance matrix: damaged streams still
+        need C/FFmpeg differential fixtures. The generated corpus covers
+        640x480 long-GOP, 1280x720, 1920x1080, Main10, repeated sequence
+        headers and 320<->640 dynamic resolution; all are byte-identical to C
+        in the full corpus sweep.
   - The 320x240 fixture is the initial acceptance baseline: official C MPP
     emits 10/10 frames byte-identical to FFmpeg
     (`2cd9c129…291d29` for the planar YUV output). The 64x64 fixture is not

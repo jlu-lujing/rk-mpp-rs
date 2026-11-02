@@ -63,6 +63,63 @@ enc av1_640x480_long.ivf           640x480  60 -c:v libaom-av1 -cpu-used 8 -crf 
 enc av1_1280x720.ivf               1280x720 20 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
 enc av1_1920x1080.ivf              1920x1080 10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
 enc av1_320x240_p0_10bit.ivf       320x240  10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -profile:v 0 -pix_fmt yuv420p10le
+if ! python3 - "$out" <<'PY'
+import struct
+import sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+
+def frames(path):
+    data = path.read_bytes()
+    if data[:4] != b"DKIF":
+        raise SystemExit(f"{path}: missing DKIF")
+    header = bytearray(data[:32])
+    result = []
+    offset = 32
+    while offset < len(data):
+        if offset + 12 > len(data):
+            raise SystemExit(f"{path}: truncated frame header")
+        size = struct.unpack_from("<I", data, offset)[0]
+        end = offset + 12 + size
+        if end > len(data):
+            raise SystemExit(f"{path}: truncated frame")
+        result.append(data[offset + 12:end])
+        offset = end
+    return header, result
+
+def write_concat(name, paths):
+    header = None
+    payloads = []
+    for path in paths:
+        current_header, current = frames(path)
+        if header is None:
+            header = bytearray(current_header)
+        payloads.extend(current)
+    assert header is not None
+    struct.pack_into("<I", header, 24, len(payloads))
+    with (out / name).open("wb") as destination:
+        destination.write(header)
+        for index, payload in enumerate(payloads):
+            destination.write(struct.pack("<IQ", len(payload), index))
+            destination.write(payload)
+
+write_concat(
+    "av1_multi_sequence_320x240.ivf",
+    [out / "av1_320x240.ivf", out / "av1_320x240.ivf"],
+)
+write_concat(
+    "av1_resize_320_to_640.ivf",
+    [out / "av1_320x240.ivf", out / "av1_640x480.ivf"],
+)
+write_concat(
+    "av1_resize_640_to_320.ivf",
+    [out / "av1_640x480.ivf", out / "av1_320x240.ivf"],
+)
+PY
+then
+  failures=$((failures+1))
+fi
 
 # ---- MPEG-2 / MPEG-4 / H.263 --------------------------------------------
 enc m2v_320x240.m2v                320x240  30 -c:v mpeg2video -q:v 4 -g 15
