@@ -10,6 +10,7 @@ use crate::codec::h264::parser::{BitReader, Pps, SliceHeader, Sps};
 
 use super::h264::CavlcScan4x4;
 use super::h264::CavlcScan8x8;
+use super::h264_deblock::DeblockMap;
 use super::h264_mb::{
     parse_i_macroblock, parse_i_macroblock_residual, MacroblockContext, MacroblockError,
     MacroblockNeighbors,
@@ -62,11 +63,12 @@ impl From<ReconstructionError> for SliceDecodeError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedSlice {
     pub macroblocks: usize,
     pub end_bit: usize,
     pub final_qp: u8,
+    pub deblock: DeblockMap,
 }
 
 /// Reconstruct one CAVLC I slice into destination picture planes.
@@ -114,6 +116,7 @@ pub fn decode_i_slice(
     let mut decoded = vec![false; total_mbs];
     let mut luma_counts = vec![[0u8; 16]; total_mbs];
     let mut luma_dc_counts = vec![0u8; total_mbs];
+    let mut qp_map = vec![0u8; total_mbs];
     let chroma_block_count = chroma_width * chroma_height;
     let mut chroma_counts: [Vec<Vec<u8>>; 2] = [
         vec![vec![0; chroma_block_count]; total_mbs],
@@ -212,6 +215,7 @@ pub fn decode_i_slice(
         )?;
 
         decoded[mb_index] = true;
+        qp_map[mb_index] = qp as u8;
         luma_counts[mb_index] = residual.luma_non_zero;
         luma_dc_counts[mb_index] = residual.luma_dc_non_zero;
         chroma_counts[0][mb_index].copy_from_slice(&residual.chroma_non_zero[0]);
@@ -224,6 +228,14 @@ pub fn decode_i_slice(
         macroblocks,
         end_bit: bit_offset,
         final_qp: qp as u8,
+        deblock: DeblockMap {
+            mb_width,
+            mb_height,
+            decoded,
+            qp: qp_map,
+            luma_non_zero: luma_counts,
+            chroma_non_zero: chroma_counts,
+        },
     })
 }
 
@@ -406,6 +418,37 @@ mod tests {
         assert_eq!(luma, vec![128; 256]);
         assert_eq!(cb, vec![128; 64]);
         assert_eq!(cr, vec![128; 64]);
+
+        let mut luma_plane = PlaneMut {
+            data: &mut luma,
+            width: 16,
+            height: 16,
+            stride: 16,
+        };
+        let mut cb_plane = PlaneMut {
+            data: &mut cb,
+            width: 8,
+            height: 8,
+            stride: 8,
+        };
+        let mut cr_plane = PlaneMut {
+            data: &mut cr,
+            width: 8,
+            height: 8,
+            stride: 8,
+        };
+        super::super::h264_deblock::deblock_i_picture(
+            &mut luma_plane,
+            Some(&mut cb_plane),
+            Some(&mut cr_plane),
+            &decoded.deblock,
+            8,
+            0,
+            0,
+            [0, 0],
+        )
+        .unwrap();
+        assert_eq!(luma, vec![128; 256]);
     }
 
     #[test]
