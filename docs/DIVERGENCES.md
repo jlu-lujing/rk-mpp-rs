@@ -22,7 +22,7 @@ Dispositions:
 | VP9 `vp9_p0_720p_errres_seg`, frames 4/5 | **C-BUG** | Rust == libvpx (SHA-256 `0f0ff0da…deb51`) on all 6 frames; C differs by 106+107 V-plane bytes, max delta 3 (`5b737017…cac1`). Registers match word for word. |
 | VP9 `vp9_p0_lossless_321x241_2`, frame count | **C-BUG** | libvpx and Rust produce 2 frames; C emits 1. Rust hash is the libvpx hash `8ac48f11…beca`. |
 | VP9 damaged streams (`half-last`, `mid-flip`) | **BY-DESIGN** | C aborts the run (rc 255, 0 frames); Rust emits the pictures that did decode. Matching C would discard valid output. |
-| VP8 key-frame scale bits | **C-BUG** (candidate) | C parses the bits into fields no register reads and decodes at full size; Rust refuses the stream. Needs a libvpx check on a stream that actually uses non-unit scale before the label is final. |
+| VP8 key-frame scale bits | **FIXED** | The two bits are display-only: libvpx (FFmpeg) and C both decode at the coded size. The parser no longer refuses them; `board_vp8_profile_vs_mpp.sh` derives a scaled key frame and compares 12 frames, byte-identical to C. |
 | AV1 wider conformance / VP9 profile edge matrix | **NO-ORACLE** | Fixtures not in the corpus; only the listed streams are proven. |
 | H.263 field-coded PAFF | **NO-ORACLE** | No stream in the corpus. |
 | AVS+ / AVS2 | **NO-ORACLE** | No conformance stream and no hardware on t6. |

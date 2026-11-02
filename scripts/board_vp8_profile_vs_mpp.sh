@@ -95,9 +95,9 @@ for profile in 1 3; do
   fi
 done
 
-# Derived key-frame scale-factor check: C parses the two scale fields and
-# never programs them, so a scaled key frame must decode at full size there
-# too. Our parser refuses instead; the script records the divergence.
+# Derived key-frame scale-factor check: the two scale fields are display-only.
+# libvpx (FFmpeg) and the C MPP both decode such a stream at the coded size, and so
+# does this crate since the refusal was removed - the judge is byte identity.
 ssh t6 "python3 - /tmp/vp8_scaled_key.ivf ~/rk-mpp-rs/tests/data/vp8_320x240_12_ip.ivf" <<'PY'
 import struct, sys
 dst, src = sys.argv[1], sys.argv[2]
@@ -112,12 +112,21 @@ word = struct.unpack_from('<H', data, payload + 6)[0]
 struct.pack_into('<H', out, payload + 6, word | (2 << 14))
 open(dst, 'wb').write(out)
 PY
-ssh t6 "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs vp8dec /tmp/vp8_scaled_key.ivf /tmp/vp8_scaled_key.yuv" \
-  >/dev/null 2>&1 && scaled_rust=0 || scaled_rust=$?
-if [ "$scaled_rust" != 0 ]; then
-  printf 'NOTE key-frame scale: Rust refuses (rc %s); C decodes at full size - documented divergence\n' "$scaled_rust"
+scaled_c=/tmp/vp8_scaled_key_c.nv12
+scaled_cp=/tmp/vp8_scaled_key_c.yuv
+scaled_r=/tmp/vp8_scaled_key_r.yuv
+ssh t6 "sudo rm -f $scaled_c $scaled_cp $scaled_r"
+ssh t6 "sudo env LD_LIBRARY_PATH=$mpp_lib timeout 120 $mpp_bin -i /tmp/vp8_scaled_key.ivf \
+  -t 9 -n $frames -o $scaled_c -v q" >/dev/null 2>&1 || true
+ssh t6 "cd ~/rk-mpp-rs && sudo timeout 120 ./target/release/rk-mpp-rs vp8dec \
+  /tmp/vp8_scaled_key.ivf $scaled_r" >/dev/null 2>&1 || true
+ssh t6 "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  -video_size ${width}x${height} -i $scaled_c -pix_fmt yuv420p -f rawvideo $scaled_cp" \
+  >/dev/null 2>&1 || true
+if ssh t6 "test -s $scaled_cp && test -s $scaled_r && cmp -s $scaled_cp $scaled_r"; then
+  printf 'PASS key-frame scale: %s frames byte-identical to C at the coded size\n' "$frames"
 else
-  printf 'FAIL key-frame scale: Rust was expected to refuse and did not\n'
+  printf 'FAIL key-frame scale: exit or bytes differ from C\n'
   fail=1
 fi
 

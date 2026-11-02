@@ -493,12 +493,12 @@ impl Parser {
             let coded_height = u32::from(payload[5]) | (u32::from(payload[6]) << 8);
             width = coded_width & 0x3fff;
             height = coded_height & 0x3fff;
-            // `scaledWidth` and `scaledHeight` are the only place the reference
-            // records a key-frame scale factor, and no register ever reads them:
-            // a scaled stream would be decoded at full size. Refuse instead.
-            if coded_width >> 14 != 0 || coded_height >> 14 != 0 {
-                return Err(Vp8Error::Unsupported("key-frame scale factors"));
-            }
+            // The top two bits of each dimension are the key-frame's display scale
+            // factor. They are not part of the coded size, no register reads them,
+            // and both libvpx (FFmpeg) and the C MPP decode such a stream at the
+            // coded size - so the bits are ignored rather than refused. (The crate
+            // used to refuse this case; `vp8_scaled.ivf` shows libvpx producing
+            // 320x240 output from a stream whose scale bits are set.)
             payload = &payload[7..];
         }
 
@@ -899,6 +899,31 @@ mod tests {
             .map(|frame| parser.parse_picture(frame.data))
             .map(|result| result.expect("parse picture").expect("key frame present"))
             .collect()
+    }
+
+    /// The key-frame dimension words carry a two-bit display scale in their top
+    /// bits. libvpx and the C MPP decode such a stream at the coded size, so the
+    /// bits must not make the parser refuse it.
+    #[test]
+    fn key_frame_scale_bits_are_ignored_like_the_reference() {
+        let data = std::fs::read("tests/data/vp8_320x240_12_ip.ivf").expect("fixture");
+        let frames = parse_ivf(&data).expect("container");
+        let mut first = frames[0].data.to_vec();
+        // Three bytes of partition size, then the 9d 01 2a start code.
+        let dims = 6;
+        let w = u16::from_le_bytes([first[dims], first[dims + 1]]);
+        let h = u16::from_le_bytes([first[dims + 2], first[dims + 3]]);
+        assert_eq!(w & 0x3fff, 320);
+        assert_eq!(h & 0x3fff, 240);
+        first[dims..dims + 2].copy_from_slice(&(w | (1 << 14)).to_le_bytes());
+        first[dims + 2..dims + 4].copy_from_slice(&(h | (1 << 14)).to_le_bytes());
+
+        let mut parser = Parser::new();
+        let picture = parser
+            .parse_picture(&first)
+            .expect("scaled key frame parses")
+            .expect("key frame present");
+        assert_eq!((picture.width, picture.height), (320, 240));
     }
 
     #[test]

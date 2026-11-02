@@ -272,8 +272,10 @@ in what order the evidence gets produced.
       pinned for all eight version values.
       `scripts/board_vp8_profile_vs_mpp.sh`: profile 1 and profile 3, twelve
       frames each, byte-identical to `mpi_dec_test -t 9`. The key-frame scale
-      bits stay a documented divergence - C parses them into fields no register
-      reads and decodes at full size, Rust refuses the stream instead.
+      bits were a refusal on our side; libvpx and C both decode such a stream at
+      the coded size (the bits are display-only), so the parser now ignores them
+      too. The script derives a scaled key frame (`width scale = 2`) and compares
+      twelve frames: **byte-identical to C**.
  - [x] **The damaged-stream policy, adjudicated against the board's C harness**
        (`scripts/board_vp_corrupt_vs_mpp.sh`: container truncation, half of the
        last packet, a mid-stream bit flip, on both decoders). What the table
