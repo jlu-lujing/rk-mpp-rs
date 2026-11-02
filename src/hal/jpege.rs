@@ -19,7 +19,7 @@ use std::io;
 use std::ops::Range;
 
 use crate::service::dma_heap::DmaBuf;
-use crate::service::{Batch, Client, MppService, RegOffsetInfo};
+use crate::service::{Batch, Client, MppBatCmd, MppService, RegOffsetInfo};
 
 use super::jpege_tables as tables;
 
@@ -252,6 +252,17 @@ pub struct SplitPlan {
     pub restart_interval: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MultiCorePlan {
+    bands: Vec<usize>,
+    ecs_counts: Vec<usize>,
+    part_rows: usize,
+    /// `syntax.part_rows`, written to reg107[23:16]. C leaves it zero for the
+    /// automatic default split and sets it only for BY_CTU.
+    reg_part_rows: u8,
+    restart_interval: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EncoderConfig {
     pub width: usize,
@@ -290,7 +301,10 @@ impl EncoderConfig {
             width,
             height,
             hor_stride: align(width, 8),
-            ver_stride: align(height, 16),
+            // `mpi_enc_utils.c` default: the input allocation is only padded
+            // to an even height. The coded height (reg103) is separately
+            // rounded to 16 rows.
+            ver_stride: align(height, 2),
             output_capacity,
             quality: Quality::default(),
             input: InputFormat::default(),
@@ -337,13 +351,13 @@ impl EncoderConfig {
         if vepu_pixel_stride >= (1 << 15) {
             return Err("VEPU2 pixel stride must be less than 32768".into());
         }
-        if self.ver_stride < self.coded_height() || self.ver_stride & 1 != 0 {
-            return Err("input frame height must cover the 16-row coded height and be even".into());
+        if self.ver_stride < self.height || self.ver_stride & 1 != 0 {
+            return Err("input frame height must cover the visible height and be even".into());
         }
         if self.output_capacity < 1024 {
             return Err("JPEG output capacity is too small".into());
         }
-        if let Some(plan) = self.split_plan() {
+        if let Some(plan) = self.effective_split_plan() {
             if plan.restart_interval > u16::MAX as usize {
                 return Err(format!(
                     "JPEG restart interval {} does not fit the 16-bit DRI field",
@@ -363,6 +377,9 @@ impl EncoderConfig {
                     .into(),
             );
         }
+        if self.multi_core_plan().is_some() && self.rotation != Rotation::None {
+            return Err("rotated JPEG multi-core offsets are not implemented yet".into());
+        }
         Ok(())
     }
 
@@ -378,6 +395,26 @@ impl EncoderConfig {
                 .map(|bytes| bytes / 2)
                 .ok_or_else(|| "NV12 input size overflow".into()),
             _ => Ok(rows),
+        }
+    }
+
+    fn input_allocation_size(self) -> Result<usize, String> {
+        let mut allocation_rows = align(self.ver_stride, 64);
+        if let Some(plan) = self.multi_core_plan() {
+            let band_rows = plan.bands.iter().sum::<usize>() * 16;
+            allocation_rows = allocation_rows.max(align(band_rows, 64));
+        }
+        let rows = align(self.hor_stride, 64)
+            .checked_mul(allocation_rows)
+            .ok_or_else(|| "JPEG input allocation size overflow".to_string())?;
+        match self.input {
+            InputFormat::Nv12 => rows
+                .checked_mul(3)
+                .map(|bytes| bytes / 2)
+                .ok_or_else(|| "JPEG NV12 allocation size overflow".into()),
+            _ => rows
+                .checked_mul(self.input.bytes_per_pixel())
+                .ok_or_else(|| "JPEG input allocation size overflow".into()),
         }
     }
 
@@ -425,6 +462,95 @@ impl EncoderConfig {
             restart_interval: mcu_hor * part_rows,
         })
     }
+
+    fn effective_split_plan(self) -> Option<SplitPlan> {
+        if let Some(plan) = self.multi_core_plan() {
+            return Some(SplitPlan {
+                part_rows: plan.part_rows,
+                restart_interval: plan.restart_interval,
+            });
+        }
+        self.split_plan()
+    }
+
+    fn multi_core_plan(self) -> Option<MultiCorePlan> {
+        if self.width.saturating_mul(self.height) <= 1280 * 720 {
+            return None;
+        }
+        let (mcu_hor, mcu_ver) = self.mcu_counts();
+        let explicit_rows = self
+            .split_mcus
+            .filter(|_| self.split_plan().is_some())
+            .map(|arg| (arg as usize + mcu_hor - 1) / mcu_hor);
+
+        let (part_rows, reg_part_rows, bands, ecs_counts) = if let Some(part_rows) = explicit_rows {
+            let ecs_num = (mcu_ver + part_rows - 1) / part_rows;
+            let ecs_counts = distribute_ecs(ecs_num);
+            let bands = ecs_counts
+                .iter()
+                .copied()
+                .filter(|&count| count != 0)
+                .map(|count| count * part_rows)
+                .collect();
+            (part_rows, part_rows as u8, bands, ecs_counts.to_vec())
+        } else {
+            let part_rows = align(mcu_ver, 4) / 4;
+            let mut remaining = mcu_ver;
+            let mut bands = Vec::with_capacity(4);
+            for _ in 0..4 {
+                let rows = part_rows.min(remaining);
+                if rows == 0 {
+                    break;
+                }
+                bands.push(rows);
+                remaining -= rows;
+            }
+            let ecs_counts = vec![1; bands.len()];
+            (part_rows, 0, bands, ecs_counts)
+        };
+
+        Some(MultiCorePlan {
+            bands,
+            ecs_counts,
+            part_rows,
+            reg_part_rows,
+            restart_interval: mcu_hor * part_rows,
+        })
+    }
+}
+
+fn distribute_ecs(ecs_num: usize) -> [usize; 4] {
+    let mut core = [0usize; 4];
+    if ecs_num > 24 || ecs_num <= 8 {
+        let divider = if ecs_num > 24 { 8 } else { 1 };
+        let quotient = ecs_num / divider;
+        let remainder = ecs_num % divider;
+        let runs = quotient / 4;
+        let runs_left = quotient % 4;
+        for count in &mut core {
+            *count = runs * divider;
+        }
+        for count in core.iter_mut().take(runs_left) {
+            *count += divider;
+        }
+        core[3] += remainder;
+    } else if ecs_num > 20 {
+        core[0] = 8;
+        core[1] = 8;
+        core[2] = (ecs_num - 16) / 2;
+        core[3] = ecs_num - 16 - core[2];
+    } else if ecs_num > 16 {
+        core[0] = 8;
+        core[1] = 4;
+        core[2] = 4;
+        core[3] = ecs_num - 16;
+    } else if ecs_num > 8 {
+        core[0] = 4;
+        core[1] = 4;
+        core[2] = (ecs_num - 8) / 2;
+        core[3] = ecs_num - 8 - core[2];
+    }
+    core
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -500,6 +626,7 @@ pub struct Vepu2Jpeg {
     svc: MppService,
     input: Option<DmaBuf>,
     output: Option<DmaBuf>,
+    scratch: Vec<DmaBuf>,
 }
 
 impl Vepu2Jpeg {
@@ -508,6 +635,7 @@ impl Vepu2Jpeg {
             svc: MppService::open(Client::Vepu2Jpeg as u32)?,
             input: None,
             output: None,
+            scratch: Vec::new(),
         })
     }
 
@@ -538,6 +666,7 @@ impl Vepu2Jpeg {
         config: EncoderConfig,
     ) -> Result<EncodedJpeg, String> {
         let input_size = config.input_size()?;
+        let input_allocation_size = config.input_allocation_size()?;
         if input.len() < input_size {
             return Err(format!(
                 "JPEG input is {} bytes, expected at least {input_size}",
@@ -545,9 +674,10 @@ impl Vepu2Jpeg {
             ));
         }
 
-        if self.input.as_ref().map(DmaBuf::len).unwrap_or(0) < input_size {
-            self.input =
-                Some(DmaBuf::alloc("system", input_size, false).map_err(|e| e.to_string())?);
+        if self.input.as_ref().map(DmaBuf::len).unwrap_or(0) < input_allocation_size {
+            self.input = Some(
+                DmaBuf::alloc("system", input_allocation_size, false).map_err(|e| e.to_string())?,
+            );
         }
         let input_fd = {
             let input_buf = self.input.as_mut().unwrap();
@@ -595,6 +725,23 @@ impl Vepu2Jpeg {
         output
             .sync_write_end()
             .map_err(|e| format!("output dma-buf flush: {e}"))?;
+
+        if let Some(plan) = config.multi_core_plan() {
+            let result = encode_multi_core(
+                &self.svc,
+                input_fd,
+                output,
+                &mut self.scratch,
+                config,
+                &prepared,
+                &plan,
+            )?;
+            let packets = packet_ranges(&result, config)?;
+            return Ok(EncodedJpeg {
+                bytes: result,
+                packets,
+            });
+        }
 
         let mut registers = build_registers(
             input_fd,
@@ -723,6 +870,188 @@ fn packet_ranges(stream: &[u8], config: EncoderConfig) -> Result<Vec<Range<usize
     Ok(packets)
 }
 
+fn encode_multi_core(
+    svc: &MppService,
+    input_fd: i32,
+    output: &mut DmaBuf,
+    scratch: &mut Vec<DmaBuf>,
+    config: EncoderConfig,
+    prepared: &PreparedHeader,
+    plan: &MultiCorePlan,
+) -> Result<Vec<u8>, String> {
+    let scratch_size = config
+        .width
+        .checked_mul(config.height)
+        .map(|pixels| pixels / 2)
+        .ok_or_else(|| "JPEG multi-core scratch size overflow".to_string())?;
+    while scratch.len() + 1 < plan.bands.len() {
+        scratch.push(
+            DmaBuf::alloc("system", scratch_size, false)
+                .map_err(|e| format!("allocate JPEG multi-core scratch: {e}"))?,
+        );
+    }
+    for buffer in scratch.iter().take(plan.bands.len().saturating_sub(1)) {
+        if buffer.len() < scratch_size {
+            return Err("JPEG multi-core scratch buffer is too small".into());
+        }
+    }
+
+    let base = build_registers(
+        input_fd,
+        output.fd(),
+        config,
+        prepared.bytes.len(),
+        &prepared.bytes,
+        &prepared.quant,
+    )?;
+    let (mcu_hor, _) = config.mcu_counts();
+    let width_align = align(config.width, 16);
+    let x_fill = (width_align - config.width) / 4;
+    let y_fill = config.coded_height() - config.height;
+    let luma_size = config.hor_stride * config.ver_stride;
+
+    let mut registers = Vec::with_capacity(plan.bands.len());
+    let mut readbacks = vec![[0u32; REG_COUNT]; plan.bands.len()];
+    let mut offsets = Vec::with_capacity(plan.bands.len());
+    let mut mcu_y = 0usize;
+    let mut marker_index = 0usize;
+
+    for (index, rows) in plan.bands.iter().copied().enumerate() {
+        let last = index + 1 == plan.bands.len();
+        let mut words = base.words;
+        if index == 0 {
+            words[OUTPUT_ADDR] = output.fd() as u32;
+            words[STREAM_CAPACITY] = (config.output_capacity - prepared.bytes.len()) as u32;
+            words[STREAM_START] = (((prepared.bytes.len() & 7) * 8) as u32) << 16
+                | (x_fill as u32) << 4
+                | if last { y_fill as u32 } else { 0 };
+        } else {
+            let buffer = &scratch[index - 1];
+            words[OUTPUT_ADDR] = buffer.fd() as u32;
+            words[STREAM_CAPACITY] = scratch_size as u32;
+            words[STREAM_START] = (x_fill as u32) << 4 | if last { y_fill as u32 } else { 0 };
+        }
+        words[ENCODE_CONFIG] =
+            ((mcu_hor as u32) << 8) | ((rows as u32) << 20) | (1 << 6) | (2 << 4) | 1;
+        words[PART_CONFIG] = ((!last as u32) << 24)
+            | ((plan.reg_part_rows as u32) << 16)
+            | RESTART_MARKERS[marker_index & 7];
+        marker_index += plan.ecs_counts[index];
+
+        let band_y = mcu_y * 16;
+        let mut band_offsets = Vec::with_capacity(4);
+        if index == 0 && prepared.bytes.len() != 0 {
+            band_offsets.push(RegOffsetInfo {
+                reg_idx: OUTPUT_ADDR as u32,
+                offset: prepared.bytes.len() as u32,
+            });
+        }
+        band_offsets.push(RegOffsetInfo {
+            reg_idx: INPUT_Y as u32,
+            offset: (band_y * config.hor_stride) as u32,
+        });
+        if config.input == InputFormat::Nv12 {
+            band_offsets.push(RegOffsetInfo {
+                reg_idx: INPUT_U as u32,
+                offset: (luma_size + band_y / 2 * config.hor_stride) as u32,
+            });
+            band_offsets.push(RegOffsetInfo {
+                reg_idx: INPUT_V as u32,
+                offset: if band_y == 0 { luma_size as u32 } else { 0 },
+            });
+        }
+
+        registers.push(words);
+        offsets.push(band_offsets);
+        mcu_y += rows;
+    }
+
+    let bat_cmd = MppBatCmd {
+        flag: 0,
+        client: svc.client_fd(),
+        ret: 0,
+    };
+    let mut batch = Batch::new();
+    for index in 0..registers.len() {
+        batch.reg_write(&registers[index], 0);
+        batch.reg_read(&mut readbacks[index], 0);
+        batch.reg_offsets(&offsets[index]);
+        if index + 1 < registers.len() {
+            batch.delimit(&bat_cmd);
+        }
+    }
+    svc.submit_batch_streaming(&mut batch)
+        .map_err(|e| format!("JPEG multi-core submit: {e}"))?;
+    for _ in 0..plan.bands.len() {
+        svc.poll_hw_finish()
+            .map_err(|e| format!("JPEG multi-core poll: {e}"))?;
+    }
+
+    output
+        .sync_read_begin()
+        .map_err(|e| format!("JPEG multi-core output invalidate: {e}"))?;
+    let first_bits = readbacks[0][IRQ_CONFIG] & STATUS_MASK;
+    if first_bits != 0 {
+        output
+            .sync_read_end()
+            .map_err(|e| format!("JPEG multi-core output sync end: {e}"))?;
+        return Err(format!(
+            "VEPU2 JPEG multi-core first band error 0x{first_bits:02x}"
+        ));
+    }
+    let first_hw_bits = readbacks[0][STREAM_CAPACITY];
+    if first_hw_bits & 7 != 0 {
+        output
+            .sync_read_end()
+            .map_err(|e| format!("JPEG multi-core output sync end: {e}"))?;
+        return Err("JPEG multi-core first band returned a partial byte".into());
+    }
+    let first_len = (prepared.bytes.len() & !7)
+        .checked_add(first_hw_bits as usize / 8)
+        .ok_or_else(|| "JPEG multi-core first band length overflow".to_string())?;
+    if first_len > output.len() {
+        output
+            .sync_read_end()
+            .map_err(|e| format!("JPEG multi-core output sync end: {e}"))?;
+        return Err("JPEG multi-core first band exceeds the output buffer".into());
+    }
+    let mut stream = output.as_slice()[..first_len].to_vec();
+    output
+        .sync_read_end()
+        .map_err(|e| format!("JPEG multi-core output sync end: {e}"))?;
+
+    for index in 1..plan.bands.len() {
+        let status = readbacks[index][IRQ_CONFIG] & STATUS_MASK;
+        if status != 0 {
+            return Err(format!(
+                "VEPU2 JPEG multi-core band {index} error 0x{status:02x}"
+            ));
+        }
+        let bits = readbacks[index][STREAM_CAPACITY];
+        if bits & 7 != 0 {
+            return Err(format!(
+                "JPEG multi-core band {index} returned a partial byte"
+            ));
+        }
+        let length = bits as usize / 8;
+        let buffer = &scratch[index - 1];
+        if length > buffer.len() {
+            return Err(format!(
+                "JPEG multi-core band {index} length {length} exceeds scratch {}",
+                buffer.len()
+            ));
+        }
+        buffer
+            .sync_read_begin()
+            .map_err(|e| format!("JPEG multi-core scratch {index} invalidate: {e}"))?;
+        stream.extend_from_slice(&buffer.as_slice()[..length]);
+        buffer
+            .sync_read_end()
+            .map_err(|e| format!("JPEG multi-core scratch {index} sync end: {e}"))?;
+    }
+    Ok(stream)
+}
+
 fn find_marker(stream: &[u8], marker: u16) -> Option<usize> {
     let marker = marker.to_be_bytes();
     stream
@@ -751,7 +1080,7 @@ fn prepare_header(config: EncoderConfig) -> Result<PreparedHeader, String> {
     let (output_width, output_height) = config.output_size();
     write_sof0(&mut bytes, output_width, output_height, components);
     // `write_jpeg_header()` places the restart interval between SOF and DHT.
-    if let Some(plan) = config.split_plan() {
+    if let Some(plan) = config.effective_split_plan() {
         write_dri(&mut bytes, plan.restart_interval as u16);
     }
     write_dht(
@@ -893,9 +1222,11 @@ fn build_registers(
         | (2 << 4)
         | 1;
     words[BYTE_SWAP] = config.input.swap_bits();
-    words[PART_CONFIG] = config.split_plan().map_or(RESTART_MARKER_FIRST, |plan| {
-        (((plan.part_rows & 0xff) as u32) << 16) | RESTART_MARKER_FIRST
-    });
+    words[PART_CONFIG] = config
+        .effective_split_plan()
+        .map_or(RESTART_MARKER_FIRST, |plan| {
+            (((plan.part_rows & 0xff) as u32) << 16) | RESTART_MARKER_FIRST
+        });
     words[IRQ_CONFIG] = (1 << 12) | (1 << 10);
 
     for (reg_base, table) in [(0, &quant.y), (16, &quant.u)] {
@@ -1106,7 +1437,7 @@ mod tests {
             quality: Quality::Quant(10),
             ..EncoderConfig::new(321, 241)
         };
-        assert_eq!((config.hor_stride, config.ver_stride), (328, 256));
+        assert_eq!((config.hor_stride, config.ver_stride), (328, 242));
         let header = prepare_header(config).unwrap();
         let regs = build_registers(
             7,
@@ -1144,7 +1475,7 @@ mod tests {
         assert_eq!(regs.offsets[0].offset, 320 * 256);
 
         let too_short = EncoderConfig {
-            ver_stride: 242,
+            ver_stride: 240,
             ..EncoderConfig::new(320, 241)
         };
         assert!(too_short.validate().is_err());
@@ -1230,6 +1561,58 @@ mod tests {
                 "split_mcus {arg:?}"
             );
         }
+    }
+
+    #[test]
+    fn automatic_multicore_plan_matches_c_band_rows() {
+        let hd = EncoderConfig::new(1920, 1080);
+        let plan = hd.multi_core_plan().unwrap();
+        assert_eq!(plan.bands, vec![17, 17, 17, 17]);
+        assert_eq!(plan.ecs_counts, vec![1, 1, 1, 1]);
+        assert_eq!(
+            plan.reg_part_rows, 0,
+            "automatic C split leaves reg107 at 0"
+        );
+        assert_eq!(
+            plan.restart_interval,
+            120 * 17,
+            "C writes DRI in the 1080p default path"
+        );
+
+        let edge = EncoderConfig::new(1281, 721);
+        assert_eq!(edge.multi_core_plan().unwrap().bands, vec![12, 12, 12, 10]);
+        assert!(EncoderConfig::new(1280, 720).multi_core_plan().is_none());
+    }
+
+    #[test]
+    fn explicit_multicore_plan_uses_the_c_ecs_balance_table() {
+        assert_eq!(distribute_ecs(4), [1, 1, 1, 1]);
+        assert_eq!(distribute_ecs(9), [4, 4, 0, 1]);
+        assert_eq!(distribute_ecs(17), [8, 4, 4, 1]);
+        assert_eq!(distribute_ecs(21), [8, 8, 2, 3]);
+        assert_eq!(distribute_ecs(25), [8, 8, 8, 1]);
+
+        let config = EncoderConfig {
+            split_mcus: Some(2040),
+            ..EncoderConfig::new(1920, 1080)
+        };
+        let plan = config.multi_core_plan().unwrap();
+        assert_eq!(plan.bands, vec![17, 17, 17, 17]);
+        assert_eq!(plan.reg_part_rows, 17);
+        assert_eq!(plan.restart_interval, 2040);
+    }
+
+    #[test]
+    fn input_allocation_keeps_the_c_64_row_tail() {
+        let config = EncoderConfig::new(1920, 1080);
+        assert_eq!(config.input_size().unwrap(), 1920 * 1080 * 3 / 2);
+        assert_eq!(config.input_allocation_size().unwrap(), 1920 * 1088 * 3 / 2);
+        assert_eq!(
+            EncoderConfig::new(321, 241)
+                .input_allocation_size()
+                .unwrap(),
+            384 * 256 * 3 / 2
+        );
     }
 
     #[test]
@@ -1445,9 +1828,9 @@ mod tests {
             rotation: Rotation::Degree90,
             ..EncoderConfig::new(321, 241)
         };
-        assert_eq!((config.hor_stride, config.ver_stride), (328, 256));
+        assert_eq!((config.hor_stride, config.ver_stride), (328, 242));
         assert_eq!(config.output_size(), (241, 321));
-        assert_eq!(config.input_size().unwrap(), 328 * 256 * 3 / 2);
+        assert_eq!(config.input_size().unwrap(), 328 * 242 * 3 / 2);
         // The MCU grid is counted from the transposed output.
         assert_eq!(
             config.mcu_counts(),

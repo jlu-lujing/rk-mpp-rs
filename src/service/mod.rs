@@ -83,6 +83,18 @@ pub struct MppReqV1 {
 
 const _: () = assert!(std::mem::size_of::<MppReqV1>() == 24);
 
+/// `MppDevBatCmd`: the payload C places between register sets when
+/// `MPP_DEV_DELIMIT` is issued for a multi-job batch.
+#[repr(C)]
+#[derive(Default, Debug, Clone, Copy)]
+pub struct MppBatCmd {
+    pub flag: u64,
+    pub client: c_int,
+    pub ret: c_int,
+}
+
+const _: () = assert!(std::mem::size_of::<MppBatCmd>() == 16);
+
 pub struct MppService {
     fd: c_int,
     client_type: u32,
@@ -107,6 +119,10 @@ impl MppService {
 
     pub fn client_type(&self) -> u32 {
         self.client_type
+    }
+
+    pub fn client_fd(&self) -> c_int {
+        self.fd
     }
 
     /// One ioctl round trip.
@@ -403,6 +419,19 @@ impl Batch {
         self
     }
 
+    /// C's `MPP_DEV_DELIMIT` request. The caller owns `cmd` until the batch is
+    /// submitted.
+    pub fn delimit(&mut self, cmd: &MppBatCmd) -> &mut Self {
+        self.push(
+            MPP_CMD_SET_SESSION_FD,
+            0,
+            std::mem::size_of::<MppBatCmd>() as u32,
+            0,
+            cmd as *const MppBatCmd as u64,
+        );
+        self
+    }
+
     pub fn reg_offsets(&mut self, offs: &[RegOffsetInfo]) -> &mut Self {
         if offs.is_empty() {
             return self;
@@ -480,6 +509,23 @@ impl MppService {
         } else {
             Ok(())
         }
+    }
+
+    /// Submit a vcodec batch the way `mpp_server_send_task` does: every request
+    /// is a separate ioctl carrying `MULTI_MSG`, and only the final request
+    /// carries `LAST_MSG`. The kernel accumulates the sequence until the poll.
+    pub fn submit_batch_streaming(&self, batch: &mut Batch) -> io::Result<()> {
+        if batch.reqs.is_empty() {
+            return Ok(());
+        }
+        batch.finalize_flags(true);
+        for req in &mut batch.reqs {
+            let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, req as *mut MppReqV1) };
+            if r < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
     }
 
     /// Is this command implemented by the running kernel?

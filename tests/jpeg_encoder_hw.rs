@@ -14,7 +14,7 @@ fn odd_nv12() -> Vec<u8> {
     const WIDTH: usize = 321;
     const HEIGHT: usize = 241;
     const HOR_STRIDE: usize = 328;
-    const VER_STRIDE: usize = 256;
+    const VER_STRIDE: usize = 242;
 
     let mut output = vec![16u8; HOR_STRIDE * VER_STRIDE];
     output.resize(HOR_STRIDE * VER_STRIDE * 3 / 2, 128);
@@ -231,7 +231,7 @@ fn odd_dimensions_encode_deterministically_and_read_back_after_dma_sync() {
         quality: Quality::Quant(10),
         ..EncoderConfig::new(321, 241)
     };
-    assert_eq!((config.hor_stride, config.ver_stride), (328, 256));
+    assert_eq!((config.hor_stride, config.ver_stride), (328, 242));
 
     let mut encoder = Vepu2Jpeg::open().unwrap();
     let first = encoder.encode_nv12(&input, config).unwrap();

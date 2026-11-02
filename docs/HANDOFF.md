@@ -115,7 +115,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 615 passed, 26 board-only ignored
+cargo test --all-targets      # 618 passed, 26 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -139,6 +139,8 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_h264_lowdelay_vs_mpp.sh      # 逐 slice packet 5/5
 ./scripts/board_jpege_restart_vs_mpp.sh      # JPEG restart（-t 8 + split env）
 ./scripts/board_jpege_lowdelay_vs_mpp.sh     # JPEG 逐 band packet 2/2
+./scripts/board_jpege_multicore_vs_mpp.sh    # JPEG 默认多核 3/3
+./scripts/board_jpege_stride_vs_mpp.sh       # JPEG stride 2/2
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
@@ -335,8 +337,13 @@ H.264/VEPU580 编码已做到：
   drop/pskip 策略。它们仍属于冻结的功能前沿，不与当前等价性回归混提。
 - JPEG 编码的 low-delay packet 输出已闭合：单 job 保持原字节流，`EncodedJpeg`
   在 RST 标记处暴露 packet ranges；320x240/5 packet 与 640x480/10 packet 均与
-  C 逐字节、逐 packet 相同。旋转和 >720p 的 part 路径明确拒绝；JPEG 多核分带
-  仍未实现。
+  C 逐字节、逐 packet 相同。low-delay part 的旋转和 >720p 组合仍明确拒绝；
+  JPEG 多核分带已单独关闭下面一行。
+- JPEG 默认四 band 多核路径已闭合：GOP 无关的 streaming `MULTI_MSG` 提交、
+  `SET_SESSION_FD` delimiter、scratch band 和 reg53 拼接均按 C 实现；
+  1920x1080 qf50/qf90 + 1288x722 为 3/3，322x242/1366x768 stride 为 2/2。
+  旋转多核仍明确拒绝；显式 split 产生超出画面的 band 时 C 会输出无 EOI 的无效
+  JPEG，记录为 C-BUG，Rust 保留有效流。
 
 ### 5.4 H.265 编码（M8，12k）
 
@@ -465,7 +472,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 615 通过（26 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 618 通过（26 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

@@ -1,7 +1,7 @@
 # JPEG slice and multi-core partitioning on VEPU2 (research)
 
-Status: low-delay packet output is implemented and board-verified; multi-core
-partitioning is investigated but not implemented. Both mechanisms live in
+Status: low-delay packet output and the default multi-core partition path are
+implemented and board-verified; rotated multi-core remains. Both mechanisms live in
 `hal_jpege_vepu2_v2.c` for RK3588's client-19 (`VPU_CLIENT_VEPU2_JPEG`),
 the same client `rk-mpp-rs` opens. Line numbers refer to the develop
 reference under `refs/mpp`. Everything the *single-job* restart path needs
@@ -106,28 +106,34 @@ length, and concatenates the scratch contents behind band 0's stream.
 bands, and for 90/270 rotation the bands run along x with the 270
 direction reversed (`:661-679`).
 
-Blockers for a faithful port:
+### Rust implementation
 
-1. `MPP_DEV_DELIMIT` is a `MppDevApi` call; on the vcodec service used by
-   RK3588 kernels its `.delimit` slot is NULL (`osal/driver/vcodec_service.c:717`),
-   so the ioctl is a client-side no-op there and the actual job split
-   must come from how the kernel's vcodec batch groups multiple
-   REG_WR/REG_RD/OFFS triples before one SEND. Our `src/service/` client
-   currently models one register set + one poll per batch; pinning the
-   real multi-job batch semantics needs an on-board ioctl capture
-   (tracer) of a >720p C JPEG encode before this can be ported without
-   guessing.
-2. The concatenation needs scratch dma-bufs and per-band readback
-   buffers — service-layer work, forbidden to this worktree
-   (`src/service/**`).
+An ioctl trace showed that C's vcodec path submits each `MULTI_MSG` request in
+a separate ioctl, uses `MPP_CMD_SET_SESSION_FD` as the delimiter payload, and
+marks only the final register-offset request with `LAST_MSG`. `MppService` now
+has a streaming batch submit that reproduces that sequence.
 
-### Consequence for byte comparisons today (important)
+`Vepu2Jpeg` follows `multi_core_start` for up to four bands:
 
-C defaults to 4-band splitting for every client-19 JPEG above the 720p
-gate, and the split carries a `DRI = mb_w * part_rows` interval through
-the whole stream. Our encoder is single-job. Comparing our full-frame
-output with a stock `mpi_enc_test` JPEG at, say, 1920x1088 is therefore
-not a byte-level verdict of the current HAL — the C stream contains
-per-band RST markers our single job does not. All three new JPEG board
-scripts intentionally stay at 320x240 / 640x480; a >720p byte script
-should only be written together with the partitioning port.
+- band 0 writes into the real output buffer with the JPEG header prefix;
+- later bands use reusable scratch dma-bufs of `width * height / 2`;
+- each band rewrites reg51/52/53/60/77/103/107 and submits the exact NV12
+  input offsets, including C's zero-valued V-plane entries;
+- hardware lengths are read from each reg53 and concatenated in order.
+
+The default plan is C's four-way split (`align(mcu_rows, 4) / 4` rows per
+band). Explicit BY_CTU uses the same ECS balance table. Input allocation keeps
+the C 64-row DMA tail while logical NV12 data uses `ver_stride = align(height,
+2)`, which matters for 1080p.
+
+`scripts/board_jpege_multicore_vs_mpp.sh` is 3/3: 1920x1080 at qfactor 50 and
+90, plus 1288x722 with a 12+12+12+10 band split. All complete JPEGs are
+byte-identical. The 1280x720 boundary is also byte-identical, and
+`scripts/board_jpege_stride_vs_mpp.sh` covers 322x242 and 1366x768.
+Seven alternating whole-process 1080p/qf50 samples had medians of 64.7 ms for
+C and 60.7 ms for Rust; this is a regression guard, not a stable microbenchmark.
+
+Rotated multi-core is still rejected explicitly. An explicit split whose
+balance table makes the final band read beyond the coded picture can make the
+C harness emit a JPEG without EOI while returning success; Rust emits a valid
+EOI-terminated stream. That case is recorded as a C bug rather than imitated.
