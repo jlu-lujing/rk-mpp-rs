@@ -2148,6 +2148,14 @@ pipeline uses.
   and decodes in 113.0 ms (265.5 fps). This is fixture-specific evidence, not
   a general VP9 throughput claim; the resize stream still needs a fixed-clock
   native-NV12 comparison.
+- Representative source-built C MPP oracles are deterministic on t6. Two
+  independent H.264 decodes produced SHA-256 `e72eeb140bd7bef027b538747ed8370f1c7ab57ca231cf334fb3c4eef01b5d11`;
+  two H.265 decodes produced
+  `87375cba9ab7b4f1e445594df0670b23600ceb7be02f9f8b89c72f2f9d119f74`;
+  and two H.264 encodes produced
+  `8ef4f37baa213649152968829cd21d3a82df73223d033e278478d9c13889c86d`.
+  `scripts/board_jitter_check.sh` checks both artifact bytes and hashes, and
+  the umbrella can enforce it with `JITTER_CHECK=1`.
 - Board AV1 regression: the full local `cargo test --all-targets` suite passes
   311 tests with four hardware-only tests ignored by
   default. The focused CDF, parser, PicParams and register suite passes 54/54

@@ -15,6 +15,7 @@ BOARD="${BOARD:-t6}"
 #   FULL_QP=1 scripts/board_regress_all.sh    # the whole 24-cell size x profile x QP matrix
 #   SKIP=vp8,m2v scripts/board_regress_all.sh
 #   PERF_GATE=1 scripts/board_regress_all.sh  # also enforce t6 hot-path limits
+#   JITTER_CHECK=1 scripts/board_regress_all.sh  # rerun representative C oracles
 set -uo pipefail
 
 logdir=/tmp/rk-mpp-rs-regress
@@ -53,6 +54,9 @@ run() { # <name> <script...>
 }
 
 run refs scripts/setup_board_refs.sh
+if [ "${JITTER_CHECK:-0}" = 1 ]; then
+  run jitter scripts/board_jitter_check.sh
+fi
 run h264-decode scripts/board_regress.sh
 run hevc-decode scripts/board_regress_hevc.sh
 run m2v-decode scripts/board_regress_m2v.sh

@@ -131,8 +131,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       统一 PASS/FAIL 汇总与退出码；`SKIP=` 可跳单套。
 - [~] W0-4 fixture 管理：**板上语料与参考输出**已入 `corpus/`（438 个文件、1.3G 含 oracle）；
       `tests/data/` 的来源头与 `refresh_fixtures.sh` 仍待做。
-- [ ] W0-5 抖动检查：对每个逐字节测试跑两次，确认 C 侧输出确定（已有先例：
-      CBR 流 md5 稳定；tracer 日志因指针不同而不稳定 → 只比报表）。
+- [x] W0-5 抖动检查：`scripts/board_jitter_check.sh` 对 H.264/H.265 C decode
+      和 H.264 C encode 各跑两次，同时比较输出字节与 SHA-256。t6 首轮得到
+      H.264 decode `e72eeb14…b5d11`、H.265 decode
+      `87375cba…119f74`、H.264 encode `8ef4f37b…9c86d`，两次均一致。
+      `JITTER_CHECK=1 scripts/board_regress_all.sh` 已接入。
 - [x] W0-6 板子信息采集脚本：`scripts/board_info.sh` 采集 OS/kernel、设备树、
       CPU/内存/thermal/governor、mpp/dma-heap 节点、platform driver、hw_support
       mask 和逐 client 绑定结果，生成 [`docs/board.md`](board.md)。脚本已在 t6
