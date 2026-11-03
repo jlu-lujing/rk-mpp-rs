@@ -133,8 +133,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `tests/data/` 的来源头与 `refresh_fixtures.sh` 仍待做。
 - [ ] W0-5 抖动检查：对每个逐字节测试跑两次，确认 C 侧输出确定（已有先例：
       CBR 流 md5 稳定；tracer 日志因指针不同而不稳定 → 只比报表）。
-- [ ] W0-6 板子信息采集脚本：内核版本、mask、各 client 绑定结果，写入
-      `docs/board.md`，供更换板子时快速判断能力。
+- [x] W0-6 板子信息采集脚本：`scripts/board_info.sh` 采集 OS/kernel、设备树、
+      CPU/内存/thermal/governor、mpp/dma-heap 节点、platform driver、hw_support
+      mask 和逐 client 绑定结果，生成 [`docs/board.md`](board.md)。脚本已在 t6
+      实跑，并用 release binary 避免编译 warning 污染报告。
 
 验收：断网/重启后照脚本可在 15 分钟内恢复全部 oracle 并跑通 `board_regress_all.sh`。
 
