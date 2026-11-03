@@ -100,6 +100,7 @@ pub fn decode_cabac_i_slice(
     let mut decoder = CabacDecoder::new_h264(data);
     let slice_qp = pps.pic_init_qp + slice.qp_delta;
     let mut contexts = init_i_contexts(slice_qp);
+    let mut last_qscale_diff = 0;
 
     let (kind, luma_prediction_modes, mut cbp) = if decoder.decode_bin(&mut contexts[3]) == 0 {
         let mut modes = vec![0u8; 16];
@@ -181,17 +182,15 @@ pub fn decode_cabac_i_slice(
         cbp = decoded_cbp | (chroma_cbp << 4);
     }
 
+    let context =
+        MacroblockContext::from_sps_pps(sps, pps).map_err(|_| H264CabacError::Malformed("SPS"))?;
     let qp_delta = if matches!(kind, IntraMacroblockKind::I16x16 { .. }) || cbp != 0 {
-        if decoder.decode_bin(&mut contexts[60]) != 0 {
-            return Err(H264CabacError::Unsupported("CABAC mb_qp_delta"));
-        }
-        0
+        decode_cabac_qp_delta(&mut decoder, &mut contexts, &mut last_qscale_diff)?
     } else {
         0
     };
-    let qp = slice_qp + qp_delta;
-    let context =
-        MacroblockContext::from_sps_pps(sps, pps).map_err(|_| H264CabacError::Malformed("SPS"))?;
+    let max_qp = 51 + 6 * i32::from(context.bit_depth_luma - 8);
+    let qp = add_cabac_qp(slice_qp, qp_delta, max_qp)?;
     let mut residual = ParsedMacroblockResidual {
         luma_dc: None,
         luma_4x4: std::array::from_fn(|_| None),
@@ -418,6 +417,7 @@ fn decode_cabac_i_slice_multi(
     let slice_qp = pps.pic_init_qp + slice.qp_delta;
     let mut contexts = init_i_contexts(slice_qp);
     let mut qp = slice_qp;
+    let mut last_qscale_diff = 0;
 
     let total_mbs = mb_width * mb_height;
     let mut decoded = vec![false; total_mbs];
@@ -462,9 +462,15 @@ fn decode_cabac_i_slice_multi(
             &chroma_modes,
             &coded_flags,
         );
-        let decoded_mb =
-            decode_cabac_i16_macroblock(&mut decoder, &mut contexts, context, neighbors)?;
-        qp += decoded_mb.macroblock.qp_delta;
+        let decoded_mb = decode_cabac_i16_macroblock(
+            &mut decoder,
+            &mut contexts,
+            context,
+            neighbors,
+            &mut last_qscale_diff,
+        )?;
+        let max_qp = 51 + 6 * i32::from(context.bit_depth_luma - 8);
+        qp = add_cabac_qp(qp, decoded_mb.macroblock.qp_delta, max_qp)?;
         let options = super::h264_residual::ResidualPlaneOptions {
             qp: qp as u8,
             chroma_qp_offset: [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
@@ -594,6 +600,7 @@ fn decode_cabac_i16_macroblock(
     contexts: &mut [Context],
     context: MacroblockContext,
     neighbors: CabacMbNeighbors,
+    last_qscale_diff: &mut i32,
 ) -> Result<DecodedCabacMacroblock, H264CabacError> {
     let mb_type_context =
         3 + usize::from(neighbors.left_decoded) + usize::from(neighbors.top_decoded);
@@ -644,11 +651,7 @@ fn decode_cabac_i16_macroblock(
         neighbors.left_decoded,
     );
 
-    let qp_delta = if decoder.decode_bin(&mut contexts[60]) != 0 {
-        return Err(H264CabacError::Unsupported("CABAC mb_qp_delta"));
-    } else {
-        0
-    };
+    let qp_delta = decode_cabac_qp_delta(decoder, contexts, last_qscale_diff)?;
     let mut residual = ParsedMacroblockResidual {
         luma_dc: None,
         luma_4x4: std::array::from_fn(|_| None),
@@ -761,6 +764,51 @@ fn coded_block_flag_context(base: usize, mask: u16, neighbors: CabacMbNeighbors)
     let left = !neighbors.left_decoded || neighbors.left_flags & mask != 0;
     let top = !neighbors.top_decoded || neighbors.top_flags & mask != 0;
     base + usize::from(left) + 2 * usize::from(top)
+}
+
+fn decode_cabac_qp_delta(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    last_qscale_diff: &mut i32,
+) -> Result<i32, H264CabacError> {
+    let first_context = 60 + usize::from(*last_qscale_diff != 0);
+    if decoder.decode_bin(&mut contexts[first_context]) == 0 {
+        *last_qscale_diff = 0;
+        return Ok(0);
+    }
+    let mut magnitude = 1;
+    let mut context = 2;
+    while decoder.decode_bin(&mut contexts[60 + context]) != 0 {
+        context = 3;
+        magnitude += 1;
+        if magnitude > 102 {
+            return Err(H264CabacError::Malformed("mb_qp_delta"));
+        }
+    }
+    let delta = qp_delta_from_magnitude(magnitude);
+    *last_qscale_diff = delta;
+    Ok(delta)
+}
+
+fn qp_delta_from_magnitude(magnitude: i32) -> i32 {
+    if magnitude & 1 != 0 {
+        (magnitude + 1) >> 1
+    } else {
+        -((magnitude + 1) >> 1)
+    }
+}
+
+fn add_cabac_qp(qp: i32, delta: i32, max_qp: i32) -> Result<i32, H264CabacError> {
+    if !(0..=max_qp).contains(&qp) {
+        return Err(H264CabacError::Malformed("slice QP"));
+    }
+    let mut value = qp + delta;
+    if value > max_qp {
+        value -= max_qp + 1;
+    } else if value < 0 {
+        value += max_qp + 1;
+    }
+    Ok(value)
 }
 
 fn init_i_contexts(slice_qp: i32) -> [Context; 276] {
@@ -1218,5 +1266,27 @@ fn check_chroma_prediction_mode(mode: u8, top_available: bool, left_available: b
         0
     } else {
         mode
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_qp_delta_sign_by_magnitude() {
+        for (magnitude, expected) in [(1, 1), (2, -1), (3, 2), (4, -2), (7, 4), (8, -4)] {
+            assert_eq!(qp_delta_from_magnitude(magnitude), expected);
+        }
+    }
+
+    #[test]
+    fn wraps_qp_delta_within_the_bit_depth_range() {
+        assert_eq!(add_cabac_qp(51, 2, 51), Ok(1));
+        assert_eq!(add_cabac_qp(0, -1, 51), Ok(51));
+        assert_eq!(
+            add_cabac_qp(52, 0, 51),
+            Err(H264CabacError::Malformed("slice QP"))
+        );
     }
 }

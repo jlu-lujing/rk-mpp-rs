@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. tiles/WPP/SAO, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: CABAC core; HEVC transforms; H.264 CAVLC I-slice reconstruction with filtered prediction, transform bypass, DC Hadamard and picture deblocking; two 32x32 IDR fixtures and one 64x64, 16-macroblock noise IDR match all YUV samples; H.264 CABAC covers textured I16 and I4x4 luma/chroma residuals plus two-macroblock row propagation, with multi-row and I8x8 CABAC syntax still open** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: CABAC core; HEVC transforms; H.264 CAVLC I-slice reconstruction with filtered prediction, transform bypass, DC Hadamard and picture deblocking; two 32x32 IDR fixtures and one 64x64, 16-macroblock noise IDR match all YUV samples; H.264 CABAC covers textured I16/I4x4 residuals, signed nonzero mb_qp_delta and two-macroblock row propagation, with multi-row and I8x8 CABAC syntax still open** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -264,6 +264,13 @@ in what order the evidence gets produced.
       availability rule: a top-right block not yet reconstructed in the
       current transmission order must use `top[3]`. Multi-row and I8x8 CABAC
       residual syntax remain open.
+- [x] H.264 CABAC `mb_qp_delta`: the signed unary code, its two context
+      selections, the previous-delta context bit, QP wrap handling and
+      per-macroblock state now match FFmpeg. Two unit tests cover the complete
+      magnitude-to-sign map and QP wrapping. A dedicated adaptive-QP pixel
+      fixture is still needed; the first x264 stress stream exposed the
+      outstanding multi-row I16 residual scan orientation rather than another
+      QP bug.
 
 ## Feature checklist (per official capability)
 
