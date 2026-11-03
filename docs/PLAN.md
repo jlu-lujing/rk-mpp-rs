@@ -180,8 +180,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [x] W1-9 `setup_vepu580_me` 全量参数化：`pmv_mdst`、`mv_limit`、CIME/RIME
       搜索范围、`mei_stor` 和真实 motion-info DMA 地址均已生成；相关字段由
       level、slice type、几何和分配后的 fd 驱动。
-- [~] W1-10 宽度 > 4096 —— 偏移与 RCB 已推导并有宿主单测，`board_h264_wide_vs_mpp.sh`
-      尚无记录运行。
+- [x] W1-10 宽度 > 4096 —— 偏移与 RCB 已推导并有宿主单测；
+      `FRAMES=2 board_h264_wide_vs_mpp.sh` 已跑，4160x64 与 4608x256 均含
+      IDR+P，6 NAL 逐字节相同，CIME extension offset/RCB 路径板级 2/2。
 - [x] W1-11 `cal_first_i_start_qp` —— 板级 5/5 格逐字节（含 QP 轨迹）。
 
 ### 5.4 编码特性（6–10 天）
