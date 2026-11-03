@@ -115,9 +115,13 @@ int main(int argc, char **argv)
     int qp = argc > 6 ? atoi(argv[6]) : 26;
     int bps_target = 300000, bps_min = 250000, bps_max = 350000;
     int have_split = 0, split_mode = 0, split_arg = 0, split_out = 0;
+    int bit_depth = getenv("BIT_DEPTH") ? atoi(getenv("BIT_DEPTH")) : 8;
+    MppFrameFormat input_format =
+        bit_depth == 10 ? MPP_FMT_YUV420SP_10BIT : MPP_FMT_YUV420SP;
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
-    size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
+    size_t frame_size =
+        (size_t)hor_stride * ver_stride * 3 / 2 * (bit_depth > 8 ? 2 : 1);
 
     MppCtx ctx = NULL;
     MppApi *mpi = NULL;
@@ -207,7 +211,7 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:height", height));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", input_format));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:mode",
                               mode == 0 ? MPP_ENC_RC_MODE_FIXQP
                                         : MPP_ENC_RC_MODE_CBR));
@@ -307,7 +311,7 @@ int main(int argc, char **argv)
         mpp_frame_set_height(frame, height);
         mpp_frame_set_hor_stride(frame, hor_stride);
         mpp_frame_set_ver_stride(frame, ver_stride);
-        mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+        mpp_frame_set_fmt(frame, input_format);
         mpp_frame_set_buffer(frame, frame_buf);
 
         meta = mpp_frame_get_meta(frame);

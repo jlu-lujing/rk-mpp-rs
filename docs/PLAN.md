@@ -252,7 +252,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       smart GOP 均逐字节
 - [~] W2-7 slice 切分与逐 slice 输出已闭合（BY_CTU/BY_BYTE、32 项 FIFO 跨越、
       6 帧 IDR+P；普通整 AU 3/3，low-delay 4/4）；tiles/WPP 未做
-- [ ] W2-8 10-bit 编码（若硬件支持；先 probe 确认）
+- [x] W2-8 10-bit 编码探针 —— t6 的 VEPU580 接受 MPP 的 10-bit prep/frame
+      配置，但硬件 job 返回 `int_sta=0x100` 且不产生 packet；Rust 配置层据此
+      显式拒绝非 8-bit，`board_h265_10bit_probe.sh` 固化这条拒绝证据。
 - [x] W2-9 GDR / intra refresh —— C ref-cfg oracle 已建立；
       320x240/640x480 × row/column 为 4/4 整条逐字节。
 - [~] W2-9b ROI/QP map 已闭合（相对/绝对 QP、force-intra、多 region、

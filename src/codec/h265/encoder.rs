@@ -87,6 +87,10 @@ pub struct EncoderConfig {
     pub num_ref: u32,
     /// `codec->max_cu_size` (64 on RK3588, 32 on the parts that list it).
     pub max_cu_size: usize,
+    /// Sample bit depth. VEPU580 accepts the 10-bit prep/frame format but its
+    /// H.265 hardware job returns `int_sta=0x100` without a bitstream on t6, so
+    /// this port only advertises the supported 8-bit path.
+    pub bit_depth: u8,
     pub sao_enable: bool,
     pub amp_enable: bool,
     pub tmvp_enable: bool,
@@ -150,6 +154,7 @@ impl EncoderConfig {
             tier: false,
             num_ref: 1,
             max_cu_size: 64,
+            bit_depth: 8,
             sao_enable: true,
             amp_enable: false,
             tmvp_enable: false,
@@ -180,6 +185,12 @@ impl EncoderConfig {
     pub fn validate(&self) -> Result<(), Error> {
         if self.width == 0 || self.height == 0 {
             return Err(Error("H.265 dimensions must be non-zero".into()));
+        }
+        if self.bit_depth != 8 {
+            return Err(Error(format!(
+                "VEPU580 H.265 does not support {}-bit encoding on t6",
+                self.bit_depth
+            )));
         }
         if self.width > 8192 || self.height > 8192 {
             return Err(Error("H.265 dimensions must fit in 13 bits".into()));
@@ -439,8 +450,8 @@ pub fn build_sps(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
         w.put_ue(0); // conf_win_top_offset
         w.put_ue((conf_bottom / 2) as u32);
     }
-    w.put_ue(0); // bit_depth_luma_minus8
-    w.put_ue(0); // bit_depth_chroma_minus8
+    w.put_ue(u32::from(config.bit_depth - 8)); // bit_depth_luma_minus8
+    w.put_ue(u32::from(config.bit_depth - 8)); // bit_depth_chroma_minus8
     w.put_ue(12); // log2_max_pic_order_cnt_lsb_minus4 (m_bitsForPOC == 16)
     w.put_bits(1, 1); // sps_sub_layer_ordering_info_present_flag
     w.put_ue(config.max_dec_pic_buffering() - 1); // sps_max_dec_pic_buffering_minus1[0]
@@ -966,5 +977,13 @@ mod tests {
     #[test]
     fn rejects_zero_size_before_writing_a_header() {
         assert!(build_headers(&EncoderConfig::new(0, 0)).is_err());
+    }
+
+    #[test]
+    fn rejects_ten_bit_without_claiming_unsupported_output() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.bit_depth = 10;
+        let error = build_headers(&config).unwrap_err().to_string();
+        assert!(error.contains("does not support 10-bit"));
     }
 }
