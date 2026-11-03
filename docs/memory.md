@@ -5,16 +5,16 @@ Generated from `scripts/board_memory_profile.sh` on NanoPC-T6-LTS, kernel
 
 | codec | fixture | peak process RSS | peak new dma-buf |
 |---|---|---:|---:|
-| H.264 decode | `test720.264` | 43,180 KiB | 164,906 KiB |
-| H.265 decode | `t720.hevc` | 14,900 KiB | 193,029 KiB |
-| VP9 decode | `vp90_720.ivf` | 19,992 KiB | 148,738 KiB |
-| AV1 decode | `av1_320x240_10.ivf` | 3,288 KiB | not observed |
-| MPEG-2 decode | `m2v_320x240_12.m2v` | 2,680 KiB | not observed |
-| MPEG-4 decode | `mp4_320x240_12_ip.m4v` | 2,612 KiB | not observed |
-| H.263 decode | `h263_cif_12_ip.263` | 2,748 KiB | not observed |
-| VP8 decode | `vp8_320x240_12_ip.ivf` | 2,672 KiB | not observed |
-| H.264 encode | `1280x720.nv12` | 3,572 KiB | not observed |
-| H.265 encode | `1280x720.nv12` | 2,820 KiB | not observed |
+| H.264 decode | `test720.264` | 42,436 KiB | 164,906 KiB |
+| H.265 decode | `t720.hevc` | 4,908 KiB | 254,200 KiB |
+| VP9 decode | `vp90_720.ivf` | 19,780 KiB | 148,738 KiB |
+| AV1 decode | `av1_320x240_10.ivf` | 3,276 KiB | not observed |
+| MPEG-2 decode | `m2v_320x240_12.m2v` | 2,588 KiB | not observed |
+| MPEG-4 decode | `mp4_320x240_12_ip.m4v` | 2,672 KiB | not observed |
+| H.263 decode | `h263_cif_12_ip.263` | 2,468 KiB | not observed |
+| VP8 decode | `vp8_320x240_12_ip.ivf` | 2,388 KiB | not observed |
+| H.264 encode | `1280x720x6.nv12` | 3,712 KiB | 82,176 KiB |
+| H.265 encode | `1280x720x6.nv12` | 10,436 KiB | 86,570 KiB |
 
 Method:
 
@@ -28,9 +28,10 @@ Method:
 
 Caveats:
 
-- Tiny 320x240 decoders and the one-frame encoder cases create/free their
-  buffers faster than the debugfs sampling loop can reliably observe, so their
-  dma-buf column is `not observed`, not proven zero.
+- Tiny 320x240 decoders create/free their buffers faster than the debugfs
+  sampling loop can reliably observe, so their dma-buf column is `not
+  observed`, not proven zero. Encoders use six repeated input frames to widen
+  the observation window.
 - The dma-buf delta is system-wide, not charged by inode to the PID. Re-run on
   an otherwise idle board for publication-quality comparisons.
 - The H.264/H.265 encoder allocation budget is fixed at session `open`; no

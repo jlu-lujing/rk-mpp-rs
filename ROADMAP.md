@@ -2120,6 +2120,13 @@ pipeline uses.
   `+49.9%` versus the C decoder and scale rows at `0.482`, `0.927`, `0.382`
   and `1.303` ms.
 
+- The board memory ledger now separates process RSS from dma-buf usage. On t6,
+  six-frame H.264/H.265 encodes peak at 3,712/10,436 KiB RSS and
+  82,176/86,570 KiB new dma-buf respectively; 720p H.264/H.265/VP9 decodes
+  peak at 164,906/254,200/148,738 KiB dma-buf. The script samples `VmHWM` and
+  debugfs `bufinfo`, and records short-lived 320x240 dma-buf activity as
+  unobserved rather than claiming zero.
+
 - Frame readback rule: the decoder output mapping is uncached, so a plane is
   read exactly once and eight bytes per load. `codec::yuv::nv12_to_planar` is
   the shared implementation behind H.264, H.265, VP9 and AV1. The per-sample

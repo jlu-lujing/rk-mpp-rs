@@ -12,6 +12,8 @@ BIN="${BIN:-$HOME/rk-mpp-rs/target/release/rk-mpp-rs}"
 REPEATS="${REPEATS:-3}"
 RUNNER="${RUNNER:-}"
 FRAME=/tmp/rk-mpp-memory-1280x720.nv12
+FRAMES=/tmp/rk-mpp-memory-1280x720x6.nv12
+FRAME_BYTES=$((1280 * 720 * 3 / 2))
 BUFINFO=/sys/kernel/debug/dma_buf/bufinfo
 
 test -x "$BIN" || {
@@ -20,6 +22,10 @@ test -x "$BIN" || {
 }
 command -v "$RUNNER" >/dev/null || RUNNER=
 "$BIN" probe-frame "$FRAME" 1280 720 >/dev/null
+: >"$FRAMES"
+for frame in $(seq 0 5); do
+  dd if="$FRAME" of="$FRAMES" bs="$FRAME_BYTES" seek="$frame" conv=notrunc 2>/dev/null
+done
 dma_available=0
 if sudo test -r "$BUFINFO"; then dma_available=1; fi
 
@@ -91,5 +97,7 @@ run_case mpeg2-decode m2v_320x240_12.m2v "$BIN" m2vdec /tmp/m2v_320x240_12.m2v /
 run_case mpeg4-decode mp4_320x240_12_ip.m4v "$BIN" mp4dec /tmp/mp4_320x240_12_ip.m4v /dev/null
 run_case h263-decode h263_cif_12_ip.263 "$BIN" h263dec /tmp/h263_cif_12_ip.263 /dev/null
 run_case vp8-decode vp8_320x240_12_ip.ivf "$BIN" vp8dec /tmp/vp8_320x240_12_ip.ivf /dev/null
-run_case h264-encode 1280x720.nv12 "$BIN" h264-enc "$FRAME" /dev/null 1280 720
-run_case h265-encode 1280x720.nv12 "$BIN" h265-enc "$FRAME" /dev/null 1280 720
+run_case h264-encode 1280x720x6.nv12 \
+  "$BIN" h264-enc "$FRAMES" /dev/null 1280 720 26 baseline 6 1
+run_case h265-encode 1280x720x6.nv12 \
+  "$BIN" h265-gop "$FRAMES" /dev/null 1280 720 6 26
