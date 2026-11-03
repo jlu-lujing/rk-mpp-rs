@@ -67,6 +67,24 @@ pub fn reconstruct_i_macroblock(
     mb_x: usize,
     mb_y: usize,
 ) -> Result<(), ReconstructionError> {
+    reconstruct_i_macroblock_with_availability(
+        macroblock, residual, bit_depth, luma, chroma_cb, chroma_cr, mb_x, mb_y, true, true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_i_macroblock_with_availability(
+    macroblock: &ParsedIMacroblock,
+    residual: &MacroblockResidualPlanes,
+    bit_depth: u8,
+    luma: &mut PlaneMut<'_>,
+    chroma_cb: Option<&mut PlaneMut<'_>>,
+    chroma_cr: Option<&mut PlaneMut<'_>>,
+    mb_x: usize,
+    mb_y: usize,
+    top_available: bool,
+    left_available: bool,
+) -> Result<(), ReconstructionError> {
     validate_plane(luma)?;
     if mb_x + 16 > luma.width || mb_y + 16 > luma.height {
         return Err(ReconstructionError::MacroblockOutOfBounds);
@@ -85,14 +103,22 @@ pub fn reconstruct_i_macroblock(
                 let row = block / 4;
                 let column = block % 4;
                 let top_right_available = if row == 0 {
-                    mb_y > 0
+                    top_available && mb_y > 0
                 } else if column < 3 {
                     let top_right = (row - 1) * 4 + column + 1;
                     decoded_blocks & (1 << top_right) != 0
                 } else {
                     false
                 };
-                let neighbors = gather_4x4(luma, bx, by, bit_depth, top_right_available);
+                let neighbors = gather_4x4(
+                    luma,
+                    bx,
+                    by,
+                    bit_depth,
+                    top_available,
+                    left_available,
+                    top_right_available,
+                );
                 let prediction = predict_4x4(
                     macroblock.luma_prediction_modes[block],
                     bit_depth,
@@ -116,7 +142,7 @@ pub fn reconstruct_i_macroblock(
             for block in 0..4 {
                 let bx = mb_x + (block % 2) * 8;
                 let by = mb_y + (block / 2) * 8;
-                let neighbors = gather_8x8(luma, bx, by, bit_depth);
+                let neighbors = gather_8x8(luma, bx, by, bit_depth, top_available, left_available);
                 let prediction = predict_8x8(
                     macroblock.luma_prediction_modes[block],
                     bit_depth,
@@ -136,8 +162,10 @@ pub fn reconstruct_i_macroblock(
             }
         }
         IntraMacroblockKind::I16x16 { prediction_mode } => {
-            let top = (mb_y > 0).then(|| read_top(luma, mb_x, mb_y, 16, bit_depth));
-            let left = (mb_x > 0).then(|| read_left(luma, mb_x, mb_y, 16, bit_depth));
+            let top =
+                (top_available && mb_y > 0).then(|| read_top(luma, mb_x, mb_y, 16, bit_depth));
+            let left =
+                (left_available && mb_x > 0).then(|| read_left(luma, mb_x, mb_y, 16, bit_depth));
             let top_left = read_top_left(luma, mb_x, mb_y, bit_depth);
             let prediction = predict_16x16(
                 prediction_mode,
@@ -164,8 +192,26 @@ pub fn reconstruct_i_macroblock(
     if let Some(mode) = macroblock.chroma_prediction_mode {
         let cb = chroma_cb.ok_or(ReconstructionError::MissingChroma)?;
         let cr = chroma_cr.ok_or(ReconstructionError::MissingChroma)?;
-        reconstruct_chroma_plane(cb, &residual.chroma[0], mode, bit_depth, mb_x, mb_y)?;
-        reconstruct_chroma_plane(cr, &residual.chroma[1], mode, bit_depth, mb_x, mb_y)?;
+        reconstruct_chroma_plane(
+            cb,
+            &residual.chroma[0],
+            mode,
+            bit_depth,
+            mb_x,
+            mb_y,
+            top_available,
+            left_available,
+        )?;
+        reconstruct_chroma_plane(
+            cr,
+            &residual.chroma[1],
+            mode,
+            bit_depth,
+            mb_x,
+            mb_y,
+            top_available,
+            left_available,
+        )?;
     }
     Ok(())
 }
@@ -183,10 +229,14 @@ fn gather_4x4(
     x: usize,
     y: usize,
     bit_depth: u8,
+    top_available: bool,
+    left_available: bool,
     top_right_available: bool,
 ) -> Intra4x4Neighbors {
-    let top = (y > 0).then(|| read_top(plane, x, y, 4, bit_depth));
-    let left = (x > 0).then(|| read_left(plane, x, y, 4, bit_depth));
+    let top =
+        ((y % 16 != 0) || (top_available && y > 0)).then(|| read_top(plane, x, y, 4, bit_depth));
+    let left =
+        ((x % 16 != 0) || (left_available && x > 0)).then(|| read_left(plane, x, y, 4, bit_depth));
     let top_right = if top.is_some() && top_right_available && x + 8 <= plane.width {
         Some(std::array::from_fn(|index| {
             plane.data[(y - 1) * plane.stride + x + 4 + index]
@@ -202,9 +252,18 @@ fn gather_4x4(
     }
 }
 
-fn gather_8x8(plane: &PlaneMut<'_>, x: usize, y: usize, bit_depth: u8) -> Intra8x8Neighbors {
-    let top = (y > 0).then(|| read_top(plane, x, y, 8, bit_depth));
-    let left = (x > 0).then(|| read_left(plane, x, y, 8, bit_depth));
+fn gather_8x8(
+    plane: &PlaneMut<'_>,
+    x: usize,
+    y: usize,
+    bit_depth: u8,
+    top_available: bool,
+    left_available: bool,
+) -> Intra8x8Neighbors {
+    let top =
+        ((y % 16 != 0) || (top_available && y > 0)).then(|| read_top(plane, x, y, 8, bit_depth));
+    let left =
+        ((x % 16 != 0) || (left_available && x > 0)).then(|| read_left(plane, x, y, 8, bit_depth));
     let top_right_available = top.is_some() && (x % 16 == 0 || (y >= 16 && x + 16 <= plane.width));
     let top_right = if top_right_available {
         Some(std::array::from_fn(|index| {
@@ -378,6 +437,8 @@ fn reconstruct_chroma_plane(
     bit_depth: u8,
     mb_x: usize,
     mb_y: usize,
+    top_available: bool,
+    left_available: bool,
 ) -> Result<(), ReconstructionError> {
     validate_plane(plane)?;
     let height = match residual.len() {
@@ -394,8 +455,8 @@ fn reconstruct_chroma_plane(
     if x + 8 > plane.width || y + height > plane.height {
         return Err(ReconstructionError::MacroblockOutOfBounds);
     }
-    let top = (y > 0).then(|| read_top_vec(plane, x, y, 8, bit_depth));
-    let left = (x > 0).then(|| read_left_vec(plane, x, y, height, bit_depth));
+    let top = (top_available && y > 0).then(|| read_top_vec(plane, x, y, 8, bit_depth));
+    let left = (left_available && x > 0).then(|| read_left_vec(plane, x, y, height, bit_depth));
     let top_left = read_top_left(plane, x, y, bit_depth);
     let prediction_mode = match mode {
         0 => 2,

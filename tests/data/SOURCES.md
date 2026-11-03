@@ -32,6 +32,10 @@ cargo test --test fixture_manifest
   32x32. Its first row is I8x8 and second row I4x4, so it exercises mixed
   macroblock-type contexts, transform8x8 neighbour selection and top-right
   availability across macroblock boundaries. `_nodeblock` adds `no-deblock=1`.
+- The `h264_cabac_two_slices*` pair splits the same 32x32 picture into two
+  CABAC slices with `first_mb_in_slice=0/2`. The second I4x4 slice therefore
+  exercises CABAC restart, slice-local syntax availability and DC-128
+  prediction at the slice boundary. `_nodeblock` adds `no-deblock=1`.
 - `h265e_c_fixqp_*` are short fixed-QP streams emitted by the source-built C
   MPP encoder used as the H.265 header oracle.
 
