@@ -808,6 +808,8 @@ impl Vepu580H264 {
     /// Encode one picture, continuing the GOP: the first call of a session is an
     /// IDR and every `gop`-th picture after it opens a new one.
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
+        let previous_state = self.state;
+        let previous_slot = self.slot;
         if self.state.index != 0 || self.started {
             self.state = self
                 .state
@@ -856,7 +858,7 @@ impl Vepu580H264 {
             Some(model) => model.start(frame),
             None => (0, i32::from(self.config.qp_init)),
         };
-        let (payload, slice_lengths, statistics, measured) = loop {
+        let (payload, slice_lengths, statistics, measured, dropped) = loop {
             let rc = self.rc.as_ref().map(|_| RateControl {
                 bit_target,
                 qp_target: quality_target as u32,
@@ -1003,6 +1005,21 @@ impl Vepu580H264 {
             // by a re-encode.
             self.tune.update(&statistics);
             if let Some(model) = self.rc.as_mut() {
+                if model.drops_super_frame(frame, measured) {
+                    let mut dropped_measurement = measured;
+                    // `mpp_enc_reenc_drop` reports the requested QP as the
+                    // dropped picture's quality and zero committed bits, not the
+                    // rejected hardware result.
+                    dropped_measurement.bits = 0;
+                    dropped_measurement.quality = quality_target;
+                    break (
+                        Vec::new(),
+                        Vec::new(),
+                        statistics,
+                        dropped_measurement,
+                        true,
+                    );
+                }
                 if let Some(next_quality) = model.reencode_quality(
                     frame,
                     bit_target,
@@ -1014,7 +1031,7 @@ impl Vepu580H264 {
                     continue;
                 }
             }
-            break (payload, slice_lengths, statistics, measured);
+            break (payload, slice_lengths, statistics, measured, false);
         };
 
         // SPS and PPS precede an IDR only; a P picture rides on the parameters it
@@ -1030,7 +1047,9 @@ impl Vepu580H264 {
             && self.config.gdr_refresh_length() > 0
             && state.index > 0
             && state.index % self.config.gop as usize == 0;
-        let headers = if state.is_idr {
+        let headers = if dropped {
+            Vec::new()
+        } else if state.is_idr {
             self.hdr_added = true;
             self.headers()?
         } else if sweep_open {
@@ -1052,6 +1071,12 @@ impl Vepu580H264 {
         let packets = output_packets(&headers, &payload, &slice_lengths)?;
         if let Some(model) = self.rc.as_mut() {
             model.end_with(frame, bit_target, measured);
+        }
+        if dropped {
+            // `mpp_enc_refs_rollback`: a dropped input does not advance the
+            // encoded sequence, frame number, POC or reference slot.
+            self.state = previous_state;
+            self.slot = previous_slot;
         }
         Ok(EncodedFrame {
             annex_b,
@@ -2300,6 +2325,10 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
         } else {
             0
         },
+        super_mode: config.super_mode,
+        super_i_thd: config.super_i_thd,
+        super_p_thd: config.super_p_thd,
+        rc_priority: config.rc_priority,
         hier_qp_enabled: config.hier_qp_enabled,
         hier_qp_delta: config.hier_qp_delta,
         hier_frame_num: config.hier_frame_num,

@@ -36,6 +36,7 @@ fn encode_h264(
     hier_qp: Option<([i32; 4], [i32; 4])>,
     smart_p_vi_len: Option<u32>,
     max_reencode_times: Option<u32>,
+    super_frame: Option<(u8, u32, u32, u8)>,
     deblock: Option<(u32, i32, i32)>,
     rois: Vec<h264_syntax::RoiRegion>,
     gdr: Option<(h264_syntax::GdrMode, u32)>,
@@ -81,6 +82,12 @@ fn encode_h264(
     }
     if let Some(times) = max_reencode_times {
         config.max_reencode_times = times;
+    }
+    if let Some((mode, i_thd, p_thd, priority)) = super_frame {
+        config.super_mode = mode;
+        config.super_i_thd = i_thd;
+        config.super_p_thd = p_thd;
+        config.rc_priority = priority;
     }
     if config.split_out & h264_syntax::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
         config.max_reencode_times = 0;
@@ -1015,7 +1022,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -1051,6 +1058,7 @@ fn main() {
         let mut hier_qp: Option<([i32; 4], [i32; 4])> = None;
         let mut smart_p_vi_len: Option<u32> = None;
         let mut max_reencode_times: Option<u32> = None;
+        let mut super_frame: Option<(u8, u32, u32, u8)> = None;
         let mut deblock: Option<(u32, i32, i32)> = None;
         // The `RoiRegionCfg` list `mpi_enc_test` adds per frame, in the same
         // add order.
@@ -1122,6 +1130,22 @@ fn main() {
                     Ok(times) => max_reencode_times = Some(times),
                     Err(_) => {
                         eprintln!("bad reenc; expected reenc:n");
+                        std::process::exit(2);
+                    }
+                }
+            } else if let Some(rest) = text.strip_prefix("super:") {
+                let parts: Result<Vec<u32>, _> = rest.split(':').map(str::parse::<u32>).collect();
+                match parts.as_deref() {
+                    Ok([mode, i_thd, p_thd, priority]) => {
+                        super_frame = Some((
+                            u8::try_from(*mode).unwrap_or(u8::MAX),
+                            *i_thd,
+                            *p_thd,
+                            u8::try_from(*priority).unwrap_or(u8::MAX),
+                        ))
+                    }
+                    _ => {
+                        eprintln!("bad super; expected super:mode:i_thd:p_thd:priority");
                         std::process::exit(2);
                     }
                 }
@@ -1227,6 +1251,7 @@ fn main() {
                             "unknown option {text}; expected \
                              [cbr:|vbr:|avbr:]target:min:max, \
                              hierq:d0:d1:d2:d3:n0:n1:n2:n3, smartp:vi_len, reenc:n, \
+                             super:mode:i_thd:p_thd:priority, \
                              dblk:disable:alpha:beta, \
                              roi:x:y:w:h:intra:abs:qp, gdr:row:|col:num \
                              or split:mb:|byte:arg"
@@ -1237,7 +1262,7 @@ fn main() {
             }
         }
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -1260,6 +1285,7 @@ fn main() {
             hier_qp,
             smart_p_vi_len,
             max_reencode_times,
+            super_frame,
             deblock,
             rois,
             gdr,

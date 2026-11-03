@@ -79,4 +79,41 @@ for entry in cbr:1 vbr:0 avbr:2; do
   printf 'PASS reencode-%s (%s, %d frames, %s hardware jobs)\n' \
     "$mode" "$SIZE" "$FRAMES" "$c_jobs"
 done
+
+# Super-frame re-encode at a high target: the thresholds, not rate drift,
+# force each oversized picture through the same-frame retry path.
+c=/tmp/super_reenc_c.264
+ours=/tmp/super_reenc_ours.264
+trace=/tmp/super_reenc.trace
+stats=/tmp/super_reenc_ours_stats.txt
+ssh "$BOARD" "sudo rm -f $c $ours $trace $stats &&
+        sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=$tracer \
+          MAX_REENC=1 SUPER_MODE=2 SUPER_I_THD=10000 SUPER_P_THD=1000 RC_PRIORITY=0 \
+          /tmp/rc_probe_reenc $fixture $c $SIZE $FRAMES 300000 250000 350000 1 30 0 \
+          >/dev/null 2>$trace &&
+        cd ~/rk-mpp-rs && sudo env RKMPP_STAT_DUMP=$stats \
+          ./target/release/rk-mpp-rs h264-enc $fixture $ours \
+          $SIZE 26 baseline $FRAMES 60 \
+          cbr:300000:250000:350000 reenc:1 super:2:10000:1000:0 >/dev/null &&
+        sudo chmod 644 $c $ours $trace $stats"
+if ! ssh "$BOARD" "test -s $c && test -s $ours"; then
+  printf 'FAIL super-reenc (one side produced no stream)\n'
+  exit 1
+fi
+scp -q "$BOARD":$c "$BOARD":$ours "$BOARD":$trace "$BOARD":$stats /tmp/ 2>/dev/null
+if ! python3 scripts/compare_streams.py "$c" "$ours"; then
+  printf 'FAIL super-reenc (bitstreams differ)\n'
+  exit 1
+fi
+if ! python3 scripts/stat_compare.py "$trace" "$stats"; then
+  printf 'FAIL super-reenc (STATUS windows differ)\n'
+  exit 1
+fi
+super_jobs=$(grep -c "read_complete\[1\]@16384" "$stats")
+if [ "$super_jobs" -ne 12 ]; then
+  printf 'FAIL super-reenc (expected 12 hardware jobs, got %s)\n' "$super_jobs"
+  exit 1
+fi
+printf 'PASS super-reenc (%s, %d frames, 12 hardware jobs)\n' "$SIZE" "$FRAMES"
+
 exit "$fail"

@@ -86,6 +86,14 @@ pub struct EncoderConfig {
     /// `rc:max_reenc_times`. The H.264 API defaults to one; `mpi_enc_test`
     /// explicitly disables it, while low-delay packet output also forces it off.
     pub max_reencode_times: u32,
+    /// `rc:super_mode`: 0 none, 1 drop, 2 re-encode. `super_*_thd` is the
+    /// measured bit size at which the picture becomes a super frame.
+    pub super_mode: u8,
+    pub super_i_thd: u32,
+    pub super_p_thd: u32,
+    /// `rc:priority`; frame-size-first applies the super-frame cap during
+    /// allocation, while bitrate-first keeps the ordinary target.
+    pub rc_priority: u8,
     /// The deblocking triple of `MppEncH264Cfg`, reaching the slice syntax the
     /// hardware emits: `disable_deblocking_filter_idc`,
     /// `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2`.
@@ -251,6 +259,10 @@ impl EncoderConfig {
             hier_frame_num: [0; 4],
             smart_vi_len: 0,
             max_reencode_times: 1,
+            super_mode: 0,
+            super_i_thd: 0,
+            super_p_thd: 0,
+            rc_priority: 0,
             deblock_disable: 0,
             deblock_offset_alpha: 0,
             deblock_offset_beta: 0,
@@ -400,6 +412,17 @@ impl EncoderConfig {
                 "SMART_P vi_len {} needs one full second and an IGOP longer than it",
                 self.smart_vi_len
             )));
+        }
+        if self.super_mode > 2 || self.rc_priority > 1 {
+            return Err(Error(format!(
+                "invalid super-frame mode {} or priority {}",
+                self.super_mode, self.rc_priority
+            )));
+        }
+        if self.super_i_thd > i32::MAX as u32 || self.super_p_thd > i32::MAX as u32 {
+            return Err(Error(
+                "super-frame threshold exceeds the C signed range".into(),
+            ));
         }
         Ok(())
     }

@@ -155,6 +155,27 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:level", level));
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:trans8x8", 0));
+    if (getenv("MAX_REENC"))
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:max_reenc_times",
+                                  atoi(getenv("MAX_REENC"))));
+    if (getenv("SUPER_MODE")) {
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:super_mode",
+                                  atoi(getenv("SUPER_MODE"))));
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:super_i_thd",
+                                  atoi(getenv("SUPER_I_THD"))));
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:super_p_thd",
+                                  atoi(getenv("SUPER_P_THD"))));
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:priority",
+                                  atoi(getenv("RC_PRIORITY"))));
+    }
+    if (getenv("DROP_MODE")) {
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:drop_mode",
+                                  atoi(getenv("DROP_MODE"))));
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:drop_thd",
+                                  atoi(getenv("DROP_THD"))));
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:drop_gap",
+                                  atoi(getenv("DROP_GAP"))));
+    }
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));
 
     if (getenv("SMART_VI_LEN")) {

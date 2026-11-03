@@ -1747,7 +1747,11 @@ in what order the evidence gets produced.
       `testsrc2` run forces one oversized IDR: CBR submits seven jobs for six
       pictures and QP moves 26 -> 46; VBR/AVBR submit eight jobs because a P
       picture is also retried. `board_h264_reencode_vs_mpp.sh` compares the final
-      streams and all STATUS windows for every job. Super-frame/drop/pskip and
+      streams and all STATUS windows for every job. Its `super-reenc` cell uses
+      `super_i_thd=10000`, `super_p_thd=1000` at a 300 kbps target, forcing 12
+      hardware jobs for six pictures; the final stream and every STATUS window are
+      identical. Super-frame NORMAL-drop already emits the same final stream, but
+      one transient STATUS window after a dropped picture differs, and PSKIP /
       multi-pass remain open under W1-17.
 - [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
       What follows is the record of how it was measured, kept because the

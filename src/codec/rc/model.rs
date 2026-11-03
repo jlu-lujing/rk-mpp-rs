@@ -100,6 +100,12 @@ pub struct Config {
     /// `rc:qp_vi`, the QP subtracted from a virtual-intra picture. MPP defaults
     /// it to two when it turns a caller-provided reference schedule into SMART_P.
     pub vi_quality_delta: i32,
+    /// `super_cfg.super_mode`, `super_i_thd`, `super_p_thd` and `rc_priority`.
+    /// Mode 1 drops an oversized picture; mode 2 asks for same-frame re-encode.
+    pub super_mode: u8,
+    pub super_i_thd: u32,
+    pub super_p_thd: u32,
+    pub rc_priority: u8,
     /// `rc:hier_qp_en` and its four layer controls. The reference walks P
     /// pictures through layers 4, 3, 2 and 1 according to
     /// `hier_frame_num`, then resets the cycle. `hier_qp_delta[layer - 1]` is
@@ -150,6 +156,10 @@ impl Config {
             mode: Mode::Cbr,
             smart_p_vgop: 0,
             vi_quality_delta: 0,
+            super_mode: 0,
+            super_i_thd: 0,
+            super_p_thd: 0,
+            rc_priority: 0,
             hier_qp_enabled: false,
             hier_qp_delta: [0; 4],
             hier_frame_num: [0; 4],
@@ -481,7 +491,12 @@ impl Model {
         } else {
             i64::from(i_scale) + 16 * (gop_len - 1) as i64
         };
-        (scaled / denominator) as i32
+        let mut alloc_bits = (scaled / denominator) as i32;
+        let super_threshold = self.super_threshold(frame);
+        if alloc_bits > super_threshold && self.cfg.rc_priority == 1 {
+            alloc_bits = super_threshold - (super_threshold >> 4);
+        }
+        alloc_bits
     }
 
     pub fn alloc(&mut self, frame: FrameType) -> i32 {
@@ -524,7 +539,22 @@ impl Model {
         } else {
             i64::from(i_scale) + 16 * (gop_len - 1) as i64
         };
-        (scaled / denominator) as i32
+        let mut alloc_bits = (scaled / denominator) as i32;
+        let super_threshold = self.super_threshold(frame);
+        if alloc_bits > super_threshold && self.cfg.rc_priority == 1 {
+            alloc_bits = super_threshold - (super_threshold >> 4);
+        }
+        alloc_bits
+    }
+
+    fn super_threshold(&self, frame: FrameType) -> i32 {
+        if self.cfg.super_mode == 0 {
+            i32::MAX
+        } else if frame == FrameType::Intra {
+            self.cfg.super_i_thd as i32
+        } else {
+            self.cfg.super_p_thd as i32
+        }
     }
 
     /// `calc_next_i_ratio`: after an intra picture, how much of a head start the
@@ -599,6 +629,17 @@ impl Model {
 
     /// `bits_model_update`: replace the promise with the measured size.
     pub fn update(&mut self, frame: FrameType, real_bit: i32) {
+        self.update_measured(
+            frame,
+            Measured {
+                bits: real_bit,
+                ..Measured::default()
+            },
+        );
+    }
+
+    fn update_measured(&mut self, frame: FrameType, measured: Measured) {
+        let real_bit = measured.bits;
         self.stat_rate.update(i32::from(real_bit != 0));
         self.stat_bits.update(real_bit);
         self.ins_bps = self.stat_bits.sum() / self.cfg.stats_time;
@@ -619,6 +660,7 @@ impl Model {
                 self.p_bit.update(real_bit);
                 self.p_sumbits = self.p_bit.sum().max(1);
                 self.p_scale = 16;
+                self.madi.update(measured.madi);
             }
             FrameType::InterVi => {
                 self.vi_bit.update(real_bit);
@@ -656,10 +698,10 @@ impl Model {
         self.qp_add = 0;
         if self.cfg.mode == Mode::Avbr {
             self.moving_judge_update(frame, measured.bits, measured.quality, measured.madp);
-            self.update(frame, measured.bits);
+            self.update_measured(frame, measured);
             self.bit_statics_update(measured.bits);
         } else {
-            self.update(frame, measured.bits);
+            self.update_measured(frame, measured);
         }
     }
 
@@ -1029,16 +1071,18 @@ impl Model {
         let last_ins_bps = self.stat_bits.sum() / stat_time;
         let ins_bps =
             (last_ins_bps * stat_time - self.stat_bits.pre_val(-1) + measured.bits) / stat_time;
-        let bit_thr = match frame {
+        let default_bit_thr = match frame {
             FrameType::Intra => 3 * bit_target / 2,
             _ => 3 * bit_target,
         };
-        if measured.bits <= bit_thr {
+        let super_thr = self.super_threshold(frame);
+        let super_frame = self.cfg.super_mode != 0 && measured.bits >= super_thr;
+        if !super_frame && measured.bits <= default_bit_thr {
             return None;
         }
 
         let target_bps = self.target_bps;
-        let must_reencode = if self.cfg.mode == Mode::Cbr {
+        let rate_reencode = if self.cfg.mode == Mode::Cbr {
             target_bps / 20 < ins_bps - last_ins_bps
                 && (target_bps + target_bps / 10 < ins_bps
                     || target_bps - target_bps / 10 > ins_bps)
@@ -1046,10 +1090,16 @@ impl Model {
             let max_bps = self.cfg.bps_max;
             max_bps - (max_bps >> 3) < ins_bps && target_bps / 20 < ins_bps - last_ins_bps
         };
+        let must_reencode = super_frame || rate_reencode;
         if !must_reencode {
             return None;
         }
 
+        let bit_thr = if self.cfg.super_mode != 0 && super_thr > 0 {
+            super_thr
+        } else {
+            default_bit_thr
+        };
         if measured.bits > bit_thr * 2 {
             self.qp_add += 3;
         } else if measured.bits > bit_thr * 3 / 2 {
@@ -1101,6 +1151,15 @@ impl Model {
         Some(clip(quality, self.cfg.quality_min, self.cfg.quality_max))
     }
 
+    /// `check_super_frame`'s drop branch. MPP never drops an intra picture;
+    /// otherwise a picture at or above the configured threshold is rolled back
+    /// to the previous reference state and produces no payload.
+    pub fn drops_super_frame(&self, frame: FrameType, measured: Measured) -> bool {
+        self.cfg.super_mode == 1
+            && frame != FrameType::Intra
+            && measured.bits >= self.super_threshold(frame)
+    }
+
     /// `reenc_calc_cbr_ratio`. The super-frame branch is absent because this
     /// driver has not enabled a super-frame policy.
     fn reencode_cbr_ratio(
@@ -1113,7 +1172,7 @@ impl Model {
     ) -> i32 {
         let real_bit = measured.bits;
         let target_bps = self.target_bps;
-        let mut water_level = self.stat_watl + real_bit - bit_target;
+        let mut water_level = self.stat_watl + real_bit - self.bit_per_frame;
         if water_level > self.watl_thrd {
             water_level = self.watl_thrd - self.bit_per_frame;
         }
@@ -1526,6 +1585,87 @@ mod tests {
             ),
             Some(48)
         );
+    }
+
+    #[test]
+    fn cbr_super_frame_reencodes_across_the_first_two_pictures() {
+        let mut cfg = Config::cbr(300_000, 250_000, 350_000, 60);
+        cfg.total_mb = 300;
+        cfg.super_mode = 2;
+        cfg.super_i_thd = 10_000;
+        cfg.super_p_thd = 1_000;
+        let mut model = Model::new(cfg);
+
+        let (target0, quality0) = model.start(FrameType::Intra);
+        assert_eq!((target0, quality0), (86_956, 26));
+        let retry0 = model.reencode_quality(
+            FrameType::Intra,
+            target0,
+            quality0,
+            Measured {
+                bits: 44_816,
+                quality: 23,
+                madi: 9,
+                madp: 0,
+            },
+            1,
+        );
+        assert_eq!(retry0, Some(25));
+        model.end_with(
+            FrameType::Intra,
+            target0,
+            Measured {
+                bits: 46_088,
+                quality: 22,
+                madi: 9,
+                madp: 0,
+            },
+        );
+
+        let (target1, quality1) = model.start(FrameType::InterP);
+        assert_eq!((target1, quality1), (9_005, 27));
+        let retry = model.reencode_quality(
+            FrameType::InterP,
+            target1,
+            quality1,
+            Measured {
+                bits: 13_488,
+                quality: 27,
+                madi: 9,
+                madp: 35,
+            },
+            1,
+        );
+        assert_eq!(
+            retry,
+            Some(28),
+            "next_ratio {}, cur_scale {}",
+            model.next_ratio(),
+            model.cur_scale_qp()
+        );
+    }
+
+    #[test]
+    fn super_frame_drop_never_drops_an_intra_picture() {
+        let mut cfg = Config::cbr(300_000, 250_000, 350_000, 60);
+        cfg.super_mode = 1;
+        cfg.super_i_thd = 10_000;
+        cfg.super_p_thd = 1_000;
+        let model = Model::new(cfg);
+        let oversized = Measured {
+            bits: 20_000,
+            ..Measured::default()
+        };
+
+        assert!(!model.drops_super_frame(FrameType::Intra, oversized));
+        assert!(model.drops_super_frame(FrameType::InterP, oversized));
+        assert!(!model.drops_super_frame(
+            FrameType::InterP,
+            Measured {
+                bits: 999,
+                ..Measured::default()
+            }
+        ));
     }
 
     /// VBR budgets from `bps_max` and steers towards `bps_target`. Both halves are

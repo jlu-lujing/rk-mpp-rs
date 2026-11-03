@@ -208,7 +208,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       - [x] 同帧重编：CBR/VBR/AVBR 的 `check_re_enc` 与 reencode ratio 已接入；
         低码率强制过码时 CBR 为 7 个硬件 job、VBR/AVBR 为 8 个，
         三种最终码流和逐 job STATUS 均与 C 相同。
-      - [ ] super-frame、drop/pskip、多 pass 与超发丢帧策略。
+      - [x] super-frame re-encode：阈值强制重编时三种 RC 均与 C 相同；
+        `super-reenc` 格为 12 个逐 STATUS 相同的硬件 job。
+      - [ ] drop/pskip 与多 pass：drop 的最终流已相同，但被丢弃帧后的一个
+        瞬时 STATUS 窗口仍有差异；pskip 与多 pass 未接入。
 - [x] W1-18 与 `mpi_enc_test` 的配置对齐：差异来自 harness 将
       `rc:qp_init=-1` 并把 general/intra QP 范围从库默认 `8..48` 放宽到
       `10..51`，不是 RC 模型差异。Rust 增加可配置 RC QP 范围；C probe 和
