@@ -40,7 +40,9 @@
 
 use super::h265e_regs as regs;
 use super::h265e_vepu580_template as template;
-use crate::codec::h265::encoder::{SliceSplit, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY};
+use crate::codec::h265::encoder::{
+    SliceSplit, SplitMode, SyntaxOptions, MPP_ENC_SPLIT_OUT_LOWDELAY,
+};
 use crate::service::RegOffsetInfo;
 
 pub const REFERENCE_WIDTH: usize = 320;
@@ -186,6 +188,7 @@ pub struct IdrJob {
     pub refresh: Option<RefreshJob>,
     /// `MppEncSliceSplit`: one slice per picture by default.
     pub split: SliceSplit,
+    pub syntax: SyntaxOptions,
     /// Static ROI base and QP table fds, or -1 when no ROI is configured.
     pub roi_fd: i32,
     pub roi_qp_fd: i32,
@@ -212,6 +215,7 @@ impl IdrJob {
             rc: None,
             refresh: None,
             split: SliceSplit::default(),
+            syntax: SyntaxOptions::default(),
             roi_fd: -1,
             roi_qp_fd: -1,
             input_fd: -1,
@@ -657,16 +661,47 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
                                                              // word the oracle writes as 0x00220d40 to 0x00222d40.
     file.set(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_DEPTH, 0)?; // diff_cu_qp_delta_depth
     file.set(&regs::H265_REG0238_SYNT_PPS_LST_MDFY_PRSNT_FLG, 1)?; // lists_modification
-                                                                   // loop_filter_across_tiles default is on (`!lpf_acs_tile_disable`).
-    file.set(&regs::H265_REG0238_SYNT_PPS_LPF_FLTR_ACRS_TIL, 1)?;
+    file.set(
+        &regs::H265_REG0238_SYNT_PPS_LP_FLTR_ACRS_SLI,
+        u32::from(job.syntax.loop_filter_across_slices),
+    )?;
+    file.set(&regs::H265_REG0238_SYNT_PPS_DBLK_FLTR_OVRD_EN, 0)?;
+    file.set(
+        &regs::H265_REG0238_SYNT_PPS_LPF_FLTR_ACRS_TIL,
+        u32::from(job.syntax.loop_filter_across_tiles),
+    )?;
 
     // reg0239 synt_sli0: I slice (type 2), merge flags from codec defaults.
     file.set(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE, 2)?; // I_SLICE
     file.set(&regs::H265_REG0239_SYNT_SLI0_MRG_UP_FLG, 1)?; // merge_cfg.merge_up_flag
     file.set(&regs::H265_REG0239_SYNT_SLI0_MRG_LFT_FLG, 1)?; // merge_cfg.merge_left_flag
+    file.set(
+        &regs::H265_REG0239_SYNT_SLI0_SLI_SAO_LUMA_FLG,
+        u32::from(!job.syntax.sao_luma_disable),
+    )?;
+    file.set(
+        &regs::H265_REG0239_SYNT_SLI0_SLI_SAO_CHRM_FLG,
+        u32::from(!job.syntax.sao_chroma_disable),
+    )?;
 
-    // reg0240 synt_sli1: no deblocking offsets by default, max_mrg_cnd 2.
+    // reg0240 synt_sli1: filter controls and max_mrg_cnd 2.
     file.set(&regs::H265_REG0240_SYNT_SLI1_MAX_MRG_CND, 2)?;
+    file.set(
+        &regs::H265_REG0240_SYNT_SLI1_SP_BETA_OFST_DIV2,
+        job.syntax.deblock_beta_offset_div2 as u32 & 0xf,
+    )?;
+    file.set(
+        &regs::H265_REG0240_SYNT_SLI1_SP_TC_OFST_DIV2,
+        job.syntax.deblock_tc_offset_div2 as u32 & 0xf,
+    )?;
+    // The PPS syntax carries the disable; the C slice object still leaves this
+    // register clear when `dblk_disable=1` (confirmed by a traced C job).
+    file.set(&regs::H265_REG0240_SYNT_SLI1_SP_DBLK_FLTR_DIS, 0)?;
+    file.set(&regs::H265_REG0240_SYNT_SLI1_DBLK_FLTR_OVRD_FLG, 0)?;
+    // The PPS carries `lpf_acs_sli_en`, but the C slice object leaves its own
+    // `m_LFCrossSliceBoundaryFlag` at zero; the traced register is zero even
+    // with the PPS option enabled.
+    file.set(&regs::H265_REG0240_SYNT_SLI1_SLI_LP_FLTR_ACRS_SLI, 0)?;
 
     // reg0241 synt_sli2: first picture, poc_lsb 0. Left 0.
 
@@ -975,6 +1010,56 @@ mod tests {
         assert_eq!(file.get(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE).unwrap(), 2);
         // Tiles off.
         assert_eq!(file.get(&regs::H265_REG0252_TILE_CFG_TILE_EN).unwrap(), 0);
+    }
+
+    #[test]
+    fn deblock_sao_and_loop_filter_options_reach_the_syntax_registers() {
+        let mut job = IdrJob::reference(26);
+        job.syntax = SyntaxOptions {
+            sao_luma_disable: false,
+            sao_chroma_disable: true,
+            deblock_disable: false,
+            deblock_beta_offset_div2: 3,
+            deblock_tc_offset_div2: -2,
+            loop_filter_across_slices: true,
+            loop_filter_across_tiles: false,
+        };
+        let file = build_registers(&job).unwrap();
+        assert_eq!(
+            file.get(&regs::H265_REG0239_SYNT_SLI0_SLI_SAO_LUMA_FLG)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0239_SYNT_SLI0_SLI_SAO_CHRM_FLG)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0240_SYNT_SLI1_SP_BETA_OFST_DIV2)
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0240_SYNT_SLI1_SP_TC_OFST_DIV2)
+                .unwrap(),
+            14
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0240_SYNT_SLI1_SLI_LP_FLTR_ACRS_SLI)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0238_SYNT_PPS_LP_FLTR_ACRS_SLI)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0238_SYNT_PPS_LPF_FLTR_ACRS_TIL)
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

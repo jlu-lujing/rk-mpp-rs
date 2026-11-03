@@ -255,6 +255,27 @@ int main(int argc, char **argv)
         CHECK(mpp_enc_cfg_set_s32(cfg, "split:arg", split_arg));
         CHECK(mpp_enc_cfg_set_s32(cfg, "split:out", split_out));
     }
+    if (getenv("DBLK_DISABLE"))
+        CHECK(mpp_enc_cfg_set_u32(cfg, "h265:dblk_disable",
+                                  atoi(getenv("DBLK_DISABLE"))));
+    if (getenv("DBLK_BETA"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h265:dblk_alpha",
+                                  atoi(getenv("DBLK_BETA"))));
+    if (getenv("DBLK_TC"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h265:dblk_beta",
+                                  atoi(getenv("DBLK_TC"))));
+    if (getenv("SAO_LUMA_DISABLE"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h265:sao_luma_disable",
+                                  atoi(getenv("SAO_LUMA_DISABLE"))));
+    if (getenv("SAO_CHROMA_DISABLE"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h265:sao_chroma_disable",
+                                  atoi(getenv("SAO_CHROMA_DISABLE"))));
+    if (getenv("LPF_ACS_SLI"))
+        CHECK(mpp_enc_cfg_set_u32(cfg, "h265:lpf_acs_sli_en",
+                                  atoi(getenv("LPF_ACS_SLI"))));
+    if (getenv("LPF_ACS_TILE_DISABLE"))
+        CHECK(mpp_enc_cfg_set_u32(cfg, "h265:lpf_acs_tile_disable",
+                                  atoi(getenv("LPF_ACS_TILE_DISABLE"))));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denom", 1));

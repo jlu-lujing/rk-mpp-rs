@@ -12,7 +12,7 @@
 //! header length), 165/166 the reference, 167..170 the motion-vector and display
 //! thumbs, 171 the motion-info buffer, and 172..175 the bitstream buffer.
 
-use crate::codec::h265::encoder::{SliceSplit, MPP_ENC_SPLIT_OUT_LOWDELAY};
+use crate::codec::h265::encoder::{SliceSplit, SyntaxOptions, MPP_ENC_SPLIT_OUT_LOWDELAY};
 use crate::codec::h265::roi::{build_tables as build_roi_tables, RoiRegion};
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
@@ -125,6 +125,7 @@ pub struct Vepu580H265 {
     split: SliceSplit,
     /// Static ROI base and QP tables, allocated when the first frame is encoded.
     roi: Option<(DmaBuf, DmaBuf)>,
+    syntax: SyntaxOptions,
     service: MppService,
     width: usize,
     height: usize,
@@ -229,6 +230,7 @@ impl Vepu580H265 {
             last_measured: None,
             split: SliceSplit::default(),
             roi: None,
+            syntax: SyntaxOptions::default(),
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
             output: DmaBuf::alloc("system", output_size, false)
@@ -375,6 +377,10 @@ impl Vepu580H265 {
             .map_err(|error| format!("H.265 slice split: {error}"))?;
         self.split = split;
         Ok(())
+    }
+
+    pub fn set_syntax_options(&mut self, syntax: SyntaxOptions) {
+        self.syntax = syntax;
     }
 
     /// Configure the same regions on every picture, like the reference harness's
@@ -553,6 +559,7 @@ impl Vepu580H265 {
             rc,
             refresh: refresh_job,
             split: self.split,
+            syntax: self.syntax,
             roi_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.0.fd()),
             roi_qp_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.1.fd()),
             input_fd: self.input.fd(),
@@ -699,6 +706,7 @@ impl Vepu580H265 {
         // of the opening IDR.
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.long_term_refs = self.long_term;
+        config.apply_syntax_options(self.syntax);
         let headers = if recovery_prefix {
             let mut out = crate::codec::h265::encoder::build_headers(&config)
                 .map_err(|e| format!("H.265 recovery headers: {e:?}"))?;

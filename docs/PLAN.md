@@ -257,8 +257,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       显式拒绝非 8-bit，`board_h265_10bit_probe.sh` 固化这条拒绝证据。
 - [x] W2-9 GDR / intra refresh —— C ref-cfg oracle 已建立；
       320x240/640x480 × row/column 为 4/4 整条逐字节。
-- [~] W2-9b ROI/QP map 已闭合（相对/绝对 QP、force-intra、多 region、
-      640x480，`board_h265_roi_vs_mpp.sh` 4/4）；deblock/SAO 细调未做
+- [x] W2-9b ROI/QP map 已闭合（相对/绝对 QP、force-intra、多 region、
+      640x480，`board_h265_roi_vs_mpp.sh` 4/4）；deblock beta/tc、deblock
+      disable、SAO luma/chroma disable 与 loop-filter 选项已接入 PPS/HAL，
+      `board_h265_syntax_tune_vs_mpp.sh` 4/4，均为 7 NAL 逐字节相同。
 - [x] W2-10 吞吐测量 —— `board_bench_h265_encode_vs_mpp.sh` 用官方
       `mpi_enc_test` 与 Rust 交错采样 5 轮：320x240 / 640x480 / 720p Rust
       分别快 15.8% / 3.6% / 13.8%；1080p 为 C 147 ms、Rust 149 ms，

@@ -261,6 +261,7 @@ fn encode_h265_headers(
         rc: None,
         refresh: None,
         split: h265_syntax::SliceSplit::default(),
+        syntax: h265_syntax::SyntaxOptions::default(),
         roi_fd: -1,
         roi_qp_fd: -1,
         input_fd: -1,
@@ -303,6 +304,41 @@ fn parse_h265_split_option(
         split.out = value
             .parse()
             .map_err(|_| format!("invalid H.265 splitout value {value}"))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn parse_h265_syntax_option(
+    text: &str,
+    options: &mut h265_syntax::SyntaxOptions,
+) -> Result<bool, String> {
+    if let Some(rest) = text.strip_prefix("dblk:") {
+        let parts: Vec<i32> = rest.split(':').filter_map(|v| v.parse().ok()).collect();
+        let [disable, beta, tc] = parts.as_slice() else {
+            return Err("expected dblk:disable:beta:tc".into());
+        };
+        options.deblock_disable = *disable != 0;
+        options.deblock_beta_offset_div2 = *beta;
+        options.deblock_tc_offset_div2 = *tc;
+        return Ok(true);
+    }
+    if let Some(rest) = text.strip_prefix("sao:") {
+        let parts: Vec<u32> = rest.split(':').filter_map(|v| v.parse().ok()).collect();
+        let [luma_disable, chroma_disable] = parts.as_slice() else {
+            return Err("expected sao:luma_disable:chroma_disable".into());
+        };
+        options.sao_luma_disable = *luma_disable != 0;
+        options.sao_chroma_disable = *chroma_disable != 0;
+        return Ok(true);
+    }
+    if let Some(rest) = text.strip_prefix("lpf:") {
+        let parts: Vec<u32> = rest.split(':').filter_map(|v| v.parse().ok()).collect();
+        let [across_slices, disable_tiles] = parts.as_slice() else {
+            return Err("expected lpf:across_slices:disable_tiles".into());
+        };
+        options.loop_filter_across_slices = *across_slices != 0;
+        options.loop_filter_across_tiles = *disable_tiles == 0;
         return Ok(true);
     }
     Ok(false)
@@ -1408,6 +1444,17 @@ fn main() {
                 qp_delta_row_i: 2,
             })
         });
+        let mut syntax = h265_syntax::SyntaxOptions::default();
+        for text in args.iter().skip(5) {
+            match parse_h265_syntax_option(text, &mut syntax) {
+                Ok(true) => {}
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            }
+        }
         let job = h265e::IdrJob {
             width,
             height,
@@ -1419,6 +1466,7 @@ fn main() {
             rc,
             refresh: None,
             split: h265_syntax::SliceSplit::default(),
+            syntax,
             roi_fd: -1,
             roi_qp_fd: -1,
             input_fd: -1,
@@ -1452,7 +1500,7 @@ fn main() {
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
-        let usage = "usage: rk-mpp-rs h265-idr <in.nv12> <out.265> <width> <height> [qp] [roi:x:y:w:h:intra:abs:qp]... [split:ctu:|split:byte:arg] [splitout:lowdelay]";
+        let usage = "usage: rk-mpp-rs h265-idr <in.nv12> <out.265> <width> <height> [qp] [roi:x:y:w:h:intra:abs:qp]... [split:ctu:|split:byte:arg] [splitout:lowdelay] [dblk:disable:beta:tc] [sao:luma_disable:chroma_disable] [lpf:across_slices:disable_tiles]";
         let (Some(width), Some(height)) = (width, height) else {
             eprintln!("{usage}");
             std::process::exit(2);
@@ -1466,8 +1514,17 @@ fn main() {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(26);
         let mut split = h265_syntax::SliceSplit::default();
+        let mut syntax = h265_syntax::SyntaxOptions::default();
         let mut rois = Vec::new();
         for text in args.iter().skip(7) {
+            match parse_h265_syntax_option(text, &mut syntax) {
+                Ok(true) => continue,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+                Ok(false) => {}
+            }
             match parse_h265_split_option(text, &mut split) {
                 Ok(true) => {}
                 Err(error) => {
@@ -1496,6 +1553,7 @@ fn main() {
             }
         };
         let result = h265e_session::Vepu580H265::open(width, height, qp).and_then(|mut encoder| {
+            encoder.set_syntax_options(syntax);
             encoder.set_slice_split(split)?;
             encoder.set_roi_regions(&rois)?;
             encoder.encode_idr_packets(&input)
@@ -1528,7 +1586,7 @@ fn main() {
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
-        let usage = "usage: rk-mpp-rs h265-gop <in.nv12> <out.265> <width> <height> [frames] [qp] [row:|col:num] [shortterm] [roi:x:y:w:h:intra:abs:qp]... [split:ctu:|split:byte:arg] [splitout:lowdelay]";
+        let usage = "usage: rk-mpp-rs h265-gop <in.nv12> <out.265> <width> <height> [frames] [qp] [row:|col:num] [shortterm] [roi:x:y:w:h:intra:abs:qp]... [split:ctu:|split:byte:arg] [splitout:lowdelay] [dblk:disable:beta:tc] [sao:luma_disable:chroma_disable] [lpf:across_slices:disable_tiles]";
         let (Some(width), Some(height)) = (width, height) else {
             eprintln!("{usage}");
             std::process::exit(2);
@@ -1562,10 +1620,19 @@ fn main() {
             std::process::exit(1);
         }
         let mut split = h265_syntax::SliceSplit::default();
+        let mut syntax = h265_syntax::SyntaxOptions::default();
         let mut refresh = None;
         let mut short_term = false;
         let mut rois = Vec::new();
         for text in args.iter().skip(8) {
+            match parse_h265_syntax_option(text, &mut syntax) {
+                Ok(true) => continue,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+                Ok(false) => {}
+            }
             match parse_h265_split_option(text, &mut split) {
                 Ok(true) => continue,
                 Err(error) => {
@@ -1595,6 +1662,7 @@ fn main() {
             h265e_session::Vepu580H265::open_gop(width, height, qp)
         };
         let result = opened.and_then(|mut encoder| {
+            encoder.set_syntax_options(syntax);
             if let Ok(gop) = std::env::var("H265_GOP") {
                 let gop = gop
                     .parse::<u32>()
@@ -1654,7 +1722,7 @@ fn main() {
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
-        let usage = "usage: rk-mpp-rs h265-gop-rc <in.nv12> <out.265> <w> <h> <qp:bits,...> [min_qp] [max_qp]";
+        let usage = "usage: rk-mpp-rs h265-gop-rc <in.nv12> <out.265> <w> <h> <qp:bits,...> [min_qp] [max_qp] [bps:min:max] [init_qp] [dblk:disable:beta:tc] [sao:luma_disable:chroma_disable] [lpf:across_slices:disable_tiles]";
         let (Some(width), Some(height)) = (width, height) else {
             eprintln!("{usage}");
             std::process::exit(2);
@@ -1704,8 +1772,23 @@ fn main() {
                 None
             }
         });
+        let mut syntax = h265_syntax::SyntaxOptions::default();
+        for text in args.iter().skip(11) {
+            match parse_h265_syntax_option(text, &mut syntax) {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!("unknown H.265 option {text}");
+                    std::process::exit(2);
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            }
+        }
         let result =
             h265e_session::Vepu580H265::open_gop(width, height, max_qp).and_then(|mut encoder| {
+                encoder.set_syntax_options(syntax);
                 if let Some((target, min, max)) = bps {
                     encoder.set_rate_control_sei(h265e_session::RcSei {
                         target,
@@ -1763,7 +1846,7 @@ fn main() {
             "avbr" => h265e_session::RcMode::Avbr,
             _ => h265e_session::RcMode::Cbr,
         };
-        let usage = "usage: rk-mpp-rs h265-rate <in.nv12> <out.265> <w> <h> <frames> <bps:min:max> [init_qp] [qp_min] [qp_max] [cbr|vbr|avbr] [split:ctu:|split:byte:arg] [splitout:lowdelay]";
+        let usage = "usage: rk-mpp-rs h265-rate <in.nv12> <out.265> <w> <h> <frames> <bps:min:max> [init_qp] [qp_min] [qp_max] [cbr|vbr|avbr] [split:ctu:|split:byte:arg] [splitout:lowdelay] [dblk:disable:beta:tc] [sao:luma_disable:chroma_disable] [lpf:across_slices:disable_tiles]";
         let (Some(width), Some(height), Some(frames), Some((target, min, max))) =
             (width, height, frames, bps)
         else {
@@ -1787,7 +1870,16 @@ fn main() {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(51);
         let mut split = h265_syntax::SliceSplit::default();
+        let mut syntax = h265_syntax::SyntaxOptions::default();
         for text in args.iter().skip(12) {
+            match parse_h265_syntax_option(text, &mut syntax) {
+                Ok(true) => continue,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+                Ok(false) => {}
+            }
             match parse_h265_split_option(text, &mut split) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -1816,6 +1908,7 @@ fn main() {
             width, height, mode, target, min, max, init_qp, qp_min, qp_max,
         )
         .and_then(|mut encoder| {
+            encoder.set_syntax_options(syntax);
             encoder.set_slice_split(split)?;
             let mut out = Vec::new();
             let mut packets = 0;

@@ -41,6 +41,35 @@ pub const NAL_VPS: u8 = 32;
 pub const NAL_SPS: u8 = 33;
 /// PPS NAL unit type (`NAL_PPS`).
 pub const NAL_PPS: u8 = 34;
+
+/// H.265 slice/filter controls that reach both the parameter sets and the
+/// VEPU580 syntax registers. The C configuration exposes beta/tc under the
+/// historical names `dblk_alpha` and `dblk_beta`; this type uses their actual
+/// HEVC meanings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyntaxOptions {
+    pub sao_luma_disable: bool,
+    pub sao_chroma_disable: bool,
+    pub deblock_disable: bool,
+    pub deblock_beta_offset_div2: i32,
+    pub deblock_tc_offset_div2: i32,
+    pub loop_filter_across_slices: bool,
+    pub loop_filter_across_tiles: bool,
+}
+
+impl Default for SyntaxOptions {
+    fn default() -> Self {
+        Self {
+            sao_luma_disable: false,
+            sao_chroma_disable: false,
+            deblock_disable: false,
+            deblock_beta_offset_div2: 0,
+            deblock_tc_offset_div2: 0,
+            loop_filter_across_slices: false,
+            loop_filter_across_tiles: true,
+        }
+    }
+}
 /// An IDR picture with leading pictures (`NAL_IDR_W_RADL`), the NAL type the
 /// hardware stamps on a fixed-QP IDR access unit.
 pub const NAL_IDR_W_RADL: u8 = 19;
@@ -113,6 +142,10 @@ pub struct EncoderConfig {
     pub cabac_init_present: bool,
     /// `pps->m_LFCrossSliceBoundaryFlag` = `codec->lpf_acs_sli_en`.
     pub loop_filter_across_slices: bool,
+    pub loop_filter_across_tiles: bool,
+    pub sao_luma_disable: bool,
+    pub sao_chroma_disable: bool,
+    pub slice_deblocking_filter_disabled: bool,
     /// `!codec->dblk_cfg.slice_deblocking_filter_disabled_flag`.
     pub deblocking_filter_control_present: bool,
     pub deblock_beta_offset_div2: i32,
@@ -171,6 +204,10 @@ impl EncoderConfig {
             cb_qp_offset: 0,
             cabac_init_present: true,
             loop_filter_across_slices: false,
+            loop_filter_across_tiles: true,
+            sao_luma_disable: false,
+            sao_chroma_disable: false,
+            slice_deblocking_filter_disabled: false,
             deblocking_filter_control_present: true,
             deblock_beta_offset_div2: 0,
             deblock_tc_offset_div2: 0,
@@ -213,6 +250,17 @@ impl EncoderConfig {
             ));
         }
         Ok(())
+    }
+
+    pub fn apply_syntax_options(&mut self, options: SyntaxOptions) {
+        self.sao_luma_disable = options.sao_luma_disable;
+        self.sao_chroma_disable = options.sao_chroma_disable;
+        self.slice_deblocking_filter_disabled = options.deblock_disable;
+        self.deblocking_filter_control_present = !options.deblock_disable;
+        self.deblock_beta_offset_div2 = options.deblock_beta_offset_div2;
+        self.deblock_tc_offset_div2 = options.deblock_tc_offset_div2;
+        self.loop_filter_across_slices = options.loop_filter_across_slices;
+        self.loop_filter_across_tiles = options.loop_filter_across_tiles;
     }
 
     /// `h265e_set_sps`' derivation of the coding-tree geometry from `max_cu_size`.
@@ -525,9 +573,11 @@ pub fn build_pps(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
     w.put_bits(u32::from(config.deblocking_filter_control_present), 1);
     if config.deblocking_filter_control_present {
         w.put_bits(0, 1); // deblocking_filter_override_enabled_flag
-        w.put_bits(0, 1); // pps_disable_deblocking_filter_flag
-        w.put_se(config.deblock_beta_offset_div2); // pps_beta_offset_div2
-        w.put_se(config.deblock_tc_offset_div2); // pps_tc_offset_div2
+        w.put_bits(u32::from(config.slice_deblocking_filter_disabled), 1);
+        if !config.slice_deblocking_filter_disabled {
+            w.put_se(config.deblock_beta_offset_div2); // pps_beta_offset_div2
+            w.put_se(config.deblock_tc_offset_div2); // pps_tc_offset_div2
+        }
     }
     w.put_bits(0, 1); // pps_scaling_list_data_present_flag
     w.put_bits(1, 1); // lists_modification_present_flag (h265e_set_pps sets it to 1)
@@ -972,6 +1022,38 @@ mod tests {
             assert!(parsed.cu_qp_delta_enabled, "{mode:?}");
             assert_eq!(parsed.diff_cu_qp_delta_depth, 0, "{mode:?}");
         }
+    }
+
+    #[test]
+    fn deblock_and_sao_options_reach_the_pps() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.apply_syntax_options(SyntaxOptions {
+            deblock_disable: false,
+            deblock_beta_offset_div2: 3,
+            deblock_tc_offset_div2: -2,
+            loop_filter_across_slices: true,
+            loop_filter_across_tiles: false,
+            sao_luma_disable: false,
+            sao_chroma_disable: true,
+        });
+        let pps = build_pps(&config).unwrap();
+        let parsed = parser::parse_pps(&parser::ebsp_to_rbsp(&pps[6..])).unwrap();
+        assert!(parsed.loop_filter_across_slices);
+        assert!(parsed.deblocking_filter_control_present);
+        assert!(!parsed.pps_deblocking_filter_disabled);
+        assert_eq!(parsed.beta_offset_div2, 3);
+        assert_eq!(parsed.tc_offset_div2, -2);
+
+        let mut off = EncoderConfig::new(320, 240);
+        off.apply_syntax_options(SyntaxOptions {
+            deblock_disable: true,
+            ..SyntaxOptions::default()
+        });
+        let pps = build_pps(&off).unwrap();
+        let parsed = parser::parse_pps(&parser::ebsp_to_rbsp(&pps[6..])).unwrap();
+        assert!(!parsed.deblocking_filter_control_present);
+        assert_eq!(parsed.beta_offset_div2, 0);
+        assert_eq!(parsed.tc_offset_div2, 0);
     }
 
     #[test]
