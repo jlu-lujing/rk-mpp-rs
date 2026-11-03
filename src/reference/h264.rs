@@ -395,7 +395,21 @@ pub enum CavlcScan8x8 {
     Field,
     FrameQ0,
     FieldQ0,
+    CabacFrame,
+    CabacField,
 }
+
+const CABAC_FRAME_8X8: [usize; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+];
+
+const CABAC_FIELD_8X8: [usize; 64] = [
+    0, 8, 16, 1, 9, 24, 32, 17, 2, 25, 40, 48, 56, 33, 10, 3, 18, 41, 49, 57, 26, 11, 4, 19, 34,
+    42, 50, 58, 27, 12, 5, 20, 35, 43, 51, 59, 28, 13, 6, 21, 36, 44, 52, 60, 29, 14, 22, 37, 45,
+    53, 61, 30, 7, 15, 38, 46, 54, 62, 23, 31, 39, 47, 55, 63,
+];
 
 /// CAVLC 8x8 scan order to raster position. This is deliberately not an
 /// ordinary 8x8 zigzag: each group of four positions follows one 4x4
@@ -437,6 +451,8 @@ pub fn inverse_scan_8x8_cavlc(scan: [i32; 64], layout: CavlcScan8x8) -> [i32; 64
         CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
         CavlcScan8x8::FrameQ0 => &ZIGZAG_8X8_CAVLC_Q0,
         CavlcScan8x8::FieldQ0 => &FIELD_8X8_CAVLC_Q0,
+        CavlcScan8x8::CabacFrame => &CABAC_FRAME_8X8,
+        CavlcScan8x8::CabacField => &CABAC_FIELD_8X8,
     };
     let mut raster = [0i32; 64];
     for (position, value) in scan.into_iter().enumerate() {
@@ -494,6 +510,8 @@ pub fn dequant_8x8_cavlc(
     let table = match layout {
         CavlcScan8x8::Frame => &ZIGZAG_8X8_CAVLC,
         CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
+        CavlcScan8x8::CabacFrame => &CABAC_FRAME_8X8,
+        CavlcScan8x8::CabacField => &CABAC_FIELD_8X8,
         CavlcScan8x8::FrameQ0 | CavlcScan8x8::FieldQ0 => {
             return Err("transform-bypass q0 requires lossless reconstruction")
         }
@@ -980,6 +998,16 @@ mod tests {
     }
 
     #[test]
+    fn cabac_8x8_scan_uses_the_direct_frame_zigzag() {
+        let mut scan = [0i32; 64];
+        scan[1] = 7;
+        scan[2] = 11;
+        let raster = inverse_scan_8x8_cavlc(scan, CavlcScan8x8::CabacFrame);
+        assert_eq!(raster[1], 7);
+        assert_eq!(raster[8], 11);
+    }
+
+    #[test]
     fn dequant_4x4_keeps_custom_scaling_in_raster_order() {
         let levels: [i32; 16] = std::array::from_fn(|position| position as i32 - 8);
         let scaling: [u8; 16] = std::array::from_fn(|position| position as u8 + 1);
@@ -1084,6 +1112,8 @@ mod tests {
         let table = match layout {
             CavlcScan8x8::Frame => &ZIGZAG_8X8_CAVLC,
             CavlcScan8x8::Field => &FIELD_8X8_CAVLC,
+            CavlcScan8x8::CabacFrame => &CABAC_FRAME_8X8,
+            CavlcScan8x8::CabacField => &CABAC_FIELD_8X8,
             CavlcScan8x8::FrameQ0 | CavlcScan8x8::FieldQ0 => unreachable!("test uses qscale"),
         };
         let mut output = [0i32; 64];

@@ -1,8 +1,8 @@
 //! H.264 CABAC I-slice reconstruction.
 //!
-//! The current gates cover single-macroblock I16x16 and I4x4 syntax,
+//! The current gates cover single-macroblock I16x16, I4x4 and I8x8 syntax,
 //! two-macroblock propagation along one slice row, and I16x16 propagation
-//! across multiple rows. I4x4 multi-macroblock and 8x8 transforms remain open.
+//! across multiple rows. I4x4/I8x8 multi-macroblock propagation remains open.
 
 use std::fmt;
 
@@ -98,25 +98,19 @@ pub fn decode_cabac_i_slice(
     let mut last_qscale_diff = 0;
 
     let (kind, luma_prediction_modes, mut cbp) = if decoder.decode_bin(&mut contexts[3]) == 0 {
-        let mut modes = vec![0u8; 16];
-        for block in I4X4_BLOCK_ORDER {
-            let row = block / 4;
-            let column = block % 4;
-            let left = column.checked_sub(1).map(|left| modes[row * 4 + left]);
-            let top = row.checked_sub(1).map(|top| modes[top * 4 + column]);
-            let predicted = predict_intra_mode(left, top);
-            let mode = if decoder.decode_bin(&mut contexts[68]) != 0 {
-                predicted
-            } else {
-                let bit0 = decoder.decode_bin(&mut contexts[69]) as u8;
-                let bit1 = decoder.decode_bin(&mut contexts[69]) as u8;
-                let bit2 = decoder.decode_bin(&mut contexts[69]) as u8;
-                let remainder = u32::from(bit0 | (bit1 << 1) | (bit2 << 2));
-                (remainder + u32::from(remainder >= u32::from(predicted))) as u8
-            };
-            modes[block] = mode;
-        }
-        (IntraMacroblockKind::I4x4, modes, 0)
+        let transform_8x8 = pps.transform_8x8 && decoder.decode_bin(&mut contexts[399]) != 0;
+        let modes = decode_cabac_luma_modes(
+            &mut decoder,
+            &mut contexts,
+            transform_8x8,
+            super::h264_mb::IntraModeNeighbors::unavailable(),
+        );
+        let kind = if transform_8x8 {
+            IntraMacroblockKind::I8x8
+        } else {
+            IntraMacroblockKind::I4x4
+        };
+        (kind, modes, 0)
     } else {
         if decoder.decode_terminate() {
             return Err(H264CabacError::Unsupported("I_PCM macroblock"));
@@ -158,7 +152,7 @@ pub fn decode_cabac_i_slice(
     let chroma_prediction_mode =
         check_chroma_prediction_mode(decoded_chroma_prediction_mode, false, false);
 
-    if kind == IntraMacroblockKind::I4x4 {
+    if matches!(kind, IntraMacroblockKind::I4x4 | IntraMacroblockKind::I8x8) {
         let mut decoded_cbp = 0u8;
         decoded_cbp |= decoder.decode_bin(&mut contexts[73]) as u8;
         let context = usize::from(decoded_cbp & 1 == 0);
@@ -252,11 +246,24 @@ pub fn decode_cabac_i_slice(
                 }
             }
         }
+    } else if kind == IntraMacroblockKind::I8x8 {
+        for group in 0..4 {
+            if cbp & (1 << group) == 0 {
+                continue;
+            }
+            let block_residual = decode_cabac_residual_8x8(&mut decoder, &mut contexts)?;
+            set_luma8_non_zero(
+                &mut residual.luma_non_zero,
+                group,
+                block_residual.total_coeff[0] as u8,
+            );
+            residual.luma_8x8[group] = Some(block_residual);
+        }
     }
 
     if matches!(
         kind,
-        IntraMacroblockKind::I16x16 { .. } | IntraMacroblockKind::I4x4
+        IntraMacroblockKind::I16x16 { .. } | IntraMacroblockKind::I4x4 | IntraMacroblockKind::I8x8
     ) && cbp & 0x30 != 0
         && context.chroma_format_idc == 1
     {
@@ -307,7 +314,11 @@ pub fn decode_cabac_i_slice(
         bit_depth_chroma: context.bit_depth_chroma,
         transform_bypass: false,
         scan4: super::h264::CavlcScan4x4::Frame,
-        scan8: super::h264::CavlcScan8x8::Frame,
+        scan8: if slice.field_pic {
+            super::h264::CavlcScan8x8::CabacField
+        } else {
+            super::h264::CavlcScan8x8::CabacFrame
+        },
         luma_4x4_scaling: None,
         luma_8x8_scaling: None,
         chroma_4x4_scaling: [None, None],
@@ -780,7 +791,7 @@ fn add_cabac_qp(qp: i32, delta: i32, max_qp: i32) -> Result<i32, H264CabacError>
     Ok(value)
 }
 
-fn init_i_contexts(slice_qp: i32) -> [Context; 276] {
+fn init_i_contexts(slice_qp: i32) -> [Context; 1024] {
     const HEAD: [[i8; 2]; 11] = [
         [20, -15],
         [2, 54],
@@ -1016,11 +1027,56 @@ fn init_i_contexts(slice_qp: i32) -> [Context; 276] {
         [-13, 90],
         [-14, 97],
     ];
-    let mut init = [[0i8; 2]; 276];
+    const I8X8_FLAG: [[i8; 2]; 3] = [[31, 21], [31, 31], [25, 50]];
+    const I8X8_ABSOLUTE: [[i8; 2]; 10] = [
+        [-3, 75],
+        [-1, 23],
+        [1, 34],
+        [1, 43],
+        [0, 54],
+        [-2, 55],
+        [0, 61],
+        [1, 64],
+        [0, 68],
+        [-9, 92],
+    ];
+    const I8X8_SIGNIFICANT: [[i8; 2]; 15] = [
+        [-17, 120],
+        [-20, 112],
+        [-18, 114],
+        [-11, 85],
+        [-15, 92],
+        [-14, 89],
+        [-26, 71],
+        [-15, 81],
+        [-14, 80],
+        [0, 68],
+        [-14, 70],
+        [-24, 56],
+        [-23, 68],
+        [-24, 50],
+        [-11, 74],
+    ];
+    const I8X8_LAST: [[i8; 2]; 9] = [
+        [23, -13],
+        [26, -13],
+        [40, -15],
+        [49, -14],
+        [44, 3],
+        [45, 6],
+        [44, 34],
+        [33, 54],
+        [19, 82],
+    ];
+    let mut init = [[0i8; 2]; 1024];
     init[..HEAD.len()].copy_from_slice(&HEAD);
     init[60..86].copy_from_slice(&TAIL);
     init[86..105].copy_from_slice(&CODED_BLOCK_FLAG);
     init[105..276].copy_from_slice(&RESIDUAL);
+    init[399..402].copy_from_slice(&I8X8_FLAG);
+    init[426..436].copy_from_slice(&I8X8_ABSOLUTE);
+    init[402..417].copy_from_slice(&I8X8_SIGNIFICANT);
+    init[417..426].copy_from_slice(&I8X8_LAST);
     std::array::from_fn(|index| {
         let [m, n] = init[index];
         let mut pre = 2 * (((i32::from(m) * slice_qp) >> 4) + i32::from(n)) - 127;
@@ -1067,6 +1123,96 @@ fn decode_cabac_block(
     let mut residual = decode_cabac_residual(decoder, contexts, category, max_coefficient)?;
     residual.bits_consumed = decoder.bit_pos() - start;
     Ok(Some(residual))
+}
+
+fn decode_cabac_residual_8x8(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+) -> Result<super::h264_cavlc::Cavlc8x8Residual, H264CabacError> {
+    const SIGNIFICANT_OFFSET: [usize; 63] = [
+        0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5, 4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9, 10, 9,
+        8, 7, 7, 6, 11, 12, 13, 11, 6, 7, 8, 9, 14, 10, 9, 8, 6, 11, 12, 13, 11, 6, 9, 14, 10, 9,
+        11, 12, 13, 11, 14, 10, 12,
+    ];
+    const LAST_OFFSET: [usize; 63] = [
+        0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+        2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7,
+        8, 8, 8,
+    ];
+    const LEVEL_ONE_CONTEXT: [usize; 8] = [1, 2, 3, 4, 0, 0, 0, 0];
+    const LEVEL_GT_ONE_CONTEXT: [usize; 8] = [5, 5, 5, 5, 6, 7, 8, 9];
+    const LEVEL_ONE_TRANSITION: [usize; 8] = [1, 2, 3, 3, 4, 5, 6, 7];
+    const LEVEL_GT_ONE_TRANSITION: [usize; 8] = [4, 4, 4, 4, 5, 6, 7, 7];
+
+    let mut positions = [0usize; 64];
+    let mut coefficient_count = 0;
+    let mut last = 0;
+    while last < 63 {
+        let significant_offset = SIGNIFICANT_OFFSET[last];
+        let significant_context = 402 + significant_offset;
+        let significant = decoder.decode_bin(&mut contexts[significant_context]);
+        if significant != 0 {
+            positions[coefficient_count] = last;
+            coefficient_count += 1;
+            let last_offset = LAST_OFFSET[last];
+            let last_bit = decoder.decode_bin(&mut contexts[417 + last_offset]);
+            if last_bit != 0 {
+                last = 64;
+                break;
+            }
+        }
+        last += 1;
+    }
+    if last == 63 {
+        positions[coefficient_count] = last;
+        coefficient_count += 1;
+    }
+    if coefficient_count == 0 {
+        return Err(H264CabacError::Malformed(
+            "8x8 residual block has no significant coefficient",
+        ));
+    }
+
+    let mut scan = [0i32; 64];
+    let mut node_context = 0;
+    for position in positions[..coefficient_count].iter().rev() {
+        let one_context = 426 + LEVEL_ONE_CONTEXT[node_context];
+        let mut magnitude = if decoder.decode_bin(&mut contexts[one_context]) == 0 {
+            node_context = LEVEL_ONE_TRANSITION[node_context];
+            1
+        } else {
+            let gt_one_context = 426 + LEVEL_GT_ONE_CONTEXT[node_context];
+            node_context = LEVEL_GT_ONE_TRANSITION[node_context];
+            let mut value = 2;
+            while value < 15 && decoder.decode_bin(&mut contexts[gt_one_context]) != 0 {
+                value += 1;
+            }
+            if value >= 15 {
+                let mut suffix_length = 0;
+                while decoder.decode_bypass() != 0 && suffix_length < 23 {
+                    suffix_length += 1;
+                }
+                value = 1;
+                for _ in 0..suffix_length {
+                    value = value * 2 + decoder.decode_bypass() as i32;
+                }
+                value += 14;
+            }
+            value
+        };
+        if decoder.decode_bypass() != 0 {
+            magnitude = -magnitude;
+        }
+        scan[*position] = magnitude;
+    }
+
+    Ok(super::h264_cavlc::Cavlc8x8Residual {
+        scan,
+        total_coeff: [coefficient_count; 4],
+        trailing_ones: [0; 4],
+        block_bits: [0; 4],
+        bits_consumed: 0,
+    })
 }
 
 fn decode_cabac_residual(
@@ -1169,6 +1315,16 @@ fn luma_4x4_cbf_context(non_zero: &[u8; 16], block: usize) -> usize {
     93 + usize::from(left) + 2 * usize::from(top)
 }
 
+fn set_luma8_non_zero(non_zero: &mut [u8; 16], group: usize, count: u8) {
+    let base_row = (group / 2) * 2;
+    let base_column = (group % 2) * 2;
+    for row in 0..2 {
+        for column in 0..2 {
+            non_zero[(base_row + row) * 4 + base_column + column] = count;
+        }
+    }
+}
+
 fn chroma_ac_cbf_context(non_zero: &[u8], block: usize) -> usize {
     let left = block % 2 == 0 || non_zero[block - 1] != 0;
     let top = block / 2 == 0 || non_zero[block - 2] != 0;
@@ -1231,6 +1387,70 @@ fn i16_prediction_mode(type_index: usize) -> u8 {
     const MODE_MAP: [u8; 4] = [2, 1, 0, 3];
     let internal_mode = MODE_MAP[(type_index - 1) & 3];
     MODE_MAP[usize::from(internal_mode)]
+}
+
+fn decode_cabac_luma_modes(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    transform_8x8: bool,
+    neighbors: super::h264_mb::IntraModeNeighbors,
+) -> Vec<u8> {
+    if transform_8x8 {
+        let mut modes = [0u8; 4];
+        for row in 0..2 {
+            for column in 0..2 {
+                let left = if column == 0 {
+                    neighbors.left[row * 2]
+                } else {
+                    Some(modes[row * 2 + column - 1])
+                };
+                let top = if row == 0 {
+                    neighbors.top[column * 2]
+                } else {
+                    Some(modes[(row - 1) * 2 + column])
+                };
+                let predicted = predict_intra_mode(left, top);
+                modes[row * 2 + column] =
+                    decode_cabac_prediction_mode(decoder, contexts, predicted);
+            }
+        }
+        modes.to_vec()
+    } else {
+        let mut modes = [0u8; 16];
+        for block in I4X4_BLOCK_ORDER {
+            let row = block / 4;
+            let column = block % 4;
+            let left = if column == 0 {
+                neighbors.left[row]
+            } else {
+                Some(modes[row * 4 + column - 1])
+            };
+            let top = if row == 0 {
+                neighbors.top[column]
+            } else {
+                Some(modes[(row - 1) * 4 + column])
+            };
+            let predicted = predict_intra_mode(left, top);
+            modes[block] = decode_cabac_prediction_mode(decoder, contexts, predicted);
+        }
+        modes.to_vec()
+    }
+}
+
+fn decode_cabac_prediction_mode(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    predicted: u8,
+) -> u8 {
+    if decoder.decode_bin(&mut contexts[68]) != 0 {
+        predicted
+    } else {
+        let bit0 = decoder.decode_bin(&mut contexts[69]) as u8;
+        let bit1 = decoder.decode_bin(&mut contexts[69]) as u8;
+        let bit2 = decoder.decode_bin(&mut contexts[69]) as u8;
+        let remainder = u32::from(bit0 | (bit1 << 1) | (bit2 << 2));
+        (remainder + u32::from(remainder >= u32::from(predicted))) as u8
+    }
 }
 
 fn check_chroma_prediction_mode(mode: u8, top_available: bool, left_available: bool) -> u8 {

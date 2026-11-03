@@ -25,6 +25,9 @@ cargo test --test fixture_manifest
   encoded with `cabac=1:keyint=1:bframes=0:8x8dct=0`; the `_nodeblock` pair
   adds `no-deblock=1`. Both contain four I16x16 macroblocks and exercise
   top-neighbour propagation across macroblock rows.
+- `h264_i8x8_cabac` is a 16x16 one-frame High-profile gradient encoded with
+  `cabac=1:keyint=1:bframes=0:8x8dct=1` at QP20. It isolates four I8x8 luma
+  transforms, category-5 significance/last contexts and the CABAC 8x8 scan.
 - `h265e_c_fixqp_*` are short fixed-QP streams emitted by the source-built C
   MPP encoder used as the H.265 header oracle.
 

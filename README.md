@@ -43,7 +43,7 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成 66%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 72%）。
+整体约完成 67%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 75%）。
 ROADMAP 顶层清单当前为
 71 项完成、10 项未完成；未完成项里有硬件不存在、无 conformance 流和冻结前沿，
 不宜直接把勾选比例当作代码工作量。
