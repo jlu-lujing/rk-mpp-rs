@@ -259,7 +259,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       320x240/640x480 × row/column 为 4/4 整条逐字节。
 - [~] W2-9b ROI/QP map 已闭合（相对/绝对 QP、force-intra、多 region、
       640x480，`board_h265_roi_vs_mpp.sh` 4/4）；deblock/SAO 细调未做
-- [ ] W2-10 吞吐测量并对齐 H.264 的门槛（不低于 C，1080p 允许平手）
+- [x] W2-10 吞吐测量 —— `board_bench_h265_encode_vs_mpp.sh` 用官方
+      `mpi_enc_test` 与 Rust 交错采样 5 轮：320x240 / 640x480 / 720p Rust
+      分别快 15.8% / 3.6% / 13.8%；1080p 为 C 147 ms、Rust 149 ms，
+      Rust 慢 1.3%，在允许平手的 5% 噪声门内，4/4 通过。
 
 验收：至少 4 尺寸 × 2 QP 的固定 QP 矩阵、6 帧 GOP、CBR/VBR 各一条逐 NAL；
 场景检测与 ROI 按 H.264 的同一套证据标准。
