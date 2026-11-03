@@ -21,6 +21,10 @@ cargo test --test fixture_manifest
   FFmpeg yuv420p golden output. The fixtures are tiny, deliberately textual
   pictures that isolate I16 DC/AC, chroma residual, multi-macroblock state and
   I4x4 transmission order.
+- The `h264_i16_cabac_2x2*` pair is a 32x32, one-frame Main-profile gradient
+  encoded with `cabac=1:keyint=1:bframes=0:8x8dct=0`; the `_nodeblock` pair
+  adds `no-deblock=1`. Both contain four I16x16 macroblocks and exercise
+  top-neighbour propagation across macroblock rows.
 - `h265e_c_fixqp_*` are short fixed-QP streams emitted by the source-built C
   MPP encoder used as the H.265 header oracle.
 

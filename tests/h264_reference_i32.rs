@@ -58,6 +58,24 @@ fn cabac_two_macroblock_i16_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
+fn cabac_two_by_two_i16_matches_ffmpeg_yuv420p() {
+    compare_fixture(
+        include_bytes!("../tests/data/h264_i16_cabac_2x2.264"),
+        include_bytes!("../tests/data/h264_i16_cabac_2x2.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_two_by_two_i16_without_deblock_matches_ffmpeg_yuv420p() {
+    compare_fixture(
+        include_bytes!("../tests/data/h264_i16_cabac_2x2_nodeblock.264"),
+        include_bytes!("../tests/data/h264_i16_cabac_2x2_nodeblock.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
 fn cabac_textured_i4x4_matches_ffmpeg_yuv420p() {
     compare_fixture(
         include_bytes!("../tests/data/h264_i4x4_cabac.264"),

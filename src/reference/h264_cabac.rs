@@ -1,13 +1,13 @@
 //! H.264 CABAC I-slice reconstruction.
 //!
-//! The current gates cover I16x16 and I4x4 luma/chroma residual syntax plus
-//! two-macroblock propagation along one slice row. Multi-row pictures and 8x8
-//! transforms remain open.
+//! The current gates cover single-macroblock I16x16 and I4x4 syntax,
+//! two-macroblock propagation along one slice row, and I16x16 propagation
+//! across multiple rows. I4x4 multi-macroblock and 8x8 transforms remain open.
 
 use std::fmt;
 
 use super::cabac::{CabacDecoder, Context};
-use super::h264_deblock::{deblock_i_picture, DeblockMap};
+use super::h264_deblock::DeblockMap;
 use super::h264_mb::{
     predict_intra_mode, IntraMacroblockKind, MacroblockContext, ParsedIMacroblock,
     ParsedMacroblockResidual, I4X4_BLOCK_ORDER,
@@ -84,11 +84,6 @@ pub fn decode_cabac_i_slice(
         return Err(H264CabacError::Malformed("CABAC byte alignment"));
     }
     if mb_width * mb_height != 1 {
-        if mb_height != 1 {
-            return Err(H264CabacError::Unsupported(
-                "CABAC multi-row macroblock propagation",
-            ));
-        }
         return decode_cabac_i_slice_multi(
             rbsp, slice, sps, pps, mb_width, mb_height, luma, chroma_cb, chroma_cr,
         );
@@ -133,7 +128,7 @@ pub fn decode_cabac_i_slice(
         }
         type_index += 2 * decoder.decode_bin(&mut contexts[9]) as usize;
         type_index += decoder.decode_bin(&mut contexts[10]) as usize;
-        let decoded_prediction_mode = [2, 1, 0, 3][(type_index - 1) & 3];
+        let decoded_prediction_mode = i16_prediction_mode(type_index);
         let prediction_mode = check_i16_prediction_mode(decoded_prediction_mode, false, false);
         let decoded_cbp = match type_index {
             1..=4 => 0,
@@ -360,18 +355,6 @@ pub fn decode_cabac_i_slice(
             vec![residual.chroma_non_zero[1].clone()],
         ],
     };
-    deblock_i_picture(
-        &mut luma_plane,
-        cb_plane.as_mut(),
-        cr_plane.as_mut(),
-        &deblock,
-        context.bit_depth_luma.min(context.bit_depth_chroma),
-        slice.deblocking_alpha * 2,
-        slice.deblocking_beta * 2,
-        [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
-    )
-    .map_err(|_| H264CabacError::Malformed("deblocking"))?;
-
     if !decoder.decode_terminate() {
         return Err(H264CabacError::Malformed("missing end_of_slice_flag"));
     }
@@ -530,18 +513,6 @@ fn decode_cabac_i_slice_multi(
         luma_non_zero: luma_counts,
         chroma_non_zero: chroma_counts,
     };
-    deblock_i_picture(
-        &mut luma_plane,
-        cb_plane.as_mut(),
-        cr_plane.as_mut(),
-        &deblock,
-        context.bit_depth_luma.min(context.bit_depth_chroma),
-        slice.deblocking_alpha * 2,
-        slice.deblocking_beta * 2,
-        [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
-    )
-    .map_err(|_| H264CabacError::Malformed("deblocking"))?;
-
     Ok(DecodedCabacSlice {
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
@@ -617,7 +588,7 @@ fn decode_cabac_i16_macroblock(
     }
     type_index += 2 * decoder.decode_bin(&mut contexts[9]) as usize;
     type_index += decoder.decode_bin(&mut contexts[10]) as usize;
-    let decoded_prediction_mode = [2, 1, 0, 3][(type_index - 1) & 3];
+    let decoded_prediction_mode = i16_prediction_mode(type_index);
     let prediction_mode = check_i16_prediction_mode(
         decoded_prediction_mode,
         neighbors.top_decoded,
@@ -632,7 +603,6 @@ fn decode_cabac_i16_macroblock(
         21..=24 => 47,
         _ => return Err(H264CabacError::Malformed("intra macroblock type")),
     };
-
     let chroma_context = 64
         + usize::from(neighbors.left_decoded && neighbors.left_chroma_mode != 0)
         + 2 * usize::from(neighbors.top_decoded && neighbors.top_chroma_mode != 0);
@@ -730,7 +700,6 @@ fn decode_cabac_i16_macroblock(
         }
     }
     residual.end_bit = decoder.bit_pos();
-
     let mut coded_flags = u16::from(cbp);
     if residual.luma_dc_non_zero != 0 {
         coded_flags |= 0x100;
@@ -1258,6 +1227,12 @@ fn check_i16_prediction_mode(mode: u8, top_available: bool, left_available: bool
     }
 }
 
+fn i16_prediction_mode(type_index: usize) -> u8 {
+    const MODE_MAP: [u8; 4] = [2, 1, 0, 3];
+    let internal_mode = MODE_MAP[(type_index - 1) & 3];
+    MODE_MAP[usize::from(internal_mode)]
+}
+
 fn check_chroma_prediction_mode(mode: u8, top_available: bool, left_available: bool) -> u8 {
     if (mode == 1 && !left_available)
         || (mode == 2 && !top_available)
@@ -1277,6 +1252,22 @@ mod tests {
     fn maps_qp_delta_sign_by_magnitude() {
         for (magnitude, expected) in [(1, 1), (2, -1), (3, 2), (4, -2), (7, 4), (8, -4)] {
             assert_eq!(qp_delta_from_magnitude(magnitude), expected);
+        }
+    }
+
+    #[test]
+    fn maps_internal_i16_prediction_modes_to_h264_modes() {
+        for (type_index, expected) in [
+            (1, 0),
+            (2, 1),
+            (3, 2),
+            (4, 3),
+            (13, 0),
+            (14, 1),
+            (15, 2),
+            (16, 3),
+        ] {
+            assert_eq!(i16_prediction_mode(type_index), expected);
         }
     }
 
