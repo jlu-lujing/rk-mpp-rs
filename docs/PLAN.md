@@ -203,7 +203,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
         `INTER_VI_FRAME` 分配与 2-QP VI delta 已接入；IDR 保留为长期参考，
         VI 在 slice header 重排 L0。`board_h264_smartp_vs_mpp.sh` 的
         CBR/VBR/AVBR 三格均为 33 帧、37 NAL 逐字节相同。
-- [~] W1-17 重编码与多 pass：`check_re_enc`、`reenc_calc_*_ratio`、super frame、
+- [x] W1-17 重编码与多 pass：`check_re_enc`、`reenc_calc_*_ratio`、super frame、
       `-n` 超发时的 drop/pskip 策略；补"同帧重编"路径
       - [x] 同帧重编：CBR/VBR/AVBR 的 `check_re_enc` 与 reencode ratio 已接入；
         低码率强制过码时 CBR 为 7 个硬件 job、VBR/AVBR 为 8 个，
@@ -216,7 +216,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
         相同，包含 POC/frame_num 推进、RC 的双结束语义，以及 C 回灌的
         CAVLC 13-bit / CABAC 15-bit 口径。CABAC 的 skip context、terminal
         和 flush 与 C 逐字节相同；三种 RC 均为 7/8/9 个硬件 job。
-      - [ ] 多 pass 尚未接入。
+      - [x] two-pass deflicker：首个 IDR 之后，每个 IDR 先以 non-reference P
+        写入 64×16 对齐的线性 NV12 pass1 buffer，第二个 job 再从这里取源；
+        `calc_debreath_qp`、RC 状态恢复、重编抑制、逐 IDR version/RC SEI 与
+        SPS/PPS 只发一次均已对齐。CBR/VBR/AVBR 的 17 NAL 和 12 job STATUS
+        全同，CABAC 格 17 NAL 和 11 job STATUS 全同。
 - [x] W1-18 与 `mpi_enc_test` 的配置对齐：差异来自 harness 将
       `rc:qp_init=-1` 并把 general/intra QP 范围从库默认 `8..48` 放宽到
       `10..51`，不是 RC 模型差异。Rust 增加可配置 RC QP 范围；C probe 和
@@ -462,7 +466,8 @@ W5 可以与 W1/W2 并行（不同人/不同上下文），但 W7 必须等 W5�
   其他 SoC 不在承诺范围，代码保持"探测 + 分块 HAL"的可扩展形态；W12 暂不排入主线，
   等 3588 收口后再评估。
 - **D3 secure/TA**：是否有可验证的 TA 环境；没有则按"探测即拒绝"实现并记录。
-- **D4 多 pass/两遍编码**：是否需要 `mpi_enc_mt`/2-pass 行为？影响 W1-17 与 W5。
+- **D4 多 pass/两遍编码 —— 已决定**：H.264 two-pass deflicker 已实现；
+  `mpi_enc_mt` 的并发/多实例语义归 W5，不再阻塞 W1-17。
 - **D5 逐字节范围**：CBR/VBR 是否要在所有分辨率/内容上都逐字节，还是仅代表性矩阵
   （逐字节覆盖成本随内容增长很快）。
 - **D6 依赖策略**：是否接受为 NEON/并发引入 crate（当前仅 `libc`）。

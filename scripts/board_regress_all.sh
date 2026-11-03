@@ -78,6 +78,7 @@ else
 fi
 
 run h264-encode-rc scripts/board_h264_cbr_vs_mpp.sh
+run h264-debreath scripts/board_h264_debreath_vs_mpp.sh
 run h264-status scripts/board_h264_status_vs_mpp.sh
 
 if [ "${PERF_GATE:-0}" = 1 ]; then

@@ -94,6 +94,12 @@ pub struct EncoderConfig {
     /// `rc:priority`; frame-size-first applies the super-frame cap during
     /// allocation, while bitrate-first keeps the ordinary target.
     pub rc_priority: u8,
+    /// `rc:debreath_en` and `rc:debreath_strength`. On VEPU580 this selects the
+    /// reference's two-pass deflicker path: every IDR after the first is first
+    /// encoded as a non-reference P picture into a linear reconstruction buffer,
+    /// then the IDR is coded from that reconstruction.
+    pub debreath_en: bool,
+    pub debreath_strength: u8,
     /// `rc:drop_mode`, `drop_thd` and `drop_gap`: bitrate-overflow policy.
     /// Mode 1 drops the picture; mode 2 emits an all-skip non-reference P slice.
     pub drop_mode: u8,
@@ -268,6 +274,8 @@ impl EncoderConfig {
             super_i_thd: 0,
             super_p_thd: 0,
             rc_priority: 0,
+            debreath_en: false,
+            debreath_strength: 0,
             drop_mode: 0,
             drop_threshold: 20,
             drop_gap: 1,
@@ -327,6 +335,12 @@ impl EncoderConfig {
             return Err(Error(format!(
                 "rate-control QP range {}..={} is invalid",
                 self.rc_qp_min, self.rc_qp_max
+            )));
+        }
+        if self.debreath_strength > 35 {
+            return Err(Error(format!(
+                "debreath strength {} is outside 0..=35",
+                self.debreath_strength
             )));
         }
         if self.fps_num == 0 || self.fps_den == 0 {

@@ -106,6 +106,8 @@ pub struct Config {
     pub super_i_thd: u32,
     pub super_p_thd: u32,
     pub rc_priority: u8,
+    pub debreath_en: bool,
+    pub debreath_strength: u8,
     pub drop_mode: u8,
     pub drop_threshold: u32,
     pub drop_gap: u32,
@@ -163,6 +165,8 @@ impl Config {
             super_i_thd: 0,
             super_p_thd: 0,
             rc_priority: 0,
+            debreath_en: false,
+            debreath_strength: 0,
             drop_mode: 0,
             drop_threshold: 20,
             drop_gap: 1,
@@ -300,6 +304,15 @@ pub struct Model {
     motion_sensitivity: i32,
     pre_mean_qp: i32,
     scale_qp: i32,
+    /// `start_qp`, the target this picture was actually coded with.
+    start_qp: i32,
+    /// `pre_iblk4_prop`, the previous coded picture's intra-block proportion on
+    /// the C's 0..256 scale.
+    pre_iblk4_prop: i32,
+    /// `gop_frm_cnt` / `gop_qp_sum`, reset at each normal intra picture and read
+    /// by `calc_debreath_qp`.
+    gop_frm_cnt: i32,
+    gop_qp_sum: i32,
     /// `hier_frm_cnt` and `qp_layer_id` from `rc_hier_calc_dealt_qp`.
     hier_frame_cnt: [i32; 4],
     qp_layer_id: i32,
@@ -319,6 +332,8 @@ pub struct Measured {
     pub quality: i32,
     pub madi: i32,
     pub madp: i32,
+    /// `iblk4_prop`: the sum of the I4/I8/I16 block counts scaled by 256.
+    pub iblk4_prop: i32,
 }
 
 impl Model {
@@ -403,6 +418,10 @@ impl Model {
             motion_sensitivity: 90,
             pre_mean_qp: 0,
             scale_qp: 0,
+            start_qp: 0,
+            pre_iblk4_prop: 0,
+            gop_frm_cnt: 0,
+            gop_qp_sum: 0,
             hier_frame_cnt: [0; 4],
             qp_layer_id: 0,
             reenc_cnt: 0,
@@ -700,6 +719,9 @@ impl Model {
         self.first = false;
         self.scale_qp = self.cur_scale_qp;
         self.pre_mean_qp = measured.quality;
+        self.pre_iblk4_prop = measured.iblk4_prop;
+        self.gop_frm_cnt += 1;
+        self.gop_qp_sum += self.start_qp;
         self.reenc_cnt = 0;
         if self.cfg.mode == Mode::Avbr {
             self.moving_judge_update(frame, measured.bits, measured.quality, measured.madp);
@@ -1014,6 +1036,14 @@ impl Model {
             quality_target = clip(quality_target, self.cfg.quality_min, self.cfg.quality_max);
         }
 
+        if frame == FrameType::Intra {
+            if self.cfg.debreath_en && !self.first {
+                quality_target = self.calc_debreath_qp();
+            }
+            self.gop_frm_cnt = 0;
+            self.gop_qp_sum = 0;
+        }
+
         if self.cfg.hier_qp_enabled {
             self.hier_advance(frame);
             if self.qp_layer_id != 0 {
@@ -1022,7 +1052,32 @@ impl Model {
             quality_target = clip(quality_target, self.cfg.quality_min, self.cfg.quality_max);
         }
 
+        self.start_qp = quality_target;
         (bit_target, quality_target)
+    }
+
+    /// `calc_debreath_qp`: blend the previous GOP's mean requested QP with the
+    /// strength and the previous picture's I4/I8/I16 proportion.
+    fn calc_debreath_qp(&self) -> i32 {
+        const STRENGTH: [i32; 36] = [
+            0, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 10,
+            10, 10, 11, 11, 11, 12, 12, 12,
+        ];
+        const INTRA_QP: [i32; 8] = [0, 0, 1, 1, 2, 2, 2, 2];
+
+        let qp_start_sum = if self.gop_frm_cnt > 0 {
+            (self.gop_qp_sum / self.gop_frm_cnt).min(35)
+        } else {
+            0
+        };
+        let index = ((self.pre_iblk4_prop >> 5).max(0) as usize).min(INTRA_QP.len() - 1);
+        let dealt_qp = STRENGTH[self.cfg.debreath_strength.min(35) as usize] - INTRA_QP[index];
+        let start_qp = if qp_start_sum > dealt_qp {
+            qp_start_sum - dealt_qp
+        } else {
+            qp_start_sum
+        };
+        clip(start_qp, self.cfg.quality_min, self.cfg.quality_max)
     }
 
     /// `rc_hier_calc_dealt_qp`: an intra picture starts a new hierarchy, while
@@ -1082,6 +1137,9 @@ impl Model {
         };
         let super_thr = self.super_threshold(frame);
         let super_frame = self.cfg.super_mode != 0 && measured.bits >= super_thr;
+        if !super_frame && self.cfg.debreath_en && !self.first {
+            return None;
+        }
         if !super_frame && measured.bits <= default_bit_thr {
             return None;
         }
@@ -1158,7 +1216,8 @@ impl Model {
 
     /// The bitrate-overflow drop/pskip decision in `check_re_enc`.
     pub fn requests_pskip(&mut self, frame: FrameType, measured: Measured) -> bool {
-        if self.cfg.drop_mode != 2
+        if (self.cfg.debreath_en && !self.first)
+            || self.cfg.drop_mode != 2
             || frame != FrameType::InterP
             || self.reenc_cnt != 0
             || (self.cfg.drop_gap != 0 && self.drop_cnt >= self.cfg.drop_gap)
@@ -1179,7 +1238,8 @@ impl Model {
 
     /// The NORMAL-drop form of the same bitrate-overflow decision.
     pub fn requests_drop(&mut self, frame: FrameType, measured: Measured) -> bool {
-        if self.cfg.drop_mode != 1
+        if (self.cfg.debreath_en && !self.first)
+            || self.cfg.drop_mode != 1
             || frame != FrameType::InterP
             || self.reenc_cnt != 0
             || (self.cfg.drop_gap != 0 && self.drop_cnt >= self.cfg.drop_gap)
@@ -1545,6 +1605,7 @@ mod tests {
                 quality: 24,
                 madi: 0,
                 madp: 0,
+                iblk4_prop: 0,
             },
         );
 
@@ -1554,6 +1615,20 @@ mod tests {
         assert_eq!(model.moving_ratio(), 222, "the still/moving level itself");
         assert_eq!(target, 9_276, "222/256 of the GOP, then the usual scale");
         assert_eq!(quality, 27);
+    }
+
+    #[test]
+    fn debreath_uses_the_previous_gop_and_intra_block_proportion() {
+        let mut cfg = Config::cbr(100_000, 80_000, 120_000, 4);
+        cfg.debreath_en = true;
+        cfg.debreath_strength = 12;
+        let mut model = Model::new(cfg);
+        model.gop_qp_sum = 120;
+        model.gop_frm_cnt = 4;
+        model.pre_iblk4_prop = 96;
+        // mean requested QP 30, I4 proportion index 3 subtracts 1, strength
+        // index 12 adds 5: 30 - (5 - 1) = 26.
+        assert_eq!(model.calc_debreath_qp(), 26);
     }
 
     #[test]
@@ -1623,6 +1698,7 @@ mod tests {
                     quality: 27,
                     madi: 16,
                     madp: 0,
+                    iblk4_prop: 0,
                 },
                 1,
             ),
@@ -1650,6 +1726,7 @@ mod tests {
                 quality: 23,
                 madi: 9,
                 madp: 0,
+                iblk4_prop: 0,
             },
             1,
         );
@@ -1662,6 +1739,7 @@ mod tests {
                 quality: 22,
                 madi: 9,
                 madp: 0,
+                iblk4_prop: 0,
             },
         );
 
@@ -1676,6 +1754,7 @@ mod tests {
                 quality: 27,
                 madi: 9,
                 madp: 35,
+                iblk4_prop: 0,
             },
             1,
         );
@@ -1731,6 +1810,7 @@ mod tests {
                     quality: 23,
                     madi: 9,
                     madp: 0,
+                    iblk4_prop: 0,
                 },
                 1,
             )
@@ -1744,6 +1824,7 @@ mod tests {
                 quality: 22,
                 madi: 9,
                 madp: 0,
+                iblk4_prop: 0,
             },
         );
 
@@ -1764,6 +1845,7 @@ mod tests {
                 quality: measured_qp,
                 madi: 9,
                 madp,
+                iblk4_prop: 0,
             };
             assert!(model.drops_super_frame(FrameType::InterP, measured));
             model.end_with(
@@ -1774,6 +1856,7 @@ mod tests {
                     quality,
                     madi: 9,
                     madp,
+                    iblk4_prop: 0,
                 },
             );
             model.end_with(
@@ -1784,6 +1867,7 @@ mod tests {
                     quality,
                     madi: 9,
                     madp,
+                    iblk4_prop: 0,
                 },
             );
             assert_eq!(quality, expected, "seen {seen:?}");

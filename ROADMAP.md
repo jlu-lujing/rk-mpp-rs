@@ -1739,7 +1739,7 @@ in what order the evidence gets produced.
       `scripts/board_h264_smartp_vs_mpp.sh` runs 33 pictures at `vi_len=31` across
       CBR, VBR and AVBR. Each stream is **37 NAL units byte-identical**, including
       the VI at picture 31 and its following P.
-- [~] **Same-frame re-encoding follows the reference's CBR/VBR/AVBR loop.**
+- [x] **Same-frame re-encoding follows the reference's CBR/VBR/AVBR loop.**
       `check_re_enc`, the CBR and VBR re-encode ratios, the VI-capable QP update
       and the repeated hardware submission are wired. Every attempt updates the
       scene tune exactly where the HAL's get-statistics pass does, while the RC
@@ -1759,7 +1759,14 @@ in what order the evidence gets produced.
       arithmetic. Both advance POC but not frame_num and end the RC frame twice;
       the reference reports 13 bits for CAVLC and 15 for CABAC. All CBR/VBR/AVBR
       streams and 7/8/9 attempted-job STATUS windows match the C byte for byte.
-      Multi-pass remains open under W1-17.
+      Two-pass deflicker is also closed. On every IDR after the first, a
+      non-reference P picture first reconstructs into a 64x16-aligned linear NV12
+      pass1 buffer; the real IDR then reads that buffer. The port carries
+      `calc_debreath_qp`, preserves/restores the previous RC info around pass1,
+      suppresses normal rate/drop re-encodes on debreath pictures, and mirrors the
+      reference header policy: SPS/PPS once, version/RC SEI on every IDR.
+      `board_h264_debreath_vs_mpp.sh`: CBR/VBR/AVBR are each 17 identical NALs and
+      12 identical-job STATUS windows; the CABAC cell is 17 NALs and 11 jobs.
 - [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
       What follows is the record of how it was measured, kept because the
       corrections in it are the useful part. `setup_vepu580_rc_base`'s VBR/CBR path -

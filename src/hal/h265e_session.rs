@@ -824,6 +824,7 @@ fn measured_from_status(width: usize, height: usize, status: &[u32]) -> rc_model
         quality,
         madi,
         madp,
+        iblk4_prop: 0,
     }
 }
 

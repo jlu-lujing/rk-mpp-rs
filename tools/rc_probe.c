@@ -131,7 +131,8 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_target", bps_target));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_max", bps_max));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 60));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop",
+                              getenv("RC_GOP") ? atoi(getenv("RC_GOP")) : 60));
     if (hier &&
         sscanf(hier, "%d:%d:%d:%d:%d:%d:%d:%d",
                &hier_qp_delta[0], &hier_qp_delta[1],
@@ -179,6 +180,13 @@ int main(int argc, char **argv)
                                   atoi(getenv("DROP_THD"))));
         CHECK(mpp_enc_cfg_set_u32(cfg, "rc:drop_gap",
                                   atoi(getenv("DROP_GAP"))));
+    }
+    if (getenv("DEBREATH_EN")) {
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:debreath_en",
+                                  atoi(getenv("DEBREATH_EN"))));
+        CHECK(mpp_enc_cfg_set_u32(cfg, "rc:debreath_strength",
+                                  getenv("DEBREATH_STRENGTH") ?
+                                  atoi(getenv("DEBREATH_STRENGTH")) : 0));
     }
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));
 

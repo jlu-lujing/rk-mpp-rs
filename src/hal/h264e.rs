@@ -242,9 +242,9 @@ impl FrameState {
                 is_idr: true,
                 is_vi: false,
                 frame_num: 0,
-                // `h264e_slice_init` alternates idr_pic_id across IDR pictures, and
+                // `h264e_slice_init` increments idr_pic_id across IDR pictures;
                 // a P picture carries the id of the IDR that opened its GOP.
-                idr_pic_id: (self.idr_pic_id + 1) & 1,
+                idr_pic_id: self.idr_pic_id + 1,
                 poc: 0,
                 ..FrameState::default()
             };
@@ -302,6 +302,11 @@ pub struct Job<'a> {
     /// extension (`setup_vepu580_ext_line_buf`).
     pub ext_fd: i32,
     pub ext_offset: u32,
+    /// `save_pass1`: write a linear reconstruction into the two-pass buffer.
+    /// `use_pass1`: read that reconstruction as this job's source instead.
+    pub save_pass1: bool,
+    pub use_pass1: bool,
+    pub pass1_fd: i32,
 }
 
 /// What rate control decided about one picture.
@@ -646,6 +651,11 @@ pub struct Vepu580H264 {
     /// allocation whose second half the `ebufb` register reaches through the
     /// offset table, `ctx->ext_line_buf` of the HAL.
     ext_line: Option<(DmaBuf, usize)>,
+    /// `buf_pass1`, VEPU580's linear NV12 reconstruction for two-pass debreath.
+    pass1: Option<DmaBuf>,
+    /// `rc_info_prev`: the accepted picture's RC request, reused by the next
+    /// pass1 job before the normal intra RC start runs.
+    last_rate_control: Option<RateControl>,
     /// The `MppEncHeaderStatus` added-bits mirror: once the parameter sets and
     /// SEIs have been emitted, `mpp_enc_impl.cpp` refuses to add them again
     /// until a forced IDR or a header-affecting reconfiguration clears the bits
@@ -737,6 +747,15 @@ impl Vepu580H264 {
             },
             gdr_base,
             ext_line,
+            pass1: if config.debreath_en {
+                Some(
+                    DmaBuf::alloc("system", pass1_luma_size(&config) * 3 / 2, false)
+                        .map_err(|e| format!("allocate H.264 pass1 reconstruction: {e}"))?,
+                )
+            } else {
+                None
+            },
+            last_rate_control: None,
             hdr_added: false,
             state: FrameState::default(),
             slot: 0,
@@ -767,6 +786,14 @@ impl Vepu580H264 {
     /// the one being compared against.
     pub fn headers(&self) -> Result<Vec<u8>, String> {
         let mut out = self.parameter_sets()?;
+        out.extend(self.idr_seis()?);
+        Ok(out)
+    }
+
+    /// The two user-data SEI NALUs `mpp_enc_add_sw_header` emits ahead of every
+    /// IDR, independently of whether the SPS/PPS header has already been added.
+    fn idr_seis(&self) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
         out.extend(sei::user_data(
             &sei::UUID_VERSION,
             version_info(&self.config).as_bytes(),
@@ -811,6 +838,146 @@ impl Vepu580H264 {
     /// The SPS and PPS for the current configuration.
     fn parameter_sets(&self) -> Result<Vec<u8>, String> {
         encoder::build_headers(&self.config).map_err(|e| e.to_string())
+    }
+
+    /// Submit one VEPU580 job and collect its payload and STATUS. The normal
+    /// picture loop and the deflicker pass1 path have different RC ownership but
+    /// the same register/ioctl lifecycle, so they share this executor.
+    fn run_hardware_job(
+        &mut self,
+        state: FrameState,
+        rc: Option<RateControl>,
+        current_slot: usize,
+        reference_slot: usize,
+        save_pass1: bool,
+        use_pass1: bool,
+    ) -> Result<(Vec<u8>, Vec<usize>, Statistics), String> {
+        let pass1_fd = self.pass1.as_ref().map_or(-1, |b| b.fd());
+        let current_fd = if save_pass1 {
+            pass1_fd
+        } else {
+            self.recons[current_slot].pixel.fd()
+        };
+        let job = Job {
+            config: &self.config,
+            input_fd: self.input.fd(),
+            output_fd: self.output.fd(),
+            current_fd,
+            current_thumb_fd: self.recons[current_slot].thumb.fd(),
+            md_fd: self.md_info.fd(),
+            reference_fd: self.recons[reference_slot].pixel.fd(),
+            reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
+            state,
+            output_capacity: logical_output_size(&self.config)?,
+            rc,
+            tune: &self.tune,
+            roi_fd: self.roi.as_ref().map_or(-1, |b| b.0.fd()),
+            roi_qp_fd: self.roi.as_ref().map_or(-1, |b| b.1.fd()),
+            gdr_fd: self.gdr_base.as_ref().map_or(-1, |b| b.fd()),
+            ext_fd: self.ext_line.as_ref().map_or(-1, |b| b.0.fd()),
+            ext_offset: self.ext_line.as_ref().map_or(0, |b| b.1 as u32),
+            save_pass1,
+            use_pass1,
+            pass1_fd,
+        };
+        if self.config.gdr && state.is_i_refresh {
+            let table = gdr_base_table(&self.config, state.refresh_idx);
+            let buffer = self
+                .gdr_base
+                .as_mut()
+                .ok_or_else(|| "GDR enabled without a base table".to_string())?;
+            buffer
+                .sync_write_begin()
+                .map_err(|e| format!("GDR table sync begin: {e}"))?;
+            buffer.as_mut_slice()[..table.len()].copy_from_slice(&table);
+            buffer
+                .sync_write_end()
+                .map_err(|e| format!("GDR table flush: {e}"))?;
+        }
+        let registers = build_registers(&job)?;
+        dump_job_registers(&job, &registers);
+
+        let mut status = vec![0u32; STATUS_WORDS];
+        let mut hw_status = [0u32; 1];
+        let mut batch = Batch::new();
+        batch.reg_write(&registers.ctl, CTL_OFFSET);
+        batch.reg_write(&registers.base, BASE_OFFSET);
+        batch.reg_write(&registers.rc_klut, RCKLUT_OFFSET);
+        batch.reg_write(&registers.param, PARAM_OFFSET);
+        batch.reg_write(&registers.rdo, RDO_OFFSET);
+        batch.reg_write(&registers.scl, SCL_OFFSET);
+        batch.reg_write(&registers.osd, OSD_OFFSET);
+        batch.reg_offsets(&registers.offsets);
+        if !registers.rcb.is_empty() {
+            batch.rcb_info(&registers.rcb);
+        }
+        batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
+        batch.reg_read(&mut status, STATUS_OFFSET);
+        self.svc
+            .submit_batch(&mut batch)
+            .map_err(|e| format!("H.264 register submit: {e}"))?;
+        let mut slice_lengths = Vec::new();
+        if self.config.split_out & encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 && !save_pass1 {
+            let mut complete = false;
+            for _ in 0..=4096 {
+                let mut info = [SliceInfo::default()];
+                let count = self
+                    .svc
+                    .poll_irq(&mut info)
+                    .map_err(|e| format!("H.264 slice poll: {e}"))?;
+                for slice in &info[..count] {
+                    let (length, last) = slice.vepu580();
+                    slice_lengths.push(length as usize);
+                    complete |= last;
+                }
+                if complete {
+                    break;
+                }
+            }
+            if !complete {
+                return Err("H.264 slice FIFO did not report the last slice".into());
+            }
+        } else {
+            self.svc
+                .poll_hw_finish()
+                .map_err(|e| format!("H.264 poll: {e}"))?;
+        }
+
+        let errors = hw_status[0] & HW_ERROR_MASK;
+        if errors != 0 {
+            return Err(format!(
+                "VEPU580 H.264 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
+                hw_status[0]
+            ));
+        }
+        if hw_status[0] & 1 == 0 {
+            return Err(format!(
+                "VEPU580 H.264 completed ioctl without enc_done (int_sta=0x{:08x})",
+                hw_status[0]
+            ));
+        }
+
+        let payload_len = status[0] as usize;
+        if payload_len < 8 || payload_len > self.output.len() {
+            return Err(format!(
+                "invalid VEPU580 H.264 length {payload_len} (capacity {})",
+                self.output.len()
+            ));
+        }
+        self.output
+            .sync_read_begin()
+            .map_err(|e| format!("H.264 output invalidate: {e}"))?;
+        let payload = self.output.as_slice()[..payload_len].to_vec();
+        let nal_validation = validate_nal_bytes(&payload, if state.is_idr { 5 } else { 1 });
+        self.output
+            .sync_read_end()
+            .map_err(|e| format!("H.264 output sync end: {e}"))?;
+        nal_validation?;
+
+        let statistics = Statistics::from_words(&status);
+        dump_statistics(&state, &status);
+        self.tune.update(&statistics);
+        Ok((payload, slice_lengths, statistics))
     }
 
     /// Encode one picture, continuing the GOP: the first call of a session is an
@@ -868,6 +1035,30 @@ impl Vepu580H264 {
         // overshoots, so the loop reuses `state`, input and reference surfaces and
         // only replaces the RC decision and output payload.
         let frame = picture_frame_type(&state);
+        let use_pass1 = if self.config.debreath_en && state.is_idr && state.index > 0 {
+            let pass_state = FrameState {
+                index: state.index,
+                is_idr: false,
+                is_vi: false,
+                frame_num: previous_state.frame_num + 1,
+                idr_pic_id: previous_state.idr_pic_id,
+                poc: previous_state.poc + 2,
+                is_i_refresh: false,
+                is_i_recovery: false,
+                refresh_idx: 0,
+            };
+            self.run_hardware_job(
+                pass_state,
+                self.last_rate_control,
+                self.slot,
+                previous_slot,
+                true,
+                false,
+            )?;
+            true
+        } else {
+            false
+        };
         let (bit_target, mut quality_target) = match self.rc.as_mut() {
             Some(model) => model.start(frame),
             None => (0, i32::from(self.config.qp_init)),
@@ -881,127 +1072,12 @@ impl Vepu580H264 {
                 qp_delta_row: 2,
                 qp_delta_row_i: 2,
             });
-            let job = Job {
-                config: &self.config,
-                input_fd: self.input.fd(),
-                output_fd: self.output.fd(),
-                current_fd: self.recons[self.slot].pixel.fd(),
-                current_thumb_fd: self.recons[self.slot].thumb.fd(),
-                md_fd: self.md_info.fd(),
-                reference_fd: self.recons[reference_slot].pixel.fd(),
-                reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
-                state,
-                output_capacity: logical_output_size(&self.config)?,
-                rc,
-                tune: &self.tune,
-                roi_fd: self.roi.as_ref().map_or(-1, |b| b.0.fd()),
-                roi_qp_fd: self.roi.as_ref().map_or(-1, |b| b.1.fd()),
-                gdr_fd: self.gdr_base.as_ref().map_or(-1, |b| b.fd()),
-                ext_fd: self.ext_line.as_ref().map_or(-1, |b| b.0.fd()),
-                ext_offset: self.ext_line.as_ref().map_or(0, |b| b.1 as u32),
-            };
-            // `setup_vepu580_intra_refresh` refills its base table on every refresh
-            // picture - the band slid - and flushes it to DMA before the submit.
-            if self.config.gdr && state.is_i_refresh {
-                let table = gdr_base_table(&self.config, state.refresh_idx);
-                let buffer = self
-                    .gdr_base
-                    .as_mut()
-                    .ok_or_else(|| "GDR enabled without a base table".to_string())?;
-                buffer
-                    .sync_write_begin()
-                    .map_err(|e| format!("GDR table sync begin: {e}"))?;
-                buffer.as_mut_slice()[..table.len()].copy_from_slice(&table);
-                buffer
-                    .sync_write_end()
-                    .map_err(|e| format!("GDR table flush: {e}"))?;
-            }
-            let registers = build_registers(&job)?;
-            dump_job_registers(&job, &registers);
-
-            let mut status = vec![0u32; STATUS_WORDS];
-            let mut hw_status = [0u32; 1];
-            let mut batch = Batch::new();
-            batch.reg_write(&registers.ctl, CTL_OFFSET);
-            batch.reg_write(&registers.base, BASE_OFFSET);
-            batch.reg_write(&registers.rc_klut, RCKLUT_OFFSET);
-            batch.reg_write(&registers.param, PARAM_OFFSET);
-            batch.reg_write(&registers.rdo, RDO_OFFSET);
-            batch.reg_write(&registers.scl, SCL_OFFSET);
-            batch.reg_write(&registers.osd, OSD_OFFSET);
-            batch.reg_offsets(&registers.offsets);
-            if !registers.rcb.is_empty() {
-                batch.rcb_info(&registers.rcb);
-            }
-            batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
-            batch.reg_read(&mut status, STATUS_OFFSET);
-            self.svc
-                .submit_batch(&mut batch)
-                .map_err(|e| format!("H.264 register submit: {e}"))?;
-            let mut slice_lengths = Vec::new();
-            if self.config.split_out & encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
-                let mut complete = false;
-                for _ in 0..=4096 {
-                    let mut info = [SliceInfo::default()];
-                    let count = self
-                        .svc
-                        .poll_irq(&mut info)
-                        .map_err(|e| format!("H.264 slice poll: {e}"))?;
-                    for slice in &info[..count] {
-                        let (length, last) = slice.vepu580();
-                        slice_lengths.push(length as usize);
-                        complete |= last;
-                    }
-                    if complete {
-                        break;
-                    }
-                }
-                if !complete {
-                    return Err("H.264 slice FIFO did not report the last slice".into());
-                }
-            } else {
-                self.svc
-                    .poll_hw_finish()
-                    .map_err(|e| format!("H.264 poll: {e}"))?;
-            }
-
-            let errors = hw_status[0] & HW_ERROR_MASK;
-            if errors != 0 {
-                return Err(format!(
-                    "VEPU580 H.264 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
-                    hw_status[0]
-                ));
-            }
-            if hw_status[0] & 1 == 0 {
-                return Err(format!(
-                    "VEPU580 H.264 completed ioctl without enc_done (int_sta=0x{:08x})",
-                    hw_status[0]
-                ));
-            }
-
-            let payload_len = status[0] as usize;
-            if payload_len < 8 || payload_len > self.output.len() {
-                return Err(format!(
-                    "invalid VEPU580 H.264 length {payload_len} (capacity {})",
-                    self.output.len()
-                ));
-            }
-            self.output
-                .sync_read_begin()
-                .map_err(|e| format!("H.264 output invalidate: {e}"))?;
-            let payload = self.output.as_slice()[..payload_len].to_vec();
-            let nal_validation = validate_nal_bytes(&payload, if state.is_idr { 5 } else { 1 });
-            self.output
-                .sync_read_end()
-                .map_err(|e| format!("H.264 output sync end: {e}"))?;
-            nal_validation?;
-
-            let statistics = Statistics::from_words(&status);
-            dump_statistics(&state, &status);
-            let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as i32;
+            let (payload, slice_lengths, statistics) =
+                self.run_hardware_job(state, rc, self.slot, reference_slot, false, use_pass1)?;
+            let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as u32;
             let measured = rc_model::Measured {
                 bits: statistics.bitstream_bytes as i32 * 8,
-                quality: statistics.qp_sum as i32 / mbs,
+                quality: statistics.qp_sum as i32 / mbs as i32,
                 madi: if statistics.num_b16 > 0 {
                     (statistics.madi / statistics.num_b16) as i32
                 } else {
@@ -1012,12 +1088,8 @@ impl Vepu580H264 {
                 } else {
                     0
                 },
+                iblk4_prop: statistics.iblk4_prop(mbs),
             };
-            drop(job);
-            // The HAL's get-statistics pass updates the scene tune for every
-            // hardware attempt, including a result that is about to be replaced
-            // by a re-encode.
-            self.tune.update(&statistics);
             if let Some(model) = self.rc.as_mut() {
                 if model.drops_super_frame(frame, measured) || model.requests_drop(frame, measured)
                 {
@@ -1046,6 +1118,7 @@ impl Vepu580H264 {
                         quality: quality_target,
                         madi: measured.madi,
                         madp: measured.madp,
+                        iblk4_prop: measured.iblk4_prop,
                     };
                     break (
                         payload,
@@ -1091,8 +1164,14 @@ impl Vepu580H264 {
         let headers = if disposition != PictureDisposition::Accepted {
             Vec::new()
         } else if state.is_idr {
-            self.hdr_added = true;
-            self.headers()?
+            let mut out = if self.hdr_added {
+                Vec::new()
+            } else {
+                self.hdr_added = true;
+                self.parameter_sets()?
+            };
+            out.extend(self.idr_seis()?);
+            out
         } else if sweep_open {
             self.hdr_added = true;
             // The measured prefix at a sweep opening is the bare parameter sets
@@ -1110,6 +1189,14 @@ impl Vepu580H264 {
         annex_b.extend_from_slice(&headers);
         annex_b.extend_from_slice(&payload);
         let packets = output_packets(&headers, &payload, &slice_lengths)?;
+        self.last_rate_control = self.rc.as_ref().map(|_| RateControl {
+            bit_target,
+            qp_target: quality_target as u32,
+            qp_min: self.config.rc_qp_min,
+            qp_max: self.config.rc_qp_max,
+            qp_delta_row: 2,
+            qp_delta_row_i: 2,
+        });
         if let Some(model) = self.rc.as_mut() {
             model.end_with(frame, bit_target, measured);
             if disposition != PictureDisposition::Accepted {
@@ -1695,6 +1782,10 @@ pub struct Statistics {
     pub madi_b16num: [u32; 4],
     /// `qp_sum`, reg4099 - the QP sum rate control divides by the CTU count.
     pub qp_sum: u32,
+    /// reg4165..reg4167, the I16/I8/I4 block counts used by debreath.
+    pub pnum_i16: u32,
+    pub pnum_i8: u32,
+    pub pnum_i4: u32,
 }
 
 impl Statistics {
@@ -1714,6 +1805,17 @@ impl Statistics {
             md_sad_b16num: [at(4173), at(4174), at(4175), at(4176)],
             madi_b16num: [at(4177), at(4178), at(4179), at(4180)],
             qp_sum: at(4099),
+            pnum_i16: at(4165) & 0x1f_ffff,
+            pnum_i8: at(4166) & 0x7f_ffff,
+            pnum_i4: at(4167) & 0x7f_ffff,
+        }
+    }
+
+    fn iblk4_prop(&self, mbs: u32) -> i32 {
+        if mbs == 0 {
+            0
+        } else {
+            (self.pnum_i4 + self.pnum_i8 + self.pnum_i16).wrapping_mul(256) as i32 / mbs as i32
         }
     }
 
@@ -1821,6 +1923,9 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
         || reference_thumb_fd < 0
     {
         return Err("H.264 register file received an invalid dma-buf fd".into());
+    }
+    if (job.save_pass1 || job.use_pass1) && job.pass1_fd < 0 {
+        return Err("H.264 two-pass job has no pass1 dma-buf fd".into());
     }
     let expected_min_output = input_size(config)? + REFERENCE_OUTPUT_MARGIN;
     if output_capacity < expected_min_output {
@@ -1963,6 +2068,7 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     // the attempt to clear this bit turned out to be measuring.
     file.set(&vepu580_regs::BASE_ENC_PIC_MEI_STOR, 1)?;
     file.apply_tune(job)?;
+    file.apply_pass1(job)?;
     Ok(file)
 }
 
@@ -2027,6 +2133,51 @@ impl RegisterFile {
     /// this patch - so those writes are kept out of the quiet path and pinned by
     /// `tune_default_rows_match_the_captured_image` instead of being repeated
     /// from the tables. The moment the detector moves, the writes happen.
+    /// `vepu580_h264e_save_pass1_patch` and
+    /// `vepu580_h264e_use_pass1_patch`.
+    fn apply_pass1(&mut self, job: &Job<'_>) -> Result<(), String> {
+        let config = job.config;
+        let width = align(config.width, 64);
+        let height = align(config.height, 16);
+        let luma = width * height;
+
+        if job.save_pass1 {
+            let fd = job.pass1_fd as u32;
+            self.set(&vepu580_regs::BASE_ENC_PIC_CUR_FRM_REF, 1)?;
+            self.base[BASE_RFPW_H] = fd;
+            self.base[BASE_RFPW_B] = fd;
+            self.set(&vepu580_regs::BASE_ENC_PIC_REC_FBC_DIS, 1)?;
+            if let Some(offset) = self.offsets.iter_mut().find(|o| o.reg_idx == REG_RFPW_B) {
+                offset.offset = luma as u32;
+            }
+            self.set(&vepu580_regs::BASE_SLI_SPLT_SLI_SPLT, 0)?;
+            self.set(&vepu580_regs::BASE_ENC_PIC_SLEN_FIFO, 0)?;
+        }
+
+        if job.use_pass1 {
+            let fd = job.pass1_fd as u32;
+            self.set(&vepu580_regs::BASE_SRC_FMT_SRC_CFMT, 6)?;
+            self.set(&vepu580_regs::BASE_SRC_FMT_ALPHA_SWAP, 0)?;
+            self.set(&vepu580_regs::BASE_SRC_FMT_RBUV_SWAP, 0)?;
+            self.set(&vepu580_regs::BASE_SRC_FMT_OUT_FMT, 1)?;
+            self.set(&vepu580_regs::BASE_SRC_PROC_AFBCD_EN, 0)?;
+            self.set(&vepu580_regs::BASE_SRC_STRD0_SRC_STRD0, width as u32)?;
+            self.set(&vepu580_regs::BASE_SRC_STRD1_SRC_STRD1, width as u32)?;
+            self.set(&vepu580_regs::BASE_SRC_PROC_SRC_MIRR, 0)?;
+            self.set(&vepu580_regs::BASE_SRC_PROC_SRC_ROT, 0)?;
+            self.set(&vepu580_regs::BASE_SRC_PROC_TXA_EN, 0)?;
+            self.base[BASE_ADR_SRC0] = fd;
+            self.base[BASE_ADR_SRC1] = fd;
+            self.base[BASE_ADR_SRC2] = fd;
+            for reg_idx in [REG_SRC_1_OFFSET, REG_SRC_2_OFFSET] {
+                if let Some(offset) = self.offsets.iter_mut().find(|o| o.reg_idx == reg_idx) {
+                    offset.offset = luma as u32;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn apply_tune(&mut self, job: &Job<'_>) -> Result<(), String> {
         let tune = job.tune;
         let curr = tune.curr_scene_motion_flag() != 0;
@@ -2323,7 +2474,13 @@ impl RegisterFile {
         // the hardware stamps every P picture as an IDR.
         self.set(
             &vepu580_regs::H264_SYNT_NAL_NAL_REF_IDC,
-            if state.is_idr { 3 } else { 2 },
+            if state.is_idr {
+                3
+            } else if job.save_pass1 {
+                1
+            } else {
+                2
+            },
         )?;
         self.set(
             &vepu580_regs::H264_SYNT_NAL_NAL_UNIT_TYPE,
@@ -2606,6 +2763,8 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
         super_i_thd: config.super_i_thd,
         super_p_thd: config.super_p_thd,
         rc_priority: config.rc_priority,
+        debreath_en: config.debreath_en,
+        debreath_strength: config.debreath_strength,
         drop_mode: config.drop_mode,
         drop_threshold: config.drop_threshold,
         drop_gap: config.drop_gap,
@@ -2862,6 +3021,12 @@ fn reconstruction_sizes(config: &EncoderConfig) -> Result<(usize, usize), String
     Ok((header + body, thumb))
 }
 
+/// VEPU580's debreath reconstruction is linear NV12 aligned to 64x16, unlike
+/// the normal FBC surfaces.
+fn pass1_luma_size(config: &EncoderConfig) -> usize {
+    align(config.width, 64) * align(config.height, 16)
+}
+
 /// The motion derivation info buffer, `mdinfo_size` of the C test path: one
 /// 16-byte record per 64x16 macroblock block of the coded size. The reference
 /// harness passes this for every picture, and `setup_vepu580_recn_refr`'s
@@ -3007,6 +3172,69 @@ mod tests {
         }
     }
 
+    #[test]
+    fn debreath_patches_the_linear_pass1_buffer_and_second_pass_source() {
+        let config = config();
+        let p_state = FrameState {
+            index: 1,
+            is_idr: false,
+            frame_num: 1,
+            poc: 2,
+            refresh_idx: 1,
+            ..FrameState::default()
+        };
+
+        let mut save = job(&config, p_state);
+        save.pass1_fd = 29;
+        save.save_pass1 = true;
+        let saved = build_registers(&save).unwrap();
+        assert_eq!(saved.base[BASE_RFPW_H], 29);
+        assert_eq!(saved.base[BASE_RFPW_B], 29);
+        assert_eq!(
+            saved.get(&vepu580_regs::BASE_ENC_PIC_CUR_FRM_REF).unwrap(),
+            1
+        );
+        assert_eq!(
+            saved.get(&vepu580_regs::BASE_ENC_PIC_REC_FBC_DIS).unwrap(),
+            1
+        );
+        assert_eq!(
+            saved.get(&vepu580_regs::H264_SYNT_NAL_NAL_REF_IDC).unwrap(),
+            1,
+            "pass1 is a non-reference P picture"
+        );
+        let luma = pass1_luma_size(&config) as u32;
+        assert_eq!(
+            saved
+                .offsets
+                .iter()
+                .find(|o| o.reg_idx == REG_RFPW_B)
+                .unwrap()
+                .offset,
+            luma
+        );
+
+        let mut use_first = job(&config, FrameState::default());
+        use_first.pass1_fd = 29;
+        use_first.use_pass1 = true;
+        let used = build_registers(&use_first).unwrap();
+        assert_eq!(used.base[BASE_ADR_SRC0], 29);
+        assert_eq!(used.base[BASE_ADR_SRC1], 29);
+        assert_eq!(used.base[BASE_ADR_SRC2], 29);
+        assert_eq!(used.get(&vepu580_regs::BASE_SRC_FMT_SRC_CFMT).unwrap(), 6);
+        assert_eq!(used.get(&vepu580_regs::BASE_SRC_FMT_OUT_FMT).unwrap(), 1);
+        for reg_idx in [REG_SRC_1_OFFSET, REG_SRC_2_OFFSET] {
+            assert_eq!(
+                used.offsets
+                    .iter()
+                    .find(|o| o.reg_idx == reg_idx)
+                    .unwrap()
+                    .offset,
+                luma
+            );
+        }
+    }
+
     /// A job on stand-in fds, which the register builder only copies around.
     fn job(config: &EncoderConfig, state: FrameState) -> Job<'_> {
         Job {
@@ -3027,6 +3255,9 @@ mod tests {
             rc: None,
             state,
             output_capacity: 119_296,
+            save_pass1: false,
+            use_pass1: false,
+            pass1_fd: -1,
         }
     }
 
@@ -3217,7 +3448,7 @@ mod tests {
 
     /// The GOP walk the slice header has to report. PocType 20 without B frames
     /// is a recurrence of +2 per picture, reset at an IDR, and idr_pic_id
-    /// alternates across IDR pictures - the same numbers `h264e_dpb` and
+    /// increments across IDR pictures - the same numbers `h264e_dpb` and
     /// `h264e_slice_init` produce, and the same ones the C encoder's second
     /// picture carried (`frame_num = 1`, `poc_lsb = 2`).
     #[test]
@@ -3235,10 +3466,10 @@ mod tests {
                 (true, 0, 0, 0),  // IDR
                 (false, 1, 2, 0), // P
                 (false, 2, 4, 0), // P
-                (true, 0, 0, 1),  // IDR, idr_pic_id alternates
+                (true, 0, 0, 1),  // IDR
                 (false, 1, 2, 1),
                 (false, 2, 4, 1),
-                (true, 0, 0, 0),
+                (true, 0, 0, 2), // IDR
             ]
         );
     }
@@ -4209,6 +4440,9 @@ mod tests {
             md_sad_b16num: [0, 0, 0, 1],
             madi_b16num: [100, 0, 0, 0],
             qp_sum: 7800,
+            pnum_i16: 0,
+            pnum_i8: 0,
+            pnum_i4: 0,
         };
 
         let mut tune = SceneTune::new(false);
@@ -4826,6 +5060,9 @@ mod rate_control_registers {
             gdr_fd: -1,
             ext_fd: -1,
             ext_offset: 0,
+            save_pass1: false,
+            use_pass1: false,
+            pass1_fd: -1,
         })
         .unwrap();
         file.apply_rate_control(&config, is_idr, &rate).unwrap();
@@ -4909,6 +5146,9 @@ mod rate_control_registers {
             gdr_fd: -1,
             ext_fd: -1,
             ext_offset: 0,
+            save_pass1: false,
+            use_pass1: false,
+            pass1_fd: -1,
         })
         .unwrap();
         let rate = RateControl {
