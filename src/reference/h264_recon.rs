@@ -78,23 +78,17 @@ pub fn reconstruct_i_macroblock(
 
     match macroblock.kind {
         IntraMacroblockKind::I4x4 => {
+            let mut decoded_blocks = 0u16;
             for block in I4X4_BLOCK_ORDER {
                 let bx = mb_x + (block % 4) * 4;
                 let by = mb_y + (block / 4) * 4;
-                let order = I4X4_BLOCK_ORDER
-                    .iter()
-                    .position(|&candidate| candidate == block)
-                    .unwrap();
                 let row = block / 4;
                 let column = block % 4;
                 let top_right_available = if row == 0 {
                     mb_y > 0
                 } else if column < 3 {
                     let top_right = (row - 1) * 4 + column + 1;
-                    I4X4_BLOCK_ORDER
-                        .iter()
-                        .position(|&candidate| candidate == top_right)
-                        .is_some_and(|position| position < order)
+                    decoded_blocks & (1 << top_right) != 0
                 } else {
                     false
                 };
@@ -115,6 +109,7 @@ pub fn reconstruct_i_macroblock(
                     block,
                     bit_depth,
                 );
+                decoded_blocks |= 1 << block;
             }
         }
         IntraMacroblockKind::I8x8 => {
