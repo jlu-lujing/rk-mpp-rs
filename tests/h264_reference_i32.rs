@@ -58,6 +58,15 @@ fn cabac_two_macroblock_i16_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
+fn cabac_textured_i4x4_matches_ffmpeg_yuv420p() {
+    compare_fixture(
+        include_bytes!("../tests/data/h264_i4x4_cabac.264"),
+        include_bytes!("../tests/data/h264_i4x4_cabac.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
 fn sixteen_macroblock_luma_matches_ffmpeg_yuv420p() {
     compare_fixture_planes(
         include_bytes!("../tests/data/h264_i64_cavlc.264"),

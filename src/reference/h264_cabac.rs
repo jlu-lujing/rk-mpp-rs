@@ -1,8 +1,8 @@
 //! H.264 CABAC I-slice reconstruction.
 //!
-//! The current gates cover I16x16 luma/chroma DC+AC residual syntax and
-//! two-macroblock propagation along one slice row. Multi-row pictures, I4x4
-//! residual syntax and 8x8 transforms remain open.
+//! The current gates cover I16x16 and I4x4 luma/chroma residual syntax plus
+//! two-macroblock propagation along one slice row. Multi-row pictures and 8x8
+//! transforms remain open.
 
 use std::fmt;
 
@@ -164,9 +164,13 @@ pub fn decode_cabac_i_slice(
 
     if kind == IntraMacroblockKind::I4x4 {
         let mut decoded_cbp = 0u8;
-        for (bit, context) in [3usize, 3, 3, 3].into_iter().enumerate() {
-            decoded_cbp |= (decoder.decode_bin(&mut contexts[73 + context]) as u8) << bit;
-        }
+        decoded_cbp |= decoder.decode_bin(&mut contexts[73]) as u8;
+        let context = usize::from(decoded_cbp & 1 == 0);
+        decoded_cbp |= (decoder.decode_bin(&mut contexts[73 + context]) as u8) << 1;
+        let context = 2 * usize::from(decoded_cbp & 1 == 0);
+        decoded_cbp |= (decoder.decode_bin(&mut contexts[73 + context]) as u8) << 2;
+        let context = usize::from(decoded_cbp & 4 == 0) + 2 * usize::from(decoded_cbp & 2 == 0);
+        decoded_cbp |= (decoder.decode_bin(&mut contexts[73 + context]) as u8) << 3;
         let chroma_cbp = if decoder.decode_bin(&mut contexts[77]) == 0 {
             0
         } else if decoder.decode_bin(&mut contexts[81]) == 0 {
@@ -175,12 +179,9 @@ pub fn decode_cabac_i_slice(
             2
         };
         cbp = decoded_cbp | (chroma_cbp << 4);
-        if decoded_cbp != 0 || chroma_cbp != 0 {
-            return Err(H264CabacError::Unsupported("CABAC I4x4 residual syntax"));
-        }
     }
 
-    let qp_delta = if matches!(kind, IntraMacroblockKind::I16x16 { .. }) {
+    let qp_delta = if matches!(kind, IntraMacroblockKind::I16x16 { .. }) || cbp != 0 {
         if decoder.decode_bin(&mut contexts[60]) != 0 {
             return Err(H264CabacError::Unsupported("CABAC mb_qp_delta"));
         }
@@ -227,7 +228,7 @@ pub fn decode_cabac_i_slice(
                 let decoded = decode_cabac_block(
                     &mut decoder,
                     &mut contexts,
-                    ResidualCategory::Luma4x4,
+                    ResidualCategory::LumaAc16,
                     15,
                     cbf_context,
                 )?;
@@ -237,10 +238,32 @@ pub fn decode_cabac_i_slice(
                 }
             }
         }
+    } else if kind == IntraMacroblockKind::I4x4 {
+        for group in 0..4 {
+            if cbp & (1 << group) == 0 {
+                continue;
+            }
+            for sub in 0..4 {
+                let block = I4X4_BLOCK_ORDER[group * 4 + sub];
+                let cbf_context = luma_4x4_cbf_context(&residual.luma_non_zero, block);
+                if let Some(block_residual) = decode_cabac_block(
+                    &mut decoder,
+                    &mut contexts,
+                    ResidualCategory::Luma4x4,
+                    16,
+                    cbf_context,
+                )? {
+                    residual.luma_non_zero[block] = block_residual.total_coeff as u8;
+                    residual.luma_4x4[block] = Some(block_residual);
+                }
+            }
+        }
     }
 
-    if matches!(kind, IntraMacroblockKind::I16x16 { .. })
-        && cbp & 0x30 != 0
+    if matches!(
+        kind,
+        IntraMacroblockKind::I16x16 { .. } | IntraMacroblockKind::I4x4
+    ) && cbp & 0x30 != 0
         && context.chroma_format_idc == 1
     {
         for plane in 0..2 {
@@ -659,7 +682,7 @@ fn decode_cabac_i16_macroblock(
             if let Some(block_residual) = decode_cabac_block(
                 decoder,
                 contexts,
-                ResidualCategory::Luma4x4,
+                ResidualCategory::LumaAc16,
                 15,
                 cbf_context,
             )? {
@@ -995,6 +1018,7 @@ fn init_i_contexts(slice_qp: i32) -> [Context; 276] {
 #[derive(Debug, Clone, Copy)]
 enum ResidualCategory {
     LumaDc,
+    LumaAc16,
     Luma4x4,
     ChromaDc,
     ChromaAc,
@@ -1004,7 +1028,8 @@ impl ResidualCategory {
     fn context_bases(self) -> (usize, usize, usize) {
         match self {
             ResidualCategory::LumaDc => (105, 166, 227),
-            ResidualCategory::Luma4x4 => (120, 181, 237),
+            ResidualCategory::LumaAc16 => (120, 181, 237),
+            ResidualCategory::Luma4x4 => (134, 195, 247),
             ResidualCategory::ChromaDc => (149, 210, 257),
             ResidualCategory::ChromaAc => (152, 213, 266),
         }
@@ -1119,6 +1144,12 @@ fn luma_ac_cbf_context(non_zero: &[u8; 16], block: usize) -> usize {
     let left = block % 4 == 0 || non_zero[block - 1] != 0;
     let top = block / 4 == 0 || non_zero[block - 4] != 0;
     89 + usize::from(left) + 2 * usize::from(top)
+}
+
+fn luma_4x4_cbf_context(non_zero: &[u8; 16], block: usize) -> usize {
+    let left = block % 4 == 0 || non_zero[block - 1] != 0;
+    let top = block / 4 == 0 || non_zero[block - 4] != 0;
+    93 + usize::from(left) + 2 * usize::from(top)
 }
 
 fn chroma_ac_cbf_context(non_zero: &[u8], block: usize) -> usize {

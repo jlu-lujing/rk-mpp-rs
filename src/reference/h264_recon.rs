@@ -81,7 +81,24 @@ pub fn reconstruct_i_macroblock(
             for block in I4X4_BLOCK_ORDER {
                 let bx = mb_x + (block % 4) * 4;
                 let by = mb_y + (block / 4) * 4;
-                let neighbors = gather_4x4(luma, bx, by, bit_depth);
+                let order = I4X4_BLOCK_ORDER
+                    .iter()
+                    .position(|&candidate| candidate == block)
+                    .unwrap();
+                let row = block / 4;
+                let column = block % 4;
+                let top_right_available = if row == 0 {
+                    mb_y > 0
+                } else if column < 3 {
+                    let top_right = (row - 1) * 4 + column + 1;
+                    I4X4_BLOCK_ORDER
+                        .iter()
+                        .position(|&candidate| candidate == top_right)
+                        .is_some_and(|position| position < order)
+                } else {
+                    false
+                };
+                let neighbors = gather_4x4(luma, bx, by, bit_depth, top_right_available);
                 let prediction = predict_4x4(
                     macroblock.luma_prediction_modes[block],
                     bit_depth,
@@ -166,10 +183,16 @@ fn validate_plane(plane: &PlaneMut<'_>) -> Result<(), ReconstructionError> {
     }
 }
 
-fn gather_4x4(plane: &PlaneMut<'_>, x: usize, y: usize, bit_depth: u8) -> Intra4x4Neighbors {
+fn gather_4x4(
+    plane: &PlaneMut<'_>,
+    x: usize,
+    y: usize,
+    bit_depth: u8,
+    top_right_available: bool,
+) -> Intra4x4Neighbors {
     let top = (y > 0).then(|| read_top(plane, x, y, 4, bit_depth));
     let left = (x > 0).then(|| read_left(plane, x, y, 4, bit_depth));
-    let top_right = if top.is_some() && x + 8 <= plane.width {
+    let top_right = if top.is_some() && top_right_available && x + 8 <= plane.width {
         Some(std::array::from_fn(|index| {
             plane.data[(y - 1) * plane.stride + x + 4 + index]
         }))
