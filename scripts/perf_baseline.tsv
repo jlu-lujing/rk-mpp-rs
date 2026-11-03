@@ -1,0 +1,10 @@
+# kind	key	limit
+#
+# decode: minimum allowed "rust speed" percentage versus C MPP. Zero means
+# Rust must not be slower; negative values allow bounded measurement noise.
+# scale: maximum allowed shipped vector_ms per frame on t6.
+decode	test720.264	-5.0
+scale	1920x1080->640x640	0.65
+scale	1280x720->640x640	1.15
+scale	640x480->640x640	0.50
+scale	1930x1080->640x640	1.65

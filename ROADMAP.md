@@ -2110,6 +2110,16 @@ pipeline uses.
   Every General and integer-ratio test shape remains byte-identical to the
   scalar reference.
 
+- The board regression umbrella now has an opt-in hot-path performance gate.
+  `PERF_GATE=1 scripts/board_regress_all.sh` delegates to
+  `scripts/board_perf_gate.sh`, which runs eleven interleaved `test720`
+  decode samples plus the four release scale rows and checks
+  `scripts/perf_baseline.tsv`. A missing row or a decode result below
+  `-5%` versus C MPP, or a scale result above its t6 millisecond limit,
+  fails the umbrella. On the first gated run t6 measured Rust decode at
+  `+49.9%` versus the C decoder and scale rows at `0.482`, `0.927`, `0.382`
+  and `1.303` ms.
+
 - Frame readback rule: the decoder output mapping is uncached, so a plane is
   read exactly once and eight bytes per load. `codec::yuv::nv12_to_planar` is
   the shared implementation behind H.264, H.265, VP9 and AV1. The per-sample

@@ -336,7 +336,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       路径内没有 `DmaBuf::alloc`/`mmap`。H.265 session 同样在 `open_inner`
       完成 input/output/two surfaces/motion-info 的固定分配。
 - [ ] W8-4 1088 行编码的抖动定位（当前与 C 平手、双峰 ~110/~140ms）
-- [ ] W8-5 基准门槛化：`board_regress_all.sh` 记录关键行吞吐，回归超阈值即失败
+- [x] W8-5 基准门槛化：`scripts/board_perf_gate.sh` 运行 t6 的交错
+      `test720` decode 与四条 NEON scale 基准，读取
+      `scripts/perf_baseline.tsv` 的相对吞吐/毫秒上限；任一关键行缺失或超限
+      即失败。`PERF_GATE=1 scripts/board_regress_all.sh` 已接入，默认关闭以
+      保持普通正确性回归的速度。
 - [ ] W8-6 内存占用报告（各 codec 峰值）与优化
 
 验收：每个已交付路径"不慢于 C"；推理链路（JPEG+scale）保持现有 30% 与 2.9–3.8× 优势。

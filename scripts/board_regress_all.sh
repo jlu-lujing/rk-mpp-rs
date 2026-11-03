@@ -14,6 +14,7 @@ BOARD="${BOARD:-t6}"
 #   scripts/board_regress_all.sh              # quick fixed-QP matrix (6 GOP cells)
 #   FULL_QP=1 scripts/board_regress_all.sh    # the whole 24-cell size x profile x QP matrix
 #   SKIP=vp8,m2v scripts/board_regress_all.sh
+#   PERF_GATE=1 scripts/board_regress_all.sh  # also enforce t6 hot-path limits
 set -uo pipefail
 
 logdir=/tmp/rk-mpp-rs-regress
@@ -74,6 +75,10 @@ fi
 
 run h264-encode-rc scripts/board_h264_cbr_vs_mpp.sh
 run h264-status scripts/board_h264_status_vs_mpp.sh
+
+if [ "${PERF_GATE:-0}" = 1 ]; then
+  run perf-hotpaths scripts/board_perf_gate.sh
+fi
 
 printf '\n================ board regression summary ================\n'
 for line in "${summary[@]}"; do printf '%s\n' "$line"; done
