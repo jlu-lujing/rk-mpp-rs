@@ -1316,11 +1316,12 @@ in what order the evidence gets produced.
       slice type, the P-picture fields, the two SEI NAL units and the whole
       rate-control block are generated now, and the 24-cell matrix plus the GOP and
       CBR/VBR runs are byte-exact because of it.
-       What is still a recorded-image replay: the `cime_multi` / `rime_multi` corner
-       of section 3 (where the 2024-04 build and
-       master disagree), and the parts of `calc_cime_parameter` whose outputs happen
-       to be constant for every fixture
-       used so far. Those are listed as open work, not presented as ported.
+       The former recorded-image corner is now generated too: `calc_cime_parameter`
+       derives search/cache geometry from level and picture size, and the tune
+       pass writes all four CIME/RIME rows plus the intra/skip RDO thresholds and
+       weights on every picture. The quiet row no longer depends on the captured
+       template; a unit test corrupts those words and verifies `apply_tune`
+       restores them from the reference tables.
 - [x] VEPU580 register field map generated from the C struct definitions
       (`tools/gen_vepu580_regs.py` to `src/hal/vepu580_regs.rs`): the absolute word,
       bit position and width of every named field in `Vepu580CtlCommon`,

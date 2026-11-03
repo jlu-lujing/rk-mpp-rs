@@ -1738,55 +1738,81 @@ impl RegisterFile {
             self.set_param(&vepu580_regs::S3_FME_SQI_THD0_CIME_SAD_PU16_TH, 0)?;
             self.set_param(&vepu580_regs::S3_FME_SQI_THD1_MOVE_LAMBDA, 8)?;
         }
-        if flag != SCENE_MOTION_FLAG_DEFAULT {
-            // The rows the patch re-writes on every picture. With a detected
-            // change the recorded image is the wrong row, so they get written
-            // from the tables; the quiet case is covered by the test above.
-            let intra_fields = [
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT00,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT01,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT02,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT10,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT11,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT12,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT20,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT21,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT22,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT30,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT31,
-                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT32,
-            ];
-            for (field, value) in intra_fields.iter().zip(INTRA_ATF_WEIGHTS[flag]) {
-                self.set(field, value)?;
-            }
-            let skip_fields = [
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT00,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT10,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT11,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT12,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT20,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT21,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT22,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT30,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT31,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT32,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT40,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT41,
-                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT42,
-            ];
-            for (field, value) in skip_fields.iter().zip(SKIP_ATF_WEIGHTS[flag]) {
-                self.set(field, value)?;
-            }
-            let cime = &CIME_MULTI[flag];
-            self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI0, cime[0])?;
-            self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI1, cime[1])?;
-            self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI1_CIME_MULTI2, cime[2])?;
-            self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI1_CIME_MULTI3, cime[3])?;
-            let rime = &RIME_MULTI[flag];
-            self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI0, rime[0])?;
-            self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI1, rime[1])?;
-            self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI2, rime[2])?;
+        // The reference patch writes every one of these rows on every picture,
+        // regardless of whether the detector moved. Generating the quiet row as
+        // well keeps the captured image from acting as a hidden input.
+        self.set(
+            &vepu580_regs::RDO_RDO_INTRA_CIME_THD0_ATF_RDO_INTRA_CIME_THD0,
+            28,
+        )?;
+        self.set(
+            &vepu580_regs::RDO_RDO_INTRA_CIME_THD0_ATF_RDO_INTRA_CIME_THD1,
+            44,
+        )?;
+        self.set(
+            &vepu580_regs::RDO_RDO_INTRA_CIME_THD1_ATF_RDO_INTRA_CIME_THD2,
+            72,
+        )?;
+        self.set(
+            &vepu580_regs::RDO_RDO_SKIP_CIME_THD0_ATF_RDO_SKIP_CIME_THD0,
+            10,
+        )?;
+        self.set(
+            &vepu580_regs::RDO_RDO_SKIP_CIME_THD0_ATF_RDO_SKIP_CIME_THD1,
+            8,
+        )?;
+        self.set(
+            &vepu580_regs::RDO_RDO_SKIP_CIME_THD1_ATF_RDO_SKIP_CIME_THD2,
+            15,
+        )?;
+        self.set(
+            &vepu580_regs::RDO_RDO_SKIP_CIME_THD1_ATF_RDO_SKIP_CIME_THD3,
+            25,
+        )?;
+        let intra_fields = [
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT00,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT01,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT02,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT10,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT11,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT1_ATF_RDO_INTRA_WGT12,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT20,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT21,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT2_ATF_RDO_INTRA_WGT22,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT30,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT31,
+            &vepu580_regs::RDO_RDO_INTRA_ATF_WGT3_ATF_RDO_INTRA_WGT32,
+        ];
+        for (field, value) in intra_fields.iter().zip(INTRA_ATF_WEIGHTS[flag]) {
+            self.set(field, value)?;
         }
+        let skip_fields = [
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT00,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT10,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT11,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT12,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT20,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT21,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT1_ATF_RDO_SKIP_ATF_WGT22,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT30,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT31,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT2_ATF_RDO_SKIP_ATF_WGT32,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT40,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT41,
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT3_ATF_RDO_SKIP_ATF_WGT42,
+        ];
+        for (field, value) in skip_fields.iter().zip(SKIP_ATF_WEIGHTS[flag]) {
+            self.set(field, value)?;
+        }
+        let cime = &CIME_MULTI[flag];
+        self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI0, cime[0])?;
+        self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI1, cime[1])?;
+        self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI1_CIME_MULTI2, cime[2])?;
+        self.set_param(&vepu580_regs::S3_CIME_SQI_MULTI1_CIME_MULTI3, cime[3])?;
+        let rime = &RIME_MULTI[flag];
+        self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI0, rime[0])?;
+        self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI1, rime[1])?;
+        self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI2, rime[2])?;
         Ok(())
     }
     /// `setup_vepu580_roi`, which runs whenever the task carries ROI data:
@@ -3604,6 +3630,64 @@ mod tests {
                 "{} carries the row the C build wrote",
                 field.name
             );
+        }
+    }
+
+    #[test]
+    fn tune_default_rows_are_rebuilt_instead_of_replayed() {
+        let cfg = config();
+        let mut file = registers_at(&cfg, FrameState::default().next(60, 0));
+        file.set(
+            &vepu580_regs::RDO_RDO_INTRA_CIME_THD0_ATF_RDO_INTRA_CIME_THD0,
+            0,
+        )
+        .unwrap();
+        file.set(
+            &vepu580_regs::RDO_RDO_SKIP_CIME_THD0_ATF_RDO_SKIP_CIME_THD0,
+            0,
+        )
+        .unwrap();
+        file.set(&vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT00, 0)
+            .unwrap();
+        file.set(
+            &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT00,
+            0,
+        )
+        .unwrap();
+        file.set_param(&vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI0, 0)
+            .unwrap();
+        file.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI0, 0)
+            .unwrap();
+
+        file.apply_tune(&job(&cfg, FrameState::default().next(60, 0)))
+            .unwrap();
+        for (field, want) in [
+            (
+                &vepu580_regs::RDO_RDO_INTRA_CIME_THD0_ATF_RDO_INTRA_CIME_THD0,
+                28,
+            ),
+            (
+                &vepu580_regs::RDO_RDO_SKIP_CIME_THD0_ATF_RDO_SKIP_CIME_THD0,
+                10,
+            ),
+            (
+                &vepu580_regs::RDO_RDO_INTRA_ATF_WGT0_ATF_RDO_INTRA_WGT00,
+                INTRA_ATF_WEIGHTS[SCENE_MOTION_FLAG_DEFAULT][0],
+            ),
+            (
+                &vepu580_regs::RDO_RDO_SKIP_ATF_WGT0_ATF_RDO_SKIP_ATF_WGT00,
+                SKIP_ATF_WEIGHTS[SCENE_MOTION_FLAG_DEFAULT][0],
+            ),
+            (
+                &vepu580_regs::S3_CIME_SQI_MULTI0_CIME_MULTI0,
+                CIME_MULTI[SCENE_MOTION_FLAG_DEFAULT][0],
+            ),
+            (
+                &vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI0,
+                RIME_MULTI[SCENE_MOTION_FLAG_DEFAULT][0],
+            ),
+        ] {
+            assert_eq!(file.get(field).unwrap(), want, "{}", field.name);
         }
     }
 

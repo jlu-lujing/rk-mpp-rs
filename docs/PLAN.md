@@ -174,8 +174,12 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 - [x] W1-7 level 参数化：`level_idc` 生成 SPS/PPS/`rect_size/mv_limit`，并逐级验证
       （至少 3.1/4.0/5.1）。
-- [ ] W1-8 `calc_cime_parameter` + `cime_multi`/`rime_multi` 生成（当前仍在用录制字）。
-- [ ] W1-9 `setup_vepu580_me` 全量参数化（`mei_stor`、search range、colmv）
+- [x] W1-8 `calc_cime_parameter` + `cime_multi`/`rime_multi` 生成。搜索范围/
+      cache 由 level、编码尺寸和 GMV=0 推导；tune patch 的四行 CIME/RIME 与
+      RDO 阈值/权重现在每帧从表重建，不再把 quiet 行留在录制模板里。
+- [x] W1-9 `setup_vepu580_me` 全量参数化：`pmv_mdst`、`mv_limit`、CIME/RIME
+      搜索范围、`mei_stor` 和真实 motion-info DMA 地址均已生成；相关字段由
+      level、slice type、几何和分配后的 fd 驱动。
 - [~] W1-10 宽度 > 4096 —— 偏移与 RCB 已推导并有宿主单测，`board_h264_wide_vs_mpp.sh`
       尚无记录运行。
 - [x] W1-11 `cal_first_i_start_qp` —— 板级 5/5 格逐字节（含 QP 轨迹）。
