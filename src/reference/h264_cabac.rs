@@ -1,16 +1,15 @@
 //! H.264 CABAC I-slice reconstruction.
 //!
-//! The current gates cover single-macroblock I16x16, I4x4 and I8x8 syntax,
-//! two-macroblock propagation along one slice row, and I16x16 propagation
-//! across multiple rows. I4x4/I8x8 multi-macroblock propagation remains open.
+//! The current gates cover I16x16, I4x4 and I8x8 syntax plus multi-macroblock
+//! propagation across rows for 4:2:0 I-slices beginning at macroblock zero.
 
 use std::fmt;
 
 use super::cabac::{CabacDecoder, Context};
 use super::h264_deblock::DeblockMap;
 use super::h264_mb::{
-    predict_intra_mode, IntraMacroblockKind, MacroblockContext, ParsedIMacroblock,
-    ParsedMacroblockResidual, I4X4_BLOCK_ORDER,
+    intra_mode_grid, predict_intra_mode, IntraMacroblockKind, IntraModeNeighbors,
+    MacroblockContext, ParsedIMacroblock, ParsedMacroblockResidual, I4X4_BLOCK_ORDER,
 };
 use super::h264_recon::{reconstruct_i_macroblock, PlaneMut};
 use super::h264_residual::assemble_i_macroblock_residual;
@@ -47,12 +46,18 @@ pub struct DecodedCabacSlice {
 struct CabacMbNeighbors {
     left_decoded: bool,
     top_decoded: bool,
+    left_i16_or_pcm: bool,
+    top_i16_or_pcm: bool,
     left_flags: u16,
     top_flags: u16,
     left_chroma_mode: u8,
     top_chroma_mode: u8,
     left_luma: [u8; 4],
     top_luma: [u8; 4],
+    left_modes: [u8; 4],
+    top_modes: [u8; 4],
+    left_transform8: bool,
+    top_transform8: bool,
     left_chroma: [[u8; 4]; 2],
     top_chroma: [[u8; 4]; 2],
 }
@@ -419,6 +424,9 @@ fn decode_cabac_i_slice_multi(
     let mut chroma_counts: [Vec<Vec<u8>>; 2] =
         [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]];
     let mut chroma_modes = vec![0u8; total_mbs];
+    let mut luma_modes = vec![[0u8; 16]; total_mbs];
+    let mut transform8 = vec![false; total_mbs];
+    let mut i16_or_pcm = vec![false; total_mbs];
     let mut coded_flags = vec![0u16; total_mbs];
     let mut qp_map = vec![0u8; total_mbs];
 
@@ -454,9 +462,12 @@ fn decode_cabac_i_slice_multi(
             &luma_counts,
             &chroma_counts,
             &chroma_modes,
+            &luma_modes,
+            &transform8,
+            &i16_or_pcm,
             &coded_flags,
         );
-        let decoded_mb = decode_cabac_i16_macroblock(
+        let decoded_mb = decode_cabac_i_macroblock(
             &mut decoder,
             &mut contexts,
             context,
@@ -472,7 +483,11 @@ fn decode_cabac_i_slice_multi(
             bit_depth_chroma: context.bit_depth_chroma,
             transform_bypass: false,
             scan4: super::h264::CavlcScan4x4::Frame,
-            scan8: super::h264::CavlcScan8x8::Frame,
+            scan8: if slice.field_pic {
+                super::h264::CavlcScan8x8::CabacField
+            } else {
+                super::h264::CavlcScan8x8::CabacFrame
+            },
             luma_4x4_scaling: None,
             luma_8x8_scaling: None,
             chroma_4x4_scaling: [None, None],
@@ -503,6 +518,12 @@ fn decode_cabac_i_slice_multi(
         chroma_counts[0][mb_index].copy_from_slice(&decoded_mb.residual.chroma_non_zero[0]);
         chroma_counts[1][mb_index].copy_from_slice(&decoded_mb.residual.chroma_non_zero[1]);
         chroma_modes[mb_index] = decoded_mb.chroma_prediction_mode;
+        luma_modes[mb_index] = intra_mode_grid(&decoded_mb.macroblock);
+        transform8[mb_index] = decoded_mb.macroblock.kind == IntraMacroblockKind::I8x8;
+        i16_or_pcm[mb_index] = matches!(
+            decoded_mb.macroblock.kind,
+            IntraMacroblockKind::I16x16 { .. }
+        );
         coded_flags[mb_index] = decoded_mb.coded_flags;
         qp_map[mb_index] = qp as u8;
         macroblocks += 1;
@@ -539,6 +560,9 @@ fn collect_cabac_neighbors(
     luma_counts: &[[u8; 16]],
     chroma_counts: &[Vec<Vec<u8>>; 2],
     chroma_modes: &[u8],
+    luma_modes: &[[u8; 16]],
+    transform8: &[bool],
+    i16_or_pcm: &[bool],
     coded_flags: &[u16],
 ) -> CabacMbNeighbors {
     let left = index
@@ -549,17 +573,24 @@ fn collect_cabac_neighbors(
     let mut neighbors = CabacMbNeighbors {
         left_decoded: left.is_some(),
         top_decoded: top.is_some(),
+        left_i16_or_pcm: left.is_some_and(|left| i16_or_pcm[left]),
+        top_i16_or_pcm: top.is_some_and(|top| i16_or_pcm[top]),
         left_flags: left.map_or(0x7cf, |left| coded_flags[left]),
         top_flags: top.map_or(0x7cf, |top| coded_flags[top]),
         left_chroma_mode: left.map_or(0, |left| chroma_modes[left]),
         top_chroma_mode: top.map_or(0, |top| chroma_modes[top]),
         left_luma: [0; 4],
         top_luma: [0; 4],
+        left_modes: [0; 4],
+        top_modes: [0; 4],
+        left_transform8: left.is_some_and(|left| transform8[left]),
+        top_transform8: top.is_some_and(|top| transform8[top]),
         left_chroma: [[0; 4]; 2],
         top_chroma: [[0; 4]; 2],
     };
     if let Some(left) = left {
         neighbors.left_luma = std::array::from_fn(|row| luma_counts[left][row * 4 + 3]);
+        neighbors.left_modes = std::array::from_fn(|row| luma_modes[left][row * 4 + 3]);
         for plane in 0..2 {
             for row in 0..2 {
                 neighbors.left_chroma[plane][row] = chroma_counts[plane][left][row * 2 + 1];
@@ -568,6 +599,7 @@ fn collect_cabac_neighbors(
     }
     if let Some(top) = top {
         neighbors.top_luma = std::array::from_fn(|column| luma_counts[top][12 + column]);
+        neighbors.top_modes = std::array::from_fn(|column| luma_modes[top][12 + column]);
         for plane in 0..2 {
             for column in 0..2 {
                 neighbors.top_chroma[plane][column] = chroma_counts[plane][top][2 + column];
@@ -577,7 +609,7 @@ fn collect_cabac_neighbors(
     neighbors
 }
 
-fn decode_cabac_i16_macroblock(
+fn decode_cabac_i_macroblock(
     decoder: &mut CabacDecoder<'_>,
     contexts: &mut [Context],
     context: MacroblockContext,
@@ -585,35 +617,66 @@ fn decode_cabac_i16_macroblock(
     last_qscale_diff: &mut i32,
 ) -> Result<DecodedCabacMacroblock, H264CabacError> {
     let mb_type_context =
-        3 + usize::from(neighbors.left_decoded) + usize::from(neighbors.top_decoded);
-    if decoder.decode_bin(&mut contexts[mb_type_context]) == 0 {
-        return Err(H264CabacError::Unsupported("CABAC I4x4 macroblock"));
-    }
-    if decoder.decode_terminate() {
-        return Err(H264CabacError::Unsupported("I_PCM macroblock"));
-    }
-    let mut type_index = 1usize;
-    type_index += 12 * decoder.decode_bin(&mut contexts[6]) as usize;
-    if decoder.decode_bin(&mut contexts[7]) != 0 {
-        type_index += 4 + 4 * decoder.decode_bin(&mut contexts[8]) as usize;
-    }
-    type_index += 2 * decoder.decode_bin(&mut contexts[9]) as usize;
-    type_index += decoder.decode_bin(&mut contexts[10]) as usize;
-    let decoded_prediction_mode = i16_prediction_mode(type_index);
-    let prediction_mode = check_i16_prediction_mode(
-        decoded_prediction_mode,
-        neighbors.top_decoded,
-        neighbors.left_decoded,
-    );
-    let cbp = match type_index {
-        1..=4 => 0,
-        5..=8 => 16,
-        9..=12 => 32,
-        13..=16 => 15,
-        17..=20 => 31,
-        21..=24 => 47,
-        _ => return Err(H264CabacError::Malformed("intra macroblock type")),
-    };
+        3 + usize::from(neighbors.left_i16_or_pcm) + usize::from(neighbors.top_i16_or_pcm);
+    let (kind, luma_prediction_modes, mut cbp) =
+        if decoder.decode_bin(&mut contexts[mb_type_context]) == 0 {
+            let transform_context = 399
+                + usize::from(neighbors.left_transform8)
+                + usize::from(neighbors.top_transform8);
+            let transform_8x8 =
+                context.transform_8x8 && decoder.decode_bin(&mut contexts[transform_context]) != 0;
+            let modes = decode_cabac_luma_modes(
+                decoder,
+                contexts,
+                transform_8x8,
+                IntraModeNeighbors {
+                    left: std::array::from_fn(|row| {
+                        neighbors.left_decoded.then_some(neighbors.left_modes[row])
+                    }),
+                    top: std::array::from_fn(|column| {
+                        neighbors.top_decoded.then_some(neighbors.top_modes[column])
+                    }),
+                },
+            );
+            let kind = if transform_8x8 {
+                IntraMacroblockKind::I8x8
+            } else {
+                IntraMacroblockKind::I4x4
+            };
+            (kind, modes, 0)
+        } else {
+            if decoder.decode_terminate() {
+                return Err(H264CabacError::Unsupported("I_PCM macroblock"));
+            }
+            let mut type_index = 1usize;
+            type_index += 12 * decoder.decode_bin(&mut contexts[6]) as usize;
+            if decoder.decode_bin(&mut contexts[7]) != 0 {
+                type_index += 4 + 4 * decoder.decode_bin(&mut contexts[8]) as usize;
+            }
+            type_index += 2 * decoder.decode_bin(&mut contexts[9]) as usize;
+            type_index += decoder.decode_bin(&mut contexts[10]) as usize;
+            let decoded_prediction_mode = i16_prediction_mode(type_index);
+            let prediction_mode = check_i16_prediction_mode(
+                decoded_prediction_mode,
+                neighbors.top_decoded,
+                neighbors.left_decoded,
+            );
+            let cbp = match type_index {
+                1..=4 => 0,
+                5..=8 => 16,
+                9..=12 => 32,
+                13..=16 => 15,
+                17..=20 => 31,
+                21..=24 => 47,
+                _ => return Err(H264CabacError::Malformed("intra macroblock type")),
+            };
+            (
+                IntraMacroblockKind::I16x16 { prediction_mode },
+                vec![prediction_mode; 16],
+                cbp,
+            )
+        };
+
     let chroma_context = 64
         + usize::from(neighbors.left_decoded && neighbors.left_chroma_mode != 0)
         + 2 * usize::from(neighbors.top_decoded && neighbors.top_chroma_mode != 0);
@@ -632,6 +695,9 @@ fn decode_cabac_i16_macroblock(
         neighbors.left_decoded,
     );
 
+    if !matches!(kind, IntraMacroblockKind::I16x16 { .. }) {
+        cbp = decode_cabac_cbp(decoder, contexts, neighbors);
+    }
     let qp_delta = decode_cabac_qp_delta(decoder, contexts, last_qscale_diff)?;
     let mut residual = ParsedMacroblockResidual {
         luma_dc: None,
@@ -645,35 +711,82 @@ fn decode_cabac_i16_macroblock(
         end_bit: 0,
     };
 
-    let luma_dc_context = coded_block_flag_context(85, 0x100, neighbors);
-    let luma_dc = if decoder.decode_bin(&mut contexts[luma_dc_context]) == 0 {
-        super::h264_cavlc::CavlcResidual {
-            scan: [0; 16],
-            total_coeff: 0,
-            trailing_ones: 0,
-            bits_consumed: 0,
-        }
-    } else {
-        decode_cabac_residual(decoder, contexts, ResidualCategory::LumaDc, 16)?
-    };
-    residual.luma_dc_non_zero = luma_dc.total_coeff as u8;
-    residual.luma_dc = Some(luma_dc);
+    match kind {
+        IntraMacroblockKind::I16x16 { .. } => {
+            let luma_dc_context = coded_block_flag_context(85, 0x100, neighbors);
+            let luma_dc = if decoder.decode_bin(&mut contexts[luma_dc_context]) == 0 {
+                super::h264_cavlc::CavlcResidual {
+                    scan: [0; 16],
+                    total_coeff: 0,
+                    trailing_ones: 0,
+                    bits_consumed: 0,
+                }
+            } else {
+                decode_cabac_residual(decoder, contexts, ResidualCategory::LumaDc, 16)?
+            };
+            residual.luma_dc_non_zero = luma_dc.total_coeff as u8;
+            residual.luma_dc = Some(luma_dc);
 
-    if cbp & 0x0f != 0 {
-        for block in 0..16 {
-            let cbf_context =
-                luma_ac_cbf_context_with_neighbors(&residual.luma_non_zero, block, neighbors);
-            if let Some(block_residual) = decode_cabac_block(
-                decoder,
-                contexts,
-                ResidualCategory::LumaAc16,
-                15,
-                cbf_context,
-            )? {
-                residual.luma_non_zero[block] = block_residual.total_coeff as u8;
-                residual.luma_4x4[block] = Some(block_residual);
+            if cbp & 0x0f != 0 {
+                for block in 0..16 {
+                    let cbf_context = luma_ac_cbf_context_with_neighbors(
+                        &residual.luma_non_zero,
+                        block,
+                        neighbors,
+                    );
+                    if let Some(block_residual) = decode_cabac_block(
+                        decoder,
+                        contexts,
+                        ResidualCategory::LumaAc16,
+                        15,
+                        cbf_context,
+                    )? {
+                        residual.luma_non_zero[block] = block_residual.total_coeff as u8;
+                        residual.luma_4x4[block] = Some(block_residual);
+                    }
+                }
             }
         }
+        IntraMacroblockKind::I4x4 => {
+            for group in 0..4 {
+                if cbp & (1 << group) == 0 {
+                    continue;
+                }
+                for sub in 0..4 {
+                    let block = I4X4_BLOCK_ORDER[group * 4 + sub];
+                    let cbf_context = luma_4x4_cbf_context_with_neighbors(
+                        &residual.luma_non_zero,
+                        block,
+                        neighbors,
+                    );
+                    if let Some(block_residual) = decode_cabac_block(
+                        decoder,
+                        contexts,
+                        ResidualCategory::Luma4x4,
+                        16,
+                        cbf_context,
+                    )? {
+                        residual.luma_non_zero[block] = block_residual.total_coeff as u8;
+                        residual.luma_4x4[block] = Some(block_residual);
+                    }
+                }
+            }
+        }
+        IntraMacroblockKind::I8x8 => {
+            for group in 0..4 {
+                if cbp & (1 << group) == 0 {
+                    continue;
+                }
+                let block_residual = decode_cabac_residual_8x8(decoder, contexts)?;
+                set_luma8_non_zero(
+                    &mut residual.luma_non_zero,
+                    group,
+                    block_residual.total_coeff[0] as u8,
+                );
+                residual.luma_8x8[group] = Some(block_residual);
+            }
+        }
+        IntraMacroblockKind::IPcm => unreachable!(),
     }
 
     if cbp & 0x30 != 0 && context.chroma_format_idc == 1 {
@@ -726,8 +839,8 @@ fn decode_cabac_i16_macroblock(
 
     Ok(DecodedCabacMacroblock {
         macroblock: ParsedIMacroblock {
-            kind: IntraMacroblockKind::I16x16 { prediction_mode },
-            luma_prediction_modes: vec![prediction_mode; 16],
+            kind,
+            luma_prediction_modes,
             chroma_prediction_mode: Some(chroma_prediction_mode),
             coded_block_pattern: cbp,
             qp_delta,
@@ -744,6 +857,36 @@ fn coded_block_flag_context(base: usize, mask: u16, neighbors: CabacMbNeighbors)
     let left = !neighbors.left_decoded || neighbors.left_flags & mask != 0;
     let top = !neighbors.top_decoded || neighbors.top_flags & mask != 0;
     base + usize::from(left) + 2 * usize::from(top)
+}
+
+fn decode_cabac_cbp(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    neighbors: CabacMbNeighbors,
+) -> u8 {
+    let left = neighbors.left_flags;
+    let top = neighbors.top_flags;
+    let mut cbp = 0u8;
+
+    let context = usize::from(left & 0x02 == 0) + 2 * usize::from(top & 0x04 == 0);
+    cbp |= decoder.decode_bin(&mut contexts[73 + context]) as u8;
+    let context = usize::from(cbp & 0x01 == 0) + 2 * usize::from(top & 0x08 == 0);
+    cbp |= (decoder.decode_bin(&mut contexts[73 + context]) as u8) << 1;
+    let context = usize::from(left & 0x08 == 0) + 2 * usize::from(cbp & 0x01 == 0);
+    cbp |= (decoder.decode_bin(&mut contexts[73 + context]) as u8) << 2;
+    let context = usize::from(cbp & 0x04 == 0) + 2 * usize::from(cbp & 0x02 == 0);
+    cbp |= (decoder.decode_bin(&mut contexts[73 + context]) as u8) << 3;
+
+    let left_chroma = (left >> 4) & 0x03;
+    let top_chroma = (top >> 4) & 0x03;
+    let context = usize::from(left_chroma > 0) + 2 * usize::from(top_chroma > 0);
+    let chroma = if decoder.decode_bin(&mut contexts[77 + context]) == 0 {
+        0
+    } else {
+        let context = 4 + usize::from(left_chroma == 2) + 2 * usize::from(top_chroma == 2);
+        1 + decoder.decode_bin(&mut contexts[77 + context]) as u8
+    };
+    cbp | (chroma << 4)
 }
 
 fn decode_cabac_qp_delta(
@@ -1312,6 +1455,26 @@ fn luma_ac_cbf_context(non_zero: &[u8; 16], block: usize) -> usize {
 fn luma_4x4_cbf_context(non_zero: &[u8; 16], block: usize) -> usize {
     let left = block % 4 == 0 || non_zero[block - 1] != 0;
     let top = block / 4 == 0 || non_zero[block - 4] != 0;
+    93 + usize::from(left) + 2 * usize::from(top)
+}
+
+fn luma_4x4_cbf_context_with_neighbors(
+    non_zero: &[u8; 16],
+    block: usize,
+    neighbors: CabacMbNeighbors,
+) -> usize {
+    let row = block / 4;
+    let column = block % 4;
+    let left = if column == 0 {
+        !neighbors.left_decoded || neighbors.left_luma[row] != 0
+    } else {
+        non_zero[block - 1] != 0
+    };
+    let top = if row == 0 {
+        !neighbors.top_decoded || neighbors.top_luma[column] != 0
+    } else {
+        non_zero[block - 4] != 0
+    };
     93 + usize::from(left) + 2 * usize::from(top)
 }
 

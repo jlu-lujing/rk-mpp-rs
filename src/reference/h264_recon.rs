@@ -205,7 +205,8 @@ fn gather_4x4(
 fn gather_8x8(plane: &PlaneMut<'_>, x: usize, y: usize, bit_depth: u8) -> Intra8x8Neighbors {
     let top = (y > 0).then(|| read_top(plane, x, y, 8, bit_depth));
     let left = (x > 0).then(|| read_left(plane, x, y, 8, bit_depth));
-    let top_right = if top.is_some() && x + 16 <= plane.width {
+    let top_right_available = top.is_some() && (x % 16 == 0 || (y >= 16 && x + 16 <= plane.width));
+    let top_right = if top_right_available {
         Some(std::array::from_fn(|index| {
             plane.data[(y - 1) * plane.stride + x + 8 + index]
         }))
