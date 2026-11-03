@@ -847,145 +847,175 @@ impl Vepu580H264 {
             1 + (state.index - 2) % 2
         };
         // The model decides the picture's bits and QP before the register file is
-        // built; under fixed QP there is no decision to make.
-        let rc = match self.rc.as_mut() {
-            Some(model) => {
-                let frame = picture_frame_type(&state);
-                let (bit_target, quality_target) = model.start(frame);
-                Some(RateControl {
-                    bit_target,
-                    qp_target: quality_target as u32,
-                    qp_min: self.config.rc_qp_min,
-                    qp_max: self.config.rc_qp_max,
-                    qp_delta_row: 2,
-                    qp_delta_row_i: 2,
-                })
+        // built; under fixed QP there is no decision to make. The C re-encodes
+        // the same picture in the same reconstruction slot when the first result
+        // overshoots, so the loop reuses `state`, input and reference surfaces and
+        // only replaces the RC decision and output payload.
+        let frame = picture_frame_type(&state);
+        let (bit_target, mut quality_target) = match self.rc.as_mut() {
+            Some(model) => model.start(frame),
+            None => (0, i32::from(self.config.qp_init)),
+        };
+        let (payload, slice_lengths, statistics, measured) = loop {
+            let rc = self.rc.as_ref().map(|_| RateControl {
+                bit_target,
+                qp_target: quality_target as u32,
+                qp_min: self.config.rc_qp_min,
+                qp_max: self.config.rc_qp_max,
+                qp_delta_row: 2,
+                qp_delta_row_i: 2,
+            });
+            let job = Job {
+                config: &self.config,
+                input_fd: self.input.fd(),
+                output_fd: self.output.fd(),
+                current_fd: self.recons[self.slot].pixel.fd(),
+                current_thumb_fd: self.recons[self.slot].thumb.fd(),
+                md_fd: self.md_info.fd(),
+                reference_fd: self.recons[reference_slot].pixel.fd(),
+                reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
+                state,
+                output_capacity: logical_output_size(&self.config)?,
+                rc,
+                tune: &self.tune,
+                roi_fd: self.roi.as_ref().map_or(-1, |b| b.0.fd()),
+                roi_qp_fd: self.roi.as_ref().map_or(-1, |b| b.1.fd()),
+                gdr_fd: self.gdr_base.as_ref().map_or(-1, |b| b.fd()),
+                ext_fd: self.ext_line.as_ref().map_or(-1, |b| b.0.fd()),
+                ext_offset: self.ext_line.as_ref().map_or(0, |b| b.1 as u32),
+            };
+            // `setup_vepu580_intra_refresh` refills its base table on every refresh
+            // picture - the band slid - and flushes it to DMA before the submit.
+            if self.config.gdr && state.is_i_refresh {
+                let table = gdr_base_table(&self.config, state.refresh_idx);
+                let buffer = self
+                    .gdr_base
+                    .as_mut()
+                    .ok_or_else(|| "GDR enabled without a base table".to_string())?;
+                buffer
+                    .sync_write_begin()
+                    .map_err(|e| format!("GDR table sync begin: {e}"))?;
+                buffer.as_mut_slice()[..table.len()].copy_from_slice(&table);
+                buffer
+                    .sync_write_end()
+                    .map_err(|e| format!("GDR table flush: {e}"))?;
             }
-            None => None,
-        };
-        let job = Job {
-            config: &self.config,
-            input_fd: self.input.fd(),
-            output_fd: self.output.fd(),
-            current_fd: self.recons[self.slot].pixel.fd(),
-            current_thumb_fd: self.recons[self.slot].thumb.fd(),
-            md_fd: self.md_info.fd(),
-            reference_fd: self.recons[reference_slot].pixel.fd(),
-            reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
-            state,
-            output_capacity: logical_output_size(&self.config)?,
-            rc,
-            tune: &self.tune,
-            roi_fd: self.roi.as_ref().map_or(-1, |b| b.0.fd()),
-            roi_qp_fd: self.roi.as_ref().map_or(-1, |b| b.1.fd()),
-            gdr_fd: self.gdr_base.as_ref().map_or(-1, |b| b.fd()),
-            ext_fd: self.ext_line.as_ref().map_or(-1, |b| b.0.fd()),
-            ext_offset: self.ext_line.as_ref().map_or(0, |b| b.1 as u32),
-        };
-        // `setup_vepu580_intra_refresh` refills its base table on every refresh
-        // picture - the band slid - and flushes it to DMA before the submit.
-        // Static ROI tables are not touched: a configured region list and the
-        // GDR table share only the `roi_addr` register, and the refresh table
-        // wins there exactly as it does in the C, running after `setup_vepu580_roi`.
-        if self.config.gdr && state.is_i_refresh {
-            let table = gdr_base_table(&self.config, state.refresh_idx);
-            let buffer = self
-                .gdr_base
-                .as_mut()
-                .ok_or_else(|| "GDR enabled without a base table".to_string())?;
-            buffer
-                .sync_write_begin()
-                .map_err(|e| format!("GDR table sync begin: {e}"))?;
-            buffer.as_mut_slice()[..table.len()].copy_from_slice(&table);
-            buffer
-                .sync_write_end()
-                .map_err(|e| format!("GDR table flush: {e}"))?;
-        }
-        let registers = build_registers(&job)?;
-        dump_job_registers(&job, &registers);
+            let registers = build_registers(&job)?;
+            dump_job_registers(&job, &registers);
 
-        // The SOC returns the number of encoded bytes in STATUS[0]. Reading it
-        // back is mandatory: ioctl and poll completion alone do not prove that
-        // a valid NAL was written.
-        let mut status = vec![0u32; STATUS_WORDS];
-        let mut hw_status = [0u32; 1];
-        let mut batch = Batch::new();
-        batch.reg_write(&registers.ctl, CTL_OFFSET);
-        batch.reg_write(&registers.base, BASE_OFFSET);
-        batch.reg_write(&registers.rc_klut, RCKLUT_OFFSET);
-        batch.reg_write(&registers.param, PARAM_OFFSET);
-        batch.reg_write(&registers.rdo, RDO_OFFSET);
-        batch.reg_write(&registers.scl, SCL_OFFSET);
-        batch.reg_write(&registers.osd, OSD_OFFSET);
-        batch.reg_offsets(&registers.offsets);
-        if !registers.rcb.is_empty() {
-            // The two `MPP_DEV_RCB_INFO` calls the C makes between its offset
-            // setup and its read setup: the extension buffer's size for the
-            // reg183 half, zero for reg182's own.
-            batch.rcb_info(&registers.rcb);
-        }
-        batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
-        batch.reg_read(&mut status, STATUS_OFFSET);
-        self.svc
-            .submit_batch(&mut batch)
-            .map_err(|e| format!("H.264 register submit: {e}"))?;
-        let mut slice_lengths = Vec::new();
-        if self.config.split_out & encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
-            let mut complete = false;
-            for _ in 0..=4096 {
-                let mut info = [SliceInfo::default()];
-                let count = self
-                    .svc
-                    .poll_irq(&mut info)
-                    .map_err(|e| format!("H.264 slice poll: {e}"))?;
-                for slice in &info[..count] {
-                    let (length, last) = slice.vepu580();
-                    slice_lengths.push(length as usize);
-                    complete |= last;
-                }
-                if complete {
-                    break;
-                }
+            let mut status = vec![0u32; STATUS_WORDS];
+            let mut hw_status = [0u32; 1];
+            let mut batch = Batch::new();
+            batch.reg_write(&registers.ctl, CTL_OFFSET);
+            batch.reg_write(&registers.base, BASE_OFFSET);
+            batch.reg_write(&registers.rc_klut, RCKLUT_OFFSET);
+            batch.reg_write(&registers.param, PARAM_OFFSET);
+            batch.reg_write(&registers.rdo, RDO_OFFSET);
+            batch.reg_write(&registers.scl, SCL_OFFSET);
+            batch.reg_write(&registers.osd, OSD_OFFSET);
+            batch.reg_offsets(&registers.offsets);
+            if !registers.rcb.is_empty() {
+                batch.rcb_info(&registers.rcb);
             }
-            if !complete {
-                return Err("H.264 slice FIFO did not report the last slice".into());
-            }
-        } else {
+            batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
+            batch.reg_read(&mut status, STATUS_OFFSET);
             self.svc
-                .poll_hw_finish()
-                .map_err(|e| format!("H.264 poll: {e}"))?;
-        }
+                .submit_batch(&mut batch)
+                .map_err(|e| format!("H.264 register submit: {e}"))?;
+            let mut slice_lengths = Vec::new();
+            if self.config.split_out & encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+                let mut complete = false;
+                for _ in 0..=4096 {
+                    let mut info = [SliceInfo::default()];
+                    let count = self
+                        .svc
+                        .poll_irq(&mut info)
+                        .map_err(|e| format!("H.264 slice poll: {e}"))?;
+                    for slice in &info[..count] {
+                        let (length, last) = slice.vepu580();
+                        slice_lengths.push(length as usize);
+                        complete |= last;
+                    }
+                    if complete {
+                        break;
+                    }
+                }
+                if !complete {
+                    return Err("H.264 slice FIFO did not report the last slice".into());
+                }
+            } else {
+                self.svc
+                    .poll_hw_finish()
+                    .map_err(|e| format!("H.264 poll: {e}"))?;
+            }
 
-        let errors = hw_status[0] & HW_ERROR_MASK;
-        if errors != 0 {
-            return Err(format!(
-                "VEPU580 H.264 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
-                hw_status[0]
-            ));
-        }
-        if hw_status[0] & 1 == 0 {
-            return Err(format!(
-                "VEPU580 H.264 completed ioctl without enc_done (int_sta=0x{:08x})",
-                hw_status[0]
-            ));
-        }
+            let errors = hw_status[0] & HW_ERROR_MASK;
+            if errors != 0 {
+                return Err(format!(
+                    "VEPU580 H.264 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
+                    hw_status[0]
+                ));
+            }
+            if hw_status[0] & 1 == 0 {
+                return Err(format!(
+                    "VEPU580 H.264 completed ioctl without enc_done (int_sta=0x{:08x})",
+                    hw_status[0]
+                ));
+            }
 
-        let payload_len = status[0] as usize;
-        if payload_len < 8 || payload_len > self.output.len() {
-            return Err(format!(
-                "invalid VEPU580 H.264 length {payload_len} (capacity {})",
-                self.output.len()
-            ));
-        }
-        self.output
-            .sync_read_begin()
-            .map_err(|e| format!("H.264 output invalidate: {e}"))?;
-        let payload = self.output.as_slice()[..payload_len].to_vec();
-        let nal_validation = validate_nal_bytes(&payload, if state.is_idr { 5 } else { 1 });
-        self.output
-            .sync_read_end()
-            .map_err(|e| format!("H.264 output sync end: {e}"))?;
-        nal_validation?;
+            let payload_len = status[0] as usize;
+            if payload_len < 8 || payload_len > self.output.len() {
+                return Err(format!(
+                    "invalid VEPU580 H.264 length {payload_len} (capacity {})",
+                    self.output.len()
+                ));
+            }
+            self.output
+                .sync_read_begin()
+                .map_err(|e| format!("H.264 output invalidate: {e}"))?;
+            let payload = self.output.as_slice()[..payload_len].to_vec();
+            let nal_validation = validate_nal_bytes(&payload, if state.is_idr { 5 } else { 1 });
+            self.output
+                .sync_read_end()
+                .map_err(|e| format!("H.264 output sync end: {e}"))?;
+            nal_validation?;
+
+            let statistics = Statistics::from_words(&status);
+            dump_statistics(&state, &status);
+            let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as i32;
+            let measured = rc_model::Measured {
+                bits: statistics.bitstream_bytes as i32 * 8,
+                quality: statistics.qp_sum as i32 / mbs,
+                madi: if statistics.num_b16 > 0 {
+                    (statistics.madi / statistics.num_b16) as i32
+                } else {
+                    0
+                },
+                madp: if statistics.num_ctu > 0 {
+                    (statistics.madp / statistics.num_ctu) as i32
+                } else {
+                    0
+                },
+            };
+            drop(job);
+            // The HAL's get-statistics pass updates the scene tune for every
+            // hardware attempt, including a result that is about to be replaced
+            // by a re-encode.
+            self.tune.update(&statistics);
+            if let Some(model) = self.rc.as_mut() {
+                if let Some(next_quality) = model.reencode_quality(
+                    frame,
+                    bit_target,
+                    quality_target,
+                    measured,
+                    self.config.max_reencode_times,
+                ) {
+                    quality_target = next_quality;
+                    continue;
+                }
+            }
+            break (payload, slice_lengths, statistics, measured);
+        };
 
         // SPS and PPS precede an IDR only; a P picture rides on the parameters it
         // already established, which is what `mpi_enc_test` streams too.
@@ -1020,37 +1050,8 @@ impl Vepu580H264 {
         annex_b.extend_from_slice(&headers);
         annex_b.extend_from_slice(&payload);
         let packets = output_packets(&headers, &payload, &slice_lengths)?;
-        let statistics = Statistics::from_words(&status);
-        dump_statistics(&state, &status);
-        // Copy the rate-control decision out before the update below so the job
-        // - which borrows the tune state - stops borrowing it.
-        let job_rc = job.rc;
-        drop(job);
-        // `vepu580_h264e_tune_stat_update` runs at the end of the reference's
-        // get-statistics pass, on the finished picture's STATUS window.
-        self.tune.update(&statistics);
-        if let (Some(model), Some(rc)) = (self.rc.as_mut(), job_rc) {
-            let frame = picture_frame_type(&state);
-            // Everything the model weighs comes out of the same STATUS window, with
-            // the same divisors the HAL uses before handing it to the reference's
-            // rate control: the coded size (`bs_lgth_l32` * 8), the mean QP over
-            // 16x16 blocks, and the two block-difference averages.
-            let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as i32;
-            let measured = rc_model::Measured {
-                bits: statistics.bitstream_bytes as i32 * 8,
-                quality: statistics.qp_sum as i32 / mbs,
-                madi: if statistics.num_b16 > 0 {
-                    (statistics.madi / statistics.num_b16) as i32
-                } else {
-                    0
-                },
-                madp: if statistics.num_ctu > 0 {
-                    (statistics.madp / statistics.num_ctu) as i32
-                } else {
-                    0
-                },
-            };
-            model.end_with(frame, rc.bit_target, measured);
+        if let Some(model) = self.rc.as_mut() {
+            model.end_with(frame, bit_target, measured);
         }
         Ok(EncodedFrame {
             annex_b,

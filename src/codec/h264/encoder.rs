@@ -83,6 +83,9 @@ pub struct EncoderConfig {
     /// the reference schedule into `SMART_P` only when its derived `vgop`
     /// reaches one second of output and remains shorter than the IGOP.
     pub smart_vi_len: u32,
+    /// `rc:max_reenc_times`. The H.264 API defaults to one; `mpi_enc_test`
+    /// explicitly disables it, while low-delay packet output also forces it off.
+    pub max_reencode_times: u32,
     /// The deblocking triple of `MppEncH264Cfg`, reaching the slice syntax the
     /// hardware emits: `disable_deblocking_filter_idc`,
     /// `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2`.
@@ -247,6 +250,7 @@ impl EncoderConfig {
             hier_qp_delta: [0; 4],
             hier_frame_num: [0; 4],
             smart_vi_len: 0,
+            max_reencode_times: 1,
             deblock_disable: 0,
             deblock_offset_alpha: 0,
             deblock_offset_beta: 0,

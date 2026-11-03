@@ -287,6 +287,11 @@ pub struct Model {
     /// `hier_frm_cnt` and `qp_layer_id` from `rc_hier_calc_dealt_qp`.
     hier_frame_cnt: [i32; 4],
     qp_layer_id: i32,
+    /// `rc_model_v2_check_reenc` state. The current phase intentionally wires
+    /// the CBR re-encode branch; the same-frame hardware loop is independent of
+    /// the controller and later modes can reuse it.
+    reenc_cnt: u32,
+    qp_add: i32,
 }
 
 /// Everything the hardware measured about one picture, as the reference's
@@ -384,6 +389,8 @@ impl Model {
             scale_qp: 0,
             hier_frame_cnt: [0; 4],
             qp_layer_id: 0,
+            reenc_cnt: 0,
+            qp_add: 0,
             cfg,
         };
         out.bits_frm_init();
@@ -645,6 +652,8 @@ impl Model {
         self.first = false;
         self.scale_qp = self.cur_scale_qp;
         self.pre_mean_qp = measured.quality;
+        self.reenc_cnt = 0;
+        self.qp_add = 0;
         if self.cfg.mode == Mode::Avbr {
             self.moving_judge_update(frame, measured.bits, measured.quality, measured.madp);
             self.update(frame, measured.bits);
@@ -999,6 +1008,187 @@ impl Model {
         self.qp_layer_id
     }
 
+    /// `rc_model_v2_check_reenc` plus `rc_model_v2_hal_start`. Returns the QP to
+    /// use for the same picture when another hardware attempt is required. The C
+    /// first compares the picture's measured bits with its allocation and
+    /// instantaneous rate, then the mode's re-encode ratio moves the quantiser
+    /// before the current frame is submitted again.
+    pub fn reencode_quality(
+        &mut self,
+        frame: FrameType,
+        bit_target: i32,
+        quality_target: i32,
+        measured: Measured,
+        max_times: u32,
+    ) -> Option<i32> {
+        if self.reenc_cnt >= max_times {
+            return None;
+        }
+
+        let stat_time = self.cfg.stats_time;
+        let last_ins_bps = self.stat_bits.sum() / stat_time;
+        let ins_bps =
+            (last_ins_bps * stat_time - self.stat_bits.pre_val(-1) + measured.bits) / stat_time;
+        let bit_thr = match frame {
+            FrameType::Intra => 3 * bit_target / 2,
+            _ => 3 * bit_target,
+        };
+        if measured.bits <= bit_thr {
+            return None;
+        }
+
+        let target_bps = self.target_bps;
+        let must_reencode = if self.cfg.mode == Mode::Cbr {
+            target_bps / 20 < ins_bps - last_ins_bps
+                && (target_bps + target_bps / 10 < ins_bps
+                    || target_bps - target_bps / 10 > ins_bps)
+        } else {
+            let max_bps = self.cfg.bps_max;
+            max_bps - (max_bps >> 3) < ins_bps && target_bps / 20 < ins_bps - last_ins_bps
+        };
+        if !must_reencode {
+            return None;
+        }
+
+        if measured.bits > bit_thr * 2 {
+            self.qp_add += 3;
+        } else if measured.bits > bit_thr * 3 / 2 {
+            self.qp_add += 2;
+        } else if measured.bits > bit_thr {
+            self.qp_add += 1;
+        }
+        if quality_target + self.qp_add > self.cfg.quality_max {
+            return None;
+        }
+
+        self.next_ratio = match self.cfg.mode {
+            Mode::Cbr => {
+                self.reencode_cbr_ratio(frame, bit_target, measured, ins_bps, last_ins_bps)
+            }
+            Mode::Vbr | Mode::Avbr => {
+                self.reencode_vbr_ratio(bit_target, measured, ins_bps, last_ins_bps)
+            }
+        };
+        self.reenc_cnt += 1;
+
+        let i_delta = if frame == FrameType::Intra {
+            self.cfg.i_quality_delta
+        } else {
+            0
+        };
+        let quality = if frame == FrameType::Intra {
+            self.cur_scale_qp += self.next_ratio;
+            let quality = (self.cur_scale_qp >> 6) - i_delta;
+            self.cur_scale_qp = clip(
+                self.cur_scale_qp,
+                self.cfg.quality_min << 6,
+                self.cfg.quality_max << 6,
+            );
+            quality
+        } else {
+            let qp_scale = clip(
+                self.cur_scale_qp + self.next_ratio,
+                self.cfg.quality_min << 6,
+                self.cfg.quality_max << 6,
+            );
+            self.cur_scale_qp = qp_scale;
+            let mut quality = qp_scale >> 6;
+            if frame == FrameType::InterVi {
+                quality -= self.cfg.vi_quality_delta;
+            }
+            quality
+        };
+        Some(clip(quality, self.cfg.quality_min, self.cfg.quality_max))
+    }
+
+    /// `reenc_calc_cbr_ratio`. The super-frame branch is absent because this
+    /// driver has not enabled a super-frame policy.
+    fn reencode_cbr_ratio(
+        &self,
+        frame: FrameType,
+        bit_target: i32,
+        measured: Measured,
+        ins_bps: i32,
+        pre_ins_bps: i32,
+    ) -> i32 {
+        let real_bit = measured.bits;
+        let target_bps = self.target_bps;
+        let mut water_level = self.stat_watl + real_bit - bit_target;
+        if water_level > self.watl_thrd {
+            water_level = self.watl_thrd - self.bit_per_frame;
+        }
+        water_level = water_level.max(0);
+
+        let mut bit_diff_ratio = if bit_target > real_bit {
+            32 * (real_bit - bit_target) / real_bit
+        } else {
+            32 * (real_bit - bit_target) / bit_target
+        };
+        let idx1 = clip(ins_bps / (target_bps >> 5), 0, 63) as usize;
+        let idx2 = clip(pre_ins_bps / (target_bps >> 5), 0, 63) as usize;
+        let mut ins_ratio = TAB_LNX[idx1] - TAB_LNX[idx2];
+        let mut bps_ratio = 96 * (ins_bps - target_bps) / target_bps;
+        let mut wl_ratio = 32 * (water_level - self.watl_base) / self.watl_base;
+
+        if pre_ins_bps < ins_bps && target_bps != pre_ins_bps {
+            ins_ratio = clip(6 * ins_ratio, -192, 256);
+        } else if frame == FrameType::Intra {
+            ins_ratio = clip(3 * ins_ratio, -192, 256);
+        } else {
+            ins_ratio = 0;
+        }
+        bit_diff_ratio = clip(bit_diff_ratio, -128, 256);
+        bps_ratio = clip(bps_ratio, -32, 32);
+        wl_ratio = clip(wl_ratio, -32, 32);
+
+        let mut next_ratio = bit_diff_ratio + ins_ratio + bps_ratio + wl_ratio;
+        if frame == FrameType::Intra && measured.madi > 0 {
+            let tar_bpp = bit_target / self.cfg.total_mb;
+            let lnb_t = (tar_bpp as f32).ln();
+            let c = 6.7204f32;
+            let a = -0.1435f32;
+            let b = 0.0438f32;
+            let start_qp = self.cur_scale_qp >> 6;
+            let qp_c = ((lnb_t - measured.madi as f32 * b - c) / a + 14.0) as i32;
+            if qp_c > start_qp {
+                next_ratio = (qp_c << 6) - self.cur_scale_qp;
+            }
+        }
+        next_ratio
+    }
+
+    /// `reenc_calc_vbr_ratio`; AVBR selects this same function in
+    /// `bits_model_init`, despite using its own normal allocator.
+    fn reencode_vbr_ratio(
+        &self,
+        bit_target: i32,
+        measured: Measured,
+        ins_bps: i32,
+        pre_ins_bps: i32,
+    ) -> i32 {
+        let real_bit = measured.bits;
+        let target_bps = self.target_bps;
+        let max_bps_target = self.cfg.bps_max;
+        let mut bit_diff_ratio = if bit_target <= real_bit {
+            32 * (real_bit - bit_target) / bit_target
+        } else {
+            32 * (real_bit - bit_target) / real_bit
+        };
+
+        let idx1 = clip(ins_bps / (max_bps_target >> 5), 0, 63) as usize;
+        let idx2 = clip(pre_ins_bps / (max_bps_target >> 5), 0, 63) as usize;
+        let mut ins_ratio = if pre_ins_bps < ins_bps && target_bps < ins_bps {
+            clip(6 * (TAB_LNX[idx1] - TAB_LNX[idx2]), -192, 256)
+        } else {
+            0
+        };
+        let mut bps_ratio = 96 * (ins_bps - target_bps) / target_bps;
+        bit_diff_ratio = clip(bit_diff_ratio, -128, 256);
+        bps_ratio = clip(bps_ratio, -32, 32);
+        ins_ratio = clip(ins_ratio, -128, 256);
+        bit_diff_ratio + ins_ratio + bps_ratio
+    }
+
     /// `last_inst_bps`, the previous picture's instantaneous rate.
     pub fn last_inst_bps(&self) -> i32 {
         self.last_inst_bps
@@ -1311,6 +1501,31 @@ mod tests {
 
         let (target, quality) = model.start(FrameType::InterP);
         assert_eq!((target, quality), (8_333, 27));
+    }
+
+    #[test]
+    fn cbr_reencodes_the_captured_low_bitrate_idr_at_qp_48() {
+        let mut cfg = Config::cbr(10_000, 8_333, 11_666, 60);
+        cfg.total_mb = 300;
+        let mut model = Model::new(cfg);
+
+        let (target, quality) = model.start(FrameType::Intra);
+        assert_eq!((target, quality), (2_898, 26));
+        assert_eq!(
+            model.reencode_quality(
+                FrameType::Intra,
+                target,
+                quality,
+                Measured {
+                    bits: 25_824,
+                    quality: 27,
+                    madi: 16,
+                    madp: 0,
+                },
+                1,
+            ),
+            Some(48)
+        );
     }
 
     /// VBR budgets from `bps_max` and steers towards `bps_target`. Both halves are

@@ -1739,6 +1739,16 @@ in what order the evidence gets produced.
       `scripts/board_h264_smartp_vs_mpp.sh` runs 33 pictures at `vi_len=31` across
       CBR, VBR and AVBR. Each stream is **37 NAL units byte-identical**, including
       the VI at picture 31 and its following P.
+- [~] **Same-frame re-encoding follows the reference's CBR/VBR/AVBR loop.**
+      `check_re_enc`, the CBR and VBR re-encode ratios, the VI-capable QP update
+      and the repeated hardware submission are wired. Every attempt updates the
+      scene tune exactly where the HAL's get-statistics pass does, while the RC
+      windows are committed only for the accepted payload. A low-bitrate
+      `testsrc2` run forces one oversized IDR: CBR submits seven jobs for six
+      pictures and QP moves 26 -> 46; VBR/AVBR submit eight jobs because a P
+      picture is also retried. `board_h264_reencode_vs_mpp.sh` compares the final
+      streams and all STATUS windows for every job. Super-frame/drop/pskip and
+      multi-pass remain open under W1-17.
 - [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
       What follows is the record of how it was measured, kept because the
       corrections in it are the useful part. `setup_vepu580_rc_base`'s VBR/CBR path -
