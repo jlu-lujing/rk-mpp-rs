@@ -774,7 +774,8 @@ impl Vepu580H264 {
                 RcMode::Vbr => "vbr",
                 RcMode::Avbr => "avbr",
                 _ => "cbr",
-            }),
+            })
+            .with_quality(self.config.rc_qp_min, self.config.rc_qp_max),
         };
         // A caller who left the initial quality unset hands the reference a -1
         // sentinel (`rc:qp_init = -1`), and `update_rc_cfg_log` prints what the
@@ -2247,8 +2248,8 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
         } else {
             i32::from(config.qp_init)
         },
-        quality_min: 8,
-        quality_max: 48,
+        quality_min: config.rc_qp_min as i32,
+        quality_max: config.rc_qp_max as i32,
         i_quality_delta: 2,
         total_mb: (config.coded_width() / 16) as i32 * (config.coded_height() / 16) as i32,
         mode: match config.rc_mode {
@@ -3209,6 +3210,23 @@ mod tests {
         let mut absurd = config();
         absurd.level_idc = 60;
         assert!(build_registers(&job(&absurd, FrameState::default())).is_err());
+    }
+
+    #[test]
+    fn rate_control_uses_the_configured_quality_band() {
+        let mut cfg = config();
+        cfg.rc_mode = RcMode::Cbr;
+        cfg.gop = 60;
+        cfg.quality_auto = true;
+        cfg.rc_qp_min = 10;
+        cfg.rc_qp_max = 51;
+        let model = rc_model_config(&cfg).unwrap();
+        assert_eq!(model.quality_min, 10);
+        assert_eq!(model.quality_max, 51);
+
+        cfg.rc_qp_min = 40;
+        cfg.rc_qp_max = 20;
+        assert!(cfg.validate().is_err());
     }
 
     /// The HAL reads the level `h264e_sps_update` has already raised to what the

@@ -32,6 +32,7 @@ fn encode_h264(
     frames: usize,
     gop: u32,
     bps: Option<(h264_syntax::RcMode, i64, i64, i64)>,
+    rc_qp_bounds: Option<(u32, u32)>,
     deblock: Option<(u32, i32, i32)>,
     rois: Vec<h264_syntax::RoiRegion>,
     gdr: Option<(h264_syntax::GdrMode, u32)>,
@@ -60,6 +61,10 @@ fn encode_h264(
     }
     config.qp_init = qp_init;
     config.quality_auto = quality_auto;
+    if let Some((min, max)) = rc_qp_bounds {
+        config.rc_qp_min = min;
+        config.rc_qp_max = max;
+    }
     config.gop = gop.max(1);
     // Same mapping `mpi_enc_test` uses: CABAC from Main upwards, transform-8x8
     // only at High.
@@ -990,7 +995,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -1022,6 +1027,7 @@ fn main() {
         // rate's slot when no rate control was asked for. A bare `target:min:max`
         // in the slot the scripts written before VBR existed use is still CBR.
         let mut bps: Option<(h264_syntax::RcMode, i64, i64, i64)> = None;
+        let mut rc_qp_bounds: Option<(u32, u32)> = None;
         let mut deblock: Option<(u32, i32, i32)> = None;
         // The `RoiRegionCfg` list `mpi_enc_test` adds per frame, in the same
         // add order.
@@ -1057,6 +1063,15 @@ fn main() {
                     }
                     _ => {
                         eprintln!("bad dblk; expected dblk:disable:alpha:beta");
+                        std::process::exit(2);
+                    }
+                }
+            } else if let Some(rest) = text.strip_prefix("qprc:") {
+                let parts: Vec<u32> = rest.split(':').filter_map(|s| s.parse().ok()).collect();
+                match parts.as_slice() {
+                    [min, max] => rc_qp_bounds = Some((*min, *max)),
+                    _ => {
+                        eprintln!("bad qprc; expected qprc:min:max");
                         std::process::exit(2);
                     }
                 }
@@ -1170,7 +1185,7 @@ fn main() {
             }
         }
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -1189,6 +1204,7 @@ fn main() {
             frames,
             gop,
             bps,
+            rc_qp_bounds,
             deblock,
             rois,
             gdr,

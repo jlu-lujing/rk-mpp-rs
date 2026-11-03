@@ -56,6 +56,7 @@ int main(int argc, char **argv)
     int bps_max = argc > 8 ? atoi(argv[8]) : 350000;
     int mode = argc > 9 ? atoi(argv[9]) : 1; /* 0: VBR, 1: CBR, 2: AVBR, 3: FIXQP */
     int level = argc > 10 ? atoi(argv[10]) : 30;
+    int mpi_quality = argc > 11 ? atoi(argv[11]) : 0;
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
@@ -110,6 +111,18 @@ int main(int argc, char **argv)
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max", 26));
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", 26));
         CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", 26));
+    } else if (mpi_quality) {
+        /* `mpi_enc_test.c` leaves qp_init auto and widens each general/intra
+         * band around MPP's library defaults. */
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_init", -1));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_min", 10));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max", 51));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", 10));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", 51));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_i", 10));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_i", 51));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_p", 10));
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_p", 51));
     }
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_target", bps_target));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));

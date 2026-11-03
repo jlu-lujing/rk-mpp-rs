@@ -258,6 +258,14 @@ impl RcCfgLine {
         self
     }
 
+    pub fn with_quality(mut self, min: u32, max: u32) -> Self {
+        self.min_quality = min as i32;
+        self.max_quality = max as i32;
+        self.min_i_quality = min as i32;
+        self.max_i_quality = max as i32;
+        self
+    }
+
     /// The fixed-QP rendering: every quality bound collapses onto `init_quality`
     /// and the I/QP delta is zero, as the reference's own output shows for
     /// `-rc 2 -qc 26:...`.
@@ -295,6 +303,15 @@ mod tests {
     const C_RC_CFG_SEI: &str = "00000001060554d7dc03c3c56f40e08ea9171ad2ef5e2364656661756c743a\
         66697871702d623a3238383030305b313530303030303a323530303030305d2d673a36302d713a32363a5b32\
         363a32365d3a5b32363a32365d3a300a80";
+
+    #[test]
+    fn rate_control_line_carries_the_harness_quality_band() {
+        let line = RcCfgLine::cbr(300_000, 250_000, 350_000, 60).with_quality(10, 51);
+        assert_eq!(
+            rc_cfg_line(&line),
+            "default:cbr-b:300000[250000:350000]-g:60-q:26:[10:51]:[10:51]:2\n"
+        );
+    }
 
     /// The same capture at 64x64, where the harness' derived target is 15360
     /// rather than 288000: `64 * 64 / 8 * 30`. Same bounds, because fixed QP never

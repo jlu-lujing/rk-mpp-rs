@@ -199,8 +199,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W1-16 hier QP / SMART_P（`hier_qp_cfg`、`vgop`、`vi_bit` 窗口）
 - [ ] W1-17 重编码与多 pass：`check_re_enc`、`reenc_calc_*_ratio`、super frame、
       `-n` 超发时的 drop/pskip 策略；补"同帧重编"路径
-- [ ] W1-18 与 `mpi_enc_test` 的配置对齐（其 CBR 首帧 QP=23 vs 库默认 26），
-      搞清楚它额外设了什么；能对齐则加一格对照
+- [x] W1-18 与 `mpi_enc_test` 的配置对齐：差异来自 harness 将
+      `rc:qp_init=-1` 并把 general/intra QP 范围从库默认 `8..48` 放宽到
+      `10..51`，不是 RC 模型差异。Rust 增加可配置 RC QP 范围；C probe 和
+      Rust 使用同一配置后，六帧 CBR 的 10 个 NAL 逐字节一致。
 
 - [x] **W1-19（P1 阻断，已闭合）P 帧在 1280x720 与参考分岔** —— 根因：FBC 体偏移
       （reg 164 / 166）写死成常量 8192，而 `pixel_buf_fbc_hdr_size = align(aligned_w*aligned_h/64, 8K)`

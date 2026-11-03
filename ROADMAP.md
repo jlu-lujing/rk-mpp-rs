@@ -1685,14 +1685,13 @@ in what order the evidence gets produced.
       NAL units identical, the version SEI framing-only as always. The two rc-cfg
       SEIs match byte for byte, which means the SEI's own rendering of the mode,
       bounds and I delta agreed before the payload did.
-      The reference side runs through `tools/rc_probe.c` rather than
-      `mpi_enc_test`, and that is a deliberate choice rather than convenience: both
-      sides then set exactly CBR, the bit rate and GOP 60 at 30 fps, leaving the
-      quality band at `h264e_api_v2.c`'s defaults, where `mpi_enc_test` configures
-      more of its own and lands its first picture at QP 23 against the library's
-      26. That harness difference is recorded as an open question, not papered
-      over: the same six-frame stream from `mpi_enc_test` is a different stream,
-      and matching it needs its exact configuration enumerated.
+      The reference side runs through `tools/rc_probe.c`. Its original cell leaves
+      the quality band at `h264e_api_v2.c`'s 8..48 / qp_init 26 defaults; the
+      `cbr-mpi` cell reproduces `mpi_enc_test`'s extra configuration exactly -
+      qp_init -1 and a 10..51 band for general and intra QPs. Rust exposes the same
+      band as `qprc:10:51`, while `auto` carries qp_init -1. With both sides aligned,
+      the six-frame CBR stream is ten NAL units byte-identical and the first picture
+      lands on the harness' QP 23 trajectory.
 - [x] **VBR, verified the same way.** `calc_vbr_ratio` is three terms rather than
       four - no buffer water level, because VBR is allowed to spend what it saved -
       with the bit-error weight at 32 instead of 52, the logarithm table indexed by
@@ -1715,8 +1714,9 @@ in what order the evidence gets produced.
       `mad_ratio` 258, `moving_ratio` 222, `gop_bits` 607031 and a first P target of
       9276 at QP 27. Reaching it needed the STATUS feedback the other modes ignore -
       `quality_real`, `madi` and `madp`, each with the divisor the HAL applies.
-      `board_h264_cbr_vs_mpp.sh` now runs all three modes and passes all three:
-      ten NAL units identical each, including the rc-cfg SEI's own mode name.
+      `board_h264_cbr_vs_mpp.sh` now runs all three modes plus the official-harness
+      alignment cell and passes all four: ten NAL units identical each, including
+      the rc-cfg SEI's own mode name and quality band.
 - [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
       What follows is the record of how it was measured, kept because the
       corrections in it are the useful part. `setup_vepu580_rc_base`'s VBR/CBR path -

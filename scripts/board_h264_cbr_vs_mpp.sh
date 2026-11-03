@@ -2,12 +2,11 @@
 BOARD="${BOARD:-t6}"
 # CBR, VBR and AVBR: our encoder against the reference library, NAL by NAL.
 #
-# The reference is driven through `tools/rc_probe.c` rather than `mpi_enc_test`,
-# because both sides then configure the same three things - CBR, the bit rate and
-# GOP 60 at 30 fps - and leave the quality band at `h264e_api_v2.c`'s defaults.
-# `mpi_enc_test` configures more of its own (its quality lands a first picture at
-# QP 23 where the library's default is 26), so it is a harness comparison for a
-# later day, not this one.
+# The reference is driven through `tools/rc_probe.c`. The first three cells keep
+# the library's default quality band (8..48, qp_init 26). `cbr-mpi` reproduces
+# `mpi_enc_test`'s additional settings exactly: qp_init=-1 and a 10..51 band for
+# both general and intra QPs. The same settings reach Rust as `auto` plus
+# `qprc:10:51`; both streams converge on the harness' first-picture QP.
 #
 # The version SEI is compared for framing only: its payload is the build identity
 # of whichever encoder ran. Every other NAL, the rc-cfg SEI included, is compared
@@ -45,13 +44,23 @@ ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frame
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
 
 fail=0
-for entry in cbr:1 vbr:0 avbr:2; do
-  mode="${entry%%:*}"; probe_mode="${entry##*:}"
+for entry in cbr:1:0 vbr:0:0 avbr:2:0 cbr-mpi:1:1; do
+  mode="${entry%%:*}"
+  rest="${entry#*:}"
+  probe_mode="${rest%%:*}"
+  mpi_quality="${rest##*:}"
+  rust_mode="${mode%-mpi}"
+  quality=26
+  quality_extra=
+  if [ "$mpi_quality" -eq 1 ]; then
+    quality=auto
+    quality_extra=qprc:10:51
+  fi
   ssh "$BOARD" "sudo rm -f /tmp/rc_ours_$mode.264 /tmp/rc_c_$mode.264 &&
           cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture /tmp/rc_ours_$mode.264 \
-            $SIZE 26 baseline $FRAMES 60 $mode:$BPS_TARGET:$BPS_MIN:$BPS_MAX >/dev/null &&
+            $SIZE $quality baseline $FRAMES 60 $rust_mode:$BPS_TARGET:$BPS_MIN:$BPS_MAX $quality_extra >/dev/null &&
           sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/rc_probe $fixture /tmp/rc_c_$mode.264 \
-            $SIZE $FRAMES $BPS_TARGET $BPS_MIN $BPS_MAX $probe_mode >/dev/null 2>&1 &&
+            $SIZE $FRAMES $BPS_TARGET $BPS_MIN $BPS_MAX $probe_mode 30 $mpi_quality >/dev/null 2>&1 &&
           sudo chmod 644 /tmp/rc_ours_$mode.264 /tmp/rc_c_$mode.264"
   if ! ssh "$BOARD" "test -s /tmp/rc_ours_$mode.264 && test -s /tmp/rc_c_$mode.264"; then
     printf 'FAIL %s (one side produced no stream)\n' "$mode"; fail=1; continue

@@ -69,6 +69,10 @@ pub struct EncoderConfig {
     /// its bit budget (`cal_first_i_start_qp`); under fixed QP the reference forces
     /// 26 and logs about it, which is what `qp_init` already carries in that case.
     pub quality_auto: bool,
+    /// `rc:qp_min` / `rc:qp_max`. MPP's library defaults are 8/48;
+    /// `mpi_enc_test` explicitly widens them to 10/51.
+    pub rc_qp_min: u32,
+    pub rc_qp_max: u32,
     /// The deblocking triple of `MppEncH264Cfg`, reaching the slice syntax the
     /// hardware emits: `disable_deblocking_filter_idc`,
     /// `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2`.
@@ -227,6 +231,8 @@ impl EncoderConfig {
             fps_den: 1,
             vui: true,
             quality_auto: false,
+            rc_qp_min: 8,
+            rc_qp_max: 48,
             deblock_disable: 0,
             deblock_offset_alpha: 0,
             deblock_offset_beta: 0,
@@ -278,6 +284,12 @@ impl EncoderConfig {
         }
         if self.qp_init > 51 {
             return Err(Error("pic_init_qp must be in 0..=51".into()));
+        }
+        if self.rc_qp_min > self.rc_qp_max || self.rc_qp_max > 51 {
+            return Err(Error(format!(
+                "rate-control QP range {}..={} is invalid",
+                self.rc_qp_min, self.rc_qp_max
+            )));
         }
         if self.fps_num == 0 || self.fps_den == 0 {
             return Err(Error(
