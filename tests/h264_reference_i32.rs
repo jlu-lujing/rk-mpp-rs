@@ -104,6 +104,15 @@ fn cabac_i_pcm_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
+fn cabac_ten_bit_i_pcm_matches_ffmpeg_yuv420p10le() {
+    compare_fixture(
+        include_bytes!("../tests/data/h264_i_pcm_cabac_10bit.264"),
+        include_bytes!("../tests/data/h264_i_pcm_cabac_10bit.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
 fn cabac_mixed_i8x8_and_i4x4_across_rows_matches_ffmpeg_yuv420p() {
     compare_fixture(
         include_bytes!("../tests/data/h264_cabac_mixed_2x2.264"),
@@ -308,6 +317,25 @@ fn compare_fixture_planes(
         Some(&mut v),
     )
     .map_err(|error| error.to_string())?;
+    let sample_count = if compare_chroma {
+        y.len() + u.len() + v.len()
+    } else {
+        y.len()
+    };
+    let sample_bytes = if compare_chroma {
+        let bytes = expected.len() / sample_count;
+        if !matches!(bytes, 1 | 2) || expected.len() != sample_count * bytes {
+            return Err(format!(
+                "unexpected expected size {} for {sample_count} samples",
+                expected.len()
+            ));
+        }
+        bytes
+    } else if expected.len() == y.len() * 2 {
+        2
+    } else {
+        1
+    };
 
     if pps.deblocking_filter_control && slice.deblocking_disable_idc != 1 {
         let mut yp = PlaneMut {
@@ -333,7 +361,7 @@ fn compare_fixture_planes(
             Some(&mut up),
             Some(&mut vp),
             &decoded.deblock,
-            8,
+            sps.bit_depth_luma as u8,
             slice.deblocking_alpha * 2,
             slice.deblocking_beta * 2,
             [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
@@ -342,17 +370,31 @@ fn compare_fixture_planes(
     }
 
     let mut actual = Vec::with_capacity(expected.len());
-    actual.extend(y.iter().map(|&sample| sample as u8));
+    extend_samples(&mut actual, &y, sample_bytes);
     if compare_chroma {
-        actual.extend(u.iter().map(|&sample| sample as u8));
-        actual.extend(v.iter().map(|&sample| sample as u8));
+        extend_samples(&mut actual, &u, sample_bytes);
+        extend_samples(&mut actual, &v, sample_bytes);
     }
     let planes: &[usize] = if compare_chroma {
-        &[y.len(), u.len(), v.len()]
+        &[
+            y.len() * sample_bytes,
+            u.len() * sample_bytes,
+            v.len() * sample_bytes,
+        ]
     } else {
-        &[y.len()]
+        &[y.len() * sample_bytes]
     };
     compare_samples(&actual, expected, planes)
+}
+
+fn extend_samples(output: &mut Vec<u8>, samples: &[u16], bytes_per_sample: usize) {
+    for &sample in samples {
+        if bytes_per_sample == 2 {
+            output.extend_from_slice(&sample.to_le_bytes());
+        } else {
+            output.push(sample as u8);
+        }
+    }
 }
 
 fn compare_samples(actual: &[u8], expected: &[u8], planes: &[usize]) -> Result<(), String> {

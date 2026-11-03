@@ -39,6 +39,8 @@ cargo test --test fixture_manifest
 - `h264_i_pcm_cabac` is a 16x16 High-4:4:4-Intra `qp=0` CABAC stream using
   100% I_PCM macroblocks. It locks the raw 4:2:0 sample payload, byte
   realignment and arithmetic-decoder restart behavior.
+- `h264_i_pcm_cabac_10bit` repeats the I_PCM gate as 10-bit 4:2:0 and stores
+  FFmpeg's little-endian `yuv420p10le` output.
 - `h265e_c_fixqp_*` are short fixed-QP streams emitted by the source-built C
   MPP encoder used as the H.265 header oracle.
 

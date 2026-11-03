@@ -290,9 +290,10 @@ in what order the evidence gets produced.
       metadata remains available for CABAC mode prediction. The gate also
       enforces slice-local predictor samples, selecting DC-128 at the new
       slice's unavailable edge instead of reading the previous slice.
-- [x] H.264 CABAC I_PCM gate: a 16x16 High-4:4:4-Intra lossless CABAC stream
-      is encoded as one I_PCM macroblock. All 384 YUV samples match FFmpeg. The
-      decoder aligns the arithmetic reader to the raw payload byte, reads
+- [x] H.264 CABAC I_PCM gate: 16x16 High-4:4:4-Intra lossless CABAC streams
+      are encoded as one 8-bit and one 10-bit I_PCM macroblock. Both the 384
+      byte yuv420p and 768-byte little-endian yuv420p10le outputs match FFmpeg.
+      The decoder aligns the arithmetic reader to the raw payload byte, reads
       4:2:0 luma/Cb/Cr samples at the SPS bit depth, reinitialises CABAC after
       the macroblock, and seeds neighbour state with all residual blocks coded.
 - [x] H.264 CABAC `mb_qp_delta`: the signed unary code, its two context
