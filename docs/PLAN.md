@@ -212,9 +212,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
         `super-reenc` 格为 12 个逐 STATUS 相同的硬件 job。
       - [x] super-frame NORMAL drop：丢弃帧回滚参考状态、提交 0 bit，并按
         参考路径结束 RC 两次；三种 RC 的最终流和 7 个逐 job STATUS 均相同。
-      - [x] PSKIP：software all-skip NAL 在 CBR/VBR/AVBR 下均与 C 相同，
-        包含 9 字节 slice、POC/frame_num 推进和 RC 的 13-bit/双结束语义。
-      - [ ] 多 pass 尚未接入。
+      - [x] PSKIP（CAVLC）：software all-skip NAL 在 CBR/VBR/AVBR 下均与 C
+        相同，包含 9 字节 slice、POC/frame_num 推进和 RC 的 13-bit/双结束语义。
+      - [ ] CABAC PSKIP 与多 pass 尚未接入。
 - [x] W1-18 与 `mpi_enc_test` 的配置对齐：差异来自 harness 将
       `rc:qp_init=-1` 并把 general/intra QP 范围从库默认 `8..48` 放宽到
       `10..51`，不是 RC 模型差异。Rust 增加可配置 RC QP 范围；C probe 和
