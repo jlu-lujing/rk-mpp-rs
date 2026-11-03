@@ -1,8 +1,8 @@
 //! H.264 CABAC I-slice reconstruction.
 //!
-//! The current gates cover I16x16, I4x4 and I8x8 syntax plus multi-macroblock
-//! propagation for 4:2:0 I-pictures split into consecutive slices, including a
-//! non-zero `first_mb_in_slice`.
+//! The current gates cover I16x16, I4x4, I8x8 and I_PCM syntax plus
+//! multi-macroblock propagation for 4:2:0 I-pictures split into consecutive
+//! slices, including a non-zero `first_mb_in_slice`.
 
 use std::fmt;
 
@@ -74,6 +74,77 @@ struct DecodedCabacMacroblock {
     residual: ParsedMacroblockResidual,
     chroma_prediction_mode: u8,
     coded_flags: u16,
+}
+
+fn decode_i_pcm_macroblock(
+    decoder: &mut CabacDecoder<'_>,
+    context: MacroblockContext,
+) -> Result<(ParsedIMacroblock, ParsedMacroblockResidual), H264CabacError> {
+    let chroma_samples = match context.chroma_format_idc {
+        0 => 0,
+        1 => 64 * 2,
+        2 => 128 * 2,
+        3 => 256 * 2,
+        _ => return Err(H264CabacError::Unsupported("I_PCM chroma format")),
+    };
+    let chroma_blocks = match context.chroma_format_idc {
+        0 => 0,
+        1 => 4,
+        2 => 8,
+        3 => 16,
+        _ => return Err(H264CabacError::Unsupported("I_PCM chroma format")),
+    };
+    let total_bits = 256 * usize::from(context.bit_depth_luma)
+        + chroma_samples * usize::from(context.bit_depth_chroma);
+    let raw = decoder
+        .read_i_pcm_and_restart(total_bits.div_ceil(8))
+        .ok_or(H264CabacError::Malformed("I_PCM payload"))?;
+    let mut bit = 0;
+    let mut read_plane = |count: usize, depth: u8| -> Result<Vec<u16>, H264CabacError> {
+        let mut samples = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut value = 0u32;
+            for _ in 0..depth {
+                let byte = raw
+                    .get(bit / 8)
+                    .copied()
+                    .ok_or(H264CabacError::Malformed("I_PCM samples"))?;
+                value = (value << 1) | u32::from((byte >> (7 - bit % 8)) & 1);
+                bit += 1;
+            }
+            samples.push(value as u16);
+        }
+        Ok(samples)
+    };
+    let mut planes = vec![read_plane(256, context.bit_depth_luma)?];
+    if chroma_samples != 0 {
+        planes.push(read_plane(chroma_samples / 2, context.bit_depth_chroma)?);
+        planes.push(read_plane(chroma_samples / 2, context.bit_depth_chroma)?);
+    }
+
+    let residual = ParsedMacroblockResidual {
+        luma_dc: None,
+        luma_4x4: std::array::from_fn(|_| None),
+        luma_8x8: std::array::from_fn(|_| None),
+        chroma_dc: std::array::from_fn(|_| None),
+        chroma_ac: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+        luma_dc_non_zero: 16,
+        luma_non_zero: [16; 16],
+        chroma_non_zero: [vec![16; chroma_blocks], vec![16; chroma_blocks]],
+        end_bit: decoder.bit_pos(),
+    };
+    Ok((
+        ParsedIMacroblock {
+            kind: IntraMacroblockKind::IPcm,
+            luma_prediction_modes: Vec::new(),
+            chroma_prediction_mode: None,
+            coded_block_pattern: if chroma_blocks == 0 { 15 } else { 47 },
+            qp_delta: 0,
+            pcm_planes: planes,
+            residual_bit_offset: 0,
+        },
+        residual,
+    ))
 }
 
 struct CabacPictureState {
@@ -171,7 +242,72 @@ pub fn decode_cabac_i_slice(
         (kind, modes, 0)
     } else {
         if decoder.decode_terminate() {
-            return Err(H264CabacError::Unsupported("I_PCM macroblock"));
+            let context = MacroblockContext::from_sps_pps(sps, pps)
+                .map_err(|_| H264CabacError::Malformed("SPS"))?;
+            let (macroblock, residual) = decode_i_pcm_macroblock(&mut decoder, context)?;
+            let options = super::h264_residual::ResidualPlaneOptions {
+                qp: 0,
+                chroma_qp_offset: [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
+                bit_depth_luma: context.bit_depth_luma,
+                bit_depth_chroma: context.bit_depth_chroma,
+                transform_bypass: false,
+                scan4: super::h264::CavlcScan4x4::Frame,
+                scan8: super::h264::CavlcScan8x8::Frame,
+                luma_4x4_scaling: None,
+                luma_8x8_scaling: None,
+                chroma_4x4_scaling: [None, None],
+            };
+            let residual_planes =
+                assemble_i_macroblock_residual(&macroblock, &residual, context, &options)
+                    .map_err(|_| H264CabacError::Malformed("I_PCM residual"))?;
+            let mut luma_plane = PlaneMut {
+                data: luma,
+                width: 16,
+                height: 16,
+                stride: 16,
+            };
+            let mut cb_plane = chroma_cb.map(|data| PlaneMut {
+                data,
+                width: 8,
+                height: 8,
+                stride: 8,
+            });
+            let mut cr_plane = chroma_cr.map(|data| PlaneMut {
+                data,
+                width: 8,
+                height: 8,
+                stride: 8,
+            });
+            reconstruct_i_macroblock(
+                &macroblock,
+                &residual_planes,
+                context.bit_depth_luma.min(context.bit_depth_chroma),
+                &mut luma_plane,
+                cb_plane.as_mut(),
+                cr_plane.as_mut(),
+                0,
+                0,
+            )
+            .map_err(|_| H264CabacError::Malformed("I_PCM reconstruction"))?;
+            if !decoder.decode_terminate() {
+                return Err(H264CabacError::Malformed("missing end_of_slice_flag"));
+            }
+            return Ok(DecodedCabacSlice {
+                macroblocks: 1,
+                end_bit: slice.data_offset_bits + decoder.bit_pos(),
+                final_qp: 0,
+                deblock: DeblockMap {
+                    mb_width: 1,
+                    mb_height: 1,
+                    decoded: vec![true],
+                    qp: vec![0],
+                    luma_non_zero: vec![residual.luma_non_zero],
+                    chroma_non_zero: [
+                        vec![residual.chroma_non_zero[0].clone()],
+                        vec![residual.chroma_non_zero[1].clone()],
+                    ],
+                },
+            });
         }
         let mut type_index = 1usize;
         type_index += 12 * decoder.decode_bin(&mut contexts[6]) as usize;
@@ -648,15 +784,23 @@ fn decode_cabac_i_slice_into_picture(
         state.chroma_counts[0][mb_index].copy_from_slice(&decoded_mb.residual.chroma_non_zero[0]);
         state.chroma_counts[1][mb_index].copy_from_slice(&decoded_mb.residual.chroma_non_zero[1]);
         state.chroma_modes[mb_index] = decoded_mb.chroma_prediction_mode;
-        state.luma_modes[mb_index] = intra_mode_grid(&decoded_mb.macroblock);
+        state.luma_modes[mb_index] = if decoded_mb.macroblock.kind == IntraMacroblockKind::IPcm {
+            [2; 16]
+        } else {
+            intra_mode_grid(&decoded_mb.macroblock)
+        };
         state.transform8[mb_index] = decoded_mb.macroblock.kind == IntraMacroblockKind::I8x8;
         state.i16_or_pcm[mb_index] = matches!(
             decoded_mb.macroblock.kind,
-            IntraMacroblockKind::I16x16 { .. }
+            IntraMacroblockKind::I16x16 { .. } | IntraMacroblockKind::IPcm
         );
         state.coded_flags[mb_index] = decoded_mb.coded_flags;
         state.slice_id[mb_index] = slice_id;
-        state.qp[mb_index] = qp as u8;
+        state.qp[mb_index] = if decoded_mb.macroblock.kind == IntraMacroblockKind::IPcm {
+            0
+        } else {
+            qp as u8
+        };
         macroblocks += 1;
 
         let end_of_slice = decoder.decode_terminate();
@@ -781,7 +925,13 @@ fn decode_cabac_i_macroblock(
             (kind, modes, 0)
         } else {
             if decoder.decode_terminate() {
-                return Err(H264CabacError::Unsupported("I_PCM macroblock"));
+                let (macroblock, residual) = decode_i_pcm_macroblock(decoder, context)?;
+                return Ok(DecodedCabacMacroblock {
+                    macroblock,
+                    residual,
+                    chroma_prediction_mode: 0,
+                    coded_flags: 0xf7ef,
+                });
             }
             let mut type_index = 1usize;
             type_index += 12 * decoder.decode_bin(&mut contexts[6]) as usize;

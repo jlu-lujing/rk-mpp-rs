@@ -36,6 +36,9 @@ cargo test --test fixture_manifest
   CABAC slices with `first_mb_in_slice=0/2`. The second I4x4 slice therefore
   exercises CABAC restart, slice-local syntax availability and DC-128
   prediction at the slice boundary. `_nodeblock` adds `no-deblock=1`.
+- `h264_i_pcm_cabac` is a 16x16 High-4:4:4-Intra `qp=0` CABAC stream using
+  100% I_PCM macroblocks. It locks the raw 4:2:0 sample payload, byte
+  realignment and arithmetic-decoder restart behavior.
 - `h265e_c_fixqp_*` are short fixed-QP streams emitted by the source-built C
   MPP encoder used as the H.265 header oracle.
 

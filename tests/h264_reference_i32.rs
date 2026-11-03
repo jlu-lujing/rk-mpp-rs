@@ -95,6 +95,15 @@ fn cabac_textured_i8x8_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
+fn cabac_i_pcm_matches_ffmpeg_yuv420p() {
+    compare_fixture(
+        include_bytes!("../tests/data/h264_i_pcm_cabac.264"),
+        include_bytes!("../tests/data/h264_i_pcm_cabac.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
 fn cabac_mixed_i8x8_and_i4x4_across_rows_matches_ffmpeg_yuv420p() {
     compare_fixture(
         include_bytes!("../tests/data/h264_cabac_mixed_2x2.264"),

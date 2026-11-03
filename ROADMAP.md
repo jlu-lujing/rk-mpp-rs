@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. tiles/WPP/SAO, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: CABAC core; HEVC transforms; H.264 CAVLC I-slice reconstruction with filtered prediction, transform bypass, DC Hadamard and picture deblocking; two 32x32 IDR fixtures and one 64x64, 16-macroblock noise IDR match all YUV samples; H.264 CABAC covers textured I16/I4x4/I8x8 residuals, signed nonzero mb_qp_delta, mixed macroblock propagation and consecutive slices with non-zero first_mb; P/B-slice CABAC remains open** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: CABAC core; HEVC transforms; H.264 CAVLC I-slice reconstruction with filtered prediction, transform bypass, DC Hadamard and picture deblocking; two 32x32 IDR fixtures and one 64x64, 16-macroblock noise IDR match all YUV samples; H.264 CABAC covers textured I16/I4x4/I8x8 residuals, I_PCM, signed nonzero mb_qp_delta, mixed macroblock propagation and consecutive slices with non-zero first_mb; P/B-slice CABAC remains open** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -290,6 +290,11 @@ in what order the evidence gets produced.
       metadata remains available for CABAC mode prediction. The gate also
       enforces slice-local predictor samples, selecting DC-128 at the new
       slice's unavailable edge instead of reading the previous slice.
+- [x] H.264 CABAC I_PCM gate: a 16x16 High-4:4:4-Intra lossless CABAC stream
+      is encoded as one I_PCM macroblock. All 384 YUV samples match FFmpeg. The
+      decoder aligns the arithmetic reader to the raw payload byte, reads
+      4:2:0 luma/Cb/Cr samples at the SPS bit depth, reinitialises CABAC after
+      the macroblock, and seeds neighbour state with all residual blocks coded.
 - [x] H.264 CABAC `mb_qp_delta`: the signed unary code, its two context
       selections, the previous-delta context bit, QP wrap handling and
       per-macroblock state now match FFmpeg. Two unit tests cover the complete

@@ -185,6 +185,22 @@ impl<'a> CabacDecoder<'a> {
     pub fn bit_pos(&self) -> usize {
         self.bits.pos
     }
+
+    /// Read an H.264 I_PCM byte payload after its zero alignment bits, then
+    /// restart arithmetic decoding at the following byte.
+    pub fn read_i_pcm_and_restart(&mut self, byte_count: usize) -> Option<&'a [u8]> {
+        let aligned = (self.bits.pos + 7) & !7;
+        self.bits.pos = aligned;
+        let start = self.bits.pos / 8;
+        let end = start.checked_add(byte_count)?;
+        if end > self.bits.data.len() {
+            return None;
+        }
+        self.bits.pos = end * 8;
+        self.range = 510;
+        self.offset = self.bits.bits(9);
+        Some(&self.bits.data[start..end])
+    }
 }
 
 /// Arithmetic encoder used only by the tests (and later by an encoder module).
