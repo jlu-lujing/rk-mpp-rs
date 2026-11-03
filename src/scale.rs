@@ -39,6 +39,14 @@ enum MapMode {
     },
 }
 
+#[derive(Clone, Copy)]
+struct GeneralChunk {
+    base: u32,
+    index_a: [u8; 16],
+    index_b: [u8; 16],
+    weights: [i16; 16],
+}
+
 pub struct Scaler {
     dw: usize,
     dh: usize,
@@ -48,6 +56,7 @@ pub struct Scaler {
     map_scale: f32,
     map_wx_zero: bool,
     mode: MapMode,
+    general_chunks: Vec<GeneralChunk>,
     neon_disabled: bool,
     scratch0: Vec<u8>,
     scratch1: Vec<u8>,
@@ -72,6 +81,7 @@ impl Scaler {
             map_scale: 0.0,
             map_wx_zero: false,
             mode: MapMode::General,
+            general_chunks: Vec::new(),
             neon_disabled: !neon_available(),
             scratch0: Vec::new(),
             scratch1: Vec::new(),
@@ -130,6 +140,10 @@ impl Scaler {
         self.map_scale = g.scale;
         self.map_wx_zero = self.xmap.iter().all(|m| m.wx == 0);
         self.mode = classify_map(&self.xmap);
+        self.general_chunks.clear();
+        if self.mode == MapMode::General {
+            self.general_chunks = general_chunks(&self.xmap);
+        }
         self.scratch0.clear();
         self.scratch1.clear();
     }
@@ -169,6 +183,7 @@ impl Scaler {
 
         let inv = 1.0f32 / g.scale;
         let mode = self.mode;
+        let general_chunks = &self.general_chunks;
         let map_wx_zero = self.map_wx_zero;
         let neon_disabled = self.neon_disabled;
         let xmap = &self.xmap;
@@ -204,6 +219,7 @@ impl Scaler {
                     r0,
                     r1,
                     out,
+                    general_chunks,
                     wy,
                 )
             };
@@ -282,6 +298,47 @@ impl Scaler {
     }
 }
 
+fn general_chunks(xmap: &[XMap]) -> Vec<GeneralChunk> {
+    let mut chunks = Vec::with_capacity(xmap.len() / 4);
+    for maps in xmap.chunks_exact(4) {
+        let mut base = u32::MAX;
+        for map in maps {
+            base = base.min(map.x0 * 3).min(map.x1 * 3);
+        }
+        let mut index_a = [64u8; 16];
+        let mut index_b = [64u8; 16];
+        let mut weights = [0i16; 16];
+        let mut valid = true;
+        for (pixel, map) in maps.iter().enumerate() {
+            weights[pixel * 3..pixel * 3 + 3].fill(map.wx as i16);
+            for channel in 0..3 {
+                let a = map.x0 * 3 + channel as u32 - base;
+                let b = map.x1 * 3 + channel as u32 - base;
+                if a > 63 || b > 63 {
+                    valid = false;
+                    break;
+                }
+                let lane = pixel * 3 + channel;
+                index_a[lane] = a as u8;
+                index_b[lane] = b as u8;
+            }
+            if !valid {
+                break;
+            }
+        }
+        if !valid {
+            break;
+        }
+        chunks.push(GeneralChunk {
+            base,
+            index_a,
+            index_b,
+            weights,
+        });
+    }
+    chunks
+}
+
 /// Number of leading output pixels the vector kernels produced for this
 /// row; `0` sends the whole row through `row_scalar`. A free function so
 /// the row loop can keep borrowing the mapping while the scratch moves.
@@ -292,6 +349,7 @@ fn fast_row(
     r0: &[u8],
     r1: &[u8],
     out: &mut [u8],
+    general: &[GeneralChunk],
     wy: u32,
 ) -> usize {
     if !neon_available() {
@@ -299,8 +357,11 @@ fn fast_row(
     }
     #[cfg(target_arch = "aarch64")]
     {
+        if mode == MapMode::General {
+            return unsafe { kernels::row_bilinear(r0, r1, out, general, wy) };
+        }
         let (step, offset) = match mode {
-            MapMode::General => return 0,
+            MapMode::General => unreachable!(),
             MapMode::Decimate { step, offset } => {
                 if wy != 0 || step == 0 {
                     return 0;
@@ -340,7 +401,7 @@ fn fast_row(
     }
     #[cfg(not(target_arch = "aarch64"))]
     {
-        let _ = (r0, r1, out, wy);
+        let _ = (r0, r1, out, general, wy);
         0
     }
 }
@@ -524,6 +585,98 @@ mod kernels {
             i += 8;
         }
         i
+    }
+
+    #[target_feature(enable = "neon")]
+    unsafe fn interpolate_chunk(
+        src: *const u8,
+        index_a: uint8x16_t,
+        index_b: uint8x16_t,
+        weight_low: int16x8_t,
+        weight_high: int16x8_t,
+        neg8: int16x8_t,
+    ) -> uint8x16_t {
+        let regs = uint8x16x4_t(
+            vld1q_u8(src),
+            vld1q_u8(src.add(16)),
+            vld1q_u8(src.add(32)),
+            vld1q_u8(src.add(48)),
+        );
+        let a = vqtbl4q_u8(regs, index_a);
+        let b = vqtbl4q_u8(regs, index_b);
+        let low = interp8(vget_low_u8(a), vget_low_u8(b), weight_low, neg8);
+        let high = interp8(vget_high_u8(a), vget_high_u8(b), weight_high, neg8);
+        vcombine_u8(low, high)
+    }
+
+    /// General non-integer bilinear rows. Each precomputed chunk gathers four
+    /// pixels from a 64-byte source window, interpolates horizontally and then
+    /// combines the two source rows vertically. The caller's scalar row
+    /// finishes anything this returns as incomplete.
+    ///
+    /// # Safety
+    /// Requires NEON. Every chunk's `base + 64` must be checked by this
+    /// function; `r0`, `r1` and `out` remain borrowed for the duration.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn row_bilinear(
+        r0: &[u8],
+        r1: &[u8],
+        out: &mut [u8],
+        chunks: &[super::GeneralChunk],
+        wy: u32,
+    ) -> usize {
+        let neg8 = vdupq_n_s16(-8);
+        let vertical = vdupq_n_s16(wy as i16);
+        let mut done = 0usize;
+        for chunk in chunks {
+            if (done + PIXELS) * 3 > out.len() {
+                break;
+            }
+            let base = chunk.base as usize;
+            if base + 64 > r0.len() || base + 64 > r1.len() {
+                break;
+            }
+            let index_a = vld1q_u8(chunk.index_a.as_ptr());
+            let index_b = vld1q_u8(chunk.index_b.as_ptr());
+            let weight_low = vld1q_s16(chunk.weights.as_ptr());
+            let weight_high = vld1q_s16(chunk.weights.as_ptr().add(8));
+            let horizontal0 = interpolate_chunk(
+                r0.as_ptr().add(base),
+                index_a,
+                index_b,
+                weight_low,
+                weight_high,
+                neg8,
+            );
+            let result = if wy == 0 {
+                horizontal0
+            } else {
+                let horizontal1 = interpolate_chunk(
+                    r1.as_ptr().add(base),
+                    index_a,
+                    index_b,
+                    weight_low,
+                    weight_high,
+                    neg8,
+                );
+                let low = interp8(
+                    vget_low_u8(horizontal0),
+                    vget_low_u8(horizontal1),
+                    vertical,
+                    neg8,
+                );
+                let high = interp8(
+                    vget_high_u8(horizontal0),
+                    vget_high_u8(horizontal1),
+                    vertical,
+                    neg8,
+                );
+                vcombine_u8(low, high)
+            };
+            store_chunk(out.as_mut_ptr().add(done * 3), result);
+            done += PIXELS;
+        }
+        done
     }
 
     /// Byte-exact decimation of one source row:
