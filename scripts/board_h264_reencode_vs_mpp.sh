@@ -116,4 +116,50 @@ if [ "$super_jobs" -ne 12 ]; then
 fi
 printf 'PASS super-reenc (%s, %d frames, 12 hardware jobs)\n' "$SIZE" "$FRAMES"
 
+# Super-frame NORMAL drop: every P picture is measured, then rolled back and
+# emitted as a zero-length packet. The IDR is re-encoded but never dropped.
+for entry in cbr:1 vbr:0 avbr:2; do
+  mode="${entry%%:*}"
+  probe_mode="${entry##*:}"
+  c=/tmp/sdrop_${mode}_c.264
+  ours=/tmp/sdrop_${mode}_ours.264
+  trace=/tmp/sdrop_${mode}.trace
+  stats=/tmp/sdrop_${mode}_ours_stats.txt
+  ssh "$BOARD" "sudo rm -f $c $ours $trace $stats &&
+          sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=$tracer \
+            MAX_REENC=1 SUPER_MODE=1 SUPER_I_THD=10000 SUPER_P_THD=1000 RC_PRIORITY=0 \
+            /tmp/rc_probe_reenc $fixture $c $SIZE $FRAMES 300000 250000 350000 $probe_mode 30 0 \
+            >/dev/null 2>$trace &&
+          cd ~/rk-mpp-rs && sudo env RKMPP_STAT_DUMP=$stats \
+            ./target/release/rk-mpp-rs h264-enc $fixture $ours \
+            $SIZE 26 baseline $FRAMES 60 \
+            $mode:300000:250000:350000 reenc:1 super:1:10000:1000:0 >/dev/null &&
+          sudo chmod 644 $c $ours $trace $stats"
+  if ! ssh "$BOARD" "test -s $c && test -s $ours"; then
+    printf 'FAIL super-drop-%s (one side produced no stream)\n' "$mode"
+    fail=1
+    continue
+  fi
+  scp -q "$BOARD":$c "$BOARD":$ours "$BOARD":$trace "$BOARD":$stats /tmp/ 2>/dev/null
+  if ! python3 scripts/compare_streams.py "$c" "$ours"; then
+    printf 'FAIL super-drop-%s (bitstreams differ)\n' "$mode"
+    fail=1
+    continue
+  fi
+  if ! python3 scripts/stat_compare.py "$trace" "$stats"; then
+    printf 'FAIL super-drop-%s (STATUS windows differ)\n' "$mode"
+    fail=1
+    continue
+  fi
+  drop_jobs=$(grep -c "read_complete\[1\]@16384" "$stats")
+  if [ "$drop_jobs" -ne 7 ]; then
+    printf 'FAIL super-drop-%s (expected 7 hardware jobs, got %s)\n' \
+      "$mode" "$drop_jobs"
+    fail=1
+    continue
+  fi
+  printf 'PASS super-drop-%s (%s, %d frames, final stream = IDR only)\n' \
+    "$mode" "$SIZE" "$FRAMES"
+done
+
 exit "$fail"

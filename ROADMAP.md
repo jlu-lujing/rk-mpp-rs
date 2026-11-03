@@ -1750,8 +1750,10 @@ in what order the evidence gets produced.
       streams and all STATUS windows for every job. Its `super-reenc` cell uses
       `super_i_thd=10000`, `super_p_thd=1000` at a 300 kbps target, forcing 12
       hardware jobs for six pictures; the final stream and every STATUS window are
-      identical. Super-frame NORMAL-drop already emits the same final stream, but
-      one transient STATUS window after a dropped picture differs, and PSKIP /
+      identical. NORMAL-drop also matches across CBR/VBR/AVBR: each P picture is
+      measured, the reference state is rolled back, zero bits are committed, and
+      the RC frame is ended twice on the drop path. The final stream is the IDR
+      only and all seven hardware-job STATUS windows are identical. PSKIP and
       multi-pass remain open under W1-17.
 - [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
       What follows is the record of how it was measured, kept because the

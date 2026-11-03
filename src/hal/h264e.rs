@@ -1071,6 +1071,11 @@ impl Vepu580H264 {
         let packets = output_packets(&headers, &payload, &slice_lengths)?;
         if let Some(model) = self.rc.as_mut() {
             model.end_with(frame, bit_target, measured);
+            if dropped {
+                // The reference's drop path reaches `rc_model_v2_end` twice for
+                // the rejected picture before the next input is accepted.
+                model.end_with(frame, bit_target, measured);
+            }
         }
         if dropped {
             // `mpp_enc_refs_rollback`: a dropped input does not advance the

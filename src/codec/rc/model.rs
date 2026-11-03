@@ -1668,6 +1668,86 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn super_frame_drop_rolls_the_cbr_qp_sequence_like_the_reference() {
+        let mut cfg = Config::cbr(300_000, 250_000, 350_000, 60);
+        cfg.total_mb = 300;
+        cfg.super_mode = 1;
+        cfg.super_i_thd = 10_000;
+        cfg.super_p_thd = 1_000;
+        let mut model = Model::new(cfg);
+
+        let (target, quality) = model.start(FrameType::Intra);
+        let retry = model
+            .reencode_quality(
+                FrameType::Intra,
+                target,
+                quality,
+                Measured {
+                    bits: 44_816,
+                    quality: 23,
+                    madi: 9,
+                    madp: 0,
+                },
+                1,
+            )
+            .unwrap();
+        assert_eq!(retry, 25);
+        model.end_with(
+            FrameType::Intra,
+            target,
+            Measured {
+                bits: 46_088,
+                quality: 22,
+                madi: 9,
+                madp: 0,
+            },
+        );
+
+        let attempts = [
+            (13_488, 27, 35),
+            (17_912, 27, 77),
+            (17_664, 27, 93),
+            (25_240, 25, 117),
+            (28_520, 23, 132),
+        ];
+        let expected_qp = [27, 26, 26, 24, 23];
+        let mut seen = Vec::new();
+        for ((bits, measured_qp, madp), expected) in attempts.into_iter().zip(expected_qp) {
+            let (target, quality) = model.start(FrameType::InterP);
+            seen.push(quality);
+            let measured = Measured {
+                bits,
+                quality: measured_qp,
+                madi: 9,
+                madp,
+            };
+            assert!(model.drops_super_frame(FrameType::InterP, measured));
+            model.end_with(
+                FrameType::InterP,
+                target,
+                Measured {
+                    bits: 0,
+                    quality,
+                    madi: 9,
+                    madp,
+                },
+            );
+            model.end_with(
+                FrameType::InterP,
+                target,
+                Measured {
+                    bits: 0,
+                    quality,
+                    madi: 9,
+                    madp,
+                },
+            );
+            assert_eq!(quality, expected, "seen {seen:?}");
+        }
+        assert_eq!(seen, expected_qp);
+    }
+
     /// VBR budgets from `bps_max` and steers towards `bps_target`. Both halves are
     /// visible in the reference's own printout (`mode vbr bps [250000:300000:350000]`,
     /// `total_bits 112000000`): a port that budgets from the target produces a first
