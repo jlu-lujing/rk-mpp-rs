@@ -58,7 +58,7 @@ impl Context {
         LPS_TABLE[self.state as usize][((range >> 6) & 3) as usize] as u32
     }
 
-    fn update(&mut self, lps: bool) {
+    pub(crate) fn update(&mut self, lps: bool) {
         if lps {
             if self.state == 0 {
                 self.mps ^= 1;

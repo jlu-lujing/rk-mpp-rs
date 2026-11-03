@@ -151,9 +151,13 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denom", 1));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:profile", 66));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:profile",
+                              getenv("H264_PROFILE") ?
+                              atoi(getenv("H264_PROFILE")) : 66));
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:level", level));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 0));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:cabac_en",
+                              getenv("H264_CABAC") ?
+                              atoi(getenv("H264_CABAC")) : 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:trans8x8", 0));
     if (getenv("MAX_REENC"))
         CHECK(mpp_enc_cfg_set_u32(cfg, "rc:max_reenc_times",

@@ -1754,10 +1754,12 @@ in what order the evidence gets produced.
       measured, the reference state is rolled back, zero bits are committed, and
       the RC frame is ended twice on the drop path. The final stream is the IDR
       only and all seven hardware-job STATUS windows are identical. CAVLC PSKIP uses a
-      software non-reference P slice with one `mb_skip_run`; it advances POC but
-      not frame_num, reports 13 bits to RC and also ends the RC frame twice. Its
-      CBR/VBR/AVBR streams and 7/8/9 attempted-job STATUS windows match the C.
-      CABAC PSKIP and multi-pass remain open under W1-17.
+      software non-reference P slice with one `mb_skip_run`; CABAC PSKIP uses the
+      C encoder's per-macroblock skip context and exact queue/terminal/flush
+      arithmetic. Both advance POC but not frame_num and end the RC frame twice;
+      the reference reports 13 bits for CAVLC and 15 for CABAC. All CBR/VBR/AVBR
+      streams and 7/8/9 attempted-job STATUS windows match the C byte for byte.
+      Multi-pass remains open under W1-17.
 - [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
       What follows is the record of how it was measured, kept because the
       corrections in it are the useful part. `setup_vepu580_rc_base`'s VBR/CBR path -

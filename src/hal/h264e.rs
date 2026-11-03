@@ -18,6 +18,7 @@
 use crate::codec::h264::encoder::{self, EncoderConfig, GdrMode, RcMode, SplitMode};
 use crate::codec::h264::sei;
 use crate::codec::rc::model as rc_model;
+use crate::reference::cabac::Context;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RcbInfo, RegOffsetInfo, SliceInfo};
 
@@ -1037,10 +1038,11 @@ impl Vepu580H264 {
                 if model.requests_pskip(frame, measured) {
                     let payload = pskip_nal(&self.config, &state)?;
                     let pskip_measurement = rc_model::Measured {
-                        // `rc_model_v2_end` receives 13 bits for this software
-                        // slice in the reference path (the packet length is nine
-                        // bytes, but the encoder's task counter reports 13).
-                        bits: 13,
+                        // The reference's software-slice task counter reports
+                        // the slice-header bit count, not the packet length:
+                        // 13 bits for CAVLC and 15 for CABAC (`cabac_init_idc`
+                        // plus the alignment bits). Board tracing pins both.
+                        bits: if self.config.entropy_coding { 15 } else { 13 },
                         quality: quality_target,
                         madi: measured.madi,
                         madp: measured.madp,
@@ -1199,13 +1201,128 @@ fn put_se(bits: &mut Vec<bool>, value: i32) {
     put_ue(bits, mapped);
 }
 
-/// `h264e_slice_write_pskip`: a non-reference P slice with one `mb_skip_run`
-/// covering the whole picture. CAVLC and CABAC differ after the slice header;
-/// the latter carries `cabac_init_idc` before `slice_qp_delta`.
-fn pskip_nal(config: &EncoderConfig, state: &FrameState) -> Result<Vec<u8>, String> {
-    if config.entropy_coding {
-        return Err("H.264 software PSKIP currently supports CAVLC only".into());
+/// The arithmetic coder half of `h264e_slice_write_pskip`.
+///
+/// The C encoder deliberately carries its own compact queue implementation
+/// rather than using the general-purpose CABAC type. A skip-only slice has a
+/// single context and every bin is one, so keeping that exact state machine
+/// here is both small and removes any chance that trailing-bit conventions
+/// diverge from MPP.
+struct SkipCabac {
+    context: Context,
+    low: i32,
+    range: i32,
+    queue: i32,
+    outstanding: i32,
+    bits: Vec<bool>,
+}
+
+impl SkipCabac {
+    fn new(qp: u8, bits: Vec<bool>) -> Self {
+        let state = 23 * i32::from(qp) / 16 + 33;
+        let state = state.clamp(1, 126) as u8;
+        Self {
+            context: Context::new(63 - state.min(127 - state), state >> 6),
+            low: 0,
+            range: 0x01fe,
+            queue: -9,
+            outstanding: 0,
+            bits,
+        }
     }
+
+    fn put_bits(&mut self, value: i32, width: u32) {
+        for shift in (0..width).rev() {
+            self.bits.push((value >> shift) & 1 != 0);
+        }
+    }
+
+    fn put_byte(&mut self) {
+        if self.queue < 0 {
+            return;
+        }
+        let out = self.low >> (self.queue + 10);
+        self.low &= (0x400 << self.queue) - 1;
+        self.queue -= 8;
+
+        if (out & 0xff) == 0xff {
+            self.outstanding += 1;
+            return;
+        }
+
+        let carry = out >> 8;
+        if self.queue > 0 {
+            self.put_bits(carry, (self.queue & 7) as u32);
+        }
+        while self.outstanding > 0 {
+            self.put_bits(carry - 1, 8);
+            self.outstanding -= 1;
+        }
+        self.put_bits(out, 8.min(8 - self.queue) as u32);
+    }
+
+    fn renorm(&mut self) {
+        while self.range < 256 {
+            self.range <<= 1;
+            self.low <<= 1;
+            self.queue += 1;
+        }
+        self.put_byte();
+    }
+
+    fn skip_flag(&mut self) {
+        let lps = self.context.lps_range(self.range as u32) as i32;
+        self.range -= lps;
+        let lps_bin = self.context.mps == 0;
+        if lps_bin {
+            self.low += self.range;
+            self.range = lps;
+        }
+        self.context.update(lps_bin);
+        self.renorm();
+    }
+
+    fn terminal(&mut self) {
+        self.range -= 2;
+        self.renorm();
+    }
+
+    fn finish(mut self) -> Vec<bool> {
+        self.low += self.range - 2;
+        self.low |= 1;
+        self.low <<= 9;
+        self.queue += 9;
+        self.put_byte();
+        self.put_byte();
+
+        self.low <<= -self.queue;
+        self.low |= 1 << 10;
+        self.queue = 0;
+        self.put_byte();
+        while self.outstanding > 0 {
+            self.put_bits(0xff, 8);
+            self.outstanding -= 1;
+        }
+        self.bits
+    }
+}
+
+fn write_skip_cabac(bits: Vec<bool>, qp: u8, mb_count: usize) -> Vec<bool> {
+    let mut cabac = SkipCabac::new(qp, bits);
+    for index in 0..mb_count {
+        if index != 0 {
+            cabac.terminal();
+        }
+        cabac.skip_flag();
+    }
+    cabac.finish()
+}
+
+/// `h264e_slice_write_pskip`: a non-reference P slice covering the whole
+/// picture. CAVLC writes one skip run; CABAC writes one skip flag per
+/// macroblock, separated by `end_of_slice_flag = 0`, then flushes the final
+/// terminating bin.
+fn pskip_nal(config: &EncoderConfig, state: &FrameState) -> Result<Vec<u8>, String> {
     let mut bits = Vec::new();
 
     put_ue(&mut bits, 0); // first_mb_in_slice
@@ -1223,17 +1340,26 @@ fn pskip_nal(config: &EncoderConfig, state: &FrameState) -> Result<Vec<u8>, Stri
     );
     put_bits(&mut bits, 0, 1); // num_ref_idx_active_override_flag
     put_bits(&mut bits, 0, 1); // ref_pic_list_modification_flag_l0
+    if config.entropy_coding {
+        put_ue(&mut bits, 0); // cabac_init_idc
+    }
     put_se(&mut bits, 0); // slice_qp_delta
     put_ue(&mut bits, 0); // disable_deblocking_filter_idc
     put_se(&mut bits, 0); // slice_alpha_c0_offset_div2
     put_se(&mut bits, 0); // slice_beta_offset_div2
-    put_ue(
-        &mut bits,
-        (config.coded_width() / 16 * config.coded_height() / 16) as u32,
-    );
-    bits.push(true); // rbsp_stop_one_bit
-    while bits.len() % 8 != 0 {
-        bits.push(false);
+
+    let mb_count = config.coded_width() / 16 * config.coded_height() / 16;
+    if config.entropy_coding {
+        while bits.len() % 8 != 0 {
+            bits.push(true); // cabac_alignment_one_bit
+        }
+        bits = write_skip_cabac(bits, config.qp_init, mb_count);
+    } else {
+        put_ue(&mut bits, mb_count as u32);
+        bits.push(true); // rbsp_stop_one_bit
+        while bits.len() % 8 != 0 {
+            bits.push(false);
+        }
     }
 
     let mut rbsp = Vec::with_capacity(bits.len() / 8);
@@ -2826,6 +2952,38 @@ mod tests {
             (1, 2, "0000000101e000200047804b60"),
             (2, 6, "0000000101e0004000c7804b60"),
             (3, 10, "0000000101e000600147804b60"),
+        ] {
+            let state = FrameState {
+                index: frame_num as usize,
+                is_idr: false,
+                is_vi: false,
+                frame_num,
+                idr_pic_id: 0,
+                poc,
+                is_i_refresh: false,
+                is_i_recovery: false,
+                refresh_idx: frame_num,
+            };
+            assert_eq!(
+                pskip_nal(&config, &state).unwrap(),
+                expected
+                    .as_bytes()
+                    .chunks_exact(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn software_cabac_pskip_matches_the_c_slice_bytes() {
+        let mut config = config();
+        config.profile = encoder::PROFILE_MAIN;
+        config.entropy_coding = true;
+        for (frame_num, poc, expected) in [
+            (1, 2, "0000000101e000200047ff00000979"),
+            (2, 6, "0000000101e0004000c7ff00000979"),
+            (3, 10, "0000000101e000600147ff00000979"),
         ] {
             let state = FrameState {
                 index: frame_num as usize,
