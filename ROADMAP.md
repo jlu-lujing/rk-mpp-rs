@@ -2101,6 +2101,15 @@ pipeline uses.
   moved that row's own reported work back into the timed region where it belongs.
   The six byte-exact GOP cells still pass after the change.
 
+- RGB scale now has a NEON path for non-integer ratios as well as the existing
+  exact decimate/weighted kernels. The general path precomputes four-output-pixel
+  gather indices and weights, interpolates horizontally in NEON and folds the
+  two source rows in one pass; rows outside a 64-byte gather window stay scalar.
+  On t6, 60 interleaved samples of the non-ratio
+  `1930x1080 -> 640x640` case moved from `2.804` to `1.321` ms (about `2.12x`).
+  Every General and integer-ratio test shape remains byte-identical to the
+  scalar reference.
+
 - Frame readback rule: the decoder output mapping is uncached, so a plane is
   read exactly once and eight bytes per load. `codec::yuv::nv12_to_planar` is
   the shared implementation behind H.264, H.265, VP9 and AV1. The per-sample

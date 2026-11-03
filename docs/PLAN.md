@@ -324,7 +324,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 12. W8 性能工程（M–L，约 8–12 天）
 
-- [ ] W8-1 NEON 缩放内核（非整数比例，如 1280x960→640）
+- [x] W8-1 NEON 缩放内核：一般比例 bilinear 行现在预计算每四个输出像素的
+      gather index/weight，NEON 横向插值后直接纵向合并，尾部回退标量。
+      t6 `60` 次交错采样中，非整数 `1930x1080→640x640` 从 `2.804` ms
+      降到 `1.321` ms（约 `2.12x`），全部 General/int ratio 样例与标量输出
+      逐字节相同。
 - [ ] W8-2 零拷贝链路：解码→缩放→推理输入，减少 DMA_BUF sync 次数
 - [x] W8-3 编码器缓冲复用：`Vepu580H264::open` 一次性分配 input、output、
       两个 recon 的 FBC pixel/thumb、motion-info、ROI、GDR 和 CIME extension
