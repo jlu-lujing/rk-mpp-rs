@@ -369,10 +369,16 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 14. W10 测试资产与 conformance 语料（M，约 3–5 天）
 
-- [ ] W10-1 流语料清单与来源（JCT-VC、AOM、libvpx、x265/x264 生成），记录许可
+- [x] W10-1 流语料清单与来源：[`tests/data/SOURCES.md`](../tests/data/SOURCES.md)
+      按 x264/x265/libvpx/libaom/FFmpeg 生成流、C MPP captures 和本项目
+      pixel gates 分类；没有把第三方大 conformance corpus 收入仓库。
 - [ ] W10-2 AVS+/AVS2 conformance 流获取（或明确"无法获得"）
-- [ ] W10-3 生成器脚本统一（尺寸/QP/profile/特性矩阵），产出 hash 清单
-- [ ] W10-4 golden 大小控制：大流只存 hash + 生成命令
+- [x] W10-3 hash 清单：`scripts/update_fixture_hashes.sh` 生成
+      `tests/data/SHA256SUMS`，`tests/fixture_manifest.rs` 同时检查文件集合和
+      每个文件的 SHA-256。158 个 fixture，总计约 2.7 MiB。
+- [x] W10-4 golden 大小控制：仓库内只保留小型生成流、C-MPP capture 和 pixel
+      gate golden，总计约 2.7 MiB；来源/生成入口在 `tests/data/SOURCES.md`
+      固定，字节由 `SHA256SUMS` 锁定。更大的外部 corpus 不进 git。
 
 ---
 

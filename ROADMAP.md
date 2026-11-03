@@ -2156,6 +2156,12 @@ pipeline uses.
   `8ef4f37baa213649152968829cd21d3a82df73223d033e278478d9c13889c86d`.
   `scripts/board_jitter_check.sh` checks both artifact bytes and hashes, and
   the umbrella can enforce it with `JITTER_CHECK=1`.
+- The `tests/data` corpus is now self-describing and byte-locked:
+  `SOURCES.md` records the x264/x265/libvpx/libaom/FFmpeg and C-MPP capture
+  classes, `SHA256SUMS` locks all 158 files (about 2.7 MiB), and
+  `tests/fixture_manifest.rs` rejects both a changed byte and an unlisted
+  fixture. `scripts/update_fixture_hashes.sh` is the only intended manifest
+  regeneration entry point.
 - Board AV1 regression: the full local `cargo test --all-targets` suite passes
   311 tests with four hardware-only tests ignored by
   default. The focused CDF, parser, PicParams and register suite passes 54/54
