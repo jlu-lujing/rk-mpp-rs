@@ -182,6 +182,9 @@ pub struct FrameState {
     /// Pictures encoded by this session so far.
     pub index: usize,
     pub is_idr: bool,
+    /// `EncFrmStatus.ref_mode == REF_TO_PREV_INTRA`: a smart-GOP virtual-intra
+    /// P picture, predicted from the retained IDR.
+    pub is_vi: bool,
     pub frame_num: u32,
     pub idr_pic_id: u32,
     pub poc: i32,
@@ -200,6 +203,7 @@ impl Default for FrameState {
         Self {
             index: 0,
             is_idr: true,
+            is_vi: false,
             frame_num: 0,
             idr_pic_id: 0,
             poc: 0,
@@ -235,6 +239,7 @@ impl FrameState {
             return FrameState {
                 index,
                 is_idr: true,
+                is_vi: false,
                 frame_num: 0,
                 // `h264e_slice_init` alternates idr_pic_id across IDR pictures, and
                 // a P picture carries the id of the IDR that opened its GOP.
@@ -249,6 +254,7 @@ impl FrameState {
         FrameState {
             index,
             is_idr: false,
+            is_vi: false,
             frame_num,
             idr_pic_id: self.idr_pic_id,
             poc: self.poc + 2 * (frame_num - self.frame_num) as i32,
@@ -611,7 +617,9 @@ pub struct Vepu580H264 {
     input: DmaBuf,
     output: DmaBuf,
     started: bool,
-    recons: [Recon; 2],
+    /// Slot zero retains the IDR for smart-GOP VI pictures; the two working
+    /// slots alternate after it.
+    recons: [Recon; 3],
     md_info: DmaBuf,
     state: FrameState,
     slot: usize,
@@ -691,6 +699,7 @@ impl Vepu580H264 {
             output: DmaBuf::alloc("system", output_size, false)
                 .map_err(|e| format!("allocate H.264 output: {e}"))?,
             recons: [
+                Recon::alloc(pixel_size, thumb_size)?,
                 Recon::alloc(pixel_size, thumb_size)?,
                 Recon::alloc(pixel_size, thumb_size)?,
             ],
@@ -803,7 +812,15 @@ impl Vepu580H264 {
             self.state = self
                 .state
                 .next(self.config.gop, self.config.gdr_refresh_length());
-            self.slot = self.state.index % 2;
+            self.state.is_vi = self.config.smart_p_vgop().is_some_and(|vi_len| {
+                !self.state.is_idr
+                    && self.state.index % self.config.gop.max(1) as usize == vi_len as usize
+            });
+            self.slot = if self.state.is_idr {
+                0
+            } else {
+                1 + (self.state.index - 1) % 2
+            };
         } else {
             self.started = true;
         }
@@ -824,26 +841,22 @@ impl Vepu580H264 {
             .sync_write_end()
             .map_err(|e| format!("H.264 input flush: {e}"))?;
 
-        let reference_slot = if state.is_idr {
-            self.slot
+        let reference_slot = if state.is_idr || state.is_vi || state.index <= 1 {
+            0
         } else {
-            1 - self.slot
+            1 + (state.index - 2) % 2
         };
         // The model decides the picture's bits and QP before the register file is
         // built; under fixed QP there is no decision to make.
         let rc = match self.rc.as_mut() {
             Some(model) => {
-                let frame = if state.is_idr {
-                    rc_model::FrameType::Intra
-                } else {
-                    rc_model::FrameType::InterP
-                };
+                let frame = picture_frame_type(&state);
                 let (bit_target, quality_target) = model.start(frame);
                 Some(RateControl {
                     bit_target,
                     qp_target: quality_target as u32,
-                    qp_min: 8,
-                    qp_max: 48,
+                    qp_min: self.config.rc_qp_min,
+                    qp_max: self.config.rc_qp_max,
                     qp_delta_row: 2,
                     qp_delta_row_i: 2,
                 })
@@ -1017,11 +1030,7 @@ impl Vepu580H264 {
         // get-statistics pass, on the finished picture's STATUS window.
         self.tune.update(&statistics);
         if let (Some(model), Some(rc)) = (self.rc.as_mut(), job_rc) {
-            let frame = if state.is_idr {
-                rc_model::FrameType::Intra
-            } else {
-                rc_model::FrameType::InterP
-            };
+            let frame = picture_frame_type(&state);
             // Everything the model weighs comes out of the same STATUS window, with
             // the same divisors the HAL uses before handing it to the reference's
             // rate control: the coded size (`bs_lgth_l32` * 8), the mean QP over
@@ -1063,6 +1072,16 @@ impl Vepu580H264 {
             payload: frame.payload,
             headers: frame.headers,
         })
+    }
+}
+
+fn picture_frame_type(state: &FrameState) -> rc_model::FrameType {
+    if state.is_idr {
+        rc_model::FrameType::Intra
+    } else if state.is_vi {
+        rc_model::FrameType::InterVi
+    } else {
+        rc_model::FrameType::InterP
     }
 }
 
@@ -1979,6 +1998,23 @@ impl RegisterFile {
             &vepu580_regs::H264_SYNT_SLI1_POC_LSB,
             (state.poc as u32) & ((1 << poc_lsb_bits) - 1),
         )?;
+        // A smart-GOP VI picture reorders reference list 0 so its retained IDR
+        // becomes index zero. The traced job carries `rodr_pic_idx=2` and
+        // `ref_list0_rodr=1` in `synt_sli2`.
+        self.set(
+            &vepu580_regs::H264_SYNT_SLI2_RODR_PIC_IDX,
+            if state.is_vi { 2 } else { 0 },
+        )?;
+        self.set(
+            &vepu580_regs::H264_SYNT_SLI2_REF_LIST0_RODR,
+            u32::from(state.is_vi),
+        )?;
+        // The smart reference schedule marks the opening IDR long-term. This is
+        // the IDR's `long_term_reference_flag` in dec_ref_pic_marking.
+        self.set(
+            &vepu580_regs::H264_SYNT_REFM0_LTRF_FLG,
+            u32::from(state.is_idr && config.smart_p_vgop().is_some()),
+        )?;
         // `setup_vepu580_codec` takes the NAL header from the slice: an I slice
         // is type 5 with nal_ref_idc 3, a P slice is type 1 with 2. Without this
         // the hardware stamps every P picture as an IDR.
@@ -2256,6 +2292,12 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
             RcMode::Vbr => rc_model::Mode::Vbr,
             RcMode::Avbr => rc_model::Mode::Avbr,
             _ => rc_model::Mode::Cbr,
+        },
+        smart_p_vgop: config.smart_p_vgop().unwrap_or(0) as i32,
+        vi_quality_delta: if config.smart_p_vgop().is_some() {
+            2
+        } else {
+            0
         },
         hier_qp_enabled: config.hier_qp_enabled,
         hier_qp_delta: config.hier_qp_delta,

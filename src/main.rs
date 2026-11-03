@@ -34,6 +34,7 @@ fn encode_h264(
     bps: Option<(h264_syntax::RcMode, i64, i64, i64)>,
     rc_qp_bounds: Option<(u32, u32)>,
     hier_qp: Option<([i32; 4], [i32; 4])>,
+    smart_p_vi_len: Option<u32>,
     deblock: Option<(u32, i32, i32)>,
     rois: Vec<h264_syntax::RoiRegion>,
     gdr: Option<(h264_syntax::GdrMode, u32)>,
@@ -70,6 +71,12 @@ fn encode_h264(
         config.hier_qp_enabled = true;
         config.hier_qp_delta = delta;
         config.hier_frame_num = frames;
+    }
+    if let Some(vi_len) = smart_p_vi_len {
+        config.smart_vi_len = vi_len;
+        // The smart reference schedule keeps the IDR long-term plus one working
+        // short-term picture, which is the two-reference DPB the C SPS advertises.
+        config.num_ref_frames = 2;
     }
     config.gop = gop.max(1);
     // Same mapping `mpi_enc_test` uses: CABAC from Main upwards, transform-8x8
@@ -1001,7 +1008,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -1035,6 +1042,7 @@ fn main() {
         let mut bps: Option<(h264_syntax::RcMode, i64, i64, i64)> = None;
         let mut rc_qp_bounds: Option<(u32, u32)> = None;
         let mut hier_qp: Option<([i32; 4], [i32; 4])> = None;
+        let mut smart_p_vi_len: Option<u32> = None;
         let mut deblock: Option<(u32, i32, i32)> = None;
         // The `RoiRegionCfg` list `mpi_enc_test` adds per frame, in the same
         // add order.
@@ -1090,6 +1098,14 @@ fn main() {
                     }
                     _ => {
                         eprintln!("bad hierq; expected hierq:d0:d1:d2:d3:n0:n1:n2:n3");
+                        std::process::exit(2);
+                    }
+                }
+            } else if let Some(value) = text.strip_prefix("smartp:") {
+                match value.parse::<u32>() {
+                    Ok(vi_len) if vi_len > 0 => smart_p_vi_len = Some(vi_len),
+                    _ => {
+                        eprintln!("bad smartp; expected smartp:vi_len");
                         std::process::exit(2);
                     }
                 }
@@ -1194,7 +1210,8 @@ fn main() {
                         eprintln!(
                             "unknown option {text}; expected \
                              [cbr:|vbr:|avbr:]target:min:max, \
-                             hierq:d0:d1:d2:d3:n0:n1:n2:n3, dblk:disable:alpha:beta, \
+                             hierq:d0:d1:d2:d3:n0:n1:n2:n3, smartp:vi_len, \
+                             dblk:disable:alpha:beta, \
                              roi:x:y:w:h:intra:abs:qp, gdr:row:|col:num \
                              or split:mb:|byte:arg"
                         );
@@ -1204,7 +1221,7 @@ fn main() {
             }
         }
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -1225,6 +1242,7 @@ fn main() {
             bps,
             rc_qp_bounds,
             hier_qp,
+            smart_p_vi_len,
             deblock,
             rois,
             gdr,

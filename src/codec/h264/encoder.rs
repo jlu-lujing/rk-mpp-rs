@@ -79,6 +79,10 @@ pub struct EncoderConfig {
     pub hier_qp_enabled: bool,
     pub hier_qp_delta: [i32; 4],
     pub hier_frame_num: [i32; 4],
+    /// The smart-GOP `vi_len` from `mpi_enc_gen_smart_gop_ref_cfg`. MPP turns
+    /// the reference schedule into `SMART_P` only when its derived `vgop`
+    /// reaches one second of output and remains shorter than the IGOP.
+    pub smart_vi_len: u32,
     /// The deblocking triple of `MppEncH264Cfg`, reaching the slice syntax the
     /// hardware emits: `disable_deblocking_filter_idc`,
     /// `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2`.
@@ -242,6 +246,7 @@ impl EncoderConfig {
             hier_qp_enabled: false,
             hier_qp_delta: [0; 4],
             hier_frame_num: [0; 4],
+            smart_vi_len: 0,
             deblock_disable: 0,
             deblock_offset_alpha: 0,
             deblock_offset_beta: 0,
@@ -386,6 +391,12 @@ impl EncoderConfig {
                 "split_out requires a BY_CTU or BY_BYTE slice split".into(),
             ));
         }
+        if self.smart_vi_len != 0 && self.smart_p_vgop().is_none() {
+            return Err(Error(format!(
+                "SMART_P vi_len {} needs one full second and an IGOP longer than it",
+                self.smart_vi_len
+            )));
+        }
         Ok(())
     }
 
@@ -404,6 +415,18 @@ impl EncoderConfig {
         };
         let length = (lines + num - 1) / num;
         length.min(self.gop.max(1) as usize)
+    }
+
+    /// `RcCfg::vgop` derived from `mpi_enc_gen_smart_gop_ref_cfg`. The reference
+    /// schedule's period includes the long-term entry, so the value visible in
+    /// `set_rc_cfg` is the caller's `vi_len`. It activates SMART_P only inside
+    /// the same one-second/IGOP window as `mpp_enc_impl.c`.
+    pub fn smart_p_vgop(&self) -> Option<u32> {
+        if self.smart_vi_len == 0 {
+            return None;
+        }
+        let fps = self.fps_num / self.fps_den.max(1);
+        (self.smart_vi_len >= fps && self.smart_vi_len < self.gop).then_some(self.smart_vi_len)
     }
 
     pub fn coded_width(&self) -> usize {

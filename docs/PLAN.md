@@ -196,11 +196,13 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `board_h264_slice_vs_mpp.sh` 为 4/4；低延迟 packet 在
       `board_h264_lowdelay_vs_mpp.sh` 为 5/5（BY_CTU 96/150/8、BY_BYTE 256、
       6 帧 IDR+P）。38-slice 格跨 32 项硬件 FIFO，所有实际 slice 边界与拼接码流一致。
-- [~] W1-16 hier QP / SMART_P（`hier_qp_cfg`、`vgop`、`vi_bit` 窗口）
+- [x] W1-16 hier QP / SMART_P（`hier_qp_cfg`、`vgop`、`vi_bit` 窗口）
       - [x] hier QP：四层计数器与 `hier_qp_delta` 已接入三种 RC，IDR 清零；
         `board_h264_cbr_vs_mpp.sh` 的 `hier-cbr/vbr/avbr` 三格均逐 NAL 相同。
-      - [ ] SMART_P：`SMART_P` 的 `i_scale=320`、`vi_scale=32` 初始化、
-        `INTER_VI_FRAME` 分配分支和 `vi_bit` 窗口尚未接入。
+      - [x] SMART_P：`i_scale=320`/`vi_scale=32`、`vi_bit` 窗口、
+        `INTER_VI_FRAME` 分配与 2-QP VI delta 已接入；IDR 保留为长期参考，
+        VI 在 slice header 重排 L0。`board_h264_smartp_vs_mpp.sh` 的
+        CBR/VBR/AVBR 三格均为 33 帧、37 NAL 逐字节相同。
 - [ ] W1-17 重编码与多 pass：`check_re_enc`、`reenc_calc_*_ratio`、super frame、
       `-n` 超发时的 drop/pskip 策略；补"同帧重编"路径
 - [x] W1-18 与 `mpi_enc_test` 的配置对齐：差异来自 harness 将

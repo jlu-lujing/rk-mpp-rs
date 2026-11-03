@@ -67,6 +67,7 @@ int main(int argc, char **argv)
     MppCtx ctx = NULL;
     MppApi *mpi = NULL;
     MppEncCfg cfg = NULL;
+    MppEncRefCfg ref_cfg = NULL;
     MppBufferGroup group = NULL;
     MppBuffer frame_buf = NULL;
     MppBuffer packet_buf = NULL;
@@ -156,6 +157,48 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:trans8x8", 0));
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));
 
+    if (getenv("SMART_VI_LEN")) {
+        int vi_len = atoi(getenv("SMART_VI_LEN"));
+        int pos = 0;
+        MppEncRefLtFrmCfg lt_ref;
+        MppEncRefStFrmCfg st_ref[3];
+
+        if (vi_len < 2) {
+            fprintf(stderr, "SMART_VI_LEN must be at least 2\n");
+            goto cleanup;
+        }
+        memset(&lt_ref, 0, sizeof(lt_ref));
+        memset(st_ref, 0, sizeof(st_ref));
+        lt_ref.lt_idx = 0;
+        lt_ref.temporal_id = 0;
+        lt_ref.ref_mode = REF_TO_PREV_LT_REF;
+        lt_ref.lt_gap = 60;
+        lt_ref.lt_delay = 0;
+
+        st_ref[pos].is_non_ref = 0;
+        st_ref[pos].temporal_id = 0;
+        st_ref[pos].ref_mode = REF_TO_PREV_INTRA;
+        pos++;
+        if (vi_len > 1) {
+            st_ref[pos].is_non_ref = 0;
+            st_ref[pos].temporal_id = 0;
+            st_ref[pos].ref_mode = REF_TO_PREV_REF_FRM;
+            st_ref[pos].repeat = vi_len - 2;
+            pos++;
+        }
+        st_ref[pos].is_non_ref = 0;
+        st_ref[pos].temporal_id = 0;
+        st_ref[pos].ref_mode = REF_TO_PREV_INTRA;
+        pos++;
+
+        CHECK(mpp_enc_ref_cfg_init(&ref_cfg));
+        CHECK(mpp_enc_ref_cfg_set_cfg_cnt(ref_cfg, 1, 8));
+        CHECK(mpp_enc_ref_cfg_add_lt_cfg(ref_cfg, 1, &lt_ref));
+        CHECK(mpp_enc_ref_cfg_add_st_cfg(ref_cfg, pos, st_ref));
+        CHECK(mpp_enc_ref_cfg_check(ref_cfg));
+        CHECK(mpi->control(ctx, MPP_ENC_SET_REF_CFG, ref_cfg));
+    }
+
     for (i = 0; i < frames; i++) {
         MppFrame frame = NULL;
         MppPacket packet = NULL;
@@ -211,6 +254,8 @@ cleanup:
         mpp_destroy(ctx);
     if (cfg)
         mpp_enc_cfg_deinit(cfg);
+    if (ref_cfg)
+        mpp_enc_ref_cfg_deinit(&ref_cfg);
     if (frame_buf)
         mpp_buffer_put(frame_buf);
     if (packet_buf)

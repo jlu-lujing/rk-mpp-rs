@@ -1727,8 +1727,18 @@ in what order the evidence gets produced.
       The board script drives the reference's own trie keys through
       `mpp_enc_cfg_set_st`; `hier-cbr`, `hier-vbr` and `hier-avbr` each produce ten
       NAL units identical to the C stream, so the layer offset is verified across
-      all three controllers. SMART_P's separate `vgop` / `vi_bit` allocation path
-      remains open under W1-16.
+      all three controllers.
+- [x] **SMART_P uses the reference's virtual-intra budget and retained IDR.**
+      `bits_frm_init` switches to `i_scale=320`, `p_scale=16` and `vi_scale=32`;
+      the `vgop`-derived denominator and `INTER_VI_FRAME` branch now share the
+      C's `vi_bit` window. A VI picture subtracts the default two-QP `qp_vi` delta,
+      resets hierarchical QP, reads reference list zero reordered onto the retained
+      IDR, and is marked by `ref_list0_rodr = 1`, `rodr_pic_idx = 2`. The opening
+      IDR sets `long_term_reference_flag`, advertises the two-reference DPB and
+      stays in slot zero while the two working reconstruction slots alternate.
+      `scripts/board_h264_smartp_vs_mpp.sh` runs 33 pictures at `vi_len=31` across
+      CBR, VBR and AVBR. Each stream is **37 NAL units byte-identical**, including
+      the VI at picture 31 and its following P.
 - [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
       What follows is the record of how it was measured, kept because the
       corrections in it are the useful part. `setup_vepu580_rc_base`'s VBR/CBR path -

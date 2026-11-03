@@ -54,13 +54,14 @@ const MAX_I_DELTA_QP: [i32; 51] = [
     128, 64, 64, 64, 64, 64, 64, 0, 0, 0, 0, 0, 0,
 ];
 
-/// The picture kind the allocator is told about. `GOP_MODE_SMART_P` and the
-/// intra-refresh frame type are the reference's other cases; this driver drives
-/// `NORMAL_P` and does not pretend otherwise - see [`Model::start`].
+/// The picture kind the allocator is told about. `InterVi` is the smart-GOP
+/// virtual-intra picture, which still codes as a P slice but points at the last
+/// intra picture. The intra-refresh frame type is not driven by this model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameType {
     Intra,
     InterP,
+    InterVi,
 }
 
 /// `RC_CBR` and `RC_VBR` of `rc_model_v2.c`. `RC_AVBR`, which weighs motion
@@ -93,6 +94,12 @@ pub struct Config {
     pub stats_time: i32,
     /// Which controller runs.
     pub mode: Mode,
+    /// `RcCfg::vgop`, nonzero only when a reference schedule makes the C choose
+    /// `SMART_P`. MPP derives it from the short-term reference period.
+    pub smart_p_vgop: i32,
+    /// `rc:qp_vi`, the QP subtracted from a virtual-intra picture. MPP defaults
+    /// it to two when it turns a caller-provided reference schedule into SMART_P.
+    pub vi_quality_delta: i32,
     /// `rc:hier_qp_en` and its four layer controls. The reference walks P
     /// pictures through layers 4, 3, 2 and 1 according to
     /// `hier_frame_num`, then resets the cycle. `hier_qp_delta[layer - 1]` is
@@ -141,6 +148,8 @@ impl Config {
             // 320x240, the size of every capture this model is verified against.
             total_mb: 20 * 15,
             mode: Mode::Cbr,
+            smart_p_vgop: 0,
+            vi_quality_delta: 0,
             hier_qp_enabled: false,
             hier_qp_delta: [0; 4],
             hier_frame_num: [0; 4],
@@ -229,9 +238,12 @@ pub struct Model {
     p_scale: i32,
     i_sumbits: i32,
     p_sumbits: i32,
+    vi_sumbits: i32,
+    vi_scale: i32,
     /// `i_bit`, `p_bit`, and the water-level statistics.
     i_bit: DataV2,
     p_bit: DataV2,
+    vi_bit: DataV2,
     stat_bits: DataV2,
     stat_rate: DataV2,
     /// `ins_bps`, `stat_watl` and its two bounds.
@@ -332,8 +344,11 @@ impl Model {
             p_scale: 16,
             i_sumbits: 0,
             p_sumbits: 0,
+            vi_sumbits: 0,
+            vi_scale: 32,
             i_bit: DataV2::new(I_WINDOW, 0).unwrap(),
             p_bit: DataV2::new(P_WINDOW1, 0).unwrap(),
+            vi_bit: DataV2::new(I_WINDOW, 0).unwrap(),
             stat_bits: DataV2::new(fps * cfg.stats_time, bit_per_frame).unwrap(),
             stat_rate: DataV2::new(cfg.fps_num, 0).unwrap(),
             ins_bps: 0,
@@ -380,6 +395,34 @@ impl Model {
     fn bits_frm_init(&mut self) {
         let gop_len = self.cfg.igop;
         let total = self.gop_total_bits;
+        if self.cfg.smart_p_vgop > 1 {
+            let vi_num = {
+                let count = gop_len / self.cfg.smart_p_vgop;
+                if count > 0 {
+                    count - 1
+                } else {
+                    0
+                }
+            };
+            self.i_scale = 320;
+            self.p_scale = 16;
+            self.vi_scale = 32;
+            let p_bit = (total * 16
+                / (i64::from(self.i_scale)
+                    + i64::from(self.vi_scale) * i64::from(vi_num)
+                    + i64::from(self.p_scale) * i64::from(gop_len - vi_num)))
+                as i32;
+            self.p_bit.reset(p_bit);
+            self.p_sumbits = 5 * p_bit;
+            let i_bit = p_bit * self.i_scale / 16;
+            self.i_bit.reset(i_bit);
+            self.i_sumbits = 2 * p_bit * self.i_scale / 16;
+            let vi_bit = p_bit * self.vi_scale / 16;
+            self.vi_bit.reset(vi_bit);
+            self.vi_sumbits = 2 * p_bit * self.vi_scale / 16;
+            return;
+        }
+
         let p_bit = if gop_len <= 1 {
             (total * 16) as i32
         } else {
@@ -402,14 +445,36 @@ impl Model {
         let max_i_prop = self.cfg.max_i_bit_prop * 16;
         let gop_len = self.cfg.igop;
         self.i_scale = 80 * self.i_sumbits / (2 * self.p_sumbits);
+        let smart = self.cfg.smart_p_vgop > 1;
+        let vi_num = if smart {
+            let count = gop_len / self.cfg.smart_p_vgop;
+            if count > 0 {
+                count - 1
+            } else {
+                0
+            }
+        } else {
+            0
+        };
         let (i_scale, scaled) = match frame {
             FrameType::Intra => (
                 clip(self.i_scale, 16, 16000),
                 total_bits * self.i_scale as i64,
             ),
             FrameType::InterP => (clip(self.i_scale, 16, max_i_prop), total_bits * 16),
+            FrameType::InterVi => (
+                clip(self.i_scale, 16, max_i_prop),
+                total_bits * self.vi_scale as i64,
+            ),
         };
-        (scaled / (i_scale as i64 + 16 * (gop_len - 1) as i64)) as i32
+        let denominator = if smart {
+            i64::from(i_scale)
+                + 16 * i64::from(gop_len - vi_num)
+                + i64::from(vi_num) * i64::from(self.vi_scale)
+        } else {
+            i64::from(i_scale) + 16 * (gop_len - 1) as i64
+        };
+        (scaled / denominator) as i32
     }
 
     pub fn alloc(&mut self, frame: FrameType) -> i32 {
@@ -417,6 +482,17 @@ impl Model {
         let gop_len = self.cfg.igop;
         self.i_scale = 80 * self.i_sumbits / (2 * self.p_sumbits);
         let total_bits = self.gop_total_bits;
+        let smart = self.cfg.smart_p_vgop > 1;
+        let vi_num = if smart {
+            let count = gop_len / self.cfg.smart_p_vgop;
+            if count > 0 {
+                count - 1
+            } else {
+                0
+            }
+        } else {
+            0
+        };
 
         let (i_scale, scaled) = match frame {
             // An intra picture may take everything it can get, up to 16000; a P
@@ -427,10 +503,21 @@ impl Model {
                 total_bits * self.i_scale as i64,
             ),
             FrameType::InterP => (clip(self.i_scale, 16, max_i_prop), total_bits * 16),
+            FrameType::InterVi => (
+                clip(self.i_scale, 16, max_i_prop),
+                total_bits * self.vi_scale as i64,
+            ),
         };
         // The reference also clamps this against a super-frame threshold, which
         // only exists when the caller asks for one (`super_cfg.super_mode`).
-        (scaled / (i_scale as i64 + 16 * (gop_len - 1) as i64)) as i32
+        let denominator = if smart {
+            i64::from(i_scale)
+                + 16 * i64::from(gop_len - vi_num)
+                + i64::from(vi_num) * i64::from(self.vi_scale)
+        } else {
+            i64::from(i_scale) + 16 * (gop_len - 1) as i64
+        };
+        (scaled / denominator) as i32
     }
 
     /// `calc_next_i_ratio`: after an intra picture, how much of a head start the
@@ -495,6 +582,11 @@ impl Model {
                 self.p_sumbits = self.p_bit.sum().max(1);
                 self.p_scale = 16;
             }
+            FrameType::InterVi => {
+                self.vi_bit.preset(bit_target);
+                self.vi_sumbits = self.vi_bit.sum();
+                self.vi_scale = clip(80 * self.vi_sumbits / (2 * self.p_sumbits), 16, 320);
+            }
         }
     }
 
@@ -520,6 +612,11 @@ impl Model {
                 self.p_bit.update(real_bit);
                 self.p_sumbits = self.p_bit.sum().max(1);
                 self.p_scale = 16;
+            }
+            FrameType::InterVi => {
+                self.vi_bit.update(real_bit);
+                self.vi_sumbits = self.vi_bit.sum();
+                self.vi_scale = clip(80 * self.vi_sumbits / (2 * self.p_sumbits), 16, 320);
             }
         }
     }
@@ -628,6 +725,7 @@ impl Model {
                 self.pre_p_bit.update(bit_real);
                 self.madp.update(madp);
             }
+            FrameType::InterVi => {}
         }
     }
 
@@ -855,6 +953,11 @@ impl Model {
             self.cur_scale_qp >> 6
         };
 
+        if frame == FrameType::InterVi {
+            quality_target -= self.cfg.vi_quality_delta;
+            quality_target = clip(quality_target, self.cfg.quality_min, self.cfg.quality_max);
+        }
+
         if self.cfg.hier_qp_enabled {
             self.hier_advance(frame);
             if self.qp_layer_id != 0 {
@@ -869,7 +972,7 @@ impl Model {
     /// `rc_hier_calc_dealt_qp`: an intra picture starts a new hierarchy, while
     /// inter pictures walk the four counters from the deepest layer upward.
     fn hier_advance(&mut self, frame: FrameType) {
-        if frame == FrameType::Intra {
+        if matches!(frame, FrameType::Intra | FrameType::InterVi) {
             self.hier_frame_cnt = [0; 4];
             self.qp_layer_id = 0;
             return;
@@ -1190,6 +1293,24 @@ mod tests {
         let (_, quality) = model.start(FrameType::Intra);
         assert_eq!(model.qp_layer_id(), 0);
         assert!((8..=48).contains(&quality));
+    }
+
+    #[test]
+    fn smart_p_initialises_the_vi_window_and_allocation() {
+        let mut cfg = Config::cbr(300_000, 250_000, 350_000, 60);
+        cfg.smart_p_vgop = 31;
+        cfg.vi_quality_delta = 2;
+        let mut model = Model::new(cfg);
+
+        assert_eq!(model.alloc(FrameType::InterP), 7_500);
+        assert_eq!(model.alloc(FrameType::InterVi), 15_000);
+
+        let (target, quality) = model.start(FrameType::Intra);
+        assert_eq!((target, quality), (150_000, 26));
+        model.end(FrameType::Intra, target, 30_224);
+
+        let (target, quality) = model.start(FrameType::InterP);
+        assert_eq!((target, quality), (8_333, 27));
     }
 
     /// VBR budgets from `bps_max` and steers towards `bps_target`. Both halves are
