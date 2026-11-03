@@ -341,7 +341,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `scripts/perf_baseline.tsv` 的相对吞吐/毫秒上限；任一关键行缺失或超限
       即失败。`PERF_GATE=1 scripts/board_regress_all.sh` 已接入，默认关闭以
       保持普通正确性回归的速度。
-- [ ] W8-6 内存占用报告（各 codec 峰值）与优化
+- [~] W8-6 内存占用报告：`scripts/board_memory_profile.sh` 在 t6 采样
+      `/proc/*/status` 的 `VmHWM` 和 debugfs dma-buf 总量，生成
+      [`docs/memory.md`](memory.md)。八种 decode 和两种 encode 已有 t6
+      基线；极短任务的新 dma-buf 暂记为未观测。编码器每帧 alloc/mmap 已由
+      W8-3 消除，剩余的逐 codec dma-buf 归属优化继续开放。
 
 验收：每个已交付路径"不慢于 C"；推理链路（JPEG+scale）保持现有 30% 与 2.9–3.8× 优势。
 
