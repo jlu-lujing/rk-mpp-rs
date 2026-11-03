@@ -162,4 +162,53 @@ for entry in cbr:1 vbr:0 avbr:2; do
     "$mode" "$SIZE" "$FRAMES"
 done
 
+# PSKIP replaces an oversized non-reference P picture with the software
+# all-mb-skip slice. The 9-byte NALs, alternating accepted P pictures, final
+# stream and every attempted hardware STATUS must all match.
+for entry in cbr:1:7 vbr:0:8 avbr:2:9; do
+  mode="${entry%%:*}"
+  rest="${entry#*:}"
+  probe_mode="${rest%%:*}"
+  expected_jobs="${rest##*:}"
+  c=/tmp/pskip_${mode}_c.264
+  ours=/tmp/pskip_${mode}_ours.264
+  trace=/tmp/pskip_${mode}.trace
+  stats=/tmp/pskip_${mode}_ours_stats.txt
+  ssh "$BOARD" "sudo rm -f $c $ours $trace $stats &&
+          sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=$tracer \
+            MAX_REENC=1 DROP_MODE=2 DROP_THD=0 DROP_GAP=1 \
+            /tmp/rc_probe_reenc $fixture $c $SIZE $FRAMES 10000 8333 11666 $probe_mode 30 0 \
+            >/dev/null 2>$trace &&
+          cd ~/rk-mpp-rs && sudo env RKMPP_STAT_DUMP=$stats \
+            ./target/release/rk-mpp-rs h264-enc $fixture $ours \
+            $SIZE 26 baseline $FRAMES 60 \
+            $mode:10000:8333:11666 reenc:1 drop:2:0:1 >/dev/null &&
+          sudo chmod 644 $c $ours $trace $stats"
+  if ! ssh "$BOARD" "test -s $c && test -s $ours"; then
+    printf 'FAIL pskip-%s (one side produced no stream)\n' "$mode"
+    fail=1
+    continue
+  fi
+  scp -q "$BOARD":$c "$BOARD":$ours "$BOARD":$trace "$BOARD":$stats /tmp/ 2>/dev/null
+  if ! python3 scripts/compare_streams.py "$c" "$ours"; then
+    printf 'FAIL pskip-%s (bitstreams differ)\n' "$mode"
+    fail=1
+    continue
+  fi
+  if ! python3 scripts/stat_compare.py "$trace" "$stats"; then
+    printf 'FAIL pskip-%s (STATUS windows differ)\n' "$mode"
+    fail=1
+    continue
+  fi
+  pskip_jobs=$(grep -c "read_complete\[1\]@16384" "$stats")
+  if [ "$pskip_jobs" -ne "$expected_jobs" ]; then
+    printf 'FAIL pskip-%s (expected %s hardware jobs, got %s)\n' \
+      "$mode" "$expected_jobs" "$pskip_jobs"
+    fail=1
+    continue
+  fi
+  printf 'PASS pskip-%s (%s, %d frames, %s hardware jobs)\n' \
+    "$mode" "$SIZE" "$FRAMES" "$pskip_jobs"
+done
+
 exit "$fail"

@@ -623,6 +623,11 @@ pub struct Vepu580H264 {
     md_info: DmaBuf,
     state: FrameState,
     slot: usize,
+    /// A PSKIP consumes input/POC but neither advances frame_num nor becomes a
+    /// reference. The next accepted picture therefore reuses the PSKIP attempt's
+    /// current slot and its previous accepted reference slot.
+    next_slot_override: Option<usize>,
+    next_reference_override: Option<usize>,
     /// The rate-control model, present only in CBR mode.
     rc: Option<rc_model::Model>,
     /// The scene-motion detector, updated from every picture's STATUS window.
@@ -734,6 +739,8 @@ impl Vepu580H264 {
             hdr_added: false,
             state: FrameState::default(),
             slot: 0,
+            next_slot_override: None,
+            next_reference_override: None,
             tune: SceneTune::new(false),
             rc: match config.rc_mode {
                 RcMode::FixedQp => None,
@@ -818,11 +825,15 @@ impl Vepu580H264 {
                 !self.state.is_idr
                     && self.state.index % self.config.gop.max(1) as usize == vi_len as usize
             });
-            self.slot = if self.state.is_idr {
-                0
-            } else {
-                1 + (self.state.index - 1) % 2
-            };
+            self.slot = self.next_slot_override.take().unwrap_or_else(|| {
+                if self.state.is_idr {
+                    0
+                } else if previous_slot == 1 {
+                    2
+                } else {
+                    1
+                }
+            });
         } else {
             self.started = true;
         }
@@ -843,11 +854,13 @@ impl Vepu580H264 {
             .sync_write_end()
             .map_err(|e| format!("H.264 input flush: {e}"))?;
 
-        let reference_slot = if state.is_idr || state.is_vi || state.index <= 1 {
-            0
-        } else {
-            1 + (state.index - 2) % 2
-        };
+        let reference_slot = self.next_reference_override.take().unwrap_or_else(|| {
+            if state.is_idr || state.is_vi || state.index <= 1 {
+                0
+            } else {
+                previous_slot
+            }
+        });
         // The model decides the picture's bits and QP before the register file is
         // built; under fixed QP there is no decision to make. The C re-encodes
         // the same picture in the same reconstruction slot when the first result
@@ -858,7 +871,7 @@ impl Vepu580H264 {
             Some(model) => model.start(frame),
             None => (0, i32::from(self.config.qp_init)),
         };
-        let (payload, slice_lengths, statistics, measured, dropped) = loop {
+        let (payload, slice_lengths, statistics, measured, disposition) = loop {
             let rc = self.rc.as_ref().map(|_| RateControl {
                 bit_target,
                 qp_target: quality_target as u32,
@@ -1005,7 +1018,8 @@ impl Vepu580H264 {
             // by a re-encode.
             self.tune.update(&statistics);
             if let Some(model) = self.rc.as_mut() {
-                if model.drops_super_frame(frame, measured) {
+                if model.drops_super_frame(frame, measured) || model.requests_drop(frame, measured)
+                {
                     let mut dropped_measurement = measured;
                     // `mpp_enc_reenc_drop` reports the requested QP as the
                     // dropped picture's quality and zero committed bits, not the
@@ -1017,7 +1031,26 @@ impl Vepu580H264 {
                         Vec::new(),
                         statistics,
                         dropped_measurement,
-                        true,
+                        PictureDisposition::Dropped,
+                    );
+                }
+                if model.requests_pskip(frame, measured) {
+                    let payload = pskip_nal(&self.config, &state)?;
+                    let pskip_measurement = rc_model::Measured {
+                        // `rc_model_v2_end` receives 13 bits for this software
+                        // slice in the reference path (the packet length is nine
+                        // bytes, but the encoder's task counter reports 13).
+                        bits: 13,
+                        quality: quality_target,
+                        madi: measured.madi,
+                        madp: measured.madp,
+                    };
+                    break (
+                        payload,
+                        Vec::new(),
+                        statistics,
+                        pskip_measurement,
+                        PictureDisposition::Pskip,
                     );
                 }
                 if let Some(next_quality) = model.reencode_quality(
@@ -1031,7 +1064,13 @@ impl Vepu580H264 {
                     continue;
                 }
             }
-            break (payload, slice_lengths, statistics, measured, false);
+            break (
+                payload,
+                slice_lengths,
+                statistics,
+                measured,
+                PictureDisposition::Accepted,
+            );
         };
 
         // SPS and PPS precede an IDR only; a P picture rides on the parameters it
@@ -1047,7 +1086,7 @@ impl Vepu580H264 {
             && self.config.gdr_refresh_length() > 0
             && state.index > 0
             && state.index % self.config.gop as usize == 0;
-        let headers = if dropped {
+        let headers = if disposition != PictureDisposition::Accepted {
             Vec::new()
         } else if state.is_idr {
             self.hdr_added = true;
@@ -1071,17 +1110,28 @@ impl Vepu580H264 {
         let packets = output_packets(&headers, &payload, &slice_lengths)?;
         if let Some(model) = self.rc.as_mut() {
             model.end_with(frame, bit_target, measured);
-            if dropped {
-                // The reference's drop path reaches `rc_model_v2_end` twice for
-                // the rejected picture before the next input is accepted.
+            if disposition != PictureDisposition::Accepted {
+                // The reference's drop and software-PSKIP paths reach
+                // `rc_model_v2_end` twice for the replaced picture.
                 model.end_with(frame, bit_target, measured);
+            } else if disposition == PictureDisposition::Accepted {
+                model.accept_frame();
             }
         }
-        if dropped {
+        if disposition == PictureDisposition::Dropped {
             // `mpp_enc_refs_rollback`: a dropped input does not advance the
             // encoded sequence, frame number, POC or reference slot.
             self.state = previous_state;
             self.slot = previous_slot;
+        } else if disposition == PictureDisposition::Pskip {
+            // A non-reference PSKIP consumes sequence/POC but does not advance
+            // frame_num, and the next accepted picture reuses its working slot.
+            self.state = FrameState {
+                frame_num: state.frame_num.saturating_sub(1),
+                ..state
+            };
+            self.next_slot_override = Some(self.slot);
+            self.next_reference_override = Some(reference_slot);
         }
         Ok(EncodedFrame {
             annex_b,
@@ -1114,6 +1164,102 @@ fn picture_frame_type(state: &FrameState) -> rc_model::FrameType {
     } else {
         rc_model::FrameType::InterP
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PictureDisposition {
+    Accepted,
+    Dropped,
+    Pskip,
+}
+
+fn put_bits(bits: &mut Vec<bool>, value: u32, width: u32) {
+    for shift in (0..width).rev() {
+        bits.push((value >> shift) & 1 != 0);
+    }
+}
+
+fn put_ue(bits: &mut Vec<bool>, value: u32) {
+    let code = u64::from(value) + 1;
+    let width = 64 - code.leading_zeros();
+    for _ in 1..width {
+        bits.push(false);
+    }
+    for shift in (0..width).rev() {
+        bits.push((code >> shift) & 1 != 0);
+    }
+}
+
+fn put_se(bits: &mut Vec<bool>, value: i32) {
+    let mapped = if value > 0 {
+        (value as u32) * 2 - 1
+    } else {
+        (-value as u32) * 2
+    };
+    put_ue(bits, mapped);
+}
+
+/// `h264e_slice_write_pskip`: a non-reference P slice with one `mb_skip_run`
+/// covering the whole picture. CAVLC and CABAC differ after the slice header;
+/// the latter carries `cabac_init_idc` before `slice_qp_delta`.
+fn pskip_nal(config: &EncoderConfig, state: &FrameState) -> Result<Vec<u8>, String> {
+    if config.entropy_coding {
+        return Err("H.264 software PSKIP currently supports CAVLC only".into());
+    }
+    let mut bits = Vec::new();
+
+    put_ue(&mut bits, 0); // first_mb_in_slice
+    put_ue(&mut bits, 0); // P slice
+    put_ue(&mut bits, 0); // pps_id
+    put_bits(
+        &mut bits,
+        state.frame_num & ((1 << (config.log2_max_frame_num_minus4 + 4)) - 1),
+        config.log2_max_frame_num_minus4 as u32 + 4,
+    );
+    put_bits(
+        &mut bits,
+        (state.poc as u32) & ((1 << (config.log2_max_poc_lsb_minus4 + 4)) - 1),
+        config.log2_max_poc_lsb_minus4 as u32 + 4,
+    );
+    put_bits(&mut bits, 0, 1); // num_ref_idx_active_override_flag
+    put_bits(&mut bits, 0, 1); // ref_pic_list_modification_flag_l0
+    put_se(&mut bits, 0); // slice_qp_delta
+    put_ue(&mut bits, 0); // disable_deblocking_filter_idc
+    put_se(&mut bits, 0); // slice_alpha_c0_offset_div2
+    put_se(&mut bits, 0); // slice_beta_offset_div2
+    put_ue(
+        &mut bits,
+        (config.coded_width() / 16 * config.coded_height() / 16) as u32,
+    );
+    bits.push(true); // rbsp_stop_one_bit
+    while bits.len() % 8 != 0 {
+        bits.push(false);
+    }
+
+    let mut rbsp = Vec::with_capacity(bits.len() / 8);
+    for chunk in bits.chunks(8) {
+        rbsp.push(
+            chunk
+                .iter()
+                .fold(0u8, |byte, bit| (byte << 1) | u8::from(*bit)),
+        );
+    }
+    let mut escaped = Vec::with_capacity(rbsp.len() + 4);
+    let mut zeroes = 0;
+    for byte in rbsp {
+        if zeroes >= 2 && byte <= 3 {
+            escaped.push(3);
+            zeroes = 0;
+        }
+        escaped.push(byte);
+        zeroes = if byte == 0 { zeroes + 1 } else { 0 };
+    }
+    let mut nal = vec![0, 0, 0, 1, 0x01];
+    if nal.len() + escaped.len() < 8 {
+        return Err("software PSKIP produced an invalid NAL".into());
+    }
+    nal.extend_from_slice(&escaped);
+    Ok(nal)
 }
 
 /// Write one job's register image to `RKMPP_REG_DUMP` in the same text layout
@@ -2334,6 +2480,9 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
         super_i_thd: config.super_i_thd,
         super_p_thd: config.super_p_thd,
         rc_priority: config.rc_priority,
+        drop_mode: config.drop_mode,
+        drop_threshold: config.drop_threshold,
+        drop_gap: config.drop_gap,
         hier_qp_enabled: config.hier_qp_enabled,
         hier_qp_delta: config.hier_qp_delta,
         hier_frame_num: config.hier_frame_num,
@@ -2668,6 +2817,36 @@ mod tests {
 
     fn config() -> EncoderConfig {
         EncoderConfig::new(REFERENCE_WIDTH, REFERENCE_HEIGHT)
+    }
+
+    #[test]
+    fn software_pskip_matches_the_c_slice_bytes() {
+        let config = config();
+        for (frame_num, poc, expected) in [
+            (1, 2, "0000000101e000200047804b60"),
+            (2, 6, "0000000101e0004000c7804b60"),
+            (3, 10, "0000000101e000600147804b60"),
+        ] {
+            let state = FrameState {
+                index: frame_num as usize,
+                is_idr: false,
+                is_vi: false,
+                frame_num,
+                idr_pic_id: 0,
+                poc,
+                is_i_refresh: false,
+                is_i_recovery: false,
+                refresh_idx: frame_num,
+            };
+            assert_eq!(
+                pskip_nal(&config, &state).unwrap(),
+                expected
+                    .as_bytes()
+                    .chunks_exact(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 
     /// A job on stand-in fds, which the register builder only copies around.

@@ -94,6 +94,11 @@ pub struct EncoderConfig {
     /// `rc:priority`; frame-size-first applies the super-frame cap during
     /// allocation, while bitrate-first keeps the ordinary target.
     pub rc_priority: u8,
+    /// `rc:drop_mode`, `drop_thd` and `drop_gap`: bitrate-overflow policy.
+    /// Mode 1 drops the picture; mode 2 emits an all-skip non-reference P slice.
+    pub drop_mode: u8,
+    pub drop_threshold: u32,
+    pub drop_gap: u32,
     /// The deblocking triple of `MppEncH264Cfg`, reaching the slice syntax the
     /// hardware emits: `disable_deblocking_filter_idc`,
     /// `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2`.
@@ -263,6 +268,9 @@ impl EncoderConfig {
             super_i_thd: 0,
             super_p_thd: 0,
             rc_priority: 0,
+            drop_mode: 0,
+            drop_threshold: 20,
+            drop_gap: 1,
             deblock_disable: 0,
             deblock_offset_alpha: 0,
             deblock_offset_beta: 0,
@@ -413,10 +421,10 @@ impl EncoderConfig {
                 self.smart_vi_len
             )));
         }
-        if self.super_mode > 2 || self.rc_priority > 1 {
+        if self.super_mode > 2 || self.rc_priority > 1 || self.drop_mode > 2 {
             return Err(Error(format!(
-                "invalid super-frame mode {} or priority {}",
-                self.super_mode, self.rc_priority
+                "invalid super-frame mode {}, priority {} or drop mode {}",
+                self.super_mode, self.rc_priority, self.drop_mode
             )));
         }
         if self.super_i_thd > i32::MAX as u32 || self.super_p_thd > i32::MAX as u32 {

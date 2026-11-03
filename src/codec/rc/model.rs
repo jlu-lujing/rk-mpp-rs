@@ -106,6 +106,9 @@ pub struct Config {
     pub super_i_thd: u32,
     pub super_p_thd: u32,
     pub rc_priority: u8,
+    pub drop_mode: u8,
+    pub drop_threshold: u32,
+    pub drop_gap: u32,
     /// `rc:hier_qp_en` and its four layer controls. The reference walks P
     /// pictures through layers 4, 3, 2 and 1 according to
     /// `hier_frame_num`, then resets the cycle. `hier_qp_delta[layer - 1]` is
@@ -160,6 +163,9 @@ impl Config {
             super_i_thd: 0,
             super_p_thd: 0,
             rc_priority: 0,
+            drop_mode: 0,
+            drop_threshold: 20,
+            drop_gap: 1,
             hier_qp_enabled: false,
             hier_qp_delta: [0; 4],
             hier_frame_num: [0; 4],
@@ -301,7 +307,7 @@ pub struct Model {
     /// the CBR re-encode branch; the same-frame hardware loop is independent of
     /// the controller and later modes can reuse it.
     reenc_cnt: u32,
-    qp_add: i32,
+    drop_cnt: u32,
 }
 
 /// Everything the hardware measured about one picture, as the reference's
@@ -400,7 +406,7 @@ impl Model {
             hier_frame_cnt: [0; 4],
             qp_layer_id: 0,
             reenc_cnt: 0,
-            qp_add: 0,
+            drop_cnt: 0,
             cfg,
         };
         out.bits_frm_init();
@@ -695,7 +701,6 @@ impl Model {
         self.scale_qp = self.cur_scale_qp;
         self.pre_mean_qp = measured.quality;
         self.reenc_cnt = 0;
-        self.qp_add = 0;
         if self.cfg.mode == Mode::Avbr {
             self.moving_judge_update(frame, measured.bits, measured.quality, measured.madp);
             self.update_measured(frame, measured);
@@ -1095,22 +1100,6 @@ impl Model {
             return None;
         }
 
-        let bit_thr = if self.cfg.super_mode != 0 && super_thr > 0 {
-            super_thr
-        } else {
-            default_bit_thr
-        };
-        if measured.bits > bit_thr * 2 {
-            self.qp_add += 3;
-        } else if measured.bits > bit_thr * 3 / 2 {
-            self.qp_add += 2;
-        } else if measured.bits > bit_thr {
-            self.qp_add += 1;
-        }
-        if quality_target + self.qp_add > self.cfg.quality_max {
-            return None;
-        }
-
         self.next_ratio = match self.cfg.mode {
             Mode::Cbr => {
                 self.reencode_cbr_ratio(frame, bit_target, measured, ins_bps, last_ins_bps)
@@ -1119,6 +1108,9 @@ impl Model {
                 self.reencode_vbr_ratio(bit_target, measured, ins_bps, last_ins_bps)
             }
         };
+        if self.next_ratio == 0 || quality_target >= self.cfg.quality_max {
+            return None;
+        }
         self.reenc_cnt += 1;
 
         let i_delta = if frame == FrameType::Intra {
@@ -1154,10 +1146,61 @@ impl Model {
     /// `check_super_frame`'s drop branch. MPP never drops an intra picture;
     /// otherwise a picture at or above the configured threshold is rolled back
     /// to the previous reference state and produces no payload.
-    pub fn drops_super_frame(&self, frame: FrameType, measured: Measured) -> bool {
-        self.cfg.super_mode == 1
+    pub fn drops_super_frame(&mut self, frame: FrameType, measured: Measured) -> bool {
+        let drop = self.cfg.super_mode == 1
             && frame != FrameType::Intra
-            && measured.bits >= self.super_threshold(frame)
+            && measured.bits >= self.super_threshold(frame);
+        if drop {
+            self.drop_cnt += 1;
+        }
+        drop
+    }
+
+    /// The bitrate-overflow drop/pskip decision in `check_re_enc`.
+    pub fn requests_pskip(&mut self, frame: FrameType, measured: Measured) -> bool {
+        if self.cfg.drop_mode != 2
+            || frame != FrameType::InterP
+            || self.reenc_cnt != 0
+            || (self.cfg.drop_gap != 0 && self.drop_cnt >= self.cfg.drop_gap)
+        {
+            return false;
+        }
+        let last = self.stat_bits.sum() / self.cfg.stats_time;
+        let ins = (last * self.cfg.stats_time - self.stat_bits.pre_val(-1) + measured.bits)
+            / self.cfg.stats_time;
+        let threshold =
+            i64::from(self.cfg.bps_max) * (100 + i64::from(self.cfg.drop_threshold)) / 100;
+        let pskip = i64::from(ins) > threshold;
+        if pskip {
+            self.drop_cnt += 1;
+        }
+        pskip
+    }
+
+    /// The NORMAL-drop form of the same bitrate-overflow decision.
+    pub fn requests_drop(&mut self, frame: FrameType, measured: Measured) -> bool {
+        if self.cfg.drop_mode != 1
+            || frame != FrameType::InterP
+            || self.reenc_cnt != 0
+            || (self.cfg.drop_gap != 0 && self.drop_cnt >= self.cfg.drop_gap)
+        {
+            return false;
+        }
+        let last = self.stat_bits.sum() / self.cfg.stats_time;
+        let ins = (last * self.cfg.stats_time - self.stat_bits.pre_val(-1) + measured.bits)
+            / self.cfg.stats_time;
+        let threshold =
+            i64::from(self.cfg.bps_max) * (100 + i64::from(self.cfg.drop_threshold)) / 100;
+        let drop = i64::from(ins) > threshold;
+        if drop {
+            self.drop_cnt += 1;
+        }
+        drop
+    }
+
+    /// A normally accepted picture closes the continuous-drop gap.
+    pub fn accept_frame(&mut self) {
+        self.drop_cnt = 0;
     }
 
     /// `reenc_calc_cbr_ratio`. The super-frame branch is absent because this
@@ -1651,7 +1694,7 @@ mod tests {
         cfg.super_mode = 1;
         cfg.super_i_thd = 10_000;
         cfg.super_p_thd = 1_000;
-        let model = Model::new(cfg);
+        let mut model = Model::new(cfg);
         let oversized = Measured {
             bits: 20_000,
             ..Measured::default()
