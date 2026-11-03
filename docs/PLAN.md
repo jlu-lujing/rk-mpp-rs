@@ -324,7 +324,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 - [ ] W8-1 NEON 缩放内核（非整数比例，如 1280x960→640）
 - [ ] W8-2 零拷贝链路：解码→缩放→推理输入，减少 DMA_BUF sync 次数
-- [ ] W8-3 编码器缓冲复用：避免每帧重新 alloc/mmap（当前 ~18MB/open）
+- [x] W8-3 编码器缓冲复用：`Vepu580H264::open` 一次性分配 input、output、
+      两个 recon 的 FBC pixel/thumb、motion-info、ROI、GDR 和 CIME extension
+      表；后续 `encode_frame` 只做 sync、copy、寄存器提交和 STATUS 读取，
+      路径内没有 `DmaBuf::alloc`/`mmap`。H.265 session 同样在 `open_inner`
+      完成 input/output/two surfaces/motion-info 的固定分配。
 - [ ] W8-4 1088 行编码的抖动定位（当前与 C 平手、双峰 ~110/~140ms）
 - [ ] W8-5 基准门槛化：`board_regress_all.sh` 记录关键行吞吐，回归超阈值即失败
 - [ ] W8-6 内存占用报告（各 codec 峰值）与优化
