@@ -21,7 +21,8 @@
  * Usage:
  *   h264e_probe in.nv12 out.264 w h frames <0|1|2|3> qp [bps[:min:max]]
  *               [dblk disable alpha beta] [roi x y w h fi qpmode qpval]...
- *               [gop n] [gdr mode num] [split mode arg] [splitout value]
+ *               [gop n] [hier d0:d1:d2:d3:n0:n1:n2:n3]
+ *               [gdr mode num] [split mode arg] [splitout value]
  *
  *   mode 0 = fixed QP, 1 = CBR, 2 = VBR, 3 = AVBR.
  *   `gop` overrides the hard-coded intra GOP of 60.
@@ -31,6 +32,7 @@
  *   `MPP_ENC_SPLIT_BY_CTU` with n macroblocks per slice, at the reference
  *   `splitout 1` enables MPP_ENC_SPLIT_OUT_LOWDELAY; packets are then drained
  *   through EOI. The default of zero keeps one access unit per picture.
+ *   `hier` enables hierarchical QP with four layer deltas and frame counts.
  *   qp: the value written to the initial-quality field; pass -1 under a rate
  *       control to say "the caller left it unset" (written as -1 so the model
  *       takes its derivation branch), ignored beyond that.
@@ -170,6 +172,9 @@ int main(int argc, char **argv)
     int gop = 60;
     int have_gdr = 0, gdr_mode = 0, gdr_num = 0;
     int have_split = 0, split_mode = 0, split_arg = 0, split_out = 0;
+    int have_hier = 0;
+    int hier_qp_delta[4] = { 0, 0, 0, 0 };
+    int hier_frame_num[4] = { 0, 0, 0, 0 };
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
@@ -251,6 +256,17 @@ int main(int argc, char **argv)
                 return 2;
             }
             split_out = atoi(argv[++arg]);
+        } else if (!strcmp(argv[arg], "hier")) {
+            if (arg + 1 >= argc ||
+                sscanf(argv[++arg], "%d:%d:%d:%d:%d:%d:%d:%d",
+                       &hier_qp_delta[0], &hier_qp_delta[1],
+                       &hier_qp_delta[2], &hier_qp_delta[3],
+                       &hier_frame_num[0], &hier_frame_num[1],
+                       &hier_frame_num[2], &hier_frame_num[3]) != 8) {
+                fprintf(stderr, "hier wants d0:d1:d2:d3:n0:n1:n2:n3\n");
+                return 2;
+            }
+            have_hier = 1;
         }
     }
 
@@ -310,6 +326,11 @@ int main(int argc, char **argv)
         CHECK(set_s32_any(cfg, &tried_qp_ip, "rc:qp_ip", 0));
     }
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", gop));
+    if (have_hier) {
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:hier_qp_en", 1));
+        CHECK(mpp_enc_cfg_set_st(cfg, "rc:hier_qp_delta", hier_qp_delta));
+        CHECK(mpp_enc_cfg_set_st(cfg, "rc:hier_frame_num", hier_frame_num));
+    }
     if (have_gdr) {
         /* The refresh trio of `MppEncRcCfg`, registered as U32 keys.
          * `h264e_proc_cfg` derives `refresh_length` from these on SET_CFG,

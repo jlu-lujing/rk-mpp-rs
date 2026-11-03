@@ -1717,6 +1717,18 @@ in what order the evidence gets produced.
       `board_h264_cbr_vs_mpp.sh` now runs all three modes plus the official-harness
       alignment cell and passes all four: ten NAL units identical each, including
       the rc-cfg SEI's own mode name and quality band.
+- [x] **Hierarchical QP follows the reference's nested layer schedule.**
+      `rc_hier_calc_dealt_qp` selects layers 4, 3, 2 and 1 from the four
+      `hier_frame_num` counters, resets deeper counters on each selection, and
+      subtracts `hier_qp_delta[layer - 1]` after the rate controller chooses the
+      picture QP. An IDR resets the whole hierarchy. Rust carries the same three
+      `MppEncRcCfg` fields through `EncoderConfig` and exposes the harness form as
+      `hierq:d0:d1:d2:d3:n0:n1:n2:n3`.
+      The board script drives the reference's own trie keys through
+      `mpp_enc_cfg_set_st`; `hier-cbr`, `hier-vbr` and `hier-avbr` each produce ten
+      NAL units identical to the C stream, so the layer offset is verified across
+      all three controllers. SMART_P's separate `vgop` / `vi_bit` allocation path
+      remains open under W1-16.
 - [x] Rate control beyond fixed QP - done, three modes, three kinds of evidence.
       What follows is the record of how it was measured, kept because the
       corrections in it are the useful part. `setup_vepu580_rc_base`'s VBR/CBR path -

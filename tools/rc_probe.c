@@ -57,6 +57,9 @@ int main(int argc, char **argv)
     int mode = argc > 9 ? atoi(argv[9]) : 1; /* 0: VBR, 1: CBR, 2: AVBR, 3: FIXQP */
     int level = argc > 10 ? atoi(argv[10]) : 30;
     int mpi_quality = argc > 11 ? atoi(argv[11]) : 0;
+    const char *hier = argc > 12 ? argv[12] : NULL;
+    int hier_qp_delta[4] = { 0, 0, 0, 0 };
+    int hier_frame_num[4] = { 0, 0, 0, 0 };
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
@@ -128,6 +131,19 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_max", bps_max));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 60));
+    if (hier &&
+        sscanf(hier, "%d:%d:%d:%d:%d:%d:%d:%d",
+               &hier_qp_delta[0], &hier_qp_delta[1],
+               &hier_qp_delta[2], &hier_qp_delta[3],
+               &hier_frame_num[0], &hier_frame_num[1],
+               &hier_frame_num[2], &hier_frame_num[3]) == 8) {
+        CHECK(mpp_enc_cfg_set_s32(cfg, "rc:hier_qp_en", 1));
+        CHECK(mpp_enc_cfg_set_st(cfg, "rc:hier_qp_delta", hier_qp_delta));
+        CHECK(mpp_enc_cfg_set_st(cfg, "rc:hier_frame_num", hier_frame_num));
+    } else if (hier) {
+        fprintf(stderr, "bad hierarchical QP spec %s\n", hier);
+        goto cleanup;
+    }
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denom", 1));

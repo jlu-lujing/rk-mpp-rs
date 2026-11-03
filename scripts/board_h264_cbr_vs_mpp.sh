@@ -20,6 +20,7 @@ BPS_MIN=250000
 BPS_MAX=350000
 FRAMES=6
 SIZE="320 240"
+HIER="1:2:3:4:1:1:1:1"
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
@@ -73,4 +74,29 @@ for entry in cbr:1:0 vbr:0:0 avbr:2:0 cbr-mpi:1:1; do
     printf 'FAIL %s (bitstreams differ)\n' "$mode"; fail=1
   fi
 done
+
+# Hierarchical QP: the counters walk the reference's nested layer schedule.
+# Run all three rate controllers so the layer offset is not accidentally tied to
+# CBR's particular QP trajectory.
+for entry in cbr:1 vbr:0 avbr:2; do
+  mode="${entry%%:*}"
+  probe_mode="${entry##*:}"
+  ssh "$BOARD" "sudo rm -f /tmp/rc_ours_hier-$mode.264 /tmp/rc_c_hier-$mode.264 &&
+          cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture /tmp/rc_ours_hier-$mode.264 \
+            $SIZE 26 baseline $FRAMES 60 $mode:$BPS_TARGET:$BPS_MIN:$BPS_MAX hierq:$HIER >/dev/null &&
+          sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/rc_probe $fixture /tmp/rc_c_hier-$mode.264 \
+            $SIZE $FRAMES $BPS_TARGET $BPS_MIN $BPS_MAX $probe_mode 30 0 $HIER >/dev/null 2>&1 &&
+          sudo chmod 644 /tmp/rc_ours_hier-$mode.264 /tmp/rc_c_hier-$mode.264"
+  if ! ssh "$BOARD" "test -s /tmp/rc_ours_hier-$mode.264 && test -s /tmp/rc_c_hier-$mode.264"; then
+    printf 'FAIL hier-%s (one side produced no stream)\n' "$mode"
+    fail=1
+  elif scp -q "$BOARD":/tmp/rc_ours_hier-$mode.264 "$BOARD":/tmp/rc_c_hier-$mode.264 /tmp/ 2>/dev/null &&
+       python3 scripts/compare_streams.py /tmp/rc_c_hier-$mode.264 /tmp/rc_ours_hier-$mode.264; then
+    printf 'PASS hier-%s (%s, %d frames, deltas %s)\n' "$mode" "$SIZE" "$FRAMES" "$HIER"
+  else
+    printf 'FAIL hier-%s (bitstreams differ)\n' "$mode"
+    fail=1
+  fi
+done
+
 exit "$fail"

@@ -2257,6 +2257,9 @@ fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
             RcMode::Avbr => rc_model::Mode::Avbr,
             _ => rc_model::Mode::Cbr,
         },
+        hier_qp_enabled: config.hier_qp_enabled,
+        hier_qp_delta: config.hier_qp_delta,
+        hier_frame_num: config.hier_frame_num,
     })
 }
 

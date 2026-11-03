@@ -73,6 +73,12 @@ pub struct EncoderConfig {
     /// `mpi_enc_test` explicitly widens them to 10/51.
     pub rc_qp_min: u32,
     pub rc_qp_max: u32,
+    /// `MppEncRcCfg`'s hierarchical-QP controls. The reference subtracts the
+    /// selected layer's delta from the rate controller's QP after allocation;
+    /// the counters walk layers 4, 3, 2 and 1 and reset at an IDR.
+    pub hier_qp_enabled: bool,
+    pub hier_qp_delta: [i32; 4],
+    pub hier_frame_num: [i32; 4],
     /// The deblocking triple of `MppEncH264Cfg`, reaching the slice syntax the
     /// hardware emits: `disable_deblocking_filter_idc`,
     /// `slice_alpha_c0_offset_div2` and `slice_beta_offset_div2`.
@@ -233,6 +239,9 @@ impl EncoderConfig {
             quality_auto: false,
             rc_qp_min: 8,
             rc_qp_max: 48,
+            hier_qp_enabled: false,
+            hier_qp_delta: [0; 4],
+            hier_frame_num: [0; 4],
             deblock_disable: 0,
             deblock_offset_alpha: 0,
             deblock_offset_beta: 0,

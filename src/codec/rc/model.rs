@@ -93,6 +93,13 @@ pub struct Config {
     pub stats_time: i32,
     /// Which controller runs.
     pub mode: Mode,
+    /// `rc:hier_qp_en` and its four layer controls. The reference walks P
+    /// pictures through layers 4, 3, 2 and 1 according to
+    /// `hier_frame_num`, then resets the cycle. `hier_qp_delta[layer - 1]` is
+    /// subtracted after the controller picks this picture's QP.
+    pub hier_qp_enabled: bool,
+    pub hier_qp_delta: [i32; 4],
+    pub hier_frame_num: [i32; 4],
     /// The quantiser bounds, on MPP's 0..100 quality scale. `h264e_api_v2.c`'s
     /// defaults: medium (26) as the initial target and 8..48 as the bounds, with an
     /// I-picture delta of two - the `:2` the `uuid_rc_cfg` SEI ends with.
@@ -134,6 +141,9 @@ impl Config {
             // 320x240, the size of every capture this model is verified against.
             total_mb: 20 * 15,
             mode: Mode::Cbr,
+            hier_qp_enabled: false,
+            hier_qp_delta: [0; 4],
+            hier_frame_num: [0; 4],
         }
     }
 }
@@ -262,6 +272,9 @@ pub struct Model {
     motion_sensitivity: i32,
     pre_mean_qp: i32,
     scale_qp: i32,
+    /// `hier_frm_cnt` and `qp_layer_id` from `rc_hier_calc_dealt_qp`.
+    hier_frame_cnt: [i32; 4],
+    qp_layer_id: i32,
 }
 
 /// Everything the hardware measured about one picture, as the reference's
@@ -354,6 +367,8 @@ impl Model {
             motion_sensitivity: 90,
             pre_mean_qp: 0,
             scale_qp: 0,
+            hier_frame_cnt: [0; 4],
+            qp_layer_id: 0,
             cfg,
         };
         out.bits_frm_init();
@@ -822,7 +837,7 @@ impl Model {
         };
         self.preset(frame, bit_target);
 
-        let quality_target = if first {
+        let mut quality_target = if first {
             let quality_init = first_quality(&self.cfg, bit_target);
             let seed = quality_init + self.cfg.i_quality_delta;
             self.cur_scale_qp = clip(
@@ -840,7 +855,45 @@ impl Model {
             self.cur_scale_qp >> 6
         };
 
+        if self.cfg.hier_qp_enabled {
+            self.hier_advance(frame);
+            if self.qp_layer_id != 0 {
+                quality_target -= self.cfg.hier_qp_delta[self.qp_layer_id as usize - 1];
+            }
+            quality_target = clip(quality_target, self.cfg.quality_min, self.cfg.quality_max);
+        }
+
         (bit_target, quality_target)
+    }
+
+    /// `rc_hier_calc_dealt_qp`: an intra picture starts a new hierarchy, while
+    /// inter pictures walk the four counters from the deepest layer upward.
+    fn hier_advance(&mut self, frame: FrameType) {
+        if frame == FrameType::Intra {
+            self.hier_frame_cnt = [0; 4];
+            self.qp_layer_id = 0;
+            return;
+        }
+
+        for layer in (0..4).rev() {
+            if self.hier_frame_cnt[layer] < self.cfg.hier_frame_num[layer] {
+                self.hier_frame_cnt[layer] += 1;
+                for deeper in layer + 1..4 {
+                    self.hier_frame_cnt[deeper] = 0;
+                }
+                self.qp_layer_id = layer as i32 + 1;
+                return;
+            }
+        }
+
+        self.hier_frame_cnt = [0; 4];
+        self.qp_layer_id = 0;
+    }
+
+    /// The layer selected for the most recent picture, zero meaning the
+    /// hierarchy reset or is disabled.
+    pub fn qp_layer_id(&self) -> i32 {
+        self.qp_layer_id
     }
 
     /// `last_inst_bps`, the previous picture's instantaneous rate.
@@ -1106,6 +1159,37 @@ mod tests {
         assert_eq!(model.moving_ratio(), 222, "the still/moving level itself");
         assert_eq!(target, 9_276, "222/256 of the GOP, then the usual scale");
         assert_eq!(quality, 27);
+    }
+
+    #[test]
+    fn hierarchical_qp_walks_the_reference_layer_cycle() {
+        let mut cfg = Config::cbr(300_000, 250_000, 350_000, 60);
+        cfg.hier_qp_enabled = true;
+        cfg.hier_qp_delta = [1, 2, 3, 4];
+        cfg.hier_frame_num = [1, 1, 1, 1];
+        let mut model = Model::new(cfg);
+
+        let (_, quality) = model.start(FrameType::Intra);
+        assert_eq!((model.qp_layer_id(), quality), (0, 26));
+        model.end(FrameType::Intra, 86_956, 30_224);
+
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            let (target, quality) = model.start(FrameType::InterP);
+            seen.push(model.qp_layer_id());
+            assert!((8..=48).contains(&quality));
+            model.end(FrameType::InterP, target, 2_000);
+        }
+        assert_eq!(seen, [4, 3, 4, 2, 4, 3, 4, 1]);
+
+        let (_, quality) = model.start(FrameType::InterP);
+        assert_eq!(model.qp_layer_id(), 4);
+        assert!((8..=48).contains(&quality));
+        model.end(FrameType::InterP, 8_000, 2_000);
+
+        let (_, quality) = model.start(FrameType::Intra);
+        assert_eq!(model.qp_layer_id(), 0);
+        assert!((8..=48).contains(&quality));
     }
 
     /// VBR budgets from `bps_max` and steers towards `bps_target`. Both halves are
