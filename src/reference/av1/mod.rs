@@ -17,4 +17,5 @@ pub mod scan;
 pub mod scan_defaults;
 pub mod sm_weights;
 pub mod symbol;
+pub mod tile;
 pub mod tx;

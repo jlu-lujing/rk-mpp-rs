@@ -824,7 +824,16 @@ in what order the evidence gets produced.
       pin a DC-only 4x4 DCT_DCT to a constant block and the FlipADST/odd-input
       equivalence. The identity transform is currently a pass-through; the
       specification's own identity scaling is still to be checked.
-      Next: the tile driver, CDEF/LR, then the libaom pixel comparison.
+      **Thirtieth slice:** the tile traversal geometry. `tile.rs` implements
+      the recursive `decode_partition` walk (superblock grid, `subsize` for
+      every square partition, HORZ/VERT/SPLIT/A/B/4-way recursion, edge
+      handling) with the partition choice injected as a callback, so coverage
+      can be checked without an entropy-coded tile. Four tests pin `subsize`,
+      all-NONE, all-SPLIT and a mixed HORZ/VERT walk, each asserting every 4x4
+      position is covered exactly once. The first run caught a real bug: the
+      superblock lookup matched `BLOCK_64X32` because it only compared width.
+      Next: wire the symbol decoder into the walk, then CDEF/LR and the libaom
+      pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
