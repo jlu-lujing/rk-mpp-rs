@@ -61,7 +61,7 @@
 | AV1 默认 CDF 表 | 完成：96 张、19,677 个值，生成器 + FNV 校验（含 3D 表与 `128 * 125` 乘积更正） |
 | AV1 块几何 / partition / intra 模式 | 完成：22 种 BLOCK_SIZES、上下文、`y_mode`/`intra_frame_y_mode`/`uv_mode`+CFL、`tx_depth`、32 张扫描表 |
 | AV1 系数语法 | 完成：EOB 类别与 extra bits、`coeff_base`/`eob`/`br`、signs/Golomb、`Quant[]`、tile 级 above/left 上下文 |
-| AV1 帧内预测 | 完成 DC/V/H/SMOOTH/SMOOTH_V/H/PAETH、方向预测（含 sub-90 分支）、CFL、边缘滤波与强度选择 |
+| AV1 帧内预测 | 完成统一 `predict_intra` 入口：DC/V/H/SMOOTH/SMOOTH_V/H/PAETH、8 个方向模式及 angle delta、邻近样本不可用替换、边缘强度/滤波/上采样、CFL；18 个预测测试 |
 | AV1 逆变换 | 完成 bit-exact 蝶形 DCT、ADST4/8/16 与 FLIPADST、2D 变换、量化与残差重建；identity scaling 待与 libaom 核 |
 | AV1 CDEF | 完成：方向搜索、主/次抽头、约束差值，9 个测试（含 8/10-bit 与色度几何） |
 | AV1 loop restoration 滤波 | 完成：Wiener、self-guided（两遍 box + 投影）、stripe 边界源切换，8 个测试含两个独立规范向量 |
@@ -108,13 +108,14 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 44 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 45 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
 5 个真实 IVF fixture 的 50 帧上验证），以及 §5.9 完整帧头（8 个真实 IVF 共 112 个帧头逐位
-对齐，并经 ffmpeg `trace_headers` 交叉核对），以及真实 tile-group 的字节范围拆包和不依赖
-`skip_mode` 注入的参考帧状态串行更新。仍缺全帧 tile 驱动（含帧间预测与参考帧管理），
+对齐，并经 ffmpeg `trace_headers` 交叉核对），真实 tile-group 的字节范围拆包、不依赖
+`skip_mode` 注入的参考帧状态串行更新，以及统一帧内预测入口。仍缺全帧 tile 驱动（含帧间
+预测与参考帧管理），
 因此 libaom 像素比对尚未开始（ADST8/16 快照、identity scaling、蝶形数值对齐也还欠 libaom
-佐证）。`cargo test --all-targets`：**980 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
+佐证）。`cargo test --all-targets`：**982 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
 干净。

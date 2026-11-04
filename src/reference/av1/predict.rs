@@ -5,6 +5,8 @@
 //! neither exists. Vertical and horizontal copy the above row and left column
 //! respectively; the directional, smooth, Paeth and CFL processes follow.
 
+use crate::reference::av1::intra::IntraMode;
+
 /// Clip a value to the sample range.
 fn clip1(value: i32, bit_depth: u32) -> u16 {
     value.clamp(0, (1 << bit_depth) - 1) as u16
@@ -441,6 +443,361 @@ pub fn cfl_predict(
     out
 }
 
+/// The edge samples needed by one intra prediction invocation. `above` and
+/// `left` start at index 0; the shared top-left sample is stored separately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntraEdges {
+    pub above: Vec<u16>,
+    pub left: Vec<u16>,
+    pub top_left: u16,
+    pub have_above: bool,
+    pub have_left: bool,
+    /// Number of samples available before the right/bottom frame boundary.
+    pub above_available: usize,
+    pub left_available: usize,
+}
+
+impl IntraEdges {
+    /// Build `AboveRow` / `LeftCol` for the intra prediction process, including
+    /// the unavailable-edge substitutions from §7.11.2.1.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_plane(
+        frame: &[u16],
+        stride: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        have_above: bool,
+        have_left: bool,
+        have_above_right: bool,
+        have_below_left: bool,
+        max_x: usize,
+        max_y: usize,
+        bit_depth: u32,
+    ) -> Self {
+        assert!(stride >= max_x + 1);
+        assert!(frame.len() >= stride * (max_y + 1));
+        let mid = 1u16 << (bit_depth - 1);
+        let mut above = vec![0u16; w + h];
+        let mut left = vec![0u16; w + h];
+        if !have_above && have_left {
+            above.fill(frame[y * stride + x - 1]);
+        } else if !have_above {
+            above.fill(mid - 1);
+        } else {
+            let above_limit = max_x.min(x + if have_above_right { 2 * w } else { w } - 1);
+            for (i, sample) in above.iter_mut().enumerate() {
+                *sample = frame[(y - 1) * stride + (x + i).min(above_limit)];
+            }
+        }
+        if !have_left && have_above {
+            left.fill(frame[(y - 1) * stride + x]);
+        } else if !have_left {
+            left.fill(mid + 1);
+        } else {
+            let left_limit = max_y.min(y + if have_below_left { 2 * h } else { h } - 1);
+            for (i, sample) in left.iter_mut().enumerate() {
+                *sample = frame[(y + i).min(left_limit) * stride + x - 1];
+            }
+        }
+        let top_left = match (have_above, have_left) {
+            (true, true) => frame[(y - 1) * stride + x - 1],
+            (true, false) => frame[(y - 1) * stride + x],
+            (false, true) => frame[y * stride + x - 1],
+            (false, false) => mid,
+        };
+        Self {
+            above,
+            left,
+            top_left,
+            have_above,
+            have_left,
+            above_available: w.min(max_x.saturating_sub(x) + 1),
+            left_available: h.min(max_y.saturating_sub(y) + 1),
+        }
+    }
+}
+
+/// Select the intra edge filter type from the above/left neighbour modes.
+pub fn intra_filter_type(above: Option<IntraMode>, left: Option<IntraMode>) -> u8 {
+    let smooth = |mode: Option<IntraMode>| {
+        matches!(
+            mode,
+            Some(IntraMode::Smooth | IntraMode::SmoothV | IntraMode::SmoothH)
+        )
+    };
+    u8::from(smooth(above) || smooth(left))
+}
+
+fn mode_angle(mode: IntraMode) -> Option<i32> {
+    Some(match mode {
+        IntraMode::D45 => 45,
+        IntraMode::D67 => 67,
+        IntraMode::V => 90,
+        IntraMode::D113 => 113,
+        IntraMode::D135 => 135,
+        IntraMode::D157 => 157,
+        IntraMode::H => 180,
+        IntraMode::D203 => 203,
+        _ => return None,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct DirectionalEdge {
+    samples: Vec<u16>,
+    /// Logical index of `samples[0]`.
+    origin: isize,
+}
+
+impl DirectionalEdge {
+    fn at(&self, index: isize) -> u16 {
+        let slot = index - self.origin;
+        debug_assert!(slot >= 0 && slot < self.samples.len() as isize);
+        self.samples[slot as usize]
+    }
+}
+
+/// Run intra prediction for one transform block. `angle_delta` is the syntax
+/// element in `-3..=3`; it is multiplied by `ANGLE_STEP` (3 degrees).
+#[allow(clippy::too_many_arguments)]
+pub fn predict_intra(
+    mode: IntraMode,
+    edges: &IntraEdges,
+    log2_w: u32,
+    log2_h: u32,
+    angle_delta: i32,
+    enable_intra_edge_filter: bool,
+    filter_type: u8,
+    bit_depth: u32,
+) -> Vec<u16> {
+    let w = 1usize << log2_w;
+    let h = 1usize << log2_h;
+    assert!(filter_type <= 1);
+    assert!(edges.above.len() >= w + h);
+    assert!(edges.left.len() >= w + h);
+    match mode {
+        IntraMode::Dc => dc_predict(
+            &edges.above,
+            &edges.left,
+            edges.have_above,
+            edges.have_left,
+            log2_w,
+            log2_h,
+            bit_depth,
+        ),
+        IntraMode::V => v_predict(&edges.above, log2_w, log2_h),
+        IntraMode::H => h_predict(&edges.left, log2_w, log2_h),
+        IntraMode::Smooth => smooth_predict(
+            SmoothMode::Smooth,
+            &edges.above,
+            &edges.left,
+            log2_w,
+            log2_h,
+        ),
+        IntraMode::SmoothV => smooth_predict(
+            SmoothMode::SmoothV,
+            &edges.above,
+            &edges.left,
+            log2_w,
+            log2_h,
+        ),
+        IntraMode::SmoothH => smooth_predict(
+            SmoothMode::SmoothH,
+            &edges.above,
+            &edges.left,
+            log2_w,
+            log2_h,
+        ),
+        IntraMode::Paeth => {
+            paeth_predict(&edges.above, &edges.left, edges.top_left, log2_w, log2_h)
+        }
+        _ => directional_predict(
+            mode,
+            edges,
+            w,
+            h,
+            angle_delta,
+            enable_intra_edge_filter,
+            filter_type,
+            bit_depth,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn directional_predict(
+    mode: IntraMode,
+    edges: &IntraEdges,
+    w: usize,
+    h: usize,
+    angle_delta: i32,
+    enable_intra_edge_filter: bool,
+    filter_type: u8,
+    bit_depth: u32,
+) -> Vec<u16> {
+    let p_angle = mode_angle(mode).expect("directional mode") + angle_delta * 3;
+    let mut above = Vec::with_capacity(edges.above.len() + 1);
+    above.push(edges.top_left);
+    above.extend_from_slice(&edges.above);
+    let mut left = Vec::with_capacity(edges.left.len() + 1);
+    left.push(edges.top_left);
+    left.extend_from_slice(&edges.left);
+
+    let mut upsample_above = false;
+    let mut upsample_left = false;
+    if enable_intra_edge_filter && p_angle != 90 && p_angle != 180 {
+        if (90..180).contains(&p_angle) && w + h >= 24 {
+            let corner = round2(
+                i32::from(left[1]) * 5 + i32::from(above[0]) * 6 + i32::from(above[1]) * 5,
+                4,
+            );
+            above[0] = corner;
+            left[0] = corner;
+        }
+        if edges.have_above {
+            let strength = intra_edge_filter_strength(
+                w as u32,
+                h as u32,
+                u32::from(filter_type),
+                p_angle - 90,
+            );
+            let num_px = edges.above_available + usize::from(p_angle < 90) * h + 1;
+            let filtered = intra_edge_filter(&above[..num_px], num_px, strength, bit_depth);
+            above[1..num_px].copy_from_slice(&filtered);
+        }
+        if edges.have_left {
+            let strength = intra_edge_filter_strength(
+                w as u32,
+                h as u32,
+                u32::from(filter_type),
+                p_angle - 180,
+            );
+            let num_px = edges.left_available + usize::from(p_angle > 180) * w + 1;
+            let filtered = intra_edge_filter(&left[..num_px], num_px, strength, bit_depth);
+            left[1..num_px].copy_from_slice(&filtered);
+        }
+        upsample_above =
+            intra_edge_upsample_selection(w as u32, h as u32, u32::from(filter_type), p_angle - 90);
+        if upsample_above {
+            let num_px = w + usize::from(p_angle < 90) * h;
+            above = upsample_edge(&above[..=num_px], num_px, bit_depth);
+        }
+        upsample_left = intra_edge_upsample_selection(
+            w as u32,
+            h as u32,
+            u32::from(filter_type),
+            p_angle - 180,
+        );
+        if upsample_left {
+            let num_px = h + usize::from(p_angle > 180) * w;
+            left = upsample_edge(&left[..=num_px], num_px, bit_depth);
+        }
+    }
+
+    let (above, left) = if upsample_above || upsample_left {
+        let above = if upsample_above {
+            DirectionalEdge {
+                samples: above,
+                origin: -2,
+            }
+        } else {
+            DirectionalEdge {
+                samples: above,
+                origin: -1,
+            }
+        };
+        let left = if upsample_left {
+            DirectionalEdge {
+                samples: left,
+                origin: -2,
+            }
+        } else {
+            DirectionalEdge {
+                samples: left,
+                origin: -1,
+            }
+        };
+        (above, left)
+    } else {
+        (
+            DirectionalEdge {
+                samples: above,
+                origin: -1,
+            },
+            DirectionalEdge {
+                samples: left,
+                origin: -1,
+            },
+        )
+    };
+    let up_above = usize::from(upsample_above);
+    let up_left = usize::from(upsample_left);
+    let mut out = vec![0u16; w * h];
+    if p_angle < 90 {
+        let dx = u32::from(dr_intra_derivative(p_angle as u32));
+        let max_base = (w + h - 1) << up_above;
+        for i in 0..h {
+            for j in 0..w {
+                let idx = (i + 1) as u32 * dx;
+                let base = (idx >> (6 - up_above)) as usize + (j << up_above);
+                let shift = (idx >> 1) & 0x1F;
+                out[i * w + j] = if base < max_base {
+                    let value = u32::from(above.at(base as isize)) * (32 - shift)
+                        + u32::from(above.at(base as isize + 1)) * shift;
+                    ((value + 16) >> 5) as u16
+                } else {
+                    above.at(max_base as isize)
+                };
+            }
+        }
+    } else if (90..180).contains(&p_angle) {
+        let dx = u32::from(dr_intra_derivative((180 - p_angle) as u32));
+        let dy = u32::from(dr_intra_derivative((p_angle - 90) as u32));
+        for i in 0..h {
+            for j in 0..w {
+                let idx = j as i32 * 64 - (i as i32 + 1) * dx as i32;
+                let base = idx >> (6 - up_above);
+                if base >= -(1 << up_above) {
+                    let shift = ((idx << up_above) as u32 >> 1) & 0x1F;
+                    let value = u32::from(above.at(base as isize)) * (32 - shift)
+                        + u32::from(above.at(base as isize + 1)) * shift;
+                    out[i * w + j] = ((value + 16) >> 5) as u16;
+                } else {
+                    let idx = i as i32 * 64 - (j as i32 + 1) * dy as i32;
+                    let base = idx >> (6 - up_left);
+                    let shift = ((idx << up_left) as u32 >> 1) & 0x1F;
+                    let value = u32::from(left.at(base as isize)) * (32 - shift)
+                        + u32::from(left.at(base as isize + 1)) * shift;
+                    out[i * w + j] = ((value + 16) >> 5) as u16;
+                }
+            }
+        }
+    } else if p_angle > 180 {
+        let dy = u32::from(dr_intra_derivative((270 - p_angle) as u32));
+        for i in 0..h {
+            for j in 0..w {
+                let idx = (j + 1) as u32 * dy;
+                let base = (idx >> (6 - up_left)) as usize + (i << up_left);
+                let shift = (idx >> 1) & 0x1F;
+                let value = u32::from(left.at(base as isize)) * (32 - shift)
+                    + u32::from(left.at(base as isize + 1)) * shift;
+                out[i * w + j] = ((value + 16) >> 5) as u16;
+            }
+        }
+    } else if p_angle == 90 {
+        for i in 0..h {
+            out[i * w..(i + 1) * w].copy_from_slice(&edges.above[..w]);
+        }
+    } else {
+        for i in 0..h {
+            out[i * w..(i + 1) * w].fill(edges.left[i]);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,6 +900,53 @@ mod tests {
         assert_eq!(dr_intra_derivative(45), 64);
         let pred = directional_lt90(&above, 64, 1, 1);
         assert_eq!(pred, [20, 30, 30, 40]);
+    }
+
+    #[test]
+    fn intra_edges_substitute_unavailable_neighbours() {
+        let mut frame = vec![0u16; 64];
+        for i in 0..8 {
+            for j in 0..8 {
+                frame[i * 8 + j] = (i * 10 + j) as u16;
+            }
+        }
+        let edges =
+            IntraEdges::from_plane(&frame, 8, 2, 2, 2, 2, false, true, false, false, 7, 7, 8);
+        assert_eq!(edges.above, [21, 21, 21, 21]);
+        assert_eq!(edges.left, [21, 31, 31, 31]);
+        assert_eq!(edges.top_left, 21);
+        assert_eq!(edges.above_available, 2);
+
+        let edges =
+            IntraEdges::from_plane(&frame, 8, 2, 2, 2, 2, false, false, false, false, 7, 7, 8);
+        assert!(edges.above.iter().all(|v| *v == 127));
+        assert!(edges.left.iter().all(|v| *v == 129));
+        assert_eq!(edges.top_left, 128);
+    }
+
+    #[test]
+    fn intra_prediction_dispatches_cardinal_modes() {
+        let edges = IntraEdges {
+            above: vec![10, 20, 30, 40],
+            left: vec![50, 60, 70, 80],
+            top_left: 5,
+            have_above: true,
+            have_left: true,
+            above_available: 2,
+            left_available: 2,
+        };
+        assert_eq!(
+            predict_intra(IntraMode::V, &edges, 1, 1, 0, false, 0, 8),
+            [10, 20, 10, 20]
+        );
+        assert_eq!(
+            predict_intra(IntraMode::H, &edges, 1, 1, 0, false, 0, 8),
+            [50, 50, 60, 60]
+        );
+        assert_eq!(
+            predict_intra(IntraMode::D45, &edges, 1, 1, 0, false, 0, 8),
+            [20, 30, 30, 40]
+        );
     }
 
     #[test]
