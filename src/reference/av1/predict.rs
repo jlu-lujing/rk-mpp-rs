@@ -203,9 +203,98 @@ pub fn directional_lt90(above: &[u16], dx: u16, log2_w: u32, log2_h: u32) -> Vec
     out
 }
 
+/// Directional prediction for `90 < pAngle < 180` (the unfiltered,
+/// non-upsampled path). `above` and `left` include the top-left sample at
+/// index 0, so `above[base + 1]` is the specification's `AboveRow[base]`.
+pub fn directional_gte90_lt180(
+    above: &[u16],
+    left: &[u16],
+    dx: u16,
+    dy: u16,
+    log2_w: u32,
+    log2_h: u32,
+) -> Vec<u16> {
+    let w = 1usize << log2_w;
+    let h = 1usize << log2_h;
+    let mut out = vec![0u16; w * h];
+    for i in 0..h {
+        for j in 0..w {
+            let idx = (j as i32) * 64 - (i as i32 + 1) * i32::from(dx);
+            let base = idx >> 6;
+            if base >= -1 {
+                let shift = ((idx as u32) << 1 & 0x3F) >> 1 & 0x1F;
+                let at = (base + 1) as usize;
+                let value = u32::from(above[at]) * (32 - shift) + u32::from(above[at + 1]) * shift;
+                out[i * w + j] = ((value + 16) >> 5) as u16;
+            } else {
+                let idx = (i as i32) * 64 - (j as i32 + 1) * i32::from(dy);
+                let base = idx >> 6;
+                let shift = ((idx as u32) >> 1) & 0x1F;
+                // Index 0 of `left` is the top-left sample, i.e. LeftCol[-1].
+                let at = (base + 1) as usize;
+                let value = u32::from(left[at]) * (32 - shift) + u32::from(left[at + 1]) * shift;
+                out[i * w + j] = ((value + 16) >> 5) as u16;
+            }
+        }
+    }
+    out
+}
+
+/// Directional prediction for `pAngle > 180` (unfiltered, non-upsampled).
+pub fn directional_gt180(left: &[u16], dy: u16, log2_w: u32, log2_h: u32) -> Vec<u16> {
+    let w = 1usize << log2_w;
+    let h = 1usize << log2_h;
+    let max_base = w + h - 1;
+    let mut out = vec![0u16; w * h];
+    for i in 0..h {
+        for j in 0..w {
+            let idx = (j + 1) as u32 * u32::from(dy);
+            let base = (idx >> 6) as usize + i;
+            let shift = (idx >> 1) & 0x1F;
+            out[i * w + j] = if base < max_base {
+                let value =
+                    u32::from(left[base]) * (32 - shift) + u32::from(left[base + 1]) * shift;
+                ((value + 16) >> 5) as u16
+            } else {
+                left[max_base]
+            };
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directional_135_mixes_above_and_left() {
+        // Dr[45] = 64 for both axes at 135 degrees; index 0 of each edge slice
+        // is the top-left sample.
+        let above = [50u16, 60, 70, 80, 90];
+        let left = [50u16, 61, 62, 63, 64];
+        let dx = dr_intra_derivative(45);
+        let dy = dr_intra_derivative(45);
+        assert_eq!((dx, dy), (64, 64));
+        let pred = directional_gte90_lt180(&above, &left, dx, dy, 1, 1);
+        assert_eq!(pred, [50, 60, 61, 50]);
+    }
+
+    #[test]
+    fn directional_203_stays_on_the_left_edge() {
+        // Dr[67] = 27 for both samples of a 2-wide block.
+        let left = [50u16, 60, 70, 80, 90];
+        let dy = dr_intra_derivative(67);
+        assert_eq!(dy, 27);
+        let pred = directional_gt180(&left, dy, 1, 1);
+        let blend = |a: u16, b: u16, shift: u32| {
+            ((u32::from(a) * (32 - shift) + u32::from(b) * shift + 16) >> 5) as u16
+        };
+        assert_eq!(pred[0], blend(50, 60, 13));
+        assert_eq!(pred[1], blend(50, 60, 27));
+        assert_eq!(pred[2], blend(60, 70, 13));
+        assert_eq!(pred[3], blend(60, 70, 27));
+    }
 
     #[test]
     fn directional_45_follows_the_diagonal() {

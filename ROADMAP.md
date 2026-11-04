@@ -754,8 +754,15 @@ in what order the evidence gets produced.
       `w+h-1` edge clamp. Two tests pin the 45-degree pure diagonal and the
       67-degree derivative (27) blends. The `90 < pAngle < 180` and
       `pAngle > 180` branches, edge filtering/upsampling and CFL remain.
-      Next: those branches, the bit-exact DCT/ADST/FLIPADST butterflies, then
-      the libaom pixel comparison.
+      **Twentieth slice:** the other two directional branches in their
+      unfiltered, non-upsampled form: `directional_gte90_lt180` (above edge
+      while `base >= -1`, left edge otherwise, with the top-left sample at edge
+      index 0) and `directional_gt180` (left edge with the `w+h-1` clamp). Two
+      tests pin the 135-degree mix (`50,60,61,50`) and the 203-degree left-edge
+      blends at shifts 13 and 27; the first exposed that the left branch had to
+      add the same +1 offset as the above branch.
+      Next: edge filtering/upsampling, CFL, the bit-exact DCT/ADST/FLIPADST
+      butterflies, then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
