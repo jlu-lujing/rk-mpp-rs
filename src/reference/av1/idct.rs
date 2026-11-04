@@ -89,9 +89,97 @@ pub fn brev(num_bits: u32, x: u32) -> u32 {
     t
 }
 
+/// The specification's butterfly workspace: an integer array plus its clamping
+/// precision `r`.
+pub struct Butterfly {
+    pub t: Vec<i32>,
+    pub r: u32,
+}
+
+impl Butterfly {
+    pub fn new(t: Vec<i32>, r: u32) -> Self {
+        Self { t, r }
+    }
+
+    fn clip(&self, value: i32) -> i32 {
+        let limit = 1i32 << (self.r - 1);
+        value.clamp(-limit, limit - 1)
+    }
+
+    fn round2_12(&self, value: i32) -> i32 {
+        self.clip((value + 2048) >> 12)
+    }
+
+    /// `B(a, b, angle, 0, r)`: a rotation.
+    pub fn b_rotation(&mut self, a: usize, b: usize, angle: i32) {
+        let ca = cos128(angle);
+        let sa = sin128(angle);
+        let x = self.t[a] * ca - self.t[b] * sa;
+        let y = self.t[a] * sa + self.t[b] * ca;
+        self.t[a] = self.round2_12(x);
+        self.t[b] = self.round2_12(y);
+    }
+
+    /// `B(a, b, angle, 1, r)`: rotation and flip.
+    pub fn b_rotation_flip(&mut self, a: usize, b: usize, angle: i32) {
+        self.b_rotation(a, b, angle);
+        self.t.swap(a, b);
+    }
+
+    /// `H(a, b, 0, r)`: a Hadamard rotation with clamping.
+    pub fn h(&mut self, a: usize, b: usize, flip: bool) {
+        let (a, b) = if flip { (b, a) } else { (a, b) };
+        let x = self.t[a];
+        let y = self.t[b];
+        self.t[a] = self.clip(x + y);
+        self.t[b] = self.clip(x - y);
+    }
+}
+
+/// `Inverse DCT array permutation process`: `T[i] = copyT[brev(n, i)]`.
+pub fn idct_permute(t: &mut [i32], n: u32) {
+    let copy = t.to_vec();
+    let len = 1usize << n;
+    for i in 0..len {
+        t[i] = copy[brev(n, i as u32) as usize];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn butterfly_rotation_and_flip() {
+        // cos128(32) = sin128(32) = 2896.
+        let mut bf = Butterfly::new(vec![100, 50], 24);
+        bf.b_rotation(0, 1, 32);
+        assert_eq!(bf.t, [35, 106]);
+        let mut bf = Butterfly::new(vec![100, 50], 24);
+        bf.b_rotation_flip(0, 1, 32);
+        assert_eq!(bf.t, [106, 35]);
+    }
+
+    #[test]
+    fn hadamard_rotation_clamps() {
+        let mut bf = Butterfly::new(vec![100, 50], 8);
+        bf.h(0, 1, false);
+        assert_eq!(bf.t, [127, 50]);
+        // Flipped indices: H(1, 0, 0) gives T[1] = 150 and T[0] = -50.
+        let mut bf = Butterfly::new(vec![100, 50], 24);
+        bf.h(0, 1, true);
+        assert_eq!(bf.t, [-50, 150]);
+    }
+
+    #[test]
+    fn dct_permutation_uses_bit_reversal() {
+        let mut t = vec![1, 2, 3, 4];
+        idct_permute(&mut t, 2);
+        assert_eq!(t, [1, 3, 2, 4]);
+        let mut t = (0..8).collect::<Vec<i32>>();
+        idct_permute(&mut t, 3);
+        assert_eq!(t, [0, 4, 2, 6, 1, 5, 3, 7]);
+    }
 
     #[test]
     fn cos128_and_sin128_follow_the_lookup_rules() {
