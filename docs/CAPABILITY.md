@@ -63,6 +63,7 @@
 | AV1 系数语法 stateful 路径 | 完成：`coeff.rs` 提供 all_zero/TxbSkip、EOB、coeff_base/eob/br、level loop 和 DC sign 的 `CdfState` 入口；stateful 与默认路径在同一码流上得到一致的 `Quant[]` |
 | AV1 transform-block 系数消费 | 完成：`coeff_block.rs` 串联 all_zero、EOB、levels、signs、transform scan 和 above/left context 更新，返回完整 `Quant[]` |
 | AV1 block mode 状态 | 完成：`segment.rs` 的 segment prediction/neg_deinterleave，以及方向模式的 signed `angle_delta_y/uv` |
+| AV1 intra transform-block 重建 | 完成：`reconstruct_intra_tx` 构造邻域、预测、选择 TX row/column kind、逆变换、加残差并写回平面 |
 | AV1 块几何 / partition / intra 模式 | 完成：22 种 BLOCK_SIZES、上下文、`y_mode`/`intra_frame_y_mode`/`uv_mode`+CFL、`tx_depth`、块级 `read_tx_size`（lossless / largest / select 与 split chain）、32 张扫描表 |
 | AV1 residual transform 布局 | 完成：`residual.rs` — 规范 `Subsampled_Size[22][2][2]`、chroma `get_tx_size`、>64 block 的 64x64 chunk、plane/raster transform block 坐标；4 个测试 |
 | AV1 系数语法 | 完成：EOB 类别与 extra bits、`coeff_base`/`eob`/`br`、signs/Golomb、`Quant[]`、tile 级 above/left 上下文 |
@@ -116,7 +117,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 55 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 56 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
@@ -126,9 +127,9 @@ restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr
 stream 事件驱动、residual transform 的 chunk/plane/raster 布局、tile 级可变 CDF 状态，以及
 partition/mode/skip/tx_depth 的持久 CDF 接线、系数 EOB/level/sign 的 stateful 路径，以及
 tile MI 边界与叶块回调驱动、transform-type 选择、residual 的 `all_zero` 入口、单
-transform block 的完整系数消费，以及 segment/angle-delta block 状态。仍缺真实 block sink
-的组合与预测/重建
+transform block 的完整系数消费、segment/angle-delta block 状态，以及 intra
+transform-block 重建。仍缺真实 block sink 的组合
 （含帧间预测与参考帧管理），
 因此 libaom 像素比对尚未开始（ADST8/16 快照、identity scaling、蝶形数值对齐也还欠 libaom
-佐证）。`cargo test --all-targets`：**1012 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
+佐证）。`cargo test --all-targets`：**1014 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
 干净。
