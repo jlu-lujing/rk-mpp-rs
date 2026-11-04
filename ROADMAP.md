@@ -768,8 +768,14 @@ in what order the evidence gets produced.
       duplicated endpoints). Three tests pin the strength branches, the
       selection matrix and the doubled edge (`10,14,20,26,30`); the last one
       caught the endpoint duplication producing the wrong `dup` array.
-      Next: the edge filter process itself, CFL, the bit-exact DCT/ADST/
-      FLIPADST butterflies, then the libaom pixel comparison.
+      **Twenty-second slice:** the edge filter process itself:
+      `INTRA_EDGE_KERNEL` (`(0,4,8,4,0)`, `(0,5,6,5,0)`, `(2,4,4,4,2)`) and
+      `intra_edge_filter` with the clamped window, `(s+8)>>4` rounding and the
+      untouched `buf[-1]`. A test pins strengths 0/1/3 for the edge
+      `10,20,30,40` (`20,30,38` / unchanged / `21,29,35`); the first hand
+      calculation was wrong about the clamped window and the test caught it.
+      Next: CFL prediction, the bit-exact DCT/ADST/FLIPADST butterflies, then
+      the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

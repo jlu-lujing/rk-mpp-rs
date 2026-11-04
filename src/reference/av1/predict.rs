@@ -358,6 +358,31 @@ pub fn upsample_edge(buf: &[u16], num_px: usize, bit_depth: u32) -> Vec<u16> {
     out
 }
 
+/// `Intra_Edge_Kernel[ INTRA_EDGE_KERNELS ][ INTRA_EDGE_TAPS ]`.
+pub static INTRA_EDGE_KERNEL: [[i32; 5]; 3] = [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
+
+/// Intra edge filter process (specification 7.11.2.11).
+///
+/// `edge` holds `buf[-1] .. buf[sz-2]`; the return value holds the filtered
+/// `buf[0] .. buf[sz-2]` (the `buf[-1]` sample is never rewritten).
+pub fn intra_edge_filter(edge: &[u16], sz: usize, strength: u8, bit_depth: u32) -> Vec<u16> {
+    let mut out = vec![0u16; sz - 1];
+    if strength == 0 {
+        out.copy_from_slice(&edge[1..sz]);
+        return out;
+    }
+    let kernel = &INTRA_EDGE_KERNEL[(strength - 1) as usize];
+    for i in 1..sz {
+        let mut s = 0i32;
+        for (j, weight) in kernel.iter().enumerate() {
+            let k = (i as i32 - 2 + j as i32).clamp(0, sz as i32 - 1) as usize;
+            s += weight * i32::from(edge[k]);
+        }
+        out[i - 1] = clip1((s + 8) >> 4, bit_depth);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +414,17 @@ mod tests {
         assert_eq!(pred[1], blend(50, 60, 27));
         assert_eq!(pred[2], blend(60, 70, 13));
         assert_eq!(pred[3], blend(60, 70, 27));
+    }
+
+    #[test]
+    fn edge_filter_applies_the_strength_kernel() {
+        let edge = [10u16, 20, 30, 40];
+        // Strength 1 is (0,4,8,4,0); edge[0] is buf[-1] and is not rewritten.
+        assert_eq!(intra_edge_filter(&edge, 4, 1, 8), [20, 30, 38]);
+        // Strength 0 copies buf[0..] unchanged.
+        assert_eq!(intra_edge_filter(&edge, 4, 0, 8), [20, 30, 40]);
+        // Strength 3 is (2,4,4,4,2).
+        assert_eq!(intra_edge_filter(&edge, 4, 3, 8), [21, 29, 35]);
     }
 
     #[test]
