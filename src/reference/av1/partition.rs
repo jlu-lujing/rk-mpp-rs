@@ -19,6 +19,7 @@ use crate::reference::av1::cdf_defaults::{
     CdfTable, DEFAULT_PARTITION_W128_CDF, DEFAULT_PARTITION_W16_CDF, DEFAULT_PARTITION_W32_CDF,
     DEFAULT_PARTITION_W64_CDF, DEFAULT_PARTITION_W8_CDF,
 };
+use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 
 /// One `BLOCK_SIZES` entry, in specification order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,6 +285,28 @@ pub fn read_partition(
     Ok(PartitionType::from_symbol(symbol))
 }
 
+/// Stateful form of [`read_partition`] for a real tile. The selected context
+/// row remains in the tile's CDF state and adapts across blocks.
+pub fn read_partition_with_cdf(
+    decoder: &mut crate::reference::av1::symbol::SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    size: BlockSize,
+    above: Option<BlockSize>,
+    left: Option<BlockSize>,
+    disable_cdf_update: bool,
+) -> Result<Option<PartitionType>, CdfStateError> {
+    let Some(table) = partition_cdf(size) else {
+        return Ok(None);
+    };
+    let symbols = partition_symbol_count(size).unwrap_or(4);
+    let width = symbols + 1;
+    let contexts = table.values.len() / width;
+    let ctx = partition_context(size, above, left);
+    debug_assert!(ctx < contexts);
+    let symbol = cdfs.read_symbol(decoder, table, ctx * width, width, disable_cdf_update)?;
+    Ok(PartitionType::from_symbol(symbol))
+}
+
 /// `split_or_horz` / `split_or_vert` CDF from the specification's CDF
 /// derivation: a three-symbol array where the disallowed direction's mass is
 /// folded into SPLIT. `partition_cdf` is the selected context's ten-value row
@@ -476,5 +499,21 @@ mod tests {
             partition_context(size, Some(named("BLOCK_32X32")), Some(named("BLOCK_32X32"))),
             0
         );
+    }
+
+    #[test]
+    fn stateful_partition_read_keeps_the_cdf_row_in_the_tile() {
+        let mut cdfs = CdfState::new();
+        let mut decoder = crate::reference::av1::symbol::SymbolDecoder::init(&[0u8; 16]).unwrap();
+        let size = named("BLOCK_16X16");
+        assert_eq!(
+            read_partition_with_cdf(&mut decoder, &mut cdfs, size, None, None, false).unwrap(),
+            Some(PartitionType::None)
+        );
+        let (table, width) = (partition_cdf(size).unwrap(), 11);
+        let row = cdfs
+            .row_mut(table, partition_context(size, None, None) * width, width)
+            .unwrap();
+        assert_eq!(row[width - 1], 1);
     }
 }

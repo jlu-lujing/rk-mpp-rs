@@ -11,6 +11,7 @@
 use crate::reference::av1::cdf_defaults::{
     CdfTable, DEFAULT_TX_16X16_CDF, DEFAULT_TX_32X32_CDF, DEFAULT_TX_64X64_CDF, DEFAULT_TX_8X8_CDF,
 };
+use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::partition::{BlockSize, BLOCK_SIZES};
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 
@@ -151,10 +152,26 @@ pub fn read_tx_depth(
     let table = tx_depth_table(size);
     let max = max_tx_size_rect(size);
     let ctx = tx_depth_context(above_width, left_height, max);
-    let start = ctx * 3;
-    let mut cdf = table.values[start..start + 3].to_vec();
+    let width = if max_tx_depth(size) == 1 { 3 } else { 4 };
+    let start = ctx * width;
+    let mut cdf = table.values[start..start + width].to_vec();
     let depth = decoder.read_symbol(&mut cdf)?;
     Ok(depth as u32)
+}
+
+/// Stateful `tx_depth` read for a tile.
+pub fn read_tx_depth_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    size: BlockSize,
+    above_width: u32,
+    left_height: u32,
+    disable_cdf_update: bool,
+) -> Result<u32, CdfStateError> {
+    let table = tx_depth_table(size);
+    let ctx = tx_depth_context(above_width, left_height, max_tx_size_rect(size));
+    let width = if max_tx_depth(size) == 1 { 3 } else { 4 };
+    Ok(cdfs.read_symbol(decoder, table, ctx * width, width, disable_cdf_update)? as u32)
 }
 
 /// `read_tx_size(allowSelect)` for an intra block. The caller supplies the
@@ -175,6 +192,39 @@ pub fn read_tx_size(
     let mut tx = max_tx_size_rect(size);
     if size.width > 4 && allow_select && tx_mode_select {
         let depth = read_tx_depth(decoder, size, above_width, left_height)?;
+        for _ in 0..depth {
+            tx = split_tx_size(tx);
+        }
+    }
+    Ok(tx)
+}
+
+/// Stateful intra `read_tx_size()` with persistent tx-depth CDF rows.
+#[allow(clippy::too_many_arguments)]
+pub fn read_tx_size_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    size: BlockSize,
+    allow_select: bool,
+    lossless: bool,
+    tx_mode_select: bool,
+    above_width: u32,
+    left_height: u32,
+    disable_cdf_update: bool,
+) -> Result<TxSize, CdfStateError> {
+    if lossless {
+        return Ok(TxSize::Tx4x4);
+    }
+    let mut tx = max_tx_size_rect(size);
+    if size.width > 4 && allow_select && tx_mode_select {
+        let depth = read_tx_depth_with_cdf(
+            decoder,
+            cdfs,
+            size,
+            above_width,
+            left_height,
+            disable_cdf_update,
+        )?;
         for _ in 0..depth {
             tx = split_tx_size(tx);
         }
@@ -280,5 +330,28 @@ mod tests {
             read_tx_size(&mut decoder, named("BLOCK_16X16"), true, false, true, 0, 0).unwrap(),
             Tx16x16
         );
+    }
+
+    #[test]
+    fn stateful_tx_size_updates_the_selected_depth_row() {
+        let mut cdfs = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&[0u8; 16]).unwrap();
+        let size = named("BLOCK_16X16");
+        assert_eq!(
+            read_tx_size_with_cdf(
+                &mut decoder,
+                &mut cdfs,
+                size,
+                true,
+                false,
+                true,
+                0,
+                0,
+                false,
+            )
+            .unwrap(),
+            Tx16x16
+        );
+        assert_eq!(cdfs.row_mut(tx_depth_table(size), 0, 4).unwrap()[3], 1);
     }
 }

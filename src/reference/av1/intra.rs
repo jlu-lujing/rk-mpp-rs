@@ -9,6 +9,7 @@ use crate::reference::av1::cdf_defaults::{
     CdfTable, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DEFAULT_UV_MODE_CFL_ALLOWED_CDF,
     DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_Y_MODE_CDF,
 };
+use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::partition::{size_group, BlockSize};
 use crate::reference::av1::symbol::SymbolDecoder;
 
@@ -94,6 +95,29 @@ pub fn read_intra_frame_y_mode(
     decode(decoder, intra_frame_y_mode_cdf(above, left))
 }
 
+/// Stateful key-frame luma mode read. The neighbour-context row stays in the
+/// tile's adaptive CDF set.
+pub fn read_intra_frame_y_mode_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    above: Option<IntraMode>,
+    left: Option<IntraMode>,
+    disable_cdf_update: bool,
+) -> Result<IntraMode, CdfStateError> {
+    let ctx = |mode: Option<IntraMode>| {
+        INTRA_MODE_CONTEXT[mode.unwrap_or(IntraMode::Dc) as usize] as usize
+    };
+    let row = ctx(above) * 13 + ctx(left);
+    let symbol = cdfs.read_symbol(
+        decoder,
+        &DEFAULT_INTRA_FRAME_Y_MODE_CDF,
+        row * 14,
+        14,
+        disable_cdf_update,
+    )?;
+    Ok(IntraMode::from_symbol(symbol).expect("intra mode within range"))
+}
+
 /// `TileYModeCdf[ Size_Group[ MiSize ] ]`.
 pub fn y_mode_cdf(size: BlockSize) -> &'static [u16] {
     // Shape [BLOCK_SIZE_GROUPS][INTRA_MODES + 1].
@@ -106,6 +130,24 @@ pub fn read_y_mode(
     size: BlockSize,
 ) -> Result<IntraMode, crate::reference::av1::symbol::SymbolError> {
     decode(decoder, y_mode_cdf(size))
+}
+
+/// Stateful `y_mode` read for an intra block in an inter frame type.
+pub fn read_y_mode_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    size: BlockSize,
+    disable_cdf_update: bool,
+) -> Result<IntraMode, CdfStateError> {
+    let row = size_group(size) as usize;
+    let symbol = cdfs.read_symbol(
+        decoder,
+        &DEFAULT_Y_MODE_CDF,
+        row * 14,
+        14,
+        disable_cdf_update,
+    )?;
+    Ok(IntraMode::from_symbol(symbol).expect("intra mode within range"))
 }
 
 /// `enum UvMode`: the thirteen intra modes plus CFL.
@@ -190,6 +232,29 @@ pub fn read_uv_mode(
     let mut cdf = uv_mode_cdf(y_mode, allowed).to_vec();
     cdf.push(0);
     let symbol = decoder.read_symbol(&mut cdf)?;
+    Ok(UvMode::from_symbol(symbol).expect("uv mode within range"))
+}
+
+/// Stateful `uv_mode` read, selecting the CFL-allowed or ordinary table row.
+pub fn read_uv_mode_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    y_mode: IntraMode,
+    allowed: bool,
+    disable_cdf_update: bool,
+) -> Result<UvMode, CdfStateError> {
+    let (table, width) = if allowed {
+        (&DEFAULT_UV_MODE_CFL_ALLOWED_CDF, 15)
+    } else {
+        (&DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, 14)
+    };
+    let symbol = cdfs.read_symbol(
+        decoder,
+        table,
+        y_mode as usize * width,
+        width,
+        disable_cdf_update,
+    )?;
     Ok(UvMode::from_symbol(symbol).expect("uv mode within range"))
 }
 
