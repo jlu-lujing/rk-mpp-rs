@@ -158,7 +158,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 77 项完成、7 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 78 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
@@ -416,7 +416,9 @@ H.264/VEPU580 编码已做到：
   `board_h265_tile_vs_mpp.sh` 为 **2/2 逐字节**；`tools/h265e_trace_diff.py --job=0/1`
   显示除 10 个 dma-buf fd 字与 `mei_stor` 外无一个非地址字不同。
   tile + low-delay 逐 slice 输出**显式拒绝**（C 跨 tile 的 FIFO 行为无证据）。
-- 下一步：WPP、B 帧/多参考。
+- `-g 60` 是 **harness 误用**：`sscanf` 只填 `gop_mode=60`，`gop_len=vi_len=0`，MPP 据此生成
+  `lt_gap=0` + 两个 `REF_TO_PREV_INTRA` 的病态调度；我们的 API 拒绝 `gop=0`。新 cell 用 `-g 0:60:0`。
+- WPP、B 帧与多参考在 C 参考里不存在（见 ROADMAP），不是待写代码。
 
 ### 5.5 M9 后处理（IEP）
 
