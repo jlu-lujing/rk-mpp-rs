@@ -801,8 +801,15 @@ in what order the evidence gets produced.
       exists: a DC-only input is a constant block for every size (n 2..6, three
       amplitudes) and doubling the input doubles the output within two units.
       Numeric validation against libaom still needs the 2D/tile path.
-      Next: the ADST/FLIPADST schedules, the 2D transform and the tile driver,
-      then the libaom pixel comparison.
+      **Twenty-seventh slice:** the inverse ADST perimeter and ADST4.
+      `adst_input_permute`/`adst_output_permute` implement the specification's
+      `idx` rules for `n = 3..4`, and `inverse_adst4` follows the documented
+      `s`/`a7`/`b7`/`x` sequence with `SINPI_1_9..SINPI_4_9` = 1321/2482/
+      3344/3803 and `Round2(.,12)`. Two tests pin `[100,0,0,0] -> 32,61,82,93`
+      and both permutations; the output-permutation expectation was hand-derived
+      from the a/b/c/d index rule after the first guess was wrong.
+      Next: ADST8/ADST16 and FLIPADST, the 2D transform, the tile driver, then
+      the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

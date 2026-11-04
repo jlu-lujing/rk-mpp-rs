@@ -335,6 +335,64 @@ pub fn inverse_dct(t: &mut [i32], n: u32, r: u32) {
     t.copy_from_slice(&bf.t);
 }
 
+/// `SINPI_1_9`..`SINPI_4_9`.
+pub const SINPI_1_9: i32 = 1321;
+pub const SINPI_2_9: i32 = 2482;
+pub const SINPI_3_9: i32 = 3344;
+pub const SINPI_4_9: i32 = 3803;
+
+/// `Inverse ADST input array permutation process` (`3 <= n <= 4`).
+pub fn adst_input_permute(t: &mut [i32], n: u32) {
+    let n0 = 1usize << n;
+    let copy = t.to_vec();
+    for i in 0..n0 {
+        let idx = if i & 1 != 0 { i - 1 } else { n0 - i - 1 };
+        t[i] = copy[idx];
+    }
+}
+
+/// `Inverse ADST output array permutation process` (`3 <= n <= 4`).
+pub fn adst_output_permute(t: &mut [i32], n: u32) {
+    let n0 = 1usize << n;
+    let copy = t.to_vec();
+    for i in 0..n0 {
+        let a = (i >> 3) & 1;
+        let b = ((i >> 2) & 1) ^ ((i >> 3) & 1);
+        let c = ((i >> 1) & 1) ^ ((i >> 2) & 1);
+        let d = (i & 1) ^ ((i >> 1) & 1);
+        let idx = ((d << 3) | (c << 2) | (b << 1) | a) >> (4 - n);
+        t[i] = if i & 1 != 0 { -copy[idx] } else { copy[idx] };
+    }
+}
+
+/// `Inverse ADST4 process`: a 4-point inverse ADST.
+pub fn inverse_adst4(t: &mut [i32; 4], _r: u32) {
+    let mut s = [0i32; 7];
+    s[0] = SINPI_1_9 * t[0];
+    s[1] = SINPI_2_9 * t[0];
+    s[2] = SINPI_3_9 * t[1];
+    s[3] = SINPI_4_9 * t[2];
+    s[4] = SINPI_1_9 * t[2];
+    s[5] = SINPI_2_9 * t[3];
+    s[6] = SINPI_4_9 * t[3];
+    let a7 = t[0] - t[2];
+    let b7 = a7 + t[3];
+    s[0] += s[3];
+    s[1] -= s[4];
+    s[3] = s[2];
+    s[2] = SINPI_3_9 * b7;
+    s[0] += s[5];
+    s[1] -= s[6];
+    let x0 = s[0] + s[3];
+    let x1 = s[1] + s[3];
+    let x2 = s[2];
+    let x3 = s[0] + s[1] - s[3];
+    t[0] = (x0 + 2048) >> 12;
+    t[1] = (x1 + 2048) >> 12;
+    t[2] = (x2 + 2048) >> 12;
+    t[3] = (x3 + 2048) >> 12;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +423,25 @@ mod tests {
         for (a, b) in scaled.iter().zip(doubled.iter()) {
             assert!((a - b).abs() <= 2, "{scaled:?} vs {doubled:?}");
         }
+    }
+
+    #[test]
+    fn adst4_matches_the_specification_sequence() {
+        // T = [100,0,0,0] gives x = [132100, 248200, 334400, 380300].
+        let mut t = [100i32, 0, 0, 0];
+        inverse_adst4(&mut t, 16);
+        assert_eq!(t, [32, 61, 82, 93]);
+    }
+
+    #[test]
+    fn adst_permutations_follow_the_index_rules() {
+        let mut t = vec![0, 1, 2, 3, 4, 5, 6, 7];
+        adst_input_permute(&mut t, 3);
+        assert_eq!(t, [7, 0, 5, 2, 3, 4, 1, 6]);
+        let mut t = (0..8).collect::<Vec<i32>>();
+        adst_output_permute(&mut t, 3);
+        // Computed from the specification's a/b/c/d index rule.
+        assert_eq!(t, [0, -4, 6, -2, 3, -7, 5, -1]);
     }
 
     #[test]
