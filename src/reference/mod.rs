@@ -5,6 +5,7 @@
 //! against the *original* picture the test streams were encoded from (a
 //! synthetic source we generate ourselves), so nothing external is needed.
 
+pub mod av1;
 pub mod cabac;
 pub mod h264;
 pub mod h264_cabac;

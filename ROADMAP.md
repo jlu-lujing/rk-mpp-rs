@@ -602,9 +602,20 @@ in what order the evidence gets produced.
       profile-0+10-bit stream is invalid per the AV1 spec (10-bit needs profile
       2) and differs from C in one byte at offset 76802.
 - [ ] AV1 software tile entropy decoder (M11). The hardware path hands tile
-      payloads to rkvdec; `src/reference/` has no AV1 entropy stage, so an
-      independent software AV1 decode remains software-reference-decoder work.
-      This is not a gap in the hardware path closed above.
+      payloads to rkvdec; `src/reference/` has no complete AV1 decode, so an
+      independent software AV1 bit-exact decode remains software-reference-
+      decoder work. This is not a gap in the hardware path closed above.
+      **First slice landed (2026-11-04):** `src/reference/av1/symbol.rs` is the
+      specification's symbol decoder (section 8.2): `init_symbol`'s complemented
+      15-bit seed, `read_symbol` with `EC_PROB_SHIFT = 6` / `EC_MIN_PROB = 4`,
+      the CDF adaptation (`rate` and the 32-count clamp), `read_bool` as the
+      pseudo-raw `[1 << 14, 1 << 15, 0]` symbol, `read_literal`, and
+      `exit_symbol`'s trailing-one/padding checks. Seven host tests pin the
+      initialisation, the adaptation step (`[0x4400, 0x8000, 1]` after one
+      uniform symbol), literal sequences computed by an independent run of the
+      specification pseudocode, and the trailing/padding errors.
+      Next: the default CDF tables, tile syntax (partition, modes, coefficients)
+      and inverse transforms, then a pixel comparison against libaom.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
