@@ -48,9 +48,10 @@
 整体约完成 82%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 83%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 66 个
-AV1 slice（最新为 CFL chroma 像素预测接入：已重建 luma、DC 基础预测、alphaU/V 和残差
-统一进入写回；此前为 palette/filter-intra 单 plane 像素预测、`Quant[]` 到逆变换布局的桥接、
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 67 个
+AV1 slice（最新为首张真实 keyframe 的 Y/U/V 帧级重建：按 block 顺序先做 luma、再用该
+luma 做 CFL chroma，并输出三平面稳定哈希；此前为 palette/filter-intra 单 plane 像素预测、
+`Quant[]` 到逆变换布局的桥接、
 真实 320x240 keyframe 的整 tile 熵解码闭合：palette 颜色/索引图、10-bit
 颜色、CFL alpha、边缘分区、完整系数上下文以及 `exit_symbol()` 尾位校验均通过；
 此前为 intra tile block sink、skip 语义修正、filter-intra、CDEF index、

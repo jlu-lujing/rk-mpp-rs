@@ -110,7 +110,8 @@ pub fn reconstruct_intra_tx(
     let w = block.tx.width() as usize;
     let h = block.tx.height() as usize;
     assert!(block.coeffs.len() >= w * h);
-    assert!(block.x + w <= plane_width && block.y + h <= plane_height);
+    assert!(block.x + w <= stride);
+    assert!(frame.len() >= (block.y + h) * stride);
     let edges = IntraEdges::from_plane(
         frame,
         stride,
@@ -234,8 +235,8 @@ pub fn reconstruct_intra_block_plane(
         let plane_quant = quant_to_plane_order(&tx.quant, tx.tx);
         let w = tx.tx.width() as usize;
         let h = tx.tx.height() as usize;
-        if tx.x + w > plane_width || tx.y + h > plane_height {
-            return Err("transform extends beyond the reconstructed plane");
+        if tx.x + w > stride || frame.len() < (tx.y + h) * stride {
+            return Err("transform extends beyond the reconstructed plane buffer");
         }
         let have_above = tx.y > 0;
         let have_left = tx.x > 0;

@@ -21,6 +21,7 @@ pub mod filter_intra;
 pub mod frame_header;
 pub mod idct;
 pub mod intra;
+pub mod intra_frame;
 pub mod intra_sink;
 pub mod lr_frame;
 pub mod lr_syntax;
