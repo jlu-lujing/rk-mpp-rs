@@ -774,8 +774,15 @@ in what order the evidence gets produced.
       untouched `buf[-1]`. A test pins strengths 0/1/3 for the edge
       `10,20,30,40` (`20,30,38` / unchanged / `21,29,35`); the first hand
       calculation was wrong about the clamped window and the test caught it.
-      Next: CFL prediction, the bit-exact DCT/ADST/FLIPADST butterflies, then
-      the libaom pixel comparison.
+      **Twenty-third slice:** chroma-from-luma (specification 7.11.5):
+      `cfl_predict` subsamples the reconstructed luma with the `3 - subX - subY`
+      precision shift, clamps to `MaxLumaW/H`, derives the luma average over
+      `log2W + log2H`, and adds `Round2Signed(alpha * (L - lumaAvg), 6)` to the
+      DC-predicted chroma. Two tests pin the constant-luma case (DC unchanged)
+      and a single bright luma sample (135 / 127 and the negative-alpha mirror
+      121).
+      Next: the bit-exact DCT/ADST/FLIPADST butterflies, then the libaom pixel
+      comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

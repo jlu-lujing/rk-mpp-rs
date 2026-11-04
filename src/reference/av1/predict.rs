@@ -383,6 +383,64 @@ pub fn intra_edge_filter(edge: &[u16], sz: usize, strength: u8, bit_depth: u32) 
     out
 }
 
+/// `Round2Signed(value, n)`.
+fn round2_signed(value: i32, n: u32) -> i32 {
+    if value < 0 {
+        -(((-value) + (1 << (n - 1))) >> n)
+    } else {
+        (value + (1 << (n - 1))) >> n
+    }
+}
+
+/// Chroma-from-luma prediction (specification 7.11.5).
+///
+/// `luma` is the reconstructed luma plane with `luma_stride`; `dc` is the
+/// already DC-predicted chroma block in row-major order. `sub_x`/`sub_y` are
+/// the chroma subsampling shifts (both 1 for 4:2:0).
+#[allow(clippy::too_many_arguments)]
+pub fn cfl_predict(
+    luma: &[u16],
+    luma_stride: usize,
+    start_x: usize,
+    start_y: usize,
+    w: usize,
+    h: usize,
+    sub_x: u32,
+    sub_y: u32,
+    max_luma_w: usize,
+    max_luma_h: usize,
+    alpha: i32,
+    dc: &[u16],
+    bit_depth: u32,
+) -> Vec<u16> {
+    let log2_w = (w as u32).trailing_zeros();
+    let log2_h = (h as u32).trailing_zeros();
+    let mut samples = vec![0u32; w * h];
+    let mut luma_avg = 0u32;
+    for i in 0..h {
+        for j in 0..w {
+            let luma_y = (((start_y + i) << sub_y).min(max_luma_h - (1 << sub_y))) as usize;
+            let luma_x = (((start_x + j) << sub_x).min(max_luma_w - (1 << sub_x))) as usize;
+            let mut t = 0u32;
+            for dy in 0..=sub_y as usize {
+                for dx in 0..=sub_x as usize {
+                    t += u32::from(luma[(luma_y + dy) * luma_stride + luma_x + dx]);
+                }
+            }
+            let v = t << (3 - sub_x - sub_y);
+            samples[i * w + j] = v;
+            luma_avg += v;
+        }
+    }
+    luma_avg = (luma_avg + (1 << (log2_w + log2_h - 1))) >> (log2_w + log2_h);
+    let mut out = vec![0u16; w * h];
+    for i in 0..w * h {
+        let scaled = round2_signed(alpha * (samples[i] as i32 - luma_avg as i32), 6);
+        out[i] = clip1(i32::from(dc[i]) + scaled, bit_depth);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +472,27 @@ mod tests {
         assert_eq!(pred[1], blend(50, 60, 27));
         assert_eq!(pred[2], blend(60, 70, 13));
         assert_eq!(pred[3], blend(60, 70, 27));
+    }
+
+    #[test]
+    fn cfl_constant_luma_leaves_the_dc_prediction() {
+        let luma = vec![100u16; 64];
+        let dc = vec![128u16; 16];
+        let pred = cfl_predict(&luma, 8, 0, 0, 4, 4, 1, 1, 8, 8, 1, &dc, 8);
+        assert_eq!(pred, dc);
+    }
+
+    #[test]
+    fn cfl_adds_the_scaled_high_frequency() {
+        let mut luma = vec![0u16; 64];
+        luma[0] = 255;
+        let dc = vec![128u16; 16];
+        let pred = cfl_predict(&luma, 8, 0, 0, 4, 4, 1, 1, 8, 8, 1, &dc, 8);
+        assert_eq!(pred[0], 135);
+        assert!(pred[1..].iter().all(|v| *v == 127), "{pred:?}");
+        // A negative alpha mirrors the correction around the DC value.
+        let pred = cfl_predict(&luma, 8, 0, 0, 4, 4, 1, 1, 8, 8, -1, &dc, 8);
+        assert_eq!(pred[0], 121);
     }
 
     #[test]
