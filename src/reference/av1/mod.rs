@@ -23,6 +23,7 @@ pub mod intra;
 pub mod lr_frame;
 pub mod lr_syntax;
 pub mod obu;
+pub mod palette;
 pub mod partition;
 pub mod predict;
 pub mod quant;
