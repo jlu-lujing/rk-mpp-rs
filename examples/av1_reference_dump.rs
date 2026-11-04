@@ -4,7 +4,7 @@ use std::path::Path;
 
 use rk_mpp_rs::reference::av1::intra_frame::{
     apply_intra_cdef, apply_intra_deblock, apply_intra_loop_restoration, reconstruct_intra_frame,
-    IntraFrame, PlaneBuffer,
+    upscale_frame, IntraFrame, PlaneBuffer,
 };
 use rk_mpp_rs::reference::av1::intra_sink::{IntraTileBlockSink, IntraTileConfig};
 use rk_mpp_rs::reference::av1::obu::parse_ivf;
@@ -167,6 +167,11 @@ fn main() -> Result<(), String> {
     );
     write_frame(&prefix.with_extension("cdef.yuv"), &picture).map_err(|error| error.to_string())?;
     print_hashes("cdef", &picture);
+    if frame.header.use_superres {
+        let upscaled = upscale_frame(sequence, &frame.header, &picture)?;
+        write_frame(&prefix.with_extension("cdef-upscaled.yuv"), &upscaled)
+            .map_err(|error| error.to_string())?;
+    }
 
     apply_intra_loop_restoration(
         sequence,

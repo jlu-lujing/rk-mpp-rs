@@ -16,6 +16,7 @@ use crate::reference::av1::reconstruct::{
 };
 use crate::reference::av1::residual::plane_tx_size;
 use crate::reference::av1::seq_header::SequenceHeader;
+use crate::reference::av1::upscale::upscale_plane;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaneBuffer {
@@ -569,6 +570,57 @@ pub fn apply_intra_cdef(
     }
 }
 
+/// Apply §7.16 super-resolution to every plane of a reconstructed frame.
+pub fn upscale_frame(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    input: &IntraFrame,
+) -> Result<IntraFrame, &'static str> {
+    if !header.use_superres {
+        return Ok(input.clone());
+    }
+    let sub_x = u32::from(sequence.color.subsampling_x);
+    let sub_y = u32::from(sequence.color.subsampling_y);
+    let upscale =
+        |data: &[u16], stride: usize, input_width: usize, plane_sub_x: u32, plane_sub_y: u32| {
+            let plane = upscale_plane(
+                data,
+                stride,
+                input_width,
+                header.frame_width as usize,
+                header.frame_height as usize,
+                header.upscaled_width as usize,
+                plane_sub_x,
+                plane_sub_y,
+                input.bit_depth,
+            );
+            PlaneBuffer {
+                data: plane.data,
+                width: plane.width,
+                height: plane.height,
+                stride: plane.stride,
+            }
+        };
+    let u = input
+        .u
+        .as_ref()
+        .map(|plane| upscale(&plane.data, plane.stride, plane.width, sub_x, sub_y));
+    let v = input
+        .v
+        .as_ref()
+        .map(|plane| upscale(&plane.data, plane.stride, plane.width, sub_x, sub_y));
+    Ok(IntraFrame {
+        coded_width: header.upscaled_width as usize,
+        coded_height: header.frame_height as usize,
+        viewport_width: header.upscaled_width as usize,
+        viewport_height: header.frame_height as usize,
+        bit_depth: input.bit_depth,
+        y: upscale(&input.y.data, input.y.stride, input.y.width, 0, 0),
+        u,
+        v,
+    })
+}
+
 /// Apply §7.17 loop restoration. `current` is the deblocked frame before CDEF;
 /// `frame` is the CDEF output and is replaced with the restored frame.
 pub fn apply_intra_loop_restoration(
@@ -578,32 +630,43 @@ pub fn apply_intra_loop_restoration(
     current: &IntraFrame,
     frame: &mut IntraFrame,
 ) -> Result<(), &'static str> {
-    if !header.uses_lr {
+    if !header.uses_lr && !header.use_superres {
         return Ok(());
     }
-    if header.use_superres {
-        return Err("loop restoration after superresolution is not integrated");
+    let cdef_upscaled = header
+        .use_superres
+        .then(|| upscale_frame(sequence, header, frame))
+        .transpose()?;
+    let current_upscaled = header
+        .use_superres
+        .then(|| upscale_frame(sequence, header, current))
+        .transpose()?;
+    let cdef_frame = cdef_upscaled.as_ref().unwrap_or(frame);
+    let current_frame = current_upscaled.as_ref().unwrap_or(current);
+    if !header.uses_lr {
+        *frame = cdef_frame.clone();
+        return Ok(());
     }
     let geometry: Vec<LrPlaneGeometry> = (0..sequence.color.num_planes)
         .map(|plane| header.lr_geometry(plane, sequence))
         .collect();
     let mut cdef_planes = vec![crate::reference::av1::cdef::PlaneView::new(
-        &frame.y.data,
-        frame.y.stride,
-        frame.y.width,
-        frame.y.height,
+        &cdef_frame.y.data,
+        cdef_frame.y.stride,
+        cdef_frame.y.width,
+        cdef_frame.y.height,
     )];
     let mut current_planes = vec![crate::reference::av1::cdef::PlaneView::new(
-        &current.y.data,
-        current.y.stride,
-        current.y.width,
-        current.y.height,
+        &current_frame.y.data,
+        current_frame.y.stride,
+        current_frame.y.width,
+        current_frame.y.height,
     )];
-    if let Some(u) = frame.u.as_ref() {
+    if let Some(u) = cdef_frame.u.as_ref() {
         cdef_planes.push(crate::reference::av1::cdef::PlaneView::new(
             &u.data, u.stride, u.width, u.height,
         ));
-        let current = current.u.as_ref().ok_or("missing current U plane")?;
+        let current = current_frame.u.as_ref().ok_or("missing current U plane")?;
         current_planes.push(crate::reference::av1::cdef::PlaneView::new(
             &current.data,
             current.stride,
@@ -611,11 +674,11 @@ pub fn apply_intra_loop_restoration(
             current.height,
         ));
     }
-    if let Some(v) = frame.v.as_ref() {
+    if let Some(v) = cdef_frame.v.as_ref() {
         cdef_planes.push(crate::reference::av1::cdef::PlaneView::new(
             &v.data, v.stride, v.width, v.height,
         ));
-        let current = current.v.as_ref().ok_or("missing current V plane")?;
+        let current = current_frame.v.as_ref().ok_or("missing current V plane")?;
         current_planes.push(crate::reference::av1::cdef::PlaneView::new(
             &current.data,
             current.stride,
@@ -635,12 +698,38 @@ pub fn apply_intra_loop_restoration(
         header.upscaled_width as usize,
         frame.bit_depth,
     );
+    let coded_size = (cdef_frame.coded_width, cdef_frame.coded_height);
+    let viewport_size = (cdef_frame.viewport_width, cdef_frame.viewport_height);
+    let y_geometry = (cdef_frame.y.width, cdef_frame.y.height, cdef_frame.y.stride);
+    let u_geometry = cdef_frame
+        .u
+        .as_ref()
+        .map(|plane| (plane.width, plane.height, plane.stride));
+    let v_geometry = cdef_frame
+        .v
+        .as_ref()
+        .map(|plane| (plane.width, plane.height, plane.stride));
+    frame.coded_width = coded_size.0;
+    frame.coded_height = coded_size.1;
+    frame.viewport_width = viewport_size.0;
+    frame.viewport_height = viewport_size.1;
     frame.y.data = out[0].clone();
+    frame.y.width = y_geometry.0;
+    frame.y.height = y_geometry.1;
+    frame.y.stride = y_geometry.2;
     if let Some(u) = frame.u.as_mut() {
         u.data = out[1].clone();
+        let geometry = u_geometry.unwrap();
+        u.width = geometry.0;
+        u.height = geometry.1;
+        u.stride = geometry.2;
     }
     if let Some(v) = frame.v.as_mut() {
         v.data = out[2].clone();
+        let geometry = v_geometry.unwrap();
+        v.width = geometry.0;
+        v.height = geometry.1;
+        v.stride = geometry.2;
     }
     Ok(())
 }
@@ -745,15 +834,15 @@ mod tests {
         let restored = hashes(&picture);
         assert_eq!(
             pre,
-            (0xec3127107a028ba9, 0xddc697920c2f2ac3, 0xa74634a8ca371ede)
+            (0x68fc6d8755c7d35b, 0xcf3144357b71c9c7, 0x4857460a905f7092)
         );
         assert_eq!(
             deblock,
-            (0x40fd84e40c374bad, 0xa6663d4a79fa944d, 0x6862da5be37d243b)
+            (0xe7379bd094ffe54e, 0x75d6e8936c34e186, 0xcecd3e9c6c037bc8)
         );
         assert_eq!(
             cdef,
-            (0x963167066633f520, 0xdcca09f07d7037e3, 0x6432e49ef4ca8d88)
+            (0xb84936b022b0f93a, 0x60a6b7d4f51e600c, 0xec0da83a8ba1394e)
         );
         assert_eq!(restored, cdef);
     }
@@ -860,5 +949,112 @@ mod tests {
         assert_ne!(picture.y, cdef.y);
         assert_ne!(picture.u, cdef.u);
         assert_ne!(picture.v, cdef.v);
+    }
+
+    #[test]
+    fn real_superres_keyframe_matches_libaom_visible_pixels() {
+        let data = include_bytes!("../../../tests/data/av1_superres_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let packets = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        let frame = packets
+            .iter()
+            .flatten()
+            .find_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        assert!(frame.header.use_superres);
+        assert_eq!(frame.header.superres_denom, 12);
+        assert_eq!(
+            (
+                frame.header.frame_width,
+                frame.header.upscaled_width,
+                frame.header.frame_height
+            ),
+            (213, 320, 240)
+        );
+
+        let config = IntraTileConfig::from_headers(sequence, &frame.header);
+        let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
+        let tile = &frame.layout.tiles[0];
+        let decoded = decode_tile_partitions(
+            &frame.payload[tile.bytes.clone()],
+            &frame.header,
+            tile.tile,
+            sb_size,
+            false,
+            true,
+            IntraTileBlockSink::new(config),
+        )
+        .unwrap();
+        let visible_hash = |plane: &PlaneBuffer, width: usize, height: usize| {
+            plane
+                .data
+                .chunks_exact(plane.stride)
+                .take(height)
+                .flat_map(|row| &row[..width])
+                .fold(0xcbf29ce484222325u64, |hash, sample| {
+                    (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
+                })
+        };
+        let hashes = |picture: &IntraFrame, width: usize, height: usize| {
+            let sub_x = u32::from(sequence.color.subsampling_x);
+            let sub_y = u32::from(sequence.color.subsampling_y);
+            let chroma_width = (width + (1 << sub_x) - 1) >> sub_x;
+            let chroma_height = (height + (1 << sub_y) - 1) >> sub_y;
+            (
+                visible_hash(&picture.y, width, height),
+                visible_hash(picture.u.as_ref().unwrap(), chroma_width, chroma_height),
+                visible_hash(picture.v.as_ref().unwrap(), chroma_width, chroma_height),
+            )
+        };
+
+        let mut picture =
+            reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap();
+        assert_eq!(
+            hashes(
+                &picture,
+                frame.header.frame_width as usize,
+                frame.header.frame_height as usize
+            ),
+            (0x35b16aec62f2f764, 0x7ca6039e9e84c9fe, 0x794e83e36b04acea)
+        );
+        apply_intra_deblock(sequence, &frame.header, &decoded.sink.blocks, &mut picture);
+        let deblocked = picture.clone();
+        apply_intra_cdef(
+            sequence,
+            &frame.header,
+            &decoded.sink.blocks,
+            decoded.sink.cdef_grid(),
+            &mut picture,
+        );
+        apply_intra_loop_restoration(
+            sequence,
+            &frame.header,
+            decoded.sink.lr_params(),
+            &deblocked,
+            &mut picture,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                picture.viewport_width,
+                picture.viewport_height,
+                picture.y.width,
+                picture.y.height
+            ),
+            (320, 240, 320, 240)
+        );
+        assert_eq!(
+            hashes(
+                &picture,
+                frame.header.upscaled_width as usize,
+                frame.header.frame_height as usize
+            ),
+            (0xf09348412b37d47c, 0x83d310531bebf8ae, 0x0d5e3aa6ca67a8de)
+        );
     }
 }

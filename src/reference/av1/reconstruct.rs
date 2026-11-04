@@ -328,8 +328,9 @@ pub(crate) fn reconstruct_intra_block_plane_with_grid(
     let dc_q = dc_q(bit_depth, qindex);
     let ac_q = ac_q(bit_depth, qindex + q_delta.ac - q_delta.dc);
     let filter_type = intra_filter_type(above_mode, left_mode);
-    let block_x = (syntax.block.col * 4) >> sub_x;
-    let block_y = (syntax.block.row * 4) >> sub_y;
+    let (plane_sub_x, plane_sub_y) = if plane == 0 { (0, 0) } else { (sub_x, sub_y) };
+    let block_x = (syntax.block.col * 4) >> plane_sub_x;
+    let block_y = (syntax.block.row * 4) >> plane_sub_y;
 
     for tx in &syntax.transforms {
         if tx.plane != plane {

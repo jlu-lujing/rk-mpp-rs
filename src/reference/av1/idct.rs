@@ -722,6 +722,17 @@ mod tests {
     }
 
     #[test]
+    fn four_by_four_dct_adst_matches_libaom_vector() {
+        let mut row_major = [0i32; 16];
+        row_major[0] = -518;
+        let out = inverse_transform_2d(&row_major, 4, 4, TxKind::Adst, TxKind::Dct, 0, 4, 16, 16);
+        assert_eq!(
+            out,
+            [-7, -14, -19, -21, -7, -14, -19, -21, -7, -14, -19, -21, -7, -14, -19, -21]
+        );
+    }
+
+    #[test]
     fn four_by_four_dct_dct_matches_libaom_vector() {
         let column_major = [
             -1984, 360, 0, -144, 360, -288, 0, 144, 0, 0, 0, 0, -144, 144, 0, -72,

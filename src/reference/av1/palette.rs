@@ -138,9 +138,9 @@ pub fn predict_palette_plane(
     }
     let mut out = vec![0u16; w * h];
     for row in 0..h {
-        let source_y = (block_y + tx_y + row).min(block_y + map.height - 1) - block_y;
+        let source_y = (tx_y + row).min(block_y + map.height - 1) - block_y;
         for col in 0..w {
-            let source_x = (block_x + tx_x + col).min(block_x + map.width - 1) - block_x;
+            let source_x = (tx_x + col).min(block_x + map.width - 1) - block_x;
             let index = map.indices[source_y * map.width + source_x];
             if usize::from(index) >= size {
                 return Err(PaletteError::InvalidIndex(index));
@@ -664,6 +664,52 @@ mod tests {
         assert_eq!(
             out,
             [10, 20, 20, 20, 30, 20, 20, 20, 30, 20, 20, 20, 30, 20, 20, 20]
+        );
+    }
+
+    #[test]
+    fn palette_prediction_uses_transform_coordinates_without_adding_the_block_origin_twice() {
+        let info = PaletteModeInfo {
+            y_size: 4,
+            y_colors: [10, 20, 30, 40, 0, 0, 0, 0],
+            ..PaletteModeInfo::default()
+        };
+        let tokens = PaletteTokens {
+            y: Some(PaletteMap {
+                width: 4,
+                height: 1,
+                indices: vec![0, 1, 2, 3],
+            }),
+            uv: None,
+        };
+        assert_eq!(
+            predict_palette_plane(&info, &tokens, 0, 8, 0, 8, 0, 2, 1)
+                .unwrap()
+                .unwrap(),
+            [10, 20]
+        );
+    }
+
+    #[test]
+    fn palette_prediction_keeps_nonzero_transform_offsets() {
+        let info = PaletteModeInfo {
+            y_size: 7,
+            y_colors: [32, 48, 67, 81, 113, 130, 145, 0],
+            ..PaletteModeInfo::default()
+        };
+        let tokens = PaletteTokens {
+            y: Some(PaletteMap {
+                width: 16,
+                height: 8,
+                indices: [3, 3, 3, 3, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6].repeat(8),
+            }),
+            uv: None,
+        };
+        assert_eq!(
+            predict_palette_plane(&info, &tokens, 0, 32, 0, 32, 0, 8, 8)
+                .unwrap()
+                .unwrap()[..8],
+            [81, 81, 81, 81, 145, 145, 145, 145]
         );
     }
 
