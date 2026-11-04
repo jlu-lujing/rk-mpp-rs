@@ -642,8 +642,15 @@ in what order the evidence gets produced.
       generated defaults. Five tests pin the group table, the context table,
       both mode decoders (symbols cross-checked with the specification
       pseudocode) and the neighbour-context selection.
-      Next: `uv_mode` (CFL allowed/not), `tx_size` and the coefficient CDF sets,
-      inverse transforms, then a pixel comparison against libaom.
+      **Fifth slice:** `uv_mode` with the specification's CFL availability rule
+      (`residual size == BLOCK_4X4` when lossless, else
+      `max(width,height) <= 32`), selecting
+      `TileUVModeCfl{Allowed,NotAllowed}Cdf[ YMode ]` and its fourteen-symbol
+      alphabet (CFL is symbol 13). Two tests pin the availability matrix
+      (including the 4x16 -> 4x8 lossless corner) and the mode symbols
+      (0 -> DC, 0xff -> PAETH without CFL and CFL with it).
+      Next: `tx_size`, the coefficient CDF sets, inverse transforms, then a
+      pixel comparison against libaom.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

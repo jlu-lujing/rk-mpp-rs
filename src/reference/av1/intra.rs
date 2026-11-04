@@ -6,7 +6,8 @@
 //! types code `y_mode` with `TileYModeCdf[ Size_Group[ MiSize ] ]`.
 
 use crate::reference::av1::cdf_defaults::{
-    CdfTable, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DEFAULT_Y_MODE_CDF,
+    CdfTable, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DEFAULT_UV_MODE_CFL_ALLOWED_CDF,
+    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_Y_MODE_CDF,
 };
 use crate::reference::av1::partition::{size_group, BlockSize};
 use crate::reference::av1::symbol::SymbolDecoder;
@@ -107,6 +108,91 @@ pub fn read_y_mode(
     decode(decoder, y_mode_cdf(size))
 }
 
+/// `enum UvMode`: the thirteen intra modes plus CFL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum UvMode {
+    Dc = 0,
+    V = 1,
+    H = 2,
+    D45 = 3,
+    D135 = 4,
+    D113 = 5,
+    D157 = 6,
+    D203 = 7,
+    D67 = 8,
+    Smooth = 9,
+    SmoothV = 10,
+    SmoothH = 11,
+    Paeth = 12,
+    Cfl = 13,
+}
+
+impl UvMode {
+    fn from_symbol(symbol: usize) -> Option<Self> {
+        Some(match symbol {
+            0 => Self::Dc,
+            1 => Self::V,
+            2 => Self::H,
+            3 => Self::D45,
+            4 => Self::D135,
+            5 => Self::D113,
+            6 => Self::D157,
+            7 => Self::D203,
+            8 => Self::D67,
+            9 => Self::Smooth,
+            10 => Self::SmoothV,
+            11 => Self::SmoothH,
+            12 => Self::Paeth,
+            13 => Self::Cfl,
+            _ => return None,
+        })
+    }
+}
+
+/// `get_plane_residual_size( size, 1 )` for 4:2:0 (both subsampling flags set):
+/// each dimension halves with a four-pixel floor.
+pub fn residual_size_420(size: BlockSize) -> Option<BlockSize> {
+    let width = (size.width / 2).max(4);
+    let height = (size.height / 2).max(4);
+    crate::reference::av1::partition::BLOCK_SIZES
+        .iter()
+        .copied()
+        .find(|entry| entry.width == width && entry.height == height)
+}
+
+/// `uv_mode`'s CFL availability, spec 5.11.4.
+pub fn cfl_allowed(size: BlockSize, lossless: bool) -> bool {
+    if lossless {
+        residual_size_420(size) == Some(crate::reference::av1::partition::BLOCK_SIZES[0])
+    } else {
+        size.width.max(size.height) <= 32
+    }
+}
+
+/// `TileUVModeCfl{Allowed,NotAllowed}Cdf[ YMode ]`.
+pub fn uv_mode_cdf(y_mode: IntraMode, allowed: bool) -> &'static [u16] {
+    let table = if allowed {
+        &DEFAULT_UV_MODE_CFL_ALLOWED_CDF
+    } else {
+        &DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF
+    };
+    let width = if allowed { 15 } else { 14 };
+    row(table, y_mode as usize, width)
+}
+
+/// `uv_mode`.
+pub fn read_uv_mode(
+    decoder: &mut SymbolDecoder<'_>,
+    y_mode: IntraMode,
+    allowed: bool,
+) -> Result<UvMode, crate::reference::av1::symbol::SymbolError> {
+    let mut cdf = uv_mode_cdf(y_mode, allowed).to_vec();
+    cdf.push(0);
+    let symbol = decoder.read_symbol(&mut cdf)?;
+    Ok(UvMode::from_symbol(symbol).expect("uv mode within range"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +200,53 @@ mod tests {
 
     fn named(name: &str) -> BlockSize {
         *BLOCK_SIZES.iter().find(|size| size.name == name).unwrap()
+    }
+
+    #[test]
+    fn cfl_availability_follows_the_specification_rules() {
+        let named = |name: &str| *BLOCK_SIZES.iter().find(|size| size.name == name).unwrap();
+        // Lossless allows CFL only when the 4:2:0 residual is 4x4.
+        assert!(cfl_allowed(named("BLOCK_4X4"), true));
+        assert!(cfl_allowed(named("BLOCK_8X8"), true));
+        assert!(cfl_allowed(named("BLOCK_4X8"), true));
+        assert!(cfl_allowed(named("BLOCK_8X4"), true));
+        // 4x16 halves to 4x8, so it is *not* allowed in lossless mode.
+        assert!(!cfl_allowed(named("BLOCK_4X16"), true));
+        assert!(!cfl_allowed(named("BLOCK_16X16"), true));
+        assert!(!cfl_allowed(named("BLOCK_16X8"), true));
+        // Otherwise max(width, height) <= 32.
+        assert!(cfl_allowed(named("BLOCK_32X32"), false));
+        assert!(cfl_allowed(named("BLOCK_32X8"), false));
+        assert!(!cfl_allowed(named("BLOCK_32X64"), false));
+        assert!(!cfl_allowed(named("BLOCK_64X16"), false));
+    }
+
+    #[test]
+    fn uv_mode_decodes_with_and_without_cfl() {
+        // Expected symbols from the specification pseudocode over the DC rows.
+        let bytes = [0u8; 8];
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        assert_eq!(
+            read_uv_mode(&mut decoder, IntraMode::Dc, false).unwrap(),
+            UvMode::Dc
+        );
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        assert_eq!(
+            read_uv_mode(&mut decoder, IntraMode::Dc, true).unwrap(),
+            UvMode::Dc
+        );
+
+        let bytes = [0xffu8; 8];
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        assert_eq!(
+            read_uv_mode(&mut decoder, IntraMode::Dc, false).unwrap(),
+            UvMode::Paeth
+        );
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        assert_eq!(
+            read_uv_mode(&mut decoder, IntraMode::Dc, true).unwrap(),
+            UvMode::Cfl
+        );
     }
 
     #[test]
