@@ -832,8 +832,16 @@ in what order the evidence gets produced.
       all-NONE, all-SPLIT and a mixed HORZ/VERT walk, each asserting every 4x4
       position is covered exactly once. The first run caught a real bug: the
       superblock lookup matched `BLOCK_64X32` because it only compared width.
-      Next: wire the symbol decoder into the walk, then CDEF/LR and the libaom
-      pixel comparison.
+      **Thirty-first slice:** the symbol-driven walk. `PartitionSource` now
+      separates the geometry from the decisions; `ConstantPartition` drives the
+      coverage tests and `SymbolTile` reads each node with `read_partition`
+      using the recorded MiSizes grid for the above/left contexts. A test walks
+      32x32 mi with zero, 0xff and ramp tiles and still proves exact coverage.
+      The first run exposed a real bug in `read_partition`: it sliced rows as
+      `symbols` values instead of `symbols + 1` (the trailing adaptation
+      counter), which only showed up once a real CDF was indexed.
+      Next: block syntax and residual wiring, CDEF/LR, then the libaom pixel
+      comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

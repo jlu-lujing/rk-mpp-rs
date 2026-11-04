@@ -40,20 +40,47 @@ pub struct DecodedBlock {
     pub size: BlockSize,
 }
 
-/// Walk every superblock and report the blocks `decode_partition` would visit.
+/// Source of partition decisions plus the block-size grid they build.
 ///
-/// `choose` receives `(row, col, size, above, left)` and returns the partition
-/// for that level; `above`/`left` are `None` when the neighbouring position is
-/// outside the picture.
-pub fn walk_partitions<F>(
+/// The grid lets a symbol-driven source derive the above/left contexts the way
+/// `decode_partition` does; the constant source in the tests ignores it.
+pub trait PartitionSource {
+    fn choose(
+        &mut self,
+        row: usize,
+        col: usize,
+        size: BlockSize,
+        above: Option<BlockSize>,
+        left: Option<BlockSize>,
+    ) -> PartitionType;
+    fn record(&mut self, block: DecodedBlock);
+}
+
+/// A source that always returns the same partition.
+pub struct ConstantPartition(pub PartitionType);
+
+impl PartitionSource for ConstantPartition {
+    fn choose(
+        &mut self,
+        _row: usize,
+        _col: usize,
+        _size: BlockSize,
+        _above: Option<BlockSize>,
+        _left: Option<BlockSize>,
+    ) -> PartitionType {
+        self.0
+    }
+
+    fn record(&mut self, _block: DecodedBlock) {}
+}
+
+/// Walk every superblock and report the blocks `decode_partition` would visit.
+pub fn walk_partitions<S: PartitionSource>(
     mi_cols: usize,
     mi_rows: usize,
     sb_size: u32,
-    mut choose: F,
-) -> Vec<DecodedBlock>
-where
-    F: FnMut(usize, usize, BlockSize, Option<BlockSize>, Option<BlockSize>) -> PartitionType,
-{
+    source: &mut S,
+) -> Vec<DecodedBlock> {
     let sb = BLOCK_SIZES
         .iter()
         .copied()
@@ -65,7 +92,7 @@ where
     while row < mi_rows {
         let mut col = 0;
         while col < mi_cols {
-            visit(row, col, sb, mi_cols, mi_rows, &mut choose, &mut blocks);
+            visit(row, col, sb, mi_cols, mi_rows, source, &mut blocks);
             col += sb_mi;
         }
         row += sb_mi;
@@ -73,17 +100,27 @@ where
     blocks
 }
 
-fn visit<F>(
+fn push_block<S: PartitionSource>(
+    source: &mut S,
+    blocks: &mut Vec<DecodedBlock>,
+    row: usize,
+    col: usize,
+    size: BlockSize,
+) {
+    let block = DecodedBlock { row, col, size };
+    blocks.push(block);
+    source.record(block);
+}
+
+fn visit<S: PartitionSource>(
     row: usize,
     col: usize,
     size: BlockSize,
     mi_cols: usize,
     mi_rows: usize,
-    choose: &mut F,
+    source: &mut S,
     blocks: &mut Vec<DecodedBlock>,
-) where
-    F: FnMut(usize, usize, BlockSize, Option<BlockSize>, Option<BlockSize>) -> PartitionType,
-{
+) {
     if row >= mi_rows || col >= mi_cols {
         return;
     }
@@ -95,43 +132,34 @@ fn visit<F>(
     } else {
         let above = (row > 0).then_some(size);
         let left = (col > 0).then_some(size);
-        choose(row, col, size, above, left)
+        source.choose(row, col, size, above, left)
     };
     let Some(sub) = subsize(partition, size) else {
-        blocks.push(DecodedBlock { row, col, size });
+        push_block(source, blocks, row, col, size);
         return;
     };
     let split = subsize(PartitionType::Split, size).unwrap_or(sub);
-    let block = |r: usize, c: usize, s: BlockSize, blocks: &mut Vec<DecodedBlock>| {
-        if r < mi_rows && c < mi_cols {
-            blocks.push(DecodedBlock {
-                row: r,
-                col: c,
-                size: s,
-            });
-        }
-    };
     match partition {
-        PartitionType::None => block(row, col, sub, blocks),
+        PartitionType::None => push_block(source, blocks, row, col, sub),
         PartitionType::Horz => {
-            block(row, col, sub, blocks);
+            push_block(source, blocks, row, col, sub);
             if has_rows {
-                block(row + half, col, sub, blocks);
+                push_block(source, blocks, row + half, col, sub);
             }
         }
         PartitionType::Vert => {
-            block(row, col, sub, blocks);
+            push_block(source, blocks, row, col, sub);
             if has_cols {
-                block(row, col + half, sub, blocks);
+                push_block(source, blocks, row, col + half, sub);
             }
         }
         PartitionType::Split => {
-            visit(row, col, sub, mi_cols, mi_rows, choose, blocks);
+            visit(row, col, sub, mi_cols, mi_rows, source, blocks);
             if has_cols {
-                visit(row, col + half, sub, mi_cols, mi_rows, choose, blocks);
+                visit(row, col + half, sub, mi_cols, mi_rows, source, blocks);
             }
             if has_rows {
-                visit(row + half, col, sub, mi_cols, mi_rows, choose, blocks);
+                visit(row + half, col, sub, mi_cols, mi_rows, source, blocks);
                 if has_cols {
                     visit(
                         row + half,
@@ -139,42 +167,98 @@ fn visit<F>(
                         sub,
                         mi_cols,
                         mi_rows,
-                        choose,
+                        source,
                         blocks,
                     );
                 }
             }
         }
         PartitionType::HorzA => {
-            block(row, col, split, blocks);
-            block(row, col + half, split, blocks);
-            block(row + half, col, sub, blocks);
+            push_block(source, blocks, row, col, split);
+            push_block(source, blocks, row, col + half, split);
+            push_block(source, blocks, row + half, col, sub);
         }
         PartitionType::HorzB => {
-            block(row, col, sub, blocks);
-            block(row + half, col, split, blocks);
-            block(row + half, col + half, split, blocks);
+            push_block(source, blocks, row, col, sub);
+            push_block(source, blocks, row + half, col, split);
+            push_block(source, blocks, row + half, col + half, split);
         }
         PartitionType::VertA => {
-            block(row, col, split, blocks);
-            block(row + half, col, split, blocks);
-            block(row, col + half, sub, blocks);
+            push_block(source, blocks, row, col, split);
+            push_block(source, blocks, row + half, col, split);
+            push_block(source, blocks, row, col + half, sub);
         }
         PartitionType::VertB => {
-            block(row, col, sub, blocks);
-            block(row, col + half, split, blocks);
-            block(row + half, col + half, split, blocks);
+            push_block(source, blocks, row, col, sub);
+            push_block(source, blocks, row, col + half, split);
+            push_block(source, blocks, row + half, col + half, split);
         }
         PartitionType::Horz4 => {
             let quarter = (size.num_4x4_high() / 4) as usize;
             for i in 0..4 {
-                block(row + i * quarter, col, sub, blocks);
+                push_block(source, blocks, row + i * quarter, col, sub);
             }
         }
         PartitionType::Vert4 => {
             let quarter = (size.num_4x4_wide() / 4) as usize;
             for i in 0..4 {
-                block(row, col + i * quarter, sub, blocks);
+                push_block(source, blocks, row, col + i * quarter, sub);
+            }
+        }
+    }
+}
+
+/// A partition source driven by the tile's symbol stream.
+pub struct SymbolTile<'a> {
+    decoder: crate::reference::av1::symbol::SymbolDecoder<'a>,
+    sizes: Vec<Option<BlockSize>>,
+    mi_cols: usize,
+}
+
+impl<'a> SymbolTile<'a> {
+    pub fn new(
+        data: &'a [u8],
+        mi_cols: usize,
+        mi_rows: usize,
+    ) -> Result<Self, crate::reference::av1::symbol::SymbolError> {
+        Ok(Self {
+            decoder: crate::reference::av1::symbol::SymbolDecoder::init(data)?,
+            sizes: vec![None; mi_cols * mi_rows],
+            mi_cols,
+        })
+    }
+}
+
+impl PartitionSource for SymbolTile<'_> {
+    fn choose(
+        &mut self,
+        row: usize,
+        col: usize,
+        size: BlockSize,
+        _above: Option<BlockSize>,
+        _left: Option<BlockSize>,
+    ) -> PartitionType {
+        // `decode_partition` derives the context from the recorded MiSizes.
+        let above = (row > 0)
+            .then(|| self.sizes[(row - 1) * self.mi_cols + col])
+            .flatten();
+        let left = (col > 0)
+            .then(|| self.sizes[row * self.mi_cols + col - 1])
+            .flatten();
+        crate::reference::av1::partition::read_partition(&mut self.decoder, size, above, left)
+            .ok()
+            .flatten()
+            .unwrap_or(PartitionType::None)
+    }
+
+    fn record(&mut self, block: DecodedBlock) {
+        let w = (block.size.width / 4) as usize;
+        let h = (block.size.height / 4) as usize;
+        for r in block.row..block.row + h {
+            for c in block.col..block.col + w {
+                if r * self.mi_cols + c < self.sizes.len() {
+                    self.sizes[r * self.mi_cols + c] = Some(block.size);
+                }
             }
         }
     }
@@ -201,7 +285,7 @@ mod tests {
 
     #[test]
     fn all_none_covers_each_superblock_once() {
-        let blocks = walk_partitions(32, 16, 64, |_, _, _, _, _| PartitionType::None);
+        let blocks = walk_partitions(32, 16, 64, &mut ConstantPartition(PartitionType::None));
         let count = coverage(&blocks, 32, 16);
         assert!(count.iter().all(|v| *v == 1), "{count:?}");
         assert!(blocks.iter().all(|b| b.size.width == 64));
@@ -209,7 +293,7 @@ mod tests {
 
     #[test]
     fn all_split_covers_each_4x4_once() {
-        let blocks = walk_partitions(32, 16, 64, |_, _, _, _, _| PartitionType::Split);
+        let blocks = walk_partitions(32, 16, 64, &mut ConstantPartition(PartitionType::Split));
         let count = coverage(&blocks, 32, 16);
         assert!(count.iter().all(|v| *v == 1), "{count:?}");
         assert_eq!(blocks.len(), 32 * 16);
@@ -220,17 +304,43 @@ mod tests {
 
     #[test]
     fn mixed_partitions_still_tile_the_picture() {
-        let blocks = walk_partitions(48, 48, 64, |row, col, size, _, _| {
-            if size.width == 128 {
-                PartitionType::Split
-            } else if (row + col) % 2 == 0 {
-                PartitionType::Horz
-            } else {
-                PartitionType::Vert
+        struct Alternating;
+        impl PartitionSource for Alternating {
+            fn choose(
+                &mut self,
+                row: usize,
+                col: usize,
+                size: BlockSize,
+                _above: Option<BlockSize>,
+                _left: Option<BlockSize>,
+            ) -> PartitionType {
+                if size.width == 128 {
+                    PartitionType::Split
+                } else if (row + col) % 2 == 0 {
+                    PartitionType::Horz
+                } else {
+                    PartitionType::Vert
+                }
             }
-        });
+            fn record(&mut self, _block: DecodedBlock) {}
+        }
+        let blocks = walk_partitions(48, 48, 64, &mut Alternating);
         let count = coverage(&blocks, 48, 48);
         assert!(count.iter().all(|v| *v == 1), "overlap or hole");
+    }
+
+    #[test]
+    fn symbol_driven_walk_still_tiles_the_picture() {
+        for data in [
+            vec![0u8; 256],
+            vec![0xffu8; 256],
+            (0..256).map(|v| v as u8).collect(),
+        ] {
+            let mut tile = SymbolTile::new(&data, 32, 32).unwrap();
+            let blocks = walk_partitions(32, 32, 64, &mut tile);
+            let count = coverage(&blocks, 32, 32);
+            assert!(count.iter().all(|v| *v == 1), "overlap or hole");
+        }
     }
 
     #[test]

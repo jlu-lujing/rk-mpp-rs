@@ -270,11 +270,13 @@ pub fn read_partition(
         return Ok(None);
     };
     let symbols = partition_symbol_count(size).unwrap_or(4);
-    debug_assert_eq!(table.values.len() % symbols, 0, "{} shape", table.name);
-    let contexts = table.values.len() / symbols;
+    // Each context row is `symbols` probabilities plus the adaptation counter.
+    let width = symbols + 1;
+    debug_assert_eq!(table.values.len() % width, 0, "{} shape", table.name);
+    let contexts = table.values.len() / width;
     let ctx = partition_context(size, above, left);
     debug_assert!(ctx < contexts);
-    let mut cdf: Vec<u16> = table.values[ctx * symbols..(ctx + 1) * symbols].to_vec();
+    let mut cdf: Vec<u16> = table.values[ctx * width..ctx * width + symbols].to_vec();
     // The specification's arrays carry the adaptation counter as the last
     // entry; `read_symbol` expects it in place, so append one.
     cdf.push(0);
