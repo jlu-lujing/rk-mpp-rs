@@ -685,8 +685,17 @@ in what order the evidence gets produced.
       remaining shifts, with an out-of-range guard against `segEob`. Two tests
       pin `txSzCtx` (including the 4x16 -> 1 corner) and the decoded totals
       (0 bytes -> eob 1, 0xff -> 16, fixed pattern -> 5).
-      Next: `coeff_base`/`coeff_br`, signs, inverse transforms and a libaom
-      pixel comparison.
+      **Eleventh slice:** the coefficient contexts. `tools/gen_av1_coeff_tables.py`
+      emits `Adjusted_Tx_Size`, `Coeff_Base_Ctx_Offset[19][5][5]`,
+      `Coeff_Base_Pos_Ctx_Offset` (26/31/36) and `Sig_Ref_Diff_Offset`, and
+      `coeff.rs` implements `get_coeff_base_ctx`: the EOB branch
+      (38/39/40/41 from the coefficient count), the 2D branch (neighbour
+      magnitudes capped at 3, `(mag+1)>>1` capped at 4, plus the row/col
+      offset), and the 1D branch (position offsets by row/column). Four tests
+      pin the table shapes, the EOB split, the 2D neighbour sums and the 1D
+      position offsets.
+      Next: `coeff_base`/`coeff_br` symbols on these contexts, signs, inverse
+      transforms and a libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

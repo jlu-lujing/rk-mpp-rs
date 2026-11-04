@@ -14,6 +14,9 @@ use crate::reference::av1::cdf_defaults::{
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF,
     DEFAULT_EOB_PT_64_CDF,
 };
+use crate::reference::av1::coeff_tables::{
+    ADJUSTED_TX_SIZE, COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET, SIG_REF_DIFF_OFFSET,
+};
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 use crate::reference::av1::tx::TxSize;
 
@@ -156,6 +159,95 @@ pub fn decode_eob(
     Ok(eob)
 }
 
+/// `SIG_COEF_CONTEXTS`.
+pub const SIG_COEF_CONTEXTS: usize = 42;
+/// `SIG_COEF_CONTEXTS_2D`.
+pub const SIG_COEF_CONTEXTS_2D: usize = 26;
+/// The three `get_tx_class` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxClass {
+    TwoD = 0,
+    Vertical = 1,
+    Horizontal = 2,
+}
+
+/// `Adjusted_Tx_Size[ txSz ]`.
+pub fn adjusted_tx_size(tx: TxSize) -> TxSize {
+    ADJUSTED_TX_SIZE[tx as usize]
+}
+
+/// `get_coeff_base_ctx(..., isEob = 1)`: the last-coefficient contexts.
+pub fn coeff_base_context_eob(tx: TxSize, c: u32) -> usize {
+    let adj = adjusted_tx_size(tx);
+    let bwl = log2(adj.width());
+    let height = adj.height();
+    if c == 0 {
+        return SIG_COEF_CONTEXTS - 4;
+    }
+    if c <= (height << bwl) / 8 {
+        return SIG_COEF_CONTEXTS - 3;
+    }
+    if c <= (height << bwl) / 4 {
+        return SIG_COEF_CONTEXTS - 2;
+    }
+    SIG_COEF_CONTEXTS - 1
+}
+
+fn coefficient_magnitude(tx: TxSize, pos: u32, quant: &[i32], class: TxClass) -> usize {
+    let adj = adjusted_tx_size(tx);
+    let bwl = log2(adj.width());
+    let width = 1u32 << bwl;
+    let height = adj.height();
+    let row = (pos >> bwl) as i32;
+    let col = (pos & (width - 1)) as i32;
+    let mut mag = 0usize;
+    for idx in 0..5 {
+        let base = (class as usize * 5 + idx) * 2;
+        let ref_row = row + i32::from(SIG_REF_DIFF_OFFSET[base]);
+        let ref_col = col + i32::from(SIG_REF_DIFF_OFFSET[base + 1]);
+        if ref_row >= 0 && ref_col >= 0 && ref_row < height as i32 && ref_col < width as i32 {
+            let at = ((ref_row as u32) << bwl) + ref_col as u32;
+            mag += quant
+                .get(at as usize)
+                .copied()
+                .unwrap_or(0)
+                .unsigned_abs()
+                .min(3) as usize;
+        }
+    }
+    mag
+}
+
+/// `get_coeff_base_ctx(..., isEob = 0)` for a 2D transform.
+pub fn coeff_base_context_2d(tx: TxSize, pos: u32, quant: &[i32]) -> usize {
+    let adj = adjusted_tx_size(tx);
+    let bwl = log2(adj.width());
+    let width = 1u32 << bwl;
+    let row = pos >> bwl;
+    let col = pos & (width - 1);
+    let mag = coefficient_magnitude(tx, pos, quant, TxClass::TwoD);
+    let ctx = ((mag + 1) >> 1).min(4);
+    if row == 0 && col == 0 {
+        return 0;
+    }
+    let offset =
+        COEFF_BASE_CTX_OFFSET[(tx as usize * 25) + (row.min(4) as usize * 5) + col.min(4) as usize];
+    ctx + usize::from(offset)
+}
+
+/// `get_coeff_base_ctx(..., isEob = 0)` for the 1D transform classes.
+pub fn coeff_base_context_1d(tx: TxSize, pos: u32, quant: &[i32], class: TxClass) -> usize {
+    let adj = adjusted_tx_size(tx);
+    let bwl = log2(adj.width());
+    let width = 1u32 << bwl;
+    let row = pos >> bwl;
+    let col = pos & (width - 1);
+    let mag = coefficient_magnitude(tx, pos, quant, class);
+    let ctx = ((mag + 1) >> 1).min(4);
+    let idx = if class == TxClass::Vertical { row } else { col } as usize;
+    ctx + usize::from(COEFF_BASE_POS_CTX_OFFSET[idx.min(2)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +302,55 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn eob_contexts_split_the_coefficient_range() {
+        // 4x4: height << bwl = 16, so c <= 2 -> 39, c <= 4 -> 40, else 41.
+        assert_eq!(coeff_base_context_eob(TxSize::Tx4x4, 0), 38);
+        assert_eq!(coeff_base_context_eob(TxSize::Tx4x4, 1), 39);
+        assert_eq!(coeff_base_context_eob(TxSize::Tx4x4, 2), 39);
+        assert_eq!(coeff_base_context_eob(TxSize::Tx4x4, 3), 40);
+        assert_eq!(coeff_base_context_eob(TxSize::Tx4x4, 5), 41);
+    }
+
+    #[test]
+    fn two_d_context_uses_the_neighbour_magnitudes() {
+        let quant = [0i32; 64];
+        assert_eq!(coeff_base_context_2d(TxSize::Tx4x4, 0, &quant), 0);
+        // DC's right neighbour (0,1) counts: mag 1 -> ctx 1, offset[0][0]=0.
+        let mut quant = [0i32; 64];
+        quant[1] = 1;
+        assert_eq!(coeff_base_context_2d(TxSize::Tx4x4, 0, &quant), 0);
+        let mut quant = [0i32; 64];
+        quant[1] = 3;
+        // The coefficient at pos 1 is not its own neighbour; offset[0][1] = 1.
+        assert_eq!(coeff_base_context_2d(TxSize::Tx4x4, 1, &quant), 1);
+        // A saturated neighbour still caps ctx at 4.
+        let mut quant = [0i32; 64];
+        quant[1] = -9;
+        quant[2] = 9;
+        quant[3] = 9;
+        // mag 6 -> ctx 3, plus offset[0][1] = 1.
+        assert_eq!(coeff_base_context_2d(TxSize::Tx4x4, 1, &quant), 4);
+    }
+
+    #[test]
+    fn one_d_context_uses_the_position_offsets() {
+        let quant = [0i32; 64];
+        assert_eq!(
+            coeff_base_context_1d(TxSize::Tx4x4, 0, &quant, TxClass::Vertical),
+            26
+        );
+        assert_eq!(
+            coeff_base_context_1d(TxSize::Tx4x4, 4, &quant, TxClass::Vertical),
+            31
+        );
+        // Horizontal uses the column: col 1 -> pos offset 31.
+        assert_eq!(
+            coeff_base_context_1d(TxSize::Tx4x4, 1, &quant, TxClass::Horizontal),
+            31
+        );
     }
 
     #[test]
