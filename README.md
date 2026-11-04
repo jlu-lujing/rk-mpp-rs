@@ -10,6 +10,8 @@
 [docs/HANDOFF.md](docs/HANDOFF.md)。
 
 ## 验证范围（重要）
+完整能力矩阵（每条结论的证据与边界）：[docs/CAPABILITY.md](docs/CAPABILITY.md)。
+
 
 **本项目只对 RK3588（NanoPC-T6-LTS；当前板为 t6）做验证与保证。**
 
