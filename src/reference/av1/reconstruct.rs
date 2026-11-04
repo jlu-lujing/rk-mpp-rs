@@ -171,6 +171,44 @@ pub struct ReconstructedLuma<'a> {
     pub height: usize,
 }
 
+/// `BlockDecoded[plane]` at one 4x4 sample per cell.
+#[derive(Debug, Clone)]
+pub(crate) struct DecodedPlane {
+    cols: usize,
+    rows: usize,
+    cells: Vec<bool>,
+}
+
+impl DecodedPlane {
+    pub(crate) fn new(mi_cols: usize, mi_rows: usize, sub_x: u32, sub_y: u32) -> Self {
+        let cols = mi_cols >> sub_x;
+        let rows = mi_rows >> sub_y;
+        Self {
+            cols,
+            rows,
+            cells: vec![false; cols * rows],
+        }
+    }
+
+    fn at(&self, col: isize, row: isize) -> bool {
+        col >= 0
+            && row >= 0
+            && (col as usize) < self.cols
+            && (row as usize) < self.rows
+            && self.cells[row as usize * self.cols + col as usize]
+    }
+
+    fn mark(&mut self, x: usize, y: usize, width: usize, height: usize) {
+        let x4 = x >> 2;
+        let y4 = y >> 2;
+        for row in y4..(y4 + (height >> 2)).min(self.rows) {
+            for col in x4..(x4 + (width >> 2)).min(self.cols) {
+                self.cells[row * self.cols + col] = true;
+            }
+        }
+    }
+}
+
 fn uv_intra_mode(mode: UvMode) -> Option<IntraMode> {
     Some(match mode {
         UvMode::Dc => IntraMode::Dc,
@@ -209,6 +247,43 @@ pub fn reconstruct_intra_block_plane(
     left_mode: Option<IntraMode>,
     luma: Option<ReconstructedLuma<'_>>,
 ) -> Result<(), &'static str> {
+    reconstruct_intra_block_plane_with_grid(
+        frame,
+        stride,
+        plane_width,
+        plane_height,
+        plane,
+        sub_x,
+        sub_y,
+        syntax,
+        q_delta,
+        bit_depth,
+        enable_intra_edge_filter,
+        above_mode,
+        left_mode,
+        luma,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_intra_block_plane_with_grid(
+    frame: &mut [u16],
+    stride: usize,
+    plane_width: usize,
+    plane_height: usize,
+    plane: usize,
+    sub_x: u32,
+    sub_y: u32,
+    syntax: &IntraSyntaxBlock,
+    q_delta: PlaneQDelta,
+    bit_depth: u32,
+    enable_intra_edge_filter: bool,
+    above_mode: Option<IntraMode>,
+    left_mode: Option<IntraMode>,
+    luma: Option<ReconstructedLuma<'_>>,
+    mut decoded: Option<&mut DecodedPlane>,
+) -> Result<(), &'static str> {
     let is_cfl = plane > 0 && syntax.uv_mode == Some(UvMode::Cfl);
     let (mode, angle_delta) = if plane == 0 {
         (syntax.y_mode, syntax.angle_y)
@@ -238,10 +313,24 @@ pub fn reconstruct_intra_block_plane(
         if tx.x + w > stride || frame.len() < (tx.y + h) * stride {
             return Err("transform extends beyond the reconstructed plane buffer");
         }
-        let have_above = tx.y > 0;
-        let have_left = tx.x > 0;
-        let have_above_right = tx.x + w < plane_width;
-        let have_below_left = tx.y + h < plane_height;
+        let (have_above, have_left, have_above_right, have_below_left) =
+            if let Some(grid) = decoded.as_deref() {
+                let x4 = (tx.x >> 2) as isize;
+                let y4 = (tx.y >> 2) as isize;
+                (
+                    grid.at(x4, y4 - 1),
+                    grid.at(x4 - 1, y4),
+                    grid.at(x4 + (w >> 2) as isize, y4 - 1),
+                    grid.at(x4 - 1, y4 + (h >> 2) as isize),
+                )
+            } else {
+                (
+                    tx.y > 0,
+                    tx.x > 0,
+                    tx.x + w < plane_width,
+                    tx.y + h < plane_height,
+                )
+            };
         let palette_prediction = predict_palette_plane(
             &syntax.palette,
             &syntax.palette_tokens,
@@ -343,6 +432,9 @@ pub fn reconstruct_intra_block_plane(
                 let start = (tx.y + row) * stride + tx.x;
                 frame[start..start + w].copy_from_slice(&out[row * w..(row + 1) * w]);
             }
+            if let Some(grid) = decoded.as_deref_mut() {
+                grid.mark(tx.x, tx.y, w, h);
+            }
             continue;
         }
         reconstruct_intra_tx(
@@ -370,6 +462,9 @@ pub fn reconstruct_intra_block_plane(
                 lossless: syntax.lossless,
             },
         );
+        if let Some(grid) = decoded.as_deref_mut() {
+            grid.mark(tx.x, tx.y, w, h);
+        }
     }
     Ok(())
 }
@@ -380,6 +475,21 @@ mod tests {
 
     fn tx4() -> TxSize {
         TxSize::Tx4x4
+    }
+
+    #[test]
+    fn decoded_grid_exposes_only_reconstructed_neighbours() {
+        let mut luma = DecodedPlane::new(8, 8, 0, 0);
+        assert!(!luma.at(0, 0));
+        luma.mark(0, 0, 4, 4);
+        assert!(luma.at(0, 0));
+        assert!(!luma.at(1, 0));
+        assert!(!luma.at(0, 1));
+        luma.mark(4, 0, 4, 4);
+        assert!(luma.at(1, 0));
+
+        let chroma = DecodedPlane::new(8, 8, 1, 1);
+        assert_eq!((chroma.cols, chroma.rows), (4, 4));
     }
 
     #[test]

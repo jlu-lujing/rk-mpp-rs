@@ -12,7 +12,7 @@ use crate::reference::av1::intra::{IntraMode, UvMode};
 use crate::reference::av1::intra_sink::IntraSyntaxBlock;
 use crate::reference::av1::lr_frame::{apply_loop_restoration, LrFrameParams, LrPlaneGeometry};
 use crate::reference::av1::reconstruct::{
-    reconstruct_intra_block_plane, PlaneQDelta, ReconstructedLuma,
+    reconstruct_intra_block_plane_with_grid, DecodedPlane, PlaneQDelta, ReconstructedLuma,
 };
 use crate::reference::av1::seq_header::SequenceHeader;
 
@@ -127,6 +127,9 @@ pub fn reconstruct_intra_frame(
 
     let mut y_modes = vec![None; header.mi_cols * header.mi_rows];
     let mut uv_modes = vec![None; header.mi_cols * header.mi_rows];
+    let mut y_decoded = DecodedPlane::new(header.mi_cols, header.mi_rows, 0, 0);
+    let mut u_decoded = DecodedPlane::new(header.mi_cols, header.mi_rows, sub_x, sub_y);
+    let mut v_decoded = DecodedPlane::new(header.mi_cols, header.mi_rows, sub_x, sub_y);
     for block in blocks {
         fill_modes(&mut y_modes, header.mi_cols, block, Some(block.y_mode));
         fill_modes(
@@ -152,7 +155,7 @@ pub fn reconstruct_intra_frame(
 
     for block in blocks {
         let (y_above, y_left) = neighbor_modes(&y_modes, header.mi_cols, block);
-        reconstruct_intra_block_plane(
+        reconstruct_intra_block_plane_with_grid(
             &mut frame.y.data,
             frame.y.stride,
             frame.y.width,
@@ -167,6 +170,7 @@ pub fn reconstruct_intra_frame(
             y_above,
             y_left,
             None,
+            Some(&mut y_decoded),
         )?;
 
         let (uv_above, uv_left) = neighbor_modes(&uv_modes, header.mi_cols, block);
@@ -175,7 +179,7 @@ pub fn reconstruct_intra_frame(
                 .u
                 .as_mut()
                 .ok_or("chroma transform without a chroma plane")?;
-            reconstruct_intra_block_plane(
+            reconstruct_intra_block_plane_with_grid(
                 &mut u.data,
                 u.stride,
                 u.width,
@@ -195,6 +199,7 @@ pub fn reconstruct_intra_frame(
                     width: frame.y.width,
                     height: frame.y.height,
                 }),
+                Some(&mut u_decoded),
             )?;
         }
         if block.transforms.iter().any(|tx| tx.plane == 2) {
@@ -202,7 +207,7 @@ pub fn reconstruct_intra_frame(
                 .v
                 .as_mut()
                 .ok_or("chroma transform without a chroma plane")?;
-            reconstruct_intra_block_plane(
+            reconstruct_intra_block_plane_with_grid(
                 &mut v.data,
                 v.stride,
                 v.width,
@@ -222,6 +227,7 @@ pub fn reconstruct_intra_frame(
                     width: frame.y.width,
                     height: frame.y.height,
                 }),
+                Some(&mut v_decoded),
             )?;
         }
     }
@@ -687,19 +693,19 @@ mod tests {
         );
         assert_eq!(
             pre,
-            (0xe12aeb18ef5284cf, 0xf81f8248e3580e7a, 0xb0cfd953aedda7e8)
+            (0x4ef4205df5509374, 0x6c3240d43b19cabd, 0x67f89c88fd26a625)
         );
         assert_eq!(
             deblock,
-            (0x7bf04485e4fdb0f7, 0x236052dc567fdda0, 0xfe6010294121f8e0)
+            (0x91e392681eb2311f, 0x0d424f5f5071ea4f, 0xf764d1004a443a03)
         );
         assert_eq!(
             cdef_hash,
-            (0xfd798fcb45671b6b, 0x2cc022ca8b385aaa, 0x9866e06e740a481a)
+            (0x4bf627a737e63247, 0xf71001f0d18f317b, 0x34a6afdaffdfdfb1)
         );
         assert_eq!(
             restored,
-            (0xa0ffe97cea94da2b, 0x500d0f019dfcef2a, 0x1fa8822ca5fca13c)
+            (0x0082d2abf3c22207, 0xbe54be29fac533e5, 0x2b0e33806dc5bff3)
         );
         assert_ne!(picture.y, cdef.y);
         assert_ne!(picture.u, cdef.u);
