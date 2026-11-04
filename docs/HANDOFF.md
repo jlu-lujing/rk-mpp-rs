@@ -103,6 +103,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
    **另一个目录**（如 `~/rk-mpp-run`）运行，因为有些脚本会打包当前目录并在
    同一目标解压；在目标目录里运行会自己吞自己。
 4. `ffmpeg`/`ffprobe` 需要 `apt-get install`，矩阵脚本的 NV12→planar 依赖它们。板上的 ffmpeg **没有 AV1 编码器**（无 libaom-av1），AV1 大尺寸 fixture 要在宿主生成后 scp，小尺寸已固化在 `tests/data/av1_{96x96,128x128,192x192}_10.ivf`。
+  AV1 默认 CDF 表由 `tools/gen_av1_cdf.py` 从规范 HTML 生成：`curl -sL https://aomediacodec.github.io/av1-spec/ -o /tmp/av1spec.html && python3 tools/gen_av1_cdf.py /tmp/av1spec.html > src/reference/av1/cdf_defaults.rs`。
 5. t62 上已有重新生成的覆盖语料 `~/rk-mpp-oracles/corpus-gen`（59 个 payload；
    从当前提交重跑后会再写一个 `corpus-manifest.json`）。原 t6 的第三方 corpus
    无法原样复制；扫描时使用 `CORPUS=.../corpus-gen`，并确保从当前提交重新运行
