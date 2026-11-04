@@ -10,9 +10,9 @@
 //! ```
 
 use crate::reference::av1::cdf_defaults::{
-    CdfTable, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EOB_PT_128_CDF,
-    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_64_CDF,
+    CdfTable, DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BR_CDF,
+    DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_16_CDF,
+    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_64_CDF,
 };
 use crate::reference::av1::coeff_tables::{
     ADJUSTED_TX_SIZE, COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET, SIG_REF_DIFF_OFFSET,
@@ -248,6 +248,75 @@ pub fn coeff_base_context_1d(tx: TxSize, pos: u32, quant: &[i32], class: TxClass
     ctx + usize::from(COEFF_BASE_POS_CTX_OFFSET[idx.min(2)])
 }
 
+/// `SIG_COEF_CONTEXTS_EOB`.
+pub const SIG_COEF_CONTEXTS_EOB: usize = 4;
+/// `LEVEL_CONTEXTS`.
+pub const LEVEL_CONTEXTS: usize = 21;
+
+/// `TileCoeffBaseCdf[ txSzCtx ][ ptype ][ ctx ]` row (four levels + counter).
+pub fn coeff_base_cdf_row(q: usize, tx: TxSize, plane_type: usize, ctx: usize) -> &'static [u16] {
+    let index = (((q * 5 + tx_size_ctx(tx)) * 2 + plane_type) * SIG_COEF_CONTEXTS) + ctx;
+    let start = index * 5;
+    &DEFAULT_COEFF_BASE_CDF.values[start..start + 5]
+}
+
+/// `TileCoeffBaseEobCdf[ txSzCtx ][ ptype ][ ctx ]` row (three levels + counter).
+pub fn coeff_base_eob_cdf_row(
+    q: usize,
+    tx: TxSize,
+    plane_type: usize,
+    ctx: usize,
+) -> &'static [u16] {
+    let local = ctx - (SIG_COEF_CONTEXTS - SIG_COEF_CONTEXTS_EOB);
+    debug_assert!(local < SIG_COEF_CONTEXTS_EOB);
+    let index = (((q * 5 + tx_size_ctx(tx)) * 2 + plane_type) * SIG_COEF_CONTEXTS_EOB) + local;
+    let start = index * 4;
+    &DEFAULT_COEFF_BASE_EOB_CDF.values[start..start + 4]
+}
+
+/// `TileCoeffBrCdf[ txSzCtx ][ ptype ][ ctx ]` row (four values + counter).
+pub fn coeff_br_cdf_row(q: usize, tx: TxSize, plane_type: usize, ctx: usize) -> &'static [u16] {
+    let index = (((q * 5 + tx_size_ctx(tx)) * 2 + plane_type) * LEVEL_CONTEXTS) + ctx;
+    let start = index * 5;
+    &DEFAULT_COEFF_BR_CDF.values[start..start + 5]
+}
+
+/// `coeff_base: S()` for one coefficient (returns the base level 0..3).
+pub fn read_coeff_base(
+    decoder: &mut SymbolDecoder<'_>,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    ctx: usize,
+) -> Result<u32, SymbolError> {
+    let mut cdf = coeff_base_cdf_row(q, tx, plane_type, ctx).to_vec();
+    Ok(decoder.read_symbol(&mut cdf)? as u32)
+}
+
+/// `coeff_base_eob: S()` for the last coefficient (returns 1..3).
+pub fn read_coeff_base_eob(
+    decoder: &mut SymbolDecoder<'_>,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    ctx: usize,
+) -> Result<u32, SymbolError> {
+    let mut cdf = coeff_base_eob_cdf_row(q, tx, plane_type, ctx).to_vec();
+    Ok(decoder.read_symbol(&mut cdf)? as u32 + 1)
+}
+
+/// `coeff_br: S()` in the level loop.
+pub fn read_coeff_br(
+    decoder: &mut SymbolDecoder<'_>,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    ctx: usize,
+) -> Result<u32, SymbolError> {
+    let mut cdf = coeff_br_cdf_row(q, tx, plane_type, ctx).to_vec();
+    Ok(decoder.read_symbol(&mut cdf)? as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +369,47 @@ mod tests {
             assert_eq!(
                 read_eob_pt(&mut decoder, TxSize::Tx4x4, 0, 0, true).unwrap(),
                 expected
+            );
+        }
+    }
+
+    #[test]
+    fn coefficient_cdf_rows_start_where_the_tables_do() {
+        assert_eq!(
+            coeff_base_cdf_row(0, TxSize::Tx4x4, 0, 0)[..4],
+            [4034, 8930, 12727, 32768]
+        );
+        assert_eq!(
+            coeff_base_eob_cdf_row(0, TxSize::Tx4x4, 0, 38)[..3],
+            [17837, 29055, 32768]
+        );
+        assert_eq!(
+            coeff_br_cdf_row(0, TxSize::Tx4x4, 0, 0)[..4],
+            [14298, 20718, 24174, 32768]
+        );
+    }
+
+    #[test]
+    fn coefficient_levels_decode_from_the_defaults() {
+        for (bytes, base, eob, br) in [
+            ([0u8; 8], 0u32, 1u32, 0u32),
+            ([0xffu8; 8], 3, 3, 3),
+            ([0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78], 0, 1, 0),
+        ] {
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            assert_eq!(
+                read_coeff_base(&mut decoder, TxSize::Tx4x4, 0, 0, 0).unwrap(),
+                base
+            );
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            assert_eq!(
+                read_coeff_base_eob(&mut decoder, TxSize::Tx4x4, 0, 0, 38).unwrap(),
+                eob
+            );
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            assert_eq!(
+                read_coeff_br(&mut decoder, TxSize::Tx4x4, 0, 0, 0).unwrap(),
+                br
             );
         }
     }

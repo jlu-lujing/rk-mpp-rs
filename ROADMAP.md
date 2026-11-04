@@ -694,8 +694,15 @@ in what order the evidence gets produced.
       offset), and the 1D branch (position offsets by row/column). Four tests
       pin the table shapes, the EOB split, the 2D neighbour sums and the 1D
       position offsets.
-      Next: `coeff_base`/`coeff_br` symbols on these contexts, signs, inverse
-      transforms and a libaom pixel comparison.
+      **Twelfth slice:** the level symbols. `coefficient_cdf_rows` select
+      `TileCoeffBaseCdf[txSzCtx][ptype][ctx]` (42 contexts, four levels),
+      `TileCoeffBaseEobCdf[...][ctx-38]` (three levels) and
+      `TileCoeffBrCdf[...][ctx]` (21 level contexts), and
+      `read_coeff_base` / `read_coeff_base_eob` / `read_coeff_br` decode them.
+      Two tests pin the first rows of all three tables and the decoded levels
+      (0/1/0, 3/3/3, 0/1/0) for fixed byte patterns.
+      Next: the `coeff_br` level loop, signs and Golomb, then inverse
+      transforms and the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
