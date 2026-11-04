@@ -15,6 +15,7 @@ pub mod coeff_block;
 pub mod coeff_tables;
 pub mod context;
 pub mod deblock;
+pub mod delta;
 pub mod frame_header;
 pub mod idct;
 pub mod intra;
