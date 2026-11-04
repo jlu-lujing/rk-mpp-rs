@@ -719,8 +719,15 @@ in what order the evidence gets produced.
       mask, `culLevel` accumulation (capped at 63) and the DC category. A test
       pins a negative DC (0xff stream), a Golomb rebuild (20 -> 15) and the
       zero-block path.
-      Next: wire the tile-level Above/Left level and DC context arrays, inverse
-      transforms, prediction, then the libaom pixel comparison.
+      **Fifteenth slice:** `context.rs` carries the tile's per-plane
+      `Above`/`Left` level and DC arrays, derives `dc_sign`'s context from the
+      neighbour DC categories (negative/positive/balanced -> 1/2/0) and records
+      a finished block's `culLevel`/`dcCategory` across its extent.
+      `dc_sign_cdf_row`/`read_dc_sign` select and decode
+      `TileDcSignCdf[ ptype ][ ctx ]` (the corrected 16000/32768/0 row).
+      Two tests pin the category sum (including the balanced case) and the
+      block-wide update, one pins the sign symbols.
+      Next: inverse transforms, prediction, then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

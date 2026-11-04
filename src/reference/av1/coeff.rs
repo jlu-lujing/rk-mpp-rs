@@ -11,8 +11,9 @@
 
 use crate::reference::av1::cdf_defaults::{
     CdfTable, DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BR_CDF,
-    DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_64_CDF,
+    DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EOB_PT_128_CDF,
+    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF,
+    DEFAULT_EOB_PT_64_CDF,
 };
 use crate::reference::av1::coeff_tables::{
     ADJUSTED_TX_SIZE, COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET, SIG_REF_DIFF_OFFSET,
@@ -460,6 +461,24 @@ pub fn decode_signs(
     Ok((dc_category, cul_level.min(63)))
 }
 
+/// `TileDcSignCdf[ ptype ][ ctx ]`: three values (probability, scale, counter).
+pub fn dc_sign_cdf_row(q: usize, plane_type: usize, ctx: usize) -> &'static [u16] {
+    let index = ((q * 2 + plane_type) * 3) + ctx;
+    let start = index * 3;
+    &DEFAULT_DC_SIGN_CDF.values[start..start + 3]
+}
+
+/// `dc_sign: S()` — 1 means negative.
+pub fn read_dc_sign(
+    decoder: &mut SymbolDecoder<'_>,
+    q: usize,
+    plane_type: usize,
+    ctx: usize,
+) -> Result<u32, SymbolError> {
+    let mut cdf = dc_sign_cdf_row(q, plane_type, ctx).to_vec();
+    Ok(decoder.read_symbol(&mut cdf)? as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,6 +564,15 @@ mod tests {
         let (category, cul) =
             decode_signs(&mut decoder, &mut quant, &scan, 1, &mut dc_cdf).unwrap();
         assert_eq!((category, cul), (0, 0));
+    }
+
+    #[test]
+    fn dc_sign_rows_and_symbols_follow_the_specification() {
+        assert_eq!(dc_sign_cdf_row(0, 0, 0), [16000, 32768, 0]);
+        for (bytes, expected) in [([0u8; 8], 0u32), ([0xffu8; 8], 1u32)] {
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            assert_eq!(read_dc_sign(&mut decoder, 0, 0, 0).unwrap(), expected);
+        }
     }
 
     #[test]
