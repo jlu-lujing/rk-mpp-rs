@@ -733,8 +733,15 @@ in what order the evidence gets produced.
       `1 << (BitDepth-1)` fallback - plus vertical and horizontal copies. Four
       tests pin the three DC branches (25 / 25 / 15), the 8-/10-bit fallbacks and
       the V/H layout; the output is `u16` so 10-bit samples are not truncated.
-      Next: inverse transforms, the remaining intra modes (directional, smooth,
-      Paeth, CFL), then the libaom pixel comparison.
+      **Seventeenth slice:** `idct.rs` is a mathematical inverse DCT reference
+      (`cospi(n) = round(cos(n*pi/64)*64)`, 1D orthonormal DCT-III, separable
+      2D). It is deliberately **not** the specification's bit-exact butterfly
+      chain: it exists so prediction experiments have a working transform and
+      so the future butterfly port has an independent check. Four tests pin the
+      cosine table, a DC-only constant block, a direct-formula comparison and
+      separability.
+      Next: the bit-exact DCT/ADST/FLIPADST butterflies, the remaining intra
+      modes (directional, smooth, Paeth, CFL), then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
