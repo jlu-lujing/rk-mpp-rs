@@ -48,11 +48,12 @@
 整体约完成 82%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 83%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 73 个
-AV1 slice（最新为帧内预测的 4×4 `BlockDecoded` 可用性网格：正确区分已重建的
-above-right/below-left 样本，修复变换块误读未来像素；真实无-grain keyframe 的首帧 PSNR
-提升到 49.07 dB；此前为 inverse-identity 尺寸缩放、帧级 loop restoration、CDEF、去块、
-Y/U/V 帧级重建、
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 75 个
+AV1 slice（最新为 CDEF 与方向预测修正：约束差值按规范夹到非负范围，补齐 CDEF 的
+skip/strength/damping 语义，并让带 angle delta 的 H/V 模式真正进入方向预测；真实无-grain
+keyframe 的重建前 Y 平面已与 libaom 逐像素一致，最终 Y/U/V PSNR 提升到
+73.931/61.514/55.260 dB（平均 63.568）；此前为 4×4 `BlockDecoded` 可用性网格、
+inverse-identity 尺寸缩放、帧级 loop restoration、CDEF、去块、Y/U/V 帧级重建、
 palette/filter-intra 单 plane 像素预测、
 `Quant[]` 到逆变换布局的桥接、
 真实 320x240 keyframe 的整 tile 熵解码闭合：palette 颜色/索引图、10-bit

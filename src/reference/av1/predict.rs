@@ -587,8 +587,8 @@ pub fn predict_intra(
             log2_h,
             bit_depth,
         ),
-        IntraMode::V => v_predict(&edges.above, log2_w, log2_h),
-        IntraMode::H => h_predict(&edges.left, log2_w, log2_h),
+        IntraMode::V if angle_delta == 0 => v_predict(&edges.above, log2_w, log2_h),
+        IntraMode::H if angle_delta == 0 => h_predict(&edges.left, log2_w, log2_h),
         IntraMode::Smooth => smooth_predict(
             SmoothMode::Smooth,
             &edges.above,
@@ -946,6 +946,27 @@ mod tests {
         assert_eq!(
             predict_intra(IntraMode::D45, &edges, 1, 1, 0, false, 0, 8),
             [20, 30, 30, 40]
+        );
+    }
+
+    #[test]
+    fn horizontal_angle_delta_uses_the_directional_process() {
+        let edges = IntraEdges {
+            above: vec![110, 110, 110, 110, 110, 110, 96, 65, 67, 98, 113, 52],
+            left: vec![108, 105, 107, 30, 33, 34, 34, 55, 54, 54, 54, 54],
+            top_left: 107,
+            have_above: true,
+            have_left: true,
+            above_available: 12,
+            left_available: 12,
+        };
+        let pred = predict_intra(IntraMode::H, &edges, 3, 2, -1, true, 0, 8);
+        assert_eq!(
+            pred,
+            [
+                108, 108, 108, 108, 108, 108, 108, 108, 105, 105, 105, 105, 105, 106, 106, 106,
+                107, 108, 108, 109, 109, 109, 110, 110, 34, 37, 41, 45, 48, 52, 56, 59,
+            ]
         );
     }
 

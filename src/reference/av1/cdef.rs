@@ -244,7 +244,7 @@ fn constrain(diff: i32, threshold: i32, damping: i32) -> i32 {
     let damping_adj = (damping - floor_log2(threshold as u64) as i32).max(0);
     let sign = if diff < 0 { -1 } else { 1 };
     let magnitude = diff.unsigned_abs() as i32;
-    let constrained = magnitude.min(threshold - (magnitude >> damping_adj));
+    let constrained = (threshold - (magnitude >> damping_adj)).clamp(0, magnitude);
     sign * constrained
 }
 
@@ -299,6 +299,7 @@ pub fn cdef_filter_block(
     assert!((8..=12).contains(&bit_depth));
 
     let coeff_shift = bit_depth - 8;
+    let clipping_required = primary_strength != 0 && secondary_strength != 0;
     let mut out = vec![0u16; width * height];
     for i in 0..height {
         for j in 0..width {
@@ -345,7 +346,11 @@ pub fn cdef_filter_block(
                 }
             }
             let rounded = i32::from(x) + ((8 + sum - i32::from(sum < 0)) >> 4);
-            out[i * width + j] = rounded.clamp(i32::from(min), i32::from(max)) as u16;
+            out[i * width + j] = if clipping_required {
+                rounded.clamp(i32::from(min), i32::from(max)) as u16
+            } else {
+                rounded as u16
+            };
         }
     }
     out
@@ -420,6 +425,14 @@ mod tests {
         assert_eq!(cdef_luma_primary_strength(12, 64), 3);
         // Variance is capped at a log2 of 12.
         assert_eq!(cdef_luma_primary_strength(12, i64::MAX), 12);
+    }
+
+    #[test]
+    fn constrain_clamps_an_overdamped_difference_to_zero() {
+        assert_eq!(constrain(100, 4, 4), 0);
+        assert_eq!(constrain(-100, 4, 4), 0);
+        assert_eq!(constrain(7, 4, 3), 1);
+        assert_eq!(constrain(-7, 4, 3), -1);
     }
 
     #[test]

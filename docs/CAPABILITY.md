@@ -73,14 +73,14 @@
 | AV1 块几何 / partition / intra 模式 | 完成：22 种 BLOCK_SIZES、上下文、`y_mode`/`intra_frame_y_mode`/`uv_mode`+CFL、`tx_depth`、块级 `read_tx_size`（lossless / largest / select 与 split chain）、32 张扫描表；128×128 分区按规范的 8 符号 CDF 读取，窄 16×4/4×16 仍按 `MiSize >= BLOCK_8X8` 消费 palette/angle-delta |
 | AV1 residual transform 布局 | 完成：`residual.rs` — 规范 `Subsampled_Size[22][2][2]`、chroma `get_tx_size`、>64 block 的 64x64 chunk、plane/raster transform block 坐标；4 个测试 |
 | AV1 系数语法 | 完成：EOB 类别与 extra bits、`coeff_base`/`eob`/`br`、signs/Golomb、`Quant[]`、tile 级 above/left 上下文 |
-| AV1 帧内预测 | 完成统一 `predict_intra` 入口：DC/V/H/SMOOTH/SMOOTH_V/H/PAETH、8 个方向模式及 angle delta、邻近样本不可用替换、边缘强度/滤波/上采样、CFL；帧级重建维护每 plane 的 4×4 `BlockDecoded` 网格，above-right/below-left 只读取已重建样本；18 个预测测试 |
+| AV1 帧内预测 | 完成统一 `predict_intra` 入口：DC/V/H/SMOOTH/SMOOTH_V/H/PAETH、8 个方向模式及 angle delta、邻近样本不可用替换、边缘强度/滤波/上采样、CFL；带非零 angle delta 的 V/H 模式走方向预测而不是退化复制，色度 `filterType` 邻域按 4:2:0 奇偶规则定位；帧级重建维护每 plane 的 4×4 `BlockDecoded` 网格，above-right/below-left 只读取已重建样本；19 个预测测试 |
 | AV1 filter-intra | 完成：`use_filter_intra`/5 种 mode 的持久 CDF、完整 `Intra_Filter_Taps` 和递归 4×2 预测；PAETH 的 transform 方向按 `Fimode_To_Intradir` 映射到 DC |
 | AV1 palette mode / token map | 完成：screen-content/尺寸门控、邻域 size 上下文、Y/UV/V 颜色（含 10-bit）、cache merge、color-index wavefront 和全部 2–8 色 CDF；真实 keyframe 中的 palette 与 libaom 逐语法一致 |
 | AV1 CFL alpha | 完成：`read_cfl_alphas()` 的 joint sign、U/V 16 级 magnitude、按 joint sign 选择 6 个持久 CDF 上下文，并保留 alpha index；真实 tile 的 CFL 块已闭合 |
 | AV1 intra skip 语义 | 完成修正：skip 只跳过残差；segment 之后的 y/uv mode 仍按语法读取，避免真实 tile 失步 |
-| AV1 逆变换 | 完成蝶形 DCT、ADST4/8/16 与 FLIPADST、2D 变换、量化与残差重建；行列移位按规范使用 `Round2`，矩形输入执行 2896/4096 预缩放，4/8/16/32 点 inverse identity 使用尺寸相关缩放；libaom 的 4×4 DCT_DCT、4×4 H_DCT 与 8×4 H_DCT 残差向量均逐样本一致 |
+| AV1 逆变换 | 完成蝶形 DCT、ADST4/8/16 与 FLIPADST、2D 变换、量化与残差重建；行列移位按规范使用 `Round2`，矩形输入执行 2896/4096 预缩放，4/8/16/32 点 inverse identity 使用尺寸相关缩放；libaom 的 4×4 DCT_DCT、4×4 IDTX、4×4 H_DCT、8×4 H_DCT 与 8×4 DCT_ADST 残差向量均逐样本一致 |
 | AV1 transform type / set | 完成：`tx_type.rs` — `get_tx_set`、intra set1/set2 inverse tables、intra `tx_type` CDF、row/column `TxKind`、scan direction 与 tx class |
-| AV1 CDEF | 完成：方向搜索、主/次抽头、约束差值，9 个测试（含 8/10-bit 与色度几何） |
+| AV1 CDEF | 完成：方向搜索、主/次抽头、约束差值、全 skip 8×8 跳过、8/10-bit strength/damping 缩放、色度 damping 减一和主/次强度为零时的 no-clip 语义；使用 libaom 去块帧作为输入时 Y/U/V 三平面逐像素一致。10 个测试（含 8/10-bit 与色度几何） |
 | AV1 CDEF index 语法 | 完成：64×64 luma 对齐网格、`L(cdef_bits)`、skip/lossless/intrabc gating 与同区复用；2 个测试 |
 | AV1 loop restoration 滤波 | 完成：Wiener、self-guided（两遍 box + 投影）、stripe 边界源切换，8 个测试含两个独立规范向量 |
 | AV1 LR 参数解码（§8.3 subexp） | 完成：`NS(n)` / `decode_subexp_bool` / `inverse_recenter` / `decode_signed_subexp_with_ref_bool`，7 个测试 |
@@ -95,7 +95,7 @@
 | AV1 stream 调度（IVF/OBU→frame→tile） | 完成：`stream.rs` — 按 packet/OBU 顺序产出 sequence/show-existing/coded-frame 事件，事件携带真实 tile ranges，并把帧头参考状态更新接在事件推进上；单 tile 与 2×2 fixture 均覆盖 |
 | AV1 intra tile block sink | 完成语法闭环：按规范的 Y mode→Y angle→UV mode→CFL alpha→UV angle 顺序消费，并处理 palette、filter-intra、tx depth 与逐 plane 系数；真实 320×240 keyframe 的整 tile（17944 bits）通过分区覆盖、全部残差上下文和 `exit_symbol()` 尾位校验，记录的 `Quant[]` 已接入帧级像素重建 |
 | AV1 tile 熵入口 / 分区驱动 | 完成：`tile_entropy.rs` — tile id→MI 边界、叶块回调、stateful partition CDF、图像边缘的折叠二符号/隐式 SPLIT、`HORZ_4`/`VERT_4` 越界保护；真实 2×2 fixture 与 320×240 单 tile keyframe 均通过 |
-| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240、无 film-grain keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF 与 LR；restoration-enabled fixture 的 12 个阶段哈希已锁定。首帧对 libaom 当前为 Y/U/V PSNR 55.624/44.268/45.848 dB（平均 49.066），尚未像素对齐；仍缺剩余预测/色度误差、4×4 IDTX 系数排列、superres 后 LR，以及帧间预测与参考帧管理 |
+| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240、无 film-grain keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF 与 LR；restoration-enabled fixture 的 12 个阶段哈希已锁定。重建前 Y 已逐像素一致；最终对 libaom 为 Y/U/V PSNR 73.931/61.514/55.260 dB（平均 63.568）。CDEF 在 libaom 去块输入上三平面逐像素一致，剩余差异主要来自去块的少量舍入、V 高精度 CFL 误差、superres 后 LR，以及帧间预测与参考帧管理 |
 
 ## 已知 C bug（本 crate 保留独立结果）
 
@@ -129,7 +129,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 73 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 75 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
@@ -144,5 +144,5 @@ intra transform-block 重建、CDEF index 语法、filter-intra、palette/color-
 CFL alpha、正确的 intra skip 语义，以及真实 320×240 keyframe 的整 tile 熵闭合。
 预测、重建、去块、CDEF 与 LR 的帧级像素写回现已接通；仍缺首帧像素级 libaom 对齐
 （ADST8/16 快照与部分预测/色度路径仍欠 libaom 佐证）、superres 后 LR，
-以及帧间预测与参考帧管理。`cargo test --all-targets`：**1053 通过 / 0 失败 / 27 板级
+以及帧间预测与参考帧管理。`cargo test --all-targets`：**1057 通过 / 0 失败 / 27 板级
 ignore**，`cargo fmt --check` 干净。

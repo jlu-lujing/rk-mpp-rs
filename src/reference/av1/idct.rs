@@ -653,6 +653,26 @@ mod tests {
     }
 
     #[test]
+    fn eight_by_four_dct_adst_matches_libaom_vector() {
+        let mut column_major = [0i32; 32];
+        column_major[..3].copy_from_slice(&[-68, 160, -80]);
+        let mut row_major = [0i32; 32];
+        for pos in 0..32 {
+            let row = pos & 3;
+            let col = pos >> 2;
+            row_major[row * 8 + col] = column_major[pos];
+        }
+        let out = inverse_transform_2d(&row_major, 8, 4, TxKind::Adst, TxKind::Dct, 0, 4, 16, 16);
+        assert_eq!(
+            out,
+            [
+                0, 1, 1, 1, 1, 2, 2, 2, 0, 1, 2, 2, 2, 3, 3, 3, 0, -1, -1, -1, -2, -2, -2, -2, -1,
+                -3, -5, -7, -9, -10, -11, -11,
+            ]
+        );
+    }
+
+    #[test]
     fn four_by_four_horizontal_dct_matches_libaom_vector() {
         let input = [0, 0, 936, 936, 0, 0, -864, 0, 0, 0, 0, -936, 0, 0, 360, 0];
         let mut row_major = [0i32; 16];
@@ -676,6 +696,29 @@ mod tests {
             out,
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 117, 117, 0, 117, 117, 0]
         );
+    }
+
+    #[test]
+    fn four_by_four_identity_matches_libaom_vector() {
+        let column_major = [0, 0, 168, 252, 0, 0, 0, 168, 0, 0, 0, 0, 0, 0, 168, 168];
+        let mut row_major = [0i32; 16];
+        for pos in 0..16 {
+            let row = pos & 3;
+            let col = pos >> 2;
+            row_major[row * 4 + col] = column_major[pos];
+        }
+        let out = inverse_transform_2d(
+            &row_major,
+            4,
+            4,
+            TxKind::Identity,
+            TxKind::Identity,
+            0,
+            4,
+            16,
+            16,
+        );
+        assert_eq!(out, [0, 0, 0, 0, 0, 0, 0, 0, 21, 0, 0, 21, 31, 21, 0, 21]);
     }
 
     #[test]

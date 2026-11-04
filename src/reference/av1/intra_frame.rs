@@ -99,6 +99,40 @@ fn neighbor_modes(
     (above, left)
 }
 
+fn chroma_neighbor_modes(
+    grid: &[Option<IntraMode>],
+    cols: usize,
+    rows: usize,
+    block: &IntraSyntaxBlock,
+    sub_x: u32,
+    sub_y: u32,
+) -> (Option<IntraMode>, Option<IntraMode>) {
+    let mut above_row = block.block.row as isize - 1;
+    let mut above_col = block.block.col as isize;
+    if sub_x != 0 && block.block.col & 1 == 0 {
+        above_col += 1;
+    }
+    if sub_y != 0 && block.block.row & 1 != 0 {
+        above_row -= 1;
+    }
+
+    let mut left_row = block.block.row as isize;
+    let mut left_col = block.block.col as isize - 1;
+    if sub_x != 0 && block.block.col & 1 != 0 {
+        left_col -= 1;
+    }
+    if sub_y != 0 && block.block.row & 1 == 0 {
+        left_row += 1;
+    }
+
+    let at = |row: isize, col: isize| {
+        (row >= 0 && col >= 0 && row < rows as isize && col < cols as isize)
+            .then(|| grid[row as usize * cols + col as usize])
+            .flatten()
+    };
+    (at(above_row, above_col), at(left_row, left_col))
+}
+
 /// Reconstruct an intra frame from the syntax blocks in tile order. Loop
 /// filters and CDEF/restoration run after this stage.
 pub fn reconstruct_intra_frame(
@@ -173,7 +207,14 @@ pub fn reconstruct_intra_frame(
             Some(&mut y_decoded),
         )?;
 
-        let (uv_above, uv_left) = neighbor_modes(&uv_modes, header.mi_cols, block);
+        let (uv_above, uv_left) = chroma_neighbor_modes(
+            &uv_modes,
+            header.mi_cols,
+            header.mi_rows,
+            block,
+            sub_x,
+            sub_y,
+        );
         if block.transforms.iter().any(|tx| tx.plane == 1) {
             let u = frame
                 .u
@@ -342,6 +383,7 @@ fn write_block(dst: &mut [u16], stride: usize, x: usize, y: usize, width: usize,
 pub fn apply_intra_cdef(
     sequence: &SequenceHeader,
     header: &FrameHeader,
+    blocks: &[IntraSyntaxBlock],
     cdef_grid: &CdefIndexGrid,
     frame: &mut IntraFrame,
 ) {
@@ -355,18 +397,39 @@ pub fn apply_intra_cdef(
     let mut y_out = frame.y.data.clone();
     let mut u_out = frame.u.as_ref().map(|p| p.data.clone());
     let mut v_out = frame.v.as_ref().map(|p| p.data.clone());
+    let mut skip_grid = vec![false; header.mi_cols * header.mi_rows];
+    for block in blocks {
+        let width = block.block.size.num_4x4_wide() as usize;
+        let height = block.block.size.num_4x4_high() as usize;
+        for row in block.block.row..(block.block.row + height).min(header.mi_rows) {
+            for col in block.block.col..(block.block.col + width).min(header.mi_cols) {
+                skip_grid[row * header.mi_cols + col] = block.skip;
+            }
+        }
+    }
+    let coeff_shift = frame.bit_depth - 8;
 
     for r in (0..header.mi_rows).step_by(2) {
         for c in (0..header.mi_cols).step_by(2) {
             let Some(index) = cdef_grid.get(r & !15, c & !15) else {
                 continue;
             };
+            let skip = (0..2).all(|dy| {
+                (0..2).all(|dx| {
+                    skip_grid
+                        .get((r + dy) * header.mi_cols + c + dx)
+                        .copied()
+                        .unwrap_or(false)
+                })
+            });
+            if skip {
+                continue;
+            }
             let index = usize::from(index);
             let direction = cdef_direction(luma_input, c * 4, r * 4, frame.bit_depth);
-            let luma_primary = cdef_luma_primary_strength(
-                i32::from(header.cdef_y_pri_strength[index]),
-                direction.variance,
-            );
+            let primary = i32::from(header.cdef_y_pri_strength[index]) << coeff_shift;
+            let luma_primary = cdef_luma_primary_strength(primary, direction.variance);
+            let luma_direction = if primary == 0 { 0 } else { direction.dir };
             let luma = cdef_filter_block(
                 luma_input,
                 region,
@@ -375,14 +438,19 @@ pub fn apply_intra_cdef(
                 0,
                 0,
                 luma_primary,
-                i32::from(header.cdef_y_sec_strength[index]),
-                i32::from(header.cdef_damping),
-                direction.dir,
+                i32::from(header.cdef_y_sec_strength[index]) << coeff_shift,
+                i32::from(header.cdef_damping) + coeff_shift as i32,
+                luma_direction,
                 frame.bit_depth,
             );
             write_block(&mut y_out, frame.y.stride, c * 4, r * 4, 8, &luma);
 
-            let uv_dir = CDEF_UV_DIR[sub_x as usize][sub_y as usize][usize::from(direction.dir)];
+            let uv_primary = i32::from(header.cdef_uv_pri_strength[index]) << coeff_shift;
+            let uv_dir = if uv_primary == 0 {
+                0
+            } else {
+                CDEF_UV_DIR[sub_x as usize][sub_y as usize][usize::from(direction.dir)]
+            };
             for (plane, out) in [(&frame.u, &mut u_out), (&frame.v, &mut v_out)] {
                 let (Some(plane), Some(out)) = (plane.as_ref(), out.as_mut()) else {
                     continue;
@@ -395,9 +463,9 @@ pub fn apply_intra_cdef(
                     c,
                     sub_x,
                     sub_y,
-                    i32::from(header.cdef_uv_pri_strength[index]),
-                    i32::from(header.cdef_uv_sec_strength[index]),
-                    i32::from(header.cdef_damping),
+                    uv_primary,
+                    i32::from(header.cdef_uv_sec_strength[index]) << coeff_shift,
+                    i32::from(header.cdef_damping) + coeff_shift as i32 - 1,
                     uv_dir,
                     frame.bit_depth,
                 );
@@ -581,6 +649,7 @@ mod tests {
         apply_intra_cdef(
             sequence,
             &frame.header,
+            &decoded.sink.blocks,
             decoded.sink.cdef_grid(),
             &mut picture,
         );
@@ -596,15 +665,15 @@ mod tests {
         let restored = hashes(&picture);
         assert_eq!(
             pre,
-            (0x0a34a3cfd193a71d, 0x5d059733787f6fb4, 0x94f66f15c41ada2b)
+            (0xec3127107a028ba9, 0xddc697920c2f2ac3, 0xa74634a8ca371ede)
         );
         assert_eq!(
             deblock,
-            (0xb89c19467bb3b7d8, 0x046212053d9061de, 0x95fa872d76a82acf)
+            (0x2a08a662b18279f8, 0xf1b3aaf037484c99, 0x44d1083999fd1b64)
         );
         assert_eq!(
             cdef,
-            (0xe37337007395094b, 0xf725cc8a12cf1eeb, 0x6c03f140fb49a236)
+            (0x4123d6e7e9df10dd, 0x93a4782f036426ff, 0x65798501044419b)
         );
         assert_eq!(restored, cdef);
     }
@@ -669,6 +738,7 @@ mod tests {
         apply_intra_cdef(
             sequence,
             &frame.header,
+            &decoded.sink.blocks,
             decoded.sink.cdef_grid(),
             &mut picture,
         );
@@ -693,19 +763,19 @@ mod tests {
         );
         assert_eq!(
             pre,
-            (0x4ef4205df5509374, 0x6c3240d43b19cabd, 0x67f89c88fd26a625)
+            (0x4ef4205df5509374, 0xdcacdbf585962a6a, 0x03b637d01097d628)
         );
         assert_eq!(
             deblock,
-            (0x91e392681eb2311f, 0x0d424f5f5071ea4f, 0xf764d1004a443a03)
+            (0x91e392681eb2311f, 0xa68bbf8ab932a097, 0x26e8df9edc9902a6)
         );
         assert_eq!(
             cdef_hash,
-            (0x4bf627a737e63247, 0xf71001f0d18f317b, 0x34a6afdaffdfdfb1)
+            (0xea142655a8de1b39, 0x1348dc0ab5f177f3, 0x151e8de79e324419)
         );
         assert_eq!(
             restored,
-            (0x0082d2abf3c22207, 0xbe54be29fac533e5, 0x2b0e33806dc5bff3)
+            (0xdb3ce8ed15835a79, 0x3615403abcc84071, 0xfa01012de3f32a1e)
         );
         assert_ne!(picture.y, cdef.y);
         assert_ne!(picture.u, cdef.u);
