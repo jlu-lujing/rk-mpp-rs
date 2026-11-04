@@ -9,6 +9,7 @@ pub mod bitstream;
 pub mod block;
 pub mod cdef;
 pub mod cdf_defaults;
+pub mod cdf_state;
 pub mod coeff;
 pub mod coeff_tables;
 pub mod context;

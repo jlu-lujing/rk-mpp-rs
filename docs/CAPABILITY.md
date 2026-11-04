@@ -59,6 +59,7 @@
 | HEVC 变换 | 完成 |
 | AV1 符号解码器（规范 §8.2） | 完成：init_symbol/read_symbol/CDF 自适应/read_bool/read_literal/exit_symbol |
 | AV1 默认 CDF 表 | 完成：96 张、19,677 个值，生成器 + FNV 校验（含 3D 表与 `128 * 125` 乘积更正） |
+| AV1 tile CDF 状态 | 完成：`cdf_state.rs` 复制全部 96 张表（19,677 值），按静态表身份选择可变 row，`read_symbol` 跨调用保留自适应，支持 `disable_cdf_update` 与单表 reset |
 | AV1 块几何 / partition / intra 模式 | 完成：22 种 BLOCK_SIZES、上下文、`y_mode`/`intra_frame_y_mode`/`uv_mode`+CFL、`tx_depth`、块级 `read_tx_size`（lossless / largest / select 与 split chain）、32 张扫描表 |
 | AV1 residual transform 布局 | 完成：`residual.rs` — 规范 `Subsampled_Size[22][2][2]`、chroma `get_tx_size`、>64 block 的 64x64 chunk、plane/raster transform block 坐标；4 个测试 |
 | AV1 系数语法 | 完成：EOB 类别与 extra bits、`coeff_base`/`eob`/`br`、signs/Golomb、`Quant[]`、tile 级 above/left 上下文 |
@@ -110,15 +111,15 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 47 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 48 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
 5 个真实 IVF fixture 的 50 帧上验证），以及 §5.9 完整帧头（8 个真实 IVF 共 112 个帧头逐位
 对齐，并经 ffmpeg `trace_headers` 交叉核对），真实 tile-group 的字节范围拆包、不依赖
 `skip_mode` 注入的参考帧状态串行更新、统一帧内预测入口，以及把 OBU/帧头/tile 串起来的
-stream 事件驱动，以及 residual transform 的 chunk/plane/raster 布局。仍缺全帧 tile 驱动
-（含帧间预测与参考帧管理），
+stream 事件驱动、residual transform 的 chunk/plane/raster 布局，以及 tile 级可变 CDF 状态。
+仍缺全帧 tile 驱动（含帧间预测与参考帧管理），
 因此 libaom 像素比对尚未开始（ADST8/16 快照、identity scaling、蝶形数值对齐也还欠 libaom
-佐证）。`cargo test --all-targets`：**990 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
+佐证）。`cargo test --all-targets`：**994 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
 干净。
