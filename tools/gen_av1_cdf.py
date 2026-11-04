@@ -22,13 +22,11 @@ def load(path):
     return re.sub(r"\s+", " ", text)
 
 def tables(text):
-    pattern = re.compile(
-        r"([A-Z][A-Za-z0-9_]+_Cdf)\s*\[([^\]]*)\](?:\s*\[([^\]]*)\])?\s*=\s*\{"
-    )
+    pattern = re.compile(r"([A-Z][A-Za-z0-9_]+_Cdf)\s*((?:\[[^\]]*\]\s*)+)=\s*\{")
     out = []
     for match in pattern.finditer(text):
         name = match.group(1)
-        shape = [part.strip() for part in match.groups()[1:] if part]
+        shape = [part.strip() for part in re.findall(r"\[([^\]]*)\]", match.group(2))]
         start = match.end() - 1
         depth = 0
         end = start
