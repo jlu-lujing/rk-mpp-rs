@@ -107,9 +107,19 @@ pub const YEND: usize = 156; // [8]
 pub const OUT_MV_HIST: usize = 0; // [MVL + MVR + 1]
 pub const OUT_DECT_PD_TCNT: usize = OUT_MV_HIST + (MVL + MVR + 1); // 56
 pub const OUT_DECT_PD_BCNT: usize = OUT_DECT_PD_TCNT + 1;
+pub const OUT_DECT_FF_CUR_TCNT: usize = OUT_DECT_PD_TCNT + 2;
+pub const OUT_DECT_FF_CUR_BCNT: usize = OUT_DECT_PD_TCNT + 3;
+pub const OUT_DECT_FF_NXT_TCNT: usize = OUT_DECT_PD_TCNT + 4;
+pub const OUT_DECT_FF_NXT_BCNT: usize = OUT_DECT_PD_TCNT + 5;
+pub const OUT_DECT_FF_BLE_TCNT: usize = OUT_DECT_PD_TCNT + 6;
+pub const OUT_DECT_FF_BLE_BCNT: usize = OUT_DECT_PD_TCNT + 7;
+pub const OUT_DECT_FF_NZ: usize = OUT_DECT_PD_TCNT + 8;
+pub const OUT_DECT_FF_COMB_F: usize = OUT_DECT_PD_TCNT + 9;
 pub const OUT_DECT_OSD_CNT: usize = OUT_DECT_PD_TCNT + 10;
 pub const OUT_COMB_CNT: usize = OUT_DECT_PD_TCNT + 11;
 pub const OUT_OSD_COMB_CNT: usize = OUT_DECT_PD_TCNT + 12;
+pub const OUT_FF_GRADT_TCNT: usize = OUT_DECT_PD_TCNT + 13;
+pub const OUT_FF_GRADT_BCNT: usize = OUT_DECT_PD_TCNT + 14;
 
 /// `enum IEP2_FMT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

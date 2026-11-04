@@ -52,6 +52,7 @@ pub mod h265e_session;
 pub mod h265e_vepu580_template;
 pub mod hevc;
 pub mod iep;
+pub mod iep_pd;
 pub mod jpegd;
 pub mod jpege;
 pub mod jpege_tables;
