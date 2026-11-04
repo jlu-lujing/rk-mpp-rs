@@ -407,6 +407,59 @@ pub fn decode_levels(
     Ok(eob)
 }
 
+/// The sign and Golomb pass of `coeffs()`.
+///
+/// `dc_cdf` is the `TileDcSignCdf[ ptype ][ ctx ]` row selected by the tile
+/// driver from `AboveDcContext`/`LeftDcContext` (three values: probability,
+/// scale, counter). Returns `(dcCategory, culLevel)`.
+pub fn decode_signs(
+    decoder: &mut SymbolDecoder<'_>,
+    quant: &mut [i32],
+    scan: &[u16],
+    eob: u32,
+    dc_cdf: &mut [u16],
+) -> Result<(i32, u32), SymbolError> {
+    let mut cul_level = 0u32;
+    let mut dc_category = 0i32;
+    for c in 0..eob {
+        let pos = u32::from(scan[c as usize]);
+        let level = quant.get(pos as usize).copied().unwrap_or(0);
+        let sign = if level != 0 {
+            if c == 0 {
+                decoder.read_symbol(dc_cdf)? as i32
+            } else {
+                decoder.read_bool()? as i32
+            }
+        } else {
+            0
+        };
+        let mut magnitude = level;
+        if magnitude > (NUM_BASE_LEVELS + COEFF_BASE_RANGE) as i32 {
+            let mut length = 0u32;
+            loop {
+                length += 1;
+                if decoder.read_bool()? != 0 {
+                    break;
+                }
+            }
+            let mut x = 1u32;
+            for _ in 0..length.saturating_sub(1) {
+                x = (x << 1) | decoder.read_bool()?;
+            }
+            magnitude = (x + COEFF_BASE_RANGE + NUM_BASE_LEVELS) as i32;
+        }
+        if pos == 0 && magnitude > 0 {
+            dc_category = if sign != 0 { 1 } else { 2 };
+        }
+        magnitude &= 0xFFFFF;
+        cul_level += magnitude as u32;
+        if let Some(slot) = quant.get_mut(pos as usize) {
+            *slot = if sign != 0 { -magnitude } else { magnitude };
+        }
+    }
+    Ok((dc_category, cul_level.min(63)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +514,37 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn signs_and_golomb_finish_the_quant_buffer() {
+        let scan = [0u16, 1, 4, 8];
+        let mut dc_cdf = [16384u16, 32768, 0];
+
+        // A 0xff stream gives sign 1 on the DC coefficient.
+        let mut quant = [5i32, 0, 0, 0];
+        let mut decoder = SymbolDecoder::init(&[0xff; 8]).unwrap();
+        let (category, cul) =
+            decode_signs(&mut decoder, &mut quant, &scan, 1, &mut dc_cdf).unwrap();
+        assert_eq!(quant, [-5, 0, 0, 0]);
+        assert_eq!(category, 1);
+        assert_eq!(cul, 5);
+
+        // A magnitude above the base range is rebuilt from the Golomb suffix.
+        let mut quant = [20i32, 0, 0, 0];
+        let mut decoder = SymbolDecoder::init(&[0xff; 8]).unwrap();
+        let (category, cul) =
+            decode_signs(&mut decoder, &mut quant, &scan, 1, &mut dc_cdf).unwrap();
+        assert_eq!(quant, [-15, 0, 0, 0]);
+        assert_eq!(category, 1);
+        assert_eq!(cul, 15);
+
+        // Zero levels consume nothing and report no DC category.
+        let mut quant = [0i32; 4];
+        let mut decoder = SymbolDecoder::init(&[0u8; 8]).unwrap();
+        let (category, cul) =
+            decode_signs(&mut decoder, &mut quant, &scan, 1, &mut dc_cdf).unwrap();
+        assert_eq!((category, cul), (0, 0));
     }
 
     #[test]

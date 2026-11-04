@@ -710,8 +710,15 @@ in what order the evidence gets produced.
       br contexts and the full 4x4 level buffer for the zero and 0xff streams
       (the offset table, not just the neighbour magnitude, decides the base
       context - the independent reference disagreed until it included it).
-      Next: signs and Golomb, inverse transforms, then the libaom pixel
-      comparison.
+      **Fourteenth slice:** `decode_signs` finishes `Quant[]`: `dc_sign` from a
+      caller-supplied `TileDcSignCdf` row (the tile's Above/LeftDcContext arrays
+      select it), `sign_bit` literals elsewhere, the Golomb length/data suffix
+      for magnitudes above `NUM_BASE_LEVELS + COEFF_BASE_RANGE`, the `0xFFFFF`
+      mask, `culLevel` accumulation (capped at 63) and the DC category. A test
+      pins a negative DC (0xff stream), a Golomb rebuild (20 -> 15) and the
+      zero-block path.
+      Next: wire the tile-level Above/Left level and DC context arrays, inverse
+      transforms, prediction, then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
