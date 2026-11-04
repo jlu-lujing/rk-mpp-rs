@@ -10,7 +10,7 @@ use crate::reference::av1::cdf_defaults::{
     DEFAULT_UV_MODE_CFL_ALLOWED_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_Y_MODE_CDF,
 };
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
-use crate::reference::av1::partition::{size_group, BlockSize};
+use crate::reference::av1::partition::{block_size_index, size_group, BlockSize, BLOCK_SIZES};
 use crate::reference::av1::symbol::SymbolDecoder;
 
 /// `enum IntraMode` in specification order.
@@ -270,7 +270,7 @@ pub fn read_angle_delta_with_cdf(
     disable_cdf_update: bool,
 ) -> Result<i32, CdfStateError> {
     let directional = mode as u8 >= IntraMode::V as u8 && mode as u8 <= IntraMode::D67 as u8;
-    if size.width < 8 || size.height < 8 || !directional {
+    if block_size_index(size) < block_size_index(BLOCK_SIZES[3]) || !directional {
         return Ok(0);
     }
     let row = mode as usize - IntraMode::V as usize;
@@ -362,6 +362,35 @@ mod tests {
                 &mut decoder,
                 &mut cdfs,
                 IntraMode::D45,
+                named("BLOCK_4X8"),
+                false
+            )
+            .unwrap(),
+            0
+        );
+        let mut cdfs = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&[0u8; 8]).unwrap();
+        assert_eq!(
+            read_angle_delta_with_cdf(
+                &mut decoder,
+                &mut cdfs,
+                IntraMode::V,
+                *BLOCK_SIZES
+                    .iter()
+                    .find(|size| size.name == "BLOCK_16X4")
+                    .unwrap(),
+                false
+            )
+            .unwrap(),
+            -3
+        );
+        let mut cdfs = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&[0u8; 8]).unwrap();
+        assert_eq!(
+            read_angle_delta_with_cdf(
+                &mut decoder,
+                &mut cdfs,
+                IntraMode::V,
                 named("BLOCK_4X8"),
                 false
             )

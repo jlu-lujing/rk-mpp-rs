@@ -254,6 +254,7 @@ impl PartitionType {
 fn partition_symbol_count(size: BlockSize) -> Option<usize> {
     match size.mi_width_log2() {
         1 => Some(4),
+        5 => Some(8),
         _ => Some(10),
     }
 }
@@ -455,6 +456,9 @@ mod tests {
             partition_cdf(named("BLOCK_128X128")).unwrap().name,
             "Default_Partition_W128_Cdf"
         );
+        assert_eq!(partition_symbol_count(named("BLOCK_8X8")), Some(4));
+        assert_eq!(partition_symbol_count(named("BLOCK_16X16")), Some(10));
+        assert_eq!(partition_symbol_count(named("BLOCK_128X128")), Some(8));
     }
 
     #[test]

@@ -73,7 +73,8 @@ pub fn filter_intra_direction(mode: FilterIntraMode) -> IntraMode {
         FilterIntraMode::V => IntraMode::V,
         FilterIntraMode::H => IntraMode::H,
         FilterIntraMode::D157 => IntraMode::D157,
-        FilterIntraMode::Paeth => IntraMode::Paeth,
+        // `Fimode_To_Intradir[FILTER_PAETH]` is DC_PRED, not PAETH_PRED.
+        FilterIntraMode::Paeth => IntraMode::Dc,
     }
 }
 
@@ -250,5 +251,17 @@ mod tests {
             assert_eq!(a, b);
             assert!(a.iter().all(|v| *v <= 255));
         }
+    }
+
+    #[test]
+    fn filter_intra_paeth_uses_the_dc_transform_direction() {
+        assert_eq!(
+            filter_intra_direction(FilterIntraMode::Paeth),
+            IntraMode::Dc
+        );
+        assert_eq!(
+            filter_intra_direction(FilterIntraMode::D157),
+            IntraMode::D157
+        );
     }
 }

@@ -10,6 +10,7 @@ use crate::reference::av1::deblock::{
 use crate::reference::av1::frame_header::FrameHeader;
 use crate::reference::av1::intra::{IntraMode, UvMode};
 use crate::reference::av1::intra_sink::IntraSyntaxBlock;
+use crate::reference::av1::lr_frame::{apply_loop_restoration, LrFrameParams, LrPlaneGeometry};
 use crate::reference::av1::reconstruct::{
     reconstruct_intra_block_plane, PlaneQDelta, ReconstructedLuma,
 };
@@ -414,6 +415,82 @@ pub fn apply_intra_cdef(
     }
 }
 
+/// Apply §7.17 loop restoration. `current` is the deblocked frame before CDEF;
+/// `frame` is the CDEF output and is replaced with the restored frame.
+pub fn apply_intra_loop_restoration(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    params: &LrFrameParams,
+    current: &IntraFrame,
+    frame: &mut IntraFrame,
+) -> Result<(), &'static str> {
+    if !header.uses_lr {
+        return Ok(());
+    }
+    if header.use_superres {
+        return Err("loop restoration after superresolution is not integrated");
+    }
+    let geometry: Vec<LrPlaneGeometry> = (0..sequence.color.num_planes)
+        .map(|plane| header.lr_geometry(plane, sequence))
+        .collect();
+    let mut cdef_planes = vec![crate::reference::av1::cdef::PlaneView::new(
+        &frame.y.data,
+        frame.y.stride,
+        frame.y.width,
+        frame.y.height,
+    )];
+    let mut current_planes = vec![crate::reference::av1::cdef::PlaneView::new(
+        &current.y.data,
+        current.y.stride,
+        current.y.width,
+        current.y.height,
+    )];
+    if let Some(u) = frame.u.as_ref() {
+        cdef_planes.push(crate::reference::av1::cdef::PlaneView::new(
+            &u.data, u.stride, u.width, u.height,
+        ));
+        let current = current.u.as_ref().ok_or("missing current U plane")?;
+        current_planes.push(crate::reference::av1::cdef::PlaneView::new(
+            &current.data,
+            current.stride,
+            current.width,
+            current.height,
+        ));
+    }
+    if let Some(v) = frame.v.as_ref() {
+        cdef_planes.push(crate::reference::av1::cdef::PlaneView::new(
+            &v.data, v.stride, v.width, v.height,
+        ));
+        let current = current.v.as_ref().ok_or("missing current V plane")?;
+        current_planes.push(crate::reference::av1::cdef::PlaneView::new(
+            &current.data,
+            current.stride,
+            current.width,
+            current.height,
+        ));
+    }
+    if geometry.len() != cdef_planes.len() {
+        return Err("loop restoration plane count does not match the frame");
+    }
+    let out = apply_loop_restoration(
+        &cdef_planes,
+        &current_planes,
+        &geometry,
+        params,
+        header.frame_height as usize,
+        header.upscaled_width as usize,
+        frame.bit_depth,
+    );
+    frame.y.data = out[0].clone();
+    if let Some(u) = frame.u.as_mut() {
+        u.data = out[1].clone();
+    }
+    if let Some(v) = frame.v.as_mut() {
+        v.data = out[2].clone();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +568,7 @@ mod tests {
         assert_eq!(hash(&picture.y.data), 0x80d4b73dddfa95ff);
         assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0xd9a3fdb700876a9d);
         assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0x02018d345616f502);
+        let deblocked = picture.clone();
         apply_intra_cdef(
             sequence,
             &frame.header,
@@ -500,5 +578,119 @@ mod tests {
         assert_eq!(hash(&picture.y.data), 0x3348232c6c09a4e9);
         assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0x865ede29493daf45);
         assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0xfef0786e27928f05);
+        apply_intra_loop_restoration(
+            sequence,
+            &frame.header,
+            decoded.sink.lr_params(),
+            &deblocked,
+            &mut picture,
+        )
+        .unwrap();
+        assert_eq!(hash(&picture.y.data), 0x3348232c6c09a4e9);
+        assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0x865ede29493daf45);
+        assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0xfef0786e27928f05);
+    }
+
+    #[test]
+    fn real_keyframe_consumes_lr_units_and_restores_planes() {
+        let data = include_bytes!("../../../tests/data/av1_lr_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let packets = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        let frame = packets
+            .iter()
+            .flatten()
+            .find_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        assert!(frame.header.uses_lr);
+        assert!(frame.header.uses_chroma_lr);
+        assert_eq!(sequence.color.num_planes, 3);
+        let config = IntraTileConfig::from_headers(sequence, &frame.header);
+        let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
+        let tile = &frame.layout.tiles[0];
+        let decoded = decode_tile_partitions(
+            &frame.payload[tile.bytes.clone()],
+            &frame.header,
+            tile.tile,
+            sb_size,
+            false,
+            true,
+            IntraTileBlockSink::new(config),
+        )
+        .unwrap();
+        assert!(decoded
+            .sink
+            .lr_params()
+            .planes
+            .iter()
+            .any(|plane| plane.iter().any(Option::is_some)));
+
+        let mut picture =
+            reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap();
+        let hash = |data: &[u16]| {
+            data.iter().fold(0xcbf29ce484222325u64, |hash, sample| {
+                (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
+            })
+        };
+        let pre = (
+            hash(&picture.y.data),
+            hash(&picture.u.as_ref().unwrap().data),
+            hash(&picture.v.as_ref().unwrap().data),
+        );
+        apply_intra_deblock(sequence, &frame.header, &decoded.sink.blocks, &mut picture);
+        let deblock = (
+            hash(&picture.y.data),
+            hash(&picture.u.as_ref().unwrap().data),
+            hash(&picture.v.as_ref().unwrap().data),
+        );
+        let deblocked = picture.clone();
+        apply_intra_cdef(
+            sequence,
+            &frame.header,
+            decoded.sink.cdef_grid(),
+            &mut picture,
+        );
+        let cdef_hash = (
+            hash(&picture.y.data),
+            hash(&picture.u.as_ref().unwrap().data),
+            hash(&picture.v.as_ref().unwrap().data),
+        );
+        let cdef = picture.clone();
+        apply_intra_loop_restoration(
+            sequence,
+            &frame.header,
+            decoded.sink.lr_params(),
+            &deblocked,
+            &mut picture,
+        )
+        .unwrap();
+        let restored = (
+            hash(&picture.y.data),
+            hash(&picture.u.as_ref().unwrap().data),
+            hash(&picture.v.as_ref().unwrap().data),
+        );
+        assert_eq!(
+            pre,
+            (0x5fac9a382a5be3d1, 0x51172f41d2347089, 0x732bfafda48b93cd)
+        );
+        assert_eq!(
+            deblock,
+            (0x3e15d3999aa2c24e, 0x87fe894c01f81776, 0xedd6db05bd328784)
+        );
+        assert_eq!(
+            cdef_hash,
+            (0xde2c3fbc75674e21, 0x81e99dbcd2b81717, 0xa335bb54bc24a80d)
+        );
+        assert_eq!(
+            restored,
+            (0xc65d1e501fc8b101, 0xb98ecd9e774aed37, 0x5137a16b910fb700)
+        );
+        assert_ne!(picture.y, cdef.y);
+        assert_ne!(picture.u, cdef.u);
+        assert_ne!(picture.v, cdef.v);
     }
 }

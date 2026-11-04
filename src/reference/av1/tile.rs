@@ -45,6 +45,10 @@ pub struct DecodedBlock {
 /// The grid lets a symbol-driven source derive the above/left contexts the way
 /// `decode_partition` does; the constant source in the tests ignores it.
 pub trait PartitionSource {
+    /// Called once before `decode_partition()` for a superblock. AV1 consumes
+    /// loop-restoration unit parameters at this point, before partition bits.
+    fn begin_superblock(&mut self, _row: usize, _col: usize, _size: BlockSize) {}
+
     fn choose(
         &mut self,
         row: usize,
@@ -92,6 +96,7 @@ pub fn walk_partitions<S: PartitionSource>(
     while row < mi_rows {
         let mut col = 0;
         while col < mi_cols {
+            source.begin_superblock(row, col, sb);
             visit(row, col, sb, mi_cols, mi_rows, source, &mut blocks);
             col += sb_mi;
         }

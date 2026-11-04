@@ -19,6 +19,8 @@ use crate::reference::av1::intra::{
     cfl_allowed, read_angle_delta_with_cdf, read_intra_frame_y_mode_with_cdf,
     read_uv_mode_with_cdf, read_y_mode_with_cdf, IntraMode, UvMode,
 };
+use crate::reference::av1::lr_frame::{LrFrameParams, LrPlaneGeometry};
+use crate::reference::av1::lr_syntax::{LrSyntaxError, LrTileState};
 use crate::reference::av1::palette::{
     read_palette_tokens, PaletteError, PaletteModeInfo, PaletteState, PaletteTokens,
 };
@@ -60,6 +62,9 @@ pub struct IntraTileConfig {
     pub cdef_bits: u8,
     pub base_q_index: u8,
     pub superblock_mi: usize,
+    pub allow_intrabc: bool,
+    pub lr_geometry: Vec<LrPlaneGeometry>,
+    pub superres_denom: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +114,7 @@ pub struct IntraTileBlockSink {
     delta_lf: [i32; 4],
     read_deltas_for_sb: bool,
     current_sb: Option<(usize, usize)>,
+    lr: LrTileState,
     pub blocks: Vec<IntraSyntaxBlock>,
 }
 
@@ -117,6 +123,7 @@ impl IntraTileBlockSink {
         let mi_cols = config.mi_cols;
         let mi_rows = config.mi_rows;
         let current_qindex = config.base_q_index;
+        let lr = LrTileState::new(config.lr_geometry.clone());
         Self {
             config,
             tile_context: TileContext::new(mi_cols, mi_rows),
@@ -132,12 +139,17 @@ impl IntraTileBlockSink {
             delta_lf: [0; 4],
             read_deltas_for_sb: false,
             current_sb: None,
+            lr,
             blocks: Vec::new(),
         }
     }
 
     pub fn cdef_grid(&self) -> &CdefIndexGrid {
         &self.cdef
+    }
+
+    pub fn lr_params(&self) -> &LrFrameParams {
+        &self.lr.params
     }
 
     fn neighbor<T: Copy>(grid: &[T], mi_cols: usize, row: isize, col: isize) -> Option<T> {
@@ -174,6 +186,13 @@ impl IntraTileBlockSink {
             PaletteError::BadPaletteSize(_) => TileEntropyError::Unsupported("palette size"),
             PaletteError::MissingTokens => TileEntropyError::Unsupported("palette tokens"),
             PaletteError::InvalidIndex(_) => TileEntropyError::Unsupported("palette color index"),
+        }
+    }
+
+    fn lr_as_tile(error: LrSyntaxError) -> TileEntropyError {
+        match error {
+            LrSyntaxError::Symbol(error) => TileEntropyError::Symbol(error),
+            _ => TileEntropyError::Unsupported("loop restoration syntax"),
         }
     }
 
@@ -225,11 +244,56 @@ impl IntraTileConfig {
             cdef_bits: header.cdef_bits,
             base_q_index: header.base_q_idx,
             superblock_mi: if seq.use_128x128_superblock { 32 } else { 16 },
+            allow_intrabc: header.allow_intrabc,
+            lr_geometry: (0..seq.color.num_planes)
+                .map(|plane| {
+                    if header.uses_lr {
+                        header.lr_geometry(plane, seq)
+                    } else {
+                        let (sub_x, sub_y) = if plane == 0 {
+                            (0, 0)
+                        } else {
+                            (
+                                u32::from(seq.color.subsampling_x),
+                                u32::from(seq.color.subsampling_y),
+                            )
+                        };
+                        LrPlaneGeometry::new(
+                            header.frame_height as usize,
+                            header.upscaled_width as usize,
+                            64,
+                            sub_x,
+                            sub_y,
+                            crate::reference::av1::restoration::RestorationType::None,
+                        )
+                    }
+                })
+                .collect(),
+            superres_denom: header.use_superres.then_some(header.superres_denom),
         }
     }
 }
 
 impl TileBlockSink for IntraTileBlockSink {
+    fn decode_superblock(
+        &mut self,
+        block: DecodedBlock,
+        decoder: &mut crate::reference::av1::symbol::SymbolDecoder<'_>,
+        _cdfs: &mut CdfState,
+    ) -> Result<(), TileEntropyError> {
+        self.lr
+            .read_lr(
+                decoder,
+                block.row,
+                block.col,
+                block.size.num_4x4_wide() as usize,
+                block.size.num_4x4_high() as usize,
+                self.config.allow_intrabc,
+                self.config.superres_denom,
+            )
+            .map_err(Self::lr_as_tile)
+    }
+
     fn decode_block(
         &mut self,
         block: DecodedBlock,
@@ -687,6 +751,16 @@ mod tests {
             cdef_bits: 0,
             base_q_index: 64,
             superblock_mi: 16,
+            allow_intrabc: false,
+            lr_geometry: vec![LrPlaneGeometry::new(
+                128,
+                128,
+                64,
+                0,
+                0,
+                crate::reference::av1::restoration::RestorationType::None,
+            )],
+            superres_denom: None,
         }
     }
 

@@ -97,6 +97,17 @@ pub fn tile_bounds(frame: &FrameHeader, tile: usize) -> Result<TileBounds, TileE
 
 /// Consumer called in bitstream order for every leaf block.
 pub trait TileBlockSink {
+    /// Consume syntax that belongs to a whole superblock before its partition
+    /// tree. AV1 loop-restoration units are decoded here.
+    fn decode_superblock(
+        &mut self,
+        _block: DecodedBlock,
+        _decoder: &mut SymbolDecoder<'_>,
+        _cdfs: &mut CdfState,
+    ) -> Result<(), TileEntropyError> {
+        Ok(())
+    }
+
     fn decode_block(
         &mut self,
         block: DecodedBlock,
@@ -135,6 +146,29 @@ struct StatefulTile<'a, S> {
 }
 
 impl<S: TileBlockSink> PartitionSource for StatefulTile<'_, S> {
+    fn begin_superblock(&mut self, row: usize, col: usize, size: BlockSize) {
+        if self.error.is_some() {
+            return;
+        }
+        let global = DecodedBlock {
+            row: row + self.bounds.mi_row_start,
+            col: col + self.bounds.mi_col_start,
+            size,
+        };
+        if let Err(source) = self
+            .sink
+            .decode_superblock(global, &mut self.decoder, &mut self.cdfs)
+        {
+            self.error = Some(TileEntropyError::Block {
+                row: global.row,
+                col: global.col,
+                size: global.size.name,
+                bit_position: self.decoder.position(),
+                source: Box::new(source),
+            });
+        }
+    }
+
     fn choose(
         &mut self,
         row: usize,

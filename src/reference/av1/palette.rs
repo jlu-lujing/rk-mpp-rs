@@ -13,7 +13,7 @@ use crate::reference::av1::cdf_defaults::{
 };
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::intra::{IntraMode, UvMode};
-use crate::reference::av1::partition::BlockSize;
+use crate::reference::av1::partition::{block_size_index, BlockSize, BLOCK_SIZES};
 use crate::reference::av1::subexp::read_ns;
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 
@@ -39,6 +39,12 @@ const UV_COLOR_CDFS: [&CdfTable; 7] = [
     &DEFAULT_PALETTE_SIZE_7_UV_COLOR_CDF,
     &DEFAULT_PALETTE_SIZE_8_UV_COLOR_CDF,
 ];
+
+fn palette_allowed_size(size: BlockSize) -> bool {
+    block_size_index(size) >= block_size_index(BLOCK_SIZES[3])
+        && size.width <= 64
+        && size.height <= 64
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteError {
@@ -280,12 +286,7 @@ impl PaletteState {
         disable_cdf_update: bool,
         bit_depth: u32,
     ) -> Result<PaletteModeInfo, PaletteError> {
-        if !allow_screen_content_tools
-            || size.width < 8
-            || size.height < 8
-            || size.width > 64
-            || size.height > 64
-        {
+        if !allow_screen_content_tools || !palette_allowed_size(size) {
             return Ok(PaletteModeInfo::default());
         }
         let bsize_ctx = (size.mi_width_log2() + size.mi_height_log2() - 2) as usize;
@@ -578,6 +579,26 @@ mod tests {
             .unwrap();
         assert_eq!(info.y_size, 0);
         assert_eq!(state.y_size(0, 0), 0);
+    }
+
+    #[test]
+    fn palette_size_gate_uses_the_block_size_enumeration() {
+        assert!(!palette_allowed_size(BLOCK_SIZES[0])); // 4x4
+        assert!(!palette_allowed_size(BLOCK_SIZES[1])); // 4x8
+        assert!(!palette_allowed_size(BLOCK_SIZES[2])); // 8x4
+        assert!(palette_allowed_size(BLOCK_SIZES[3])); // 8x8
+        assert!(palette_allowed_size(
+            *BLOCK_SIZES
+                .iter()
+                .find(|size| size.name == "BLOCK_16X4")
+                .unwrap()
+        ));
+        assert!(palette_allowed_size(
+            *BLOCK_SIZES
+                .iter()
+                .find(|size| size.name == "BLOCK_4X16")
+                .unwrap()
+        ));
     }
 
     #[test]

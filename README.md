@@ -48,9 +48,11 @@
 整体约完成 82%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 83%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 69 个
-AV1 slice（最新为真实 keyframe 的帧级 CDEF：读取 tile 的 cdef_idx，对 luma 做方向搜索与
-variance 调强，并将方向推导到 U/V 完成三平面滤波；此前为帧级去块、Y/U/V 帧级重建、
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 70 个
+AV1 slice（最新为真实 keyframe 的帧级 loop restoration：在 superblock 分区前消费
+`read_lr` 参数，再以 CDEF 帧和去块帧驱动 Y/U/V 恢复并锁定滤波后哈希；该 fixture 同时
+暴露并修正了 128×128 分区 CDF 宽度、窄块 palette/angle-delta 门控和 filter-intra
+PAETH transform 方向。此前为帧级 CDEF、帧级去块、Y/U/V 帧级重建、
 palette/filter-intra 单 plane 像素预测、
 `Quant[]` 到逆变换布局的桥接、
 真实 320x240 keyframe 的整 tile 熵解码闭合：palette 颜色/索引图、10-bit
