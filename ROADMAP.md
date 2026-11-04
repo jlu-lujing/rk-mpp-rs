@@ -671,8 +671,16 @@ in what order the evidence gets produced.
       `TileEobPt*Cdf` table selection and `eob_from_pt` (`eobPt < 2` literal,
       otherwise `(1 << (eobPt-2)) + 1`). Four tests pin the ranges and the
       power-of-two chain.
-      Next: the EOB symbol plus its extra bits, then `coeff_base`/`coeff_br`,
-      signs, inverse transforms and a libaom pixel comparison.
+      **Ninth slice (in progress):** `read_eob_pt` decodes the EOB class with
+      the verified row layout. The specification's selection is
+      `TileEobPt{16,32,64,128,256}Cdf[ ptype ][ ctx ]` with `ctx` the transform
+      class, and 512/1024 drop the class dimension (`[ ptype ]`); the four
+      `COEFF_CDF_Q_CTXS` copies select the active table at frame start, so the
+      Rust helper takes `q` explicitly. Two tests pin that layout (row counts
+      4*2*2 vs 4*2) and the symbols decoded from the 16 row (0 -> eobPt 1,
+      0xff -> 5, the fixed pattern -> 4).
+      Next: the EOB extra bits, `coeff_base`/`coeff_br`, signs, inverse
+      transforms and a libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

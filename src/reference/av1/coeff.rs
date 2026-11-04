@@ -13,6 +13,7 @@ use crate::reference::av1::cdf_defaults::{
     CdfTable, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_16_CDF,
     DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_64_CDF,
 };
+use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 use crate::reference::av1::tx::TxSize;
 
 fn log2(value: u32) -> u32 {
@@ -56,6 +57,50 @@ pub fn eob_from_pt(eob_pt: u32) -> u32 {
     }
 }
 
+/// `eob_pt` symbol count for a multisize: 5 for 16, one more per class up to
+/// 11 for 1024 (`CDF_SIZE(5..11)` in the reference implementation).
+pub fn eob_symbol_count(multisize: u32) -> usize {
+    5 + multisize.min(6) as usize
+}
+
+/// The selected EOB row. The row already includes the adaptation counter.
+///
+/// `TileEobPt{16,32,64,128,256}Cdf` are indexed `[ q ][ ptype ][ tx_class ]`
+/// (the specification's selection is `[ ptype ][ ctx ]` on the q-selected
+/// copy); 512 and 1024 have no tx-class dimension, so they are
+/// `[ q ][ ptype ]`.
+pub fn eob_row(
+    table: &CdfTable,
+    q: usize,
+    plane_type: usize,
+    tx_class: usize,
+    multisize: u32,
+) -> &'static [u16] {
+    let width = eob_symbol_count(multisize) + 1;
+    let index = if multisize <= 4 {
+        (((q * 2 + plane_type) * 2) + tx_class) * width
+    } else {
+        (q * 2 + plane_type) * width
+    };
+    &table.values[index..index + width]
+}
+
+/// `eob_pt = S(...) + 1` for the block's class, plane and transform class.
+pub fn read_eob_pt(
+    decoder: &mut SymbolDecoder<'_>,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    tx_class_2d: bool,
+) -> Result<u32, SymbolError> {
+    let multisize = eob_multisize(tx);
+    let table = eob_pt_table(multisize);
+    let tx_class = usize::from(!tx_class_2d);
+    let mut cdf = eob_row(table, q, plane_type, tx_class, multisize).to_vec();
+    let symbol = decoder.read_symbol(&mut cdf)?;
+    Ok(symbol as u32 + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +123,38 @@ mod tests {
         assert_eq!(eob_multisize(TxSize::Tx32x32), 6);
         assert_eq!(eob_multisize(TxSize::Tx64x64), 6);
         assert_eq!(eob_multisize(TxSize::Tx4x16), 2);
+    }
+
+    #[test]
+    fn eob_tables_hold_one_more_symbol_per_class() {
+        assert_eq!(eob_symbol_count(0), 5);
+        assert_eq!(eob_symbol_count(1), 6);
+        assert_eq!(eob_symbol_count(3), 8);
+        assert_eq!(eob_symbol_count(6), 11);
+        assert_eq!(eob_symbol_count(9), 11);
+        for multisize in 0..=6 {
+            let table = eob_pt_table(multisize);
+            let per_row = eob_symbol_count(multisize) + 1;
+            // 16..256 carry a tx-class dimension; 512/1024 do not.
+            let rows = if multisize <= 4 { 4 * 2 * 2 } else { 4 * 2 };
+            assert_eq!(table.values.len(), rows * per_row, "multisize {multisize}");
+        }
+    }
+
+    #[test]
+    fn eob_pt_decodes_per_plane_and_class() {
+        // Expected symbols from the specification pseudocode over the 16 row.
+        for (bytes, expected) in [
+            ([0u8; 8], 1u32),
+            ([0xffu8; 8], 5),
+            ([0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78], 4),
+        ] {
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            assert_eq!(
+                read_eob_pt(&mut decoder, TxSize::Tx4x4, 0, 0, true).unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]
