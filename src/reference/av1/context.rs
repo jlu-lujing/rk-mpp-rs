@@ -13,6 +13,9 @@
 //! and a finished block writes its `culLevel`/`dcCategory` into every 4x4
 //! position it covers.
 
+use crate::reference::av1::partition::BlockSize;
+use crate::reference::av1::tx::TxSize;
+
 /// Levels and DC categories for the three planes.
 #[derive(Debug, Clone)]
 pub struct TileContext {
@@ -101,11 +104,80 @@ impl TileContext {
             }
         }
     }
+
+    /// `all_zero` context from the current block's above/left levels.
+    #[allow(clippy::too_many_arguments)]
+    pub fn txb_skip_context(
+        &self,
+        plane: usize,
+        x4: usize,
+        y4: usize,
+        tx: TxSize,
+        residual_size: BlockSize,
+        max_x4: usize,
+        max_y4: usize,
+    ) -> usize {
+        let w4 = (tx.width() / 4) as usize;
+        let h4 = (tx.height() / 4) as usize;
+        if plane == 0 {
+            let mut top = 0u8;
+            let mut left = 0u8;
+            for k in 0..w4 {
+                if x4 + k < max_x4 {
+                    top = top.max(self.above_level[plane][x4 + k]);
+                }
+            }
+            for k in 0..h4 {
+                if y4 + k < max_y4 {
+                    left = left.max(self.left_level[plane][y4 + k]);
+                }
+            }
+            if residual_size.width == tx.width() && residual_size.height == tx.height() {
+                return 0;
+            }
+            if top == 0 && left == 0 {
+                return 1;
+            }
+            if top == 0 || left == 0 {
+                return 2 + usize::from(top.max(left) > 3);
+            }
+            if top.max(left) <= 3 {
+                4
+            } else if top.min(left) <= 3 {
+                5
+            } else {
+                6
+            }
+        } else {
+            let mut above = false;
+            let mut left = false;
+            for k in 0..w4 {
+                if x4 + k < max_x4 {
+                    above |= self.above_level[plane][x4 + k] != 0;
+                    above |= self.above_dc[plane][x4 + k] != 0;
+                }
+            }
+            for k in 0..h4 {
+                if y4 + k < max_y4 {
+                    left |= self.left_level[plane][y4 + k] != 0;
+                    left |= self.left_dc[plane][y4 + k] != 0;
+                }
+            }
+            let mut ctx = 7 + usize::from(above) + usize::from(left);
+            let block_area = u64::from(residual_size.width) * u64::from(residual_size.height);
+            let tx_area = u64::from(tx.width()) * u64::from(tx.height());
+            if block_area > tx_area {
+                ctx += 3;
+            }
+            ctx
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reference::av1::partition::BLOCK_SIZES;
 
     #[test]
     fn dc_sign_context_counts_neighbour_categories() {
@@ -137,5 +209,28 @@ mod tests {
         // Positions outside the block stay untouched, and planes are separate.
         assert_eq!(ctx.above_level[1][1], 0);
         assert_eq!(ctx.above_level[0][2], 0);
+    }
+
+    #[test]
+    fn txb_skip_context_uses_levels_and_residual_area() {
+        let mut ctx = TileContext::new(8, 8);
+        ctx.above_level[0][0] = 9;
+        ctx.left_level[0][0] = 2;
+        assert_eq!(
+            ctx.txb_skip_context(0, 0, 0, TxSize::Tx4x4, BLOCK_SIZES[0], 8, 8),
+            0
+        );
+        assert_eq!(
+            ctx.txb_skip_context(0, 0, 0, TxSize::Tx4x4, BLOCK_SIZES[3], 8, 8),
+            5
+        );
+        ctx.above_level[1][0] = 1;
+        ctx.above_dc[1][0] = 0;
+        ctx.left_level[1][0] = 0;
+        ctx.left_dc[1][0] = 0;
+        assert_eq!(
+            ctx.txb_skip_context(1, 0, 0, TxSize::Tx4x4, BLOCK_SIZES[3], 8, 8),
+            11
+        );
     }
 }

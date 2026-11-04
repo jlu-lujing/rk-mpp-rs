@@ -13,7 +13,7 @@ use crate::reference::av1::cdf_defaults::{
     CdfTable, DEFAULT_COEFF_BASE_CDF, DEFAULT_COEFF_BASE_EOB_CDF, DEFAULT_COEFF_BR_CDF,
     DEFAULT_DC_SIGN_CDF, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EOB_PT_128_CDF,
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF,
-    DEFAULT_EOB_PT_64_CDF,
+    DEFAULT_EOB_PT_64_CDF, DEFAULT_TXB_SKIP_CDF,
 };
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::coeff_tables::{
@@ -24,6 +24,40 @@ use crate::reference::av1::tx::TxSize;
 
 fn log2(value: u32) -> u32 {
     value.trailing_zeros()
+}
+
+/// `TileTxbSkipCdf[ q ][ Tx_Size_Sqr ][ ctx ]` row (one probability plus
+/// cumulative scale and adaptation counter).
+pub fn txb_skip_cdf_row(q: usize, tx: TxSize, ctx: usize) -> &'static [u16] {
+    let tx_ctx = tx_sqr_index(tx);
+    let index = ((q * 5 + tx_ctx) * 13) + ctx;
+    let start = index * 3;
+    &DEFAULT_TXB_SKIP_CDF.values[start..start + 3]
+}
+
+/// `all_zero: S()` for a coefficient transform block.
+pub fn read_all_zero(
+    decoder: &mut SymbolDecoder<'_>,
+    tx: TxSize,
+    q: usize,
+    ctx: usize,
+) -> Result<bool, SymbolError> {
+    let mut cdf = txb_skip_cdf_row(q, tx, ctx).to_vec();
+    Ok(decoder.read_symbol(&mut cdf)? != 0)
+}
+
+/// Stateful `all_zero` read using the tile's adaptive TxbSkip row.
+pub fn read_all_zero_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tx: TxSize,
+    q: usize,
+    ctx: usize,
+    disable_cdf_update: bool,
+) -> Result<bool, CdfStateError> {
+    let tx_ctx = tx_sqr_index(tx);
+    let start = (((q * 5 + tx_ctx) * 13) + ctx) * 3;
+    Ok(cdfs.read_symbol(decoder, &DEFAULT_TXB_SKIP_CDF, start, 3, disable_cdf_update)? != 0)
 }
 
 /// `segEob`: how many coefficient positions the block can signal.
@@ -1009,6 +1043,21 @@ mod tests {
                 expected_base
             );
         }
+    }
+
+    #[test]
+    fn all_zero_reads_the_txb_skip_row_and_updates_state() {
+        let mut decoder = SymbolDecoder::init(&[0u8; 8]).unwrap();
+        assert!(!read_all_zero(&mut decoder, TxSize::Tx4x4, 0, 0).unwrap());
+        let mut decoder = SymbolDecoder::init(&[0xffu8; 8]).unwrap();
+        assert!(read_all_zero(&mut decoder, TxSize::Tx4x4, 0, 0).unwrap());
+
+        let mut cdfs = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&[0xffu8; 8]).unwrap();
+        assert!(
+            read_all_zero_with_cdf(&mut decoder, &mut cdfs, TxSize::Tx4x4, 0, 0, false,).unwrap()
+        );
+        assert_eq!(cdfs.row_mut(&DEFAULT_TXB_SKIP_CDF, 0, 3).unwrap()[2], 1);
     }
 
     #[test]
