@@ -634,8 +634,16 @@ in what order the evidence gets produced.
       CDF derivation including the 128x128 four-way exclusion. Three more tests
       pin the block table, a multi-context partition decode and both CDF
       foldings.
-      Next: intra modes (needs `Size_Group`), coefficient CDF sets, inverse
-      transforms, then a pixel comparison against libaom.
+      **Fourth slice:** `Size_Group` (the reference implementation's
+      `size_group_lookup`, pinned by a test) and `src/reference/av1/intra.rs`:
+      the specification's `Intra_Mode_Context`, key-frame
+      `intra_frame_y_mode` through `TileIntraFrameYModeCdf[above][left]`, and
+      `y_mode` through `TileYModeCdf[Size_Group]`, all decoding against the
+      generated defaults. Five tests pin the group table, the context table,
+      both mode decoders (symbols cross-checked with the specification
+      pseudocode) and the neighbour-context selection.
+      Next: `uv_mode` (CFL allowed/not), `tx_size` and the coefficient CDF sets,
+      inverse transforms, then a pixel comparison against libaom.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

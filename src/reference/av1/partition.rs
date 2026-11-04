@@ -169,6 +169,27 @@ pub static BLOCK_SIZES: [BlockSize; 22] = [
     },
 ];
 
+/// `Size_Group[ BLOCK_SIZES ]`, the reference implementation's table
+/// (`av1/common/common_data.h`, `size_group_lookup`). It groups the square-ish
+/// sizes for the `y_mode` CDF; the tall/wider-than-4 variants reuse the group
+/// of their square size.
+pub const SIZE_GROUP: [u8; 22] = [
+    0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2,
+];
+
+/// Index of a size in [`BLOCK_SIZES`].
+pub fn block_size_index(size: BlockSize) -> usize {
+    BLOCK_SIZES
+        .iter()
+        .position(|entry| *entry == size)
+        .expect("block size is one of BLOCK_SIZES")
+}
+
+/// `Size_Group[ MiSize ]`.
+pub fn size_group(size: BlockSize) -> u8 {
+    SIZE_GROUP[block_size_index(size)]
+}
+
 /// `TilePartitionW*Cdf` for a block size, or `None` for 4x4 (no symbol).
 pub fn partition_cdf(size: BlockSize) -> Option<&'static CdfTable> {
     match size.mi_width_log2() {
@@ -420,6 +441,15 @@ mod tests {
         // The last term is VERT_4 = 12000 - 11000 = 1000 in the small case.
         assert_eq!(u32::from(horz_small[0]), 24768);
         assert_eq!(u32::from(horz_large[0]), u32::from(horz_small[0]) + 1000);
+    }
+
+    #[test]
+    fn size_group_matches_the_reference_table() {
+        let groups: Vec<u8> = BLOCK_SIZES.iter().map(|size| size_group(*size)).collect();
+        assert_eq!(
+            groups,
+            [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2]
+        );
     }
 
     #[test]
