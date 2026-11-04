@@ -5,6 +5,7 @@
 //! symbol decoder (`AV1 Bitstream & Decoding Process Specification` 8.2),
 //! because every tile syntax element is read through it.
 
+pub mod block;
 pub mod cdf_defaults;
 pub mod coeff;
 pub mod coeff_tables;

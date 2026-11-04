@@ -840,7 +840,14 @@ in what order the evidence gets produced.
       The first run exposed a real bug in `read_partition`: it sliced rows as
       `symbols` values instead of `symbols + 1` (the trailing adaptation
       counter), which only showed up once a real CDF was indexed.
-      Next: block syntax and residual wiring, CDEF/LR, then the libaom pixel
+      **Thirty-second slice:** `block.rs` decodes an intra block's modes:
+      `skip` on `TileSkipCdf[above_skip + left_skip]`, then the luma mode
+      (`intra_frame_y_mode` on key frames, `y_mode` otherwise) and the chroma
+      mode with the CFL-allowed alphabet. A skipped block reads no modes.
+      Three tests pin the skip contexts, the zero-stream path (DC/DC) and the
+      skipped path.
+      Next: the transform-size/residual wiring (the quant tables, `coeffs`,
+      dequant + 2D transform + prediction), CDEF/LR, then the libaom pixel
       comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
