@@ -145,9 +145,227 @@ pub fn idct_permute(t: &mut [i32], n: u32) {
     }
 }
 
+/// `Inverse DCT process` (specification 7.13.2.2) for `2 <= n <= 6`.
+///
+/// `t` holds `1 << n` coefficients in place; `r` is the intermediate clamping
+/// precision.
+pub fn inverse_dct(t: &mut [i32], n: u32, r: u32) {
+    let len = 1usize << n;
+    debug_assert_eq!(t.len(), len);
+    idct_permute(t, n);
+    let mut bf = Butterfly::new(t.to_vec(), r);
+
+    if n == 6 {
+        for i in 0..16 {
+            bf.b_rotation(32 + i, 63 - i, 63 - 4 * brev(4, i as u32) as i32);
+        }
+    }
+    if n >= 5 {
+        for i in 0..8 {
+            bf.b_rotation(16 + i, 31 - i, 6 + ((brev(3, 7 - i as u32) << 3) as i32));
+        }
+    }
+    if n == 6 {
+        for i in 0..16 {
+            bf.h(32 + i * 2, 33 + i * 2, i & 1 != 0);
+        }
+    }
+    if n >= 4 {
+        for i in 0..4 {
+            bf.b_rotation(8 + i, 15 - i, 12 + ((brev(2, 3 - i as u32) << 4) as i32));
+        }
+    }
+    if n >= 5 {
+        for i in 0..8 {
+            bf.h(16 + 2 * i, 17 + 2 * i, i & 1 != 0);
+        }
+    }
+    if n == 6 {
+        for i in 0..4 {
+            for j in 0..2 {
+                bf.b_rotation_flip(
+                    62 - i * 4 - j,
+                    33 + i * 4 + j,
+                    60 - 16 * brev(2, i as u32) as i32 + 64 * j as i32,
+                );
+            }
+        }
+    }
+    if n >= 3 {
+        for i in 0..2 {
+            bf.b_rotation(4 + i, 7 - i, 56 - 32 * i as i32);
+        }
+    }
+    if n >= 4 {
+        for i in 0..4 {
+            bf.h(8 + 2 * i, 9 + 2 * i, i & 1 != 0);
+        }
+    }
+    if n >= 5 {
+        for i in 0..2 {
+            for j in 0..2 {
+                bf.b_rotation_flip(
+                    30 - 4 * i - j,
+                    17 + 4 * i + j,
+                    24 + ((j << 6) as i32) + (((1 - i) << 5) as i32),
+                );
+            }
+        }
+    }
+    if n == 6 {
+        for i in 0..8 {
+            for j in 0..2 {
+                bf.h(32 + i * 4 + j, 35 + i * 4 - j, i & 1 != 0);
+            }
+        }
+    }
+    for i in 0..2 {
+        let flip = 1 - i as i32;
+        if flip == 1 {
+            bf.b_rotation_flip(2 * i, 2 * i + 1, 32 + 16 * i as i32);
+        } else {
+            bf.b_rotation(2 * i, 2 * i + 1, 32 + 16 * i as i32);
+        }
+    }
+    if n >= 3 {
+        for i in 0..2 {
+            bf.h(4 + 2 * i, 5 + 2 * i, i != 0);
+        }
+    }
+    if n >= 4 {
+        for i in 0..2 {
+            bf.b_rotation_flip(14 - i, 9 + i, 48 + 64 * i as i32);
+        }
+    }
+    if n >= 5 {
+        for i in 0..4 {
+            for j in 0..2 {
+                bf.h(16 + 4 * i + j, 19 + 4 * i - j, i & 1 != 0);
+            }
+        }
+    }
+    if n == 6 {
+        for i in 0..2 {
+            for j in 0..4 {
+                bf.b_rotation_flip(
+                    61 - 8 * i - j,
+                    34 + 8 * i + j,
+                    56 - 32 * i as i32 + (j >> 1) as i32 * 64,
+                );
+            }
+        }
+    }
+    for i in 0..2 {
+        bf.h(i, 3 - i, false);
+    }
+    if n >= 3 {
+        bf.b_rotation_flip(6, 5, 32);
+    }
+    if n >= 4 {
+        for i in 0..2 {
+            for j in 0..2 {
+                bf.h(8 + 4 * i + j, 11 + 4 * i - j, i != 0);
+            }
+        }
+    }
+    if n >= 5 {
+        for i in 0..4 {
+            bf.b_rotation_flip(29 - i, 18 + i, 48 + (i >> 1) as i32 * 64);
+        }
+    }
+    if n == 6 {
+        for i in 0..4 {
+            for j in 0..4 {
+                bf.h(32 + 8 * i + j, 39 + 8 * i - j, i & 1 != 0);
+            }
+        }
+    }
+    if n >= 3 {
+        for i in 0..4 {
+            bf.h(i, 7 - i, false);
+        }
+    }
+    if n >= 4 {
+        for i in 0..2 {
+            bf.b_rotation_flip(13 - i, 10 + i, 32);
+        }
+    }
+    if n >= 5 {
+        for i in 0..2 {
+            for j in 0..4 {
+                bf.h(16 + 8 * i + j, 23 + 8 * i - j, i != 0);
+            }
+        }
+    }
+    if n == 6 {
+        for i in 0..8 {
+            bf.b_rotation_flip(59 - i, 36 + i, if i < 4 { 48 } else { 112 });
+        }
+    }
+    if n >= 4 {
+        for i in 0..8 {
+            bf.h(i, 15 - i, false);
+        }
+    }
+    if n >= 5 {
+        for i in 0..4 {
+            bf.b_rotation_flip(27 - i, 20 + i, 32);
+        }
+    }
+    if n == 6 {
+        for i in 0..8 {
+            bf.h(32 + i, 47 - i, false);
+            bf.h(48 + i, 63 - i, true);
+        }
+    }
+    if n >= 5 {
+        for i in 0..16 {
+            bf.h(i, 31 - i, false);
+        }
+    }
+    if n == 6 {
+        for i in 0..8 {
+            bf.b_rotation_flip(55 - i, 40 + i, 32);
+        }
+        for i in 0..32 {
+            bf.h(i, 63 - i, false);
+        }
+    }
+
+    t.copy_from_slice(&bf.t);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inverse_dct_dc_is_constant() {
+        for n in 2..=6u32 {
+            let len = 1usize << n;
+            for dc in [1i32, 16, 100] {
+                let mut t = vec![0i32; len];
+                t[0] = dc;
+                inverse_dct(&mut t, n, 16);
+                let first = t[0];
+                assert!(t.iter().all(|v| *v == first), "n {n} dc {dc}: {t:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_dct_is_linear_before_rounding() {
+        let n = 2u32;
+        let a = vec![10, -20, 30, -40];
+        let mut scaled = a.iter().map(|v| v * 2).collect::<Vec<_>>();
+        inverse_dct(&mut scaled, n, 16);
+        let mut single = a.clone();
+        inverse_dct(&mut single, n, 16);
+        let doubled = single.iter().map(|v| v * 2).collect::<Vec<_>>();
+        for (a, b) in scaled.iter().zip(doubled.iter()) {
+            assert!((a - b).abs() <= 2, "{scaled:?} vs {doubled:?}");
+        }
+    }
 
     #[test]
     fn butterfly_rotation_and_flip() {

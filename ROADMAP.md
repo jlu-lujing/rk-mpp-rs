@@ -793,8 +793,16 @@ in what order the evidence gets produced.
       `T[i] = copyT[brev(n,i)]`. Three tests pin the rotation (35/106), the flip
       (106/35), the clamped Hadamard (127/50 and -50/150) and the 4-/8-point
       permutations.
-      Next: the DCT/ADST/FLIPADST invocation schedules and 2D transform, then
-      the libaom pixel comparison.
+      **Twenty-sixth slice:** the bit-exact inverse DCT for `n = 2..6`:
+      `inverse_dct` follows the specification's full 31-step `B`/`H`
+      invocation schedule (including the `brev`-derived angles, the
+      `i < 4 ? 48 : 112` split and the `n == 6` tail) after `idct_permute`.
+      Two tests pin the structural properties available before the tile path
+      exists: a DC-only input is a constant block for every size (n 2..6, three
+      amplitudes) and doubling the input doubles the output within two units.
+      Numeric validation against libaom still needs the 2D/tile path.
+      Next: the ADST/FLIPADST schedules, the 2D transform and the tile driver,
+      then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
