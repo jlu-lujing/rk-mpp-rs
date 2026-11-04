@@ -620,8 +620,17 @@ in what order the evidence gets produced.
       `tools/gen_av1_cdf.py` from the published HTML, with the declared shape
       expressions kept as provenance and two tests pinning the extract (count,
       total, checksum, and the `Default_Partition_W8_Cdf` first row).
-      Next: tile syntax (partition, modes, coefficients), the coefficient CDF
-      sets, inverse transforms, then a pixel comparison against libaom.
+      **Third slice:** `src/reference/av1/partition.rs` carries the 22
+      `BLOCK_SIZES` entries in the specification's `Subsampled_Size` order (with
+      `Mi_Width_Log2`/`Mi_Height_Log2`/4x4 counts derived from the names), the
+      `partition` context (`left * 2 + above` from neighbour sizes), the
+      `TilePartitionW{8,16,32,64,128}Cdf` selection, `read_partition` (4 symbols
+      on 8x8, 10 above), and the `split_or_horz`/`split_or_vert` three-symbol
+      CDF derivation including the 128x128 four-way exclusion. Three more tests
+      pin the block table, a multi-context partition decode and both CDF
+      foldings.
+      Next: intra modes (needs `Size_Group`), coefficient CDF sets, inverse
+      transforms, then a pixel comparison against libaom.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
