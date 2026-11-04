@@ -846,9 +846,15 @@ in what order the evidence gets produced.
       mode with the CFL-allowed alphabet. A skipped block reads no modes.
       Three tests pin the skip contexts, the zero-stream path (DC/DC) and the
       skipped path.
-      Next: the transform-size/residual wiring (the quant tables, `coeffs`,
-      dequant + 2D transform + prediction), CDEF/LR, then the libaom pixel
-      comparison.
+      **Thirty-third slice:** the quantizer tables. `quant_tables.rs` carries
+      the specification's `Dc_Qlookup[3][256]` and `Ac_Qlookup[3][256]`
+      (FNV-1a `0x6c0b18109b7ab1ac`), and `quant.rs` exposes `dc_q`/`ac_q` with
+      the bit-depth row and `Clip3(0,255,b)` index, plus `dequantize`. Three
+      tests pin the known table starts (`dc_q(8,0)=4`, `ac_q(12,1)=13`), index
+      clamping and the multiplication; the first expectation wrongly assumed
+      the 8/10-bit rows always differ at index 0.
+      Next: the residual wiring (`coeffs` into `dequant` + 2D transform +
+      prediction), CDEF/LR, then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
