@@ -333,6 +333,46 @@ pub fn split_or_cdf(partition_cdf: &[u16], size: BlockSize, vertical: bool) -> [
     [(SCALE - psum) as u16, SCALE as u16, 0]
 }
 
+/// `read_partition()` at picture boundaries. A missing row or column folds
+/// the disallowed split directions into a two-symbol CDF; when both are
+/// missing the specification selects SPLIT without reading a symbol.
+pub fn read_partition_with_cdf_bounded(
+    decoder: &mut crate::reference::av1::symbol::SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    size: BlockSize,
+    above: Option<BlockSize>,
+    left: Option<BlockSize>,
+    has_rows: bool,
+    has_cols: bool,
+    disable_cdf_update: bool,
+) -> Result<Option<PartitionType>, CdfStateError> {
+    if size.is_4x4() {
+        return Ok(None);
+    }
+    if !has_rows && !has_cols {
+        return Ok(Some(PartitionType::Split));
+    }
+    if has_rows && has_cols {
+        return read_partition_with_cdf(decoder, cdfs, size, above, left, disable_cdf_update);
+    }
+
+    let table = partition_cdf(size).expect("partition table");
+    let symbols = partition_symbol_count(size).unwrap_or(4);
+    let width = symbols + 1;
+    let row = partition_context(size, above, left) * width;
+    let probabilities = cdfs.row_mut(table, row, width)?[..symbols].to_vec();
+    let signalled = split_or_cdf(&probabilities, size, has_rows);
+    let mut cdf = signalled;
+    let split = decoder.read_symbol(&mut cdf)? != 0;
+    Ok(Some(if split {
+        PartitionType::Split
+    } else if has_rows {
+        PartitionType::Vert
+    } else {
+        PartitionType::Horz
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

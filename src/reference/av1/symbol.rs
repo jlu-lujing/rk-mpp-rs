@@ -73,6 +73,11 @@ impl<'a> SymbolDecoder<'a> {
         self.position
     }
 
+    /// Current arithmetic state for diagnostics and cross-decoder comparisons.
+    pub fn debug_state(&self) -> (u32, u32, i32) {
+        (self.value, self.range, self.max_bits)
+    }
+
     /// `f(n)`: `n` bits, most significant first.
     fn read_bits(&mut self, n: u32) -> Result<u32, SymbolError> {
         let mut out = 0u32;
@@ -181,7 +186,8 @@ impl<'a> SymbolDecoder<'a> {
         if self.max_bits < -14 {
             return Err(SymbolError::TooManyBits);
         }
-        let trailing = self.position - 15i32.max(self.max_bits + 15).min(15) as usize;
+        let trailing_back = (self.max_bits + 15).min(15) as usize;
+        let trailing = self.position - trailing_back;
         let mut end = self.position + self.max_bits.max(0) as usize;
         end = (end + 7) / 8 * 8;
         if trailing >= end || self.bit_at(trailing) != Some(1) {
@@ -279,6 +285,18 @@ mod tests {
             decoder.exit_symbol(),
             Err(SymbolError::MissingTrailingOne { bit: 0 })
         );
+    }
+
+    #[test]
+    fn exit_symbol_uses_the_remaining_max_bits_for_the_trailing_one() {
+        let decoder = SymbolDecoder {
+            data: &[0xff, 0xff, 0x04],
+            position: 24,
+            value: 0,
+            range: 1 << 15,
+            max_bits: -12,
+        };
+        assert_eq!(decoder.exit_symbol(), Ok(()));
     }
 
     #[test]

@@ -26,10 +26,21 @@ fn log2(value: u32) -> u32 {
     value.trailing_zeros()
 }
 
+/// `init_coeff_cdfs()` Q bucket: 0..=20, 21..=60, 61..=120,
+/// and above 120 respectively.
+pub fn coeff_q_context(base_q_idx: u8) -> usize {
+    match base_q_idx {
+        0..=20 => 0,
+        21..=60 => 1,
+        61..=120 => 2,
+        _ => 3,
+    }
+}
+
 /// `TileTxbSkipCdf[ q ][ Tx_Size_Sqr ][ ctx ]` row (one probability plus
 /// cumulative scale and adaptation counter).
 pub fn txb_skip_cdf_row(q: usize, tx: TxSize, ctx: usize) -> &'static [u16] {
-    let tx_ctx = tx_sqr_index(tx);
+    let tx_ctx = tx_size_ctx(tx);
     let index = ((q * 5 + tx_ctx) * 13) + ctx;
     let start = index * 3;
     &DEFAULT_TXB_SKIP_CDF.values[start..start + 3]
@@ -55,7 +66,7 @@ pub fn read_all_zero_with_cdf(
     ctx: usize,
     disable_cdf_update: bool,
 ) -> Result<bool, CdfStateError> {
-    let tx_ctx = tx_sqr_index(tx);
+    let tx_ctx = tx_size_ctx(tx);
     let start = (((q * 5 + tx_ctx) * 13) + ctx) * 3;
     Ok(cdfs.read_symbol(decoder, &DEFAULT_TXB_SKIP_CDF, start, 3, disable_cdf_update)? != 0)
 }
@@ -305,18 +316,20 @@ pub fn coeff_base_context_eob(tx: TxSize, c: u32) -> usize {
 
 fn coefficient_magnitude(tx: TxSize, pos: u32, quant: &[i32], class: TxClass) -> usize {
     let adj = adjusted_tx_size(tx);
-    let bwl = log2(adj.width());
-    let width = 1u32 << bwl;
+    let bhl = log2(adj.height());
     let height = adj.height();
-    let row = (pos >> bwl) as i32;
-    let col = (pos & (width - 1)) as i32;
+    let width = adj.width();
+    let row = (pos & (height - 1)) as i32;
+    let col = (pos >> bhl) as i32;
     let mut mag = 0usize;
     for idx in 0..5 {
         let base = (class as usize * 5 + idx) * 2;
-        let ref_row = row + i32::from(SIG_REF_DIFF_OFFSET[base]);
-        let ref_col = col + i32::from(SIG_REF_DIFF_OFFSET[base + 1]);
+        // Scan positions are column-major, so the specification's logical
+        // (row, col) offsets are transposed before addressing `quant`.
+        let ref_row = row + i32::from(SIG_REF_DIFF_OFFSET[base + 1]);
+        let ref_col = col + i32::from(SIG_REF_DIFF_OFFSET[base]);
         if ref_row >= 0 && ref_col >= 0 && ref_row < height as i32 && ref_col < width as i32 {
-            let at = ((ref_row as u32) << bwl) + ref_col as u32;
+            let at = (ref_col as u32) * height + ref_row as u32;
             mag += quant
                 .get(at as usize)
                 .copied()
@@ -331,10 +344,10 @@ fn coefficient_magnitude(tx: TxSize, pos: u32, quant: &[i32], class: TxClass) ->
 /// `get_coeff_base_ctx(..., isEob = 0)` for a 2D transform.
 pub fn coeff_base_context_2d(tx: TxSize, pos: u32, quant: &[i32]) -> usize {
     let adj = adjusted_tx_size(tx);
-    let bwl = log2(adj.width());
-    let width = 1u32 << bwl;
-    let row = pos >> bwl;
-    let col = pos & (width - 1);
+    let bhl = log2(adj.height());
+    let height = adj.height();
+    let row = pos & (height - 1);
+    let col = pos >> bhl;
     let mag = coefficient_magnitude(tx, pos, quant, TxClass::TwoD);
     let ctx = ((mag + 1) >> 1).min(4);
     if row == 0 && col == 0 {
@@ -348,10 +361,10 @@ pub fn coeff_base_context_2d(tx: TxSize, pos: u32, quant: &[i32]) -> usize {
 /// `get_coeff_base_ctx(..., isEob = 0)` for the 1D transform classes.
 pub fn coeff_base_context_1d(tx: TxSize, pos: u32, quant: &[i32], class: TxClass) -> usize {
     let adj = adjusted_tx_size(tx);
-    let bwl = log2(adj.width());
-    let width = 1u32 << bwl;
-    let row = pos >> bwl;
-    let col = pos & (width - 1);
+    let bhl = log2(adj.height());
+    let height = adj.height();
+    let row = pos & (height - 1);
+    let col = pos >> bhl;
     let mag = coefficient_magnitude(tx, pos, quant, class);
     let ctx = ((mag + 1) >> 1).min(4);
     let idx = if class == TxClass::Vertical { row } else { col } as usize;
@@ -510,17 +523,17 @@ const MAG_REF_OFFSET: [[[i8; 2]; 3]; 3] = [
 /// `get_coeff_br_ctx` (0..20).
 pub fn coeff_br_context(tx: TxSize, pos: u32, quant: &[i32], class: TxClass) -> usize {
     let adj = adjusted_tx_size(tx);
-    let bwl = log2(adj.width());
-    let txw = 1u32 << bwl;
+    let bhl = log2(adj.height());
+    let txw = adj.width();
     let txh = adj.height();
-    let row = pos >> bwl;
-    let col = pos & (txw - 1);
+    let row = pos & (txh - 1);
+    let col = pos >> bhl;
     let mut mag = 0u32;
     for idx in 0..3 {
-        let ref_row = row as i32 + i32::from(MAG_REF_OFFSET[class as usize][idx][0]);
-        let ref_col = col as i32 + i32::from(MAG_REF_OFFSET[class as usize][idx][1]);
+        let ref_row = row as i32 + i32::from(MAG_REF_OFFSET[class as usize][idx][1]);
+        let ref_col = col as i32 + i32::from(MAG_REF_OFFSET[class as usize][idx][0]);
         if ref_row >= 0 && ref_col >= 0 && ref_row < txh as i32 && ref_col < txw as i32 {
-            let at = (ref_row as u32 * txw + ref_col as u32) as usize;
+            let at = (ref_col as u32 * txh + ref_row as u32) as usize;
             let value = quant.get(at).copied().unwrap_or(0).unsigned_abs();
             mag += value.min(COEFF_BASE_RANGE + NUM_BASE_LEVELS + 1);
         }
@@ -531,8 +544,8 @@ pub fn coeff_br_context(tx: TxSize, pos: u32, quant: &[i32], class: TxClass) -> 
     }
     let near = match class {
         TxClass::TwoD => row < 2 && col < 2,
-        TxClass::Vertical => col == 0,
-        TxClass::Horizontal => row == 0,
+        TxClass::Vertical => row == 0,
+        TxClass::Horizontal => col == 0,
     };
     mag + if near { 7 } else { 14 }
 }
@@ -770,6 +783,32 @@ pub fn read_dc_sign(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coefficient_q_context_uses_the_specification_boundaries() {
+        for (q_index, expected) in [
+            (0, 0),
+            (20, 0),
+            (21, 1),
+            (60, 1),
+            (61, 2),
+            (120, 2),
+            (121, 3),
+            (255, 3),
+        ] {
+            assert_eq!(coeff_q_context(q_index), expected);
+        }
+    }
+
+    #[test]
+    fn rectangular_transforms_use_the_averaged_entropy_context() {
+        assert_eq!(tx_size_ctx(TxSize::Tx8x4), tx_size_ctx(TxSize::Tx8x8));
+        assert_eq!(
+            txb_skip_cdf_row(0, TxSize::Tx8x4, 7),
+            txb_skip_cdf_row(0, TxSize::Tx8x8, 7)
+        );
+        assert_eq!(tx_size_ctx(TxSize::Tx16x4), tx_size_ctx(TxSize::Tx8x8));
+    }
 
     #[test]
     fn seg_eob_caps_large_blocks_and_the_wide_rectangles() {
@@ -1100,11 +1139,19 @@ mod tests {
         );
         assert_eq!(
             coeff_base_context_1d(TxSize::Tx4x4, 4, &quant, TxClass::Vertical),
+            26
+        );
+        assert_eq!(
+            coeff_base_context_1d(TxSize::Tx4x4, 1, &quant, TxClass::Vertical),
             31
         );
-        // Horizontal uses the column: col 1 -> pos offset 31.
+        // Horizontal uses the column: pos 1 is column 0, pos 4 is column 1.
         assert_eq!(
             coeff_base_context_1d(TxSize::Tx4x4, 1, &quant, TxClass::Horizontal),
+            26
+        );
+        assert_eq!(
+            coeff_base_context_1d(TxSize::Tx4x4, 4, &quant, TxClass::Horizontal),
             31
         );
     }

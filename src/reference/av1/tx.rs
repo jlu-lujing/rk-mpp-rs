@@ -190,7 +190,7 @@ pub fn read_tx_size(
         return Ok(TxSize::Tx4x4);
     }
     let mut tx = max_tx_size_rect(size);
-    if size.width > 4 && allow_select && tx_mode_select {
+    if !size.is_4x4() && allow_select && tx_mode_select {
         let depth = read_tx_depth(decoder, size, above_width, left_height)?;
         for _ in 0..depth {
             tx = split_tx_size(tx);
@@ -216,7 +216,7 @@ pub fn read_tx_size_with_cdf(
         return Ok(TxSize::Tx4x4);
     }
     let mut tx = max_tx_size_rect(size);
-    if size.width > 4 && allow_select && tx_mode_select {
+    if !size.is_4x4() && allow_select && tx_mode_select {
         let depth = read_tx_depth_with_cdf(
             decoder,
             cdfs,
@@ -293,6 +293,28 @@ mod tests {
             tx_depth_table(named("BLOCK_128X128")).name,
             "Default_Tx_64x64_Cdf"
         );
+    }
+
+    #[test]
+    fn rectangular_four_by_eight_blocks_still_signal_tx_depth() {
+        let size = named("BLOCK_4X8");
+        let mut decoder = SymbolDecoder::init(&[0u8; 16]).unwrap();
+        let before = decoder.position();
+        let mut cdfs = CdfState::new();
+        let tx = read_tx_size_with_cdf(
+            &mut decoder,
+            &mut cdfs,
+            size,
+            true,
+            false,
+            true,
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+        assert_eq!(tx, TxSize::Tx4x8);
+        assert!(decoder.position() > before);
     }
 
     #[test]

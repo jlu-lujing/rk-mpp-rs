@@ -87,6 +87,18 @@ pub fn get_scan(tx: TxSize, direction: ScanDirection) -> &'static ScanTable {
     }
 }
 
+/// Convert a specification scan position to the row-major coefficient buffer
+/// layout used by the decoder. The specification tables index \((row, col)\),
+/// while libaom's transform buffers and context functions advance by columns.
+pub fn scan_position(tx: TxSize, position: u16) -> u16 {
+    let width = tx.width().min(32);
+    let height = tx.height().min(32);
+    let position = u32::from(position);
+    let row = position / width;
+    let col = position - row * width;
+    (col * height + row) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +178,17 @@ mod tests {
                 "{tx:?}"
             );
         }
+    }
+
+    #[test]
+    fn scan_positions_use_the_transposed_coefficient_layout() {
+        let scan = get_scan(TxSize::Tx8x8, ScanDirection::Default);
+        let positions: Vec<u16> = scan
+            .order
+            .iter()
+            .copied()
+            .map(|position| scan_position(TxSize::Tx8x8, position))
+            .collect();
+        assert_eq!(&positions[..9], &[0, 8, 1, 2, 9, 16, 24, 17, 10]);
     }
 }

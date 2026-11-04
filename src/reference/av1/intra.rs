@@ -55,6 +55,8 @@ impl IntraMode {
 
 /// `Intra_Mode_Context[ INTRA_MODES ]`.
 pub const INTRA_MODE_CONTEXT: [u8; 13] = [0, 1, 2, 3, 4, 4, 4, 4, 3, 0, 1, 2, 0];
+/// `INTRA_MODE_CONTEXTS`.
+pub const INTRA_MODE_CONTEXTS: usize = 5;
 
 /// The thirteen probabilities of one `CdfTable` row, dropping the counter.
 fn row(table: &CdfTable, index: usize, width: usize) -> &'static [u16] {
@@ -78,10 +80,10 @@ pub fn intra_frame_y_mode_cdf(above: Option<IntraMode>, left: Option<IntraMode>)
         let mode = mode.unwrap_or(IntraMode::Dc) as usize;
         INTRA_MODE_CONTEXT[mode] as usize
     };
-    // Shape [13][13][INTRA_MODES + 1].
+    // Shape [INTRA_MODE_CONTEXTS][INTRA_MODE_CONTEXTS][INTRA_MODES + 1].
     row(
         &DEFAULT_INTRA_FRAME_Y_MODE_CDF,
-        ctx(above) * 13 + ctx(left),
+        ctx(above) * INTRA_MODE_CONTEXTS + ctx(left),
         14,
     )
 }
@@ -107,7 +109,7 @@ pub fn read_intra_frame_y_mode_with_cdf(
     let ctx = |mode: Option<IntraMode>| {
         INTRA_MODE_CONTEXT[mode.unwrap_or(IntraMode::Dc) as usize] as usize
     };
-    let row = ctx(above) * 13 + ctx(left);
+    let row = ctx(above) * INTRA_MODE_CONTEXTS + ctx(left);
     let symbol = cdfs.read_symbol(
         decoder,
         &DEFAULT_INTRA_FRAME_Y_MODE_CDF,
@@ -275,8 +277,8 @@ pub fn read_angle_delta_with_cdf(
     let symbol = cdfs.read_symbol(
         decoder,
         &DEFAULT_ANGLE_DELTA_CDF,
-        row * 7,
-        7,
+        row * 8,
+        8,
         disable_cdf_update,
     )?;
     Ok(symbol as i32 - 3)
@@ -366,6 +368,19 @@ mod tests {
             .unwrap(),
             0
         );
+        let mut cdfs = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&[0xffu8; 8]).unwrap();
+        assert_eq!(
+            read_angle_delta_with_cdf(
+                &mut decoder,
+                &mut cdfs,
+                IntraMode::D45,
+                named("BLOCK_8X8"),
+                false
+            )
+            .unwrap(),
+            3
+        );
         assert_eq!(
             read_angle_delta_with_cdf(
                 &mut decoder,
@@ -430,6 +445,11 @@ mod tests {
         assert_ne!(
             intra_frame_y_mode_cdf(Some(IntraMode::Dc), Some(IntraMode::Dc)),
             intra_frame_y_mode_cdf(Some(IntraMode::V), Some(IntraMode::Dc))
+        );
+        let start = (4 * INTRA_MODE_CONTEXTS + 1) * 14;
+        assert_eq!(
+            intra_frame_y_mode_cdf(Some(IntraMode::D135), Some(IntraMode::V)),
+            &DEFAULT_INTRA_FRAME_Y_MODE_CDF.values[start..start + 13]
         );
     }
 }

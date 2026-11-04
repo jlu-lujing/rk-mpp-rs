@@ -11,11 +11,18 @@ use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 pub enum CdfStateError {
     UnknownTable,
     BadRow {
+        table: &'static str,
         start: usize,
         width: usize,
         len: usize,
     },
     Symbol(SymbolError),
+    SymbolInRow {
+        table: &'static str,
+        start: usize,
+        width: usize,
+        error: SymbolError,
+    },
 }
 
 impl From<SymbolError> for CdfStateError {
@@ -79,6 +86,7 @@ impl CdfState {
             .checked_add(width)
             .filter(|end| *end <= values.len())
             .ok_or(CdfStateError::BadRow {
+                table: table.name,
                 start,
                 width,
                 len: values.len(),
@@ -96,7 +104,14 @@ impl CdfState {
         disable_cdf_update: bool,
     ) -> Result<usize, CdfStateError> {
         let row = self.row_mut(table, start, width)?;
-        Ok(decoder.read_symbol_with(row, disable_cdf_update)?)
+        decoder
+            .read_symbol_with(row, disable_cdf_update)
+            .map_err(|error| CdfStateError::SymbolInRow {
+                table: table.name,
+                start,
+                width,
+                error,
+            })
     }
 
     /// Re-copy one table from its specification defaults.

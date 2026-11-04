@@ -10,6 +10,7 @@ pub mod block;
 pub mod cdef;
 pub mod cdf_defaults;
 pub mod cdf_state;
+pub mod cfl;
 pub mod coeff;
 pub mod coeff_block;
 pub mod coeff_tables;

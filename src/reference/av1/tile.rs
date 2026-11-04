@@ -196,13 +196,17 @@ fn visit<S: PartitionSource>(
         PartitionType::Horz4 => {
             let quarter = (size.num_4x4_high() / 4) as usize;
             for i in 0..4 {
-                push_block(source, blocks, row + i * quarter, col, sub);
+                if row + i * quarter < mi_rows {
+                    push_block(source, blocks, row + i * quarter, col, sub);
+                }
             }
         }
         PartitionType::Vert4 => {
             let quarter = (size.num_4x4_wide() / 4) as usize;
             for i in 0..4 {
-                push_block(source, blocks, row, col + i * quarter, sub);
+                if col + i * quarter < mi_cols {
+                    push_block(source, blocks, row, col + i * quarter, sub);
+                }
             }
         }
     }

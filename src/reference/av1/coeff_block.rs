@@ -11,7 +11,7 @@ use crate::reference::av1::coeff::{
 };
 use crate::reference::av1::context::TileContext;
 use crate::reference::av1::partition::BlockSize;
-use crate::reference::av1::scan::get_scan;
+use crate::reference::av1::scan::{get_scan, scan_position};
 use crate::reference::av1::symbol::SymbolDecoder;
 use crate::reference::av1::tx::TxSize;
 use crate::reference::av1::tx_type::TxType;
@@ -97,6 +97,12 @@ pub fn decode_coefficient_payload(
 
     let class = tx_type.class();
     let scan = get_scan(tx, tx_type.scan_direction());
+    let scan_positions: Vec<u16> = scan
+        .order
+        .iter()
+        .copied()
+        .map(|position| scan_position(tx, position))
+        .collect();
     let eob = decode_eob_with_cdf(
         decoder,
         cdfs,
@@ -112,7 +118,7 @@ pub fn decode_coefficient_payload(
         cdfs,
         tx,
         &mut quant,
-        &scan.order,
+        &scan_positions,
         eob,
         q_ctx,
         usize::from(plane > 0),
@@ -124,7 +130,7 @@ pub fn decode_coefficient_payload(
         decoder,
         cdfs,
         &mut quant,
-        &scan.order,
+        &scan_positions,
         eob,
         q_ctx,
         usize::from(plane > 0),

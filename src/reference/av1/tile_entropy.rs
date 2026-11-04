@@ -7,7 +7,7 @@
 
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::frame_header::FrameHeader;
-use crate::reference::av1::partition::{read_partition_with_cdf, BlockSize, PartitionType};
+use crate::reference::av1::partition::{read_partition_with_cdf_bounded, BlockSize, PartitionType};
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 use crate::reference::av1::tile::{walk_partitions, DecodedBlock, PartitionSource};
 
@@ -39,6 +39,18 @@ pub enum TileEntropyError {
     Cdf(CdfStateError),
     Symbol(SymbolError),
     Unsupported(&'static str),
+    Block {
+        row: usize,
+        col: usize,
+        size: &'static str,
+        bit_position: usize,
+        source: Box<TileEntropyError>,
+    },
+    ExitSymbol {
+        bit_position: usize,
+        state: (u32, u32, i32),
+        error: SymbolError,
+    },
 }
 
 impl From<CdfStateError> for TileEntropyError {
@@ -140,14 +152,20 @@ impl<S: TileBlockSink> PartitionSource for StatefulTile<'_, S> {
         let left = (col > 0)
             .then(|| self.sizes[row * self.local_cols + col - 1])
             .flatten();
-        match read_partition_with_cdf(
+        let half = (size.num_4x4_wide() / 2) as usize;
+        let has_rows = row + half < self.local_rows;
+        let has_cols = col + half < self.local_cols;
+        let choice = read_partition_with_cdf_bounded(
             &mut self.decoder,
             &mut self.cdfs,
             size,
             above,
             left,
+            has_rows,
+            has_cols,
             self.disable_cdf_update,
-        ) {
+        );
+        match choice {
             Ok(Some(partition)) => partition,
             Ok(None) => PartitionType::None,
             Err(error) => {
@@ -176,11 +194,17 @@ impl<S: TileBlockSink> PartitionSource for StatefulTile<'_, S> {
             size: block.size,
         };
         self.blocks.push(global);
-        if let Err(error) = self
+        if let Err(source) = self
             .sink
             .decode_block(global, &mut self.decoder, &mut self.cdfs)
         {
-            self.error = Some(error);
+            self.error = Some(TileEntropyError::Block {
+                row: global.row,
+                col: global.col,
+                size: global.size.name,
+                bit_position: self.decoder.position(),
+                source: Box::new(source),
+            });
         }
     }
 }
@@ -224,7 +248,14 @@ pub fn decode_tile_partitions<S: TileBlockSink>(
         return Err(error);
     }
     if verify_exit {
-        state.decoder.exit_symbol()?;
+        state
+            .decoder
+            .exit_symbol()
+            .map_err(|error| TileEntropyError::ExitSymbol {
+                bit_position: state.decoder.position(),
+                state: state.decoder.debug_state(),
+                error,
+            })?;
     }
     Ok(TileDecodeResult {
         bounds,

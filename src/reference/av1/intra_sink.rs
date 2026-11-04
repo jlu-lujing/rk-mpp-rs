@@ -4,20 +4,27 @@
 //! It is the correctness gate for tile entropy order before the already-tested
 //! prediction/reconstruction block is attached.
 
-use crate::reference::av1::block::decode_intra_modes_with_cdf;
 use crate::reference::av1::cdef::CdefIndexGrid;
 use crate::reference::av1::cdf_state::CdfState;
-use crate::reference::av1::coeff::{read_all_zero_with_cdf, seg_eob};
+use crate::reference::av1::cfl::{read_cfl_alphas, CflAlphas};
+use crate::reference::av1::coeff::{coeff_q_context, read_all_zero_with_cdf, seg_eob};
 use crate::reference::av1::coeff_block::decode_coefficient_payload;
 use crate::reference::av1::context::TileContext;
 use crate::reference::av1::delta::{read_delta_lf, read_delta_qindex, DeltaError};
 use crate::reference::av1::filter_intra::{
     filter_intra_direction, read_filter_intra, FilterIntraMode,
 };
-use crate::reference::av1::intra::{read_angle_delta_with_cdf, IntraMode, UvMode};
-use crate::reference::av1::palette::{PaletteError, PaletteState};
+use crate::reference::av1::frame_header::FrameHeader;
+use crate::reference::av1::intra::{
+    cfl_allowed, read_angle_delta_with_cdf, read_intra_frame_y_mode_with_cdf,
+    read_uv_mode_with_cdf, read_y_mode_with_cdf, IntraMode, UvMode,
+};
+use crate::reference::av1::palette::{
+    read_palette_tokens, PaletteError, PaletteModeInfo, PaletteState, PaletteTokens,
+};
 use crate::reference::av1::residual::{intra_residual_blocks, residual_size};
 use crate::reference::av1::segment::SegmentState;
+use crate::reference::av1::seq_header::SequenceHeader;
 use crate::reference::av1::tile::DecodedBlock;
 use crate::reference::av1::tile_entropy::{TileBlockSink, TileEntropyError};
 use crate::reference::av1::tx::{read_tx_size_with_cdf, TxSize};
@@ -31,6 +38,7 @@ pub struct IntraTileConfig {
     pub mi_rows: usize,
     pub sub_x: u32,
     pub sub_y: u32,
+    pub bit_depth: u32,
     pub key_frame: bool,
     pub segmentation_enabled: bool,
     pub seg_id_pre_skip: bool,
@@ -61,9 +69,12 @@ pub struct IntraSyntaxBlock {
     pub qindex: u8,
     pub y_mode: IntraMode,
     pub uv_mode: Option<UvMode>,
+    pub cfl_alphas: CflAlphas,
     pub angle_y: i32,
     pub angle_uv: i32,
     pub filter_intra: Option<FilterIntraMode>,
+    pub palette: PaletteModeInfo,
+    pub palette_tokens: PaletteTokens,
     pub tx: TxSize,
     pub transforms: Vec<IntraSyntaxTx>,
 }
@@ -91,6 +102,7 @@ pub struct IntraTileBlockSink {
     uv_modes: Vec<Option<UvMode>>,
     tx_grid: Vec<Option<TxSize>>,
     current_qindex: u8,
+    coeff_q_ctx: usize,
     delta_lf: [i32; 4],
     read_deltas_for_sb: bool,
     current_sb: Option<(usize, usize)>,
@@ -113,6 +125,7 @@ impl IntraTileBlockSink {
             uv_modes: vec![None; mi_cols * mi_rows],
             tx_grid: vec![None; mi_cols * mi_rows],
             current_qindex,
+            coeff_q_ctx: coeff_q_context(current_qindex),
             delta_lf: [0; 4],
             read_deltas_for_sb: false,
             current_sb: None,
@@ -150,9 +163,8 @@ impl IntraTileBlockSink {
     fn palette_as_tile(error: PaletteError) -> TileEntropyError {
         match error {
             PaletteError::Cdf(error) => TileEntropyError::Cdf(error),
-            PaletteError::UnsupportedPalette { .. } => {
-                TileEntropyError::Unsupported("palette tokens")
-            }
+            PaletteError::Symbol(error) => TileEntropyError::Symbol(error),
+            PaletteError::BadPaletteSize(_) => TileEntropyError::Unsupported("palette size"),
         }
     }
 
@@ -167,6 +179,42 @@ impl IntraTileBlockSink {
             Some(tx) if horizontal => tx.width(),
             Some(tx) if !horizontal => tx.height(),
             _ => 1,
+        }
+    }
+}
+
+impl IntraTileConfig {
+    pub fn from_headers(seq: &SequenceHeader, header: &FrameHeader) -> Self {
+        let mut segment_skip = [false; 8];
+        for (segment, enabled) in segment_skip.iter_mut().enumerate() {
+            *enabled = header.feature_enabled[segment][6];
+        }
+        Self {
+            mi_cols: header.mi_cols,
+            mi_rows: header.mi_rows,
+            sub_x: u32::from(seq.color.subsampling_x),
+            sub_y: u32::from(seq.color.subsampling_y),
+            bit_depth: u32::from(seq.color.bit_depth),
+            key_frame: header.frame_is_intra,
+            segmentation_enabled: header.segmentation_enabled,
+            seg_id_pre_skip: header.seg_id_pre_skip,
+            last_active_seg_id: header.last_active_seg_id as usize,
+            segment_lossless: header.lossless_array,
+            segment_skip,
+            allow_screen_content_tools: header.allow_screen_content_tools != 0,
+            enable_filter_intra: seq.enable_filter_intra,
+            disable_cdf_update: header.disable_cdf_update,
+            tx_mode_select: header.tx_mode == 2,
+            reduced_tx_set: header.reduced_tx_set,
+            delta_q_present: header.delta_q_present,
+            delta_q_res: header.delta_q_res,
+            delta_lf_present: header.delta_lf_present,
+            delta_lf_res: header.delta_lf_res,
+            delta_lf_multi: header.delta_lf_multi,
+            cdef_enabled: seq.enable_cdef,
+            cdef_bits: header.cdef_bits,
+            base_q_index: header.base_q_idx,
+            superblock_mi: if seq.use_128x128_superblock { 32 } else { 16 },
         }
     }
 }
@@ -298,18 +346,19 @@ impl TileBlockSink for IntraTileBlockSink {
         self.delta_lf[0] = delta;
         self.read_deltas_for_sb = false;
 
-        let (y_mode, uv_mode) = decode_intra_modes_with_cdf(
-            decoder,
-            cdfs,
-            block.size,
-            self.config.key_frame,
-            above_mode,
-            left_mode,
-            has_chroma,
-            lossless,
-            self.config.disable_cdf_update,
-        )
-        .map_err(TileEntropyError::Cdf)?;
+        let y_mode = if self.config.key_frame {
+            read_intra_frame_y_mode_with_cdf(
+                decoder,
+                cdfs,
+                above_mode,
+                left_mode,
+                self.config.disable_cdf_update,
+            )
+            .map_err(TileEntropyError::Cdf)?
+        } else {
+            read_y_mode_with_cdf(decoder, cdfs, block.size, self.config.disable_cdf_update)
+                .map_err(TileEntropyError::Cdf)?
+        };
         let angle_y = read_angle_delta_with_cdf(
             decoder,
             cdfs,
@@ -318,6 +367,26 @@ impl TileBlockSink for IntraTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(TileEntropyError::Cdf)?;
+        let uv_mode = if has_chroma {
+            Some(
+                read_uv_mode_with_cdf(
+                    decoder,
+                    cdfs,
+                    y_mode,
+                    cfl_allowed(block.size, lossless),
+                    self.config.disable_cdf_update,
+                )
+                .map_err(TileEntropyError::Cdf)?,
+            )
+        } else {
+            None
+        };
+        let cfl_alphas = if uv_mode == Some(UvMode::Cfl) {
+            read_cfl_alphas(decoder, cdfs, self.config.disable_cdf_update)
+                .map_err(TileEntropyError::Cdf)?
+        } else {
+            CflAlphas::default()
+        };
         let angle_uv = match uv_mode {
             Some(UvMode::Cfl) => 0,
             Some(UvMode::Dc) => read_angle_delta_with_cdf(
@@ -356,7 +425,8 @@ impl TileBlockSink for IntraTileBlockSink {
             None => 0,
         };
 
-        self.palettes
+        let palette = self
+            .palettes
             .read_mode_info(
                 decoder,
                 cdfs,
@@ -368,6 +438,7 @@ impl TileBlockSink for IntraTileBlockSink {
                 has_chroma,
                 self.config.allow_screen_content_tools,
                 self.config.disable_cdf_update,
+                self.config.bit_depth,
             )
             .map_err(Self::palette_as_tile)?;
         let filter = read_filter_intra(
@@ -375,11 +446,25 @@ impl TileBlockSink for IntraTileBlockSink {
             cdfs,
             block.size,
             y_mode,
-            0,
+            palette.y_size,
             self.config.enable_filter_intra,
             self.config.disable_cdf_update,
         )
         .map_err(TileEntropyError::Cdf)?;
+        let palette_tokens = read_palette_tokens(
+            decoder,
+            cdfs,
+            palette,
+            block.row,
+            block.col,
+            mi_rows,
+            mi_cols,
+            block.size,
+            self.config.sub_x,
+            self.config.sub_y,
+            self.config.disable_cdf_update,
+        )
+        .map_err(Self::palette_as_tile)?;
 
         let above_width = Self::tx_extent(
             &self.tx_grid,
@@ -407,8 +492,8 @@ impl TileBlockSink for IntraTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(TileEntropyError::Cdf)?;
-        for r in block.row..block.row + bh4 {
-            for c in block.col..block.col + bw4 {
+        for r in block.row..(block.row + bh4).min(mi_rows) {
+            for c in block.col..(block.col + bw4).min(mi_cols) {
                 self.tx_grid[r * mi_cols + c] = Some(tx);
             }
         }
@@ -437,8 +522,8 @@ impl TileBlockSink for IntraTileBlockSink {
                     .ok_or(TileEntropyError::Unsupported("invalid residual size"))?;
                 let x4 = tx_block.x >> 2;
                 let y4 = tx_block.y >> 2;
-                let max_x4 = (mi_cols * 4) >> sx;
-                let max_y4 = (mi_rows * 4) >> sy;
+                let max_x4 = mi_cols >> sx;
+                let max_y4 = mi_rows >> sy;
                 let txb_ctx = self.tile_context.txb_skip_context(
                     tx_block.plane,
                     x4,
@@ -448,7 +533,7 @@ impl TileBlockSink for IntraTileBlockSink {
                     max_x4,
                     max_y4,
                 );
-                let q_ctx = (self.current_qindex >> 6).min(3) as usize;
+                let q_ctx = self.coeff_q_ctx;
                 let all_zero = read_all_zero_with_cdf(
                     decoder,
                     cdfs,
@@ -482,11 +567,7 @@ impl TileBlockSink for IntraTileBlockSink {
                     )
                     .map_err(TileEntropyError::Cdf)?
                 } else {
-                    let mode = match uv_mode.unwrap_or(UvMode::Dc) {
-                        UvMode::Cfl => return Err(TileEntropyError::Unsupported("CFL residual")),
-                        mode => mode,
-                    };
-                    let typ = uv_mode_tx_type(mode);
+                    let typ = uv_mode_tx_type(uv_mode.unwrap_or(UvMode::Dc));
                     let set = tx_set(tx_block.tx, false, self.config.reduced_tx_set);
                     if is_tx_type_in_set(set, typ, false) {
                         typ
@@ -533,8 +614,8 @@ impl TileBlockSink for IntraTileBlockSink {
             }
         }
 
-        for r in block.row..block.row + bh4 {
-            for c in block.col..block.col + bw4 {
+        for r in block.row..(block.row + bh4).min(mi_rows) {
+            for c in block.col..(block.col + bw4).min(mi_cols) {
                 self.skip_grid[r * mi_cols + c] = skip;
                 self.y_modes[r * mi_cols + c] = Some(y_mode);
                 self.uv_modes[r * mi_cols + c] = uv_mode;
@@ -547,9 +628,12 @@ impl TileBlockSink for IntraTileBlockSink {
             qindex: self.current_qindex,
             y_mode,
             uv_mode,
+            cfl_alphas,
             angle_y,
             angle_uv,
             filter_intra: filter.mode,
+            palette,
+            palette_tokens,
             tx,
             transforms,
         });
@@ -569,6 +653,7 @@ mod tests {
             mi_rows: 32,
             sub_x: 1,
             sub_y: 1,
+            bit_depth: 8,
             key_frame: true,
             segmentation_enabled: false,
             seg_id_pre_skip: false,
@@ -610,5 +695,39 @@ mod tests {
         assert_eq!(sink.blocks.len(), 1);
         assert_eq!(sink.blocks[0].segment_id, 0);
         assert!(!sink.blocks[0].transforms.is_empty());
+    }
+
+    #[test]
+    fn real_96_keyframe_tile_reaches_entropy_exit() {
+        use crate::reference::av1::obu::parse_ivf;
+        use crate::reference::av1::stream::{ReferenceStream, StreamEvent};
+
+        let data = include_bytes!("../../../tests/data/av1_320x240_10.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let packets = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        let frame = packets
+            .iter()
+            .flatten()
+            .find_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        let config = IntraTileConfig::from_headers(sequence, &frame.header);
+        let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
+        let tile = &frame.layout.tiles[0];
+        let result = crate::reference::av1::tile_entropy::decode_tile_partitions(
+            &frame.payload[tile.bytes.clone()],
+            &frame.header,
+            tile.tile,
+            sb_size,
+            false,
+            true,
+            IntraTileBlockSink::new(config),
+        )
+        .unwrap();
+        assert!(!result.sink.blocks.is_empty());
     }
 }
