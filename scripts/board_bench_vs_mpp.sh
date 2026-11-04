@@ -27,6 +27,8 @@ streams=(
   "/tmp/hevc_main10_256.hevc:hevcdec:16777220:320:256:0"
   "/tmp/vp90_720.ivf:vp9dec:10:1280:720:0"
   "/tmp/p0_320x240_30.ivf:vp9dec:10:320:240:0"
+  "/tmp/vp9_p0_errres_tiles_640x360_12.ivf:vp9dec:10:640:360:0"
+  "/tmp/vp9_p2_10bit_lossless_320x240_12.ivf:vp9dec:10:320:240:0"
   "/tmp/av1_320x240_10.ivf:av1dec:16777224:320:240:0"
   "/tmp/av1_tiles_320x240_10.ivf:av1dec:16777224:320:240:0"
   "/tmp/av1_320x240_p0_10bit.ivf:av1dec:16777224:320:240:0"

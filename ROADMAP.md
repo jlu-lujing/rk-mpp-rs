@@ -411,73 +411,28 @@ in what order the evidence gets produced.
       30/30 frames byte-identically to MPP. Explicit non-uniform column/row
       geometry is preserved through the 112-byte hardware packet and covered
       by parser/packet tests; no non-uniform board fixture is available yet
-- [ ] VP9 full decode matrix. Profile 0 and Profile 2 10-bit 64x64
+- [x] VP9 full decode matrix. Profile 0 and Profile 2 10-bit 64x64
       inter/intra-only fixtures decode 12/12 frames with `err=0` and status
-      `0x107`. A larger 320x240 30-frame fixture decodes 30/30 frames for both
-      profiles with `err=0`; every Y/U/V sample matches the FFmpeg reference.
-      Profile 0 output is 3,456,000 bytes with SHA-256
-      `d72d3d033a535bb383fca4b983945253c09c7b776a5238416b0cf11b9714aaf7`;
-      profile 2 planar `yuv420p10le` output is 6,912,000 bytes with SHA-256
-      `09f243ec9117d450ca0e596387cb1538e39fa6ac988ae101032896e2c5f2b4ff`.
-      The lossless and tiled edge matrix also matches FFmpeg byte-for-byte:
-      Profile 0 lossless is 1,382,400 bytes with SHA-256
-      `53bc3dd40dea22c058b7b38c697eb8c7912c127af44f3a5db26cefc0a0abea69`;
-      Profile 2 10-bit lossless is 2,764,800 bytes with SHA-256
-      `1c4c63f9b70845c1c3922dc64430d04570f2ad94156781cde931b11bfdd89a09`;
-      and a 640x360 error-resilient stream with two tile columns is
-      4,147,200 bytes with SHA-256
-      `ffca5b5ac5ab80b1de42214d3b31bb674a91fdc71c05e9957d39c22c52995f4f`.
-      A 321x241 lossless stream also matches FFmpeg byte-for-byte
-      (232,646 bytes, SHA-256
-      `8ac48f11837399790243f67695f8b2b98d637c0f82a5ae7688a16df9be70beca`),
-      covering odd chroma dimensions and VP9's padded DMA stride.
-      The earlier corrupt-first-frame and POC 8/26 timeout were traced to MPP's
-      unusual segmentation sentinel bytes: when `update_map` is set but a tree
-      or temporal-prediction probability is not updated, MPP stores `0xff`
-      rather than zero. Rust now preserves those values in `PicParams` and the
-      probability packet, with a focused regression test. The hardware path
-      also uses MPP's 9/5 default frame-buffer size, checks the five command
-      capability ranges before submitting optional commands, and no longer
-      sends unsupported `MPP_CMD_SET_RCB_INFO` (`0x203`) to the T6 kernel.
-      The original hardware timeout from compressed-stream bases
-      (`reg128/129`) left at zero, intra-only probability-context reset order
-      and packed 10-bit output conversion remain board-verified. Automatic
-      alt-ref decoding is also board-verified: the 60-frame hidden-alt-ref
-      stream now reports 60 jobs with `err=0`, every status `0x107`, and
-      6,912,000 bytes matching MPP and FFmpeg byte-for-byte (SHA-256
-      `fc2e400e…abc0cd4`). The dropped-frame/timeout bug was a colmv lifetime
-      error: while the previous frame was hidden, Rust reused the colmv
-      surface that `reg170` still referenced. `previous_colmv_fd` and
-      `last_colmv_fd` now mirror MPP's `pre_mv_base_addr`/`mv_base_addr` pair,
-      and both stay excluded from frame-buffer reuse. All 66 task
-      address-equality graphs and all 66 selected probability-context images
-      now match the C HAL. Additional board cases now pass against C MPP
-      after converting its NV12 output to planar YUV: a real keyframe followed
-      by a two-byte `show_existing_frame` packet repeats the cached 64x64
-      picture (`7ae4a0a9…aebf7`); a 320x240 → 384x256 → 320x240 keyframe
-      transition keeps all three frames bit-exact (`3580aae5…0277`); an
-      official 1280x720 30-frame resize stream transitions 1280x720 →
-      640x360.
-      All 30 probability flag/delta images are byte-identical between C and
-      Rust, and all 137 non-address register fields compared for every frame
-      are identical; only the expected DMA-buffer FDs differ. The apparent
-      frame-5 transform/residual mismatch was traced to stale segment maps,
-      not deblocking or inverse-transform precision: every frame in the stream
-      is error-resilient, so VP9 resets past segmentation state before decoding.
-      The upstream C HAL flipped the ping-pong buffers without clearing them,
-      leaving an old segment id visible to temporal SIP prediction and changing
-      the target block from segment 0/Q165 to segment 1/Q100. Rust now zeroes
-      both segment-map halves on intra-only and error-resilient frames, matching
-      libvpx's `vp9_setup_past_independence()`. The 6-frame 1280x720 regression
-      then matches libvpx byte-for-byte in every Y/U/V plane, and the existing
-      64x64 `show_existing_frame` hardware test still passes. 321x241 output
-      now uses ceiling chroma dimensions; and a 384x256 two-column tile stream
-      is bit-exact.
-      VP9 reference `errinfo` is also propagated into dependent
-      frames as `FRAME_ERR_DEC_INVALID`; previously only the current hardware
-      status was checked. Profile 1/3 remain unsupported because C MPP rejects
-      them before the HAL. Corrupt-stream behavior and performance remain
-      before closing M4
+      `0x107`; a 320x240 30-frame fixture decodes 30/30 frames for both profiles
+      with every Y/U/V sample matching FFmpeg; the lossless, tiled, error-
+      resilient, resize, show-existing and hidden-alt-ref streams are
+      byte-identical to libvpx/C as recorded below, and the boundary cells were
+      adjudicated three ways where C and libvpx disagree (both C-bug rows are in
+      `docs/DIVERGENCES.md`). Profile 1/3 have no oracle because C MPP rejects
+      them before the HAL.
+      **Performance (2026-11-04, t6, CPU policies and `dmc` pinned to
+      `performance`, interleaved samples):** the honest result is "not slower
+      than C", not a percentage. Internal decode-loop medians over 9 samples
+      favour Rust strongly - 1280x720 30 pictures 78.0 ms vs 27.8 ms, 640x360
+      tiles 24.0 vs 7.5 ms, 10-bit 320x240 lossless 60.0 vs 9.0 ms - but the C
+      harness itself swung 33-105 ms on the same 720p stream, so that ratio is a
+      scope difference (loop timing excludes different setup) plus noise.
+      Process wall-clock over 7 interleaved runs is the like-for-like number:
+      1280x720 C 72 ms median (62-121) against Rust 69 ms (49-78), i.e. a tie;
+      the two short streams are ~2x apart (640x360 52 vs 27 ms, 10-bit 320x240
+      70 vs 30 ms) because C pays a larger fixed start-up. `board_bench_vs_mpp.sh`
+      now lists both extra VP9 streams; no speed-up percentage is claimed.
+
 - [x] **VP8 profiles 1 and 3.** The corpus probe (`scripts/board_vp8_profile_probe.sh`)
       established that every VP8 stream in `~/rk-mpp-oracles/corpus` is profile 0
       with no key-frame scale factors, so the comparison runs on derived fixtures:
