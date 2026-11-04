@@ -154,6 +154,12 @@ pub struct FrameHeaderState {
     pub ref_render_width: [u32; NUM_REF_FRAMES],
     pub ref_render_height: [u32; NUM_REF_FRAMES],
     pub ref_frame_type: [u8; NUM_REF_FRAMES],
+    /// `SavedGmParams[refFrame][reference][parameter]`.
+    pub saved_gm_params: [[[i32; 6]; REFS_PER_FRAME]; NUM_REF_FRAMES],
+    /// `SavedLoopFilterRefDeltas[refFrame][reference]`.
+    pub saved_lf_ref_deltas: [[i32; TOTAL_REFS_PER_FRAME]; NUM_REF_FRAMES],
+    /// `SavedLoopFilterModeDeltas[refFrame][mode]`.
+    pub saved_lf_mode_deltas: [[i32; 2]; NUM_REF_FRAMES],
     /// `PrevGmParams[ref][idx]`; the past-independence default is
     /// `1 << WARPEDMODEL_PREC_BITS` for `idx % 3 == 2` and zero elsewhere.
     pub prev_gm_params: [[i32; 6]; REFS_PER_FRAME],
@@ -186,6 +192,16 @@ impl Default for FrameHeaderState {
             ref_render_width: [0; NUM_REF_FRAMES],
             ref_render_height: [0; NUM_REF_FRAMES],
             ref_frame_type: [0; NUM_REF_FRAMES],
+            saved_gm_params: [[[
+                0,
+                0,
+                1 << WARPEDMODEL_PREC_BITS,
+                0,
+                0,
+                1 << WARPEDMODEL_PREC_BITS,
+            ]; REFS_PER_FRAME]; NUM_REF_FRAMES],
+            saved_lf_ref_deltas: [DEFAULT_LF_REF_DELTAS; NUM_REF_FRAMES],
+            saved_lf_mode_deltas: [DEFAULT_LF_MODE_DELTAS; NUM_REF_FRAMES],
             prev_gm_params,
             prev_lf_ref_deltas: DEFAULT_LF_REF_DELTAS,
             prev_lf_mode_deltas: DEFAULT_LF_MODE_DELTAS,
@@ -194,6 +210,43 @@ impl Default for FrameHeaderState {
             spatial_id: 0,
             skip_mode_allowed: None,
         }
+    }
+}
+
+impl FrameHeaderState {
+    /// Update the reference-frame store after a coded frame has been parsed.
+    /// This mirrors `save_frame_header()` and the `Saved*` arrays in §7.21.
+    pub fn apply_frame(&mut self, header: &FrameHeader) {
+        if header.show_existing_frame {
+            let slot = header.frame_to_show_map_idx as usize;
+            if slot < NUM_REF_FRAMES {
+                self.prev_frame_id = self.ref_frame_id[slot];
+                self.prev_gm_params = self.saved_gm_params[slot];
+                self.prev_lf_ref_deltas = self.saved_lf_ref_deltas[slot];
+                self.prev_lf_mode_deltas = self.saved_lf_mode_deltas[slot];
+            }
+            return;
+        }
+
+        for slot in 0..NUM_REF_FRAMES {
+            if header.refresh_frame_flags & (1 << slot) == 0 {
+                continue;
+            }
+            self.ref_order_hints[slot] = header.order_hint;
+            self.ref_frame_id[slot] = header.current_frame_id;
+            self.ref_upscaled_width[slot] = header.upscaled_width;
+            self.ref_frame_height[slot] = header.frame_height;
+            self.ref_render_width[slot] = header.render_width;
+            self.ref_render_height[slot] = header.render_height;
+            self.ref_frame_type[slot] = header.frame_type;
+            self.saved_gm_params[slot] = header.gm_params;
+            self.saved_lf_ref_deltas[slot] = header.loop_filter_ref_deltas;
+            self.saved_lf_mode_deltas[slot] = header.loop_filter_mode_deltas;
+        }
+        self.prev_frame_id = header.current_frame_id;
+        self.prev_gm_params = header.gm_params;
+        self.prev_lf_ref_deltas = header.loop_filter_ref_deltas;
+        self.prev_lf_mode_deltas = header.loop_filter_mode_deltas;
     }
 }
 
@@ -1082,8 +1135,14 @@ impl<'a, 'b> Parser<'a, 'b> {
             self.h.loop_filter_ref_deltas = DEFAULT_LF_REF_DELTAS;
             self.h.loop_filter_mode_deltas = DEFAULT_LF_MODE_DELTAS;
         } else {
-            self.h.loop_filter_ref_deltas = self.state.prev_lf_ref_deltas;
-            self.h.loop_filter_mode_deltas = self.state.prev_lf_mode_deltas;
+            let slot = self.h.ref_frame_idx[self.h.primary_ref_frame as usize] as usize;
+            if slot < NUM_REF_FRAMES {
+                self.h.loop_filter_ref_deltas = self.state.saved_lf_ref_deltas[slot];
+                self.h.loop_filter_mode_deltas = self.state.saved_lf_mode_deltas[slot];
+            } else {
+                self.h.loop_filter_ref_deltas = self.state.prev_lf_ref_deltas;
+                self.h.loop_filter_mode_deltas = self.state.prev_lf_mode_deltas;
+            }
         }
         if self.h.loop_filter_delta_enabled {
             self.h.loop_filter_delta_update = self.flag()?;
@@ -1346,7 +1405,17 @@ impl<'a, 'b> Parser<'a, 'b> {
         };
         let sub = if idx % 3 == 2 { 1i32 << prec_bits } else { 0 };
         let mx = 1i32 << abs_bits;
-        let reference = (self.state.prev_gm_params[ref_idx][idx] >> prec_diff) - sub;
+        let previous = if self.h.primary_ref_frame != PRIMARY_REF_NONE {
+            let slot = self.h.ref_frame_idx[self.h.primary_ref_frame as usize] as usize;
+            if slot < NUM_REF_FRAMES {
+                self.state.saved_gm_params[slot]
+            } else {
+                self.state.prev_gm_params
+            }
+        } else {
+            self.state.prev_gm_params
+        };
+        let reference = (previous[ref_idx][idx] >> prec_diff) - sub;
         let value = decode_signed_subexp_with_ref(&mut self.r, -mx, mx + 1, reference)?;
         self.h.gm_params[ref_idx][idx] = (value << prec_diff) + round;
         Ok(())
@@ -1703,6 +1772,60 @@ mod tests {
             with_reference_select > 0,
             "no skip_mode_present bit was exercised"
         );
+    }
+
+    fn parse_sequential(name: &str) -> Vec<FrameHeader> {
+        let ivf = parse_ivf(fixture(name)).unwrap();
+        let mut state = FrameHeaderState::default();
+        let mut sequence = None;
+        let mut headers = Vec::new();
+        for packet in &ivf.frames {
+            for obu in parse_obus(packet.payload).unwrap() {
+                match obu.header.obu_type {
+                    ObuType::SequenceHeader => {
+                        sequence = Some(parse_sequence_header_obu(&obu, None).unwrap());
+                    }
+                    ObuType::Frame => {
+                        let parts =
+                            parse_frame_obu(&obu, sequence.as_ref().unwrap(), &state).unwrap();
+                        if !parts.header.show_existing_frame {
+                            state.apply_frame(&parts.header);
+                        }
+                        headers.push(parts.header);
+                    }
+                    ObuType::FrameHeader => {
+                        let header =
+                            parse_frame_header_obu(&obu, sequence.as_ref().unwrap(), &state)
+                                .unwrap();
+                        if !header.show_existing_frame {
+                            state.apply_frame(&header);
+                        }
+                        headers.push(header);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        headers
+    }
+
+    #[test]
+    fn state_updates_parse_real_streams_without_skip_override() {
+        for (name, expected) in ORACLE_BITS {
+            assert_eq!(parse_sequential(name).len(), expected.len(), "{name}");
+        }
+
+        let headers = parse_sequential("320x240");
+        assert_eq!(
+            headers
+                .iter()
+                .filter(|h| !h.show_existing_frame)
+                .map(|h| h.order_hint)
+                .collect::<Vec<_>>(),
+            [0, 8, 4, 2, 1, 3, 6, 5, 7, 8, 9]
+        );
+        assert_eq!(headers.iter().filter(|h| h.show_existing_frame).count(), 3);
+        assert!(headers.iter().any(|h| h.skip_mode_allowed));
     }
 
     #[test]
