@@ -740,8 +740,15 @@ in what order the evidence gets produced.
       so the future butterfly port has an independent check. Four tests pin the
       cosine table, a DC-only constant block, a direct-formula comparison and
       separability.
-      Next: the bit-exact DCT/ADST/FLIPADST butterflies, the remaining intra
-      modes (directional, smooth, Paeth, CFL), then the libaom pixel comparison.
+      **Eighteenth slice:** the smooth and Paeth intra modes.
+      `sm_weights.rs` carries the specification's `Sm_Weights_Tx_*` tables (124
+      weights, FNV-1a `0x255be4e0964b9b30`), and `predict.rs` implements
+      `SMOOTH_PRED` (the four-term blend with `Round2(.,9)`), `SMOOTH_V`/`H`
+      (`Round2(.,8)`) and `PAETH_PRED` (base plus the three distance tests).
+      Three tests pin the weights, the constant-edge blend and the 200/100
+      vertical split, plus the three Paeth outcomes.
+      Next: the bit-exact DCT/ADST/FLIPADST butterflies, directional intra and
+      CFL, then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

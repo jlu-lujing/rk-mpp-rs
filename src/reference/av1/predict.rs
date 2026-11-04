@@ -68,9 +68,131 @@ pub fn h_predict(left: &[u16], log2_w: u32, log2_h: u32) -> Vec<u16> {
     out
 }
 
+/// `Sm_Weights_Tx_*` for a transform dimension.
+pub fn smooth_weights(log2: u32) -> &'static [u8] {
+    use crate::reference::av1::sm_weights::{
+        SM_WEIGHTS_TX_16X16, SM_WEIGHTS_TX_32X32, SM_WEIGHTS_TX_4X4, SM_WEIGHTS_TX_64X64,
+        SM_WEIGHTS_TX_8X8,
+    };
+    match log2 {
+        2 => &SM_WEIGHTS_TX_4X4,
+        3 => &SM_WEIGHTS_TX_8X8,
+        4 => &SM_WEIGHTS_TX_16X16,
+        5 => &SM_WEIGHTS_TX_32X32,
+        _ => &SM_WEIGHTS_TX_64X64,
+    }
+}
+
+/// `Round2(value, n)`.
+fn round2(value: i32, n: u32) -> u16 {
+    ((value + (1 << (n - 1))) >> n) as u16
+}
+
+/// The three smooth modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmoothMode {
+    Smooth,
+    SmoothV,
+    SmoothH,
+}
+
+/// `SMOOTH_PRED`, `SMOOTH_V_PRED` and `SMOOTH_H_PRED`.
+pub fn smooth_predict(
+    mode: SmoothMode,
+    above: &[u16],
+    left: &[u16],
+    log2_w: u32,
+    log2_h: u32,
+) -> Vec<u16> {
+    let w = 1usize << log2_w;
+    let h = 1usize << log2_h;
+    let weights_x = smooth_weights(log2_w);
+    let weights_y = smooth_weights(log2_h);
+    let mut out = vec![0u16; w * h];
+    for i in 0..h {
+        for j in 0..w {
+            let value = match mode {
+                SmoothMode::Smooth => {
+                    let wy = i32::from(weights_y[i]);
+                    let wx = i32::from(weights_x[j]);
+                    wy * i32::from(above[j])
+                        + (256 - wy) * i32::from(left[h - 1])
+                        + wx * i32::from(left[i])
+                        + (256 - wx) * i32::from(above[w - 1])
+                }
+                SmoothMode::SmoothV => {
+                    let wy = i32::from(weights_y[i]);
+                    wy * i32::from(above[j]) + (256 - wy) * i32::from(left[h - 1])
+                }
+                SmoothMode::SmoothH => {
+                    let wx = i32::from(weights_x[j]);
+                    wx * i32::from(left[i]) + (256 - wx) * i32::from(above[w - 1])
+                }
+            };
+            out[i * w + j] = round2(value, if mode == SmoothMode::Smooth { 9 } else { 8 });
+        }
+    }
+    out
+}
+
+/// `PAETH_PRED` (basic intra prediction process).
+pub fn paeth_predict(
+    above: &[u16],
+    left: &[u16],
+    top_left: u16,
+    log2_w: u32,
+    log2_h: u32,
+) -> Vec<u16> {
+    let w = 1usize << log2_w;
+    let h = 1usize << log2_h;
+    let mut out = vec![0u16; w * h];
+    for i in 0..h {
+        for j in 0..w {
+            let base = i32::from(above[j]) + i32::from(left[i]) - i32::from(top_left);
+            let p_left = (base - i32::from(left[i])).abs();
+            let p_top = (base - i32::from(above[j])).abs();
+            let p_top_left = (base - i32::from(top_left)).abs();
+            out[i * w + j] = if p_left <= p_top && p_left <= p_top_left {
+                left[i]
+            } else if p_top <= p_top_left {
+                above[j]
+            } else {
+                top_left
+            };
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smooth_modes_blend_the_edge_midpoints() {
+        let above = [128u16; 4];
+        let left = [128u16; 4];
+        for mode in [SmoothMode::Smooth, SmoothMode::SmoothV, SmoothMode::SmoothH] {
+            assert_eq!(smooth_predict(mode, &above, &left, 2, 2), [128; 16]);
+        }
+        // SMOOTH_V with a 200/100 split: the first row keeps the above value,
+        // the last row's weight 64 rounds to 125.
+        let above = [200u16; 4];
+        let left = [100u16; 4];
+        let pred = smooth_predict(SmoothMode::SmoothV, &above, &left, 2, 2);
+        assert_eq!(pred[0], 200);
+        assert_eq!(pred[12], 125);
+    }
+
+    #[test]
+    fn paeth_picks_the_closest_edge() {
+        // The prediction is `above + left - top_left`; each candidate wins when
+        // its distance to that base is the smallest.
+        assert_eq!(paeth_predict(&[100], &[50], 50, 0, 0), [100]);
+        // above == top_left makes the left sample the closest.
+        assert_eq!(paeth_predict(&[10], &[100], 10, 0, 0), [100]);
+        assert_eq!(paeth_predict(&[100], &[90], 95, 0, 0), [95]);
+    }
 
     #[test]
     fn dc_uses_both_edges_when_available() {

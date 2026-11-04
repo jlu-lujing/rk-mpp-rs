@@ -15,5 +15,6 @@ pub mod partition;
 pub mod predict;
 pub mod scan;
 pub mod scan_defaults;
+pub mod sm_weights;
 pub mod symbol;
 pub mod tx;
