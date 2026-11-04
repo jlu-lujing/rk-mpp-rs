@@ -73,6 +73,7 @@
 | AV1 OBU / IVF 解复用（规范 §5.2） | 完成：`obu.rs` — `obu_type` 表、`obu_header`/extension、有/无 size field 双路径、temporal/spatial 丢弃判定、`trailing_bits_needed(consumed_bits)`，以及 DKIF IVF 容器 demux，9 个测试含畸形码流。规范表里的 N/Y 列是 **Layer-specific**，不是 size field 约束 |
 | AV1 序列头（规范 §5.5） | 完成：`seq_header.rs` — reduced 快路径、timing/decoder model/operating parameters、全部 operating points（tier/model/显示延迟分支）、最大帧尺寸、frame id 长度、全部 feature flags、`color_config()` 三分支、film grain；`choose_operating_point()` 可由调用方指定；`parse_sequence_header_obu()` 校验 trailing bits。9 个测试 + 5 个真实 IVF fixture（50 帧）端到端解析，宽高/位深/4:2:0 与容器及 `ffprobe` 交叉一致 |
 | AV1 帧头（规范 §5.9） | 完成：`frame_header.rs` — 完整 `uncompressed_header()`（show_existing、帧类型/id/order hint、帧尺寸与 superres、`tile_info()`、量化/segmentation/delta LF、lossless 默认值、`loop_filter_params()`、CDEF、`lr_params()`、`tx_mode`、`skip_mode_params()`、global motion 与 `read_global_param()`、`film_grain_params()`）。`FrameHeaderState` 注入依赖解码状态的量，默认为 `setup_past_independence()`；`parse_frame_header_obu()` 校验 trailing bits，`parse_frame_obu()` 做 `byte_alignment()` 并返回 tile-group payload；`loop_filter_params()` / `lr_geometry()` 直连 `deblock.rs` / `lr_frame.rs`。11 个测试，含 8 个真实 IVF 共 112 个帧头的独立 Python 位位置比对、8 组首帧字段快照、ffmpeg `trace_headers` 的 film grain 逐语法元素快照与负向用例。`frame_header_copy()` 属 OBU 调度器，未实现 |
+| AV1 tile-group 拆包（§5.11） | 完成：`tile_group.rs` — `tile_start_and_end_present_flag`、`tg_start`/`tg_end`、byte alignment、1–4 byte little-endian tile size、最后 tile 隐式延伸到 group 末尾、多 group 去重/完整性聚合，7 个测试；真实 320×240 单 tile 与 2×2 tile fixture 均得到完整且无重叠的 tile slice |
 | AV1 全帧码流解码 / libaom 像素比对 | 未做：宿主 `aomdec`/`aomenc`/`ffmpeg` 齐备、fixture 在 `tests/data`，OBU / 序列头 / 帧头层已能从真实码流解析（112 个帧头逐位对齐），但仍缺串起 tile 熵解码→预测→重建→去块→CDEF→LR 的**帧级驱动**，以及帧间预测与参考帧管理；因此像素比对尚未开始 |
 
 ## 已知 C bug（本 crate 保留独立结果）
@@ -107,12 +108,13 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 42 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 43 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
 5 个真实 IVF fixture 的 50 帧上验证），以及 §5.9 完整帧头（8 个真实 IVF 共 112 个帧头逐位
-对齐，并经 ffmpeg `trace_headers` 交叉核对）。仍缺全帧 tile 驱动（含帧间预测与参考帧管理），
+对齐，并经 ffmpeg `trace_headers` 交叉核对），以及真实 tile-group 的字节范围拆包。仍缺全帧
+tile 驱动（含帧间预测与参考帧管理），
 因此 libaom 像素比对尚未开始（ADST8/16 快照、identity scaling、蝶形数值对齐也还欠 libaom
-佐证）。`cargo test --all-targets`：**972 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
+佐证）。`cargo test --all-targets`：**979 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
 干净。

@@ -32,4 +32,5 @@ pub mod sm_weights;
 pub mod subexp;
 pub mod symbol;
 pub mod tile;
+pub mod tile_group;
 pub mod tx;
