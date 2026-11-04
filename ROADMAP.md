@@ -701,8 +701,17 @@ in what order the evidence gets produced.
       `read_coeff_base` / `read_coeff_base_eob` / `read_coeff_br` decode them.
       Two tests pin the first rows of all three tables and the decoded levels
       (0/1/0, 3/3/3, 0/1/0) for fixed byte patterns.
-      Next: the `coeff_br` level loop, signs and Golomb, then inverse
-      transforms and the libaom pixel comparison.
+      **Thirteenth slice:** the level loop. `coeff_br_context` follows the
+      specification's three-neighbour magnitude rule with the 7/14 position
+      split, `decode_levels` walks the scan from EOB to zero applying
+      `coeff_base_eob`/`coeff_base` then the `coeff_br` loop (capped at
+      `COEFF_BASE_RANGE / (BR_CDF_SIZE-1)`), and `read_coeff_br` now caps
+      `txSzCtx` at `TX_32X32` as the CDF selection requires. Two tests pin the
+      br contexts and the full 4x4 level buffer for the zero and 0xff streams
+      (the offset table, not just the neighbour magnitude, decides the base
+      context - the independent reference disagreed until it included it).
+      Next: signs and Golomb, inverse transforms, then the libaom pixel
+      comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

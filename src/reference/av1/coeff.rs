@@ -276,7 +276,9 @@ pub fn coeff_base_eob_cdf_row(
 
 /// `TileCoeffBrCdf[ txSzCtx ][ ptype ][ ctx ]` row (four values + counter).
 pub fn coeff_br_cdf_row(q: usize, tx: TxSize, plane_type: usize, ctx: usize) -> &'static [u16] {
-    let index = (((q * 5 + tx_size_ctx(tx)) * 2 + plane_type) * LEVEL_CONTEXTS) + ctx;
+    // `Min( txSzCtx, TX_32X32 )`: the br table stops at index 3.
+    let tx_ctx = tx_size_ctx(tx).min(3);
+    let index = (((q * 5 + tx_ctx) * 2 + plane_type) * LEVEL_CONTEXTS) + ctx;
     let start = index * 5;
     &DEFAULT_COEFF_BR_CDF.values[start..start + 5]
 }
@@ -315,6 +317,94 @@ pub fn read_coeff_br(
 ) -> Result<u32, SymbolError> {
     let mut cdf = coeff_br_cdf_row(q, tx, plane_type, ctx).to_vec();
     Ok(decoder.read_symbol(&mut cdf)? as u32)
+}
+
+/// `NUM_BASE_LEVELS`.
+pub const NUM_BASE_LEVELS: u32 = 2;
+/// `COEFF_BASE_RANGE`.
+pub const COEFF_BASE_RANGE: u32 = 12;
+/// `BR_CDF_SIZE`.
+pub const BR_CDF_SIZE: u32 = 4;
+
+/// `Mag_Ref_Offset_With_Tx_Class[ 3 ][ 3 ][ 2 ]`.
+const MAG_REF_OFFSET: [[[i8; 2]; 3]; 3] = [
+    [[0, 1], [1, 0], [1, 1]],
+    [[0, 1], [1, 0], [0, 2]],
+    [[0, 1], [1, 0], [2, 0]],
+];
+
+/// `get_coeff_br_ctx` (0..20).
+pub fn coeff_br_context(tx: TxSize, pos: u32, quant: &[i32], class: TxClass) -> usize {
+    let adj = adjusted_tx_size(tx);
+    let bwl = log2(adj.width());
+    let txw = 1u32 << bwl;
+    let txh = adj.height();
+    let row = pos >> bwl;
+    let col = pos & (txw - 1);
+    let mut mag = 0u32;
+    for idx in 0..3 {
+        let ref_row = row as i32 + i32::from(MAG_REF_OFFSET[class as usize][idx][0]);
+        let ref_col = col as i32 + i32::from(MAG_REF_OFFSET[class as usize][idx][1]);
+        if ref_row >= 0 && ref_col >= 0 && ref_row < txh as i32 && ref_col < txw as i32 {
+            let at = (ref_row as u32 * txw + ref_col as u32) as usize;
+            let value = quant.get(at).copied().unwrap_or(0).unsigned_abs();
+            mag += value.min(COEFF_BASE_RANGE + NUM_BASE_LEVELS + 1);
+        }
+    }
+    let mag = ((mag + 1) >> 1).min(6) as usize;
+    if pos == 0 {
+        return mag;
+    }
+    let near = match class {
+        TxClass::TwoD => row < 2 && col < 2,
+        TxClass::Vertical => col == 0,
+        TxClass::Horizontal => row == 0,
+    };
+    mag + if near { 7 } else { 14 }
+}
+
+/// Decode the level loop of `coeffs()` into `quant` (the scan positions are the
+/// specification's `scan[c]` order). Signs are a separate pass.
+///
+/// Returns the number of coefficients written (`eob`).
+pub fn decode_levels(
+    decoder: &mut SymbolDecoder<'_>,
+    tx: TxSize,
+    quant: &mut [i32],
+    scan: &[u16],
+    eob: u32,
+    q: usize,
+    plane_type: usize,
+    class: TxClass,
+) -> Result<u32, SymbolError> {
+    for c in (0..eob).rev() {
+        let pos = u32::from(scan[c as usize]);
+        let level = if c == eob - 1 {
+            let ctx = coeff_base_context_eob(tx, c);
+            read_coeff_base_eob(decoder, tx, q, plane_type, ctx)?
+        } else {
+            let ctx = match class {
+                TxClass::TwoD => coeff_base_context_2d(tx, pos, quant),
+                other => coeff_base_context_1d(tx, pos, quant, other),
+            };
+            read_coeff_base(decoder, tx, q, plane_type, ctx)?
+        };
+        let mut level = level;
+        if level > NUM_BASE_LEVELS {
+            for _ in 0..(COEFF_BASE_RANGE / (BR_CDF_SIZE - 1)) {
+                let ctx = coeff_br_context(tx, pos, quant, class);
+                let br = read_coeff_br(decoder, tx, q, plane_type, ctx)?;
+                level += br;
+                if br < BR_CDF_SIZE - 1 {
+                    break;
+                }
+            }
+        }
+        if let Some(slot) = quant.get_mut(pos as usize) {
+            *slot = level as i32;
+        }
+    }
+    Ok(eob)
 }
 
 #[cfg(test)]
@@ -370,6 +460,57 @@ mod tests {
                 read_eob_pt(&mut decoder, TxSize::Tx4x4, 0, 0, true).unwrap(),
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn br_context_adds_the_position_offsets() {
+        let quant = [0i32; 16];
+        assert_eq!(coeff_br_context(TxSize::Tx4x4, 0, &quant, TxClass::TwoD), 0);
+        // (0,1) is near the DC corner: mag 0 + 7.
+        assert_eq!(coeff_br_context(TxSize::Tx4x4, 1, &quant, TxClass::TwoD), 7);
+        // (3,3) is far: mag 0 + 14.
+        assert_eq!(
+            coeff_br_context(TxSize::Tx4x4, 15, &quant, TxClass::TwoD),
+            14
+        );
+        // Vertical looks at the column, horizontal at the row.
+        assert_eq!(
+            coeff_br_context(TxSize::Tx4x4, 4, &quant, TxClass::Vertical),
+            7
+        );
+        assert_eq!(
+            coeff_br_context(TxSize::Tx4x4, 1, &quant, TxClass::Horizontal),
+            7
+        );
+        assert_eq!(
+            coeff_br_context(TxSize::Tx4x4, 4, &quant, TxClass::Horizontal),
+            14
+        );
+    }
+
+    #[test]
+    fn decode_levels_fills_the_quant_buffer() {
+        use crate::reference::av1::scan_defaults::DEFAULT_SCAN_4X4;
+        let mut expected_zero = [0i32; 16];
+        expected_zero[0] = 1;
+        let expected_max = [15i32; 16];
+        for (bytes, expected) in [([0u8; 8], expected_zero), ([0xffu8; 8], expected_max)] {
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            let eob = decode_eob(&mut decoder, TxSize::Tx4x4, 0, 0, true).unwrap();
+            let mut quant = [0i32; 16];
+            decode_levels(
+                &mut decoder,
+                TxSize::Tx4x4,
+                &mut quant,
+                &DEFAULT_SCAN_4X4.order,
+                eob,
+                0,
+                0,
+                TxClass::TwoD,
+            )
+            .unwrap();
+            assert_eq!(quant, expected, "{} bytes", bytes[0]);
         }
     }
 
