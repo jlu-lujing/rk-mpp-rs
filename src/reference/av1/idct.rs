@@ -454,9 +454,132 @@ pub fn inverse_adst16(t: &mut [i32; 16], r: u32) {
     adst_output_permute(t, 4);
 }
 
+/// One axis of the inverse transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxKind {
+    Dct,
+    Adst,
+    FlipAdst,
+    Identity,
+}
+
+/// `Inverse ADST process` with the FLIPADST input negation.
+pub fn inverse_adst(t: &mut [i32], n: u32, flip: bool, r: u32) {
+    if flip {
+        for (i, value) in t.iter_mut().enumerate() {
+            if i & 1 != 0 {
+                *value = -*value;
+            }
+        }
+    }
+    match n {
+        2 => {
+            let mut a = [t[0], t[1], t[2], t[3]];
+            inverse_adst4(&mut a, r);
+            t.copy_from_slice(&a);
+        }
+        3 => {
+            let mut a = [0i32; 8];
+            a.copy_from_slice(t);
+            inverse_adst8(&mut a, r);
+            t.copy_from_slice(&a);
+        }
+        _ => {
+            let mut a = [0i32; 16];
+            a.copy_from_slice(t);
+            inverse_adst16(&mut a, r);
+            t.copy_from_slice(&a);
+        }
+    }
+}
+
+/// Dispatch one 1D inverse transform of `1 << n` samples.
+pub fn inverse_transform_1d(t: &mut [i32], kind: TxKind, n: u32, r: u32) {
+    match kind {
+        TxKind::Dct => inverse_dct(t, n, r),
+        TxKind::Adst => inverse_adst(t, n, false, r),
+        TxKind::FlipAdst => inverse_adst(t, n, true, r),
+        TxKind::Identity => {}
+    }
+}
+
+/// `2D inverse transform process` for the rectangular transform pair.
+#[allow(clippy::too_many_arguments)]
+pub fn inverse_transform_2d(
+    dequant: &[i32],
+    w: usize,
+    h: usize,
+    row_kind: TxKind,
+    col_kind: TxKind,
+    row_shift: u32,
+    col_shift: u32,
+    row_clamp: u32,
+    col_clamp: u32,
+) -> Vec<i32> {
+    let log2_w = (w as u32).trailing_zeros();
+    let log2_h = (h as u32).trailing_zeros();
+    let mut residual = vec![0i32; w * h];
+    for i in 0..h {
+        let mut t = vec![0i32; w];
+        for (j, value) in t.iter_mut().enumerate() {
+            *value = if i < 32 && j < 32 {
+                dequant[i * w + j]
+            } else {
+                0
+            };
+        }
+        if log2_w.abs_diff(log2_h) == 1 {
+            for value in t.iter_mut() {
+                *value = (*value * 2896 + 2048) >> 12;
+            }
+        }
+        inverse_transform_1d(&mut t, row_kind, log2_w, row_clamp);
+        for (j, value) in t.iter().enumerate() {
+            let clipped = clip_to(*value >> row_shift.min(31), row_clamp);
+            residual[i * w + j] = clip_to(clipped, col_clamp);
+        }
+    }
+    for j in 0..w {
+        let mut t: Vec<i32> = (0..h).map(|i| residual[i * w + j]).collect();
+        inverse_transform_1d(&mut t, col_kind, log2_h, col_clamp);
+        for (i, value) in t.iter().enumerate() {
+            residual[i * w + j] = clip_to(*value >> col_shift.min(31), col_clamp);
+        }
+    }
+    residual
+}
+
+fn clip_to(value: i32, bits: u32) -> i32 {
+    let limit = 1i32 << (bits - 1);
+    value.clamp(-limit, limit - 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_2d_dc_is_a_constant_block() {
+        let mut coeffs = vec![0i32; 16];
+        coeffs[0] = 64 << 12;
+        let out = inverse_transform_2d(&coeffs, 4, 4, TxKind::Dct, TxKind::Dct, 0, 4, 16, 16);
+        // Row DC then column DC: the block is constant after the shifts.
+        assert!(out.iter().all(|v| *v == out[0]), "{out:?}");
+    }
+
+    #[test]
+    fn flipadst_negates_the_odd_inputs() {
+        let base = [10i32, 20, 30, 40];
+        let mut plain = [0i32; 4];
+        plain.copy_from_slice(&base);
+        inverse_adst(&mut plain, 2, true, 16);
+        let flipped: [i32; 4] =
+            std::array::from_fn(|i| if i & 1 != 0 { -base[i] } else { base[i] });
+        let mut expect = [0i32; 4];
+        expect.copy_from_slice(&flipped);
+        inverse_adst(&mut expect, 2, false, 16);
+        assert_eq!(plain, expect);
+    }
 
     #[test]
     fn inverse_dct_dc_is_constant() {

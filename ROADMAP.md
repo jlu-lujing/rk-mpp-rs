@@ -816,8 +816,15 @@ in what order the evidence gets produced.
       `[4,10,10,13,35,78,130,166]` for ADST8 and
       `[5,15,24,34,42,52,59,67,74,81,86,90,94,97,99,100]` for ADST16;
       these are regression values, not libaom-validated yet.
-      Next: FLIPADST, the 2D transform, the tile driver, then the libaom pixel
-      comparison.
+      **Twenty-ninth slice:** `TxKind` dispatch (`Dct`/`Adst`/`FlipAdst`/
+      `Identity`), `inverse_adst` with the FLIPADST odd-input negation, and
+      `inverse_transform_2d`: the row transform with the `2896/4096` rectangle
+      scale and `rowShift`, the intermediate `colClampRange` clip, then the
+      column transform and `colShift` (the specification's process). Two tests
+      pin a DC-only 4x4 DCT_DCT to a constant block and the FlipADST/odd-input
+      equivalence. The identity transform is currently a pass-through; the
+      specification's own identity scaling is still to be checked.
+      Next: the tile driver, CDEF/LR, then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
