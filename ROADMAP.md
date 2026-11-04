@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. Uniform horizontal tiles are byte-exact over two cells (`auto_tile` at 320x240 across IDR+P, forced two columns at 4608x64), with a traced C tile job differing in no non-address word of any section. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. WPP, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 41 AV1 slices covering the symbol decoder, default CDFs, partition, intra prediction, bit-exact inverse transforms, reconstruction, CDEF, loop restoration, LR subexp/tile-CDF syntax, the frame/stripe driver, the section 7.14 loop filter and the section 8.1/5.2/5.5 bitstream layer (descriptors, OBU+IVF demux, full sequence header, validated on 50 real fixture frames); frame-header parsing, a full-frame tile decode with inter prediction and the libaom pixel comparison remain** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 42 AV1 slices covering the symbol decoder, default CDFs, partition, intra prediction, bit-exact inverse transforms, reconstruction, CDEF, loop restoration, LR subexp/tile-CDF syntax, the frame/stripe driver, the section 7.14 loop filter, the section 8.1/5.2/5.5 bitstream layer (descriptors, OBU+IVF demux, full sequence header, validated on 50 real fixture frames) and the section 5.9 uncompressed frame header (validated on 112 real frame headers across eight IVFs, cross-checked with ffmpeg trace_headers); a full-frame tile decode with inter prediction and the libaom pixel comparison remain** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -1011,14 +1011,51 @@ in what order the evidence gets produced.
       7 trailing bits and a final `0x40` byte. `cargo test --all-targets`:
       961 passed / 0 failed / 27 board-only ignored; `cargo fmt --check`
       clean, no new warnings.
-      Next: the frame header. `frame_header_obu()` / `uncompressed_header()`
-      (including `loop_filter_params()` and `read_delta_lf()`, which would
-      turn the injected deblocking parameters into real bitstream values),
-      splitting `OBU_FRAME` into its header and tile group, a frame-level
-      driver chaining tile entropy decode, prediction, reconstruction,
-      deblocking, CDEF and loop restoration, and inter prediction with
-      reference-frame management. All of these are still needed before a
-      decoded frame can be compared with libaom; `aomdec`, `aomenc`,
+      **Forty-second slice:** `src/reference/av1/frame_header.rs` parses
+      `uncompressed_header()` (section 5.9) and feeds its output into the
+      post-processing modules already in place. Everything the syntax reads
+      from decoder state rather than the bitstream (reference dimensions and
+      order hints, previous global-motion parameters, saved loop-filter
+      deltas, `skipModeAllowed`) is supplied through `FrameHeaderState`,
+      defaulting to `setup_past_independence()`. The parser covers
+      `show_existing_frame`, frame type/flags, frame ids and order hints,
+      `primary_ref_frame` and buffer-removal timing, frame size with
+      superresolution/render size, `tile_info()` (with `MAX_TILE_AREA =
+      4096 * 2304` luma samples and the `tile_log2` increments),
+      quantization, segmentation, delta LF and the lossless defaults,
+      `loop_filter_params()`, CDEF, `lr_params()`/`LoopRestorationSize`,
+      `read_tx_mode()`, `frame_reference_mode()`, `skip_mode_params()` (both
+      the injected and the derived section 7.13 `skipModeAllowed`), global
+      motion with `read_global_param()` and the bitstream `decode_subexp`
+      forms, and `film_grain_params()`. `parse_frame_header_obu()` verifies
+      `trailing_bits()`; `parse_frame_obu()` performs `byte_alignment()` and
+      returns the tile-group payload. `FrameHeader::loop_filter_params()` and
+      `lr_geometry()` feed `deblock.rs` / `lr_frame.rs` directly;
+      `frame_header_copy()` (the `SeenFrameHeader` copy) is deliberately left
+      to the OBU scheduler. Independent validation: a standalone Python bit
+      parser derived all 112 frame-header bit positions across eight real
+      IVFs (14 each: 64x64, 96x96, 128x128, 192x192, 320x240, plus 8-bit
+      film grain, 10-bit film grain and a 2x2-tile fixture); every Rust
+      `bits_consumed` matches and every `byte_alignment()`/trailing-bit check
+      passes. `ffmpeg -bsf:v trace_headers` independently supplied the first
+      film-grain frame's per-element values (`base_q_idx` 102, LF
+      `[6,6,8,12]`, `grain_seed` 45231, 14/8/9 scaling points,
+      `ar_coeff_lag` 2, `cb_mult` 247, `cr_offset` 54, ...), pinned in a
+      snapshot test. Three parsing mistakes were found and fixed while
+      building that oracle: `MAX_TILE_AREA` is a pixel area, not 4096;
+      `film_grain_params()` transmits `grain_scaling_minus_8 f(2)` before
+      `ar_coeff_lag`; and inter frames with `reference_select = 1` read
+      `skip_mode_present` when `skipModeAllowed` is set (hence the injectable
+      state). Eleven tests cover the 112-frame oracle, eight key-frame field
+      snapshots, the header/tile-group split, the ffmpeg film-grain
+      snapshot, negative OBU/trailing-bit paths, `tile_log2` /
+      `get_relative_dist`, subexp vectors, and the deblock/LR conversions.
+      `cargo test --all-targets`: 972 passed / 0 failed / 27 board-only
+      ignored; `cargo fmt --check` clean, no new warnings.
+      Next: a frame-level driver chaining tile entropy decode, prediction,
+      reconstruction, deblocking, CDEF and loop restoration, plus inter
+      prediction with reference-frame management. These are still needed
+      before a decoded frame can be compared with libaom; `aomdec`, `aomenc`,
       `ffmpeg` and `ffprobe` are available on the host but no pixel
       comparison is claimed. Three numerical gaps also remain: the ADST8/16
       snapshots are regression values only, identity-transform scaling is
