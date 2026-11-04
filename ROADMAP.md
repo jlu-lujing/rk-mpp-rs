@@ -808,8 +808,16 @@ in what order the evidence gets produced.
       3344/3803 and `Round2(.,12)`. Two tests pin `[100,0,0,0] -> 32,61,82,93`
       and both permutations; the output-permutation expectation was hand-derived
       from the a/b/c/d index rule after the first guess was wrong.
-      Next: ADST8/ADST16 and FLIPADST, the 2D transform, the tile driver, then
-      the libaom pixel comparison.
+      **Twenty-eighth slice:** `inverse_adst8` and `inverse_adst16`, each
+      following its specification invocation list around the shared `Butterfly`
+      (permutation, the `B`/`H` stages with the `60-16i`/`62-8i` and
+      `48-32i`/`8+32i` angles, then the output permutation). A test pins
+      determinism, doubling linearity (+-2) and the snapshots
+      `[4,10,10,13,35,78,130,166]` for ADST8 and
+      `[5,15,24,34,42,52,59,67,74,81,86,90,94,97,99,100]` for ADST16;
+      these are regression values, not libaom-validated yet.
+      Next: FLIPADST, the 2D transform, the tile driver, then the libaom pixel
+      comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

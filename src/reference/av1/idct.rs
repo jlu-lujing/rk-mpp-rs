@@ -393,6 +393,67 @@ pub fn inverse_adst4(t: &mut [i32; 4], _r: u32) {
     t[3] = (x3 + 2048) >> 12;
 }
 
+/// `Inverse ADST8 process`.
+pub fn inverse_adst8(t: &mut [i32; 8], r: u32) {
+    adst_input_permute(t, 3);
+    let mut bf = Butterfly::new(t.to_vec(), r);
+    for i in 0..4 {
+        bf.b_rotation_flip(2 * i, 2 * i + 1, 60 - 16 * i as i32);
+    }
+    for i in 0..4 {
+        bf.h(i, 4 + i, false);
+    }
+    for i in 0..2 {
+        bf.b_rotation_flip(4 + 3 * i, 5 + i, 48 - 32 * i as i32);
+    }
+    for j in 0..2 {
+        for i in 0..2 {
+            bf.h(4 * j + i, 2 + 4 * j + i, false);
+        }
+    }
+    for i in 0..2 {
+        bf.b_rotation_flip(2 + 4 * i, 3 + 4 * i, 32);
+    }
+    t.copy_from_slice(&bf.t);
+    adst_output_permute(t, 3);
+}
+
+/// `Inverse ADST16 process`.
+pub fn inverse_adst16(t: &mut [i32; 16], r: u32) {
+    adst_input_permute(t, 4);
+    let mut bf = Butterfly::new(t.to_vec(), r);
+    for i in 0..8 {
+        bf.b_rotation_flip(2 * i, 2 * i + 1, 62 - 8 * i as i32);
+    }
+    for i in 0..8 {
+        bf.h(i, 8 + i, false);
+    }
+    for i in 0..2 {
+        bf.b_rotation_flip(8 + 2 * i, 9 + 2 * i, 56 - 32 * i as i32);
+        bf.b_rotation_flip(13 + 2 * i, 12 + 2 * i, 8 + 32 * i as i32);
+    }
+    for j in 0..2 {
+        for i in 0..4 {
+            bf.h(8 * j + i, 4 + 8 * j + i, false);
+        }
+    }
+    for j in 0..2 {
+        for i in 0..2 {
+            bf.b_rotation_flip(4 + 8 * j + 3 * i, 5 + 8 * j + i, 48 - 32 * i as i32);
+        }
+    }
+    for j in 0..4 {
+        for i in 0..2 {
+            bf.h(4 * j + i, 2 + 4 * j + i, false);
+        }
+    }
+    for i in 0..4 {
+        bf.b_rotation_flip(2 + 4 * i, 3 + 4 * i, 32);
+    }
+    t.copy_from_slice(&bf.t);
+    adst_output_permute(t, 4);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +484,39 @@ mod tests {
         for (a, b) in scaled.iter().zip(doubled.iter()) {
             assert!((a - b).abs() <= 2, "{scaled:?} vs {doubled:?}");
         }
+    }
+
+    #[test]
+    fn adst8_and_adst16_are_linear_and_deterministic() {
+        let base8 = [100i32, -50, 20, 0, 0, 0, 0, 0];
+        let mut a = base8;
+        inverse_adst8(&mut a, 16);
+        let mut again = base8;
+        inverse_adst8(&mut again, 16);
+        assert_eq!(a, again);
+        let doubled = base8.map(|v| v * 2);
+        let mut b = doubled;
+        inverse_adst8(&mut b, 16);
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert!((x * 2 - y).abs() <= 2, "{a:?} vs {b:?}");
+        }
+
+        let mut base16 = [0i32; 16];
+        base16[0] = 100;
+        let mut c = base16;
+        inverse_adst16(&mut c, 16);
+        let mut d = base16.map(|v| v * 2);
+        inverse_adst16(&mut d, 16);
+        for (x, y) in c.iter().zip(d.iter()) {
+            assert!((x * 2 - y).abs() <= 2, "{c:?} vs {d:?}");
+        }
+        // Regression snapshots; numeric validation against libaom needs the
+        // 2D/tile path.
+        assert_eq!(a, [4, 10, 10, 13, 35, 78, 130, 166]);
+        assert_eq!(
+            c,
+            [5, 15, 24, 34, 42, 52, 59, 67, 74, 81, 86, 90, 94, 97, 99, 100]
+        );
     }
 
     #[test]
