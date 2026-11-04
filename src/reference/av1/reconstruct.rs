@@ -6,7 +6,7 @@ use crate::reference::av1::idct::{inverse_transform_2d, TxKind};
 use crate::reference::av1::intra::{IntraMode, UvMode};
 use crate::reference::av1::intra_sink::IntraSyntaxBlock;
 use crate::reference::av1::palette::predict_palette_plane;
-use crate::reference::av1::predict::{intra_filter_type, predict_intra, IntraEdges};
+use crate::reference::av1::predict::{cfl_predict, intra_filter_type, predict_intra, IntraEdges};
 use crate::reference::av1::quant::{ac_q, dc_q, dequantize};
 use crate::reference::av1::tx::row_shift;
 use crate::reference::av1::tx::TxSize;
@@ -162,6 +162,14 @@ pub struct PlaneQDelta {
     pub ac: i32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ReconstructedLuma<'a> {
+    pub samples: &'a [u16],
+    pub stride: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
 fn uv_intra_mode(mode: UvMode) -> Option<IntraMode> {
     Some(match mode {
         UvMode::Dc => IntraMode::Dc,
@@ -198,14 +206,18 @@ pub fn reconstruct_intra_block_plane(
     enable_intra_edge_filter: bool,
     above_mode: Option<IntraMode>,
     left_mode: Option<IntraMode>,
+    luma: Option<ReconstructedLuma<'_>>,
 ) -> Result<(), &'static str> {
+    let is_cfl = plane > 0 && syntax.uv_mode == Some(UvMode::Cfl);
     let (mode, angle_delta) = if plane == 0 {
         (syntax.y_mode, syntax.angle_y)
+    } else if is_cfl {
+        (IntraMode::Dc, 0)
     } else {
         let mode = syntax
             .uv_mode
             .and_then(uv_intra_mode)
-            .ok_or("CFL prediction is not wired into plane reconstruction")?;
+            .ok_or("invalid chroma intra mode")?;
         (mode, syntax.angle_uv)
     };
     let qindex = (i32::from(syntax.qindex) + q_delta.dc).clamp(0, 255);
@@ -243,6 +255,53 @@ pub fn reconstruct_intra_block_plane(
         .map_err(|_| "invalid palette prediction")?;
         let prediction = if let Some(prediction) = palette_prediction {
             Some(prediction)
+        } else if is_cfl {
+            let luma = luma.ok_or("CFL prediction needs the reconstructed luma plane")?;
+            let edges = IntraEdges::from_plane(
+                frame,
+                stride,
+                tx.x,
+                tx.y,
+                w,
+                h,
+                have_above,
+                have_left,
+                have_above_right,
+                have_below_left,
+                plane_width - 1,
+                plane_height - 1,
+                bit_depth,
+            );
+            let dc = predict_intra(
+                IntraMode::Dc,
+                &edges,
+                (w as u32).trailing_zeros(),
+                (h as u32).trailing_zeros(),
+                0,
+                false,
+                0,
+                bit_depth,
+            );
+            let alpha = if plane == 1 {
+                i32::from(syntax.cfl_alphas.alpha_u)
+            } else {
+                i32::from(syntax.cfl_alphas.alpha_v)
+            };
+            Some(cfl_predict(
+                luma.samples,
+                luma.stride,
+                tx.x,
+                tx.y,
+                w,
+                h,
+                sub_x,
+                sub_y,
+                luma.width,
+                luma.height,
+                alpha,
+                &dc,
+                bit_depth,
+            ))
         } else if plane == 0 {
             syntax.filter_intra.map(|filter| {
                 let edges = IntraEdges::from_plane(
@@ -506,6 +565,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(&plane[..4], &[128; 4]);
@@ -576,6 +636,7 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -638,8 +699,79 @@ mod tests {
             false,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(&plane[..4], &[128; 4]);
+    }
+
+    #[test]
+    fn syntax_cfl_uses_the_reconstructed_luma_plane() {
+        use crate::reference::av1::cfl::CflAlphas;
+        use crate::reference::av1::intra_sink::IntraSyntaxTx;
+        use crate::reference::av1::palette::{PaletteModeInfo, PaletteTokens};
+        use crate::reference::av1::partition::BLOCK_SIZES;
+        use crate::reference::av1::tile::DecodedBlock;
+
+        let syntax = IntraSyntaxBlock {
+            block: DecodedBlock {
+                row: 0,
+                col: 0,
+                size: BLOCK_SIZES[0],
+            },
+            segment_id: 0,
+            skip: false,
+            lossless: false,
+            qindex: 40,
+            y_mode: IntraMode::Dc,
+            uv_mode: Some(UvMode::Cfl),
+            cfl_alphas: CflAlphas {
+                joint_sign: 7,
+                alpha_u: 2,
+                alpha_v: -2,
+                index: 0,
+            },
+            angle_y: 0,
+            angle_uv: 0,
+            filter_intra: None,
+            palette: PaletteModeInfo::default(),
+            palette_tokens: PaletteTokens { y: None, uv: None },
+            tx: TxSize::Tx4x4,
+            transforms: vec![IntraSyntaxTx {
+                plane: 1,
+                x: 0,
+                y: 0,
+                tx: TxSize::Tx4x4,
+                tx_type: TxType::DctDct,
+                all_zero: true,
+                eob: 0,
+                quant: vec![0; 16],
+            }],
+        };
+        let luma = vec![100u16; 8 * 8];
+        let mut chroma = vec![0u16; 16];
+        reconstruct_intra_block_plane(
+            &mut chroma,
+            4,
+            4,
+            4,
+            1,
+            1,
+            1,
+            &syntax,
+            PlaneQDelta::default(),
+            8,
+            false,
+            None,
+            None,
+            Some(ReconstructedLuma {
+                samples: &luma,
+                stride: 8,
+                width: 8,
+                height: 8,
+            }),
+        )
+        .unwrap();
+        assert_eq!(chroma, [128; 16]);
     }
 }
