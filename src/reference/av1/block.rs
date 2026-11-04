@@ -59,23 +59,15 @@ pub fn decode_intra_block(
     left_skip: bool,
 ) -> Result<IntraBlock, SymbolError> {
     let skip = read_skip(decoder, above_skip, left_skip)?;
-    if skip {
-        return Ok(IntraBlock {
-            skip,
-            y_mode: None,
-            uv_mode: None,
-        });
-    }
-    let y_mode = if key_frame {
-        read_intra_frame_y_mode(decoder, above_mode, left_mode)?
-    } else {
-        read_y_mode(decoder, size)?
-    };
-    let uv_mode = if have_chroma {
-        Some(read_uv_mode(decoder, y_mode, cfl_allowed(size, lossless))?)
-    } else {
-        None
-    };
+    let (y_mode, uv_mode) = decode_intra_modes(
+        decoder,
+        size,
+        key_frame,
+        above_mode,
+        left_mode,
+        have_chroma,
+        lossless,
+    )?;
     Ok(IntraBlock {
         skip,
         y_mode: Some(y_mode),
@@ -99,13 +91,60 @@ pub fn decode_intra_block_with_cdf(
     disable_cdf_update: bool,
 ) -> Result<IntraBlock, CdfStateError> {
     let skip = read_skip_with_cdf(decoder, cdfs, above_skip, left_skip, disable_cdf_update)?;
-    if skip {
-        return Ok(IntraBlock {
-            skip,
-            y_mode: None,
-            uv_mode: None,
-        });
-    }
+    let (y_mode, uv_mode) = decode_intra_modes_with_cdf(
+        decoder,
+        cdfs,
+        size,
+        key_frame,
+        above_mode,
+        left_mode,
+        have_chroma,
+        lossless,
+        disable_cdf_update,
+    )?;
+    Ok(IntraBlock {
+        skip,
+        y_mode: Some(y_mode),
+        uv_mode,
+    })
+}
+
+/// Decode only `intra_frame_y_mode`/`y_mode` and `uv_mode`.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_intra_modes(
+    decoder: &mut SymbolDecoder<'_>,
+    size: BlockSize,
+    key_frame: bool,
+    above_mode: Option<IntraMode>,
+    left_mode: Option<IntraMode>,
+    have_chroma: bool,
+    lossless: bool,
+) -> Result<(IntraMode, Option<UvMode>), SymbolError> {
+    let y_mode = if key_frame {
+        read_intra_frame_y_mode(decoder, above_mode, left_mode)?
+    } else {
+        read_y_mode(decoder, size)?
+    };
+    let uv_mode = if have_chroma {
+        Some(read_uv_mode(decoder, y_mode, cfl_allowed(size, lossless))?)
+    } else {
+        None
+    };
+    Ok((y_mode, uv_mode))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decode_intra_modes_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    size: BlockSize,
+    key_frame: bool,
+    above_mode: Option<IntraMode>,
+    left_mode: Option<IntraMode>,
+    have_chroma: bool,
+    lossless: bool,
+    disable_cdf_update: bool,
+) -> Result<(IntraMode, Option<UvMode>), CdfStateError> {
     let y_mode = if key_frame {
         crate::reference::av1::intra::read_intra_frame_y_mode_with_cdf(
             decoder,
@@ -128,11 +167,7 @@ pub fn decode_intra_block_with_cdf(
     } else {
         None
     };
-    Ok(IntraBlock {
-        skip,
-        y_mode: Some(y_mode),
-        uv_mode,
-    })
+    Ok((y_mode, uv_mode))
 }
 
 #[cfg(test)]
@@ -178,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn skipped_block_reads_no_modes() {
+    fn skipped_intra_block_still_reads_modes() {
         let mut decoder = SymbolDecoder::init(&[0xffu8; 32]).unwrap();
         let block = decode_intra_block(
             &mut decoder,
@@ -193,8 +228,8 @@ mod tests {
         )
         .unwrap();
         assert!(block.skip);
-        assert_eq!(block.y_mode, None);
-        assert_eq!(block.uv_mode, None);
+        assert!(block.y_mode.is_some());
+        assert!(block.uv_mode.is_some());
     }
 
     #[test]
