@@ -48,9 +48,9 @@
 整体约完成 82%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 83%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 54 个
-AV1 slice（最新为完整 transform-block 系数消费：all_zero、EOB、levels、signs 与
-TileContext 更新；此前为 `all_zero`、transform type、stateful tile 入口、
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 55 个
+AV1 slice（最新为 block mode 状态：segment id、neg_deinterleave 与方向 angle delta；
+此前为完整 transform-block 系数消费、`all_zero`、transform type、stateful tile 入口、
 stateful coefficient syntax、
 partition/mode/skip/tx_depth、
 可变 CDF 状态、residual transform 布局、

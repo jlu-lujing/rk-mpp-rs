@@ -6,8 +6,8 @@
 //! types code `y_mode` with `TileYModeCdf[ Size_Group[ MiSize ] ]`.
 
 use crate::reference::av1::cdf_defaults::{
-    CdfTable, DEFAULT_INTRA_FRAME_Y_MODE_CDF, DEFAULT_UV_MODE_CFL_ALLOWED_CDF,
-    DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_Y_MODE_CDF,
+    CdfTable, DEFAULT_ANGLE_DELTA_CDF, DEFAULT_INTRA_FRAME_Y_MODE_CDF,
+    DEFAULT_UV_MODE_CFL_ALLOWED_CDF, DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF, DEFAULT_Y_MODE_CDF,
 };
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::partition::{size_group, BlockSize};
@@ -258,6 +258,30 @@ pub fn read_uv_mode_with_cdf(
     Ok(UvMode::from_symbol(symbol).expect("uv mode within range"))
 }
 
+/// `intra_angle_info_y/uv`: the signed angle delta in `-3..=3`. Non-directional
+/// modes and blocks smaller than 8x8 consume no symbol.
+pub fn read_angle_delta_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    mode: IntraMode,
+    size: BlockSize,
+    disable_cdf_update: bool,
+) -> Result<i32, CdfStateError> {
+    let directional = mode as u8 >= IntraMode::V as u8 && mode as u8 <= IntraMode::D67 as u8;
+    if size.width < 8 || size.height < 8 || !directional {
+        return Ok(0);
+    }
+    let row = mode as usize - IntraMode::V as usize;
+    let symbol = cdfs.read_symbol(
+        decoder,
+        &DEFAULT_ANGLE_DELTA_CDF,
+        row * 7,
+        7,
+        disable_cdf_update,
+    )?;
+    Ok(symbol as i32 - 3)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +335,47 @@ mod tests {
         assert_eq!(
             read_uv_mode(&mut decoder, IntraMode::Dc, true).unwrap(),
             UvMode::Cfl
+        );
+    }
+
+    #[test]
+    fn angle_delta_is_signed_and_limited_to_directional_large_blocks() {
+        let mut cdfs = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&[0u8; 8]).unwrap();
+        assert_eq!(
+            read_angle_delta_with_cdf(
+                &mut decoder,
+                &mut cdfs,
+                IntraMode::D45,
+                named("BLOCK_8X8"),
+                false
+            )
+            .unwrap(),
+            -3
+        );
+        let mut cdfs = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&[0u8; 8]).unwrap();
+        assert_eq!(
+            read_angle_delta_with_cdf(
+                &mut decoder,
+                &mut cdfs,
+                IntraMode::D45,
+                named("BLOCK_4X8"),
+                false
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            read_angle_delta_with_cdf(
+                &mut decoder,
+                &mut cdfs,
+                IntraMode::Dc,
+                named("BLOCK_8X8"),
+                false
+            )
+            .unwrap(),
+            0
         );
     }
 

@@ -30,6 +30,7 @@ pub mod residual;
 pub mod restoration;
 pub mod scan;
 pub mod scan_defaults;
+pub mod segment;
 pub mod seq_header;
 pub mod sm_weights;
 pub mod stream;
