@@ -24,6 +24,7 @@ pub mod predict;
 pub mod quant;
 pub mod quant_tables;
 pub mod reconstruct;
+pub mod residual;
 pub mod restoration;
 pub mod scan;
 pub mod scan_defaults;
