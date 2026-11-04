@@ -5,6 +5,7 @@
 //! symbol decoder (`AV1 Bitstream & Decoding Process Specification` 8.2),
 //! because every tile syntax element is read through it.
 
+pub mod bitstream;
 pub mod block;
 pub mod cdef;
 pub mod cdf_defaults;
@@ -16,6 +17,7 @@ pub mod idct;
 pub mod intra;
 pub mod lr_frame;
 pub mod lr_syntax;
+pub mod obu;
 pub mod partition;
 pub mod predict;
 pub mod quant;
@@ -24,6 +26,7 @@ pub mod reconstruct;
 pub mod restoration;
 pub mod scan;
 pub mod scan_defaults;
+pub mod seq_header;
 pub mod sm_weights;
 pub mod subexp;
 pub mod symbol;

@@ -69,7 +69,10 @@
 | AV1 LR 帧/条带驱动（§7.17） | 完成：unit 网格几何、`stripeNum`、4x4 prelude、写回，11 个测试；网格可由码流层直接填充 |
 | AV1 `read_lr` / `read_lr_unit` 码流层 | 完成：tile 级可变 CDF 与 `RefLrWiener`/`RefSgrXqd` 复位、`use_wiener`/`use_sgrproj`/`restoration_type` 符号、Wiener 两遍抽头与 SGRPROJ set/xqd（含 radius=0 的 `Clip3`）、superres 与 intrabc、unit 网格遍历，15 个测试。此前记为「缺 `TileWienerCdf`/`TileSgrprojCdf` 默认表」是误判：三张 `Default_*` 表本就在 `cdf_defaults.rs` 841–856 行，`Tile*` 是它们的每 tile 可变副本 |
 | AV1 去块 / loop filter（§7.14） | 完成：帧级遍历（先竖后横）、自适应强度（sharpness / ref-mode deltas / segment feature / delta_lf）、`hev`/`filter`/`flat`/`flat2` 掩膜、`filter4` 窄滤波与 log2Size 3/4 宽滤波，17 个测试含独立计算的规范向量与 8/10-bit。每 4x4 的 `MiSizes`/`LoopfilterTxSizes`/`Skips`/`RefFrames`/`DeltaLFs` 由调用方经 `DeblockGrid` 注入 |
-| AV1 全帧码流解码 / libaom 像素比对 | 未做：宿主 `aomdec`/`aomenc`/`ffmpeg` 齐备、fixture 在 `tests/data`，但 `src/reference/av1/` 目前是**各自独立验证的组件集合**——没有 OBU/帧头解析（故 `loop_filter_params()`/`read_delta_lf()` 未从码流读取）、没有串起 tile 熵解码→预测→重建→去块→CDEF→LR 的帧级驱动、没有帧间预测与参考帧管理 |
+| AV1 位流描述符（规范 §8.1） | 完成：`bitstream.rs` — MSB-first `f(n)`、`le(n)`、`uvlc()`、`leb128()`（含 `Leb128Bytes` 与 ≤2³²−1 校验）、`su(n)`、`ns(n)`、`byte_alignment`、`trailing_bits`、`skip_bits`、`get_position`，9 个测试含 `n=5` 的 `ns(n)` 编码表与错误路径 |
+| AV1 OBU / IVF 解复用（规范 §5.2） | 完成：`obu.rs` — `obu_type` 表、`obu_header`/extension、有/无 size field 双路径、temporal/spatial 丢弃判定、`trailing_bits_needed(consumed_bits)`，以及 DKIF IVF 容器 demux，9 个测试含畸形码流。规范表里的 N/Y 列是 **Layer-specific**，不是 size field 约束 |
+| AV1 序列头（规范 §5.5） | 完成：`seq_header.rs` — reduced 快路径、timing/decoder model/operating parameters、全部 operating points（tier/model/显示延迟分支）、最大帧尺寸、frame id 长度、全部 feature flags、`color_config()` 三分支、film grain；`choose_operating_point()` 可由调用方指定；`parse_sequence_header_obu()` 校验 trailing bits。9 个测试 + 5 个真实 IVF fixture（50 帧）端到端解析，宽高/位深/4:2:0 与容器及 `ffprobe` 交叉一致 |
+| AV1 全帧码流解码 / libaom 像素比对 | 未做：宿主 `aomdec`/`aomenc`/`ffmpeg` 齐备、fixture 在 `tests/data`，OBU 与序列头层已能从真实码流解析，但仍缺**帧头解析**（`frame_header_obu()`/`uncompressed_header()`，故 `loop_filter_params()`/`read_delta_lf()` 仍未从码流读取）、`OBU_FRAME` 的 header/tile group 拆分、串起 tile 熵解码→预测→重建→去块→CDEF→LR 的帧级驱动，以及帧间预测与参考帧管理 |
 
 ## 已知 C bug（本 crate 保留独立结果）
 
@@ -103,10 +106,11 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 40 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 41 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
-§7.14 去块滤波。仍缺 OBU/帧头解析、全帧 tile 驱动（含帧间预测与参考帧管理），因此
-libaom 像素比对尚未开始（ADST8/16 快照、identity scaling、蝶形数值对齐也还欠 libaom
-佐证）。`cargo test --all-targets`：**934 通过 / 0 失败 / 27 板级 ignore**，
-`cargo fmt --check` 干净。
+§7.14 去块滤波，以及 §8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
+5 个真实 IVF fixture 的 50 帧上验证）。仍缺帧头解析、`OBU_FRAME` 拆分、全帧 tile 驱动
+（含帧间预测与参考帧管理），因此 libaom 像素比对尚未开始（ADST8/16 快照、identity
+scaling、蝶形数值对齐也还欠 libaom 佐证）。`cargo test --all-targets`：**961 通过 /
+0 失败 / 27 板级 ignore**，`cargo fmt --check` 干净。
