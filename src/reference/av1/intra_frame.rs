@@ -1,5 +1,8 @@
 //! Frame-level driver for an intra (key-frame) AV1 picture.
 
+use crate::reference::av1::deblock::{
+    loop_filter_frame_dual_grid, DeblockCell, DeblockEdgeInfo, DeblockGrid, DeblockPlane,
+};
 use crate::reference::av1::frame_header::FrameHeader;
 use crate::reference::av1::intra::{IntraMode, UvMode};
 use crate::reference::av1::intra_sink::IntraSyntaxBlock;
@@ -220,6 +223,103 @@ pub fn reconstruct_intra_frame(
     Ok(frame)
 }
 
+fn deblock_grid(header: &FrameHeader, blocks: &[IntraSyntaxBlock], vertical: bool) -> DeblockGrid {
+    let cell = DeblockCell {
+        info: DeblockEdgeInfo::default(),
+        apply_filter: false,
+        filter_size: 4,
+    };
+    let mut grid = DeblockGrid::uniform(header.mi_cols, header.mi_rows, cell);
+    for block in blocks {
+        let w = block.block.size.num_4x4_wide() as usize;
+        let h = block.block.size.num_4x4_high() as usize;
+        let (block_extent, tx_extent) = if vertical {
+            (block.block.size.width as usize, block.tx.width() as usize)
+        } else {
+            (block.block.size.height as usize, block.tx.height() as usize)
+        };
+        let info = DeblockEdgeInfo {
+            ref_frame: 0,
+            mode_type: 0,
+            delta_lf: block.delta_lf,
+            seg_lvl_alt_lf: None,
+        };
+        for row in block.block.row..(block.block.row + h).min(header.mi_rows) {
+            for col in block.block.col..(block.block.col + w).min(header.mi_cols) {
+                let coordinate = if vertical {
+                    (col - block.block.col) * 4
+                } else {
+                    (row - block.block.row) * 4
+                };
+                grid.cells[row * header.mi_cols + col] = DeblockCell::from_geometry(
+                    coordinate,
+                    vertical as usize,
+                    block_extent,
+                    tx_extent,
+                    tx_extent,
+                    block.skip,
+                    true,
+                    info,
+                );
+            }
+        }
+    }
+    grid
+}
+
+/// Apply §7.14 deblocking to the reconstructed frame.
+pub fn apply_intra_deblock(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    blocks: &[IntraSyntaxBlock],
+    frame: &mut IntraFrame,
+) {
+    let vertical = deblock_grid(header, blocks, true);
+    let horizontal = deblock_grid(header, blocks, false);
+    let mut planes = vec![DeblockPlane::new(
+        &frame.y.data,
+        frame.y.stride,
+        frame.y.width,
+        frame.y.height,
+        frame.bit_depth,
+    )];
+    if let Some(u) = frame.u.as_ref() {
+        planes.push(DeblockPlane::new(
+            &u.data,
+            u.stride,
+            u.width,
+            u.height,
+            frame.bit_depth,
+        ));
+    }
+    if let Some(v) = frame.v.as_ref() {
+        planes.push(DeblockPlane::new(
+            &v.data,
+            v.stride,
+            v.width,
+            v.height,
+            frame.bit_depth,
+        ));
+    }
+    loop_filter_frame_dual_grid(
+        &mut planes,
+        &header.loop_filter_params(),
+        &vertical,
+        &horizontal,
+        frame.coded_width,
+        frame.coded_height,
+        u32::from(sequence.color.subsampling_x),
+        u32::from(sequence.color.subsampling_y),
+    );
+    frame.y.data = planes.remove(0).samples;
+    if let Some(u) = frame.u.as_mut() {
+        u.data = planes.remove(0).samples;
+    }
+    if let Some(v) = frame.v.as_mut() {
+        v.data = planes.remove(0).samples;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,7 +356,7 @@ mod tests {
             IntraTileBlockSink::new(config),
         )
         .unwrap();
-        let picture =
+        let mut picture =
             reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap();
         assert_eq!(
             (picture.viewport_width, picture.viewport_height),
@@ -293,5 +393,9 @@ mod tests {
         assert_eq!(hash(&picture.y.data), 0x91bf3f1db09c78e9);
         assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0x704bc148f0e31fbc);
         assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0x63ac4af721f7b9d3);
+        apply_intra_deblock(sequence, &frame.header, &decoded.sink.blocks, &mut picture);
+        assert_eq!(hash(&picture.y.data), 0x80d4b73dddfa95ff);
+        assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0xd9a3fdb700876a9d);
+        assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0x02018d345616f502);
     }
 }

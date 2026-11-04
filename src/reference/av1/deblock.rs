@@ -608,6 +608,63 @@ pub fn loop_filter_frame(
     }
 }
 
+/// `loop_filter_frame` with separate mode-info grids for the vertical and
+/// horizontal passes. Rectangular blocks need this because their block and
+/// transform extents differ by direction.
+pub fn loop_filter_frame_dual_grid(
+    planes: &mut [DeblockPlane],
+    params: &LoopFilterParams,
+    vertical_grid: &DeblockGrid,
+    horizontal_grid: &DeblockGrid,
+    frame_width: usize,
+    frame_height: usize,
+    subsampling_x: u32,
+    subsampling_y: u32,
+) {
+    assert_eq!(vertical_grid.mi_cols, horizontal_grid.mi_cols);
+    assert_eq!(vertical_grid.mi_rows, horizontal_grid.mi_rows);
+    for (index, plane) in planes.iter_mut().enumerate() {
+        if index != 0 && params.level[index + 1] == 0 {
+            continue;
+        }
+        let (sub_x, sub_y) = if index == 0 {
+            (0, 0)
+        } else {
+            (subsampling_x, subsampling_y)
+        };
+        let row_step = 1usize << sub_y;
+        let col_step = 1usize << sub_x;
+        for pass in 0..2 {
+            let grid = if pass == 0 {
+                vertical_grid
+            } else {
+                horizontal_grid
+            };
+            let mut row = 0;
+            while row < grid.mi_rows {
+                let mut col = 0;
+                while col < grid.mi_cols {
+                    filter_edge(
+                        plane,
+                        index,
+                        pass,
+                        row,
+                        col,
+                        params,
+                        grid,
+                        frame_width,
+                        frame_height,
+                        sub_x,
+                        sub_y,
+                    );
+                    col += col_step;
+                }
+                row += row_step;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
