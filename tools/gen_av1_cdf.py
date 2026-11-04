@@ -3,6 +3,9 @@
 
     curl -sL https://aomediacodec.github.io/av1-spec/ -o /tmp/av1spec.html
     python3 tools/gen_av1_cdf.py /tmp/av1spec.html > src/reference/av1/cdf_defaults.rs
+    cargo fmt -- src/reference/av1/cdf_defaults.rs
+
+The generated file is not rustfmt-shaped; run `cargo fmt` after regenerating.
 
 Only the non-coefficient tables are emitted: the specification lists 74 arrays
 between the default tables and the coefficient section, and every value is a
