@@ -262,6 +262,7 @@ fn encode_h265_headers(
         refresh: None,
         split: h265_syntax::SliceSplit::default(),
         syntax: h265_syntax::SyntaxOptions::default(),
+        tile: None,
         roi_fd: -1,
         roi_qp_fd: -1,
         input_fd: -1,
@@ -313,6 +314,14 @@ fn parse_h265_syntax_option(
     text: &str,
     options: &mut h265_syntax::SyntaxOptions,
 ) -> Result<bool, String> {
+    if text == "tile:auto" {
+        options.auto_tile = true;
+        return Ok(true);
+    }
+    if text == "tile:off" {
+        options.auto_tile = false;
+        return Ok(true);
+    }
     if let Some(rest) = text.strip_prefix("dblk:") {
         let parts: Vec<i32> = rest.split(':').filter_map(|v| v.parse().ok()).collect();
         let [disable, beta, tc] = parts.as_slice() else {
@@ -1455,6 +1464,25 @@ fn main() {
                 }
             }
         }
+        // One source of truth for the column rule and the uniform split: the same
+        // derivation the PPS writer and the session use.
+        let mut tile_config = h265_syntax::EncoderConfig::new(width, height);
+        tile_config.apply_syntax_options(syntax);
+        let columns = tile_config.tile_columns_minus1() as usize + 1;
+        let tile_index = std::env::var("H265_TILE_INDEX")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(columns - 1);
+        let (tile_start, tile_width) =
+            h265e_session::uniform_tile_widths(width, columns)[tile_index];
+        let tile = (columns > 1).then_some(h265e::TileJob {
+            index: tile_index as u32,
+            start_x: tile_start,
+            width_mb: tile_width,
+            height_mb: ((height + 63) / 64) as u32,
+            columns: columns as u32,
+        });
         let job = h265e::IdrJob {
             width,
             height,
@@ -1467,6 +1495,7 @@ fn main() {
             refresh: None,
             split: h265_syntax::SliceSplit::default(),
             syntax,
+            tile,
             roi_fd: -1,
             roi_qp_fd: -1,
             input_fd: -1,

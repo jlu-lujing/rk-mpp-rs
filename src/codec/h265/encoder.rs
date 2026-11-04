@@ -55,6 +55,7 @@ pub struct SyntaxOptions {
     pub deblock_tc_offset_div2: i32,
     pub loop_filter_across_slices: bool,
     pub loop_filter_across_tiles: bool,
+    pub auto_tile: bool,
 }
 
 impl Default for SyntaxOptions {
@@ -67,6 +68,7 @@ impl Default for SyntaxOptions {
             deblock_tc_offset_div2: 0,
             loop_filter_across_slices: false,
             loop_filter_across_tiles: true,
+            auto_tile: false,
         }
     }
 }
@@ -143,6 +145,7 @@ pub struct EncoderConfig {
     /// `pps->m_LFCrossSliceBoundaryFlag` = `codec->lpf_acs_sli_en`.
     pub loop_filter_across_slices: bool,
     pub loop_filter_across_tiles: bool,
+    pub auto_tile: bool,
     pub sao_luma_disable: bool,
     pub sao_chroma_disable: bool,
     pub slice_deblocking_filter_disabled: bool,
@@ -205,6 +208,7 @@ impl EncoderConfig {
             cabac_init_present: true,
             loop_filter_across_slices: false,
             loop_filter_across_tiles: true,
+            auto_tile: false,
             sao_luma_disable: false,
             sao_chroma_disable: false,
             slice_deblocking_filter_disabled: false,
@@ -261,6 +265,7 @@ impl EncoderConfig {
         self.deblock_tc_offset_div2 = options.deblock_tc_offset_div2;
         self.loop_filter_across_slices = options.loop_filter_across_slices;
         self.loop_filter_across_tiles = options.loop_filter_across_tiles;
+        self.auto_tile = options.auto_tile;
     }
 
     /// `h265e_set_sps`' derivation of the coding-tree geometry from `max_cu_size`.
@@ -295,6 +300,20 @@ impl EncoderConfig {
     pub fn coded_size(&self) -> (usize, usize) {
         let min_cu = 1usize << self.geometry().log2_min_cb;
         (align(self.width, min_cu), align(self.height, min_cu))
+    }
+
+    /// `h265e_set_pps` on RK3588: widths over 4096 force two tile columns, over
+    /// 8192 force four, and `auto_tile` requests two below that threshold.
+    pub fn tile_columns_minus1(&self) -> u32 {
+        if self.width > 8192 {
+            3
+        } else if self.width > 4096 {
+            1
+        } else if self.auto_tile {
+            1
+        } else {
+            0
+        }
     }
 
     /// `h265e_set_vps`'s level table: the lowest level whose `maxLumaSamples` fits
@@ -566,9 +585,16 @@ pub fn build_pps(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
     w.put_bits(0, 1); // weighted_pred_flag
     w.put_bits(0, 1); // weighted_bipred_flag
     w.put_bits(u32::from(config.transquant_bypass_enabled), 1); // transquant_bypass_enable_flag
-    w.put_bits(0, 1); // tiles_enabled_flag (auto_tile default is 0)
-    w.put_bits(0, 1); // entropy_coding_sync_enabled_flag (WPP)
-                      // (tiles block skipped: tiles_enabled_flag is 0)
+    let tile_columns_minus1 = config.tile_columns_minus1();
+    let tiles_enabled = tile_columns_minus1 > 0;
+    w.put_bits(u32::from(tiles_enabled), 1);
+    w.put_bits(0, 1); // entropy_coding_sync_enabled_flag; VEPU580 keeps WPP off
+    if tiles_enabled {
+        w.put_ue(tile_columns_minus1);
+        w.put_ue(0); // num_tile_rows_minus1
+        w.put_bits(1, 1); // uniform_spacing_flag
+        w.put_bits(u32::from(config.loop_filter_across_tiles), 1);
+    }
     w.put_bits(u32::from(config.loop_filter_across_slices), 1); // loop_filter_across_slices_enabled_flag
     w.put_bits(u32::from(config.deblocking_filter_control_present), 1);
     if config.deblocking_filter_control_present {
@@ -1033,6 +1059,7 @@ mod tests {
             deblock_tc_offset_div2: -2,
             loop_filter_across_slices: true,
             loop_filter_across_tiles: false,
+            auto_tile: false,
             sao_luma_disable: false,
             sao_chroma_disable: true,
         });
@@ -1054,6 +1081,27 @@ mod tests {
         assert!(!parsed.deblocking_filter_control_present);
         assert_eq!(parsed.beta_offset_div2, 0);
         assert_eq!(parsed.tc_offset_div2, 0);
+    }
+
+    #[test]
+    fn auto_tile_and_wide_pictures_emit_uniform_tile_pps() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.auto_tile = true;
+        let pps = build_pps(&config).unwrap();
+        let parsed = parser::parse_pps(&parser::ebsp_to_rbsp(&pps[6..])).unwrap();
+        assert!(parsed.tiles_enabled);
+        assert_eq!(parsed.tile_columns, 2);
+        assert_eq!(parsed.tile_rows, 1);
+        assert!(parsed.uniform_spacing);
+        assert!(!parsed.entropy_coding_sync);
+
+        let mut wide = EncoderConfig::new(4608, 256);
+        wide.auto_tile = false;
+        assert_eq!(wide.tile_columns_minus1(), 1);
+        let pps = build_pps(&wide).unwrap();
+        let parsed = parser::parse_pps(&parser::ebsp_to_rbsp(&pps[6..])).unwrap();
+        assert!(parsed.tiles_enabled);
+        assert_eq!(parsed.tile_columns, 2);
     }
 
     #[test]

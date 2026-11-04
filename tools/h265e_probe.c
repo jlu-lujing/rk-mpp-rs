@@ -276,6 +276,9 @@ int main(int argc, char **argv)
     if (getenv("LPF_ACS_TILE_DISABLE"))
         CHECK(mpp_enc_cfg_set_u32(cfg, "h265:lpf_acs_tile_disable",
                                   atoi(getenv("LPF_ACS_TILE_DISABLE"))));
+    if (getenv("AUTO_TILE"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h265:auto_tile",
+                                  atoi(getenv("AUTO_TILE"))));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denom", 1));

@@ -116,7 +116,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M5 | AV1 decode (frame headers, OBU, film grain) | 14k | **Main 8/10-bit and film-grain hardware paths bit-exact on 320x240 fixtures; wider conformance/performance matrix pending** |
 | M6 | MPEG2 / MPEG4 / H.263 / VP8 / AVS+ / AVS2 decode | 14k | **MPEG-2, MPEG-4, H.263 and VP8 decode done (syntax, shared vdpu2 register file, DPB, `rk-mpp-rs m2vdec` / `mp4dec` / `h263dec` / `vp8dec`): byte-exact vs C MPP on every fixture, including MPEG-4 IPBB, all three H.263 frame sizes and VP8 hidden reference frames. Field-coded PAFF unverified. AVS+ / AVS2 todo** |
 | M7 | H.264 encode (rkvenc): RC (CBR/VBR), intra/inter, deblock, ROI, GDR, slice output | 15k | **IDR byte-identical over 24 cells of size x profile x QP, and P pictures byte-identical at 320x240 (6 GOP cells: 1 IDR + up to 5 P, still and moving), SEI NAL units included, with zero non-address register differences in all seven sections. CBR, VBR *and* AVBR rate control are ported, wired and byte-exact against the reference library - registers, bit allocation and quantiser, six pictures NAL for NAL in each mode; ROI/QP map, deblock, the start-QP derivation and scene detection are ported with board evidence, GDR is byte-identical over four cells, slice split is byte-identical over four cells (BY_CTU at 96/8/150 blocks and BY_BYTE at 256, the 8-block cell putting 38 slices past the 32-entry FIFO), per-slice low-delay packet output is byte-identical over five cells (including that 38-slice FIFO crossing and a six-picture IDR+P stream), and the >4096 CIME extension lines over two (4160x64, 4608x256). P pictures match at eleven sizes spanning the FBC-header threshold - the divergence past 640x480 was the constant FBC body offset, since fixed. The implemented H.264 encode surface is closed; new scheduling/recoding modes remain frozen feature work.** |
-| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. tiles/WPP, B frames and multi-reference scheduling remain feature work.** |
+| M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. Uniform horizontal tiles are byte-exact over two cells (`auto_tile` at 320x240 across IDR+P, forced two columns at 4608x64), with a traced C tile job differing in no non-address word of any section. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. WPP, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
 | M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: CABAC core; HEVC transforms; H.264 CAVLC I-slice reconstruction with filtered prediction, transform bypass, DC Hadamard and picture deblocking; two 32x32 IDR fixtures and one 64x64, 16-macroblock noise IDR match all YUV samples; H.264 CABAC covers textured I16/I4x4/I8x8 residuals, I_PCM, signed nonzero mb_qp_delta, mixed macroblock propagation and consecutive slices with non-zero first_mb; P/B-slice CABAC remains open** |
@@ -1263,7 +1263,43 @@ in what order the evidence gets produced.
       to the reference ROI helper: partial relative-QP region, absolute-QP
       force-intra region, two disconnected regions, and 640x480. Complete six
       picture short-term GOP streams are byte-identical.
-- [ ] H.265 (rkvenc): tiles/WPP/SAO, B frames and multiple references.
+- [x] H.265 (rkvenc): uniform horizontal tiles. `h265e_set_pps` now writes
+      `tiles_enabled_flag`, `num_tile_columns_minus1`, `uniform_spacing_flag` and
+      `loop_filter_across_tiles_enabled_flag`, and each column becomes its own
+      hardware job the way `hal_h265e_v580_set_uniform_tile` does: `reg0252_tile_cfg`
+      (en/tile_w_m1/tile_h_m1), `reg0253_tile_pos`, `reg212_rc_cfg.rc_ctu_num`, the
+      tile-relative `frm_sta`/`frm_end` window that
+      `vepu580_h265_set_me_ram` derives the CIME line buffer from, the
+      `reg0193_dual_core` handshake, and the alternating `reg0176`/`reg0177`
+      tile line buffers. RK3588 only ever reaches two columns: `auto_tile`
+      requests them below 4K and any width over 4096 forces them, while four
+      columns need a width over 8192, which the hardware does not accept.
+      `scripts/board_h265_tile_vs_mpp.sh` is **2/2 byte-identical** (9 and 7 NAL
+      units): `auto_tile` at 320x240 over an IDR and a P, and the forced two
+      columns at 4608x64, which is IDR-only because neither encoder produces the
+      second picture there - the C stream stays at its one-picture size while our
+      session names the cause (`int_sta=0x00000100`). Comparing a traced C tile job with
+      `tools/h265e_trace_diff.py --job=0/1` leaves **no non-address difference**:
+      CTL, RC_KLUT, WGT, RDO and OSD are word for word identical, and the eleven
+      BASE words that differ are the ten dma-buf fd slots (160-162, 171-177) plus
+      `mei_stor`, all of which the session programs and the register dump cannot
+      know. The C gives each tile a private `frame_size / tile_num` stream buffer
+      and concatenates in software; we keep one buffer and move `reg175`'s offset
+      instead, which produces the same bytes. Two differences are registered in
+      `docs/DIVERGENCES.md` rather than hidden: tile plus
+      `MPP_ENC_SPLIT_OUT_LOWDELAY` is refused, and the reference has no
+      session-independent answer for a session's first tiled picture. The same C
+      probe, same fixture and settings, emits `9724d029..` right after one of our
+      sessions and `b27d68dc..` right after its own, and the two decode to
+      **different pixels** (`7dc42fe5..` against `c9fcd4f7..`): the VEPU580 keeps
+      dual-core state between processes and the first tiled job reads it, and
+      returning 512 MiB of zeroed pages between runs changes neither value. Our
+      session therefore encodes one discarded picture, pinning our own output to
+      `9724d029..` whatever ran before, and the script gives the C side the same
+      preamble so the comparison does not depend on which script ran last. In
+      that state the streams are byte-identical and the decoded YUV is
+      identical.
+- [ ] H.265 (rkvenc): WPP, B frames and multiple references.
       Note on the harness cell that exposed this: `-g 60` is parsed by
       `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero, so
       it is not one of `mpi_enc_gen_ref_cfg`'s modes 0..3. Its second picture gets

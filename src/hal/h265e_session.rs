@@ -142,6 +142,8 @@ pub struct Vepu580H265 {
     /// Pictures this session has encoded; 0 means the next one is the IDR.
     frames: u32,
     md_info: DmaBuf,
+    tile_line_bufs: Vec<DmaBuf>,
+    tile_warmed: bool,
 }
 
 impl Vepu580H265 {
@@ -240,6 +242,8 @@ impl Vepu580H265 {
             frames: 0,
             md_info: DmaBuf::alloc("system", md_info_size(width, height), false)
                 .map_err(|e| format!("allocate H.265 motion info: {e}"))?,
+            tile_line_bufs: Vec::new(),
+            tile_warmed: false,
         })
     }
 
@@ -372,6 +376,9 @@ impl Vepu580H265 {
         if self.frames != 0 {
             return Err("H.265 slice split must be configured before the first picture".into());
         }
+        if split.out & MPP_ENC_SPLIT_OUT_LOWDELAY != 0 && self.tile_columns() > 1 {
+            return Err("H.265 tile + low-delay slice output is not verified".into());
+        }
         split
             .validate()
             .map_err(|error| format!("H.265 slice split: {error}"))?;
@@ -381,6 +388,72 @@ impl Vepu580H265 {
 
     pub fn set_syntax_options(&mut self, syntax: SyntaxOptions) {
         self.syntax = syntax;
+    }
+
+    fn poll_picture(
+        &mut self,
+        tile_job: bool,
+        slice_lengths: &mut Vec<usize>,
+    ) -> Result<(), String> {
+        if self.split.out & MPP_ENC_SPLIT_OUT_LOWDELAY != 0 && !tile_job {
+            let mut complete = false;
+            for _ in 0..=4096 {
+                let mut info = [SliceInfo::default()];
+                let count = self
+                    .service
+                    .poll_irq(&mut info)
+                    .map_err(|e| format!("H.265 slice poll: {e}"))?;
+                for slice in &info[..count] {
+                    let (length, last) = slice.vepu580();
+                    slice_lengths.push(length as usize);
+                    complete |= last;
+                }
+                if complete {
+                    break;
+                }
+            }
+            if !complete {
+                return Err("H.265 slice FIFO did not report the last slice".into());
+            }
+        } else {
+            self.service
+                .poll_hw_finish()
+                .map_err(|e| format!("H.265 poll: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// The session's tile column count, asked of the same derivation that writes
+    /// `num_tile_columns_minus1` into the PPS. Duplicating the thresholds here is
+    /// how a PPS and a job window would drift apart.
+    fn tile_columns(&self) -> usize {
+        let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
+        config.apply_syntax_options(self.syntax);
+        config.tile_columns_minus1() as usize + 1
+    }
+
+    fn tile_widths(&self) -> Vec<(u32, u32)> {
+        uniform_tile_widths(self.width, self.tile_columns())
+    }
+
+    fn ensure_tile_line_bufs(&mut self, columns: usize) -> Result<(), String> {
+        if self.tile_line_bufs.len() >= columns {
+            return Ok(());
+        }
+        let size = align((align(self.height, 64) + 64) << 5, 256);
+        while self.tile_line_bufs.len() < columns {
+            let mut buffer = DmaBuf::alloc("system-uncached", size, false)
+                .map_err(|e| format!("allocate H.265 tile line buffer: {e}"))?;
+            buffer
+                .sync_write_begin()
+                .map_err(|e| format!("H.265 tile line buffer sync begin: {e}"))?;
+            buffer.as_mut_slice().fill(0);
+            buffer
+                .sync_write_end()
+                .map_err(|e| format!("H.265 tile line buffer sync end: {e}"))?;
+            self.tile_line_bufs.push(buffer);
+        }
+        Ok(())
     }
 
     /// Configure the same regions on every picture, like the reference harness's
@@ -484,6 +557,20 @@ impl Vepu580H265 {
         recovery_prefix: bool,
         rc: Option<RateControl>,
     ) -> Result<EncodedFrame, String> {
+        // The VEPU580 carries dual-core handshake state between processes, and
+        // the first tiled picture of a session reads it. The reference is not
+        // immune either: the same C probe at 320x240 with `auto_tile` produces
+        // one of two byte patterns depending on which encoder used the block
+        // last (three runs after our own process: `9724d029..`; three of its
+        // own: `b27d68dc..`), and emptying the page allocator between runs does
+        // not change that, so the state is inside the block, not in memory.
+        // A discarded prepass makes our output independent of that history: the
+        // picture that reaches the stream is always written by a job whose
+        // predecessor is one of our own.
+        if self.tile_widths().len() > 1 && !self.tile_warmed {
+            self.tile_warmed = true;
+            self.encode_picture_rc(nv12, picture, false, false, rc)?;
+        }
         // dma-heap rounds the allocation up to a page, so the usable picture is
         // the logical size, not `self.input.len()`.
         let input_size = luma_bytes(self.width, self.height) * 3 / 2;
@@ -540,167 +627,198 @@ impl Vepu580H265 {
             _ => None,
         };
         let (current, reference) = if matches!(picture, Picture::Idr) {
-            (&self.surfaces[self.slot], &self.surfaces[self.slot])
+            (self.slot, self.slot)
         } else if self.long_term {
             // The regular LT GOP always predicts from the opening IDR.
-            (&self.surfaces[1], &self.surfaces[0])
+            (1, 0)
         } else {
             // REF_TO_PREV_REF_FRM: alternate the two DPB surfaces.
-            (&self.surfaces[self.slot], &self.surfaces[1 - self.slot])
+            (self.slot, 1 - self.slot)
         };
-        let job = IdrJob {
-            width: self.width,
-            height: self.height,
-            qp: self.qp,
-            qp_min: self.qp,
-            qp_max: self.qp,
-            picture,
-            long_term: self.long_term,
-            rc,
-            refresh: refresh_job,
-            split: self.split,
-            syntax: self.syntax,
-            roi_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.0.fd()),
-            roi_qp_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.1.fd()),
-            input_fd: self.input.fd(),
-            output_fd: self.output.fd(),
-            current_fd: current.pixel.fd(),
-            current_thumb_fd: current.dsp.fd(),
-            reference_fd: reference.pixel.fd(),
-            reference_thumb_fd: reference.dsp.fd(),
-        };
-        let mut registers = build_registers(&job)?;
+        let current_pixel = self.surfaces[current].pixel.fd();
+        let current_dsp = self.surfaces[current].dsp.fd();
+        let reference_pixel = self.surfaces[reference].pixel.fd();
+        let reference_dsp = self.surfaces[reference].dsp.fd();
         let header = fbc_header_len(self.width, self.height);
         let luma = luma_bytes(self.width, self.height) as u32;
-
-        // `vepu580_h265_set_hw_address`: the input plane shares one fd and reaches
-        // its chroma through the 161/162 offsets; the two FBC surfaces reach their
-        // body through the header offset; 167..170 are the thumbs; 171 is the
-        // motion-info buffer this session owns (the C harness passes one, which is
-        // why the traced image has `mei_stor` set).
-        let base = &mut registers.base;
-        let input = self.input.fd() as u32;
-        let output = self.output.fd() as u32;
-        base[0] = input; // 160 adr_src0
-        base[1] = input; // 161 adr_src1
-        base[2] = input; // 162 adr_src2
-        base[3] = current.pixel.fd() as u32; // 163 rfpw_h
-        base[4] = current.pixel.fd() as u32; // 164 rfpw_b
-        base[5] = reference.pixel.fd() as u32; // 165 rfpr_h
-        base[6] = reference.pixel.fd() as u32; // 166 rfpr_b
-        base[7] = current.cmv.fd() as u32; // 167 cmvw
-        base[8] = reference.cmv.fd() as u32; // 168 cmvr
-        base[9] = current.dsp.fd() as u32; // 169 dspw
-        base[10] = reference.dsp.fd() as u32; // 170 dspr
-        base[11] = self.md_info.fd() as u32; // 171 meiw
-        base[12] = output; // 172 bsbt
-        base[13] = output; // 173 bsbb
-        base[14] = output; // 174 bsbr
-        base[15] = output; // 175 adr_bsbs
-        registers.set(&regs::BASE_ENC_PIC_MEI_STOR, 1)?;
-
-        registers.offsets = vec![
-            RegOffsetInfo {
-                reg_idx: 161,
-                offset: luma,
-            },
-            RegOffsetInfo {
-                reg_idx: 162,
-                offset: luma,
-            },
-            RegOffsetInfo {
-                reg_idx: 164,
-                offset: header as u32,
-            },
-            RegOffsetInfo {
-                reg_idx: 166,
-                offset: header as u32,
-            },
-            RegOffsetInfo {
-                reg_idx: 175,
-                offset: 0,
-            },
-            RegOffsetInfo {
-                reg_idx: 172,
-                offset: self.output.len() as u32,
-            },
-        ];
-
-        let mut status = vec![0u32; STATUS_WORDS];
-        let mut hw_status = [0u32; 1];
-        let mut batch = Batch::new();
-        batch.reg_write(&registers.ctl, CTL_OFFSET);
-        batch.reg_write(&registers.base, BASE_OFFSET);
-        batch.reg_write(&registers.rc_klut, RCKLUT_OFFSET);
-        batch.reg_write(&registers.wgt, WGT_OFFSET);
-        batch.reg_write(&registers.rdo, RDO_OFFSET);
-        batch.reg_write(&registers.osd, OSD_OFFSET);
-        batch.reg_offsets(&registers.offsets);
-        batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
-        batch.reg_read(&mut status, STATUS_OFFSET);
-        self.service
-            .submit_batch(&mut batch)
-            .map_err(|e| format!("H.265 register submit: {e}"))?;
+        let tile_widths = self.tile_widths();
+        if tile_widths.len() > 1 && self.split.out & MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            return Err("H.265 tile + low-delay slice output is not verified".into());
+        }
+        self.ensure_tile_line_bufs(tile_widths.len())?;
+        let mut payload = Vec::new();
         let mut slice_lengths = Vec::new();
-        if self.split.out & MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
-            let mut complete = false;
-            for _ in 0..=4096 {
-                let mut info = [SliceInfo::default()];
-                let count = self
-                    .service
-                    .poll_irq(&mut info)
-                    .map_err(|e| format!("H.265 slice poll: {e}"))?;
-                for slice in &info[..count] {
-                    let (length, last) = slice.vepu580();
-                    slice_lengths.push(length as usize);
-                    complete |= last;
-                }
-                if complete {
-                    break;
+        let mut aggregate_status = vec![0u32; STATUS_WORDS];
+        let mut stream_len = 0usize;
+
+        for (tile_index, &(tile_start, tile_width)) in tile_widths.iter().enumerate() {
+            let tile = (tile_widths.len() > 1).then_some(crate::hal::h265e::TileJob {
+                index: tile_index as u32,
+                start_x: tile_start,
+                width_mb: tile_width,
+                height_mb: (self.height + 63) as u32 / 64,
+                columns: tile_widths.len() as u32,
+            });
+            let job = IdrJob {
+                width: self.width,
+                height: self.height,
+                qp: self.qp,
+                qp_min: self.qp,
+                qp_max: self.qp,
+                picture,
+                long_term: self.long_term,
+                rc,
+                refresh: refresh_job,
+                split: self.split,
+                syntax: self.syntax,
+                tile,
+                roi_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.0.fd()),
+                roi_qp_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.1.fd()),
+                input_fd: self.input.fd(),
+                output_fd: self.output.fd(),
+                current_fd: current_pixel,
+                current_thumb_fd: current_dsp,
+                reference_fd: reference_pixel,
+                reference_thumb_fd: reference_dsp,
+            };
+            let mut registers = build_registers(&job)?;
+
+            // `vepu580_h265_set_hw_address`: input/output, FBC bodies, thumbs and
+            // motion info are shared by every tile. The tile line buffers alternate
+            // through regs 176/177.
+            let base = &mut registers.base;
+            let input = self.input.fd() as u32;
+            let output = self.output.fd() as u32;
+            base[0] = input;
+            base[1] = input;
+            base[2] = input;
+            base[3] = current_pixel as u32;
+            base[4] = current_pixel as u32;
+            base[5] = reference_pixel as u32;
+            base[6] = reference_pixel as u32;
+            base[7] = self.surfaces[current].cmv.fd() as u32;
+            base[8] = self.surfaces[reference].cmv.fd() as u32;
+            base[9] = current_dsp as u32;
+            base[10] = reference_dsp as u32;
+            base[11] = self.md_info.fd() as u32;
+            base[12] = output;
+            base[13] = output;
+            base[14] = output;
+            base[15] = output;
+            if tile.is_some() {
+                base[16] = self.tile_line_bufs[tile_index].fd() as u32;
+                base[17] = self.tile_line_bufs[tile_index.saturating_sub(1)].fd() as u32;
+                if tile_index == 0 && self.tile_line_bufs.len() > 1 {
+                    base[17] = self.tile_line_bufs[1].fd() as u32;
                 }
             }
-            if !complete {
-                return Err("H.265 slice FIFO did not report the last slice".into());
-            }
-        } else {
+            registers.set(&regs::BASE_ENC_PIC_MEI_STOR, 1)?;
+
+            // `vepu580_h265_set_hw_address`'s two stream multi-offsets: 175 is
+            // where the tile starts writing and 172 is where its buffer ends. The
+            // C gives tile 0 the whole output packet (`mpp_buffer_get_size`) and
+            // later tiles their own `frame_size / tile_num` slice, so the limit is
+            // per-tile, not one shared end minus a spare byte.
+            let output_offset = stream_len as u32;
+            let output_limit = if tile.is_none() {
+                self.output.len() as u32
+            } else if tile_index == 0 {
+                self.output.len() as u32
+            } else {
+                (stream_len + self.output.len() / tile_widths.len()).min(self.output.len()) as u32
+            };
+            registers.offsets = vec![
+                RegOffsetInfo {
+                    reg_idx: 161,
+                    offset: luma,
+                },
+                RegOffsetInfo {
+                    reg_idx: 162,
+                    offset: luma,
+                },
+                RegOffsetInfo {
+                    reg_idx: 164,
+                    offset: header as u32,
+                },
+                RegOffsetInfo {
+                    reg_idx: 166,
+                    offset: header as u32,
+                },
+                RegOffsetInfo {
+                    reg_idx: 175,
+                    offset: output_offset,
+                },
+                RegOffsetInfo {
+                    reg_idx: 172,
+                    offset: output_limit,
+                },
+            ];
+
+            let mut status = vec![0u32; STATUS_WORDS];
+            let mut hw_status = [0u32; 1];
+            let mut batch = Batch::new();
+            batch.reg_write(&registers.ctl, CTL_OFFSET);
+            batch.reg_write(&registers.base, BASE_OFFSET);
+            batch.reg_write(&registers.rc_klut, RCKLUT_OFFSET);
+            batch.reg_write(&registers.wgt, WGT_OFFSET);
+            batch.reg_write(&registers.rdo, RDO_OFFSET);
+            batch.reg_write(&registers.osd, OSD_OFFSET);
+            batch.reg_offsets(&registers.offsets);
+            batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
+            batch.reg_read(&mut status, STATUS_OFFSET);
             self.service
-                .poll_hw_finish()
-                .map_err(|e| format!("H.265 poll: {e}"))?;
-        }
+                .submit_batch(&mut batch)
+                .map_err(|e| format!("H.265 register submit: {e}"))?;
+            self.poll_picture(tile.is_some(), &mut slice_lengths)?;
 
-        let errors = hw_status[0] & HW_ERROR_MASK;
-        if errors != 0 {
-            return Err(format!(
-                "VEPU580 H.265 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
-                hw_status[0]
-            ));
-        }
-        if hw_status[0] & 1 == 0 {
-            return Err(format!(
-                "VEPU580 H.265 completed ioctl without enc_done (int_sta=0x{:08x})",
-                hw_status[0]
-            ));
-        }
+            let errors = hw_status[0] & HW_ERROR_MASK;
+            if errors != 0 {
+                return Err(format!(
+                    "VEPU580 H.265 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
+                    hw_status[0]
+                ));
+            }
+            if hw_status[0] & 1 == 0 {
+                return Err(format!(
+                    "VEPU580 H.265 completed ioctl without enc_done (int_sta=0x{:08x})",
+                    hw_status[0]
+                ));
+            }
 
-        let length = status[0] as usize;
-        if length == 0 || length > self.output.len() {
-            return Err(format!(
-                "invalid VEPU580 H.265 length {length} (capacity {})",
-                self.output.len()
-            ));
+            let length = status[0] as usize;
+            if length == 0 || length > self.output.len().saturating_sub(stream_len) {
+                return Err(format!(
+                    "invalid VEPU580 H.265 length {length} at offset {stream_len} (capacity {})",
+                    self.output.len()
+                ));
+            }
+            for word in [
+                0usize,
+                3,
+                4168 - 4096,
+                4169 - 4096,
+                4170 - 4096,
+                4171 - 4096,
+            ] {
+                aggregate_status[word] = aggregate_status[word].wrapping_add(status[word]);
+            }
+            stream_len += length;
+            payload.resize(stream_len, 0);
+            self.output
+                .sync_read_begin()
+                .map_err(|e| format!("H.265 output invalidate: {e}"))?;
+            payload[stream_len - length..stream_len]
+                .copy_from_slice(&self.output.as_slice()[stream_len - length..stream_len]);
+            self.output
+                .sync_read_end()
+                .map_err(|e| format!("H.265 output sync end: {e}"))?;
         }
+        let status = aggregate_status;
         // STATUS measurement, `vepu580_h265_set_feedback`: madp/num_ctu, madi/num_b16
         // and quality over the 8x8 block count (`mb64_num << 6`), not the 16x16
         // macroblock count the H.264 path divides by.
         self.last_measured = Some(measured_from_status(self.width, self.height, &status));
 
-        self.output
-            .sync_read_begin()
-            .map_err(|e| format!("H.265 output invalidate: {e}"))?;
-        let payload = self.output.as_slice()[..length].to_vec();
-        self.output
-            .sync_read_end()
-            .map_err(|e| format!("H.265 output sync end: {e}"))?;
         // The hardware writes the slice NAL; the parameter sets and the two SEIs are
         // software output, exactly as `mpp_enc_impl.cpp` prepends them - once, ahead
         // of the opening IDR.
@@ -866,6 +984,19 @@ fn md_info_size(width: usize, height: usize) -> usize {
     (align(width, 32) >> 5) * (align(height, 32) >> 5) * 16
 }
 
+/// `num_tile_columns_minus1 + 1` uniform columns: `(first CTU column, width in
+/// CTUs)` for each, the same split `hal_h265e_v580_set_uniform_tile` computes.
+pub fn uniform_tile_widths(width: usize, columns: usize) -> Vec<(u32, u32)> {
+    let mb_w = (width + 63) as u32 / 64;
+    (0..columns)
+        .map(|index| {
+            let start = (index as u32 * mb_w) / columns as u32;
+            let end = ((index as u32 + 1) * mb_w) / columns as u32;
+            (start, end - start)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -903,6 +1034,15 @@ mod tests {
         assert_eq!(md_info_size(322, 242), (352 >> 5) * (256 >> 5) * 16);
         // 11x13 blocks = 143; 143*64 = 9152 -> 16384.
         assert_eq!(fbc_header_len(640, 736), 16384);
+    }
+
+    #[test]
+    fn uniform_tiles_follow_the_c_integer_partition() {
+        assert_eq!(uniform_tile_widths(320, 2), vec![(0, 2), (2, 3)]);
+        assert_eq!(
+            uniform_tile_widths(8256, 4),
+            vec![(0, 32), (32, 32), (64, 32), (96, 33)]
+        );
     }
 
     #[test]

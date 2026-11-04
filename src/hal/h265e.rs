@@ -189,6 +189,8 @@ pub struct IdrJob {
     /// `MppEncSliceSplit`: one slice per picture by default.
     pub split: SliceSplit,
     pub syntax: SyntaxOptions,
+    /// One horizontal tile job. `None` encodes the whole picture.
+    pub tile: Option<TileJob>,
     /// Static ROI base and QP table fds, or -1 when no ROI is configured.
     pub roi_fd: i32,
     pub roi_qp_fd: i32,
@@ -198,6 +200,16 @@ pub struct IdrJob {
     pub current_thumb_fd: i32,
     pub reference_fd: i32,
     pub reference_thumb_fd: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TileJob {
+    pub index: u32,
+    /// First CTU column in the full picture.
+    pub start_x: u32,
+    pub width_mb: u32,
+    pub height_mb: u32,
+    pub columns: u32,
 }
 
 impl IdrJob {
@@ -216,6 +228,7 @@ impl IdrJob {
             refresh: None,
             split: SliceSplit::default(),
             syntax: SyntaxOptions::default(),
+            tile: None,
             roi_fd: -1,
             roi_qp_fd: -1,
             input_fd: -1,
@@ -592,9 +605,8 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
 
     // `cme_linebuf_w` is the CTU width of the picture; `cme_rama_h` narrows with
     // wide pictures; `cme_rama_max` is the window the line buffer must hold.
-    let pic_wd64 = ((job.width + 63) / 64) as u32;
-    file.set(&regs::H265_REG0222_ME_CACH_CME_LINEBUF_W, pic_wd64)?;
-    let (rama_h, rama_max) = cime_ram(job.width, srch_h, srch_v);
+    let (linebuf_w, rama_h, rama_max) = cime_ram(job.width, srch_h, srch_v, job.tile);
+    file.set(&regs::H265_REG0222_ME_CACH_CME_LINEBUF_W, linebuf_w)?;
     file.set(&regs::H265_REG0222_ME_CACH_CME_RAMA_H, rama_h)?;
     file.set(&regs::H265_REG0222_ME_CACH_CME_RAMA_MAX, rama_max)?;
     // `cach_l2_tag` steps with the 64-aligned width: 0 to 512, 1 to 1024, 2 to
@@ -706,6 +718,29 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     // reg0241 synt_sli2: first picture, poc_lsb 0. Left 0.
 
     // reg0252 tile_cfg: tiles off (auto_tile default 0). Left 0.
+    if let Some(tile) = job.tile {
+        file.set(&regs::H265_REG0252_TILE_CFG_TILE_EN, 1)?;
+        file.set(&regs::H265_REG0252_TILE_CFG_TILE_W_M1, tile.width_mb - 1)?;
+        file.set(&regs::H265_REG0252_TILE_CFG_TILE_H_M1, tile.height_mb - 1)?;
+        file.set(&regs::H265_REG0253_TILE_POS_TILE_X, tile.start_x)?;
+        file.set(&regs::H265_REG0253_TILE_POS_TILE_Y, 0)?;
+        file.set(&regs::H265_REG212_RC_CFG_RC_CTU_NUM, tile.width_mb)?;
+
+        let (txid, rxid, txe, rxe) = if tile.index == 0 {
+            (0, 0, 1, 0)
+        } else {
+            (tile.index, tile.index - 1, 1, 1)
+        };
+        file.set(&regs::H265_REG0193_DUAL_CORE_DCHS_TXID, txid)?;
+        file.set(&regs::H265_REG0193_DUAL_CORE_DCHS_RXID, rxid)?;
+        file.set(&regs::H265_REG0193_DUAL_CORE_DCHS_TXE, txe)?;
+        file.set(&regs::H265_REG0193_DUAL_CORE_DCHS_RXE, rxe)?;
+        file.set(&regs::H265_REG0193_DUAL_CORE_DCHS_OFST, 2)?;
+        if tile.index == tile.columns - 1 {
+            file.set(&regs::H265_REG0193_DUAL_CORE_DCHS_TXID, 0)?;
+            file.set(&regs::H265_REG0193_DUAL_CORE_DCHS_TXE, 0)?;
+        }
+    }
 
     // The GOP's long-term reference state is part of every picture, not just the
     // P; the traced CBR IDR carries it too.
@@ -852,14 +887,20 @@ fn ctu_num_log2(area: usize) -> u32 {
 /// `vepu580_h265_set_me_ram` for the single-tile, zero-global-motion case an IDR
 /// takes: it grows the CIME line buffer until the window holds the search, then
 /// reports `(cme_rama_h, cme_rama_max)`.
-fn cime_ram(width: usize, srch_h: u32, srch_v: u32) -> (u32, u32) {
+fn cime_ram(width: usize, srch_h: u32, srch_v: u32, tile: Option<TileJob>) -> (u32, u32, u32) {
     let pic_wd64 = ((width + 63) / 64) as i32;
     let srch_w = (srch_h * 4) as i32;
     let srch_h_px = (srch_v * 4) as i32;
     let clip = |v: i32, lo: i32, hi: i32| v.clamp(lo, hi);
     // gmv_x/gmv_y are 0 for an IDR.
-    let frm_sta = clip((0 - srch_w - 15) / 16, 0, pic_wd64 - 1);
-    let frm_end = clip(pic_wd64 - 1 + (srch_w + 15) / 16, 0, pic_wd64 - 1);
+    let (tile_sta, tile_end) = tile.map_or((0, pic_wd64 - 1), |tile| {
+        (
+            tile.start_x as i32,
+            (tile.start_x + tile.width_mb - 1) as i32,
+        )
+    });
+    let frm_sta = clip(tile_sta + (0 - srch_w - 15) / 16, 0, pic_wd64 - 1);
+    let frm_end = clip(tile_end + (srch_w + 15) / 16, 0, pic_wd64 - 1);
     let linebuf_w = (frm_end - frm_sta + 1) * 64 / 64;
     // The C takes the `if (delta < 0)` branch only when the global motion is
     // negative relative to the search; an IDR's gmv is 0, so that is exactly
@@ -902,6 +943,7 @@ fn cime_ram(width: usize, srch_h: u32, srch_v: u32) -> (u32, u32) {
     }
     let ram_col_h = (cime_rama_h - ctu_4_h) / ctu_4_h;
     (
+        linebuf_w as u32,
         cime_rama_h as u32,
         (ram_col_h * linebuf_w + cur_srch_16_w) as u32,
     )
@@ -1023,6 +1065,7 @@ mod tests {
             deblock_tc_offset_div2: -2,
             loop_filter_across_slices: true,
             loop_filter_across_tiles: false,
+            auto_tile: false,
         };
         let file = build_registers(&job).unwrap();
         assert_eq!(
@@ -1059,6 +1102,34 @@ mod tests {
             file.get(&regs::H265_REG0238_SYNT_PPS_LPF_FLTR_ACRS_TIL)
                 .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn tile_job_writes_the_uniform_tile_window() {
+        let mut job = IdrJob::reference(26);
+        job.syntax.auto_tile = true;
+        job.tile = Some(TileJob {
+            index: 1,
+            start_x: 2,
+            width_mb: 3,
+            height_mb: 4,
+            columns: 2,
+        });
+        let file = build_registers(&job).unwrap();
+        assert_eq!(file.get(&regs::H265_REG0252_TILE_CFG_TILE_EN).unwrap(), 1);
+        assert_eq!(file.get(&regs::H265_REG0252_TILE_CFG_TILE_W_M1).unwrap(), 2);
+        assert_eq!(file.get(&regs::H265_REG0252_TILE_CFG_TILE_H_M1).unwrap(), 3);
+        assert_eq!(file.get(&regs::H265_REG0253_TILE_POS_TILE_X).unwrap(), 2);
+        assert_eq!(file.get(&regs::H265_REG212_RC_CFG_RC_CTU_NUM).unwrap(), 3);
+        assert_eq!(
+            file.get(&regs::H265_REG0193_DUAL_CORE_DCHS_OFST).unwrap(),
+            2
+        );
+        assert_eq!(file.get(&regs::H265_REG0193_DUAL_CORE_DCHS_TXE).unwrap(), 0);
+        assert_eq!(
+            file.get(&regs::H265_REG0222_ME_CACH_CME_LINEBUF_W).unwrap(),
+            4
         );
     }
 

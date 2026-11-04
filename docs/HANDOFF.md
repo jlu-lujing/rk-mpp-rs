@@ -7,6 +7,12 @@
 提升；结果与 C 不一致即视为缺陷，除非另外证明 C 是 bug。功能前沿（tiles/WPP/SAO、B 帧、
 refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉。
 
+**该口径之后的实际推进（截至 2026-11-04）**：deblock/SAO 细调、H.264 two-pass deflicker、
+>4096 宽 P 帧与 **H.265 水平 tiles** 已按同一逐字节标准落地（tiles 见 ROADMAP 的
+`H.265 (rkvenc): uniform horizontal tiles`）。仍未闭合的前沿是 WPP、B 帧与多参考调度。
+口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
+`docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
+
 **当前板（用户 2026-11-02 再次决定）：t6。** t62 只保留为历史证据；后续同步、
 构建和板级验证全部在 t6（NanoPC-T6-LTS，内核 6.1.57）执行。t6 重启后
 `/tmp/mpp-old`、`/tmp/mpp-develop`、`/tmp/mpp_trace.so` 会被清理，权威副本仍在
@@ -145,12 +151,13 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_h265_slice_vs_mpp.sh         # H.265 普通整 AU slice 3/3
 ./scripts/board_h265_lowdelay_vs_mpp.sh      # H.265 逐 slice packet 4/4
 ./scripts/board_h265_roi_vs_mpp.sh           # H.265 ROI/QP map 4/4
+./scripts/board_h265_tile_vs_mpp.sh          # H.265 水平 tiles 2/2
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 全模式 + 原始 dst slots 9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar 6/6
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 71 项完成、10 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 72 项完成、10 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
@@ -400,7 +407,15 @@ H.264/VEPU580 编码已做到：
   HEVC CTU 标记、CU64/32/16/8 展开、force-split 和 base/QP 两张 DMA 表。
   `board_h265_roi_vs_mpp.sh` 为 **4/4**：相对 QP、绝对 QP+force-intra、多 region、
   640x480；六帧 short-term GOP 整条码流逐字节一致。
-- 下一步：tiles/WPP/SAO、B 帧/多参考。
+- 水平 tiles 已闭合：`build_pps` 写 `tiles_enabled_flag`/`num_tile_columns_minus1`，
+  每列一个 job，`reg0252_tile_cfg`/`reg0253_tile_pos`/`reg212_rc_cfg.rc_ctu_num`/
+  tile 相对的 CIME line buffer 窗口/`reg0193_dual_core` 握手/`reg0176-177` 交替
+  line buffer 全部照 `hal_h265e_v580_set_uniform_tile`。RK3588 只到两列
+  （`auto_tile` 或宽度 >4096），四列需要 >8192 宽度、硬件不接受。
+  `board_h265_tile_vs_mpp.sh` 为 **2/2 逐字节**；`tools/h265e_trace_diff.py --job=0/1`
+  显示除 10 个 dma-buf fd 字与 `mei_stor` 外无一个非地址字不同。
+  tile + low-delay 逐 slice 输出**显式拒绝**（C 跨 tile 的 FIFO 行为无证据）。
+- 下一步：WPP、B 帧/多参考。
 
 ### 5.5 M9 后处理（IEP）
 
@@ -453,6 +468,14 @@ buffer 池引用计数 → 多核 → secure（secure 需设备支持，可能�
    固定 QP 26 @320x240 → `qp_sum=7800`，7800/300=26。
 6. **`bit_real` 是硬件字节数×8**，不含软件写的前缀（SPS/PPS/SEI）。
 7. **tracer 输出很大**：永远 `grep`，不要 `cat`（曾一次烧掉 4 万 token）。
+
+   **H.265 tile 首帧没有跨会话稳定的 C oracle**（2026-11-04）：同一个 C probe、同一份输入、同一组参数，
+   紧跟我们会话时输出 `9724d029..`、紧跟它自己会话时输出 `b27d68dc..`，而且两者**解码出的像素也不同**
+   （`7dc42fe5..` 对 `c9fcd4f7..`）——VEPU580 的双核状态跨进程保留，tile 首帧会读到它；中间归还
+   512 MiB 归零页也不变，说明状态在硬件块内而非内存，而 `MPP_CMD_RESET_SESSION` 只清队列。
+   因此两侧各跑一趟丢弃作业：我们据此把自己钉在 `9724d029..`，`board_h265_tile_vs_mpp.sh` 也在 C
+   编码之前先跑一次我方编码，把 C 送进同一状态。**这个预热不是冗余代码**：实测去掉它之后，只要
+   前一个脚本的最后一次编码是 C 侧，`auto320` 就 FAIL。逐字节结论的边界只在"该状态内"，写文档不要越过。
 8. **`ssh "$BOARD" '...'` 单引号内 `$VAR` 不展开**；需要本地展开时用双引号或分支。
 9. 板上 `/tmp` 文件由 root 创建时，`scp` 前要 `sudo chmod 644`；删除要 `sudo rm -f`。
 10. **不要用 `cat a b` 造 fixture**（会读到自己）；`cp` 后 `cat >>`。

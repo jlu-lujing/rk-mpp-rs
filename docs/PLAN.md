@@ -251,7 +251,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [x] W2-6 复用 `codec::rc::model`（C/H.265 用同一 RC 模型）：CBR/VBR/AVBR 与
       smart GOP 均逐字节
 - [~] W2-7 slice 切分与逐 slice 输出已闭合（BY_CTU/BY_BYTE、32 项 FIFO 跨越、
-      6 帧 IDR+P；普通整 AU 3/3，low-delay 4/4）；tiles/WPP 未做
+      6 帧 IDR+P；普通整 AU 3/3，low-delay 4/4）；WPP 未做（水平 tiles 见 W2-11）
 - [x] W2-8 10-bit 编码探针 —— t6 的 VEPU580 接受 MPP 的 10-bit prep/frame
       配置，但硬件 job 返回 `int_sta=0x100` 且不产生 packet；Rust 配置层据此
       显式拒绝非 8-bit，`board_h265_10bit_probe.sh` 固化这条拒绝证据。
@@ -265,6 +265,16 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `mpi_enc_test` 与 Rust 交错采样 5 轮：320x240 / 640x480 / 720p Rust
       分别快 15.8% / 3.6% / 13.8%；1080p 为 C 147 ms、Rust 149 ms，
       Rust 慢 1.3%，在允许平手的 5% 噪声门内，4/4 通过。
+- [x] W2-11 水平 tiles —— PPS 写 `tiles_enabled_flag`/`num_tile_columns_minus1`，
+      每列一个 job（`reg0252_tile_cfg`、`reg0253_tile_pos`、`reg212_rc_cfg.rc_ctu_num`、
+      tile 相对的 CIME line buffer 窗口、`reg0193_dual_core` 握手、`reg0176/177`
+      交替 line buffer）。RK3588 只到两列：`auto_tile` 在 4K 以下要两列，宽度 >4096
+      强制两列，四列需要 >8192 宽度而硬件不接受。`board_h265_tile_vs_mpp.sh` **2/2 逐字节**
+      （auto_tile 320x240 覆盖 IDR+P、4608x64 强制两列，后者 P 帧两侧都以 `int_sta=0x100`
+      被拒，故该格为 IDR）。C tile job 的 trace 与派生镜像比对（`tools/h265e_trace_diff.py
+      --job=0/1`）除 10 个 dma-buf fd 字与 `mei_stor` 外**没有一个非地址字不同**。
+      tile + low-delay 逐 slice 输出显式拒绝；会话首帧的跨进程双核残留状态登记在
+      `docs/DIVERGENCES.md`（C 自身在两种字节模式间摇摆，我们用一趟丢弃作业把自己钉定）。
 
 验收：至少 4 尺寸 × 2 QP 的固定 QP 矩阵、6 帧 GOP、CBR/VBR 各一条逐 NAL；
 场景检测与 ROI 按 H.264 的同一套证据标准。
