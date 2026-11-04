@@ -1326,8 +1326,11 @@ in what order the evidence gets produced.
       filter-intra PAETH uses the DC transform direction. `cargo test
       --all-targets`: 1048 passed / 0 failed / 27 board-only ignored;
       `cargo fmt --check` clean.
-      Next: compare the first restored frame with libaom. Superresolution before
-      LR, inter prediction and reference-frame management remain after that.
+      A raw first-frame comparison against libaom currently measures Y/U/V PSNR
+      19.432/23.746/21.947 dB (20.284 dB average), so pixel closure is not yet
+      achieved. Next: locate the reconstruction/rounding divergence behind that
+      gap. Superresolution before LR, inter prediction and reference-frame
+      management remain after that.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

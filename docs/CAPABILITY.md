@@ -95,7 +95,7 @@
 | AV1 stream 调度（IVF/OBU→frame→tile） | 完成：`stream.rs` — 按 packet/OBU 顺序产出 sequence/show-existing/coded-frame 事件，事件携带真实 tile ranges，并把帧头参考状态更新接在事件推进上；单 tile 与 2×2 fixture 均覆盖 |
 | AV1 intra tile block sink | 完成语法闭环：按规范的 Y mode→Y angle→UV mode→CFL alpha→UV angle 顺序消费，并处理 palette、filter-intra、tx depth 与逐 plane 系数；真实 320×240 keyframe 的整 tile（17944 bits）通过分区覆盖、全部残差上下文和 `exit_symbol()` 尾位校验，记录的 `Quant[]` 已接入帧级像素重建 |
 | AV1 tile 熵入口 / 分区驱动 | 完成：`tile_entropy.rs` — tile id→MI 边界、叶块回调、stateful partition CDF、图像边缘的折叠二符号/隐式 SPLIT、`HORZ_4`/`VERT_4` 越界保护；真实 2×2 fixture 与 320×240 单 tile keyframe 均通过 |
-| AV1 全帧码流解码 / libaom 像素比对 | 未做：真实 320×240 keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF 与 LR；restoration-enabled fixture 的 12 个阶段哈希已锁定。仍缺 superres 后 LR、首帧像素级 libaom 对齐，以及帧间预测与参考帧管理 |
+| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240 keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF 与 LR；restoration-enabled fixture 的 12 个阶段哈希已锁定。首帧对 libaom 当前为 Y/U/V PSNR 19.432/23.746/21.947 dB（平均 20.284），尚未像素对齐；仍缺重建/舍入误差定位、superres 后 LR，以及帧间预测与参考帧管理 |
 
 ## 已知 C bug（本 crate 保留独立结果）
 
