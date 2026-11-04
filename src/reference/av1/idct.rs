@@ -52,9 +52,71 @@ pub fn idct_2d(input: &[i32], n: usize) -> Vec<i32> {
     out
 }
 
+/// `Cos128_Lookup[65]`: `round(4096 * cos(angle * pi / 128))`.
+pub static COS128_LOOKUP: [i32; 65] = [
+    4096, 4095, 4091, 4085, 4076, 4065, 4052, 4036, 4017, 3996, 3973, 3948, 3920, 3889, 3857, 3822,
+    3784, 3745, 3703, 3659, 3612, 3564, 3513, 3461, 3406, 3349, 3290, 3229, 3166, 3102, 3035, 2967,
+    2896, 2824, 2751, 2675, 2598, 2520, 2440, 2359, 2276, 2191, 2106, 2019, 1931, 1842, 1751, 1660,
+    1567, 1474, 1380, 1285, 1189, 1092, 995, 897, 799, 700, 601, 501, 401, 301, 201, 101, 0,
+];
+
+/// `cos128(angle)`.
+pub fn cos128(angle: i32) -> i32 {
+    let angle = angle & 255;
+    if (0..=64).contains(&angle) {
+        COS128_LOOKUP[angle as usize]
+    } else if (64..=128).contains(&angle) {
+        -COS128_LOOKUP[(128 - angle) as usize]
+    } else if (128..=192).contains(&angle) {
+        -COS128_LOOKUP[(angle - 128) as usize]
+    } else {
+        COS128_LOOKUP[(256 - angle) as usize]
+    }
+}
+
+/// `sin128(angle) = cos128(angle - 64)`.
+pub fn sin128(angle: i32) -> i32 {
+    cos128(angle - 64)
+}
+
+/// `brev(numBits, x)`: the bit-reversal of `numBits` bits of `x`.
+pub fn brev(num_bits: u32, x: u32) -> u32 {
+    let mut t = 0;
+    for i in 0..num_bits {
+        let bit = (x >> i) & 1;
+        t |= bit << (num_bits - 1 - i);
+    }
+    t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cos128_and_sin128_follow_the_lookup_rules() {
+        assert_eq!(cos128(0), 4096);
+        assert_eq!(cos128(32), COS128_LOOKUP[32]);
+        assert_eq!(cos128(64), 0);
+        assert_eq!(cos128(96), -COS128_LOOKUP[32]);
+        assert_eq!(cos128(128), -4096);
+        assert_eq!(cos128(192), 0);
+        assert_eq!(cos128(255), COS128_LOOKUP[1]);
+        assert_eq!(sin128(0), 0);
+        assert_eq!(sin128(64), 4096);
+        assert_eq!(sin128(32), COS128_LOOKUP[32]);
+    }
+
+    #[test]
+    fn bit_reversal_matches_the_specification_formula() {
+        assert_eq!(brev(0, 5), 0);
+        assert_eq!(brev(1, 1), 1);
+        assert_eq!(brev(2, 1), 2);
+        assert_eq!(brev(3, 1), 4);
+        assert_eq!(brev(4, 1), 8);
+        assert_eq!(brev(3, 7), 7);
+        assert_eq!(brev(2, 3), 3);
+    }
 
     #[test]
     fn cospi_matches_the_reference_values() {

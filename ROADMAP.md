@@ -781,7 +781,13 @@ in what order the evidence gets produced.
       DC-predicted chroma. Two tests pin the constant-luma case (DC unchanged)
       and a single bright luma sample (135 / 127 and the negative-alpha mirror
       121).
-      Next: the bit-exact DCT/ADST/FLIPADST butterflies, then the libaom pixel
+      **Twenty-fourth slice:** the butterfly primitives.
+      `idct.rs` now carries `Cos128_Lookup[65]`, `cos128` (the four quadrant
+      rules over `angle & 255`), `sin128(angle) = cos128(angle - 64)` and
+      `brev(numBits, x)`. Two tests pin the lookup quadrants (including
+      `cos128(255) = cos128(1)` and `sin128(0) = 0`) and the bit reversal.
+      Next: the `B`/`H` butterflies, the DCT/ADST permutations and the
+      DCT/ADST/FLIPADST processes themselves, then the libaom pixel
       comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
