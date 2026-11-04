@@ -39,7 +39,21 @@ def tables(text):
                     break
             end += 1
         body = text[start:end + 1]
-        values = [int(v) for v in re.findall(r"-?\d+", body)]
+        values = []
+        safe = re.compile(r"^[0-9+*() \t-]+$")
+        flat = body.replace("{", " ").replace("}", " ")
+        for token in flat.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if token.isdigit() or (token.startswith("-") and token[1:].isdigit()):
+                values.append(int(token))
+            elif safe.match(token) and any(op in token for op in "*+"):
+                # The specification writes products such as `128 * 125`.
+                value = eval(token, {"__builtins__": {}}, {})
+                values.append(int(value))
+            else:
+                raise SystemExit(f"{name}: unexpected value {token!r}")
         out.append((name, shape, values))
     return out
 
