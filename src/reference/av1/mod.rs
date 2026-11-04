@@ -38,3 +38,4 @@ pub mod tile;
 pub mod tile_entropy;
 pub mod tile_group;
 pub mod tx;
+pub mod tx_type;
