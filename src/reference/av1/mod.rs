@@ -29,6 +29,7 @@ pub mod scan;
 pub mod scan_defaults;
 pub mod seq_header;
 pub mod sm_weights;
+pub mod stream;
 pub mod subexp;
 pub mod symbol;
 pub mod tile;

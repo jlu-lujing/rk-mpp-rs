@@ -157,6 +157,31 @@ pub fn read_tx_depth(
     Ok(depth as u32)
 }
 
+/// `read_tx_size(allowSelect)` for an intra block. The caller supplies the
+/// available above/left transform extents for the depth CDF context.
+#[allow(clippy::too_many_arguments)]
+pub fn read_tx_size(
+    decoder: &mut SymbolDecoder<'_>,
+    size: BlockSize,
+    allow_select: bool,
+    lossless: bool,
+    tx_mode_select: bool,
+    above_width: u32,
+    left_height: u32,
+) -> Result<TxSize, SymbolError> {
+    if lossless {
+        return Ok(TxSize::Tx4x4);
+    }
+    let mut tx = max_tx_size_rect(size);
+    if size.width > 4 && allow_select && tx_mode_select {
+        let depth = read_tx_depth(decoder, size, above_width, left_height)?;
+        for _ in 0..depth {
+            tx = split_tx_size(tx);
+        }
+    }
+    Ok(tx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +260,25 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn read_tx_size_honours_lossless_and_largest() {
+        let bytes = [0u8; 16];
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        assert_eq!(
+            read_tx_size(&mut decoder, named("BLOCK_16X16"), true, true, true, 0, 0).unwrap(),
+            Tx4x4
+        );
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        assert_eq!(
+            read_tx_size(&mut decoder, named("BLOCK_16X16"), true, false, false, 0, 0).unwrap(),
+            Tx16x16
+        );
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        assert_eq!(
+            read_tx_size(&mut decoder, named("BLOCK_16X16"), true, false, true, 0, 0).unwrap(),
+            Tx16x16
+        );
     }
 }
