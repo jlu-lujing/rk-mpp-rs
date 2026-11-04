@@ -72,6 +72,7 @@
 | AV1 逆变换 | 完成 bit-exact 蝶形 DCT、ADST4/8/16 与 FLIPADST、2D 变换、量化与残差重建；identity scaling 待与 libaom 核 |
 | AV1 transform type / set | 完成：`tx_type.rs` — `get_tx_set`、intra set1/set2 inverse tables、intra `tx_type` CDF、row/column `TxKind`、scan direction 与 tx class |
 | AV1 CDEF | 完成：方向搜索、主/次抽头、约束差值，9 个测试（含 8/10-bit 与色度几何） |
+| AV1 CDEF index 语法 | 完成：64×64 luma 对齐网格、`L(cdef_bits)`、skip/lossless/intrabc gating 与同区复用；2 个测试 |
 | AV1 loop restoration 滤波 | 完成：Wiener、self-guided（两遍 box + 投影）、stripe 边界源切换，8 个测试含两个独立规范向量 |
 | AV1 LR 参数解码（§8.3 subexp） | 完成：`NS(n)` / `decode_subexp_bool` / `inverse_recenter` / `decode_signed_subexp_with_ref_bool`，7 个测试 |
 | AV1 LR 帧/条带驱动（§7.17） | 完成：unit 网格几何、`stripeNum`、4x4 prelude、写回，11 个测试；网格可由码流层直接填充 |
@@ -118,7 +119,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 57 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 58 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
@@ -128,9 +129,9 @@ restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr
 stream 事件驱动、residual transform 的 chunk/plane/raster 布局、tile 级可变 CDF 状态，以及
 partition/mode/skip/tx_depth 的持久 CDF 接线、系数 EOB/level/sign 的 stateful 路径，以及
 tile MI 边界与叶块回调驱动、transform-type 选择、residual 的 `all_zero` 入口、单
-transform block 的完整系数消费、segment/angle-delta block 状态、block delta 语法，以及
-intra transform-block 重建。仍缺真实 block sink 的组合
+transform block 的完整系数消费、segment/angle-delta block 状态、block delta 语法、
+intra transform-block 重建，以及 CDEF index 语法。仍缺真实 block sink 的组合
 （含帧间预测与参考帧管理），
 因此 libaom 像素比对尚未开始（ADST8/16 快照、identity scaling、蝶形数值对齐也还欠 libaom
-佐证）。`cargo test --all-targets`：**1017 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
+佐证）。`cargo test --all-targets`：**1019 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
 干净。

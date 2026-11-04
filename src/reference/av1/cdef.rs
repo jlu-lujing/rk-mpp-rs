@@ -5,6 +5,9 @@
 //! reads the same unfiltered plane and returns the filtered 8x8 luma block, or
 //! the corresponding 4x4 or 8x4 chroma block for 4:2:0 or 4:2:2 input.
 
+use crate::reference::av1::partition::BlockSize;
+use crate::reference::av1::symbol::SymbolDecoder;
+
 /// `Cdef_Directions[8][2][2]`.
 pub const CDEF_DIRECTIONS: [[[i8; 2]; 2]; 8] = [
     [[-1, 1], [-2, 2]],
@@ -28,6 +31,66 @@ pub const CDEF_UV_DIR: [[[u8; 8]; 2]; 2] = [
     [[0, 1, 2, 3, 4, 5, 6, 7], [1, 2, 2, 2, 3, 4, 6, 0]],
     [[7, 0, 2, 4, 5, 6, 6, 6], [0, 1, 2, 3, 4, 5, 6, 7]],
 ];
+
+/// Tile-wide `cdef_idx` grid in 4x4 luma units.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CdefIndexGrid {
+    pub mi_cols: usize,
+    pub mi_rows: usize,
+    values: Vec<i16>,
+}
+
+impl CdefIndexGrid {
+    pub fn new(mi_cols: usize, mi_rows: usize) -> Self {
+        Self {
+            mi_cols,
+            mi_rows,
+            values: vec![-1; mi_cols * mi_rows],
+        }
+    }
+
+    pub fn get(&self, row: usize, col: usize) -> Option<u8> {
+        if row >= self.mi_rows || col >= self.mi_cols {
+            return None;
+        }
+        let value = self.values[row * self.mi_cols + col];
+        (value >= 0).then_some(value as u8)
+    }
+
+    /// `read_cdef()`: read one aligned 64x64 CDEF index for the block, unless
+    /// this aligned region already carries an index.
+    #[allow(clippy::too_many_arguments)]
+    pub fn read(
+        &mut self,
+        decoder: &mut SymbolDecoder<'_>,
+        row: usize,
+        col: usize,
+        size: BlockSize,
+        skip: bool,
+        coded_lossless: bool,
+        enabled: bool,
+        allow_intrabc: bool,
+        cdef_bits: u8,
+    ) -> Result<Option<u8>, crate::reference::av1::symbol::SymbolError> {
+        if skip || coded_lossless || !enabled || allow_intrabc {
+            return Ok(None);
+        }
+        let base_row = row & !15usize;
+        let base_col = col & !15usize;
+        if let Some(value) = self.get(base_row, base_col) {
+            return Ok(Some(value));
+        }
+        let value = decoder.read_literal(u32::from(cdef_bits))? as u8;
+        let w4 = size.num_4x4_wide() as usize;
+        let h4 = size.num_4x4_high() as usize;
+        for r in (base_row..(base_row + h4).min(self.mi_rows)).step_by(16) {
+            for c in (base_col..(base_col + w4).min(self.mi_cols)).step_by(16) {
+                self.values[r * self.mi_cols + c] = i16::from(value);
+            }
+        }
+        Ok(Some(value))
+    }
+}
 
 /// `Div_Table[9]`, scaled by 1024.
 const DIV_TABLE: [i64; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
@@ -429,5 +492,67 @@ mod tests {
         assert_eq!(out, flat);
         assert_eq!(CDEF_UV_DIR[0][0][6], 6);
         assert_eq!(CDEF_UV_DIR[0][1][6], 6);
+    }
+
+    #[test]
+    fn cdef_index_is_aligned_and_reused() {
+        use crate::reference::av1::partition::BLOCK_SIZES;
+        let mut grid = CdefIndexGrid::new(32, 32);
+        let mut decoder = SymbolDecoder::init(&[0xffu8; 8]).unwrap();
+        assert_eq!(
+            grid.read(
+                &mut decoder,
+                17,
+                18,
+                BLOCK_SIZES[6],
+                false,
+                false,
+                true,
+                false,
+                2,
+            )
+            .unwrap(),
+            Some(3)
+        );
+        assert_eq!(grid.get(16, 16), Some(3));
+        // The existing aligned value does not consume another literal.
+        let mut decoder = SymbolDecoder::init(&[0u8; 8]).unwrap();
+        assert_eq!(
+            grid.read(
+                &mut decoder,
+                20,
+                20,
+                BLOCK_SIZES[0],
+                false,
+                false,
+                true,
+                false,
+                2,
+            )
+            .unwrap(),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn cdef_index_is_skipped_for_skip_and_lossless_blocks() {
+        let mut grid = CdefIndexGrid::new(8, 8);
+        let mut decoder = SymbolDecoder::init(&[0xffu8; 8]).unwrap();
+        assert_eq!(
+            grid.read(
+                &mut decoder,
+                0,
+                0,
+                crate::reference::av1::partition::BLOCK_SIZES[0],
+                true,
+                false,
+                true,
+                false,
+                2,
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(grid.get(0, 0), None);
     }
 }
