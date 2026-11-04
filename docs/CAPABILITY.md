@@ -61,9 +61,14 @@
 | AV1 默认 CDF 表 | 完成：96 张、19,677 个值，生成器 + FNV 校验（含 3D 表与 `128 * 125` 乘积更正） |
 | AV1 块几何 / partition / intra 模式 | 完成：22 种 BLOCK_SIZES、上下文、`y_mode`/`intra_frame_y_mode`/`uv_mode`+CFL、`tx_depth`、32 张扫描表 |
 | AV1 系数语法 | 完成：EOB 类别与 extra bits、`coeff_base`/`eob`/`br`、signs/Golomb、`Quant[]`、tile 级 above/left 上下文 |
-| AV1 帧内预测 | 完成 DC/V/H/SMOOTH/SMOOTH_V/H/PAETH；方向预测与 CFL 未做 |
-| AV1 逆变换 | 仅有数学参考（非逐位蝶形）；DCT/ADST/FLIPADST 蝶形未做 |
-| AV1 tile 驱动 / CDEF / 环路滤波 / libaom 像素比对 | 未做 |
+| AV1 帧内预测 | 完成 DC/V/H/SMOOTH/SMOOTH_V/H/PAETH、方向预测（含 sub-90 分支）、CFL、边缘滤波与强度选择 |
+| AV1 逆变换 | 完成 bit-exact 蝶形 DCT、ADST4/8/16 与 FLIPADST、2D 变换、量化与残差重建；identity scaling 待与 libaom 核 |
+| AV1 CDEF | 完成：方向搜索、主/次抽头、约束差值，9 个测试（含 8/10-bit 与色度几何） |
+| AV1 loop restoration 滤波 | 完成：Wiener、self-guided（两遍 box + 投影）、stripe 边界源切换，8 个测试含两个独立规范向量 |
+| AV1 LR 参数解码（§8.3 subexp） | 完成：`NS(n)` / `decode_subexp_bool` / `inverse_recenter` / `decode_signed_subexp_with_ref_bool`，7 个测试 |
+| AV1 LR 帧/条带驱动（§7.17） | 完成：unit 网格几何、`stripeNum`、4x4 prelude、写回，10 个测试；每 unit 参数由外部注入 |
+| AV1 `read_lr` / `read_lr_unit` 码流层 | 未做：缺 `TileWienerCdf` / `TileSgrprojCdf` 等默认 CDF 表 |
+| AV1 全帧 tile 驱动 / 去块 / libaom 像素比对 | 未做：宿主 `aomdec`/`aomenc`/`ffmpeg` 齐备、fixture 在 `tests/data`，但软件解码链路未闭合 |
 
 ## 已知 C bug（本 crate 保留独立结果）
 
@@ -96,5 +101,9 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
-当前 ROADMAP：**93 完成 / 6 未完成**。未完成项里 5 项属于上表的平台/不存在边界，1 项是
-M11 的 AV1 软件解码（熵解码、系数、基础预测已就位；方向预测、逐位变换、tile 驱动与像素比对仍待完成）。
+当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 38 个 slice：符号解码、默认
+CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
+restoration 滤波与 subexp 参数解码、帧/条带驱动。仍缺 `read_lr_unit` 的 CDF 码流层、去块
+与全帧 tile 解码，因此 libaom 像素比对尚未开始。`cargo test --all-targets`：**901 通过 /
+0 失败 / 27 板级 ignore**，`cargo fmt --check` 干净。

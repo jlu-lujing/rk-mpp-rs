@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. Uniform horizontal tiles are byte-exact over two cells (`auto_tile` at 320x240 across IDR+P, forced two columns at 4608x64), with a traced C tile job differing in no non-address word of any section. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. WPP, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: CABAC core; HEVC transforms; H.264 CAVLC I-slice reconstruction with filtered prediction, transform bypass, DC Hadamard and picture deblocking; two 32x32 IDR fixtures and one 64x64, 16-macroblock noise IDR match all YUV samples; H.264 CABAC covers textured I16/I4x4/I8x8 residuals, I_PCM, signed nonzero mb_qp_delta, mixed macroblock propagation and consecutive slices with non-zero first_mb; P/B-slice CABAC remains open** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 38 AV1 slices covering the symbol decoder, default CDFs, partition, intra prediction, bit-exact inverse transforms, reconstruction, CDEF, loop restoration filters, LR subexp parameter decoding and the frame/stripe driver; `read_lr`/`read_lr_unit` CDF syntax, deblocking, full-frame tile decode and the libaom pixel comparison remain** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -875,8 +875,51 @@ in what order the evidence gets produced.
       edge-filter vectors (`[80,80,81,83,157,159,160,160]` and the scaled
       10-bit equivalent) were independently computed from the specification
       pseudocode before entering the Rust expectations.
-      Next: loop restoration, the frame/tile driver that ties modes + coefficients +
-      reconstruction together, and the libaom pixel comparison.
+      **Thirty-sixth slice:** `src/reference/av1/restoration.rs` implements the
+      section 7.17 filters. `LrSource` reproduces the get-source-sample process
+      for the shifted 64-luma-line stripe: samples inside the stripe come from
+      `UpscaledCdefFrame`, samples outside from `UpscaledCurrFrame`, with the
+      three-line clamp at each stripe edge. `wiener_filter` builds the symmetric
+      seven-tap coefficients and runs the separable horizontal/vertical passes
+      with the bit-depth dependent `interRound0`/`interRound1`;
+      `self_guided_filter` implements both box passes, `Sgr_Params[16][4]`, the
+      variance-driven `a2`/`b2` terms and the projection. Eight tests pin the
+      constants, the unit-DC-gain symmetry, stripe source selection, flat-block
+      identity, two independently computed specification vectors (Wiener and
+      SGRPROJ) and the RESTORE_NONE copy path. The first compile attempt failed
+      on an import of `read_symbol` as a module-level function when it is a
+      `SymbolDecoder` method; removing that wholly unused import fixed it.
+      **Thirty-seventh slice:** `src/reference/av1/subexp.rs` carries the
+      arithmetic-coded subexponential values used by `read_lr_unit`: `NS(n)`,
+      `decode_subexp_bool`, `inverse_recenter` and
+      `decode_signed_subexp_with_ref_bool`. The `NS(n)` mapping is a separate
+      pure function so the specification's n=5 worked example can be pinned
+      without an arithmetic bitstream. Seven tests pin the inverse-recenter
+      branches, the whole-alphabet endpoints of `NS(n)` and `decode_subexp_bool`
+      on all-zero/all-one partitions, and that every Wiener tap and SGRPROJ xqd
+      decoded from four different bitstreams stays inside its transmitted
+      range; the all-zero Wiener tap decodes exactly `Wiener_Taps_Mid`.
+      **Thirty-eighth slice:** `src/reference/av1/lr_frame.rs` is the frame/tile
+      driver around those filters: `count_units_in_frame` (round-to-nearest,
+      not ceil), `LoopRestorationSize[plane]` from `lr_unit_shift`/
+      `lr_uv_shift`, the 4x4 `loop_restore_block` prelude (`stripeNum`,
+      `StripeStartY`/`StripeEndY`, `unitRow`/`unitCol`, `x`/`y`/`w`/`h` with
+      the plane-end clamps), and `apply_loop_restoration`, which copies
+      `UpscaledCdefFrame` first, returns that copy when `UsesLr == 0`, and
+      otherwise writes each filtered block back at its plane stride. Ten tests
+      pin `Round2`, the unit-count rounding, the unit-size shifts, the first
+      block and the row-15 stripe boundary, 4:2:0 chroma geometry, both copy
+      paths, and a Wiener frame whose four 4x4 blocks are compared against
+      independently filtered blocks. `cargo test --all-targets` after these
+      slices: 901 passed / 0 failed / 27 board-only ignored; `cargo fmt --check`
+      clean.
+      Next: the `read_lr`/`read_lr_unit` bitstream half (it needs the
+      `TileWienerCdf`/`TileSgrprojCdf` default tables, not yet in
+      `cdf_defaults.rs`), deblocking, and a full frame/tile decode so the
+      libaom pixel comparison can run. `aomdec`, `aomenc`, `ffmpeg` and
+      `ffprobe` are available on the host and the AV1 fixtures are in
+      `tests/data`, but the software decode chain is not complete yet, so no
+      pixel comparison is claimed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
