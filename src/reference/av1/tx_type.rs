@@ -6,6 +6,7 @@ use crate::reference::av1::cdf_defaults::{
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::coeff::{tx_sqr_index, tx_sqr_up_index, TxClass};
 use crate::reference::av1::idct::TxKind;
+use crate::reference::av1::intra::UvMode;
 use crate::reference::av1::scan::ScanDirection;
 use crate::reference::av1::symbol::SymbolDecoder;
 use crate::reference::av1::tx::TxSize;
@@ -170,6 +171,16 @@ pub fn is_tx_type_in_set(set: TxSet, tx_type: TxType, is_inter: bool) -> bool {
         ]
         .contains(&tx_type),
         _ => matches!(tx_type, TxType::Idtx | TxType::DctDct),
+    }
+}
+
+/// `Mode_To_Txfm[UVMode]`.
+pub fn uv_mode_tx_type(mode: UvMode) -> TxType {
+    match mode {
+        UvMode::Dc | UvMode::D45 | UvMode::Cfl => TxType::DctDct,
+        UvMode::V | UvMode::D113 | UvMode::D67 | UvMode::SmoothV => TxType::AdstDct,
+        UvMode::H | UvMode::D157 | UvMode::D203 | UvMode::SmoothH => TxType::DctAdst,
+        UvMode::D135 | UvMode::Smooth | UvMode::Paeth => TxType::AdstAdst,
     }
 }
 

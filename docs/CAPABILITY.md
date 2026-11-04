@@ -87,6 +87,7 @@
 | AV1 帧头（规范 §5.9） | 完成：`frame_header.rs` — 完整 `uncompressed_header()`（show_existing、帧类型/id/order hint、帧尺寸与 superres、`tile_info()`、量化/segmentation/delta LF、lossless 默认值、`loop_filter_params()`、CDEF、`lr_params()`、`tx_mode`、`skip_mode_params()`、global motion 与 `read_global_param()`、`film_grain_params()`）。`FrameHeaderState` 注入依赖解码状态的量，默认为 `setup_past_independence()`；`parse_frame_header_obu()` 校验 trailing bits，`parse_frame_obu()` 做 `byte_alignment()` 并返回 tile-group payload；`loop_filter_params()` / `lr_geometry()` 直连 `deblock.rs` / `lr_frame.rs`。12 个测试，含 8 个真实 IVF 共 112 个帧头的独立 Python 位位置比对、8 组首帧字段快照、ffmpeg `trace_headers` 的 film grain 逐语法元素快照、负向用例，以及不注入 `skip_mode` 的 8 个 IVF 串行参考状态更新。`frame_header_copy()` 属 OBU 调度器，未实现 |
 | AV1 tile-group 拆包（§5.11） | 完成：`tile_group.rs` — `tile_start_and_end_present_flag`、`tg_start`/`tg_end`、byte alignment、1–4 byte little-endian tile size、最后 tile 隐式延伸到 group 末尾、多 group 去重/完整性聚合，7 个测试；真实 320×240 单 tile 与 2×2 tile fixture 均得到完整且无重叠的 tile slice |
 | AV1 stream 调度（IVF/OBU→frame→tile） | 完成：`stream.rs` — 按 packet/OBU 顺序产出 sequence/show-existing/coded-frame 事件，事件携带真实 tile ranges，并把帧头参考状态更新接在事件推进上；单 tile 与 2×2 fixture 均覆盖 |
+| AV1 intra tile block sink | 首版完成：`intra_sink.rs` 在一个 block 中按顺序消费 segment/skip、CDEF、delta、mode、angle、palette 决策、filter-intra、tx size，以及每 plane 的 all_zero/stateful 系数；当前记录语法，尚未写像素 |
 | AV1 tile 熵入口 / 分区驱动 | 完成：`tile_entropy.rs` — tile id→MI 边界、`TileBlockSink` 叶块回调、stateful partition CDF、tile 内精确覆盖；真实 2×2 fixture 的四个 tile 均通过 |
 | AV1 全帧码流解码 / libaom 像素比对 | 未做：宿主 `aomdec`/`aomenc`/`ffmpeg` 齐备、fixture 在 `tests/data`，OBU / 序列头 / 帧头层已能从真实码流解析（112 个帧头逐位对齐），但仍缺串起 tile 熵解码→预测→重建→去块→CDEF→LR 的**帧级驱动**，以及帧间预测与参考帧管理；因此像素比对尚未开始 |
 
@@ -122,7 +123,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 61 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 62 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
@@ -134,8 +135,9 @@ partition/mode/skip/tx_depth 的持久 CDF 接线、系数 EOB/level/sign 的 st
 tile MI 边界与叶块回调驱动、transform-type 选择、residual 的 `all_zero` 入口、单
 transform block 的完整系数消费、segment/angle-delta block 状态、block delta 语法、
 intra transform-block 重建、CDEF index 语法、filter-intra，以及 palette 的无 palette
-决策路径，以及正确的 intra skip 语义。仍缺 palette color/token map 与真实 block sink 的组合
+决策路径、正确的 intra skip 语义，以及首版 intra block sink。仍缺 palette color/token map、
+真实 tile fixture 的 sink 闭合和像素写回
 （含帧间预测与参考帧管理），
 因此 libaom 像素比对尚未开始（ADST8/16 快照、identity scaling、蝶形数值对齐也还欠 libaom
-佐证）。`cargo test --all-targets`：**1023 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
+佐证）。`cargo test --all-targets`：**1024 通过 / 0 失败 / 27 板级 ignore**，`cargo fmt --check`
 干净。

@@ -59,6 +59,42 @@ pub fn decode_coefficients(
         });
     }
 
+    decode_coefficient_payload(
+        decoder,
+        cdfs,
+        tile,
+        plane,
+        x4,
+        y4,
+        max_x4,
+        max_y4,
+        tx,
+        tx_type,
+        q_ctx,
+        disable_cdf_update,
+    )
+}
+
+/// Decode the EOB/level/sign payload after the caller has established that
+/// `all_zero == 0` and selected the final transform type.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_coefficient_payload(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tile: &mut TileContext,
+    plane: usize,
+    x4: usize,
+    y4: usize,
+    max_x4: usize,
+    max_y4: usize,
+    tx: TxSize,
+    tx_type: TxType,
+    q_ctx: usize,
+    disable_cdf_update: bool,
+) -> Result<DecodedCoeffs, CdfStateError> {
+    let w4 = (tx.width() / 4) as usize;
+    let h4 = (tx.height() / 4) as usize;
+
     let class = tx_type.class();
     let scan = get_scan(tx, tx_type.scan_direction());
     let eob = decode_eob_with_cdf(
@@ -97,7 +133,7 @@ pub fn decode_coefficients(
     )?;
     tile.update(plane, x4, y4, w4, h4, cul_level as u8, dc_category as u8);
     Ok(DecodedCoeffs {
-        all_zero,
+        all_zero: false,
         eob,
         quant,
         tx_type,

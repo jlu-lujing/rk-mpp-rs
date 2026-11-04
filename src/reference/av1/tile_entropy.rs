@@ -38,6 +38,7 @@ pub enum TileEntropyError {
     InvalidGeometry,
     Cdf(CdfStateError),
     Symbol(SymbolError),
+    Unsupported(&'static str),
 }
 
 impl From<CdfStateError> for TileEntropyError {
