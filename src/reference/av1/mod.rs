@@ -8,5 +8,7 @@
 pub mod cdf_defaults;
 pub mod intra;
 pub mod partition;
+pub mod scan;
+pub mod scan_defaults;
 pub mod symbol;
 pub mod tx;

@@ -656,8 +656,16 @@ in what order the evidence gets produced.
       and the `TileTx{64,32,16,8}Cdf` selection by max depth, plus
       `read_tx_depth`. Five tests pin the tables, the split chain, the three
       contexts and the decoded depth symbols (0/1/0 over the Tx8 context row).
-      Next: the residual and coefficient CDF sets, inverse transforms, then a
-      pixel comparison against libaom.
+      **Seventh slice:** the coefficient scan orders. `tools/gen_av1_scan.py`
+      extracts all 32 `Default/Mcol/Mrow` scans from the specification (4,912
+      entries, FNV-1a `0x07028d3e122c7cef`), and `scan.rs` implements
+      `get_scan`: the 64-wide transforms fall back to the 32x32 / 16x32 / 32x16
+      scans exactly as the specification's `get_scan` does, while direction
+      picks Default, Mrow (vertical transforms) or Mcol (horizontal). Tests pin
+      the four-by-four rows, the 64-wide fallbacks and that every transform has a
+      scan whose length is `min(w,32) * min(h,32)`.
+      Next: the coefficient syntax itself (eob/levels/signs) on these scans,
+      inverse transforms, then a pixel comparison against libaom.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
