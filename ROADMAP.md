@@ -853,8 +853,15 @@ in what order the evidence gets produced.
       tests pin the known table starts (`dc_q(8,0)=4`, `ac_q(12,1)=13`), index
       clamping and the multiplication; the first expectation wrongly assumed
       the 8/10-bit rows always differ at index 0.
-      Next: the residual wiring (`coeffs` into `dequant` + 2D transform +
-      prediction), CDEF/LR, then the libaom pixel comparison.
+      **Thirty-fourth slice:** the residual wiring. `tx.rs` gains
+      `Transform_Row_Shift[19]`, and `reconstruct.rs` dequantizes a block (DC
+      with `dc_q`, the rest with `ac_q`), runs the 2D inverse transform with
+      `rowShift`/`colShift = 4` (0 when lossless) and the specification's clamp
+      ranges, then adds it to the prediction and clips. Three tests pin a zero
+      residual (prediction unchanged), a DC-only residual (constant offset) and
+      the DC/AC quantizer split.
+      Next: CDEF/LR, the frame/tile driver that ties modes + coefficients +
+      reconstruction together, and the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

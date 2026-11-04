@@ -99,6 +99,15 @@ fn size_index(size: BlockSize) -> usize {
         .expect("block size is one of BLOCK_SIZES")
 }
 
+/// `Transform_Row_Shift[ TX_SIZES_ALL ]`.
+pub const TRANSFORM_ROW_SHIFT: [u32; 19] =
+    [0, 1, 2, 2, 2, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2];
+
+/// `Transform_Row_Shift[ txSz ]`.
+pub fn row_shift(tx: TxSize) -> u32 {
+    TRANSFORM_ROW_SHIFT[tx as usize]
+}
+
 /// `Max_Tx_Size_Rect[ MiSize ]`.
 pub fn max_tx_size_rect(size: BlockSize) -> TxSize {
     BLOCK_MAX_TX_SIZE_RECT[size_index(size)]

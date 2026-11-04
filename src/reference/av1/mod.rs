@@ -16,6 +16,7 @@ pub mod partition;
 pub mod predict;
 pub mod quant;
 pub mod quant_tables;
+pub mod reconstruct;
 pub mod scan;
 pub mod scan_defaults;
 pub mod sm_weights;
