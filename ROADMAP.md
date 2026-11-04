@@ -761,8 +761,15 @@ in what order the evidence gets produced.
       tests pin the 135-degree mix (`50,60,61,50`) and the 203-degree left-edge
       blends at shifts 13 and 27; the first exposed that the left branch had to
       add the same +1 offset as the above branch.
-      Next: edge filtering/upsampling, CFL, the bit-exact DCT/ADST/FLIPADST
-      butterflies, then the libaom pixel comparison.
+      **Twenty-first slice:** the intra edge helpers:
+      `intra_edge_filter_strength` (the size/delta branches for filter types
+      0 and 1), `intra_edge_upsample_selection` (`d` in 1..39 and the size
+      limits) and `upsample_edge` (the four-tap `-1,9,9,-1` kernel with the
+      duplicated endpoints). Three tests pin the strength branches, the
+      selection matrix and the doubled edge (`10,14,20,26,30`); the last one
+      caught the endpoint duplication producing the wrong `dup` array.
+      Next: the edge filter process itself, CFL, the bit-exact DCT/ADST/
+      FLIPADST butterflies, then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

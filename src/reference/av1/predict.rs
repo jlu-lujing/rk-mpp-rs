@@ -263,6 +263,101 @@ pub fn directional_gt180(left: &[u16], dy: u16, log2_w: u32, log2_h: u32) -> Vec
     out
 }
 
+/// Intra edge filter strength (specification 7.11.2.8).
+pub fn intra_edge_filter_strength(w: u32, h: u32, filter_type: u32, delta: i32) -> u8 {
+    let d = delta.unsigned_abs();
+    let blk = w + h;
+    let mut strength = 0;
+    if filter_type == 0 {
+        if blk <= 8 {
+            if d >= 56 {
+                strength = 1;
+            }
+        } else if blk <= 16 {
+            if d >= 40 {
+                strength = 1;
+            }
+        } else if blk <= 24 {
+            if d >= 8 {
+                strength = 1;
+            }
+            if d >= 16 {
+                strength = 2;
+            }
+            if d >= 32 {
+                strength = 3;
+            }
+        } else if blk <= 32 {
+            strength = 1;
+            if d >= 4 {
+                strength = 2;
+            }
+            if d >= 32 {
+                strength = 3;
+            }
+        } else {
+            strength = 3;
+        }
+    } else if blk <= 8 {
+        if d >= 40 {
+            strength = 1;
+        }
+        if d >= 64 {
+            strength = 2;
+        }
+    } else if blk <= 16 {
+        if d >= 20 {
+            strength = 1;
+        }
+        if d >= 48 {
+            strength = 2;
+        }
+    } else if blk <= 24 {
+        if d >= 4 {
+            strength = 3;
+        }
+    } else {
+        strength = 3;
+    }
+    strength
+}
+
+/// Intra edge upsample selection (specification 7.11.2.9).
+pub fn intra_edge_upsample_selection(w: u32, h: u32, filter_type: u32, delta: i32) -> bool {
+    let d = delta.unsigned_abs();
+    let blk = w + h;
+    if d == 0 || d >= 40 {
+        false
+    } else if filter_type == 0 {
+        blk <= 16
+    } else {
+        blk <= 8
+    }
+}
+
+/// Intra edge upsample process (specification 7.11.2.10).
+///
+/// `buf` holds entries `-1..num_px-1` with index 0 representing `-1`; the
+/// output holds `-2..2*num_px-2` with index 0 representing `-2`.
+pub fn upsample_edge(buf: &[u16], num_px: usize, bit_depth: u32) -> Vec<u16> {
+    // dup = [buf[-1], buf[-1], buf[0], .., buf[numPx-1], buf[numPx-1]].
+    let mut dup = Vec::with_capacity(num_px + 3);
+    dup.push(buf[0]); // buf[-1]
+    dup.push(buf[0]); // the loop's i = -1 entry
+    dup.extend_from_slice(&buf[1..=num_px]); // buf[0] .. buf[numPx-1]
+    dup.push(buf[num_px]); // buf[numPx-1]
+    let mut out = vec![0u16; 2 * num_px + 1];
+    out[0] = dup[0];
+    for i in 0..num_px {
+        let s = -i32::from(dup[i]) + 9 * i32::from(dup[i + 1]) + 9 * i32::from(dup[i + 2])
+            - i32::from(dup[i + 3]);
+        let s = clip1((s + 8) >> 4, bit_depth);
+        out[2 * i + 1] = s;
+        out[2 * i + 2] = dup[i + 2];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +389,35 @@ mod tests {
         assert_eq!(pred[1], blend(50, 60, 27));
         assert_eq!(pred[2], blend(60, 70, 13));
         assert_eq!(pred[3], blend(60, 70, 27));
+    }
+
+    #[test]
+    fn edge_strength_follows_the_dimension_and_delta_branches() {
+        assert_eq!(intra_edge_filter_strength(4, 4, 0, 56), 1);
+        assert_eq!(intra_edge_filter_strength(16, 16, 0, 3), 1);
+        assert_eq!(intra_edge_filter_strength(16, 16, 0, 4), 2);
+        assert_eq!(intra_edge_filter_strength(16, 16, 0, 32), 3);
+        assert_eq!(intra_edge_filter_strength(20, 20, 0, 0), 3);
+        assert_eq!(intra_edge_filter_strength(4, 4, 1, 64), 2);
+        assert_eq!(intra_edge_filter_strength(8, 8, 1, 48), 2);
+        assert_eq!(intra_edge_filter_strength(12, 12, 1, 4), 3);
+    }
+
+    #[test]
+    fn upsample_selection_uses_delta_and_size() {
+        assert!(!intra_edge_upsample_selection(4, 4, 0, 0));
+        assert!(intra_edge_upsample_selection(8, 8, 0, 39));
+        assert!(!intra_edge_upsample_selection(12, 12, 0, 39));
+        assert!(intra_edge_upsample_selection(4, 4, 1, 20));
+        assert!(!intra_edge_upsample_selection(8, 8, 1, 20));
+        assert!(!intra_edge_upsample_selection(4, 4, 0, 40));
+    }
+
+    #[test]
+    fn upsample_doubles_the_edge_with_the_4_tap_kernel() {
+        // Entries -1, 0, 1.
+        let buf = [10u16, 20, 30];
+        assert_eq!(upsample_edge(&buf, 2, 8), [10, 14, 20, 26, 30]);
     }
 
     #[test]
