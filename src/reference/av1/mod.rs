@@ -9,3 +9,4 @@ pub mod cdf_defaults;
 pub mod intra;
 pub mod partition;
 pub mod symbol;
+pub mod tx;

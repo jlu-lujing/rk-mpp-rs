@@ -649,7 +649,14 @@ in what order the evidence gets produced.
       alphabet (CFL is symbol 13). Two tests pin the availability matrix
       (including the 4x16 -> 4x8 lossless corner) and the mode symbols
       (0 -> DC, 0xff -> PAETH without CFL and CFL with it).
-      Next: `tx_size`, the coefficient CDF sets, inverse transforms, then a
+      **Sixth slice:** `src/reference/av1/tx.rs` carries the nineteen
+      `TX_SIZES_ALL` transforms with dimensions, the `BLOCK_SIZES` tables
+      `Max_Tx_Size_Rect` and `Max_Tx_Depth`, the `Split_Tx_Size` halving chain,
+      the `tx_depth` context (`(aboveW >= maxTxWidth) + (leftH >= maxTxHeight)`)
+      and the `TileTx{64,32,16,8}Cdf` selection by max depth, plus
+      `read_tx_depth`. Five tests pin the tables, the split chain, the three
+      contexts and the decoded depth symbols (0/1/0 over the Tx8 context row).
+      Next: the residual and coefficient CDF sets, inverse transforms, then a
       pixel comparison against libaom.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
