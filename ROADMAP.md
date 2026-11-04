@@ -481,7 +481,7 @@ in what order the evidence gets produced.
        The remaining VP9 rows stay as measured divergences with their reasons: the
        damaged-stream cells where C aborts the run and Rust recovers the surviving
        pictures (`vp9/half-last`, `vp9/mid-flip`).
-- [ ] AV1 Main, film grain
+- [x] AV1 Main, film grain
   - [x] IVF packet boundaries, OBU headers/LEB128 and complete OBU splitting
   - [x] Sequence header, operating points, color config and tool flags
   - [x] Uncompressed frame header, reference state and tile geometry
@@ -588,6 +588,24 @@ in what order the evidence gets produced.
     the current C oracle self-recovers through 12 AV1 resets on this fixture;
     Rust self-recovers through 11 and produces the same ten zero frames, so the
     reset count is not a Rust-only divergence.
+      **Wider conformance matrix (2026-11-04).** The AV1 corpus was regenerated
+      with libaom on a host (the board's ffmpeg has no AV1 encoder) and swept
+      through `board_corpus_sweep.sh`: 19 PASS, 0 FAIL, 3 adjudicated C bugs.
+      Sizes 96x96, 128x128, 192x192, 320x240, 640x480 (including a 60-frame long
+      GOP), 1280x720 and 1920x1080, plus the multi-sequence and 320<->640 resize
+      streams, are byte-identical between C, this crate and libaom; the small
+      sizes are now locked as `tests/data/av1_{96x96,128x128,192x192}_10.ivf`.
+      Two boundary cells are recorded in `docs/DIVERGENCES.md` rather than
+      claimed: 64x64 never completes the rkvdec job (status `0x1` where a good
+      job reports `0x1100`), so C writes ten black pictures while libaom decodes
+      real content and this crate reports the hardware error; and a
+      profile-0+10-bit stream is invalid per the AV1 spec (10-bit needs profile
+      2) and differs from C in one byte at offset 76802.
+- [ ] AV1 software tile entropy decoder (M11). The hardware path hands tile
+      payloads to rkvdec; `src/reference/` has no AV1 entropy stage, so an
+      independent software AV1 decode remains software-reference-decoder work.
+      This is not a gap in the hardware path closed above.
+
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
       display extension, picture header, picture coding extension, quant matrix

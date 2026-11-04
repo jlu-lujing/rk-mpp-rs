@@ -57,6 +57,11 @@ enc vp9_1280x720_p0.ivf            1280x720 20 -c:v libvpx-vp9 -deadline realtim
 enc vp9_320x240_p2_10bit.ivf       320x240  20 -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 1M -g 30 -pix_fmt yuv420p10le -profile:v 2
 
 # ---- AV1 ---------------------------------------------------------------
+# libaom-av1 is not in the board's ffmpeg build: run this section on a host
+# that has one, or copy the fixtures in from tests/data.
+enc av1_96x96.ivf                  96x96    10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
+enc av1_128x128.ivf                128x128  10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
+enc av1_192x192.ivf                192x192  10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
 enc av1_320x240.ivf                320x240  10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
 enc av1_640x480.ivf                640x480  10 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p
 enc av1_640x480_long.ivf           640x480  60 -c:v libaom-av1 -cpu-used 8 -crf 40 -b:v 0 -pix_fmt yuv420p -g 30

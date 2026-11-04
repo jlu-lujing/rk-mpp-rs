@@ -85,6 +85,9 @@ for f in "$corpus"/*; do
     av1_film_grain_320x240_10.ivf|film_grain_10bit.ivf)
       printf 'KNOWN-C-BUG %s: Rust matches libaom with grain applied; C leaves sw_apply_grain clear\n' "$name"
       named=$((named+1)); continue ;;
+    av1_64x64_10.ivf)
+      printf 'KNOWN-C-BUG %s: the rkvdec job never reports done (status 0x1, not 0x1100); C writes ten black pictures, libaom decodes real pixels and Rust reports the hardware error instead of black output\n' "$name"
+      named=$((named+1)); continue ;;
     vp9_p0_720p_errres_seg.ivf|vp9_p0_lossless_321x241_2.ivf)
       printf 'KNOWN-C-BUG %s: Rust matches libvpx; C differs (see ROADMAP)\n' "$name"
       named=$((named+1)); continue ;;

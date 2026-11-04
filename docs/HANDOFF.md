@@ -102,7 +102,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 3. 新脚本统一使用 `BOARD="${BOARD:-t62}"`，默认不再写死 t6。驱动脚本时从
    **另一个目录**（如 `~/rk-mpp-run`）运行，因为有些脚本会打包当前目录并在
    同一目标解压；在目标目录里运行会自己吞自己。
-4. `ffmpeg`/`ffprobe` 需要 `apt-get install`，矩阵脚本的 NV12→planar 依赖它们。
+4. `ffmpeg`/`ffprobe` 需要 `apt-get install`，矩阵脚本的 NV12→planar 依赖它们。板上的 ffmpeg **没有 AV1 编码器**（无 libaom-av1），AV1 大尺寸 fixture 要在宿主生成后 scp，小尺寸已固化在 `tests/data/av1_{96x96,128x128,192x192}_10.ivf`。
 5. t62 上已有重新生成的覆盖语料 `~/rk-mpp-oracles/corpus-gen`（59 个 payload；
    从当前提交重跑后会再写一个 `corpus-manifest.json`）。原 t6 的第三方 corpus
    无法原样复制；扫描时使用 `CORPUS=.../corpus-gen`，并确保从当前提交重新运行
@@ -158,7 +158,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 76 项完成、7 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 77 项完成、7 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。

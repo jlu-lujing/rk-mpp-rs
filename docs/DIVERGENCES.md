@@ -19,6 +19,9 @@ Dispositions:
 
 | Case | Disposition | Evidence |
 |---|---|---|
+| AV1 64x64 | **C-BUG** | The rkvdec job never reports done (status `0x1`; a good job reports `0x1100`), so C emits ten all-zero 64x64 pictures (61,440 bytes, 0 non-zero). libaom decodes real content; this crate reports `FRAME_ERR_DEC_HW_ERR` and writes nothing instead of black. 96x96 and up complete normally. |
+| AV1 profile 0 + 10-bit | **NO-ORACLE** | The AV1 spec requires 10-bit to use profile 2; libaom produced the stream anyway (ffprobe: profile Main, yuv420p10le). C and Rust differ in one byte at offset 76,802 of the 320x240 fixture, and an invalid combination is not a conformance target. |
+| AV1 sizes 96x96, 128x128, 192x192 | **FIXED** | Regenerated with libaom and adjudicated three ways: Rust and C both equal libaom byte for byte (13,8240 / 245,760 / 552,960 bytes), and the fixtures are locked in `tests/data`. |
 | VP9 `vp9_p0_720p_errres_seg`, frames 4/5 | **C-BUG** | Rust == libvpx (SHA-256 `0f0ff0da…deb51`) on all 6 frames; C differs by 106+107 V-plane bytes, max delta 3 (`5b737017…cac1`). Registers match word for word. |
 | VP9 `vp9_p0_lossless_321x241_2`, frame count | **C-BUG** | libvpx and Rust produce 2 frames; C emits 1. Rust hash is the libvpx hash `8ac48f11…beca`. |
 | VP9 damaged streams (`half-last`, `mid-flip`) | **BY-DESIGN** | C aborts the run (rc 255, 0 frames); Rust emits the pictures that did decode. Matching C would discard valid output. |
