@@ -45,6 +45,8 @@ pub enum PaletteError {
     Cdf(CdfStateError),
     Symbol(SymbolError),
     BadPaletteSize(usize),
+    MissingTokens,
+    InvalidIndex(u8),
 }
 
 impl From<CdfStateError> for PaletteError {
@@ -91,6 +93,56 @@ pub struct PaletteMap {
 pub struct PaletteTokens {
     pub y: Option<PaletteMap>,
     pub uv: Option<PaletteMap>,
+}
+
+/// Expand one plane region of a palette block. `block_x`/`block_y` and
+/// `tx_x`/`tx_y` are plane-sample coordinates; out-of-onscreen map cells use
+/// the specification's last-column/last-row replication.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_palette_plane(
+    info: &PaletteModeInfo,
+    tokens: &PaletteTokens,
+    plane: usize,
+    block_x: usize,
+    block_y: usize,
+    tx_x: usize,
+    tx_y: usize,
+    w: usize,
+    h: usize,
+) -> Result<Option<Vec<u16>>, PaletteError> {
+    let (size, colors, map) = if plane == 0 {
+        (info.y_size, &info.y_colors, tokens.y.as_ref())
+    } else {
+        (
+            info.uv_size,
+            if plane == 1 {
+                &info.u_colors
+            } else {
+                &info.v_colors
+            },
+            tokens.uv.as_ref(),
+        )
+    };
+    if size == 0 {
+        return Ok(None);
+    }
+    let map = map.ok_or(PaletteError::MissingTokens)?;
+    if map.width == 0 || map.height == 0 {
+        return Err(PaletteError::MissingTokens);
+    }
+    let mut out = vec![0u16; w * h];
+    for row in 0..h {
+        let source_y = (block_y + tx_y + row).min(block_y + map.height - 1) - block_y;
+        for col in 0..w {
+            let source_x = (block_x + tx_x + col).min(block_x + map.width - 1) - block_x;
+            let index = map.indices[source_y * map.width + source_x];
+            if usize::from(index) >= size {
+                return Err(PaletteError::InvalidIndex(index));
+            }
+            out[row * w + col] = colors[usize::from(index)];
+        }
+    }
+    Ok(Some(out))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -568,6 +620,60 @@ mod tests {
         let mut decoder = SymbolDecoder::init(&[0xffu8; 32]).unwrap();
         let colors = state.read_colors(&mut decoder, 0, 1, 0, 0, 10).unwrap();
         assert_eq!(colors[0], 1023);
+    }
+
+    #[test]
+    fn palette_maps_expand_with_edge_replication() {
+        let info = PaletteModeInfo {
+            y_size: 3,
+            y_colors: [10, 20, 30, 0, 0, 0, 0, 0],
+            ..PaletteModeInfo::default()
+        };
+        let tokens = PaletteTokens {
+            y: Some(PaletteMap {
+                width: 2,
+                height: 2,
+                indices: vec![0, 1, 2, 1],
+            }),
+            uv: None,
+        };
+        let out = predict_palette_plane(&info, &tokens, 0, 0, 0, 0, 0, 4, 4)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out,
+            [10, 20, 20, 20, 30, 20, 20, 20, 30, 20, 20, 20, 30, 20, 20, 20]
+        );
+    }
+
+    #[test]
+    fn palette_uv_prediction_selects_u_or_v_colors() {
+        let info = PaletteModeInfo {
+            uv_size: 2,
+            u_colors: [40, 50, 0, 0, 0, 0, 0, 0],
+            v_colors: [60, 70, 0, 0, 0, 0, 0, 0],
+            ..PaletteModeInfo::default()
+        };
+        let tokens = PaletteTokens {
+            y: None,
+            uv: Some(PaletteMap {
+                width: 2,
+                height: 2,
+                indices: vec![0, 1, 1, 0],
+            }),
+        };
+        assert_eq!(
+            predict_palette_plane(&info, &tokens, 1, 0, 0, 0, 0, 2, 2)
+                .unwrap()
+                .unwrap(),
+            [40, 50, 50, 40]
+        );
+        assert_eq!(
+            predict_palette_plane(&info, &tokens, 2, 0, 0, 0, 0, 2, 2)
+                .unwrap()
+                .unwrap(),
+            [60, 70, 70, 60]
+        );
     }
 
     #[test]

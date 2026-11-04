@@ -1,9 +1,11 @@
 //! AV1 reconstruction: dequantize a coefficient block, inverse-transform it and
 //! add the residual to the prediction.
 
+use crate::reference::av1::filter_intra::predict_filter_intra;
 use crate::reference::av1::idct::{inverse_transform_2d, TxKind};
 use crate::reference::av1::intra::{IntraMode, UvMode};
 use crate::reference::av1::intra_sink::IntraSyntaxBlock;
+use crate::reference::av1::palette::predict_palette_plane;
 use crate::reference::av1::predict::{intra_filter_type, predict_intra, IntraEdges};
 use crate::reference::av1::quant::{ac_q, dc_q, dequantize};
 use crate::reference::av1::tx::row_shift;
@@ -179,15 +181,17 @@ fn uv_intra_mode(mode: UvMode) -> Option<IntraMode> {
     })
 }
 
-/// Reconstruct one plane of an intra syntax block when it uses ordinary intra
-/// prediction. Palette, CFL and filter-intra are explicit later layers.
+/// Reconstruct one plane of an intra syntax block. Palette and filter-intra
+/// predictions are wired here; CFL is the remaining explicit layer.
 #[allow(clippy::too_many_arguments)]
-pub fn reconstruct_standard_block_plane(
+pub fn reconstruct_intra_block_plane(
     frame: &mut [u16],
     stride: usize,
     plane_width: usize,
     plane_height: usize,
     plane: usize,
+    sub_x: u32,
+    sub_y: u32,
     syntax: &IntraSyntaxBlock,
     q_delta: PlaneQDelta,
     bit_depth: u32,
@@ -195,12 +199,6 @@ pub fn reconstruct_standard_block_plane(
     above_mode: Option<IntraMode>,
     left_mode: Option<IntraMode>,
 ) -> Result<(), &'static str> {
-    if (plane == 0 && syntax.palette.y_size > 0) || (plane > 0 && syntax.palette.uv_size > 0) {
-        return Err("palette prediction is not wired into plane reconstruction");
-    }
-    if syntax.filter_intra.is_some() {
-        return Err("filter-intra prediction is not wired into plane reconstruction");
-    }
     let (mode, angle_delta) = if plane == 0 {
         (syntax.y_mode, syntax.angle_y)
     } else {
@@ -214,6 +212,8 @@ pub fn reconstruct_standard_block_plane(
     let dc_q = dc_q(bit_depth, qindex);
     let ac_q = ac_q(bit_depth, qindex + q_delta.ac - q_delta.dc);
     let filter_type = intra_filter_type(above_mode, left_mode);
+    let block_x = (syntax.block.col * 4) >> sub_x;
+    let block_y = (syntax.block.row * 4) >> sub_y;
 
     for tx in &syntax.transforms {
         if tx.plane != plane {
@@ -224,6 +224,66 @@ pub fn reconstruct_standard_block_plane(
         let h = tx.tx.height() as usize;
         if tx.x + w > plane_width || tx.y + h > plane_height {
             return Err("transform extends beyond the reconstructed plane");
+        }
+        let have_above = tx.y > 0;
+        let have_left = tx.x > 0;
+        let have_above_right = tx.x + w < plane_width;
+        let have_below_left = tx.y + h < plane_height;
+        let palette_prediction = predict_palette_plane(
+            &syntax.palette,
+            &syntax.palette_tokens,
+            plane,
+            block_x,
+            block_y,
+            tx.x,
+            tx.y,
+            w,
+            h,
+        )
+        .map_err(|_| "invalid palette prediction")?;
+        let prediction = if let Some(prediction) = palette_prediction {
+            Some(prediction)
+        } else if plane == 0 {
+            syntax.filter_intra.map(|filter| {
+                let edges = IntraEdges::from_plane(
+                    frame,
+                    stride,
+                    tx.x,
+                    tx.y,
+                    w,
+                    h,
+                    have_above,
+                    have_left,
+                    have_above_right,
+                    have_below_left,
+                    plane_width - 1,
+                    plane_height - 1,
+                    bit_depth,
+                );
+                predict_filter_intra(filter, &edges, w, h, bit_depth)
+            })
+        } else {
+            None
+        };
+        if let Some(prediction) = prediction {
+            let out = reconstruct_block(
+                &plane_quant,
+                w,
+                h,
+                tx.tx,
+                tx.tx_type.row_kind(),
+                tx.tx_type.col_kind(),
+                dc_q,
+                ac_q,
+                &prediction,
+                bit_depth,
+                syntax.lossless,
+            );
+            for row in 0..h {
+                let start = (tx.y + row) * stride + tx.x;
+                frame[start..start + w].copy_from_slice(&out[row * w..(row + 1) * w]);
+            }
+            continue;
         }
         reconstruct_intra_tx(
             frame,
@@ -240,10 +300,10 @@ pub fn reconstruct_standard_block_plane(
                 angle_delta,
                 enable_edge_filter: enable_intra_edge_filter && !syntax.lossless,
                 filter_type,
-                have_above: tx.y > 0,
-                have_left: tx.x > 0,
-                have_above_right: tx.x + w < plane_width,
-                have_below_left: tx.y + h < plane_height,
+                have_above,
+                have_left,
+                have_above_right,
+                have_below_left,
                 dc_q,
                 ac_q,
                 bit_depth,
@@ -432,12 +492,14 @@ mod tests {
             }],
         };
         let mut plane = vec![0u16; 8 * 8];
-        reconstruct_standard_block_plane(
+        reconstruct_intra_block_plane(
             &mut plane,
             8,
             8,
             8,
             0,
+            1,
+            1,
             &syntax,
             PlaneQDelta::default(),
             8,
@@ -448,5 +510,136 @@ mod tests {
         .unwrap();
         assert_eq!(&plane[..4], &[128; 4]);
         assert_eq!(plane[4], 0);
+    }
+
+    #[test]
+    fn syntax_palette_prediction_expands_to_plane_samples() {
+        use crate::reference::av1::cfl::CflAlphas;
+        use crate::reference::av1::intra_sink::IntraSyntaxTx;
+        use crate::reference::av1::palette::{PaletteMap, PaletteModeInfo, PaletteTokens};
+        use crate::reference::av1::partition::BLOCK_SIZES;
+        use crate::reference::av1::tile::DecodedBlock;
+
+        let syntax = IntraSyntaxBlock {
+            block: DecodedBlock {
+                row: 0,
+                col: 0,
+                size: BLOCK_SIZES[0],
+            },
+            segment_id: 0,
+            skip: false,
+            lossless: false,
+            qindex: 40,
+            y_mode: IntraMode::Dc,
+            uv_mode: None,
+            cfl_alphas: CflAlphas::default(),
+            angle_y: 0,
+            angle_uv: 0,
+            filter_intra: None,
+            palette: PaletteModeInfo {
+                y_size: 2,
+                y_colors: [10, 20, 0, 0, 0, 0, 0, 0],
+                ..PaletteModeInfo::default()
+            },
+            palette_tokens: PaletteTokens {
+                y: Some(PaletteMap {
+                    width: 2,
+                    height: 2,
+                    indices: vec![0, 1, 1, 0],
+                }),
+                uv: None,
+            },
+            tx: TxSize::Tx4x4,
+            transforms: vec![IntraSyntaxTx {
+                plane: 0,
+                x: 0,
+                y: 0,
+                tx: TxSize::Tx4x4,
+                tx_type: TxType::DctDct,
+                all_zero: true,
+                eob: 0,
+                quant: vec![0; 16],
+            }],
+        };
+        let mut plane = vec![0u16; 16];
+        reconstruct_intra_block_plane(
+            &mut plane,
+            4,
+            4,
+            4,
+            0,
+            1,
+            1,
+            &syntax,
+            PlaneQDelta::default(),
+            8,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            plane,
+            [10, 20, 20, 20, 20, 10, 10, 10, 20, 10, 10, 10, 20, 10, 10, 10]
+        );
+    }
+
+    #[test]
+    fn syntax_filter_intra_feeds_the_residual_reconstructor() {
+        use crate::reference::av1::cfl::CflAlphas;
+        use crate::reference::av1::filter_intra::FilterIntraMode;
+        use crate::reference::av1::intra_sink::IntraSyntaxTx;
+        use crate::reference::av1::palette::{PaletteModeInfo, PaletteTokens};
+        use crate::reference::av1::partition::BLOCK_SIZES;
+        use crate::reference::av1::tile::DecodedBlock;
+
+        let syntax = IntraSyntaxBlock {
+            block: DecodedBlock {
+                row: 0,
+                col: 0,
+                size: BLOCK_SIZES[0],
+            },
+            segment_id: 0,
+            skip: false,
+            lossless: false,
+            qindex: 40,
+            y_mode: IntraMode::Dc,
+            uv_mode: None,
+            cfl_alphas: CflAlphas::default(),
+            angle_y: 0,
+            angle_uv: 0,
+            filter_intra: Some(FilterIntraMode::Paeth),
+            palette: PaletteModeInfo::default(),
+            palette_tokens: PaletteTokens { y: None, uv: None },
+            tx: TxSize::Tx4x4,
+            transforms: vec![IntraSyntaxTx {
+                plane: 0,
+                x: 0,
+                y: 0,
+                tx: TxSize::Tx4x4,
+                tx_type: TxType::DctDct,
+                all_zero: true,
+                eob: 0,
+                quant: vec![0; 16],
+            }],
+        };
+        let mut plane = vec![0u16; 64];
+        reconstruct_intra_block_plane(
+            &mut plane,
+            8,
+            8,
+            8,
+            0,
+            1,
+            1,
+            &syntax,
+            PlaneQDelta::default(),
+            8,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(&plane[..4], &[128; 4]);
     }
 }

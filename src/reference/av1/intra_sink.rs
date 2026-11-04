@@ -167,6 +167,8 @@ impl IntraTileBlockSink {
             PaletteError::Cdf(error) => TileEntropyError::Cdf(error),
             PaletteError::Symbol(error) => TileEntropyError::Symbol(error),
             PaletteError::BadPaletteSize(_) => TileEntropyError::Unsupported("palette size"),
+            PaletteError::MissingTokens => TileEntropyError::Unsupported("palette tokens"),
+            PaletteError::InvalidIndex(_) => TileEntropyError::Unsupported("palette color index"),
         }
     }
 
