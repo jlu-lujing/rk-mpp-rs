@@ -747,8 +747,15 @@ in what order the evidence gets produced.
       (`Round2(.,8)`) and `PAETH_PRED` (base plus the three distance tests).
       Three tests pin the weights, the constant-edge blend and the 200/100
       vertical split, plus the three Paeth outcomes.
-      Next: the bit-exact DCT/ADST/FLIPADST butterflies, directional intra and
-      CFL, then the libaom pixel comparison.
+      **Nineteenth slice:** `DR_INTRA_DERIVATIVE[90]` (the specification's
+      table) and `directional_lt90` for the `pAngle < 90` branch of the
+      directional process (D45/D67), in its unfiltered, non-upsampled form:
+      `base = ((i+1)*dx >> 6) + j`, the 5-bit interpolation shift and the
+      `w+h-1` edge clamp. Two tests pin the 45-degree pure diagonal and the
+      67-degree derivative (27) blends. The `90 < pAngle < 180` and
+      `pAngle > 180` branches, edge filtering/upsampling and CFL remain.
+      Next: those branches, the bit-exact DCT/ADST/FLIPADST butterflies, then
+      the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

@@ -164,9 +164,72 @@ pub fn paeth_predict(
     out
 }
 
+/// `Dr_Intra_Derivative[ 90 ]`.
+pub static DR_INTRA_DERIVATIVE: [u16; 90] = [
+    0, 0, 0, 1023, 0, 0, 547, 0, 0, 372, 0, 0, 0, 0, 273, 0, 0, 215, 0, 0, 178, 0, 0, 151, 0, 0,
+    132, 0, 0, 116, 0, 0, 102, 0, 0, 0, 90, 0, 0, 80, 0, 0, 71, 0, 0, 64, 0, 0, 57, 0, 0, 51, 0, 0,
+    45, 0, 0, 0, 40, 0, 0, 35, 0, 0, 31, 0, 0, 27, 0, 0, 23, 0, 0, 19, 0, 0, 15, 0, 0, 0, 0, 11, 0,
+    0, 7, 0, 0, 3, 0, 0,
+];
+
+/// The derivative for an angle in `3..=87` (multiples of three are unused and
+/// zero, as the specification's table stores them).
+pub fn dr_intra_derivative(angle: u32) -> u16 {
+    DR_INTRA_DERIVATIVE[angle as usize]
+}
+
+/// Directional prediction for `pAngle < 90` (the unfiltered, non-upsampled
+/// path of the specification's directional process). `above` must supply at
+/// least `w + h` samples.
+pub fn directional_lt90(above: &[u16], dx: u16, log2_w: u32, log2_h: u32) -> Vec<u16> {
+    let w = 1usize << log2_w;
+    let h = 1usize << log2_h;
+    let max_base = w + h - 1;
+    let mut out = vec![0u16; w * h];
+    for i in 0..h {
+        for j in 0..w {
+            let idx = (i + 1) as u32 * u32::from(dx);
+            let base = (idx >> 6) as usize + j;
+            let shift = (idx >> 1) & 0x1F;
+            out[i * w + j] = if base < max_base {
+                let value =
+                    u32::from(above[base]) * (32 - shift) + u32::from(above[base + 1]) * shift;
+                ((value + 16) >> 5) as u16
+            } else {
+                above[max_base]
+            };
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directional_45_follows_the_diagonal() {
+        // Dr_Intra_Derivative[45] = 64: idx = (i+1)*64, so base = i+j+1 and
+        // the shift is zero.
+        let above = [10u16, 20, 30, 40, 50, 60];
+        assert_eq!(dr_intra_derivative(45), 64);
+        let pred = directional_lt90(&above, 64, 1, 1);
+        assert_eq!(pred, [20, 30, 30, 40]);
+    }
+
+    #[test]
+    fn directional_67_uses_its_derivative() {
+        assert_eq!(dr_intra_derivative(67), 27);
+        let above = [0u16, 64, 128, 192, 256, 320];
+        let pred = directional_lt90(&above, 27, 1, 1);
+        // Row 1 uses idx 54: base 0+j and shift 27 -> blend of above[0..2].
+        let shift = 27u32;
+        assert_eq!(pred[2], ((0 * (32 - shift) + 64 * shift + 16) >> 5) as u16);
+        assert_eq!(
+            pred[3],
+            ((64 * (32 - shift) + 128 * shift + 16) >> 5) as u16
+        );
+    }
 
     #[test]
     fn smooth_modes_blend_the_edge_midpoints() {
