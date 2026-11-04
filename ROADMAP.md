@@ -860,7 +860,22 @@ in what order the evidence gets produced.
       ranges, then adds it to the prediction and clips. Three tests pin a zero
       residual (prediction unchanged), a DC-only residual (constant offset) and
       the DC/AC quantizer split.
-      Next: CDEF/LR, the frame/tile driver that ties modes + coefficients +
+      **Thirty-fifth slice:** CDEF. `src/reference/av1/cdef.rs` carries the
+      specification's eight direction vectors, primary/secondary taps, chroma
+      direction table, 1024-scaled division table, frame-MI availability
+      region, and the complete direction and filter processes. The direction
+      search uses 64-bit accumulators (the flat and gradient cost terms exceed
+      32 bits), samples 10-bit input at the required 8-bit precision, and feeds
+      its variance into the luma primary-strength adjustment. The filter handles
+      luma and 4:2:0/4:2:2 `subX`/`subY`, both primary signs, both secondary
+      direction offsets, constrained differences, tap-row selection from
+      `BitDepth - 8`, the asymmetric negative rounding, and the min/max clamp.
+      Nine tests pin the tables, 8/10-bit direction and filter results, flat
+      and zero-strength identity, variance scaling and chroma geometry. The
+      edge-filter vectors (`[80,80,81,83,157,159,160,160]` and the scaled
+      10-bit equivalent) were independently computed from the specification
+      pseudocode before entering the Rust expectations.
+      Next: loop restoration, the frame/tile driver that ties modes + coefficients +
       reconstruction together, and the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
