@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. Uniform horizontal tiles are byte-exact over two cells (`auto_tile` at 320x240 across IDR+P, forced two columns at 4608x64), with a traced C tile job differing in no non-address word of any section. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. WPP, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 39 AV1 slices covering the symbol decoder, default CDFs, partition, intra prediction, bit-exact inverse transforms, reconstruction, CDEF, loop restoration filters, LR subexp parameter decoding, the frame/stripe driver and the `read_lr`/`read_lr_unit` tile CDF syntax; deblocking, full-frame tile decode and the libaom pixel comparison remain** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 40 AV1 slices covering the symbol decoder, default CDFs, partition, intra prediction, bit-exact inverse transforms, reconstruction, CDEF, loop restoration, LR subexp/tile-CDF syntax, the frame/stripe driver and the section 7.14 loop filter; OBU/frame-header parsing, a full-frame tile decode with inter prediction and the libaom pixel comparison remain** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -939,13 +939,48 @@ in what order the evidence gets produced.
       bitstream-to-pixel driver; one more test in `lr_frame.rs` pins the grid
       allocation and writes. `cargo test --all-targets`: 917 passed / 0
       failed / 27 board-only ignored; `cargo fmt --check` clean.
-      Next: deblocking, and a full frame/tile decode so the libaom pixel
-      comparison can run. `aomdec`, `aomenc`, `ffmpeg` and `ffprobe` are
-      available on the host and the AV1 fixtures are in `tests/data`, but the
-      software decode chain is not complete yet, so no pixel comparison is
+      **Fortieth slice:** `src/reference/av1/deblock.rs` implements the
+      section 7.14 loop filter. `LoopFilterParams` covers
+      `loop_filter_level[4]`, sharpness, `delta_enabled`, the ref/mode
+      deltas and `delta_lf_multi`; `strength()` follows the adaptive filter
+      strength and selection processes (segment feature,
+      `nShift = lvlSeg >> 5`, then `limit`/`blimit`/`thresh`).
+      `filter_mask()` reproduces `hevMask`, `filterMask`, `flatMask` and
+      `flatMask2`, including the `filterLen` 4/6/8/16 cases and the bit-depth
+      shifts; `narrow_filter()` is the `filter4` core with `filter4_clamp`,
+      and `wide_filter()` implements the `log2Size` 3/4 tap sets (`n`, `n2`,
+      the `Clip3` of the tap index and `Round2`). `sample_filtering()`
+      dispatches between them; `loop_filter_frame()` walks all vertical
+      boundaries before all horizontal ones for each plane, with the chroma
+      row/col steps and the `loop_filter_level[1+plane]` gate. The per-4x4
+      mode-info arrays (`MiSizes`, `LoopfilterTxSizes`, `Skips`,
+      `RefFrames`, `SegmentIds`, `DeltaLFs`) are injected through
+      `DeblockGrid`/`DeblockCell`; `from_geometry()` derives
+      `isBlockEdge`/`isTxEdge`/`applyFilter` and the filter size from the
+      caller's pixel extents. Seventeen tests pin the lossless defaults,
+      sharpness and delta arithmetic, the segment-feature order, filter
+      sizes, cell geometry, flat/step/hev masks, 8/10-bit thresholds, an
+      independently computed `filter4` vector (`[108,115,125,132]`),
+      hev inner-sample-only behaviour, unity DC gain of all three wide tap
+      sets, sample-filtering dispatch, zero-level identity, both frame
+      passes, the chroma level gate, and a deblocked-plane-to-loop-
+      restoration handoff. `cargo test --all-targets`: 934 passed / 0
+      failed / 27 board-only ignored; `cargo fmt --check` clean, no new
+      warnings.
+      Next: a real full-frame decode. This slice closes the deblocking
+      *process*, but the software reference decoder is still a set of
+      independently verified components: there is no OBU/frame-header
+      parser (so `loop_filter_params()` and `read_delta_lf()` are not read
+      from a bitstream), no frame-level driver chaining tile entropy decode,
+      prediction, reconstruction, deblocking, CDEF and loop restoration,
+      and no inter prediction or reference-frame management. All of these
+      are needed before a decoded frame can be compared with libaom.
+      `aomdec`, `aomenc`, `ffmpeg` and `ffprobe` are available on the host
+      and the AV1 fixtures are in `tests/data`, but no pixel comparison is
       claimed. Three numerical gaps also remain: the ADST8/16 snapshots are
       regression values only, identity-transform scaling is unchecked, and
-      the bit-exact butterflies have not been aligned numerically with libaom.
+      the bit-exact butterflies have not been aligned numerically with
+      libaom.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

@@ -11,6 +11,7 @@ pub mod cdf_defaults;
 pub mod coeff;
 pub mod coeff_tables;
 pub mod context;
+pub mod deblock;
 pub mod idct;
 pub mod intra;
 pub mod lr_frame;
