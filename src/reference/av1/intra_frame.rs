@@ -5,7 +5,7 @@ use crate::reference::av1::cdef::{
     PlaneView, CDEF_UV_DIR,
 };
 use crate::reference::av1::deblock::{
-    loop_filter_frame_dual_grid, DeblockCell, DeblockEdgeInfo, DeblockGrid, DeblockPlane,
+    DeblockCell, DeblockEdgeInfo, DeblockGrid, DeblockPlane, SEG_LVL_ALT_LF_Y_V,
 };
 use crate::reference::av1::frame_header::FrameHeader;
 use crate::reference::av1::intra::{IntraMode, UvMode};
@@ -14,6 +14,7 @@ use crate::reference::av1::lr_frame::{apply_loop_restoration, LrFrameParams, LrP
 use crate::reference::av1::reconstruct::{
     reconstruct_intra_block_plane_with_grid, DecodedPlane, PlaneQDelta, ReconstructedLuma,
 };
+use crate::reference::av1::residual::plane_tx_size;
 use crate::reference::av1::seq_header::SequenceHeader;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,40 +276,113 @@ pub fn reconstruct_intra_frame(
     Ok(frame)
 }
 
-fn deblock_grid(header: &FrameHeader, blocks: &[IntraSyntaxBlock], vertical: bool) -> DeblockGrid {
+fn deblock_grid(
+    header: &FrameHeader,
+    blocks: &[IntraSyntaxBlock],
+    vertical: bool,
+    plane: usize,
+    sub_x: u32,
+    sub_y: u32,
+) -> DeblockGrid {
+    let (plane_sub_x, plane_sub_y) = if plane == 0 { (0, 0) } else { (sub_x, sub_y) };
     let cell = DeblockCell {
         info: DeblockEdgeInfo::default(),
         apply_filter: false,
         filter_size: 4,
     };
     let mut grid = DeblockGrid::uniform(header.mi_cols, header.mi_rows, cell);
+    let mut tx_extents = vec![0usize; header.mi_cols * header.mi_rows];
     for block in blocks {
         let w = block.block.size.num_4x4_wide() as usize;
         let h = block.block.size.num_4x4_high() as usize;
-        let (block_extent, tx_extent) = if vertical {
-            (block.block.size.width as usize, block.tx.width() as usize)
+        let fallback_tx =
+            plane_tx_size(block.block.size, plane, block.tx, plane_sub_x, plane_sub_y)
+                .unwrap_or(block.tx);
+        let extent = if vertical {
+            fallback_tx.width() as usize
         } else {
-            (block.block.size.height as usize, block.tx.height() as usize)
+            fallback_tx.height() as usize
         };
+        for row in block.block.row..(block.block.row + h).min(header.mi_rows) {
+            for col in block.block.col..(block.block.col + w).min(header.mi_cols) {
+                tx_extents[row * header.mi_cols + col] = extent;
+            }
+        }
+        if plane == 0 {
+            for tx in block.transforms.iter().filter(|tx| tx.plane == 0) {
+                let extent = if vertical {
+                    tx.tx.width() as usize
+                } else {
+                    tx.tx.height() as usize
+                };
+                let w = tx.tx.width() as usize / 4;
+                let h = tx.tx.height() as usize / 4;
+                let base_row = tx.y / 4;
+                let base_col = tx.x / 4;
+                for row in base_row..(base_row + h).min(header.mi_rows) {
+                    for col in base_col..(base_col + w).min(header.mi_cols) {
+                        tx_extents[row * header.mi_cols + col] = extent;
+                    }
+                }
+            }
+        }
+    }
+    for block in blocks {
+        let w = block.block.size.num_4x4_wide() as usize;
+        let h = block.block.size.num_4x4_high() as usize;
+        let block_extent = if vertical {
+            (block.block.size.width as usize) >> plane_sub_x
+        } else {
+            (block.block.size.height as usize) >> plane_sub_y
+        };
+        let mut seg_lvl_alt_lf = [0i32; 4];
+        let mut has_seg_lvl_alt_lf = false;
+        for (feature, value) in seg_lvl_alt_lf.iter_mut().enumerate() {
+            let feature = SEG_LVL_ALT_LF_Y_V + feature;
+            if header.feature_enabled[block.segment_id][feature] {
+                *value = header.feature_data[block.segment_id][feature];
+                has_seg_lvl_alt_lf = true;
+            }
+        }
         let info = DeblockEdgeInfo {
             ref_frame: 0,
             mode_type: 0,
             delta_lf: block.delta_lf,
-            seg_lvl_alt_lf: None,
+            seg_lvl_alt_lf: has_seg_lvl_alt_lf.then_some(seg_lvl_alt_lf),
         };
         for row in block.block.row..(block.block.row + h).min(header.mi_rows) {
             for col in block.block.col..(block.block.col + w).min(header.mi_cols) {
                 let coordinate = if vertical {
-                    (col - block.block.col) * 4
+                    (((col & !((1 << plane_sub_x) - 1))
+                        - (block.block.col & !((1 << plane_sub_x) - 1)))
+                        * 4)
+                        >> plane_sub_x
                 } else {
-                    (row - block.block.row) * 4
+                    (((row & !((1 << plane_sub_y) - 1))
+                        - (block.block.row & !((1 << plane_sub_y) - 1)))
+                        * 4)
+                        >> plane_sub_y
                 };
+                let current_tx_extent = tx_extents[row * header.mi_cols + col];
+                let col_step = 1usize << plane_sub_x;
+                let row_step = 1usize << plane_sub_y;
+                let prev_tx_extent =
+                    if (vertical && col < col_step) || (!vertical && row < row_step) {
+                        current_tx_extent
+                    } else {
+                        let (prev_row, prev_col) = if vertical {
+                            (row, col - col_step)
+                        } else {
+                            (row - row_step, col)
+                        };
+                        tx_extents[prev_row * header.mi_cols + prev_col]
+                    };
                 grid.cells[row * header.mi_cols + col] = DeblockCell::from_geometry(
                     coordinate,
-                    vertical as usize,
+                    plane,
                     block_extent,
-                    tx_extent,
-                    tx_extent,
+                    current_tx_extent,
+                    prev_tx_extent,
                     block.skip,
                     true,
                     info,
@@ -326,8 +400,14 @@ pub fn apply_intra_deblock(
     blocks: &[IntraSyntaxBlock],
     frame: &mut IntraFrame,
 ) {
-    let vertical = deblock_grid(header, blocks, true);
-    let horizontal = deblock_grid(header, blocks, false);
+    let sub_x = u32::from(sequence.color.subsampling_x);
+    let sub_y = u32::from(sequence.color.subsampling_y);
+    let vertical = (0..3)
+        .map(|plane| deblock_grid(header, blocks, true, plane, sub_x, sub_y))
+        .collect::<Vec<_>>();
+    let horizontal = (0..3)
+        .map(|plane| deblock_grid(header, blocks, false, plane, sub_x, sub_y))
+        .collect::<Vec<_>>();
     let mut planes = vec![DeblockPlane::new(
         &frame.y.data,
         frame.y.stride,
@@ -353,15 +433,15 @@ pub fn apply_intra_deblock(
             frame.bit_depth,
         ));
     }
-    loop_filter_frame_dual_grid(
+    crate::reference::av1::deblock::loop_filter_frame_plane_grids(
         &mut planes,
         &header.loop_filter_params(),
         &vertical,
         &horizontal,
         frame.coded_width,
         frame.coded_height,
-        u32::from(sequence.color.subsampling_x),
-        u32::from(sequence.color.subsampling_y),
+        sub_x,
+        sub_y,
     );
     frame.y.data = planes.remove(0).samples;
     if let Some(u) = frame.u.as_mut() {
@@ -669,11 +749,11 @@ mod tests {
         );
         assert_eq!(
             deblock,
-            (0x2a08a662b18279f8, 0xf1b3aaf037484c99, 0x44d1083999fd1b64)
+            (0x40fd84e40c374bad, 0xa6663d4a79fa944d, 0x6862da5be37d243b)
         );
         assert_eq!(
             cdef,
-            (0x4123d6e7e9df10dd, 0x93a4782f036426ff, 0x65798501044419b)
+            (0x963167066633f520, 0xdcca09f07d7037e3, 0x6432e49ef4ca8d88)
         );
         assert_eq!(restored, cdef);
     }
@@ -763,19 +843,19 @@ mod tests {
         );
         assert_eq!(
             pre,
-            (0x4ef4205df5509374, 0xdcacdbf585962a6a, 0x03b637d01097d628)
+            (0x4ef4205df5509374, 0x7672c012a85d151a, 0xea2a1ba10c16ea31)
         );
         assert_eq!(
             deblock,
-            (0x91e392681eb2311f, 0xa68bbf8ab932a097, 0x26e8df9edc9902a6)
+            (0x2244082b97a94d31, 0x966ede6f91454c70, 0x00f43f7954179382)
         );
         assert_eq!(
             cdef_hash,
-            (0xea142655a8de1b39, 0x1348dc0ab5f177f3, 0x151e8de79e324419)
+            (0x6894001dae9173bb, 0x01282f6d0e8d5445, 0x2c54df968c17024b)
         );
         assert_eq!(
             restored,
-            (0xdb3ce8ed15835a79, 0x3615403abcc84071, 0xfa01012de3f32a1e)
+            (0x9a98c493231c827b, 0xb2c1b028f85d848c, 0x255f3517f39effd7)
         );
         assert_ne!(picture.y, cdef.y);
         assert_ne!(picture.u, cdef.u);

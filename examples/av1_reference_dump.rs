@@ -2,9 +2,6 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use rk_mpp_rs::reference::av1::cdef::{
-    cdef_direction, cdef_filter_block, cdef_luma_primary_strength, CdefRegion, PlaneView,
-};
 use rk_mpp_rs::reference::av1::intra_frame::{
     apply_intra_cdef, apply_intra_deblock, apply_intra_loop_restoration, reconstruct_intra_frame,
     IntraFrame, PlaneBuffer,
@@ -108,90 +105,14 @@ fn replace_with_reference_deblock(path: &str, frame: &mut IntraFrame) -> Result<
     Ok(())
 }
 
-fn trace_cdef(frame: &IntraFrame) {
-    let luma = PlaneView::new(&frame.y.data, frame.y.stride, frame.y.width, frame.y.height);
-    for row in 0..8 {
-        let values: Vec<_> = (0..8)
-            .map(|col| {
-                let direction = cdef_direction(luma, col * 8, row * 8, frame.bit_depth);
-                format!("{}:{}", direction.dir, direction.variance)
-            })
-            .collect();
-        eprintln!("rk cdef row={row} {}", values.join(" "));
-    }
-    let direction = cdef_direction(luma, 24, 8, frame.bit_depth);
-    let primary = cdef_luma_primary_strength(6, direction.variance);
-    eprintln!(
-        "rk cdef input x=24 y=8 {:?}",
-        &luma.samples[8 * luma.stride + 24..8 * luma.stride + 32]
-    );
-    let block = cdef_filter_block(
-        luma,
-        CdefRegion::new(80, 60),
-        2,
-        6,
-        0,
-        0,
-        primary,
-        2,
-        4,
-        direction.dir,
-        frame.bit_depth,
-    );
-    eprintln!(
-        "rk cdef block x=24 y=8 primary={primary} direction={} {block:?}",
-        direction.dir
-    );
-}
-
-fn trace_blocks(blocks: &[rk_mpp_rs::reference::av1::intra_sink::IntraSyntaxBlock]) {
-    use rk_mpp_rs::reference::av1::intra::UvMode;
-
-    for block in blocks {
-        if block.block.row < 8
-            || block.block.row > 12
-            || block.block.col < 20
-            || block.block.col > 28
-        {
-            continue;
-        }
-        eprintln!(
-            "rk syntax row={} col={} size={:?} y={:?}/{} uv={:?}/{} alpha={}/{} tx={:?} c={}",
-            block.block.row,
-            block.block.col,
-            block.block.size.name,
-            block.y_mode,
-            block.angle_y,
-            block.uv_mode,
-            block.angle_uv,
-            block.cfl_alphas.alpha_u,
-            block.cfl_alphas.alpha_v,
-            block
-                .transforms
-                .iter()
-                .map(|tx| (tx.plane, tx.x, tx.y, tx.tx, tx.all_zero))
-                .collect::<Vec<_>>(),
-            block.uv_mode == Some(UvMode::Cfl),
-        );
-        if block.block.row == 8 && block.block.col == 20 {
-            for tx in &block.transforms {
-                eprintln!(
-                    "rk quant plane={} x={} y={} tx={:?} type={:?} eob={} quant={:?}",
-                    tx.plane, tx.x, tx.y, tx.tx, tx.tx_type, tx.eob, tx.quant
-                );
-            }
-        }
-    }
-}
-
 fn main() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let input = args
         .next()
-        .ok_or("usage: av1_reference_dump <input.ivf> <out-prefix>")?;
+        .ok_or("usage: av1_reference_dump <input.ivf> <out-prefix> [reference-deblock.yuv]")?;
     let prefix = args
         .next()
-        .ok_or("usage: av1_reference_dump <input.ivf> <out-prefix>")?;
+        .ok_or("usage: av1_reference_dump <input.ivf> <out-prefix> [reference-deblock.yuv]")?;
     let reference_deblock = args.next();
 
     let bytes = fs::read(input).map_err(|error| error.to_string())?;
@@ -224,88 +145,8 @@ fn main() -> Result<(), String> {
         IntraTileBlockSink::new(config),
     )
     .map_err(|error| format!("{error:?}"))?;
-    if env::var_os("RK_AV1_SYNTAX_TRACE").is_some() {
-        trace_blocks(&decoded.sink.blocks);
-    }
-
     let prefix = Path::new(&prefix);
     let mut picture = reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks)?;
-    if env::var_os("RK_AV1_SYNTAX_TRACE").is_some() {
-        use rk_mpp_rs::reference::av1::intra::IntraMode;
-        use rk_mpp_rs::reference::av1::predict::{cfl_predict, predict_intra, IntraEdges};
-
-        let u = picture.u.as_ref().unwrap();
-        let edges = IntraEdges::from_plane(
-            &u.data,
-            u.stride,
-            48,
-            16,
-            4,
-            4,
-            true,
-            true,
-            true,
-            true,
-            u.width - 1,
-            u.height - 1,
-            picture.bit_depth,
-        );
-        let dc = predict_intra(IntraMode::Dc, &edges, 2, 2, 0, false, 0, picture.bit_depth);
-        eprintln!(
-            "rk cfl target above={:?} left={:?} dc={:?}",
-            &edges.above[..4],
-            &edges.left[..4],
-            dc
-        );
-        for filter_type in [0, 1] {
-            for enable_filter in [false, true] {
-                let edges = IntraEdges::from_plane(
-                    &u.data,
-                    u.stride,
-                    40,
-                    16,
-                    8,
-                    4,
-                    true,
-                    true,
-                    true,
-                    true,
-                    u.width - 1,
-                    u.height - 1,
-                    picture.bit_depth,
-                );
-                let prediction = predict_intra(
-                    IntraMode::H,
-                    &edges,
-                    3,
-                    2,
-                    -1,
-                    enable_filter,
-                    filter_type,
-                    picture.bit_depth,
-                );
-                eprintln!(
-                    "rk directional filter_type={filter_type} enable={enable_filter} {prediction:?}"
-                );
-            }
-        }
-        let cfl = cfl_predict(
-            &picture.y.data,
-            picture.y.stride,
-            48,
-            16,
-            4,
-            4,
-            1,
-            1,
-            picture.y.width,
-            picture.y.height,
-            -5,
-            &dc,
-            picture.bit_depth,
-        );
-        eprintln!("rk cfl target prediction={cfl:?}");
-    }
     write_frame(&prefix.with_extension("pre.yuv"), &picture).map_err(|error| error.to_string())?;
     print_hashes("pre", &picture);
 
@@ -317,19 +158,6 @@ fn main() -> Result<(), String> {
     if let Some(reference_deblock) = reference_deblock {
         replace_with_reference_deblock(&reference_deblock, &mut picture)?;
     }
-    if env::var_os("RK_CDEF_TRACE").is_some() {
-        eprintln!(
-            "rk cdef params index={:?} y={}/{} uv={}/{} damping={}",
-            decoded.sink.cdef_grid().get(0, 0),
-            frame.header.cdef_y_pri_strength[0],
-            frame.header.cdef_y_sec_strength[0],
-            frame.header.cdef_uv_pri_strength[0],
-            frame.header.cdef_uv_sec_strength[0],
-            frame.header.cdef_damping
-        );
-        trace_cdef(&picture);
-    }
-
     apply_intra_cdef(
         sequence,
         &frame.header,

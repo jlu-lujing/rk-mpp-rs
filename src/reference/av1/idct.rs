@@ -740,6 +740,34 @@ mod tests {
     }
 
     #[test]
+    fn four_by_eight_dct_dct_matches_libaom_rounding() {
+        let mut column_major = [0i32; 32];
+        column_major[0] = -165;
+        let mut row_major = [0i32; 32];
+        for pos in 0..32 {
+            let row = pos & 7;
+            let col = pos >> 3;
+            row_major[row * 4 + col] = column_major[pos];
+        }
+        let out = inverse_transform_2d(&row_major, 4, 8, TxKind::Dct, TxKind::Dct, 0, 4, 16, 16);
+        assert_eq!(out, [-4; 32]);
+    }
+
+    #[test]
+    fn sixteen_by_thirty_two_dc_matches_libaom_rounding() {
+        let mut column_major = [0i32; 16 * 32];
+        column_major[0] = 104;
+        let mut row_major = [0i32; 16 * 32];
+        for pos in 0..16 * 32 {
+            let row = pos & 31;
+            let col = pos >> 5;
+            row_major[row * 16 + col] = column_major[pos];
+        }
+        let out = inverse_transform_2d(&row_major, 16, 32, TxKind::Dct, TxKind::Dct, 1, 4, 16, 16);
+        assert_eq!(out, [1; 16 * 32]);
+    }
+
+    #[test]
     fn flipadst_negates_the_odd_inputs() {
         let base = [10i32, 20, 30, 40];
         let mut plain = [0i32; 4];

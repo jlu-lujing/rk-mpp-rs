@@ -665,6 +665,64 @@ pub fn loop_filter_frame_dual_grid(
     }
 }
 
+/// Like [`loop_filter_frame_dual_grid`], with separate mode-info grids for each
+/// plane. Chroma transform sizes are derived after subsampling and can differ
+/// from the luma grid.
+#[allow(clippy::too_many_arguments)]
+pub fn loop_filter_frame_plane_grids(
+    planes: &mut [DeblockPlane],
+    params: &LoopFilterParams,
+    vertical_grids: &[DeblockGrid],
+    horizontal_grids: &[DeblockGrid],
+    frame_width: usize,
+    frame_height: usize,
+    subsampling_x: u32,
+    subsampling_y: u32,
+) {
+    assert_eq!(vertical_grids.len(), planes.len());
+    assert_eq!(horizontal_grids.len(), planes.len());
+    for (index, plane) in planes.iter_mut().enumerate() {
+        if index != 0 && params.level[index + 1] == 0 {
+            continue;
+        }
+        let (sub_x, sub_y) = if index == 0 {
+            (0, 0)
+        } else {
+            (subsampling_x, subsampling_y)
+        };
+        let row_step = 1usize << sub_y;
+        let col_step = 1usize << sub_x;
+        for pass in 0..2 {
+            let grid = if pass == 0 {
+                &vertical_grids[index]
+            } else {
+                &horizontal_grids[index]
+            };
+            let mut row = 0;
+            while row < grid.mi_rows {
+                let mut col = 0;
+                while col < grid.mi_cols {
+                    filter_edge(
+                        plane,
+                        index,
+                        pass,
+                        row,
+                        col,
+                        params,
+                        grid,
+                        frame_width,
+                        frame_height,
+                        sub_x,
+                        sub_y,
+                    );
+                    col += col_step;
+                }
+                row += row_step;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

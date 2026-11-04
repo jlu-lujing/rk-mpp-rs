@@ -22,6 +22,34 @@ pub fn dequantize_block(coeffs: &[i32], dc_q: i32, ac_q: i32) -> Vec<i32> {
         .collect()
 }
 
+fn dequantize_block_for_tx(
+    coeffs: &[i32],
+    dc_q: i32,
+    ac_q: i32,
+    tx: TxSize,
+    bit_depth: u32,
+) -> Vec<i32> {
+    let denom = match tx {
+        TxSize::Tx32x32 | TxSize::Tx16x32 | TxSize::Tx32x16 | TxSize::Tx16x64 | TxSize::Tx64x16 => {
+            2
+        }
+        TxSize::Tx64x64 | TxSize::Tx32x64 | TxSize::Tx64x32 => 4,
+        _ => 1,
+    };
+    let limit = 1i64 << (7 + bit_depth);
+    coeffs
+        .iter()
+        .enumerate()
+        .map(|(i, coefficient)| {
+            let q = if i == 0 { dc_q } else { ac_q };
+            let product = i64::from(*coefficient) * i64::from(q);
+            let sign = if product < 0 { -1i64 } else { 1 };
+            let dequant = sign * ((product.unsigned_abs() & 0xFF_FFFF) / denom) as i64;
+            dequant.clamp(-limit, limit - 1) as i32
+        })
+        .collect()
+}
+
 /// Convert AV1's column-major entropy buffer to the row-major transform input.
 ///
 /// AV1 caps transform coefficients at 32x32; 64-sample transforms retain that
@@ -57,7 +85,7 @@ pub fn reconstruct_block(
     bit_depth: u32,
     lossless: bool,
 ) -> Vec<u16> {
-    let dequant = dequantize_block(coeffs, dc_q, ac_q);
+    let dequant = dequantize_block_for_tx(coeffs, dc_q, ac_q, tx, bit_depth);
     let residual = inverse_transform_2d(
         &dequant,
         w,
@@ -538,6 +566,18 @@ mod tests {
     fn dequantize_uses_dc_and_ac_quantizers() {
         let coeffs = [3, 3, 3, 3];
         assert_eq!(dequantize_block(&coeffs, 10, 20), [30, 60, 60, 60]);
+    }
+
+    #[test]
+    fn large_transform_dequantization_applies_dq_denom() {
+        assert_eq!(
+            dequantize_block_for_tx(&[4], 52, 60, TxSize::Tx16x32, 8),
+            [104]
+        );
+        assert_eq!(
+            dequantize_block_for_tx(&[4], 52, 60, TxSize::Tx64x64, 8),
+            [52]
+        );
     }
 
     #[test]

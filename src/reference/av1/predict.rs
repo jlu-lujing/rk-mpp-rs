@@ -742,7 +742,7 @@ fn directional_predict(
             for j in 0..w {
                 let idx = (i + 1) as u32 * dx;
                 let base = (idx >> (6 - up_above)) as usize + (j << up_above);
-                let shift = (idx >> 1) & 0x1F;
+                let shift = ((idx << up_above) >> 1) & 0x1F;
                 out[i * w + j] = if base < max_base {
                     let value = u32::from(above.at(base as isize)) * (32 - shift)
                         + u32::from(above.at(base as isize + 1)) * shift;
@@ -967,6 +967,24 @@ mod tests {
                 108, 108, 108, 108, 108, 108, 108, 108, 105, 105, 105, 105, 105, 106, 106, 106,
                 107, 108, 108, 109, 109, 109, 110, 110, 34, 37, 41, 45, 48, 52, 56, 59,
             ]
+        );
+    }
+
+    #[test]
+    fn upsampled_directional_edge_uses_the_upsampled_interpolation_phase() {
+        let edges = IntraEdges {
+            above: vec![20, 21, 17, 20, 16, 16, 21, 26],
+            left: vec![20, 17, 17, 20, 146, 146, 146, 146],
+            top_left: 18,
+            have_above: true,
+            have_left: true,
+            above_available: 4,
+            left_available: 4,
+        };
+        let pred = predict_intra(IntraMode::V, &edges, 2, 2, -2, true, 0, 8);
+        assert_eq!(
+            pred,
+            [20, 21, 17, 20, 20, 20, 18, 19, 21, 20, 18, 19, 21, 19, 19, 18]
         );
     }
 

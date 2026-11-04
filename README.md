@@ -45,14 +45,13 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 的 **PD/DECT 逆 telecine** 两遍路径（反向下拉 + 场序状态机）已接入：3:2 telecine 与逐行素材 **2/2 与 C probe 逐字节一致**，逐帧 `pd_flag/pd_types/dil_order/frm_mode/ratio` 也逐行相同，322x242/722x482/1366x768 等非 16 对齐尺寸同样逐字节；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成 82%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 83%）。
+整体约完成 82%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 85%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 75 个
-AV1 slice（最新为 CDEF 与方向预测修正：约束差值按规范夹到非负范围，补齐 CDEF 的
-skip/strength/damping 语义，并让带 angle delta 的 H/V 模式真正进入方向预测；真实无-grain
-keyframe 的重建前 Y 平面已与 libaom 逐像素一致，最终 Y/U/V PSNR 提升到
-73.931/61.514/55.260 dB（平均 63.568）；此前为 4×4 `BlockDecoded` 可用性网格、
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 78 个
+AV1 slice（最新为 CDEF、方向预测、反量化和按 plane 去块网格修正；真实 restoration-enabled
+320×240 keyframe 在重建前、去块后、CDEF 后、LR 后四个阶段的 Y/U/V 三平面都已与 libaom
+**逐像素一致**；此前为 CDEF 约束差值、H/V angle delta、4×4 `BlockDecoded` 可用性网格、
 inverse-identity 尺寸缩放、帧级 loop restoration、CDEF、去块、Y/U/V 帧级重建、
 palette/filter-intra 单 plane 像素预测、
 `Quant[]` 到逆变换布局的桥接、
