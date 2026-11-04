@@ -1299,7 +1299,18 @@ in what order the evidence gets produced.
       preamble so the comparison does not depend on which script ran last. In
       that state the streams are byte-identical and the decoded YUV is
       identical.
-- [ ] H.265 (rkvenc): WPP, B frames and multiple references.
+- [ ] H.265 (rkvenc): the harness's degenerate `-g 60` smart-GOP allocation.
+      The WPP, B-frame and multi-reference parts this item used to carry are
+      closed as **not implemented by the C reference**, so there is no rewrite
+      target: both vintages assign `m_entropyCodingSyncEnabledFlag = 0` in both
+      `h265e_ps.c` init paths (2024-04 lines 421/450, master 422/451) and copy
+      that zero into the HAL syntax word, master's slice writer emits
+      `num_entry_point_offsets = 0` unconditionally, and the 2024-04 writer has no
+      entry-point code at all; neither tree contains a
+      `B_FRAME`/`MPP_FRAME_TYPE_B` reference anywhere under `codec/enc*` or
+      `hal/rkenc`; and `h265e_api.c` pins `h265->num_ref = 1` with
+      `m_numRefIdxL0DefaultActive = 1`. Driving any of the three would be
+      inventing behaviour beyond the library this crate reimplements.
       Note on the harness cell that exposed this: `-g 60` is parsed by
       `sscanf("%d:%d:%d")` as `gop_mode = 60` with the length fields left at zero, so
       it is not one of `mpi_enc_gen_ref_cfg`'s modes 0..3. Its second picture gets

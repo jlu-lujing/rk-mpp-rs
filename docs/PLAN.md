@@ -244,7 +244,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `hal_h265e_vepu580.c` 的 ioctl job；用 `tools/gen_vepu580_regs.py` 扩展字段映射
       （H265 专用结构），产出 `src/hal/h265e_regs.rs`。
 - [~] W2-2 SPS/PPS/VPS 生成 —— 仅固定 QP IDR 的三个参数集，用独立 HEVC 解析器回读
-      （13 条宿主单测）；tiles/WPP/SAO、RPS、profile/level 变化未做。
+      （13 条宿主单测）；tiles/SAO 已完成，WPP 在 C 参考里不存在（标志恒 0、无 entry point 写入），
+      RPS、profile/level 变化未做。
 - [ ] W2-3 CTU/CU 编码参数、MVP、SAO 表：照 C 生成，逐字段
 - [ ] W2-4 参考帧与 DPB：与 H.264 共用 `FrameState` 思路，H.265 有 RPS
 - [x] W2-5 固定 QP 的 I + P 帧逐 NAL 相同（320x240 多格，640x480/720p 已补）
