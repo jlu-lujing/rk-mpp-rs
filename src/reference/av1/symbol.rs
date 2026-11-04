@@ -30,6 +30,8 @@ pub enum SymbolError {
     MissingTrailingOne { bit: usize },
     /// `SymbolMaxBits` below the specification's -14 bound at exit.
     TooManyBits,
+    /// A decoded coefficient count exceeds what the transform can hold.
+    EobOutOfRange { eob: u32, limit: u32 },
 }
 
 /// The specification's symbol decoder over one tile data partition.

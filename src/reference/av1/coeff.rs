@@ -10,8 +10,9 @@
 //! ```
 
 use crate::reference::av1::cdf_defaults::{
-    CdfTable, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EOB_PT_128_CDF, DEFAULT_EOB_PT_16_CDF,
-    DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF, DEFAULT_EOB_PT_64_CDF,
+    CdfTable, DEFAULT_EOB_EXTRA_CDF, DEFAULT_EOB_PT_1024_CDF, DEFAULT_EOB_PT_128_CDF,
+    DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF,
+    DEFAULT_EOB_PT_64_CDF,
 };
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 use crate::reference::av1::tx::TxSize;
@@ -101,6 +102,60 @@ pub fn read_eob_pt(
     Ok(symbol as u32 + 1)
 }
 
+/// `Tx_Size_Sqr[ txSz ]`: the square transform index of the shorter side.
+pub fn tx_sqr_index(tx: TxSize) -> usize {
+    (log2(tx.width().min(tx.height())) - 2) as usize
+}
+
+/// `Tx_Size_Sqr_Up[ txSz ]`: the square transform index of the longer side.
+pub fn tx_sqr_up_index(tx: TxSize) -> usize {
+    (log2(tx.width().max(tx.height())) - 2) as usize
+}
+
+/// `txSzCtx = ( Tx_Size_Sqr[txSz] + Tx_Size_Sqr_Up[txSz] + 1 ) >> 1`.
+pub fn tx_size_ctx(tx: TxSize) -> usize {
+    (tx_sqr_index(tx) + tx_sqr_up_index(tx) + 1) >> 1
+}
+
+/// `TileEobExtraCdf[ txSzCtx ][ ptype ][ eobPt - 3 ]` row (three values:
+/// two probabilities plus the adaptation counter).
+pub fn eob_extra_row(q: usize, tx: TxSize, plane_type: usize, eob_pt: u32) -> &'static [u16] {
+    let ctx = (eob_pt - 3) as usize;
+    let index = ((((q * 5 + tx_size_ctx(tx)) * 2 + plane_type) * 9) + ctx) * 3;
+    &DEFAULT_EOB_EXTRA_CDF.values[index..index + 3]
+}
+
+/// The full `eob` of a non-zero coefficient block: the EOB class plus its
+/// `eob_extra` symbol and the `eob_extra_bit` literals.
+pub fn decode_eob(
+    decoder: &mut SymbolDecoder<'_>,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    tx_class_2d: bool,
+) -> Result<u32, SymbolError> {
+    let eob_pt = read_eob_pt(decoder, tx, q, plane_type, tx_class_2d)?;
+    let mut eob = eob_from_pt(eob_pt);
+    let mut shift = (eob_pt as i32 - 3).max(-1);
+    if shift >= 0 {
+        let mut cdf = eob_extra_row(q, tx, plane_type, eob_pt).to_vec();
+        if decoder.read_symbol(&mut cdf)? != 0 {
+            eob += 1 << shift;
+        }
+        for i in 1..(eob_pt as i32 - 2).max(0) {
+            shift = (eob_pt as i32 - 2).max(0) - 1 - i;
+            if decoder.read_bool()? != 0 {
+                eob += 1 << shift;
+            }
+        }
+    }
+    let limit = seg_eob(tx);
+    if eob > limit {
+        return Err(SymbolError::EobOutOfRange { eob, limit });
+    }
+    Ok(eob)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +207,37 @@ mod tests {
             let mut decoder = SymbolDecoder::init(&bytes).unwrap();
             assert_eq!(
                 read_eob_pt(&mut decoder, TxSize::Tx4x4, 0, 0, true).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn tx_size_context_averages_the_square_indices() {
+        use crate::reference::av1::tx::TxSize;
+        assert_eq!(tx_size_ctx(TxSize::Tx4x4), 0);
+        assert_eq!(tx_size_ctx(TxSize::Tx4x8), 1);
+        assert_eq!(tx_size_ctx(TxSize::Tx8x8), 1);
+        assert_eq!(tx_size_ctx(TxSize::Tx16x8), 2);
+        assert_eq!(tx_size_ctx(TxSize::Tx16x16), 2);
+        assert_eq!(tx_size_ctx(TxSize::Tx16x32), 3);
+        assert_eq!(tx_size_ctx(TxSize::Tx32x32), 3);
+        assert_eq!(tx_size_ctx(TxSize::Tx64x64), 4);
+        // (sqr 0 + sqr_up 2 + 1) >> 1 = 1, not the larger side.
+        assert_eq!(tx_size_ctx(TxSize::Tx4x16), 1);
+    }
+
+    #[test]
+    fn decode_eob_adds_the_extra_bits() {
+        // Expected values from the specification pseudocode.
+        for (bytes, expected) in [
+            ([0u8; 8], 1u32),
+            ([0xffu8; 8], 16),
+            ([0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78], 5),
+        ] {
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            assert_eq!(
+                decode_eob(&mut decoder, TxSize::Tx4x4, 0, 0, true).unwrap(),
                 expected
             );
         }

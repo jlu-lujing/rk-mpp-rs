@@ -679,8 +679,14 @@ in what order the evidence gets produced.
       Rust helper takes `q` explicitly. Two tests pin that layout (row counts
       4*2*2 vs 4*2) and the symbols decoded from the 16 row (0 -> eobPt 1,
       0xff -> 5, the fixed pattern -> 4).
-      Next: the EOB extra bits, `coeff_base`/`coeff_br`, signs, inverse
-      transforms and a libaom pixel comparison.
+      **Tenth slice:** `decode_eob` adds the extra bits: `eob_extra` on
+      `TileEobExtraCdf[ txSzCtx ][ ptype ][ eobPt - 3 ]` (context averaged from
+      `Tx_Size_Sqr` and `Tx_Size_Sqr_Up`), then `eob_extra_bit` literals for the
+      remaining shifts, with an out-of-range guard against `segEob`. Two tests
+      pin `txSzCtx` (including the 4x16 -> 1 corner) and the decoded totals
+      (0 bytes -> eob 1, 0xff -> 16, fixed pattern -> 5).
+      Next: `coeff_base`/`coeff_br`, signs, inverse transforms and a libaom
+      pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
