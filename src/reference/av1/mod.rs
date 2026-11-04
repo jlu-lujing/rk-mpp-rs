@@ -6,6 +6,7 @@
 //! because every tile syntax element is read through it.
 
 pub mod cdf_defaults;
+pub mod coeff;
 pub mod intra;
 pub mod partition;
 pub mod scan;

@@ -664,8 +664,15 @@ in what order the evidence gets produced.
       picks Default, Mrow (vertical transforms) or Mcol (horizontal). Tests pin
       the four-by-four rows, the 64-wide fallbacks and that every transform has a
       scan whose length is `min(w,32) * min(h,32)`.
-      Next: the coefficient syntax itself (eob/levels/signs) on these scans,
-      inverse transforms, then a pixel comparison against libaom.
+      **Eighth slice:** `src/reference/av1/coeff.rs` starts the coefficient
+      syntax with the block-level facts the symbol loop needs: `segEob`
+      (`min(1024, w*h)`, 512 for the 16x64/64x16 rectangles),
+      `eobMultisize = min(log2w,5) + min(log2h,5) - 4`, the seven
+      `TileEobPt*Cdf` table selection and `eob_from_pt` (`eobPt < 2` literal,
+      otherwise `(1 << (eobPt-2)) + 1`). Four tests pin the ranges and the
+      power-of-two chain.
+      Next: the EOB symbol plus its extra bits, then `coeff_base`/`coeff_br`,
+      signs, inverse transforms and a libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
