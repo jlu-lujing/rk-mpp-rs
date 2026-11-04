@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. Uniform horizontal tiles are byte-exact over two cells (`auto_tile` at 320x240 across IDR+P, forced two columns at 4608x64), with a traced C tile job differing in no non-address word of any section. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. WPP, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 38 AV1 slices covering the symbol decoder, default CDFs, partition, intra prediction, bit-exact inverse transforms, reconstruction, CDEF, loop restoration filters, LR subexp parameter decoding and the frame/stripe driver; `read_lr`/`read_lr_unit` CDF syntax, deblocking, full-frame tile decode and the libaom pixel comparison remain** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 39 AV1 slices covering the symbol decoder, default CDFs, partition, intra prediction, bit-exact inverse transforms, reconstruction, CDEF, loop restoration filters, LR subexp parameter decoding, the frame/stripe driver and the `read_lr`/`read_lr_unit` tile CDF syntax; deblocking, full-frame tile decode and the libaom pixel comparison remain** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -913,13 +913,39 @@ in what order the evidence gets produced.
       independently filtered blocks. `cargo test --all-targets` after these
       slices: 901 passed / 0 failed / 27 board-only ignored; `cargo fmt --check`
       clean.
-      Next: the `read_lr`/`read_lr_unit` bitstream half (it needs the
-      `TileWienerCdf`/`TileSgrprojCdf` default tables, not yet in
-      `cdf_defaults.rs`), deblocking, and a full frame/tile decode so the
-      libaom pixel comparison can run. `aomdec`, `aomenc`, `ffmpeg` and
-      `ffprobe` are available on the host and the AV1 fixtures are in
-      `tests/data`, but the software decode chain is not complete yet, so no
-      pixel comparison is claimed.
+      **Thirty-ninth slice:** `src/reference/av1/lr_syntax.rs` closes the
+      loop-restoration bitstream half. The previous note claimed
+      `TileWienerCdf`/`TileSgrprojCdf` were missing from `cdf_defaults.rs`;
+      that was wrong: `Default_Use_Wiener_Cdf`, `Default_Use_Sgrproj_Cdf` and
+      `Default_Restoration_Type_Cdf` were already generated (lines 841-856),
+      and the `Tile*Cdf` arrays are per-tile *mutable copies* of them rather
+      than additional static tables. `LrTileCdf` and `LrReferences` reproduce
+      the `decode_tile()` resets (`RefLrWiener`/`RefSgrXqd` to
+      `Wiener_Taps_Mid`/`Sgrproj_Xqd_Mid`); `read_restoration_type` picks the
+      `use_wiener`/`use_sgrproj`/`restoration_type` symbol; `read_lr_params`
+      decodes both Wiener tap passes (chroma skips tap zero without updating
+      its reference) and the SGRPROJ `lr_sgr_set`/xqd pair, including the
+      zero-radius `Clip3` complement; `read_lr` walks `unitRowStart`/`End`
+      and `unitColStart`/`End` with the `use_superres` numerator/denominator
+      and the `allow_intrabc` early return. `LrFrameParams::for_geometry`/`set`
+      feed the resulting grid straight into `apply_loop_restoration` (both
+      sides index the same `LrType` array; the eight-line stripe shift only
+      changes when a unit is decoded relative to when it is consumed).
+      Fifteen tests pin the CDF copies/resets, reference initialisation,
+      `Clip3`, both unit ranges with and without superresolution, symbol
+      selection for all three switchable values, chroma tap zero, both
+      zero-radius SGRPROJ branches, the 2x2 superblock walk, intrabc and
+      per-plane skipping, an out-of-range unit, and an end-to-end
+      bitstream-to-pixel driver; one more test in `lr_frame.rs` pins the grid
+      allocation and writes. `cargo test --all-targets`: 917 passed / 0
+      failed / 27 board-only ignored; `cargo fmt --check` clean.
+      Next: deblocking, and a full frame/tile decode so the libaom pixel
+      comparison can run. `aomdec`, `aomenc`, `ffmpeg` and `ffprobe` are
+      available on the host and the AV1 fixtures are in `tests/data`, but the
+      software decode chain is not complete yet, so no pixel comparison is
+      claimed. Three numerical gaps also remain: the ADST8/16 snapshots are
+      regression values only, identity-transform scaling is unchecked, and
+      the bit-exact butterflies have not been aligned numerically with libaom.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

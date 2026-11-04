@@ -148,6 +148,40 @@ pub struct LrFrameParams {
 }
 
 impl LrFrameParams {
+    /// Blank `RESTORE_NONE` grids for every plane, sized from the unit geometry.
+    /// `read_lr` fills these in; the loop restoration process reads them back.
+    pub fn for_geometry(geometry: &[LrPlaneGeometry]) -> Self {
+        Self {
+            planes: geometry
+                .iter()
+                .map(|g| vec![None; g.unit_rows * g.unit_cols])
+                .collect(),
+        }
+    }
+
+    /// Store one decoded unit. Returns `false` for out-of-range indices.
+    pub fn set(
+        &mut self,
+        plane: usize,
+        unit_row: usize,
+        unit_col: usize,
+        filter: Option<LrFilter>,
+        geometry: &LrPlaneGeometry,
+    ) -> bool {
+        if unit_row >= geometry.unit_rows || unit_col >= geometry.unit_cols {
+            return false;
+        }
+        let Some(grid) = self.planes.get_mut(plane) else {
+            return false;
+        };
+        let index = unit_row * geometry.unit_cols + unit_col;
+        let Some(slot) = grid.get_mut(index) else {
+            return false;
+        };
+        *slot = filter;
+        true
+    }
+
     pub fn filter(
         &self,
         plane: usize,
@@ -376,6 +410,35 @@ mod tests {
         }
         assert_eq!(out[0], expected);
         assert_ne!(out[0], cdef, "the filter must actually change samples");
+    }
+
+    #[test]
+    fn params_grid_is_allocated_and_written_by_unit_index() {
+        let luma = luma_frame(128, 128, 64);
+        let chroma = LrPlaneGeometry::new(128, 128, 64, 1, 1, RestorationType::Switchable);
+        let geometry = vec![luma, chroma, chroma];
+        let mut params = LrFrameParams::for_geometry(&geometry);
+        assert_eq!(params.planes.len(), 3);
+        // 128x128 luma with 64-sample units -> 2x2; 4:2:0 chroma is 64x64.
+        assert_eq!(params.planes[0].len(), 4);
+        assert_eq!(params.planes[1].len(), 1);
+        assert!(params
+            .planes
+            .iter()
+            .all(|grid| grid.iter().all(Option::is_none)));
+
+        let filter = LrFilter::Wiener {
+            vertical: [3, -7, 15],
+            horizontal: [2, 4, -9],
+        };
+        assert!(params.set(0, 1, 1, Some(filter), &geometry[0]));
+        assert_eq!(params.filter(0, 1, 1, &geometry[0]), Some(filter));
+        assert_eq!(params.filter(0, 0, 1, &geometry[0]), None);
+        assert!(!params.set(0, 2, 0, None, &geometry[0]), "row out of range");
+        assert!(
+            !params.set(9, 0, 0, None, &geometry[0]),
+            "plane out of range"
+        );
     }
 
     #[test]

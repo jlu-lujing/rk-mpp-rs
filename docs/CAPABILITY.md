@@ -66,8 +66,8 @@
 | AV1 CDEF | 完成：方向搜索、主/次抽头、约束差值，9 个测试（含 8/10-bit 与色度几何） |
 | AV1 loop restoration 滤波 | 完成：Wiener、self-guided（两遍 box + 投影）、stripe 边界源切换，8 个测试含两个独立规范向量 |
 | AV1 LR 参数解码（§8.3 subexp） | 完成：`NS(n)` / `decode_subexp_bool` / `inverse_recenter` / `decode_signed_subexp_with_ref_bool`，7 个测试 |
-| AV1 LR 帧/条带驱动（§7.17） | 完成：unit 网格几何、`stripeNum`、4x4 prelude、写回，10 个测试；每 unit 参数由外部注入 |
-| AV1 `read_lr` / `read_lr_unit` 码流层 | 未做：缺 `TileWienerCdf` / `TileSgrprojCdf` 等默认 CDF 表 |
+| AV1 LR 帧/条带驱动（§7.17） | 完成：unit 网格几何、`stripeNum`、4x4 prelude、写回，11 个测试；网格可由码流层直接填充 |
+| AV1 `read_lr` / `read_lr_unit` 码流层 | 完成：tile 级可变 CDF 与 `RefLrWiener`/`RefSgrXqd` 复位、`use_wiener`/`use_sgrproj`/`restoration_type` 符号、Wiener 两遍抽头与 SGRPROJ set/xqd（含 radius=0 的 `Clip3`）、superres 与 intrabc、unit 网格遍历，15 个测试。此前记为「缺 `TileWienerCdf`/`TileSgrprojCdf` 默认表」是误判：三张 `Default_*` 表本就在 `cdf_defaults.rs` 841–856 行，`Tile*` 是它们的每 tile 可变副本 |
 | AV1 全帧 tile 驱动 / 去块 / libaom 像素比对 | 未做：宿主 `aomdec`/`aomenc`/`ffmpeg` 齐备、fixture 在 `tests/data`，但软件解码链路未闭合 |
 
 ## 已知 C bug（本 crate 保留独立结果）
@@ -102,8 +102,9 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 38 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 39 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
-restoration 滤波与 subexp 参数解码、帧/条带驱动。仍缺 `read_lr_unit` 的 CDF 码流层、去块
-与全帧 tile 解码，因此 libaom 像素比对尚未开始。`cargo test --all-targets`：**901 通过 /
+restoration 滤波与 subexp 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层。仍缺
+去块与全帧 tile 解码，因此 libaom 像素比对尚未开始（ADST8/16 快照、identity scaling、
+蝶形数值对齐也还欠 libaom 佐证）。`cargo test --all-targets`：**917 通过 /
 0 失败 / 27 板级 ignore**，`cargo fmt --check` 干净。
