@@ -1901,11 +1901,24 @@ in what order the evidence gets produced.
        has been green across four sizes including 1280x720. `board_h264_qp_vs_mpp.sh`
        still keeps its P cells at 320x240; the size sweep is where P pictures are
        now proved, and it should grow into the matrix rather than sit beside it.
-- [ ] rkvenc supports one live session per process here. The two ignored encoder
-      tests pass serially and disagree with the goldens when cargo runs them as two
-      threads, which is `setup_ext_line_bufs` programming a shared system-controller
-      line-buffer configuration for both sessions. Relevant to M10's multi-instance
-      work.
+- [x] Concurrent rkvenc sessions in one process. Two and three live VEPU580
+      H.264 sessions were measured at 64x64, 320x240 and 640x480: every thread
+      produces one distinct stream, identical to the serial result and to the C
+      reference. `tests/h264_encoder_hw.rs` covers it
+      (`two_live_sessions_in_one_process_agree_with_the_reference`) and the whole
+      file now passes with `--test-threads=3`.
+      The previous entry blamed `setup_ext_line_bufs` for cross-session damage.
+      That was wrong twice: the C HAL only allocates per-context buffers in that
+      function, and these sizes never reach the >4096 extension path that uses
+      them. The two ignored tests were failing on **stale goldens** recorded
+      before the version and rc-cfg SEIs were added - they failed serially too,
+      which is the tell. They now carry C-derived per-NAL goldens for five sizes
+      (every NAL except the version SEI, whose payload is the producing
+      encoder's build identity; the rc-cfg SEI is compared byte for byte), and
+      the reference configuration (`gop 60`, `w*h*30/8 : 1500000 : 2500000`)
+      lives in the test helper so the library defaults cannot drift away from
+      the oracle again.
+
 - [x] **JPEG encoder (vepu): restart interval, 90/270-degree rotation and RGB
       input.** The restart interval follows C's split-by-CTU derivation
       (`part_rows = ceil(arg / mcu columns)`, `DRI = mcu columns * part_rows`,

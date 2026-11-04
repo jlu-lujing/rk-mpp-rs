@@ -38,14 +38,15 @@
 //! serialises its own jobs, which is what makes a worker pool per hardware
 //! block the natural shape: each *job closure* owns the session it opens, so
 //! `TaskQueue::new(n)` presents `n` independent sessions to the kernel. That
-//! is valid for the decoders and for jpegd. rkvenc is different: only one
-//! live encoder session per process is allowed because `setup_ext_line_bufs`
-//! writes process-shared line buffers (HANDOFF §6.13). For rkvenc either
-//! size the queue with one worker, or route every job through
-//! [`SessionGate`] so a pool of workers shares the single session under a
-//! mutex — the queue itself stays identical either way. When the shared
-//! line-buffer problem is solved (W5-5), the same queue shape scales to
-//! several encoder sessions without changes here.
+//! is valid for rkvenc as well: two and three live VEPU580 H.264 sessions in
+//! one process were measured at 64x64, 320x240 and 640x480 and produce one
+//! distinct stream each, equal to the serial result and to the C reference
+//! (`tests/h264_encoder_hw.rs`). The earlier claim that rkvenc allows one live
+//! session per process came from stale goldens that failed without any
+//! concurrency at all; it is retracted. [`SessionGate`] stays available for
+//! callers who *choose* to share one session (a queue with one worker per
+//! block is also a reasonable sizing choice), but it is no longer a
+//! correctness requirement.
 //!
 //! Multi-core CCU distribution (W5-6) lives below this layer: the
 //! driver-side batching C performs with `MPP_CMD_SET_SESSION_FD` inside one
@@ -684,10 +685,10 @@ fn publish_event(shared: &Shared, id: TaskId, outcome: TaskOutcome, depth: usize
     }
 }
 
-/// Serialise a *single* hardware session (rkvenc's one-session-per-process
-/// rule, HANDOFF §6.13) across several queue workers. Give every job
-/// closure the same gate; the queue may still run `n` workers, only the
-/// session section is serialised.
+/// Serialise a *single* hardware session across several queue workers. Give
+/// every job closure the same gate when the jobs must share one kernel
+/// session; the queue may still run `n` workers, only the session section is
+/// serialised. Independent sessions per worker do not need a gate.
 pub struct SessionGate<T> {
     inner: Mutex<T>,
 }
@@ -1020,7 +1021,7 @@ mod tests {
 
     #[test]
     fn session_gate_serialises_a_shared_handle() {
-        // The rkvenc shape: many workers, one live session.
+        // Many workers sharing one live session on purpose.
         // Capacity covers all 24 pinned outcomes until waited (by design).
         let queue = TaskQueue::with_capacity(4, 32);
         let concurrent = Arc::new(AtomicUsize::new(0));

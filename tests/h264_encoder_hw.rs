@@ -1,9 +1,19 @@
-// These two tests must run one at a time (`-- --ignored --test-threads=1`).
-// Running them as two threads in one process makes the second one disagree with
-// the goldens: `setup_ext_line_bufs` in the C HAL programs the external line
-// buffer through system controller registers that are shared by everything on the
-// encoder block, so two live sessions on this kernel overwrite each other's
-// configuration. Single encodes, from separate processes, are unaffected.
+// Board-only: an RK3588 VEPU580 H.264 encoder and /dev/mpp_service.
+//
+// The goldens are the C reference's own NAL units, captured with
+// `tools/h264e_probe.c` at fixed QP 26 and `mpi_enc_test`'s default rate triple
+// (`w*h*30/8 : 1500000 : 2500000`). Every NAL is byte-identical to that
+// reference except the `uuid_version` SEI: its payload is the build identity of
+// whichever encoder wrote it (C embeds its git log line, we embed our crate
+// version), so it is checked for framing only - the rule
+// `scripts/compare_streams.py` already applies to H.265. The `uuid_rc_cfg` SEI
+// is compared byte for byte.
+//
+// Two and three live sessions in one process were measured at 64x64, 320x240 and
+// 640x480: one distinct stream each, identical to the serial result. The earlier
+// comment here blamed `setup_ext_line_bufs` for cross-session damage; that
+// function only allocates per-context buffers, and these sizes never reach the
+// >4096 extension path that uses them.
 
 use rk_mpp_rs::codec::h264::encoder::EncoderConfig;
 use rk_mpp_rs::codec::h264::split_annex_b;
@@ -11,65 +21,61 @@ use rk_mpp_rs::hal::h264e::{probe_nv12, Vepu580H264, REFERENCE_HEIGHT, REFERENCE
 use std::path::PathBuf;
 use std::process::Command;
 
-const HEADERS: &[u8] = &[
-    0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xc0, 0x1e, 0x8d, 0x8d, 0x50, 0xa0, 0xf9, 0x08, 0x00, 0x00,
-    0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x01, 0xe4, 0x78, 0x44, 0x23, 0x50, 0x00, 0x00, 0x00, 0x01,
-    0x68, 0xce, 0x31, 0xb2,
-];
-
-const MULTI_SIZE_GOLDENS: &[(usize, usize, &[(u8, usize, u64)])] = &[
+/// `(picture width, height, stable NALs)` where each stable NAL is
+/// `(index in the stream, unit type, length, FNV-1a)`.
+///
+/// Index 2 - the version SEI - is deliberately absent: its payload is the
+/// encoder's build identity, not a property of the encode. Index 3 is the
+/// `uuid_rc_cfg` SEI and is compared like any other NAL.
+const MULTI_SIZE_GOLDENS: &[(usize, usize, &[(usize, u8, usize, u64)])] = &[
     (
         64,
         64,
         &[
-            (7, 27, 0x1cb6_b5d7_a916_cf59),
-            (8, 8, 0x4d13_8e40_8a89_af33),
-            (5, 171, 0x14dd_33ae_863c_7927),
+            (0, 7, 27, 0x1cb6b5d7a916cf59),
+            (1, 8, 8, 0x4d138e408a89af33),
+            (3, 6, 91, 0x7958b309dd391d31),
+            (4, 5, 171, 0x14dd33ae863c7927),
         ],
     ),
     (
         320,
         240,
         &[
-            (7, 28, 0x4775_6f8d_f2be_3302),
-            (8, 8, 0x4d13_8e40_8a89_af33),
-            (5, 825, 0xf815_b3c7_11ff_0107),
+            (0, 7, 28, 0x47756f8df2be3302),
+            (1, 8, 8, 0x4d138e408a89af33),
+            (3, 6, 92, 0x08c75296f0712a01),
+            (4, 5, 825, 0xf815b3c711ff0107),
         ],
     ),
     (
         640,
         480,
         &[
-            (7, 27, 0xc409_5ca0_055d_ac10),
-            (8, 8, 0x4d13_8e40_8a89_af33),
-            (5, 2167, 0x64cb_740f_355a_6c20),
+            (0, 7, 27, 0xc4095ca0055dac10),
+            (1, 8, 8, 0x4d138e408a89af33),
+            (3, 6, 93, 0xcf5eca59cf05a5a9),
+            (4, 5, 2167, 0x64cb740f355a6c20),
         ],
     ),
     (
         1280,
         720,
         &[
-            (7, 29, 0x5628_0ed3_2e70_a563),
-            (8, 8, 0x4d13_8e40_8a89_af33),
-            (5, 6064, 0x0245_8073_705d_318e),
-        ],
-    ),
-    (
-        322,
-        242,
-        &[
-            (7, 30, 0x9835_0a7b_8347_ba69),
-            (8, 8, 0x4d13_8e40_8a89_af33),
-            (5, 911, 0x16c4_5884_6d8c_ab85),
+            (0, 7, 29, 0x56280ed32e70a563),
+            (1, 8, 8, 0x4d138e408a89af33),
+            (3, 6, 93, 0x8e8fd772023610d0),
+            (4, 5, 6064, 0x02458073705d318e),
         ],
     ),
     (
         1366,
         768,
         &[
-            (7, 30, 0xe58c_f7fa_571b_c155),
-            (8, 8, 0x4d13_8e40_8a89_af33),
-            (5, 7014, 0x70bd_466e_e737_8748),
+            (0, 7, 30, 0xe58cf7fa571bc155),
+            (1, 8, 8, 0x4d138e408a89af33),
+            (3, 6, 93, 0xb97510c1824266bb),
+            (4, 5, 7014, 0x70bd466ee7378748),
         ],
     ),
 ];
@@ -81,8 +87,14 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     })
 }
 
+/// The harness configuration the goldens were captured with: `mpi_enc_test`'s
+/// 60-picture GOP and its own default rate target (`w * h * 30 / 8`, bounds
+/// 1.5-2.5 Mbps). A fixed-QP picture does not spend them, but both SEIs print
+/// them, so the library defaults are not the reference configuration.
 fn encode(input: &[u8], width: usize, height: usize) -> Vec<u8> {
-    let config = EncoderConfig::new(width, height);
+    let mut config = EncoderConfig::new(width, height);
+    config.gop = 60;
+    config.bps_target = rk_mpp_rs::codec::h264::encoder::default_bps_target(width, height, 30);
     let mut encoder = Vepu580H264::open(config).unwrap();
     encoder.encode_idr(input).unwrap().annex_b
 }
@@ -155,6 +167,76 @@ fn nv12_planes(nv12: &[u8], width: usize, height: usize) -> [Vec<u8>; 3] {
     planes
 }
 
+/// Five NAL units: SPS, PPS, version SEI, rc-cfg SEI, IDR. Everything except the
+/// version SEI must equal the C reference exactly.
+fn assert_reference_nals(
+    stream: &[u8],
+    width: usize,
+    height: usize,
+    goldens: &[(usize, u8, usize, u64)],
+) {
+    let nals = split_annex_b(stream);
+    assert_eq!(nals.len(), 5, "{width}x{height} NAL count");
+    assert_eq!(nals[2].unit_type, 6, "{width}x{height} version SEI type");
+    let version = &stream[nals[2].offset..nals[2].offset + nals[2].len];
+    // `split_annex_b` keeps the start code, and this encoder writes four bytes.
+    let header = if version[2] == 1 { 3 } else { 4 };
+    assert_eq!(
+        version[header + 1],
+        5,
+        "user_data_unregistered payload type"
+    );
+    assert!(
+        (40..=130).contains(&version.len()),
+        "{width}x{height} version SEI framing: {} bytes",
+        version.len()
+    );
+    for &(index, unit_type, len, hash) in goldens {
+        let nal = &nals[index];
+        assert_eq!(
+            nal.unit_type, unit_type,
+            "{width}x{height} NAL {index} type"
+        );
+        assert_eq!(nal.len, len, "{width}x{height} NAL {index} length");
+        assert_eq!(
+            fnv1a(&stream[nal.offset..nal.offset + nal.len]),
+            hash,
+            "{width}x{height} NAL {index} (type {unit_type}) differs from C MPP"
+        );
+    }
+}
+
+fn reference_goldens() -> &'static [(usize, u8, usize, u64)] {
+    MULTI_SIZE_GOLDENS
+        .iter()
+        .find(|(width, height, _)| *width == REFERENCE_WIDTH && *height == REFERENCE_HEIGHT)
+        .map(|(_, _, goldens)| *goldens)
+        .expect("reference size has goldens")
+}
+
+#[test]
+#[ignore = "requires an RK3588 RKVENCP/RKVENC H.264 encoder and /dev/mpp_service access"]
+fn two_live_sessions_in_one_process_agree_with_the_reference() {
+    let streams: Vec<Vec<u8>> = (0..2)
+        .map(|_| {
+            std::thread::spawn(|| {
+                let input = probe_nv12(REFERENCE_WIDTH, REFERENCE_HEIGHT);
+                encode(&input, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+            })
+        })
+        .map(|thread| thread.join().unwrap())
+        .collect();
+    for stream in &streams {
+        assert_eq!(stream, &streams[0], "live sessions must not interfere");
+    }
+    assert_reference_nals(
+        &streams[0],
+        REFERENCE_WIDTH,
+        REFERENCE_HEIGHT,
+        reference_goldens(),
+    );
+}
+
 #[test]
 #[ignore = "requires an RK3588 RKVENCP/RKVENC H.264 encoder and /dev/mpp_service access"]
 fn baseline_idr_is_bit_exact_deterministic_and_decodes_at_high_quality() {
@@ -163,19 +245,11 @@ fn baseline_idr_is_bit_exact_deterministic_and_decodes_at_high_quality() {
     let second = encode(&input, REFERENCE_WIDTH, REFERENCE_HEIGHT);
 
     assert_eq!(first, second, "H.264 output must be deterministic");
-    assert_eq!(first.len(), 861);
-    assert_eq!(fnv1a(&first), 0x99c1_8249_c32b_28f8);
-    assert_eq!(&first[..HEADERS.len()], HEADERS);
-
-    let nals = split_annex_b(&first);
-    assert_eq!(nals.len(), 3);
-    assert_eq!(nals[0].unit_type, 7);
-    assert_eq!(nals[1].unit_type, 8);
-    assert_eq!(nals[2].unit_type, 5);
-    assert_eq!(nals[2].len, 825);
-    assert_eq!(
-        fnv1a(&first[nals[2].offset..nals[2].offset + nals[2].len]),
-        0xf815_b3c7_11ff_0107
+    assert_reference_nals(
+        &first,
+        REFERENCE_WIDTH,
+        REFERENCE_HEIGHT,
+        reference_goldens(),
     );
 
     let decoded = ffmpeg_decode(&first);
@@ -207,21 +281,7 @@ fn baseline_idr_matches_mpp_goldens_across_dimensions() {
             "{width}x{height} output must be deterministic"
         );
 
-        let nals = split_annex_b(&stream);
-        assert_eq!(
-            nals.len(),
-            goldens.len(),
-            "{width}x{height} emitted unexpected NAL units"
-        );
-        for (nal, &(unit_type, len, hash)) in nals.iter().zip(goldens) {
-            assert_eq!(nal.unit_type, unit_type, "{width}x{height} NAL type");
-            assert_eq!(nal.len, len, "{width}x{height} NAL length");
-            assert_eq!(
-                fnv1a(&stream[nal.offset..nal.offset + nal.len]),
-                hash,
-                "{width}x{height} NAL type {unit_type} differs from C MPP"
-            );
-        }
+        assert_reference_nals(&stream, width, height, goldens);
 
         let decoded = ffmpeg_decode(&stream);
         assert_eq!(

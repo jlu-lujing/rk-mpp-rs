@@ -276,7 +276,7 @@ H.264/VEPU580 编码已做到：
   `tools/h264_enc_probe.c`（固定 QP 单帧 golden）；`tools/rc_data_probe.c`（MppDataV2 取证）。
 - `mpi_enc_test` 与库默认不完全一致：同样参数的 CBR，`mpi_enc_test` 首帧 QP=23，
   库默认路径是 26。**与库对比用 `tools/rc_probe.c`；与 harness 对比要先把它的配置列全**。
-- rkvenc 每进程只允许一个活会话（`setup_ext_line_bufs` 写共享行缓冲）。多实例前必须解。
+- rkvenc 同进程多会话**可用**：1/2/3 线程在 64x64/320x240/640x480 产出一致，且与 C 参考逐 NAL 相同。
 - fixture 生成坑：`cat src dst` 会读到刚写的文件；用 `cp` 再 `cat >>`。
   `mpi_enc_test` 对非 16 倍数尺寸按 width×height 取帧，会切错（本仓库只用 16 倍数做逐字节）。
 
@@ -481,7 +481,11 @@ buffer 池引用计数 → 多核 → secure（secure 需设备支持，可能�
 10. **不要用 `cat a b` 造 fixture**（会读到自己）；`cp` 后 `cat >>`。
 11. 复杂嵌套 heredoc 反复出问题：写成 `/tmp/x.py` 再 `python3 /tmp/x.py`。
 12. 改 Rust 文件若用脚本切片，**先用 git diff 对 HEAD 校验测试模块完整**。
-13. 编码器每进程单会话；两个 rkvenc 测试并行会互相干扰（GOP 金样会错）。
+13. **不要把金样过期误判成并发干扰**（2026-11-04 撤回旧结论）：`h264_encoder_hw` 的两个用例
+    曾以“两个 rkvenc 会话互相干扰”为由要求 `--test-threads=1`。实测串行同样失败——真正原因是
+    金样早于两个 SEI（version + rc_cfg）加入码流；而 `setup_ext_line_bufs` 在 C 里只分配本上下文
+    缓冲，且这些尺寸根本不到 >4096 的 ext 路径。重取 C 金样后，1/2/3 线程都通过，并新增了
+    并发会话用例。判据：**串行也失败 ⇒ 不是并发问题**。
 14. **残留的编码进程会占住硬件**：板上曾挂着一个 7.5 小时前的 `mpi_enc_test`，
     现象是脚本"卡住不报错"而不是失败。跑编码套件（或编排脚本）前先
     `ssh "$BOARD" 'ps -eo pid,etime,comm | grep mpi_'` 看一眼，有残留 `sudo kill -9`；
