@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. Uniform horizontal tiles are byte-exact over two cells (`auto_tile` at 320x240 across IDR+P, forced two columns at 4608x64), with a traced C tile job differing in no non-address word of any section. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. WPP, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 71 AV1 slices covering the symbol decoder, complete mutable tile CDF state wired into partition/intra-mode/skip/tx-depth/coefficients/all-zero, default CDFs, partition, the stateful tile partition driver (`tile_entropy.rs`), transform type/set selection, complete transform-block coefficient consumption, segment/angle-delta/block-delta/CDEF-index state, filter-intra, complete palette color/token maps, CFL alpha syntax, corrected intra-skip mode consumption, the first full real-keyframe intra tile entropy closure, the unified intra predictor (all modes, edge construction/filtering/upsampling), the column-major Quant-to-transform bridge and standard/palette/filter-intra/CFL plane reconstruction, the YUV frame-level intra reconstructor with superblock-aligned plane padding, frame-level dual-grid loop filtering, CDEF and loop restoration, intra transform-block reconstruction/writeback, residual transform layout (subsampled sizes, chunks and plane/raster order), inverse transforms matching specification Round2 and a libaom 8x4 H_DCT vector, reconstruction, CDEF, loop restoration, LR subexp/tile-CDF syntax, the frame/stripe driver, the section 7.14 loop filter, the section 8.1/5.2/5.5 bitstream layer (descriptors, OBU+IVF demux, full sequence header, validated on 50 real fixture frames), the section 5.9 uncompressed frame header (validated on 112 real frame headers across eight IVFs, cross-checked with ffmpeg trace_headers), real tile-group splitting (single and 2x2 tile fixtures), sequential SavedGmParams/loop-filter reference-state updates across those eight streams, a packet/OBU/frame/tile `ReferenceStream`, and frame-level LR integration on a real restoration-enabled keyframe; superres-before-LR, inter prediction, identity-transform scaling and the remaining libaom pixel comparison remain** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 72 AV1 slices covering the symbol decoder, complete mutable tile CDF state wired into partition/intra-mode/skip/tx-depth/coefficients/all-zero, default CDFs, partition, the stateful tile partition driver (`tile_entropy.rs`), transform type/set selection, complete transform-block coefficient consumption, segment/angle-delta/block-delta/CDEF-index state, filter-intra, complete palette color/token maps, CFL alpha syntax, corrected intra-skip mode consumption, the first full real-keyframe intra tile entropy closure, the unified intra predictor (all modes, edge construction/filtering/upsampling), the column-major Quant-to-transform bridge and standard/palette/filter-intra/CFL plane reconstruction, the YUV frame-level intra reconstructor with superblock-aligned plane padding, frame-level dual-grid loop filtering, CDEF and loop restoration, intra transform-block reconstruction/writeback, residual transform layout (subsampled sizes, chunks and plane/raster order), inverse transforms matching specification Round2, rectangular pre-scaling, size-dependent inverse identity and libaom 4x4/8x4 H_DCT vectors, reconstruction, CDEF, loop restoration, LR subexp/tile-CDF syntax, the frame/stripe driver, the section 7.14 loop filter, the section 8.1/5.2/5.5 bitstream layer (descriptors, OBU+IVF demux, full sequence header, validated on 50 real fixture frames), the section 5.9 uncompressed frame header (validated on 112 real frame headers across eight IVFs, cross-checked with ffmpeg trace_headers), real tile-group splitting (single and 2x2 tile fixtures), sequential SavedGmParams/loop-filter reference-state updates across those eight streams, a packet/OBU/frame/tile `ReferenceStream`, and frame-level LR integration on a real restoration-enabled keyframe; superres-before-LR, inter prediction and the remaining libaom pixel comparison remain** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -822,8 +822,8 @@ in what order the evidence gets produced.
       scale and `rowShift`, the intermediate `colClampRange` clip, then the
       column transform and `colShift` (the specification's process). Two tests
       pin a DC-only 4x4 DCT_DCT to a constant block and the FlipADST/odd-input
-      equivalence. The identity transform is currently a pass-through; the
-      specification's own identity scaling is still to be checked.
+      equivalence. At this point the identity transform was a pass-through;
+      slice 72 later added the specification's size-dependent scaling.
       **Thirtieth slice:** the tile traversal geometry. `tile.rs` implements
       the recursive `decode_partition` walk (superblock grid, `subsize` for
       every square partition, HORZ/VERT/SPLIT/A/B/4-way recursion, edge
@@ -1058,9 +1058,9 @@ in what order the evidence gets produced.
       before a decoded frame can be compared with libaom; `aomdec`, `aomenc`,
       `ffmpeg` and `ffprobe` are available on the host but no pixel
       comparison is claimed. Three numerical gaps also remain: the ADST8/16
-      snapshots are regression values only, identity-transform scaling is
-      unchecked, and the bit-exact butterflies have not been aligned
-      numerically with libaom.
+      snapshots are regression values only; identity-transform scaling was
+      unchecked at this point and the butterflies had not yet been aligned
+      numerically with libaom (both later covered by slices 71–72).
       **Forty-third slice:** `src/reference/av1/tile_group.rs` closes the next
       boundary between frame headers and entropy decoding. It parses
       `tile_group_obu()`'s start/end fields and byte alignment, applies the
@@ -1324,7 +1324,7 @@ in what order the evidence gets produced.
       entropy-order bugs: 128x128 partition syntax has eight symbols, narrow
       16x4/4x16 blocks still qualify for palette and angle-delta, and
       filter-intra PAETH uses the DC transform direction. `cargo test
-      --all-targets`: 1050 passed / 0 failed / 27 board-only ignored;
+      --all-targets`: 1052 passed / 0 failed / 27 board-only ignored;
       `cargo fmt --check` clean.
       A raw first-frame comparison against libaom currently measures Y/U/V PSNR
       19.615/24.277/22.398 dB (20.523 dB average), so pixel closure is not yet
@@ -1333,11 +1333,18 @@ in what order the evidence gets produced.
       specification's `Round2` instead of an arithmetic right shift. A dumped
       libaom 8x4 H_DCT transform block pins the exact 32-sample residual vector
       and exposed a rectangular pre-scale that was already reflected in
-      libaom's dequantized input. With that double scaling removed, the no-grain
-      LR fixture improves to Y/U/V PSNR 21.090/22.148/23.122 dB (21.540 dB
-      average). Next: close the remaining reconstruction gap. Superresolution
-      before LR, inter prediction, identity-transform scaling and reference-frame
-      management remain after that.
+      libaom's dequantized input. Temporarily disabling that pre-scale improved
+      the no-grain LR fixture to Y/U/V PSNR 21.090/22.148/23.122 dB (21.540 dB
+      average), which then exposed the missing inverse-identity scale in the
+      next slice.
+      **Seventy-second slice:** the inverse identity axis was previously a
+      no-op. It now implements the size-dependent 4/8/16/32-point scaling from
+      the specification, and the rectangular 2896/4096 pre-scale is restored.
+      Libaom-derived 4x4 DCT_DCT, 4x4 H_DCT and 8x4 H_DCT residual vectors all
+      match exactly. The no-grain LR keyframe improves to Y/U/V PSNR
+      37.029/28.442/27.649 dB (31.824 dB average). Next: close the remaining
+      prediction and chroma reconstruction gap. Superresolution before LR,
+      inter prediction and reference-frame management remain after that.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

@@ -493,13 +493,40 @@ pub fn inverse_adst(t: &mut [i32], n: u32, flip: bool, r: u32) {
     }
 }
 
+/// `Inverse identity transform process` for transforms of length 4..32.
+fn inverse_identity(t: &mut [i32], n: u32) {
+    match n {
+        2 => {
+            for value in t {
+                *value = round2_i64(i64::from(*value) * 5793, 12);
+            }
+        }
+        3 => {
+            for value in t {
+                *value *= 2;
+            }
+        }
+        4 => {
+            for value in t {
+                *value = round2_i64(i64::from(*value) * 11586, 12);
+            }
+        }
+        5 => {
+            for value in t {
+                *value *= 4;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Dispatch one 1D inverse transform of `1 << n` samples.
 pub fn inverse_transform_1d(t: &mut [i32], kind: TxKind, n: u32, r: u32) {
     match kind {
         TxKind::Dct => inverse_dct(t, n, r),
         TxKind::Adst => inverse_adst(t, n, false, r),
         TxKind::FlipAdst => inverse_adst(t, n, true, r),
-        TxKind::Identity => {}
+        TxKind::Identity => inverse_identity(t, n),
     }
 }
 
@@ -528,9 +555,11 @@ pub fn inverse_transform_2d(
                 0
             };
         }
-        // The scalar inverse-DCT kernel carries the rectangular normalization
-        // already. Reapplying the specification pseudo-code's 2896/4096 factor
-        // double-scales H_DCT/V_DCT residuals relative to libaom.
+        if log2_w.abs_diff(log2_h) == 1 {
+            for value in t.iter_mut() {
+                *value = round2_i64(i64::from(*value) * 2896, 12);
+            }
+        }
         inverse_transform_1d(&mut t, row_kind, log2_w, row_clamp);
         for (j, value) in t.iter().enumerate() {
             let clipped = clip_to(round2(*value, row_shift), row_clamp);
@@ -553,6 +582,15 @@ fn round2(value: i32, shift: u32) -> i32 {
     } else {
         (value + (1 << (shift - 1))) >> shift
     }
+}
+
+fn round2_i64(value: i64, shift: u32) -> i32 {
+    let rounded = if shift == 0 {
+        value
+    } else {
+        (value + (1i64 << (shift - 1))) >> shift
+    };
+    rounded.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 fn clip_to(value: i32, bits: u32) -> i32 {
@@ -611,6 +649,50 @@ mod tests {
                 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, -3, -1, -114, -112, -112, -114, -1,
                 -3, 6, 115, 115, 6, 6, 115, 115, 6,
             ]
+        );
+    }
+
+    #[test]
+    fn four_by_four_horizontal_dct_matches_libaom_vector() {
+        let input = [0, 0, 936, 936, 0, 0, -864, 0, 0, 0, 0, -936, 0, 0, 360, 0];
+        let mut row_major = [0i32; 16];
+        for pos in 0..16 {
+            let row = pos & 3;
+            let col = pos >> 2;
+            row_major[row * 4 + col] = input[pos];
+        }
+        let out = inverse_transform_2d(
+            &row_major,
+            4,
+            4,
+            TxKind::Dct,
+            TxKind::Identity,
+            0,
+            4,
+            16,
+            16,
+        );
+        assert_eq!(
+            out,
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 117, 117, 0, 117, 117, 0]
+        );
+    }
+
+    #[test]
+    fn four_by_four_dct_dct_matches_libaom_vector() {
+        let column_major = [
+            -1984, 360, 0, -144, 360, -288, 0, 144, 0, 0, 0, 0, -144, 144, 0, -72,
+        ];
+        let mut row_major = [0i32; 16];
+        for pos in 0..16 {
+            let row = pos & 3;
+            let col = pos >> 2;
+            row_major[row * 4 + col] = column_major[pos];
+        }
+        let out = inverse_transform_2d(&row_major, 4, 4, TxKind::Dct, TxKind::Dct, 0, 4, 16, 16);
+        assert_eq!(
+            out,
+            [-47, -49, -51, -52, -49, -51, -49, -51, -51, -49, -99, -97, -52, -51, -97, -96,]
         );
     }
 

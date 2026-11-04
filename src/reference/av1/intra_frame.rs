@@ -590,15 +590,15 @@ mod tests {
         let restored = hashes(&picture);
         assert_eq!(
             pre,
-            (0xd48aa2c6c48e1241, 0xe7d406c81d16d5f6, 0x578e37ee56d64664)
+            (0x0a34a3cfd193a71d, 0x5d059733787f6fb4, 0x94f66f15c41ada2b)
         );
         assert_eq!(
             deblock,
-            (0xa7dc961959181516, 0xbfbe6a5cb6a81dce, 0x32ad7a6a2d669b99)
+            (0xb89c19467bb3b7d8, 0x046212053d9061de, 0x95fa872d76a82acf)
         );
         assert_eq!(
             cdef,
-            (0xe8c54360ff2e7d14, 0xaf1944e6a1adb748, 0x4aabdb9970c7ea8f)
+            (0xe37337007395094b, 0xf725cc8a12cf1eeb, 0x6c03f140fb49a236)
         );
         assert_eq!(restored, cdef);
     }
@@ -687,19 +687,19 @@ mod tests {
         );
         assert_eq!(
             pre,
-            (0xf6ea0e7d9ab20dad, 0x7fe43ca90fca0146, 0x9072f1cfe1e5e071)
+            (0xe12aeb18ef5284cf, 0xf81f8248e3580e7a, 0xb0cfd953aedda7e8)
         );
         assert_eq!(
             deblock,
-            (0xd4bbbb62c0a92d13, 0x40b53d7345704318, 0x0011c4e31b77c872)
+            (0x7bf04485e4fdb0f7, 0x236052dc567fdda0, 0xfe6010294121f8e0)
         );
         assert_eq!(
             cdef_hash,
-            (0xa21d327c23420629, 0x51461930cdbf4c10, 0x200bfc6b85a9d2c2)
+            (0xfd798fcb45671b6b, 0x2cc022ca8b385aaa, 0x9866e06e740a481a)
         );
         assert_eq!(
             restored,
-            (0x486c310ad70a9309, 0x01d5a0ff5ad4894c, 0x0144ccde55fd6472)
+            (0xa0ffe97cea94da2b, 0x500d0f019dfcef2a, 0x1fa8822ca5fca13c)
         );
         assert_ne!(picture.y, cdef.y);
         assert_ne!(picture.u, cdef.u);
