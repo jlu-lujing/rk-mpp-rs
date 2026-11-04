@@ -15,6 +15,7 @@ use crate::reference::av1::cdf_defaults::{
     DEFAULT_EOB_PT_16_CDF, DEFAULT_EOB_PT_256_CDF, DEFAULT_EOB_PT_32_CDF, DEFAULT_EOB_PT_512_CDF,
     DEFAULT_EOB_PT_64_CDF,
 };
+use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::coeff_tables::{
     ADJUSTED_TX_SIZE, COEFF_BASE_CTX_OFFSET, COEFF_BASE_POS_CTX_OFFSET, SIG_REF_DIFF_OFFSET,
 };
@@ -106,6 +107,29 @@ pub fn read_eob_pt(
     Ok(symbol as u32 + 1)
 }
 
+/// Stateful EOB-class read using the tile's adaptive CDF table.
+pub fn read_eob_pt_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    tx_class_2d: bool,
+    disable_cdf_update: bool,
+) -> Result<u32, CdfStateError> {
+    let multisize = eob_multisize(tx);
+    let table = eob_pt_table(multisize);
+    let tx_class = usize::from(!tx_class_2d);
+    let width = eob_symbol_count(multisize) + 1;
+    let row = if multisize <= 4 {
+        (q * 2 + plane_type) * 2 + tx_class
+    } else {
+        q * 2 + plane_type
+    };
+    let symbol = cdfs.read_symbol(decoder, table, row * width, width, disable_cdf_update)?;
+    Ok(symbol as u32 + 1)
+}
+
 /// `Tx_Size_Sqr[ txSz ]`: the square transform index of the shorter side.
 pub fn tx_sqr_index(tx: TxSize) -> usize {
     (log2(tx.width().min(tx.height())) - 2) as usize
@@ -156,6 +180,57 @@ pub fn decode_eob(
     let limit = seg_eob(tx);
     if eob > limit {
         return Err(SymbolError::EobOutOfRange { eob, limit });
+    }
+    Ok(eob)
+}
+
+/// Stateful form of [`decode_eob`].
+pub fn decode_eob_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    tx_class_2d: bool,
+    disable_cdf_update: bool,
+) -> Result<u32, CdfStateError> {
+    let eob_pt = read_eob_pt_with_cdf(
+        decoder,
+        cdfs,
+        tx,
+        q,
+        plane_type,
+        tx_class_2d,
+        disable_cdf_update,
+    )?;
+    let mut eob = eob_from_pt(eob_pt);
+    let mut shift = (eob_pt as i32 - 3).max(-1);
+    if shift >= 0 {
+        let ctx = (eob_pt - 3) as usize;
+        let start = ((((q * 5 + tx_size_ctx(tx)) * 2 + plane_type) * 9) + ctx) * 3;
+        if cdfs.read_symbol(
+            decoder,
+            &DEFAULT_EOB_EXTRA_CDF,
+            start,
+            3,
+            disable_cdf_update,
+        )? != 0
+        {
+            eob += 1 << shift;
+        }
+        for i in 1..(eob_pt as i32 - 2).max(0) {
+            shift = (eob_pt as i32 - 2).max(0) - 1 - i;
+            if decoder.read_bool()? != 0 {
+                eob += 1 << shift;
+            }
+        }
+    }
+    let limit = seg_eob(tx);
+    if eob > limit {
+        return Err(CdfStateError::Symbol(SymbolError::EobOutOfRange {
+            eob,
+            limit,
+        }));
     }
     Ok(eob)
 }
@@ -320,6 +395,70 @@ pub fn read_coeff_br(
     Ok(decoder.read_symbol(&mut cdf)? as u32)
 }
 
+/// Stateful `coeff_base` read.
+pub fn read_coeff_base_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    ctx: usize,
+    disable_cdf_update: bool,
+) -> Result<u32, CdfStateError> {
+    let index = (((q * 5 + tx_size_ctx(tx)) * 2 + plane_type) * SIG_COEF_CONTEXTS) + ctx;
+    Ok(cdfs.read_symbol(
+        decoder,
+        &DEFAULT_COEFF_BASE_CDF,
+        index * 5,
+        5,
+        disable_cdf_update,
+    )? as u32)
+}
+
+/// Stateful `coeff_base_eob` read.
+pub fn read_coeff_base_eob_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    ctx: usize,
+    disable_cdf_update: bool,
+) -> Result<u32, CdfStateError> {
+    let local = ctx - (SIG_COEF_CONTEXTS - SIG_COEF_CONTEXTS_EOB);
+    debug_assert!(local < SIG_COEF_CONTEXTS_EOB);
+    let index = (((q * 5 + tx_size_ctx(tx)) * 2 + plane_type) * SIG_COEF_CONTEXTS_EOB) + local;
+    Ok(cdfs.read_symbol(
+        decoder,
+        &DEFAULT_COEFF_BASE_EOB_CDF,
+        index * 4,
+        4,
+        disable_cdf_update,
+    )? as u32
+        + 1)
+}
+
+/// Stateful `coeff_br` read.
+pub fn read_coeff_br_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tx: TxSize,
+    q: usize,
+    plane_type: usize,
+    ctx: usize,
+    disable_cdf_update: bool,
+) -> Result<u32, CdfStateError> {
+    let tx_ctx = tx_size_ctx(tx).min(3);
+    let index = (((q * 5 + tx_ctx) * 2 + plane_type) * LEVEL_CONTEXTS) + ctx;
+    Ok(cdfs.read_symbol(
+        decoder,
+        &DEFAULT_COEFF_BR_CDF,
+        index * 5,
+        5,
+        disable_cdf_update,
+    )? as u32)
+}
+
 /// `NUM_BASE_LEVELS`.
 pub const NUM_BASE_LEVELS: u32 = 2;
 /// `COEFF_BASE_RANGE`.
@@ -408,6 +547,59 @@ pub fn decode_levels(
     Ok(eob)
 }
 
+/// Stateful level loop. It is the production path for a real tile; the
+/// stateless function above remains useful for isolated syntax tests.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_levels_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tx: TxSize,
+    quant: &mut [i32],
+    scan: &[u16],
+    eob: u32,
+    q: usize,
+    plane_type: usize,
+    class: TxClass,
+    disable_cdf_update: bool,
+) -> Result<u32, CdfStateError> {
+    for c in (0..eob).rev() {
+        let pos = u32::from(scan[c as usize]);
+        let level = if c == eob - 1 {
+            let ctx = coeff_base_context_eob(tx, c);
+            read_coeff_base_eob_with_cdf(decoder, cdfs, tx, q, plane_type, ctx, disable_cdf_update)?
+        } else {
+            let ctx = match class {
+                TxClass::TwoD => coeff_base_context_2d(tx, pos, quant),
+                other => coeff_base_context_1d(tx, pos, quant, other),
+            };
+            read_coeff_base_with_cdf(decoder, cdfs, tx, q, plane_type, ctx, disable_cdf_update)?
+        };
+        let mut level = level;
+        if level > NUM_BASE_LEVELS {
+            for _ in 0..(COEFF_BASE_RANGE / (BR_CDF_SIZE - 1)) {
+                let ctx = coeff_br_context(tx, pos, quant, class);
+                let br = read_coeff_br_with_cdf(
+                    decoder,
+                    cdfs,
+                    tx,
+                    q,
+                    plane_type,
+                    ctx,
+                    disable_cdf_update,
+                )?;
+                level += br;
+                if br < BR_CDF_SIZE - 1 {
+                    break;
+                }
+            }
+        }
+        if let Some(slot) = quant.get_mut(pos as usize) {
+            *slot = level as i32;
+        }
+    }
+    Ok(eob)
+}
+
 /// The sign and Golomb pass of `coeffs()`.
 ///
 /// `dc_cdf` is the `TileDcSignCdf[ ptype ][ ctx ]` row selected by the tile
@@ -428,6 +620,68 @@ pub fn decode_signs(
         let sign = if level != 0 {
             if c == 0 {
                 decoder.read_symbol(dc_cdf)? as i32
+            } else {
+                decoder.read_bool()? as i32
+            }
+        } else {
+            0
+        };
+        let mut magnitude = level;
+        if magnitude > (NUM_BASE_LEVELS + COEFF_BASE_RANGE) as i32 {
+            let mut length = 0u32;
+            loop {
+                length += 1;
+                if decoder.read_bool()? != 0 {
+                    break;
+                }
+            }
+            let mut x = 1u32;
+            for _ in 0..length.saturating_sub(1) {
+                x = (x << 1) | decoder.read_bool()?;
+            }
+            magnitude = (x + COEFF_BASE_RANGE + NUM_BASE_LEVELS) as i32;
+        }
+        if pos == 0 && magnitude > 0 {
+            dc_category = if sign != 0 { 1 } else { 2 };
+        }
+        magnitude &= 0xFFFFF;
+        cul_level += magnitude as u32;
+        if let Some(slot) = quant.get_mut(pos as usize) {
+            *slot = if sign != 0 { -magnitude } else { magnitude };
+        }
+    }
+    Ok((dc_category, cul_level.min(63)))
+}
+
+/// Stateful sign/Golomb pass. The DC sign row is selected and adapted in the
+/// tile's CDF store; other coefficients use the arithmetic-coded sign bit.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_signs_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    quant: &mut [i32],
+    scan: &[u16],
+    eob: u32,
+    q: usize,
+    plane_type: usize,
+    dc_ctx: usize,
+    disable_cdf_update: bool,
+) -> Result<(i32, u32), CdfStateError> {
+    let dc_start = ((q * 2 + plane_type) * 3 + dc_ctx) * 3;
+    let mut cul_level = 0u32;
+    let mut dc_category = 0i32;
+    for c in 0..eob {
+        let pos = u32::from(scan[c as usize]);
+        let level = quant.get(pos as usize).copied().unwrap_or(0);
+        let sign = if level != 0 {
+            if c == 0 {
+                cdfs.read_symbol(
+                    decoder,
+                    &DEFAULT_DC_SIGN_CDF,
+                    dc_start,
+                    3,
+                    disable_cdf_update,
+                )? as i32
             } else {
                 decoder.read_bool()? as i32
             }
@@ -627,6 +881,67 @@ mod tests {
     }
 
     #[test]
+    fn stateful_levels_and_signs_match_the_stateless_result() {
+        use crate::reference::av1::scan_defaults::DEFAULT_SCAN_4X4;
+        let bytes = [0xffu8; 16];
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        let eob = decode_eob(&mut decoder, TxSize::Tx4x4, 0, 0, true).unwrap();
+        let mut expected = [0i32; 16];
+        decode_levels(
+            &mut decoder,
+            TxSize::Tx4x4,
+            &mut expected,
+            &DEFAULT_SCAN_4X4.order,
+            eob,
+            0,
+            0,
+            TxClass::TwoD,
+        )
+        .unwrap();
+        let mut dc_cdf = dc_sign_cdf_row(0, 0, 0).to_vec();
+        decode_signs(
+            &mut decoder,
+            &mut expected,
+            &DEFAULT_SCAN_4X4.order,
+            eob,
+            &mut dc_cdf,
+        )
+        .unwrap();
+
+        let mut cdfs = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+        let stateful_eob =
+            decode_eob_with_cdf(&mut decoder, &mut cdfs, TxSize::Tx4x4, 0, 0, true, false).unwrap();
+        let mut actual = [0i32; 16];
+        decode_levels_with_cdf(
+            &mut decoder,
+            &mut cdfs,
+            TxSize::Tx4x4,
+            &mut actual,
+            &DEFAULT_SCAN_4X4.order,
+            stateful_eob,
+            0,
+            0,
+            TxClass::TwoD,
+            false,
+        )
+        .unwrap();
+        decode_signs_with_cdf(
+            &mut decoder,
+            &mut cdfs,
+            &mut actual,
+            &DEFAULT_SCAN_4X4.order,
+            stateful_eob,
+            0,
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn coefficient_cdf_rows_start_where_the_tables_do() {
         assert_eq!(
             coeff_base_cdf_row(0, TxSize::Tx4x4, 0, 0)[..4],
@@ -663,6 +978,35 @@ mod tests {
             assert_eq!(
                 read_coeff_br(&mut decoder, TxSize::Tx4x4, 0, 0, 0).unwrap(),
                 br
+            );
+        }
+    }
+
+    #[test]
+    fn stateful_coefficient_reads_match_the_default_path() {
+        for bytes in [
+            [0u8; 8],
+            [0xffu8; 8],
+            [0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78],
+        ] {
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            let expected_eob = decode_eob(&mut decoder, TxSize::Tx4x4, 0, 0, true).unwrap();
+            let mut cdfs = CdfState::new();
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            assert_eq!(
+                decode_eob_with_cdf(&mut decoder, &mut cdfs, TxSize::Tx4x4, 0, 0, true, false,)
+                    .unwrap(),
+                expected_eob
+            );
+
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            let expected_base = read_coeff_base(&mut decoder, TxSize::Tx4x4, 0, 0, 0).unwrap();
+            let mut cdfs = CdfState::new();
+            let mut decoder = SymbolDecoder::init(&bytes).unwrap();
+            assert_eq!(
+                read_coeff_base_with_cdf(&mut decoder, &mut cdfs, TxSize::Tx4x4, 0, 0, 0, false,)
+                    .unwrap(),
+                expected_base
             );
         }
     }
