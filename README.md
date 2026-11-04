@@ -48,9 +48,9 @@
 整体约完成 82%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 83%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 58 个
-AV1 slice（最新为 64×64 对齐的 CDEF index 网格与 block 读取；
-此前为 block delta-q / delta-LF、intra transform-block 重建入口、segment/angle 状态、
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 59 个
+AV1 slice（最新为 filter-intra：mode CDF、5 组 taps 和 4×2 递归预测；
+此前为 CDEF index、block delta-q / delta-LF、intra transform-block 重建入口、
 stateful coefficient syntax、
 partition/mode/skip/tx_depth、
 可变 CDF 状态、residual transform 布局、
