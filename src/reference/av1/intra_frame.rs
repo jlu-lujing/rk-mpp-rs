@@ -1,5 +1,9 @@
 //! Frame-level driver for an intra (key-frame) AV1 picture.
 
+use crate::reference::av1::cdef::{
+    cdef_direction, cdef_filter_block, cdef_luma_primary_strength, CdefIndexGrid, CdefRegion,
+    PlaneView, CDEF_UV_DIR,
+};
 use crate::reference::av1::deblock::{
     loop_filter_frame_dual_grid, DeblockCell, DeblockEdgeInfo, DeblockGrid, DeblockPlane,
 };
@@ -320,6 +324,96 @@ pub fn apply_intra_deblock(
     }
 }
 
+fn write_block(dst: &mut [u16], stride: usize, x: usize, y: usize, width: usize, block: &[u16]) {
+    for row in 0..block.len() / width {
+        let start = (y + row) * stride + x;
+        dst[start..start + width].copy_from_slice(&block[row * width..(row + 1) * width]);
+    }
+}
+
+/// Apply §7.15 CDEF using the tile's transmitted `cdef_idx` grid.
+pub fn apply_intra_cdef(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    cdef_grid: &CdefIndexGrid,
+    frame: &mut IntraFrame,
+) {
+    if header.coded_lossless || header.allow_intrabc || !sequence.enable_cdef {
+        return;
+    }
+    let sub_x = u32::from(sequence.color.subsampling_x);
+    let sub_y = u32::from(sequence.color.subsampling_y);
+    let region = CdefRegion::new(header.mi_cols, header.mi_rows);
+    let luma_input = PlaneView::new(&frame.y.data, frame.y.stride, frame.y.width, frame.y.height);
+    let mut y_out = frame.y.data.clone();
+    let mut u_out = frame.u.as_ref().map(|p| p.data.clone());
+    let mut v_out = frame.v.as_ref().map(|p| p.data.clone());
+
+    for r in (0..header.mi_rows).step_by(2) {
+        for c in (0..header.mi_cols).step_by(2) {
+            let Some(index) = cdef_grid.get(r & !15, c & !15) else {
+                continue;
+            };
+            let index = usize::from(index);
+            let direction = cdef_direction(luma_input, c * 4, r * 4, frame.bit_depth);
+            let luma_primary = cdef_luma_primary_strength(
+                i32::from(header.cdef_y_pri_strength[index]),
+                direction.variance,
+            );
+            let luma = cdef_filter_block(
+                luma_input,
+                region,
+                r,
+                c,
+                0,
+                0,
+                luma_primary,
+                i32::from(header.cdef_y_sec_strength[index]),
+                i32::from(header.cdef_damping),
+                direction.dir,
+                frame.bit_depth,
+            );
+            write_block(&mut y_out, frame.y.stride, c * 4, r * 4, 8, &luma);
+
+            let uv_dir = CDEF_UV_DIR[sub_x as usize][sub_y as usize][usize::from(direction.dir)];
+            for (plane, out) in [(&frame.u, &mut u_out), (&frame.v, &mut v_out)] {
+                let (Some(plane), Some(out)) = (plane.as_ref(), out.as_mut()) else {
+                    continue;
+                };
+                let view = PlaneView::new(&plane.data, plane.stride, plane.width, plane.height);
+                let block = cdef_filter_block(
+                    view,
+                    region,
+                    r,
+                    c,
+                    sub_x,
+                    sub_y,
+                    i32::from(header.cdef_uv_pri_strength[index]),
+                    i32::from(header.cdef_uv_sec_strength[index]),
+                    i32::from(header.cdef_damping),
+                    uv_dir,
+                    frame.bit_depth,
+                );
+                write_block(
+                    out,
+                    plane.stride,
+                    (c * 4) >> sub_x,
+                    (r * 4) >> sub_y,
+                    8 >> sub_x,
+                    &block,
+                );
+            }
+        }
+    }
+    frame.y.data = y_out;
+    if let Some(u) = frame.u.as_mut() {
+        u.data = u_out.unwrap();
+    }
+    if let Some(v) = frame.v.as_mut() {
+        v.data = v_out.unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +491,14 @@ mod tests {
         assert_eq!(hash(&picture.y.data), 0x80d4b73dddfa95ff);
         assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0xd9a3fdb700876a9d);
         assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0x02018d345616f502);
+        apply_intra_cdef(
+            sequence,
+            &frame.header,
+            decoded.sink.cdef_grid(),
+            &mut picture,
+        );
+        assert_eq!(hash(&picture.y.data), 0x3348232c6c09a4e9);
+        assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0x865ede29493daf45);
+        assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0xfef0786e27928f05);
     }
 }

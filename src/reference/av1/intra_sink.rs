@@ -136,6 +136,10 @@ impl IntraTileBlockSink {
         }
     }
 
+    pub fn cdef_grid(&self) -> &CdefIndexGrid {
+        &self.cdef
+    }
+
     fn neighbor<T: Copy>(grid: &[T], mi_cols: usize, row: isize, col: isize) -> Option<T> {
         if row < 0 || col < 0 {
             return None;
