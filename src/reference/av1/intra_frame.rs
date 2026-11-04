@@ -561,13 +561,16 @@ mod tests {
                 (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
             })
         };
-        assert_eq!(hash(&picture.y.data), 0x91bf3f1db09c78e9);
-        assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0x704bc148f0e31fbc);
-        assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0x63ac4af721f7b9d3);
+        let hashes = |picture: &IntraFrame| {
+            (
+                hash(&picture.y.data),
+                hash(&picture.u.as_ref().unwrap().data),
+                hash(&picture.v.as_ref().unwrap().data),
+            )
+        };
+        let pre = hashes(&picture);
         apply_intra_deblock(sequence, &frame.header, &decoded.sink.blocks, &mut picture);
-        assert_eq!(hash(&picture.y.data), 0x80d4b73dddfa95ff);
-        assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0xd9a3fdb700876a9d);
-        assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0x02018d345616f502);
+        let deblock = hashes(&picture);
         let deblocked = picture.clone();
         apply_intra_cdef(
             sequence,
@@ -575,9 +578,7 @@ mod tests {
             decoded.sink.cdef_grid(),
             &mut picture,
         );
-        assert_eq!(hash(&picture.y.data), 0x3348232c6c09a4e9);
-        assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0x865ede29493daf45);
-        assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0xfef0786e27928f05);
+        let cdef = hashes(&picture);
         apply_intra_loop_restoration(
             sequence,
             &frame.header,
@@ -586,9 +587,20 @@ mod tests {
             &mut picture,
         )
         .unwrap();
-        assert_eq!(hash(&picture.y.data), 0x3348232c6c09a4e9);
-        assert_eq!(hash(&picture.u.as_ref().unwrap().data), 0x865ede29493daf45);
-        assert_eq!(hash(&picture.v.as_ref().unwrap().data), 0xfef0786e27928f05);
+        let restored = hashes(&picture);
+        assert_eq!(
+            pre,
+            (0xd48aa2c6c48e1241, 0xe7d406c81d16d5f6, 0x578e37ee56d64664)
+        );
+        assert_eq!(
+            deblock,
+            (0xa7dc961959181516, 0xbfbe6a5cb6a81dce, 0x32ad7a6a2d669b99)
+        );
+        assert_eq!(
+            cdef,
+            (0xe8c54360ff2e7d14, 0xaf1944e6a1adb748, 0x4aabdb9970c7ea8f)
+        );
+        assert_eq!(restored, cdef);
     }
 
     #[test]
@@ -675,19 +687,19 @@ mod tests {
         );
         assert_eq!(
             pre,
-            (0x5fac9a382a5be3d1, 0x51172f41d2347089, 0x732bfafda48b93cd)
+            (0xf6ea0e7d9ab20dad, 0x7fe43ca90fca0146, 0x9072f1cfe1e5e071)
         );
         assert_eq!(
             deblock,
-            (0x3e15d3999aa2c24e, 0x87fe894c01f81776, 0xedd6db05bd328784)
+            (0xd4bbbb62c0a92d13, 0x40b53d7345704318, 0x0011c4e31b77c872)
         );
         assert_eq!(
             cdef_hash,
-            (0xde2c3fbc75674e21, 0x81e99dbcd2b81717, 0xa335bb54bc24a80d)
+            (0xa21d327c23420629, 0x51461930cdbf4c10, 0x200bfc6b85a9d2c2)
         );
         assert_eq!(
             restored,
-            (0xc65d1e501fc8b101, 0xb98ecd9e774aed37, 0x5137a16b910fb700)
+            (0x486c310ad70a9309, 0x01d5a0ff5ad4894c, 0x0144ccde55fd6472)
         );
         assert_ne!(picture.y, cdef.y);
         assert_ne!(picture.u, cdef.u);

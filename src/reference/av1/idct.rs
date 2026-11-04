@@ -528,14 +528,12 @@ pub fn inverse_transform_2d(
                 0
             };
         }
-        if log2_w.abs_diff(log2_h) == 1 {
-            for value in t.iter_mut() {
-                *value = (*value * 2896 + 2048) >> 12;
-            }
-        }
+        // The scalar inverse-DCT kernel carries the rectangular normalization
+        // already. Reapplying the specification pseudo-code's 2896/4096 factor
+        // double-scales H_DCT/V_DCT residuals relative to libaom.
         inverse_transform_1d(&mut t, row_kind, log2_w, row_clamp);
         for (j, value) in t.iter().enumerate() {
-            let clipped = clip_to(*value >> row_shift.min(31), row_clamp);
+            let clipped = clip_to(round2(*value, row_shift), row_clamp);
             residual[i * w + j] = clip_to(clipped, col_clamp);
         }
     }
@@ -543,10 +541,18 @@ pub fn inverse_transform_2d(
         let mut t: Vec<i32> = (0..h).map(|i| residual[i * w + j]).collect();
         inverse_transform_1d(&mut t, col_kind, log2_h, col_clamp);
         for (i, value) in t.iter().enumerate() {
-            residual[i * w + j] = clip_to(*value >> col_shift.min(31), col_clamp);
+            residual[i * w + j] = clip_to(round2(*value, col_shift), col_clamp);
         }
     }
     residual
+}
+
+fn round2(value: i32, shift: u32) -> i32 {
+    if shift == 0 {
+        value
+    } else {
+        (value + (1 << (shift - 1))) >> shift
+    }
 }
 
 fn clip_to(value: i32, bits: u32) -> i32 {
@@ -559,12 +565,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn transform_shifts_use_the_specification_round2() {
+        assert_eq!(round2(0, 0), 0);
+        assert_eq!(round2(7, 2), 2);
+        assert_eq!(round2(-7, 2), -2);
+        assert_eq!(round2(5, 1), 3);
+        assert_eq!(round2(-5, 1), -2);
+    }
+
+    #[test]
     fn transform_2d_dc_is_a_constant_block() {
         let mut coeffs = vec![0i32; 16];
         coeffs[0] = 64 << 12;
         let out = inverse_transform_2d(&coeffs, 4, 4, TxKind::Dct, TxKind::Dct, 0, 4, 16, 16);
         // Row DC then column DC: the block is constant after the shifts.
         assert!(out.iter().all(|v| *v == out[0]), "{out:?}");
+    }
+
+    #[test]
+    fn eight_by_four_horizontal_dct_matches_libaom_vector() {
+        let column_major = [
+            62, 72, -1296, 1368, 0, 0, 0, 0, 0, 0, 1152, 0, 0, 0, 0, 0, 0, 0, 0, -1224, 0, 0, 0, 0,
+            0, 0, -504, 0, 0, 0, 0, 0,
+        ];
+        let mut row_major = [0i32; 32];
+        for pos in 0..32 {
+            let row = pos & 3;
+            let col = pos >> 2;
+            row_major[row * 8 + col] = column_major[pos];
+        }
+        let out = inverse_transform_2d(
+            &row_major,
+            8,
+            4,
+            TxKind::Dct,
+            TxKind::Identity,
+            0,
+            4,
+            16,
+            16,
+        );
+        assert_eq!(
+            out,
+            [
+                3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, -3, -1, -114, -112, -112, -114, -1,
+                -3, 6, 115, 115, 6, 6, 115, 115, 6,
+            ]
+        );
     }
 
     #[test]

@@ -78,7 +78,7 @@
 | AV1 palette mode / token map | 完成：screen-content/尺寸门控、邻域 size 上下文、Y/UV/V 颜色（含 10-bit）、cache merge、color-index wavefront 和全部 2–8 色 CDF；真实 keyframe 中的 palette 与 libaom 逐语法一致 |
 | AV1 CFL alpha | 完成：`read_cfl_alphas()` 的 joint sign、U/V 16 级 magnitude、按 joint sign 选择 6 个持久 CDF 上下文，并保留 alpha index；真实 tile 的 CFL 块已闭合 |
 | AV1 intra skip 语义 | 完成修正：skip 只跳过残差；segment 之后的 y/uv mode 仍按语法读取，避免真实 tile 失步 |
-| AV1 逆变换 | 完成 bit-exact 蝶形 DCT、ADST4/8/16 与 FLIPADST、2D 变换、量化与残差重建；identity scaling 待与 libaom 核 |
+| AV1 逆变换 | 完成蝶形 DCT、ADST4/8/16 与 FLIPADST、2D 变换、量化与残差重建；行列移位按规范使用 `Round2`，并用 libaom 的 8×4 H_DCT 32 样本残差向量锁定矩形变换路径；identity scaling 待与 libaom 核 |
 | AV1 transform type / set | 完成：`tx_type.rs` — `get_tx_set`、intra set1/set2 inverse tables、intra `tx_type` CDF、row/column `TxKind`、scan direction 与 tx class |
 | AV1 CDEF | 完成：方向搜索、主/次抽头、约束差值，9 个测试（含 8/10-bit 与色度几何） |
 | AV1 CDEF index 语法 | 完成：64×64 luma 对齐网格、`L(cdef_bits)`、skip/lossless/intrabc gating 与同区复用；2 个测试 |
@@ -95,7 +95,7 @@
 | AV1 stream 调度（IVF/OBU→frame→tile） | 完成：`stream.rs` — 按 packet/OBU 顺序产出 sequence/show-existing/coded-frame 事件，事件携带真实 tile ranges，并把帧头参考状态更新接在事件推进上；单 tile 与 2×2 fixture 均覆盖 |
 | AV1 intra tile block sink | 完成语法闭环：按规范的 Y mode→Y angle→UV mode→CFL alpha→UV angle 顺序消费，并处理 palette、filter-intra、tx depth 与逐 plane 系数；真实 320×240 keyframe 的整 tile（17944 bits）通过分区覆盖、全部残差上下文和 `exit_symbol()` 尾位校验，记录的 `Quant[]` 已接入帧级像素重建 |
 | AV1 tile 熵入口 / 分区驱动 | 完成：`tile_entropy.rs` — tile id→MI 边界、叶块回调、stateful partition CDF、图像边缘的折叠二符号/隐式 SPLIT、`HORZ_4`/`VERT_4` 越界保护；真实 2×2 fixture 与 320×240 单 tile keyframe 均通过 |
-| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240 keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF 与 LR；restoration-enabled fixture 的 12 个阶段哈希已锁定。首帧对 libaom 当前为 Y/U/V PSNR 19.432/23.746/21.947 dB（平均 20.284），尚未像素对齐；仍缺重建/舍入误差定位、superres 后 LR，以及帧间预测与参考帧管理 |
+| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240、无 film-grain keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF 与 LR；restoration-enabled fixture 的 12 个阶段哈希已锁定。首帧对 libaom 当前为 Y/U/V PSNR 21.090/22.148/23.122 dB（平均 21.540），尚未像素对齐；仍缺剩余重建误差定位、identity-transform scaling、superres 后 LR，以及帧间预测与参考帧管理 |
 
 ## 已知 C bug（本 crate 保留独立结果）
 
@@ -129,8 +129,8 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 70 个 slice：符号解码、默认
-CDF、partition/块模式、系数语法、bit-exact 逆变换、量化、重建、帧内预测、CDEF、loop
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 71 个 slice：符号解码、默认
+CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
 5 个真实 IVF fixture 的 50 帧上验证），以及 §5.9 完整帧头（8 个真实 IVF 共 112 个帧头逐位
@@ -144,5 +144,5 @@ intra transform-block 重建、CDEF index 语法、filter-intra、palette/color-
 CFL alpha、正确的 intra skip 语义，以及真实 320×240 keyframe 的整 tile 熵闭合。
 预测、重建、去块、CDEF 与 LR 的帧级像素写回现已接通；仍缺首帧像素级 libaom 对齐
 （ADST8/16 快照、identity scaling、蝶形数值对齐也还欠 libaom 佐证）、superres 后 LR，
-以及帧间预测与参考帧管理。`cargo test --all-targets`：**1048 通过 / 0 失败 / 27 板级
+以及帧间预测与参考帧管理。`cargo test --all-targets`：**1050 通过 / 0 失败 / 27 板级
 ignore**，`cargo fmt --check` 干净。

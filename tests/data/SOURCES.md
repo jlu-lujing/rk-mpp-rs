@@ -20,7 +20,7 @@ cargo test --test fixture_manifest
   `--good --cpu-used=0 --end-usage=q --cq-level=20 --passes=1 --limit=2
   --width=320 --height=240 --fps=2/1 --i420 --sb-size=64
   --enable-restoration=1 --enable-cdef=1 --enable-palette=0
-  --enable-intrabc=0 --tune-content=film`. The first keyframe exercises
+  --enable-intrabc=0 --film-grain-test=0`. The first keyframe exercises
   SGRPROJ restoration after deblocking/CDEF.
 - `h264_i32_*` and `h264_i64_*` are local x264 CAVLC streams with FFmpeg
   yuv420p golden output. Their exact generating parameters are recorded in
