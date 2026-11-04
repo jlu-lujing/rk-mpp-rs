@@ -11,6 +11,7 @@ pub mod coeff_tables;
 pub mod context;
 pub mod intra;
 pub mod partition;
+pub mod predict;
 pub mod scan;
 pub mod scan_defaults;
 pub mod symbol;

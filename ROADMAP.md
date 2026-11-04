@@ -727,7 +727,14 @@ in what order the evidence gets produced.
       `TileDcSignCdf[ ptype ][ ctx ]` (the corrected 16000/32768/0 row).
       Two tests pin the category sum (including the balanced case) and the
       block-wide update, one pins the sign symbols.
-      Next: inverse transforms, prediction, then the libaom pixel comparison.
+      **Sixteenth slice:** `predict.rs` starts the reconstruction side with the
+      specification's DC process - both edges averaged with the `(w+h)>>1`
+      bias, left-only and above-only averages with their own rounding, and the
+      `1 << (BitDepth-1)` fallback - plus vertical and horizontal copies. Four
+      tests pin the three DC branches (25 / 25 / 15), the 8-/10-bit fallbacks and
+      the V/H layout; the output is `u16` so 10-bit samples are not truncated.
+      Next: inverse transforms, the remaining intra modes (directional, smooth,
+      Paeth, CFL), then the libaom pixel comparison.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
