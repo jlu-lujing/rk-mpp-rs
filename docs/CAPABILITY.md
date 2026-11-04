@@ -57,9 +57,13 @@
 | H.264 CAVLC I-slice（预测/变换/DC Hadamard/deblock） | 完成，与原始合成源逐像素 |
 | H.264 CABAC（I16/I4x4/I8x8/I_PCM/mb_qp_delta/混合宏块） | 完成；P/B-slice CABAC 未做 |
 | HEVC 变换 | 完成 |
-| AV1 符号解码器（规范 §8.2） | 完成：init_symbol/read_symbol/CDF 自适应/read_bool/read_literal/exit_symbol，9 个符号用例 |
-| AV1 默认 CDF 表 | 完成：74 张、2697 个值，生成器 + FNV 校验 |
-| AV1 tile 语法 / 系数 / 重建 | 未做（ROADMAP 中唯一未完成的代码项） |
+| AV1 符号解码器（规范 §8.2） | 完成：init_symbol/read_symbol/CDF 自适应/read_bool/read_literal/exit_symbol |
+| AV1 默认 CDF 表 | 完成：96 张、19,677 个值，生成器 + FNV 校验（含 3D 表与 `128 * 125` 乘积更正） |
+| AV1 块几何 / partition / intra 模式 | 完成：22 种 BLOCK_SIZES、上下文、`y_mode`/`intra_frame_y_mode`/`uv_mode`+CFL、`tx_depth`、32 张扫描表 |
+| AV1 系数语法 | 完成：EOB 类别与 extra bits、`coeff_base`/`eob`/`br`、signs/Golomb、`Quant[]`、tile 级 above/left 上下文 |
+| AV1 帧内预测 | 完成 DC/V/H/SMOOTH/SMOOTH_V/H/PAETH；方向预测与 CFL 未做 |
+| AV1 逆变换 | 仅有数学参考（非逐位蝶形）；DCT/ADST/FLIPADST 蝶形未做 |
+| AV1 tile 驱动 / CDEF / 环路滤波 / libaom 像素比对 | 未做 |
 
 ## 已知 C bug（本 crate 保留独立结果）
 
@@ -93,4 +97,4 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**。未完成项里 5 项属于上表的平台/不存在边界，1 项是
-M11 的 AV1 tile 解码（已有符号解码器与默认 CDF 表两层）。
+M11 的 AV1 软件解码（熵解码、系数、基础预测已就位；方向预测、逐位变换、tile 驱动与像素比对仍待完成）。
