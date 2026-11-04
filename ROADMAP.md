@@ -2021,10 +2021,15 @@ in what order the evidence gets produced.
       frm_mode/ratio` lines exactly. The standing IEP regressions still pass:
       9/9 modes, the original 720x480 I5O2 byte comparison and the 6/6 format
       matrix.
-- [ ] IEP2 unusual geometry/alignment edges: odd widths and strides outside the
-      720x480 / 1280x720 cells. Client 28's `iep2_params` has no scale/crop
-      fields; the separate legacy `/dev/iep` scale API has no node or bound
-      driver on t6, so only client-28 geometries can be compared here.
+- [x] IEP2 geometry edges. The PD/DECT matrix now also runs sizes that are not
+      multiples of 16 - 322x242 (odd chroma rows), 722x482 and 1366x768 - and
+      every one matches the C probe byte for byte (6 pictures each, e.g.
+      1,402,632 / 6,264,072 / 18,883,584 bytes) including the per-frame
+      `pd_flag/pd_types/dil_order/frm_mode/ratio` lines. 640x360 was checked the
+      same way. The reference probe sets the stride to the picture width, so a
+      padded-stride layout still has no oracle and is not claimed; client 28's
+      `iep2_params` has no scale/crop fields, and the legacy `/dev/iep` API has
+      no node or bound driver on t6.
 
 - [ ] VDPP (`mpp/vproc/vdpp/vdpp2.c`, client 29): scale, rotate, NV12 to RGB,
       sharpen, histogram. **Absent on t6** - the kernel refuses the client - so

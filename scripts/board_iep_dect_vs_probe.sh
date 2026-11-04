@@ -16,8 +16,6 @@ set -uo pipefail
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
 test_dir="$mpp_ref/build/mpp/vproc/iep2/test"
-width=720
-height=480
 fail=0
 
 if ! ssh "$BOARD" "test -d $mpp_ref && test -f $mpp_lib/librockchip_mpp.so.1"; then
@@ -39,7 +37,7 @@ if ! ssh "$BOARD" "set -e; B=$test_dir
 fi
 
 run_cell() {
-    local name="$1" fixture="$2" frames="$3"
+    local name="$1" fixture="$2" frames="$3" width="$4" height="$5"
     local c=/tmp/iep_dect_${name}_c.yuv
     local r=/tmp/iep_dect_${name}_r.yuv
     local c_log=/tmp/iep_dect_${name}_c.log
@@ -83,13 +81,24 @@ run_cell() {
 
 # 3:2 pulldown: 24 fps source telecined to 30 fps. Confirms PULLDOWN 3:2:3:2
 # on the sixth check and then cycles CC/NC/NON.
-ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=${width}x${height}:rate=24000/1001 \
+ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=720x480:rate=24000/1001 \
     -vf telecine -frames:v 20 -pix_fmt yuv420p -f rawvideo /tmp/iep_dect_telecine.yuv"
-run_cell telecine /tmp/iep_dect_telecine.yuv 20
+run_cell telecine /tmp/iep_dect_telecine.yuv 20 720 480
 
 # Progressive content: no pulldown, so both sides must stay at pd_types 4.
-ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=${width}x${height}:rate=30 \
+ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=720x480:rate=30 \
     -frames:v 12 -pix_fmt yuv420p -f rawvideo /tmp/iep_dect_progressive.yuv"
-run_cell progressive /tmp/iep_dect_progressive.yuv 12
+run_cell progressive /tmp/iep_dect_progressive.yuv 12 720 480
+
+# Geometry edges: sizes that are not multiples of 16, including an odd chroma
+# count (322x242). The probe's stride is the picture width, so padded-stride
+# layouts still have no oracle and are not claimed.
+for cell in 322x242 722x482 1366x768; do
+    w="${cell%x*}"
+    h="${cell#*x}"
+    ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=${cell}:rate=30 \
+        -frames:v 8 -pix_fmt yuv420p -f rawvideo /tmp/iep_dect_${cell}.yuv"
+    run_cell "$cell" "/tmp/iep_dect_${cell}.yuv" 8 "$w" "$h"
+done
 
 exit "$fail"
