@@ -99,6 +99,7 @@ fn job() -> DeinterlaceJob<'static> {
         mv_fd: 16,
         md_fd: 17,
         md_lambda: 4,
+        pd_mode: 0,
         _marker: std::marker::PhantomData,
     }
 }

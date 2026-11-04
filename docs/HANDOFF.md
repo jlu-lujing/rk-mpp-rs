@@ -154,10 +154,11 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_h265_tile_vs_mpp.sh          # H.265 水平 tiles 2/2
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 全模式 + 原始 dst slots 9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar 6/6
+./scripts/board_iep_dect_vs_probe.sh         # IEP2 PD/DECT 逆 telecine 2/2
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 73 项完成、9 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 74 项完成、9 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
@@ -422,7 +423,10 @@ H.264/VEPU580 编码已做到：
 - VDPP（client 29）在 RK3588 **不存在**，不要照 MPP 的 vdpp2 实现。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
-- `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1。
+- `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1；
+  **PD/DECT 需要单独探针**：`iep2_test` 写死 I5O2，永远走不到 `iep2_check_pd`/`iep2_check_ffo`，
+  用 `tools/iep2_dect_probe.c`（同一测试改 DECT + 每帧打印 `iep2_api_info`），
+  `board_iep_dect_vs_probe.sh` 对 telecine/逐行两格逐字节且逐帧状态相同。
   `board_iep_modes_vs_probe.sh` 为 **9/9**：I5O2（TFF/BFF）、I5O1T/B、I2O2、
   I1O1T/B、DISABLE、BYPASS。T 模式只写 dst0，B 模式只写 dst1，未用槽为零。
 - 格式矩阵已闭合：420/422 × SP/Planar × UV/VU 为 **6/6**，输入 fixture、

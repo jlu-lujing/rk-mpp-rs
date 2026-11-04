@@ -18,6 +18,7 @@ use super::{Batch, Client, MppService};
 use crate::hal::iep::{
     self, DeinterlaceJob, Iep2DilMode, Iep2FieldOrder, Iep2Fmt, Iep2OutMode, Iep2YuvSwap,
 };
+use crate::hal::iep_pd::{self, FieldOrderState, Iep2DectStats, PulldownState};
 
 /// The `IEP_CLIENT_TYPE` the C library announces on `/dev/mpp_service`.
 pub const IEP_CLIENT: u32 = Client::Iep as u32; // 28
@@ -110,6 +111,19 @@ pub struct IepDeinterlace {
     dst: [DmaBuf; 2],
     mv: DmaBuf,
     md: DmaBuf,
+    /// Effective mode: starts at the configured one and switches to PD for a
+    /// frame the pulldown machine confirmed, then back to DECT.
+    mode: Iep2DilMode,
+    /// Effective field order, which `iep2_check_ffo` may override.
+    field_order: Iep2FieldOrder,
+    field_order_state: FieldOrderState,
+    pulldown: PulldownState,
+    /// `pd_mode` written into the next parameter block; never cleared, like
+    /// `iep2.c`, so an unconfirmed frame keeps the last confirmed flag.
+    pd_mode: u32,
+    /// `pd_mode` handed to the hardware for this frame, which is what the
+    /// reference reports as `pd_flag` (it is captured before `iep2_done`).
+    submitted_pd: u32,
 }
 
 impl IepDeinterlace {
@@ -126,6 +140,12 @@ impl IepDeinterlace {
             dst: [alloc(dst_frame)?, alloc(dst_frame)?],
             mv: alloc(iep::MV_BUF_BYTES)?,
             md: alloc(iep::MD_BUF_BYTES)?,
+            mode: cfg.dil_mode,
+            field_order: cfg.field_order,
+            field_order_state: FieldOrderState::default(),
+            pulldown: PulldownState::default(),
+            pd_mode: 0,
+            submitted_pd: 0,
             cfg,
         })
     }
@@ -159,14 +179,39 @@ impl IepDeinterlace {
         self.src[i].sync_write_end()
     }
 
-    /// Program the engine, run one deinterlace, and return the hardware's
-    /// `struct iep2_output` as raw words (indices from [`crate::hal::iep`]).
-    ///
-    /// On return the output dma-bufs are already invalidated for CPU reads.
-    pub fn run(&mut self) -> Result<[u32; iep::OUTPUT_WORDS], String> {
-        // `iep2_test` clears both destinations before every job. Single-output
-        // modes leave the unused slot observably zero instead of exposing stale
-        // dma-heap contents.
+    /// Effective field order after `iep2_check_ffo` has had its say.
+    pub fn field_order(&self) -> Iep2FieldOrder {
+        self.field_order
+    }
+
+    /// Pulldown state, i.e. the reference's `iep2_api_info.pd_types`.
+    pub fn pulldown(&self) -> &PulldownState {
+        &self.pulldown
+    }
+
+    /// `pd_mode` of the last submitted picture (`iep2_api_info.pd_flag`).
+    pub fn pd_mode(&self) -> u32 {
+        self.submitted_pd
+    }
+
+    /// `(frm_mode, dil_order_confidence_ratio)` of `struct iep2_api_info`.
+    pub fn frame_mode(&self) -> (i32, u32) {
+        (
+            self.field_order_state.is_frm,
+            self.field_order_state.fo_ratio_avg,
+        )
+    }
+
+    fn apply_stats(&mut self, stats: &Iep2DectStats) {
+        if let Some(order) = iep_pd::check_field_order(stats, &mut self.field_order_state) {
+            self.field_order = order;
+        }
+        iep_pd::check_pulldown(stats, &mut self.pulldown);
+    }
+
+    /// Clear both destinations and make the sources visible to the engine, once
+    /// per picture - `iep2_test` memsets before `RUN_SYNC`, not before every job.
+    fn prepare(&mut self) -> Result<(), String> {
         let dst_len = self.dst_frame_bytes();
         for dst in self.dst.iter_mut() {
             dst.sync_write_begin()
@@ -185,7 +230,11 @@ impl IepDeinterlace {
                 .sync_read_end()
                 .map_err(|e| format!("src{i} sync end: {e}"))?;
         }
+        Ok(())
+    }
 
+    /// One `iep2_start()` + `iep2_wait()` with the given mode.
+    fn submit(&mut self, mode: Iep2DilMode) -> Result<[u32; iep::OUTPUT_WORDS], String> {
         let c = self.cfg;
         let job = DeinterlaceJob {
             width: c.width,
@@ -195,16 +244,18 @@ impl IepDeinterlace {
             src_swap: c.src_swap,
             dst_fmt: c.dst_fmt,
             dst_swap: c.dst_swap,
-            dil_mode: c.dil_mode,
+            dil_mode: mode,
             out_mode: c.out_mode,
-            field_order: c.field_order,
+            field_order: self.field_order,
             src_fds: [self.src[0].fd(), self.src[1].fd(), self.src[2].fd()],
             dst_fds: [self.dst[0].fd(), self.dst[1].fd()],
             mv_fd: self.mv.fd(),
             md_fd: self.md.fd(),
             md_lambda: c.md_lambda,
+            pd_mode: self.pd_mode,
             _marker: std::marker::PhantomData,
         };
+        self.submitted_pd = self.pd_mode;
         let params = iep::build_deinterlace(&job);
 
         let mut output = [0u32; iep::OUTPUT_WORDS];
@@ -221,6 +272,48 @@ impl IepDeinterlace {
         for d in self.dst.iter_mut() {
             d.sync_read_begin()
                 .map_err(|e| format!("dst invalidate: {e}"))?;
+        }
+        Ok(output)
+    }
+
+    /// Program the engine and run one picture, following `IEP_CMD_RUN_SYNC` +
+    /// `iep2_done` from `iep2.c`:
+    ///
+    /// 1. run the picture with the mode the previous frame's `done` chose;
+    /// 2. a `PD` picture is followed by a second `DECT` job that only collects
+    ///    counters (`dil_mode = DECT`, same `pd_mode`);
+    /// 3. `iep2_done` folds the last job's counters into the field-order and
+    ///    pulldown machines and, once a pulldown type is confirmed, leaves the
+    ///    session in `PD` with the flag `iep2_pd_get_output` produced.
+    ///
+    /// The returned counters belong to the last job.
+    pub fn run(&mut self) -> Result<[u32; iep::OUTPUT_WORDS], String> {
+        let mode = self.mode;
+        self.prepare()?;
+        let first = self.submit(mode)?;
+        let output = if mode == Iep2DilMode::Pd {
+            self.mode = Iep2DilMode::Dect;
+            self.submit(Iep2DilMode::Dect)?
+        } else {
+            first
+        };
+
+        // `iep2_done`: the I5O2 family and the DECT/PD pair all update the
+        // machines here, then a confirmed pulldown moves the session to PD.
+        if matches!(
+            self.mode,
+            Iep2DilMode::I5O2
+                | Iep2DilMode::I5O1T
+                | Iep2DilMode::I5O1B
+                | Iep2DilMode::Dect
+                | Iep2DilMode::Pd
+        ) {
+            let stats = Iep2DectStats::from_words(&output);
+            self.apply_stats(&stats);
+            if self.pulldown.pdtype != iep_pd::PD_TYPES_UNKNOWN {
+                self.pd_mode = iep_pd::pulldown_mode(&self.pulldown).unwrap_or(-1) as u32;
+                self.mode = Iep2DilMode::Pd;
+            }
         }
         Ok(output)
     }

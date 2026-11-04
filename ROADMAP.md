@@ -2002,10 +2002,30 @@ in what order the evidence gets produced.
       B modes write dst1, and the unused slot stays zero.
       The format matrix is also closed: `board_iep_formats_vs_probe.sh` is
       **6/6** for 420/422 x SP/planar x UV/VU, comparing both raw dst slots.
-- [ ] IEP (`mpp/vproc/iep/iep.c`, `iep2/iep2.c`, client 28): PD/DECT two-pass
-      modes and unusual geometry/alignment edges. Client 28's `iep2_params` has
-      no scale/crop fields; the separate legacy `/dev/iep` scale API has no node
-      or bound driver on t6.
+- [x] IEP2 PD/DECT (client 28): inverse telecine with the field-order machine.
+      `iep2_check_pd`, `iep2_pd_get_output` and `iep2_check_ffo` are ported with
+      their tables and thresholds (`src/hal/iep_pd.rs`), and
+      `IepDeinterlace::run` now follows `IEP_CMD_RUN_SYNC` + `iep2_done`: a
+      `DECT` picture folds the previous job's counters in, a confirmed pulldown
+      becomes `IEP2_DIL_MODE_PD` with its `pd_mode`, a PD picture is followed by
+      a second counter-collecting `DECT` job, and `done` leaves the session in PD
+      until the type stops matching.
+      `iep2_test` hard-codes `I5O2`, which never reaches this code, so the
+      reference is `tools/iep2_dect_probe.c` (the stock test with the mode
+      changed and one line per frame printed from `struct iep2_api_info`).
+      `scripts/board_iep_dect_vs_probe.sh` is **2/2**: ffmpeg's 3:2 telecine at
+      720x480 (18 pictures, 18,662,400 bytes, PULLDOWN 3:2:3:2 confirmed on the
+      sixth check, `pd_flag` cycling NC/NON/CC) and plain progressive content
+      (10 pictures, stays at `pd_types` 4). Both cells match the probe's YUV
+      **byte for byte** and its 18/10 per-frame `pd_flag/pd_types/dil_order/
+      frm_mode/ratio` lines exactly. The standing IEP regressions still pass:
+      9/9 modes, the original 720x480 I5O2 byte comparison and the 6/6 format
+      matrix.
+- [ ] IEP2 unusual geometry/alignment edges: odd widths and strides outside the
+      720x480 / 1280x720 cells. Client 28's `iep2_params` has no scale/crop
+      fields; the separate legacy `/dev/iep` scale API has no node or bound
+      driver on t6, so only client-28 geometries can be compared here.
+
 - [ ] VDPP (`mpp/vproc/vdpp/vdpp2.c`, client 29): scale, rotate, NV12 to RGB,
       sharpen, histogram. **Absent on t6** - the kernel refuses the client - so
       this cannot be ported or verified here at all.

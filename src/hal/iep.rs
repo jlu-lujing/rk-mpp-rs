@@ -285,6 +285,10 @@ pub struct DeinterlaceJob<'a> {
     pub md_fd: i32,
     /// Motion-detection lambda; pass the platform default (4 on RK3588).
     pub md_lambda: u32,
+    /// `pd_mode`: the inverse-telecine compose flag the caller's pulldown state
+    /// machine derived for this picture (`iep2_pd_get_output`). Zero unless the
+    /// session runs PD/DECT.
+    pub pd_mode: u32,
     pub _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -321,6 +325,7 @@ pub fn build_deinterlace(job: &DeinterlaceJob) -> [u32; PARAMS_WORDS] {
     let mut w = [0u32; PARAMS_WORDS];
 
     // iep2_init() defaults (the parts the I5O2 test keeps).
+    w[PD_MODE] = job.pd_mode;
     w[MD_THETA] = 1;
     w[MD_R] = 6;
     w[MD_LAMBDA] = job.md_lambda;
@@ -435,6 +440,7 @@ mod tests {
             mv_fd: 8,
             md_fd: 9,
             md_lambda: 4,
+            pd_mode: 0,
             _marker: std::marker::PhantomData,
         }
     }

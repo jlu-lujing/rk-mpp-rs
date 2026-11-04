@@ -985,6 +985,66 @@ fn run_iep_dei(
     Ok((2, usize::from(top) + usize::from(bottom)))
 }
 
+/// Run a stream of frames through the PD/DECT path the way
+/// `tools/iep2_dect_probe.c` does: three-frame window, one `run()` per picture,
+/// both raw destination slots written in the reference's order.
+fn run_iep_dect(
+    data: &[u8],
+    dst: &str,
+    cfg: rk_mpp_rs::service::iep_session::DeinterlaceConfig,
+    frames: Option<usize>,
+) -> Result<Vec<(u32, i32, u32, i32, u32)>, String> {
+    use rk_mpp_rs::service::iep_session::IepDeinterlace;
+
+    let mut dei = IepDeinterlace::open(cfg).map_err(|e| format!("open IEP client 28: {e}"))?;
+    let frame = dei.src_frame_bytes();
+    let available = data.len() / frame;
+    let total = frames.unwrap_or(available).min(available);
+    if total < 3 {
+        return Err(format!("need at least 3 frames, input has {available}"));
+    }
+
+    let out_len = dei.dst_frame_bytes();
+    let mut out = Vec::with_capacity(out_len * 2 * (total - 2));
+    let mut report = Vec::new();
+    let mut out_order = usize::from(cfg.field_order == rk_mpp_rs::hal::iep::Iep2FieldOrder::Bff);
+
+    for k in 1..total - 1 {
+        // Slot 0 is current, 1 next, 2 previous - the content `iep2_test` maps
+        // into its own three rotating buffers.
+        for (slot, order) in [(0usize, k), (1, k + 1), (2, k - 1)] {
+            let off = order * frame;
+            dei.src_frame_mut(slot)
+                .sync_write_begin()
+                .map_err(|e| format!("src{slot} write sync: {e}"))?;
+            let n = frame.min(dei.src_frame_mut(slot).len());
+            dei.src_frame_mut(slot).as_mut_slice()[..n].copy_from_slice(&data[off..off + n]);
+            dei.flush_src(slot)
+                .map_err(|e| format!("src{slot} flush: {e}"))?;
+        }
+
+        dei.run().map_err(|e| format!("IEP PD/DECT: {e}"))?;
+        let (frm_mode, ratio) = dei.frame_mode();
+        let order = dei.field_order();
+        report.push((
+            dei.pd_mode(),
+            dei.pulldown().pdtype,
+            order as u32,
+            frm_mode,
+            ratio,
+        ));
+
+        for slot in [out_order, 1 - out_order] {
+            let n = out_len.min(dei.dst_frame(slot).len());
+            out.extend_from_slice(&dei.dst_frame(slot)[..n]);
+        }
+        out_order = usize::from(order == rk_mpp_rs::hal::iep::Iep2FieldOrder::Bff);
+    }
+
+    std::fs::write(dst, &out).map_err(|e| format!("{dst}: {e}"))?;
+    Ok(report)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "bench-dma" {
@@ -3433,6 +3493,83 @@ fn main() {
                 None => "-".to_string(),
             }
         );
+        return;
+    }
+    if args.len() > 1 && args[1] == "iep-dect" {
+        // The PD/DECT two-pass stream: `iep2_test` never selects this mode, so
+        // this subcommand is the Rust half of `tools/iep2_dect_probe.c`.
+        use rk_mpp_rs::hal::iep::{Iep2DilMode, Iep2FieldOrder, Iep2Fmt, Iep2OutMode, Iep2YuvSwap};
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");
+        let width: usize = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let height: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let frames: Option<usize> = args.get(6).and_then(|s| s.parse().ok());
+        let mut field_order = Iep2FieldOrder::Tff;
+        let mut src_fmt = Iep2Fmt::Yuv420;
+        let mut src_swap = Iep2YuvSwap::P;
+        let mut dst_swap = Iep2YuvSwap::SpUv;
+        for text in args.iter().skip(6) {
+            match text.as_str() {
+                "TFF" => field_order = Iep2FieldOrder::Tff,
+                "BFF" => field_order = Iep2FieldOrder::Bff,
+                "420p" => {
+                    src_fmt = Iep2Fmt::Yuv420;
+                    src_swap = Iep2YuvSwap::P;
+                }
+                "420sp" => {
+                    src_fmt = Iep2Fmt::Yuv420;
+                    src_swap = Iep2YuvSwap::SpUv;
+                }
+                "dst420p" => dst_swap = Iep2YuvSwap::P,
+                "dst420sp" => dst_swap = Iep2YuvSwap::SpUv,
+                "dst420spvu" => dst_swap = Iep2YuvSwap::SpVu,
+                _ => {}
+            }
+        }
+        if src.is_empty() || dst.is_empty() || width == 0 || height == 0 {
+            eprintln!(
+                "usage: rk-mpp-rs iep-dect <in.yuv> <out.yuv> <width> <height> [frames] \
+                 [TFF|BFF] [420p|420sp] [dst420p|dst420sp|dst420spvu]"
+            );
+            std::process::exit(2);
+        }
+        let cfg = iep_session::DeinterlaceConfig {
+            width,
+            height,
+            hor_stride: width,
+            src_fmt,
+            dst_fmt: Iep2Fmt::Yuv420,
+            src_swap,
+            dst_swap,
+            dil_mode: Iep2DilMode::Dect,
+            out_mode: Iep2OutMode::Line,
+            field_order,
+            ..iep_session::DeinterlaceConfig::default()
+        };
+        let data = match std::fs::read(src) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("{src}: {e}");
+                std::process::exit(1);
+            }
+        };
+        match run_iep_dect(&data, dst, cfg, frames) {
+            Ok(report) => {
+                for (index, (pd_flag, pd_types, order, frm_mode, ratio)) in
+                    report.iter().enumerate()
+                {
+                    println!(
+                        "frame {} pd_flag {} pd_types {} dil_order {} frm_mode {} ratio {}",
+                        index, pd_flag, pd_types, order, frm_mode, ratio
+                    );
+                }
+                println!("iep-dect: wrote {} pictures to {dst}", report.len());
+            }
+            Err(e) => {
+                eprintln!("iep-dect failed: {e}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
     if args.len() > 1 && args[1] == "iep-dei" {

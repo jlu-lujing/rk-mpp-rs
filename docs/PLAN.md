@@ -303,7 +303,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 - [~] W4-1 IEP2（client 28）：I5O2、I5O1T/B、I2O2、I1O1T/B、DISABLE、BYPASS
       已板上 9/9 逐字节，原始 dst0/dst1 均比较；420/422 × SP/Planar × UV/VU
-      为 6/6；PD/DECT 未做。
+      为 6/6；PD/DECT 逆 telecine 已闭合（场序 + pulldown 状态机，
+      `board_iep_dect_vs_probe.sh` 2/2 逐字节且逐帧状态相同）。
       client 28 的 `iep2_params` 只有 deinterlace，没有 YUV scale/crop 字段；
       legacy `/dev/iep` scale 后端在 t6 无节点、driver 不绑定，因此板上无法实现或验证。
 - [ ] W4-2 IEP 与解码器联动（NV12 直通、零拷贝）
