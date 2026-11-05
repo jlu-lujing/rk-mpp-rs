@@ -409,6 +409,17 @@ pub fn apply_intra_deblock(
     let horizontal = (0..3)
         .map(|plane| deblock_grid(header, blocks, false, plane, sub_x, sub_y))
         .collect::<Vec<_>>();
+    apply_deblock_grids(header, &vertical, &horizontal, sub_x, sub_y, frame);
+}
+
+pub(crate) fn apply_deblock_grids(
+    header: &FrameHeader,
+    vertical: &[DeblockGrid],
+    horizontal: &[DeblockGrid],
+    sub_x: u32,
+    sub_y: u32,
+    frame: &mut IntraFrame,
+) {
     let mut planes = vec![DeblockPlane::new(
         &frame.y.data,
         frame.y.stride,
@@ -437,8 +448,8 @@ pub fn apply_intra_deblock(
     crate::reference::av1::deblock::loop_filter_frame_plane_grids(
         &mut planes,
         &header.loop_filter_params(),
-        &vertical,
-        &horizontal,
+        vertical,
+        horizontal,
         frame.coded_width,
         frame.coded_height,
         sub_x,
@@ -471,13 +482,6 @@ pub fn apply_intra_cdef(
     if header.coded_lossless || header.allow_intrabc || !sequence.enable_cdef {
         return;
     }
-    let sub_x = u32::from(sequence.color.subsampling_x);
-    let sub_y = u32::from(sequence.color.subsampling_y);
-    let region = CdefRegion::new(header.mi_cols, header.mi_rows);
-    let luma_input = PlaneView::new(&frame.y.data, frame.y.stride, frame.y.width, frame.y.height);
-    let mut y_out = frame.y.data.clone();
-    let mut u_out = frame.u.as_ref().map(|p| p.data.clone());
-    let mut v_out = frame.v.as_ref().map(|p| p.data.clone());
     let mut skip_grid = vec![false; header.mi_cols * header.mi_rows];
     for block in blocks {
         let width = block.block.size.num_4x4_wide() as usize;
@@ -488,6 +492,26 @@ pub fn apply_intra_cdef(
             }
         }
     }
+    apply_cdef_with_skip_grid(sequence, header, &skip_grid, cdef_grid, frame);
+}
+
+pub(crate) fn apply_cdef_with_skip_grid(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    skip_grid: &[bool],
+    cdef_grid: &CdefIndexGrid,
+    frame: &mut IntraFrame,
+) {
+    if header.coded_lossless || header.allow_intrabc || !sequence.enable_cdef {
+        return;
+    }
+    let sub_x = u32::from(sequence.color.subsampling_x);
+    let sub_y = u32::from(sequence.color.subsampling_y);
+    let region = CdefRegion::new(header.mi_cols, header.mi_rows);
+    let luma_input = PlaneView::new(&frame.y.data, frame.y.stride, frame.y.width, frame.y.height);
+    let mut y_out = frame.y.data.clone();
+    let mut u_out = frame.u.as_ref().map(|p| p.data.clone());
+    let mut v_out = frame.v.as_ref().map(|p| p.data.clone());
     let coeff_shift = frame.bit_depth - 8;
 
     for r in (0..header.mi_rows).step_by(2) {

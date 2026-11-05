@@ -106,8 +106,7 @@ impl TxType {
             Self::DctFlipadst | Self::AdstFlipadst | Self::FlipadstFlipadst | Self::HFlipadst => {
                 TxKind::FlipAdst
             }
-            Self::VFlipadst => TxKind::FlipAdst,
-            Self::Idtx | Self::VDct | Self::VAdst => TxKind::Identity,
+            Self::Idtx | Self::VDct | Self::VAdst | Self::VFlipadst => TxKind::Identity,
         }
     }
 
@@ -326,6 +325,10 @@ mod tests {
         assert_eq!(
             (TxType::VDct.row_kind(), TxType::VDct.col_kind()),
             (TxKind::Identity, TxKind::Dct)
+        );
+        assert_eq!(
+            (TxType::VFlipadst.row_kind(), TxType::VFlipadst.col_kind()),
+            (TxKind::Identity, TxKind::FlipAdst)
         );
         assert_eq!(TxType::VDct.class(), TxClass::Vertical);
         assert_eq!(TxType::HDct.class(), TxClass::Horizontal);

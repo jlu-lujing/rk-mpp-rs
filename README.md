@@ -48,12 +48,14 @@
 整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 88%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 83 个
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 84 个
 AV1 slice：单参考 inter 现在覆盖 fractional MV 的 16-phase 8-tap 与 4-tap 双阶段插值、
 inter 残差和 transform type、frame 内 intra/inter 混合块、skip 的 above/left 系数上下文
 清零，以及 sub-8×8 chroma 按四个 luma MV 分象限预测。真实 high-QP 两帧 320×240 fixture
 的 327 个 P-frame block 与 libaom trace 一致，keyframe/P-frame 的 Y/U/V 均**逐字节一致**
-（P-frame MD5 `a6cb3249ce923e683934ce85fa5ba0e9`）。此前为整数像素 inter：真实两帧
+（P-frame MD5 `a6cb3249ce923e683934ce85fa5ba0e9`）。第 84 slice 又接入
+`TX_MODE_SELECT` inter transform tree、switchable interpolation filter、inter deblock 和
+CDEF；新增 LF+CDEF 真实 key+P fixture 的 P frame 三平面与 libaom **逐字节一致**。此前为整数像素 inter：真实两帧
 fixture 的 20 个 inter block 参考帧/模式/MV 与 libaom trace 一致；更早为 §7.16 normative
 superres：213×240 coded frame 按 denominator 12
 上采样到 320×240 后进入 LR，重建前、去块后、CDEF 后、LR 后四个阶段的 Y/U/V 三平面
@@ -88,7 +90,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --all-targets                     # 1078 通过，27 个板级用例 ignore
+cargo test --all-targets                     # 1080 通过，27 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4

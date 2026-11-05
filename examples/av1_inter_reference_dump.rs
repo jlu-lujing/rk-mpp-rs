@@ -3,7 +3,9 @@ use std::fs;
 use std::path::Path;
 
 use rk_mpp_rs::reference::av1::cdf_state::CdfState;
-use rk_mpp_rs::reference::av1::inter_frame::{reconstruct_inter_frame, ReferenceFrameStore};
+use rk_mpp_rs::reference::av1::inter_frame::{
+    apply_inter_cdef, apply_inter_deblock, reconstruct_inter_frame, ReferenceFrameStore,
+};
 use rk_mpp_rs::reference::av1::inter_sink::{InterTileBlockSink, InterTileConfig};
 use rk_mpp_rs::reference::av1::intra_frame::{
     apply_intra_cdef, apply_intra_deblock, apply_intra_loop_restoration, reconstruct_intra_frame,
@@ -146,13 +148,39 @@ fn main() -> Result<(), String> {
                 InterTileBlockSink::new(config),
             )
             .map_err(|error| format!("{error:?}"))?;
-            let picture =
+            let mut picture =
                 reconstruct_inter_frame(sequence, &frame.header, &decoded.sink.blocks, &references)
                     .map_err(|error| error.to_string())?;
+            if frame.header.loop_filter_level[0] != 0 || frame.header.loop_filter_level[1] != 0 {
+                apply_inter_deblock(sequence, &frame.header, &decoded.sink.blocks, &mut picture);
+            }
+            let deblocked = picture.clone();
+            if sequence.enable_cdef && !frame.header.coded_lossless {
+                apply_inter_cdef(
+                    sequence,
+                    &frame.header,
+                    &decoded.sink.blocks,
+                    decoded.sink.cdef_grid(),
+                    &mut picture,
+                );
+            }
+            if frame.header.use_superres {
+                picture = upscale_frame(sequence, &frame.header, &picture)?;
+            }
+            apply_intra_loop_restoration(
+                sequence,
+                &frame.header,
+                decoded.sink.lr_params(),
+                &deblocked,
+                &mut picture,
+            )?;
             println!(
-                "frame {shown}: {} inter blocks, {} bytes",
+                "frame {shown}: {} inter blocks, {} bytes, loop_filter={:?}, cdef={}, lr={}",
                 decoded.sink.blocks.len(),
-                frame.payload[tile.bytes.clone()].len()
+                frame.payload[tile.bytes.clone()].len(),
+                frame.header.loop_filter_level,
+                sequence.enable_cdef && !frame.header.coded_lossless,
+                frame.header.uses_lr
             );
             (picture, decoded.cdfs)
         };

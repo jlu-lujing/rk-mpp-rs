@@ -524,8 +524,7 @@ fn inverse_identity(t: &mut [i32], n: u32) {
 pub fn inverse_transform_1d(t: &mut [i32], kind: TxKind, n: u32, r: u32) {
     match kind {
         TxKind::Dct => inverse_dct(t, n, r),
-        TxKind::Adst => inverse_adst(t, n, false, r),
-        TxKind::FlipAdst => inverse_adst(t, n, true, r),
+        TxKind::Adst | TxKind::FlipAdst => inverse_adst(t, n, false, r),
         TxKind::Identity => inverse_identity(t, n),
     }
 }
@@ -571,6 +570,18 @@ pub fn inverse_transform_2d(
         inverse_transform_1d(&mut t, col_kind, log2_h, col_clamp);
         for (i, value) in t.iter().enumerate() {
             residual[i * w + j] = clip_to(round2(*value, col_shift), col_clamp);
+        }
+    }
+    if row_kind == TxKind::FlipAdst {
+        for row in residual.chunks_exact_mut(w) {
+            row.reverse();
+        }
+    }
+    if col_kind == TxKind::FlipAdst {
+        for row in 0..h / 2 {
+            for col in 0..w {
+                residual.swap(row * w + col, (h - row - 1) * w + col);
+            }
         }
     }
     residual
@@ -870,6 +881,35 @@ mod tests {
         adst_output_permute(&mut t, 3);
         // Computed from the specification's a/b/c/d index rule.
         assert_eq!(t, [0, -4, 6, -2, 3, -7, 5, -1]);
+    }
+
+    #[test]
+    fn vertical_flipadst_keeps_the_horizontal_axis_identity() {
+        let input = [3311, -50, -650, -250, 300, 450, 100, -250];
+        let mut coeffs = vec![0i32; 64];
+        for (row, value) in input.iter().enumerate() {
+            coeffs[row * 8] = *value;
+        }
+        let out = inverse_transform_2d(
+            &coeffs,
+            8,
+            8,
+            TxKind::Identity,
+            TxKind::FlipAdst,
+            1,
+            4,
+            16,
+            16,
+        );
+        assert_eq!(
+            (0..8).map(|row| out[row * 8]).collect::<Vec<_>>(),
+            [187, 191, 190, 194, 196, 20, 21, 20]
+        );
+        for row in 0..8 {
+            assert!(out[row * 8 + 1..(row + 1) * 8]
+                .iter()
+                .all(|value| *value == 0));
+        }
     }
 
     #[test]

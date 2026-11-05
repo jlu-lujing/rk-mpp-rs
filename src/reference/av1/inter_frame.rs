@@ -7,18 +7,22 @@
 
 use crate::reference::av1::cdf_state::CdfState;
 use crate::reference::av1::coeff::coeff_q_context;
+use crate::reference::av1::deblock::{
+    DeblockCell, DeblockEdgeInfo, DeblockGrid, SEG_LVL_ALT_LF_Y_V,
+};
 use crate::reference::av1::frame_header::FrameHeader;
-use crate::reference::av1::inter::{InterBlock, MotionVector};
+use crate::reference::av1::inter::{InterBlock, InterMode, MotionVector, INTRA_FRAME};
 use crate::reference::av1::inter_sink::InterSyntaxBlock;
 use crate::reference::av1::intra_frame::{
-    chroma_neighbor_modes, fill_modes, neighbor_modes, uv_mode, IntraFrame, PlaneBuffer,
+    apply_cdef_with_skip_grid, apply_deblock_grids, chroma_neighbor_modes, fill_modes,
+    neighbor_modes, uv_mode, IntraFrame, PlaneBuffer,
 };
 use crate::reference::av1::quant::{ac_q, dc_q};
 use crate::reference::av1::reconstruct::{
     quant_to_plane_order, reconstruct_block, reconstruct_intra_block_plane_with_grid, DecodedPlane,
     PlaneQDelta, ReconstructedLuma,
 };
-use crate::reference::av1::residual::residual_size;
+use crate::reference::av1::residual::{plane_tx_size, residual_size};
 use crate::reference::av1::seq_header::SequenceHeader;
 
 const REF_SCALE_SHIFT: u32 = 14;
@@ -310,12 +314,7 @@ pub fn reconstruct_inter_frame(
             "inter driver received intra frame",
         ));
     }
-    if header.loop_filter_level[0] != 0
-        || header.loop_filter_level[1] != 0
-        || (sequence.enable_cdef && !header.coded_lossless)
-        || header.uses_lr
-        || header.use_superres
-    {
+    if header.uses_lr || header.use_superres {
         return Err(InterFrameError::UnsupportedPostFilter);
     }
     let width = header.mi_cols * 4;
@@ -639,6 +638,164 @@ pub fn reconstruct_inter_frame(
     Ok(frame)
 }
 
+fn deblock_grid(
+    header: &FrameHeader,
+    blocks: &[InterSyntaxBlock],
+    vertical: bool,
+    plane: usize,
+    sub_x: u32,
+    sub_y: u32,
+) -> DeblockGrid {
+    let (plane_sub_x, plane_sub_y) = if plane == 0 { (0, 0) } else { (sub_x, sub_y) };
+    let cell = DeblockCell {
+        info: DeblockEdgeInfo::default(),
+        apply_filter: false,
+        filter_size: 4,
+    };
+    let mut grid = DeblockGrid::uniform(header.mi_cols, header.mi_rows, cell);
+    let mut tx_extents = vec![0usize; header.mi_cols * header.mi_rows];
+    for block in blocks {
+        let w = block.block.size.num_4x4_wide() as usize;
+        let h = block.block.size.num_4x4_high() as usize;
+        let fallback_tx =
+            plane_tx_size(block.block.size, plane, block.tx, plane_sub_x, plane_sub_y)
+                .unwrap_or(block.tx);
+        let extent = if vertical {
+            fallback_tx.width() as usize
+        } else {
+            fallback_tx.height() as usize
+        };
+        for row in block.block.row..(block.block.row + h).min(header.mi_rows) {
+            for col in block.block.col..(block.block.col + w).min(header.mi_cols) {
+                tx_extents[row * header.mi_cols + col] = extent;
+            }
+        }
+        if plane == 0 {
+            for tx in block.transforms.iter().filter(|tx| tx.plane == 0) {
+                let extent = if vertical {
+                    tx.tx.width() as usize
+                } else {
+                    tx.tx.height() as usize
+                };
+                let w = tx.tx.width() as usize / 4;
+                let h = tx.tx.height() as usize / 4;
+                let base_row = tx.y / 4;
+                let base_col = tx.x / 4;
+                for row in base_row..(base_row + h).min(header.mi_rows) {
+                    for col in base_col..(base_col + w).min(header.mi_cols) {
+                        tx_extents[row * header.mi_cols + col] = extent;
+                    }
+                }
+            }
+        }
+    }
+    for block in blocks {
+        let w = block.block.size.num_4x4_wide() as usize;
+        let h = block.block.size.num_4x4_high() as usize;
+        let block_extent = if vertical {
+            (block.block.size.width as usize) >> plane_sub_x
+        } else {
+            (block.block.size.height as usize) >> plane_sub_y
+        };
+        let mut seg_lvl_alt_lf = [0i32; 4];
+        let mut has_seg_lvl_alt_lf = false;
+        for (feature, value) in seg_lvl_alt_lf.iter_mut().enumerate() {
+            let feature = SEG_LVL_ALT_LF_Y_V + feature;
+            if header.feature_enabled[block.segment_id][feature] {
+                *value = header.feature_data[block.segment_id][feature];
+                has_seg_lvl_alt_lf = true;
+            }
+        }
+        let info = DeblockEdgeInfo {
+            ref_frame: block
+                .inter
+                .map_or(INTRA_FRAME as usize, |inter| inter.ref_frame as usize),
+            mode_type: block
+                .inter
+                .map_or(0, |inter| usize::from(inter.mode != InterMode::Global)),
+            delta_lf: block.delta_lf,
+            seg_lvl_alt_lf: has_seg_lvl_alt_lf.then_some(seg_lvl_alt_lf),
+        };
+        for row in block.block.row..(block.block.row + h).min(header.mi_rows) {
+            for col in block.block.col..(block.block.col + w).min(header.mi_cols) {
+                let coordinate = if vertical {
+                    (((col & !((1 << plane_sub_x) - 1))
+                        - (block.block.col & !((1 << plane_sub_x) - 1)))
+                        * 4)
+                        >> plane_sub_x
+                } else {
+                    (((row & !((1 << plane_sub_y) - 1))
+                        - (block.block.row & !((1 << plane_sub_y) - 1)))
+                        * 4)
+                        >> plane_sub_y
+                };
+                let current_tx_extent = tx_extents[row * header.mi_cols + col];
+                let col_step = 1usize << plane_sub_x;
+                let row_step = 1usize << plane_sub_y;
+                let prev_tx_extent =
+                    if (vertical && col < col_step) || (!vertical && row < row_step) {
+                        current_tx_extent
+                    } else {
+                        let (prev_row, prev_col) = if vertical {
+                            (row, col - col_step)
+                        } else {
+                            (row - row_step, col)
+                        };
+                        tx_extents[prev_row * header.mi_cols + prev_col]
+                    };
+                grid.cells[row * header.mi_cols + col] = DeblockCell::from_geometry(
+                    coordinate,
+                    plane,
+                    block_extent,
+                    current_tx_extent,
+                    prev_tx_extent,
+                    block.skip,
+                    true,
+                    info,
+                );
+            }
+        }
+    }
+    grid
+}
+
+pub fn apply_inter_deblock(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    blocks: &[InterSyntaxBlock],
+    frame: &mut IntraFrame,
+) {
+    let sub_x = u32::from(sequence.color.subsampling_x);
+    let sub_y = u32::from(sequence.color.subsampling_y);
+    let vertical = (0..3)
+        .map(|plane| deblock_grid(header, blocks, true, plane, sub_x, sub_y))
+        .collect::<Vec<_>>();
+    let horizontal = (0..3)
+        .map(|plane| deblock_grid(header, blocks, false, plane, sub_x, sub_y))
+        .collect::<Vec<_>>();
+    apply_deblock_grids(header, &vertical, &horizontal, sub_x, sub_y, frame);
+}
+
+pub fn apply_inter_cdef(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    blocks: &[InterSyntaxBlock],
+    cdef_grid: &crate::reference::av1::cdef::CdefIndexGrid,
+    frame: &mut IntraFrame,
+) {
+    let mut skip_grid = vec![false; header.mi_cols * header.mi_rows];
+    for block in blocks {
+        let width = block.block.size.num_4x4_wide() as usize;
+        let height = block.block.size.num_4x4_high() as usize;
+        for row in block.block.row..(block.block.row + height).min(header.mi_rows) {
+            for col in block.block.col..(block.block.col + width).min(header.mi_cols) {
+                skip_grid[row * header.mi_cols + col] = block.skip;
+            }
+        }
+    }
+    apply_cdef_with_skip_grid(sequence, header, &skip_grid, cdef_grid, frame);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,7 +803,10 @@ mod tests {
     use crate::reference::av1::frame_header::PRIMARY_REF_NONE;
     use crate::reference::av1::inter::InterMode;
     use crate::reference::av1::inter_sink::{InterTileBlockSink, InterTileConfig};
-    use crate::reference::av1::intra_frame::reconstruct_intra_frame;
+    use crate::reference::av1::intra_frame::{
+        apply_intra_cdef, apply_intra_deblock, apply_intra_loop_restoration,
+        reconstruct_intra_frame, upscale_frame,
+    };
     use crate::reference::av1::intra_sink::{IntraTileBlockSink, IntraTileConfig};
     use crate::reference::av1::obu::parse_ivf;
     use crate::reference::av1::stream::{ReferenceStream, StreamEvent};
@@ -750,7 +910,43 @@ mod tests {
                 )
                 .unwrap();
                 final_cdfs = decoded.cdfs;
-                reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap()
+                let mut picture =
+                    reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap();
+                if frame
+                    .header
+                    .loop_filter_level
+                    .iter()
+                    .any(|level| *level != 0)
+                {
+                    apply_intra_deblock(
+                        sequence,
+                        &frame.header,
+                        &decoded.sink.blocks,
+                        &mut picture,
+                    );
+                }
+                let deblocked = picture.clone();
+                if sequence.enable_cdef && !frame.header.coded_lossless {
+                    apply_intra_cdef(
+                        sequence,
+                        &frame.header,
+                        &decoded.sink.blocks,
+                        decoded.sink.cdef_grid(),
+                        &mut picture,
+                    );
+                }
+                if frame.header.use_superres {
+                    picture = upscale_frame(sequence, &frame.header, &picture).unwrap();
+                }
+                apply_intra_loop_restoration(
+                    sequence,
+                    &frame.header,
+                    decoded.sink.lr_params(),
+                    &deblocked,
+                    &mut picture,
+                )
+                .unwrap();
+                picture
             } else {
                 let config = InterTileConfig::from_headers(sequence, &frame.header);
                 let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
@@ -767,8 +963,48 @@ mod tests {
                 .unwrap();
                 inter_blocks = decoded.sink.blocks.clone();
                 final_cdfs = decoded.cdfs;
-                reconstruct_inter_frame(sequence, &frame.header, &decoded.sink.blocks, &references)
-                    .unwrap()
+                let mut picture = reconstruct_inter_frame(
+                    sequence,
+                    &frame.header,
+                    &decoded.sink.blocks,
+                    &references,
+                )
+                .unwrap();
+                if frame
+                    .header
+                    .loop_filter_level
+                    .iter()
+                    .any(|level| *level != 0)
+                {
+                    apply_inter_deblock(
+                        sequence,
+                        &frame.header,
+                        &decoded.sink.blocks,
+                        &mut picture,
+                    );
+                }
+                let deblocked = picture.clone();
+                if sequence.enable_cdef && !frame.header.coded_lossless {
+                    apply_inter_cdef(
+                        sequence,
+                        &frame.header,
+                        &decoded.sink.blocks,
+                        decoded.sink.cdef_grid(),
+                        &mut picture,
+                    );
+                }
+                if frame.header.use_superres {
+                    picture = upscale_frame(sequence, &frame.header, &picture).unwrap();
+                }
+                apply_intra_loop_restoration(
+                    sequence,
+                    &frame.header,
+                    decoded.sink.lr_params(),
+                    &deblocked,
+                    &mut picture,
+                )
+                .unwrap();
+                picture
             };
             references.refresh(
                 frame.header.refresh_frame_flags,
@@ -877,5 +1113,54 @@ mod tests {
         assert_eq!(inter.ref_mv_idx, 2);
         assert_eq!((inter.mv.row, inter.mv.col), (192, 0));
         assert!(block.transforms.is_empty());
+    }
+
+    #[test]
+    fn real_inter_frame_matches_libaom_after_deblock_and_cdef() {
+        let data = include_bytes!("../../../tests/data/av1_inter_filters_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        let headers = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(&frame.header),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(headers.len(), 2);
+        assert!(headers
+            .iter()
+            .any(|header| { header.loop_filter_level.iter().any(|level| *level != 0) }));
+        assert!(sequence.enable_cdef);
+        assert!(!headers[1].coded_lossless);
+        assert!(headers[1]
+            .cdef_y_pri_strength
+            .iter()
+            .chain(headers[1].cdef_uv_pri_strength.iter())
+            .any(|strength| *strength != 0));
+        assert!(!headers[1].uses_lr);
+
+        let (pictures, inter_blocks) = decode_two_picture_stream(data);
+        assert_eq!(pictures.len(), 2);
+        assert_eq!(
+            (
+                visible_hash(&pictures[0].y),
+                visible_hash(pictures[0].u.as_ref().unwrap()),
+                visible_hash(pictures[0].v.as_ref().unwrap())
+            ),
+            (0xa81ca8f8720415ba, 0x493bd4ca00ff198a, 0x29fd6cd8d60687c4)
+        );
+        assert_eq!(
+            (
+                visible_hash(&pictures[1].y),
+                visible_hash(pictures[1].u.as_ref().unwrap()),
+                visible_hash(pictures[1].v.as_ref().unwrap())
+            ),
+            (0x7e12b58bee2e77e1, 0x254c13003bd29764, 0x5c6c680c955ff66b)
+        );
+        assert_eq!(inter_blocks.len(), 255);
     }
 }
