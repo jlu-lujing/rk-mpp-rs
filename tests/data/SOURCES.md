@@ -41,6 +41,15 @@ cargo test --test fixture_manifest
   frame exercises uni- and bidirectional average compound prediction across
   `NearestNearest`, `NearNear` and `NewNew`; all four rendered frames are
   byte-exact against libaom.
+- `av1_inter_diffwtd_compound_320x240.ivf` is the first five input frames of
+  the 320x240 static-background plus moving `testsrc2` inset sequence, encoded
+  by libaom `aomenc` at CQ 40 with
+  `--enable-masked-comp=1 --enable-dist-wtd-comp=0
+  --enable-interintra-comp=0 --enable-order-hint=0 --enable-onesided-comp=0
+  --enable-global-motion=0 --enable-warped-motion=0 --enable-obmc=0`.
+  It carries a displayed difference-weighted compound frame reached through
+  `show_existing_frame`; all five visible Y/U/V frames are byte-exact against
+  libaom.
 - `h264_i32_*` and `h264_i64_*` are local x264 CAVLC streams with FFmpeg
   yuv420p golden output. Their exact generating parameters are recorded in
   `ROADMAP.md` next to the pixel gates.

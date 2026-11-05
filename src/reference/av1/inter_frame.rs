@@ -11,7 +11,9 @@ use crate::reference::av1::deblock::{
     DeblockCell, DeblockEdgeInfo, DeblockGrid, SEG_LVL_ALT_LF_Y_V,
 };
 use crate::reference::av1::frame_header::FrameHeader;
-use crate::reference::av1::inter::{InterBlock, InterMode, MotionVector, INTRA_FRAME};
+use crate::reference::av1::inter::{
+    CompoundType, InterBlock, InterMode, MotionVector, INTRA_FRAME,
+};
 use crate::reference::av1::inter_sink::InterSyntaxBlock;
 use crate::reference::av1::intra_frame::{
     apply_cdef_with_skip_grid, apply_deblock_grids, chroma_neighbor_modes, fill_modes,
@@ -338,6 +340,62 @@ fn inter_block_samples(
     .collect())
 }
 
+fn difference_weighted_mask(
+    res0: &[i64],
+    res1: &[i64],
+    bit_depth: u32,
+    mask_type: u8,
+) -> Result<Vec<u8>, InterFrameError> {
+    if !matches!(mask_type, 0 | 1) {
+        return Err(InterFrameError::InvalidState(
+            "difference-weighted mask type",
+        ));
+    }
+    let round = 2 * FILTER_BITS - ROUND0_BITS - COMPOUND_ROUND1_BITS + bit_depth.saturating_sub(8);
+    Ok(res0
+        .iter()
+        .zip(res1)
+        .map(|(left, right)| {
+            let difference = round2((left - right).abs(), round);
+            let mask = (38 + difference / 16).clamp(0, 64) as u8;
+            if mask_type == 0 {
+                mask
+            } else {
+                64 - mask
+            }
+        })
+        .collect())
+}
+
+fn sample_compound_mask(
+    mask: &[u8],
+    stride: usize,
+    row: usize,
+    col: usize,
+    sub_x: u32,
+    sub_y: u32,
+) -> u8 {
+    match (sub_x != 0, sub_y != 0) {
+        (false, false) => mask[row * stride + col],
+        (true, false) => round2(
+            i64::from(mask[row * stride + 2 * col]) + i64::from(mask[row * stride + 2 * col + 1]),
+            1,
+        ) as u8,
+        (false, true) => round2(
+            i64::from(mask[(2 * row) * stride + col])
+                + i64::from(mask[(2 * row + 1) * stride + col]),
+            1,
+        ) as u8,
+        (true, true) => round2(
+            i64::from(mask[(2 * row) * stride + 2 * col])
+                + i64::from(mask[(2 * row + 1) * stride + 2 * col])
+                + i64::from(mask[(2 * row) * stride + 2 * col + 1])
+                + i64::from(mask[(2 * row + 1) * stride + 2 * col + 1]),
+            2,
+        ) as u8,
+    }
+}
+
 fn predict_inter_block(
     reference: &IntraFrame,
     current: &mut IntraFrame,
@@ -435,24 +493,31 @@ fn predict_compound_block(
     sub_x: u32,
     sub_y: u32,
     bit_depth: u32,
+    compound_type: CompoundType,
 ) -> Result<(), InterFrameError> {
-    let current_plane = match plane {
-        0 => &mut current.y,
-        1 => current
-            .u
-            .as_mut()
-            .ok_or(InterFrameError::MissingPlane(plane))?,
-        2 => current
-            .v
-            .as_mut()
-            .ok_or(InterFrameError::MissingPlane(plane))?,
+    let (current_width, current_height) = match plane {
+        0 => (current.y.width, current.y.height),
+        1 => {
+            let current_plane = current
+                .u
+                .as_ref()
+                .ok_or(InterFrameError::MissingPlane(plane))?;
+            (current_plane.width, current_plane.height)
+        }
+        2 => {
+            let current_plane = current
+                .v
+                .as_ref()
+                .ok_or(InterFrameError::MissingPlane(plane))?;
+            (current_plane.width, current_plane.height)
+        }
         _ => return Err(InterFrameError::InvalidState("plane index")),
     };
     let res0 = inter_block_res(
         reference0,
         plane,
-        current_plane.width,
-        current_plane.height,
+        current_width,
+        current_height,
         first,
         block_col,
         block_row,
@@ -466,8 +531,8 @@ fn predict_compound_block(
     let res1 = inter_block_res(
         reference1,
         plane,
-        current_plane.width,
-        current_plane.height,
+        current_width,
+        current_height,
         second,
         block_col,
         block_row,
@@ -478,14 +543,95 @@ fn predict_compound_block(
         bit_depth,
         COMPOUND_ROUND1_BITS,
     )?;
+    let mask = match compound_type {
+        CompoundType::Average => None,
+        CompoundType::DifferenceWeighted { mask_type } => {
+            if plane == 0 {
+                Some(difference_weighted_mask(
+                    &res0, &res1, bit_depth, mask_type,
+                )?)
+            } else {
+                let luma_col = block_col << sub_x;
+                let luma_row = block_row << sub_y;
+                let luma_width = (width << sub_x).min(current.y.width.saturating_sub(luma_col));
+                let luma_height = (height << sub_y).min(current.y.height.saturating_sub(luma_row));
+                let luma_res0 = inter_block_res(
+                    reference0,
+                    0,
+                    current.y.width,
+                    current.y.height,
+                    first,
+                    luma_col,
+                    luma_row,
+                    luma_width,
+                    luma_height,
+                    sub_x,
+                    sub_y,
+                    bit_depth,
+                    COMPOUND_ROUND1_BITS,
+                )?;
+                let luma_res1 = inter_block_res(
+                    reference1,
+                    0,
+                    current.y.width,
+                    current.y.height,
+                    second,
+                    luma_col,
+                    luma_row,
+                    luma_width,
+                    luma_height,
+                    sub_x,
+                    sub_y,
+                    bit_depth,
+                    COMPOUND_ROUND1_BITS,
+                )?;
+                Some(difference_weighted_mask(
+                    &luma_res0, &luma_res1, bit_depth, mask_type,
+                )?)
+            }
+        }
+        CompoundType::DistanceWeighted => {
+            return Err(InterFrameError::InvalidState(
+                "distance-weighted compound prediction",
+            ));
+        }
+        CompoundType::Wedge { .. } => {
+            return Err(InterFrameError::InvalidState("wedge compound prediction"));
+        }
+    };
+    let current_plane = match plane {
+        0 => &mut current.y,
+        1 => current
+            .u
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        2 => current
+            .v
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
     let round_offset = convolution_round_offset(bit_depth, COMPOUND_ROUND1_BITS);
     let round_bits = 2 * FILTER_BITS - ROUND0_BITS - COMPOUND_ROUND1_BITS;
     for row in 0..height {
         for col in 0..width {
             let index = row * width + col;
             let max = (1i64 << bit_depth) - 1;
-            let average = (res0[index] + res1[index]) >> 1;
-            let value = round2(average - round_offset, round_bits).clamp(0, max) as u16;
+            let blended = match &mask {
+                Some(mask) => {
+                    let weight = i64::from(sample_compound_mask(
+                        mask,
+                        width << sub_x,
+                        row,
+                        col,
+                        sub_x,
+                        sub_y,
+                    ));
+                    (weight * res0[index] + (64 - weight) * res1[index]) >> 6
+                }
+                None => (res0[index] + res1[index]) >> 1,
+            };
+            let value = round2(blended - round_offset, round_bits).clamp(0, max) as u16;
             let dst = (block_row + row) * current_plane.stride + block_col + col;
             current_plane.data[dst] = value;
         }
@@ -515,8 +661,22 @@ fn predict_inter_or_compound_block(
             ..block
         };
         predict_compound_block(
-            reference0, reference1, current, plane, block, second, block_col, block_row, width,
-            height, sub_x, sub_y, bit_depth,
+            reference0,
+            reference1,
+            current,
+            plane,
+            block,
+            second,
+            block_col,
+            block_row,
+            width,
+            height,
+            sub_x,
+            sub_y,
+            bit_depth,
+            block
+                .compound_type
+                .ok_or(InterFrameError::InvalidState("compound type"))?,
         )
     } else {
         predict_inter_block(
@@ -526,7 +686,7 @@ fn predict_inter_or_compound_block(
     }
 }
 
-/// Reconstruct an inter frame with single and average-compound prediction.
+/// Reconstruct an inter frame with single and compound prediction.
 pub fn reconstruct_inter_frame(
     sequence: &SequenceHeader,
     header: &FrameHeader,
@@ -1093,6 +1253,7 @@ mod tests {
                 ref_frame1: crate::reference::av1::inter::NONE_FRAME,
                 mv1: MotionVector::default(),
                 compound_mode: None,
+                compound_type: None,
                 motion_mode: crate::reference::av1::inter::MotionMode::Simple,
                 interp_filter: [0, 0],
                 ref_mv_idx: 0,
@@ -1141,6 +1302,7 @@ mod tests {
             ref_frame1: 2,
             mv1: MotionVector::default(),
             compound_mode: None,
+            compound_type: Some(CompoundType::Average),
             motion_mode: crate::reference::av1::inter::MotionMode::Simple,
             interp_filter: [0, 0],
             ref_mv_idx: 0,
@@ -1165,6 +1327,7 @@ mod tests {
             0,
             0,
             8,
+            CompoundType::Average,
         )
         .unwrap();
         assert_eq!(first.y.data[0], 16);
@@ -1191,6 +1354,15 @@ mod tests {
         let mut inter_blocks = Vec::new();
 
         for event in events.iter().flatten() {
+            if let StreamEvent::ShowExisting(header) = event {
+                pictures.push(
+                    references
+                        .get(header.frame_to_show_map_idx as usize)
+                        .unwrap()
+                        .clone(),
+                );
+                continue;
+            }
             let StreamEvent::CodedFrame(frame) = event else {
                 continue;
             };
@@ -1320,7 +1492,9 @@ mod tests {
                 frame.header.base_q_idx,
                 &final_cdfs,
             );
-            pictures.push(picture);
+            if frame.header.show_frame {
+                pictures.push(picture);
+            }
         }
         (pictures, inter_blocks)
     }
@@ -1570,5 +1744,38 @@ mod tests {
         assert_eq!((inter.ref_frame, inter.ref_frame1), (1, 4));
         assert_eq!((inter.mv.row, inter.mv.col), (0, -18));
         assert_eq!((inter.mv1.row, inter.mv1.col), (4, -12));
+    }
+
+    #[test]
+    fn real_difference_weighted_compound_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_diffwtd_compound_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        assert!(sequence.enable_masked_compound);
+        assert!(!sequence.enable_interintra_compound);
+        assert!(!sequence.enable_order_hint);
+
+        let (pictures, inter_blocks) = decode_two_picture_stream(data);
+        assert_eq!(pictures.len(), 5);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0xfe5a72f3b8fcb0c0, 0x1d850b528c8704cc, 0x9edc3b88f9fe2e69),
+                (0x37802176b74c4ca3, 0x20611c93be42d21c, 0x09077d5409d14227),
+                (0x3fc460a4337801a2, 0x78aeee20ef3533cd, 0xbb57d25fe05cd369),
+                (0x8366f509fa718675, 0xb2323978a827835d, 0x44d96a63350ded41),
+                (0x89a893342f663d21, 0xda7358359f0f4adb, 0x91cff8e2e3d4f404),
+            ]
+        );
+        assert_eq!(inter_blocks.len(), 20);
     }
 }

@@ -48,8 +48,13 @@
 整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 87 个
-AV1 slice。第 87 slice 恢复双参考帧解析，覆盖全部 8 种 compound mode 符号、compound DRL、
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 88 个
+AV1 slice。第 88 slice 接入 compound mode group、masked compound type 和
+difference-weighted prediction：`comp_group_idx` 邻域上下文、`compound_type_cdf`、
+mask type、luma difference mask 及 16-bit masked blend 均按 libaom 实现；可见帧按
+`show_frame`/show-existing 顺序输出。五帧 fixture 的全部 Y/U/V 与 libaom
+**逐字节一致**。wedge、distance-weighted compound、inter-intra 仍未完成。第 87 slice
+恢复双参考帧解析，覆盖全部 8 种 compound mode 符号、compound DRL、
 双 MV 赋值和 normative average prediction。新增四帧 320×240 fixture，最终帧同时覆盖
 uni/bidirectional `NearestNearest`、`NearNear` 和 `NewNew`；四帧 Y/U/V 均与 libaom
 **逐字节一致**（frame 3 MD5 `b217ef76fa2e65327d3b4ecfa7ee1f36`）。masked/
@@ -104,7 +109,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --all-targets                     # 1086 通过，27 个板级用例 ignore
+cargo test --all-targets                     # 1087 通过，27 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4

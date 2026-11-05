@@ -5,18 +5,19 @@
 //! the spatial motion-vector stack, and MV-difference decoding. The tile sink
 //! owns the per-frame grids required by the spatial stack.
 //!
-//! Masked/distance-weighted compound, temporal motion-field candidates and
-//! warped motion are explicit errors rather than silently approximated.
+//! Wedge compound, distance-weighted compound, temporal motion-field
+//! candidates and warped motion are explicit errors rather than silently
+//! approximated.
 
 use crate::reference::av1::cdf_defaults::{
-    CdfTable, DEFAULT_COMP_BWD_REF_CDF, DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF_CDF,
-    DEFAULT_COMP_REF_TYPE_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_MOTION_MODE_CDF,
-    DEFAULT_NEW_MV_CDF, DEFAULT_REF_MV_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_UNI_COMP_REF_CDF,
-    DEFAULT_ZERO_MV_CDF,
+    CdfTable, DEFAULT_COMPOUND_TYPE_CDF, DEFAULT_COMP_BWD_REF_CDF, DEFAULT_COMP_MODE_CDF,
+    DEFAULT_COMP_REF_CDF, DEFAULT_COMP_REF_TYPE_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_IS_INTER_CDF,
+    DEFAULT_MOTION_MODE_CDF, DEFAULT_NEW_MV_CDF, DEFAULT_REF_MV_CDF, DEFAULT_SINGLE_REF_CDF,
+    DEFAULT_UNI_COMP_REF_CDF, DEFAULT_WEDGE_INDEX_CDF, DEFAULT_ZERO_MV_CDF,
 };
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError, MvCdfs};
 use crate::reference::av1::frame_header::{FrameHeader, GlobalMotionType, WARPEDMODEL_PREC_BITS};
-use crate::reference::av1::partition::{BlockSize, BLOCK_SIZES};
+use crate::reference::av1::partition::{block_size_index, BlockSize, BLOCK_SIZES};
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 
 pub const INTRA_FRAME: i8 = 0;
@@ -121,6 +122,23 @@ impl CompoundMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompoundType {
+    Average,
+    DistanceWeighted,
+    Wedge { index: u8, sign: u8 },
+    DifferenceWeighted { mask_type: u8 },
+}
+
+impl CompoundType {
+    pub fn comp_group_idx(self) -> u8 {
+        match self {
+            Self::Average | Self::DistanceWeighted => 0,
+            Self::Wedge { .. } | Self::DifferenceWeighted { .. } => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MotionMode {
     Simple,
     Obmc,
@@ -135,6 +153,7 @@ pub struct InterBlock {
     pub ref_frame1: i8,
     pub mv1: MotionVector,
     pub compound_mode: Option<CompoundMode>,
+    pub compound_type: Option<CompoundType>,
     pub motion_mode: MotionMode,
     pub interp_filter: [u8; 2],
     pub ref_mv_idx: usize,
@@ -1264,6 +1283,55 @@ pub fn read_compound_mode(
         7 => CompoundMode::NewNew,
         _ => return Err(InterError::InvalidSyntax("compound mode")),
     })
+}
+
+fn wedge_compound_allowed(size: BlockSize) -> bool {
+    matches!(
+        (size.width, size.height),
+        (8, 8) | (8, 16) | (16, 8) | (16, 16) | (16, 32) | (32, 16) | (32, 32) | (8, 32) | (32, 8)
+    )
+}
+
+/// Read the masked/average compound type selected after `comp_group_idx`.
+pub fn read_compound_type(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    size: BlockSize,
+    comp_group_idx: u8,
+    disable_cdf_update: bool,
+) -> Result<CompoundType, InterError> {
+    if comp_group_idx == 0 {
+        return Ok(CompoundType::Average);
+    }
+    if comp_group_idx != 1 {
+        return Err(InterError::InvalidSyntax("compound group index"));
+    }
+
+    let use_wedge = if wedge_compound_allowed(size) {
+        cdfs.read_symbol(
+            decoder,
+            &DEFAULT_COMPOUND_TYPE_CDF,
+            block_size_index(size) * 3,
+            3,
+            disable_cdf_update,
+        )? == 0
+    } else {
+        false
+    };
+    if use_wedge {
+        let index = cdfs.read_symbol(
+            decoder,
+            &DEFAULT_WEDGE_INDEX_CDF,
+            block_size_index(size) * 17,
+            17,
+            disable_cdf_update,
+        )? as u8;
+        let sign = decoder.read_literal(1)? as u8;
+        Ok(CompoundType::Wedge { index, sign })
+    } else {
+        let mask_type = decoder.read_literal(1)? as u8;
+        Ok(CompoundType::DifferenceWeighted { mask_type })
+    }
 }
 
 /// `drl_mode` for compound modes with a NEWMV/NearMV component.

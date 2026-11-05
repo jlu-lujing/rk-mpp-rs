@@ -1,15 +1,16 @@
 //! Inter-frame tile sink for single references and average compound blocks.
 //!
 //! The sink consumes the complete mode/reference/MV syntax and records the
-//! motion state that later blocks use for MV prediction. Average compound,
-//! fractional motion, residuals, mixed intra/inter blocks and inter
-//! post-filters are wired through the reconstruction path; masked or
-//! distance-weighted compound, warp/OBMC, temporal MVs and inter segmentation
-//! remain explicit errors.
+//! motion state that later blocks use for MV prediction. Average and
+//! difference-weighted compound, fractional motion, residuals, mixed
+//! intra/inter blocks and inter post-filters are wired through the
+//! reconstruction path; wedge/distance-weighted compound, warp/OBMC, temporal
+//! MVs and inter segmentation remain explicit errors.
 
 use crate::reference::av1::cdef::CdefIndexGrid;
 use crate::reference::av1::cdf_defaults::{
-    DEFAULT_INTERP_FILTER_CDF, DEFAULT_SKIP_MODE_CDF, DEFAULT_TXFM_SPLIT_CDF,
+    DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_INTERP_FILTER_CDF, DEFAULT_SKIP_MODE_CDF,
+    DEFAULT_TXFM_SPLIT_CDF,
 };
 use crate::reference::av1::cdf_state::CdfState;
 use crate::reference::av1::cfl::{read_cfl_alphas, CflAlphas};
@@ -21,9 +22,10 @@ use crate::reference::av1::filter_intra::{filter_intra_direction, read_filter_in
 use crate::reference::av1::frame_header::FrameHeader;
 use crate::reference::av1::inter::{
     assign_compound_mv, assign_mv, find_mv_stack, global_motion_vector_from_params,
-    read_compound_mode, read_compound_ref_mv_index, read_inter_mode, read_is_inter,
-    read_motion_mode, read_ref_frames, read_ref_mv_index, CompoundMode, InterBlock, InterError,
-    InterNeighbors, MotionGrid, MotionVector, INTRA_FRAME, NONE_FRAME,
+    read_compound_mode, read_compound_ref_mv_index, read_compound_type, read_inter_mode,
+    read_is_inter, read_motion_mode, read_ref_frames, read_ref_mv_index, CompoundMode,
+    CompoundType, InterBlock, InterError, InterNeighbors, MotionGrid, MotionVector, ALTREF_FRAME,
+    INTRA_FRAME, NONE_FRAME,
 };
 use crate::reference::av1::intra::{
     cfl_allowed, read_angle_delta_with_cdf, read_uv_mode_with_cdf, read_y_mode_with_cdf, IntraMode,
@@ -84,6 +86,7 @@ pub struct InterTileConfig {
     pub enable_dual_filter: bool,
     pub is_motion_mode_switchable: bool,
     pub allow_warped_motion: bool,
+    pub enable_masked_compound: bool,
     pub enable_order_hint: bool,
     pub gm_types: [u8; 7],
     pub gm_params: [[i32; 6]; 7],
@@ -168,6 +171,7 @@ impl InterTileConfig {
             enable_dual_filter: sequence.enable_dual_filter,
             is_motion_mode_switchable: header.is_motion_mode_switchable,
             allow_warped_motion: header.allow_warped_motion,
+            enable_masked_compound: sequence.enable_masked_compound,
             enable_order_hint: sequence.enable_order_hint,
             gm_types: header.gm_types,
             gm_params: header.gm_params,
@@ -200,6 +204,7 @@ pub struct InterTileBlockSink {
     refs: Vec<[i8; 2]>,
     modes: Vec<Option<crate::reference::av1::inter::InterMode>>,
     compound_modes: Vec<Option<CompoundMode>>,
+    compound_groups: Vec<u8>,
     mvs: Vec<[MotionVector; 2]>,
     y_modes: Vec<Option<IntraMode>>,
     uv_modes: Vec<Option<UvMode>>,
@@ -234,6 +239,7 @@ impl InterTileBlockSink {
             refs: vec![[INTRA_FRAME, NONE_FRAME]; mi_cols * mi_rows],
             modes: vec![None; mi_cols * mi_rows],
             compound_modes: vec![None; mi_cols * mi_rows],
+            compound_groups: vec![0; mi_cols * mi_rows],
             mvs: vec![[MotionVector::default(); 2]; mi_cols * mi_rows],
             y_modes: vec![None; mi_cols * mi_rows],
             uv_modes: vec![None; mi_cols * mi_rows],
@@ -897,6 +903,32 @@ impl InterTileBlockSink {
         Ok(filters)
     }
 
+    fn compound_group_context(&self, block: DecodedBlock, neighbors: &InterNeighbors) -> usize {
+        let context = |refs: Option<[i8; 2]>, row: usize, col: usize| {
+            let Some(refs) = refs else {
+                return 0;
+            };
+            if refs[1] > INTRA_FRAME {
+                self.compound_groups[Self::at(row, col, self.config.mi_cols)] as usize
+            } else if refs[0] == ALTREF_FRAME {
+                3
+            } else {
+                0
+            }
+        };
+        let above = if block.row > 0 {
+            context(neighbors.above, block.row.saturating_sub(1), block.col)
+        } else {
+            0
+        };
+        let left = if block.col > 0 {
+            context(neighbors.left, block.row, block.col.saturating_sub(1))
+        } else {
+            0
+        };
+        (above + left).min(5)
+    }
+
     fn record_block(
         &mut self,
         block: DecodedBlock,
@@ -912,6 +944,10 @@ impl InterTileBlockSink {
         let is_inter = inter.is_some();
         let mode = inter.map(|inter| inter.mode);
         let compound_mode = inter.and_then(|inter| inter.compound_mode);
+        let compound_group = inter
+            .and_then(|inter| inter.compound_type)
+            .map(CompoundType::comp_group_idx)
+            .unwrap_or(0);
         let mvs = inter
             .map(|inter| [inter.mv, inter.mv1])
             .unwrap_or([MotionVector::default(); 2]);
@@ -927,6 +963,7 @@ impl InterTileBlockSink {
                 self.refs[index] = refs;
                 self.modes[index] = mode;
                 self.compound_modes[index] = compound_mode;
+                self.compound_groups[index] = compound_group;
                 self.mvs[index] = mvs;
                 self.interp_filters[index] = interp_filter;
                 self.skip_grid[index] = skip;
@@ -1219,6 +1256,35 @@ impl TileBlockSink for InterTileBlockSink {
                 motion_mode,
             )
         };
+        let compound_type = if is_compound {
+            let masked_compound_used = self.config.enable_masked_compound
+                && !skip_mode
+                && block.size.width.min(block.size.height) >= 8;
+            if masked_compound_used {
+                let context = self.compound_group_context(block, &neighbors);
+                let comp_group_idx = cdfs.read_symbol(
+                    decoder,
+                    &DEFAULT_COMP_GROUP_IDX_CDF,
+                    context * 3,
+                    3,
+                    self.config.disable_cdf_update,
+                )? as u8;
+                Some(
+                    read_compound_type(
+                        decoder,
+                        cdfs,
+                        block.size,
+                        comp_group_idx,
+                        self.config.disable_cdf_update,
+                    )
+                    .map_err(Self::conversion)?,
+                )
+            } else {
+                Some(CompoundType::Average)
+            }
+        } else {
+            None
+        };
         let interp_filter = self
             .read_filter(
                 decoder,
@@ -1458,6 +1524,7 @@ impl TileBlockSink for InterTileBlockSink {
             ref_frame1: ref_frames[1],
             mv1,
             compound_mode,
+            compound_type,
             motion_mode,
             interp_filter,
             ref_mv_idx,

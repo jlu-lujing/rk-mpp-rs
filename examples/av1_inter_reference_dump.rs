@@ -74,7 +74,22 @@ fn main() -> Result<(), String> {
 
     let mut references = ReferenceFrameStore::new();
     let mut shown = 0usize;
+    let mut coded = 0usize;
     for event in events.iter().flatten() {
+        if let StreamEvent::ShowExisting(header) = event {
+            let picture = references
+                .get(header.frame_to_show_map_idx as usize)
+                .ok_or_else(|| {
+                    format!(
+                        "missing reference slot {} for show-existing",
+                        header.frame_to_show_map_idx
+                    )
+                })?;
+            write_frame(&output.join(format!("{shown:02}.yuv")), picture)
+                .map_err(|error| error.to_string())?;
+            shown += 1;
+            continue;
+        }
         let StreamEvent::CodedFrame(frame) = event else {
             continue;
         };
@@ -175,7 +190,7 @@ fn main() -> Result<(), String> {
                 &mut picture,
             )?;
             println!(
-                "frame {shown}: {} inter blocks, {} bytes, loop_filter={:?}, cdef={}, lr={}",
+                "frame {coded}: {} inter blocks, {} bytes, loop_filter={:?}, cdef={}, lr={}",
                 decoded.sink.blocks.len(),
                 frame.payload[tile.bytes.clone()].len(),
                 frame.header.loop_filter_level,
@@ -190,9 +205,12 @@ fn main() -> Result<(), String> {
             frame.header.base_q_idx,
             &final_cdfs,
         );
-        write_frame(&output.join(format!("{shown:02}.yuv")), &picture)
-            .map_err(|error| error.to_string())?;
-        shown += 1;
+        if frame.header.show_frame {
+            write_frame(&output.join(format!("{shown:02}.yuv")), &picture)
+                .map_err(|error| error.to_string())?;
+            shown += 1;
+        }
+        coded += 1;
     }
     Ok(())
 }

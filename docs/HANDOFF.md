@@ -11,9 +11,9 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 >4096 宽 P 帧与 **H.265 水平 tiles** 已按同一逐字节标准落地（tiles 见 ROADMAP 的
 `H.265 (rkvenc): uniform horizontal tiles`）；AV1 软件参考解码器已完成 fractional
 single-reference inter、inter residual、recursive transform tree、frame 内混合
-intra/inter、inter deblock/CDEF、inter LR 和 average compound。仍未闭合的前沿是
-masked/distance-weighted compound、inter-intra、warp/OBMC、temporal MV、
-WPP、B 帧与多参考调度。
+intra/inter、inter deblock/CDEF、inter LR、average compound 和
+difference-weighted compound。仍未闭合的前沿是 wedge/distance-weighted compound、
+inter-intra、warp/OBMC、temporal MV、WPP、B 帧与多参考调度。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -128,7 +128,7 @@ WPP、B 帧与多参考调度。
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 1086 passed, 27 board-only ignored
+cargo test --all-targets      # 1087 passed, 27 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -184,7 +184,7 @@ H.264/H.265 普通 slice split 与低延迟逐 slice packet 都已在 t6 上通�
 | `src/hal/h264e.rs` | VEPU580 H.264 编码器：缓冲、寄存器、提交、STATUS 读取 |
 | `src/codec/rc/` | 码率控制移植（`data.rs` = MppDataV2，`model.rs` = rc_model_v2 的 CBR/VBR） |
 | `src/scale.rs` | 自研 RGB 缩放/letterbox（替代 RGA，比 RGA 快 2.9–3.8×） |
-| `src/reference/` | 自研软件参考解码器（M11：CABAC、HEVC 反变换、H.264 CAVLC/4×4+8×8 扫描/反量化/残差/DC；AV1 key/intra 滤波链、SavedCdf、单参考 integer/fractional inter、average compound、inter residual 与 frame 内混合 intra/inter） |
+| `src/reference/` | 自研软件参考解码器（M11：CABAC、HEVC 反变换、H.264 CAVLC/4×4+8×8 扫描/反量化/残差/DC；AV1 key/intra 滤波链、SavedCdf、单参考 integer/fractional inter、average/difference-weighted compound、inter residual 与 frame 内混合 intra/inter） |
 | `scripts/board_*.sh` | 板上验证脚本（回归、吞吐、寄存器捕获） |
 | `tools/` | 取证工具：ioctl tracer、C 探针、寄存器 diff、字段生成器 |
 | `tests/data/` | 所有 golden/fixture（C 侧真实输出） |
@@ -538,7 +538,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 1086 通过（27 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 1087 通过（27 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。
