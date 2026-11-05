@@ -4,7 +4,11 @@
 //! copies them once, then successive `read_symbol()` calls adapt the selected
 //! rows until the tile ends or a frame context is restored.
 
-use crate::reference::av1::cdf_defaults::{CdfTable, TABLES};
+use crate::reference::av1::cdf_defaults::{
+    CdfTable, DEFAULT_MV_BIT_CDF, DEFAULT_MV_CLASS0_BIT_CDF, DEFAULT_MV_CLASS0_FR_CDF,
+    DEFAULT_MV_CLASS0_HP_CDF, DEFAULT_MV_CLASS_CDF, DEFAULT_MV_FR_CDF, DEFAULT_MV_HP_CDF,
+    DEFAULT_MV_JOINT_CDF, DEFAULT_MV_SIGN_CDF, TABLES,
+};
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,11 +41,115 @@ impl core::fmt::Display for CdfStateError {
     }
 }
 
+fn copy_row<const N: usize>(table: &CdfTable, row: usize) -> [u16; N] {
+    table.values[row * N..(row + 1) * N].try_into().unwrap()
+}
+
+/// The two-component MV CDFs. These arrays are not suffix-indexed by qcontext,
+/// but each component and each MV context still has an independent adaptation
+/// counter and saved value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MvCdfs {
+    pub(crate) joint: [u16; 5],
+    pub(crate) class: [[u16; 12]; 2],
+    pub(crate) class0_bit: [[u16; 3]; 2],
+    pub(crate) class0_fr: [[[u16; 5]; 2]; 2],
+    pub(crate) class0_hp: [[u16; 3]; 2],
+    pub(crate) sign: [[u16; 3]; 2],
+    pub(crate) bits: [[[u16; 3]; 10]; 2],
+    pub(crate) fr: [[u16; 5]; 2],
+    pub(crate) hp: [[u16; 3]; 2],
+}
+
+impl Default for MvCdfs {
+    fn default() -> Self {
+        let mut bits = [[[0u16; 3]; 10]; 2];
+        for component in &mut bits {
+            for index in 0..10 {
+                component[index] = copy_row(&DEFAULT_MV_BIT_CDF, index);
+            }
+        }
+        Self {
+            joint: copy_row(&DEFAULT_MV_JOINT_CDF, 0),
+            class: [
+                copy_row(&DEFAULT_MV_CLASS_CDF, 0),
+                copy_row(&DEFAULT_MV_CLASS_CDF, 1),
+            ],
+            class0_bit: [
+                copy_row(&DEFAULT_MV_CLASS0_BIT_CDF, 0),
+                copy_row(&DEFAULT_MV_CLASS0_BIT_CDF, 0),
+            ],
+            class0_fr: [
+                [
+                    copy_row(&DEFAULT_MV_CLASS0_FR_CDF, 0),
+                    copy_row(&DEFAULT_MV_CLASS0_FR_CDF, 1),
+                ],
+                [
+                    copy_row(&DEFAULT_MV_CLASS0_FR_CDF, 2),
+                    copy_row(&DEFAULT_MV_CLASS0_FR_CDF, 3),
+                ],
+            ],
+            class0_hp: [
+                copy_row(&DEFAULT_MV_CLASS0_HP_CDF, 0),
+                copy_row(&DEFAULT_MV_CLASS0_HP_CDF, 0),
+            ],
+            sign: [
+                copy_row(&DEFAULT_MV_SIGN_CDF, 0),
+                copy_row(&DEFAULT_MV_SIGN_CDF, 0),
+            ],
+            bits,
+            fr: [
+                copy_row(&DEFAULT_MV_FR_CDF, 0),
+                copy_row(&DEFAULT_MV_FR_CDF, 1),
+            ],
+            hp: [
+                copy_row(&DEFAULT_MV_HP_CDF, 0),
+                copy_row(&DEFAULT_MV_HP_CDF, 0),
+            ],
+        }
+    }
+}
+
+impl MvCdfs {
+    fn reset_symbol_counters(&mut self) {
+        self.joint[4] = 0;
+        for row in &mut self.class {
+            row[11] = 0;
+        }
+        for row in &mut self.class0_bit {
+            row[2] = 0;
+        }
+        for component in &mut self.class0_fr {
+            for row in component {
+                row[4] = 0;
+            }
+        }
+        for row in &mut self.class0_hp {
+            row[2] = 0;
+        }
+        for row in &mut self.sign {
+            row[2] = 0;
+        }
+        for component in &mut self.bits {
+            for row in component {
+                row[2] = 0;
+            }
+        }
+        for row in &mut self.fr {
+            row[4] = 0;
+        }
+        for row in &mut self.hp {
+            row[2] = 0;
+        }
+    }
+}
+
 /// A tile's complete adaptive CDF set. Tables stay in `cdf_defaults::TABLES`
 /// order and `read_symbol` updates the copied row in place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CdfState {
     tables: Vec<Vec<u16>>,
+    pub mv: MvCdfs,
 }
 
 impl Default for CdfState {
@@ -54,6 +162,7 @@ impl CdfState {
     pub fn new() -> Self {
         Self {
             tables: TABLES.iter().map(|table| table.values.to_vec()).collect(),
+            mv: MvCdfs::default(),
         }
     }
 
@@ -132,6 +241,7 @@ impl CdfState {
                 }
             }
         }
+        self.mv.reset_symbol_counters();
     }
 
     /// AV1 keeps one active coefficient-CDF q-context per frame. When a tile

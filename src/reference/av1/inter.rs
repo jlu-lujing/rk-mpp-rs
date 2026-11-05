@@ -10,12 +10,10 @@
 
 use crate::reference::av1::cdf_defaults::{
     CdfTable, DEFAULT_COMP_MODE_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_IS_INTER_CDF,
-    DEFAULT_MOTION_MODE_CDF, DEFAULT_MV_BIT_CDF, DEFAULT_MV_CLASS0_BIT_CDF,
-    DEFAULT_MV_CLASS0_FR_CDF, DEFAULT_MV_CLASS0_HP_CDF, DEFAULT_MV_CLASS_CDF, DEFAULT_MV_FR_CDF,
-    DEFAULT_MV_HP_CDF, DEFAULT_MV_JOINT_CDF, DEFAULT_MV_SIGN_CDF, DEFAULT_NEW_MV_CDF,
-    DEFAULT_REF_MV_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_ZERO_MV_CDF,
+    DEFAULT_MOTION_MODE_CDF, DEFAULT_NEW_MV_CDF, DEFAULT_REF_MV_CDF, DEFAULT_SINGLE_REF_CDF,
+    DEFAULT_ZERO_MV_CDF,
 };
-use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
+use crate::reference::av1::cdf_state::{CdfState, CdfStateError, MvCdfs};
 use crate::reference::av1::frame_header::{FrameHeader, GlobalMotionType, WARPEDMODEL_PREC_BITS};
 use crate::reference::av1::partition::{BlockSize, BLOCK_SIZES};
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
@@ -79,6 +77,49 @@ pub enum InterMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompoundMode {
+    NearestNearest,
+    NearNear,
+    NearestNew,
+    NewNearest,
+    NearNew,
+    NewNear,
+    GlobalGlobal,
+    NewNew,
+}
+
+impl CompoundMode {
+    pub fn ref0_mode(self) -> InterMode {
+        match self {
+            Self::NearestNearest | Self::NearestNew => InterMode::Nearest,
+            Self::NearNear | Self::NearNew => InterMode::Near,
+            Self::NewNearest | Self::NewNear | Self::NewNew => InterMode::New,
+            Self::GlobalGlobal => InterMode::Global,
+        }
+    }
+
+    pub fn ref1_mode(self) -> InterMode {
+        match self {
+            Self::NearestNearest | Self::NewNearest => InterMode::Nearest,
+            Self::NearNear | Self::NewNear => InterMode::Near,
+            Self::NearestNew | Self::NearNew | Self::NewNew => InterMode::New,
+            Self::GlobalGlobal => InterMode::Global,
+        }
+    }
+
+    fn has_new_mv(self) -> bool {
+        matches!(
+            self,
+            Self::NearestNew | Self::NewNearest | Self::NearNew | Self::NewNear | Self::NewNew
+        )
+    }
+
+    fn has_near_mv(self) -> bool {
+        matches!(self, Self::NearNear | Self::NearNew | Self::NewNear)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MotionMode {
     Simple,
     Obmc,
@@ -90,6 +131,9 @@ pub struct InterBlock {
     pub ref_frame: i8,
     pub mode: InterMode,
     pub mv: MotionVector,
+    pub ref_frame1: i8,
+    pub mv1: MotionVector,
+    pub compound_mode: Option<CompoundMode>,
     pub motion_mode: MotionMode,
     pub interp_filter: [u8; 2],
     pub ref_mv_idx: usize,
@@ -214,17 +258,7 @@ pub fn read_is_inter(
     left_intra: bool,
     disable_cdf_update: bool,
 ) -> Result<bool, InterError> {
-    let ctx = if avail_u && avail_l {
-        if left_intra && above_intra {
-            3
-        } else {
-            usize::from(left_intra || above_intra)
-        }
-    } else if avail_u || avail_l {
-        2 * usize::from(if avail_u { above_intra } else { left_intra })
-    } else {
-        0
-    };
+    let ctx = is_inter_context(avail_u, avail_l, above_intra, left_intra);
     Ok(binary(
         decoder,
         cdfs,
@@ -234,15 +268,34 @@ pub fn read_is_inter(
     )? != 0)
 }
 
-/// `read_ref_frames()` restricted to a single reference.
-pub fn read_single_ref_frame(
+pub fn is_inter_context(
+    avail_u: bool,
+    avail_l: bool,
+    above_intra: bool,
+    left_intra: bool,
+) -> usize {
+    if avail_u && avail_l {
+        if left_intra && above_intra {
+            3
+        } else {
+            usize::from(left_intra || above_intra)
+        }
+    } else if avail_u || avail_l {
+        2 * usize::from(if avail_u { above_intra } else { left_intra })
+    } else {
+        0
+    }
+}
+
+/// `read_ref_frames()` for single and compound references.
+pub fn read_ref_frames(
     decoder: &mut SymbolDecoder<'_>,
     cdfs: &mut CdfState,
     neighbors: InterNeighbors,
     size: BlockSize,
     reference_select: bool,
     disable_cdf_update: bool,
-) -> Result<i8, InterError> {
+) -> Result<[i8; 2], InterError> {
     if reference_select && size.num_4x4_wide().min(size.num_4x4_high()) >= 2 {
         let ctx = reference_mode_context(neighbors);
         let compound = binary(
@@ -280,7 +333,7 @@ pub fn read_single_ref_frame(
             disable_cdf_update,
         )?;
         if p2 != 0 {
-            return Ok(ALTREF_FRAME);
+            return Ok([ALTREF_FRAME, NONE_FRAME]);
         }
         let brf = count_refs(neighbors, BWDREF_FRAME);
         let arf2 = count_refs(neighbors, ALTREF2_FRAME);
@@ -291,7 +344,10 @@ pub fn read_single_ref_frame(
             ref_count_ctx(brf, arf2) * 6 + 5,
             disable_cdf_update,
         )?;
-        return Ok(if p6 != 0 { ALTREF2_FRAME } else { BWDREF_FRAME });
+        return Ok([
+            if p6 != 0 { ALTREF2_FRAME } else { BWDREF_FRAME },
+            NONE_FRAME,
+        ]);
     }
 
     let last12 = count_refs(neighbors, LAST_FRAME) + count_refs(neighbors, LAST2_FRAME);
@@ -313,7 +369,7 @@ pub fn read_single_ref_frame(
             ref_count_ctx(last3, gold) * 6 + 4,
             disable_cdf_update,
         )?;
-        return Ok(if p5 != 0 { GOLDEN_FRAME } else { LAST3_FRAME });
+        return Ok([if p5 != 0 { GOLDEN_FRAME } else { LAST3_FRAME }, NONE_FRAME]);
     }
     let last = count_refs(neighbors, LAST_FRAME);
     let last2 = count_refs(neighbors, LAST2_FRAME);
@@ -324,21 +380,50 @@ pub fn read_single_ref_frame(
         ref_count_ctx(last, last2) * 6 + 3,
         disable_cdf_update,
     )?;
-    Ok(if p4 != 0 { LAST2_FRAME } else { LAST_FRAME })
+    Ok([if p4 != 0 { LAST2_FRAME } else { LAST_FRAME }, NONE_FRAME])
+}
+
+/// Compatibility wrapper that rejects a decoded compound pair.
+pub fn read_single_ref_frame(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    neighbors: InterNeighbors,
+    size: BlockSize,
+    reference_select: bool,
+    disable_cdf_update: bool,
+) -> Result<i8, InterError> {
+    let refs = read_ref_frames(
+        decoder,
+        cdfs,
+        neighbors,
+        size,
+        reference_select,
+        disable_cdf_update,
+    )?;
+    if refs[1] > INTRA_FRAME {
+        Err(InterError::Unsupported("compound reference"))
+    } else {
+        Ok(refs[0])
+    }
 }
 
 /// The spatial `find_mv_stack()` result used by the mode syntax.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MotionVectorStack {
-    pub candidates: [MotionVector; 8],
+    pub candidates: [[MotionVector; 2]; 8],
     pub weights: [u16; 8],
     pub count: usize,
     mode_context: u8,
+    compound_mode_context: u8,
 }
 
 impl MotionVectorStack {
     pub fn mode_context(&self) -> u8 {
         self.mode_context
+    }
+
+    pub fn compound_mode_context(&self) -> u8 {
+        self.compound_mode_context
     }
 
     fn drl_context(&self, index: usize) -> usize {
@@ -365,6 +450,7 @@ pub struct MotionGrid<'a> {
     pub is_inter: &'a [bool],
     pub refs: &'a [[i8; 2]],
     pub modes: &'a [Option<InterMode>],
+    pub compound_modes: &'a [Option<CompoundMode>],
     pub mvs: &'a [[MotionVector; 2]],
 }
 
@@ -426,8 +512,9 @@ pub fn global_motion_vector_from_params(
 struct StackBuilder<'a> {
     stack: MotionVectorStack,
     grid: MotionGrid<'a>,
-    ref_frame: i8,
-    global_mv: MotionVector,
+    ref_frames: [i8; 2],
+    global_mvs: [MotionVector; 2],
+    is_compound: bool,
     allow_high_precision_mv: bool,
     force_integer_mv: bool,
     found: bool,
@@ -435,15 +522,15 @@ struct StackBuilder<'a> {
 }
 
 impl StackBuilder<'_> {
-    fn add_to_stack(&mut self, mv: MotionVector, weight: u16) {
+    fn add_to_stack(&mut self, mvs: [MotionVector; 2], weight: u16) {
         for index in 0..self.stack.count {
-            if self.stack.candidates[index] == mv {
+            if self.stack.candidates[index] == mvs {
                 self.stack.weights[index] += weight;
                 return;
             }
         }
         if self.stack.count < self.stack.candidates.len() {
-            self.stack.candidates[self.stack.count] = mv;
+            self.stack.candidates[self.stack.count] = mvs;
             self.stack.weights[self.stack.count] = weight;
             self.stack.count += 1;
         }
@@ -455,25 +542,43 @@ impl StackBuilder<'_> {
             return;
         }
         let refs = self.grid.refs[index];
-        let Some(list) = (0..2).find(|list| refs[*list] == self.ref_frame) else {
-            return;
-        };
-        let mode = self.grid.modes[index].unwrap_or(InterMode::Nearest);
-        let size = self.grid.size(row, col).unwrap_or(BLOCK_SIZES[0]);
-        let mut mv = if mode == InterMode::Global
-            && size.width.min(size.height) >= 8
-            && self.global_mv != MotionVector::default()
-        {
-            self.global_mv
+        if self.is_compound {
+            if refs != self.ref_frames {
+                return;
+            }
+            let mut mvs = self.grid.mvs[index];
+            for list in 0..2 {
+                mvs[list].lower_precision(self.allow_high_precision_mv, self.force_integer_mv);
+            }
+            if self.grid.compound_modes[index]
+                .unwrap_or(CompoundMode::NearestNearest)
+                .has_new_mv()
+            {
+                self.new_mv_count += 1;
+            }
+            self.found = true;
+            self.add_to_stack(mvs, weight);
         } else {
-            self.grid.mvs[index][list]
-        };
-        mv.lower_precision(self.allow_high_precision_mv, self.force_integer_mv);
-        if matches!(mode, InterMode::New) {
-            self.new_mv_count += 1;
+            let Some(list) = (0..2).find(|list| refs[*list] == self.ref_frames[0]) else {
+                return;
+            };
+            let mode = self.grid.modes[index].unwrap_or(InterMode::Nearest);
+            let size = self.grid.size(row, col).unwrap_or(BLOCK_SIZES[0]);
+            let mut mv = if mode == InterMode::Global
+                && size.width.min(size.height) >= 8
+                && self.global_mvs[0] != MotionVector::default()
+            {
+                self.global_mvs[0]
+            } else {
+                self.grid.mvs[index][list]
+            };
+            mv.lower_precision(self.allow_high_precision_mv, self.force_integer_mv);
+            if matches!(mode, InterMode::New) {
+                self.new_mv_count += 1;
+            }
+            self.found = true;
+            self.add_to_stack([mv, MotionVector::default()], weight);
         }
-        self.found = true;
-        self.add_to_stack(mv, weight);
     }
 
     fn scan_row(&mut self, delta_row: isize, block_row: usize, block_col: usize, size: BlockSize) {
@@ -588,6 +693,10 @@ impl StackBuilder<'_> {
             .min(16)
             .min(self.grid.mi_rows.saturating_sub(block_row));
         let num4x4 = w4.min(h4);
+        let mut id_mvs = [[MotionVector::default(); 2]; 2];
+        let mut id_counts = [0usize; 2];
+        let mut diff_mvs = [[MotionVector::default(); 2]; 2];
+        let mut diff_counts = [0usize; 2];
         for pass in 0..2 {
             let mut index = 0usize;
             while index < num4x4 && self.stack.count < 2 {
@@ -599,7 +708,18 @@ impl StackBuilder<'_> {
                 if !self.grid.inside(row, col) {
                     break;
                 }
-                self.add_extra_candidate(row as usize, col as usize);
+                if self.is_compound {
+                    self.collect_extra_candidate(
+                        row as usize,
+                        col as usize,
+                        &mut id_mvs,
+                        &mut id_counts,
+                        &mut diff_mvs,
+                        &mut diff_counts,
+                    );
+                } else {
+                    self.add_extra_candidate(row as usize, col as usize);
+                }
                 let candidate = self
                     .grid
                     .size(row as usize, col as usize)
@@ -611,11 +731,45 @@ impl StackBuilder<'_> {
                 };
             }
         }
+        if self.is_compound {
+            let mut combined = [[MotionVector::default(); 2]; 2];
+            for list in 0..2 {
+                let mut count = 0usize;
+                for index in 0..id_counts[list] {
+                    combined[count][list] = id_mvs[list][index];
+                    count += 1;
+                }
+                for index in 0..diff_counts[list].min(2 - count) {
+                    combined[count][list] = diff_mvs[list][index];
+                    count += 1;
+                }
+                while count < 2 {
+                    combined[count][list] = self.global_mvs[list];
+                    count += 1;
+                }
+            }
+            if self.stack.count == 1 {
+                if combined[0] == self.stack.candidates[0] {
+                    self.stack.candidates[1] = combined[1];
+                } else {
+                    self.stack.candidates[1] = combined[0];
+                }
+                self.stack.weights[1] = 2;
+                self.stack.count += 1;
+            } else {
+                for index in 0..2 {
+                    self.stack.candidates[self.stack.count] = combined[index];
+                    self.stack.weights[self.stack.count] = 2;
+                    self.stack.count += 1;
+                }
+            }
+            return;
+        }
         // The global-MV fallback fills RefStackMv[0..1] but does not increase
         // NumMvFound; DRL syntax uses the number of real matches.
         let mut fill = self.stack.count;
         while fill < 2 {
-            self.stack.candidates[fill] = self.global_mv;
+            self.stack.candidates[fill] = [self.global_mvs[0], MotionVector::default()];
             fill += 1;
         }
     }
@@ -634,11 +788,47 @@ impl StackBuilder<'_> {
             // The supported path requires order hints to be disabled, so all
             // RefFrameSignBias values are zero and no sign inversion is needed.
             mv.lower_precision(self.allow_high_precision_mv, self.force_integer_mv);
-            let found = (0..self.stack.count).any(|i| self.stack.candidates[i] == mv);
+            let candidate = [mv, MotionVector::default()];
+            let found = (0..self.stack.count).any(|i| self.stack.candidates[i] == candidate);
             if !found && self.stack.count < self.stack.candidates.len() {
-                self.stack.candidates[self.stack.count] = mv;
+                self.stack.candidates[self.stack.count] = candidate;
                 self.stack.weights[self.stack.count] = 2;
                 self.stack.count += 1;
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn collect_extra_candidate(
+        &self,
+        row: usize,
+        col: usize,
+        id_mvs: &mut [[MotionVector; 2]; 2],
+        id_counts: &mut [usize; 2],
+        diff_mvs: &mut [[MotionVector; 2]; 2],
+        diff_counts: &mut [usize; 2],
+    ) {
+        let index = self.grid.index(row, col);
+        if !self.grid.is_inter[index] {
+            return;
+        }
+        for candidate_list in 0..2 {
+            let candidate_ref = self.grid.refs[index][candidate_list];
+            if candidate_ref <= INTRA_FRAME {
+                continue;
+            }
+            let mut candidate_mv = self.grid.mvs[index][candidate_list];
+            candidate_mv.lower_precision(self.allow_high_precision_mv, self.force_integer_mv);
+            for list in 0..2 {
+                if candidate_ref == self.ref_frames[list] && id_counts[list] < 2 {
+                    id_mvs[list][id_counts[list]] = candidate_mv;
+                    id_counts[list] += 1;
+                } else if diff_counts[list] < 2 {
+                    // The order-hint path is rejected by the caller, so every
+                    // RefFrameSignBias is zero and the vector is not inverted.
+                    diff_mvs[list][diff_counts[list]] = candidate_mv;
+                    diff_counts[list] += 1;
+                }
             }
         }
     }
@@ -652,22 +842,25 @@ impl StackBuilder<'_> {
         let right = ((self.grid.mi_cols as i32 - bw4 - block_col as i32) * 4) * 8;
         let border_row = MV_BORDER + size.height as i32 * 8;
         let border_col = MV_BORDER + size.width as i32 * 8;
-        for mv in &mut self.stack.candidates {
-            mv.row = mv.row.clamp(top - border_row, bottom + border_row);
-            mv.col = mv.col.clamp(left - border_col, right + border_col);
+        let lists = if self.is_compound { 2 } else { 1 };
+        for candidate in &mut self.stack.candidates {
+            for mv in &mut candidate[..lists] {
+                mv.row = mv.row.clamp(top - border_row, bottom + border_row);
+                mv.col = mv.col.clamp(left - border_col, right + border_col);
+            }
         }
     }
 }
 
-/// Build the spatial two-entry stack for a single reference frame.
+/// Build the spatial two-entry stack for one or two reference frames.
 #[allow(clippy::too_many_arguments)]
 pub fn find_mv_stack(
     grid: MotionGrid<'_>,
     block_row: usize,
     block_col: usize,
     size: BlockSize,
-    ref_frame: i8,
-    global_mv: MotionVector,
+    ref_frames: [i8; 2],
+    global_mvs: [MotionVector; 2],
     allow_high_precision_mv: bool,
     force_integer_mv: bool,
     use_ref_frame_mvs: bool,
@@ -677,14 +870,16 @@ pub fn find_mv_stack(
     }
     let mut builder = StackBuilder {
         stack: MotionVectorStack {
-            candidates: [MotionVector::default(); 8],
+            candidates: [[MotionVector::default(); 2]; 8],
             weights: [0; 8],
             count: 0,
             mode_context: 0,
+            compound_mode_context: 0,
         },
         grid,
-        ref_frame,
-        global_mv,
+        ref_frames,
+        global_mvs,
+        is_compound: ref_frames[1] > INTRA_FRAME,
         allow_high_precision_mv,
         force_integer_mv,
         found: false,
@@ -749,6 +944,9 @@ pub fn find_mv_stack(
         _ => (5 - usize::from(num_new.min(1)), 5),
     };
     builder.stack.mode_context = (new_mv_ctx | (ref_mv_ctx << 4)) as u8;
+    const COMPOUND_MODE_CTX_MAP: [[u8; 5]; 3] = [[0, 1, 1, 1, 1], [1, 2, 3, 4, 4], [4, 4, 5, 6, 7]];
+    builder.stack.compound_mode_context =
+        COMPOUND_MODE_CTX_MAP[(ref_mv_ctx >> 1).min(2)][new_mv_ctx.min(4)];
     Ok(builder.stack)
 }
 
@@ -845,73 +1043,72 @@ pub fn read_ref_mv_index(
     Ok(result)
 }
 
-/// Per-tile MV CDF copies. The generated defaults contain one row per
-/// component; the specification stores independent copies for the two
-/// components, so adaptation cannot share `CdfState` rows.
-#[derive(Debug, Clone)]
-pub struct MvCdfs {
-    joint: [u16; 5],
-    class: [[u16; 12]; 2],
-    class0_bit: [[u16; 3]; 2],
-    class0_fr: [[[u16; 5]; 2]; 2],
-    class0_hp: [[u16; 3]; 2],
-    sign: [[u16; 3]; 2],
-    bits: [[[u16; 3]; 10]; 2],
-    fr: [[u16; 5]; 2],
-    hp: [[u16; 3]; 2],
+/// Read `compound_mode` and its optional DRL index.
+pub fn read_compound_mode(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    stack: &MotionVectorStack,
+    disable_cdf_update: bool,
+) -> Result<CompoundMode, InterError> {
+    let symbol = cdfs.read_symbol(
+        decoder,
+        &crate::reference::av1::cdf_defaults::DEFAULT_COMPOUND_MODE_CDF,
+        usize::from(stack.compound_mode_context()) * 8,
+        8,
+        disable_cdf_update,
+    )?;
+    Ok(match symbol {
+        0 => CompoundMode::NearestNearest,
+        1 => CompoundMode::NearNear,
+        2..=7 => return Err(InterError::Unsupported("compound NEW/GLOBAL mode")),
+        _ => return Err(InterError::InvalidSyntax("compound mode")),
+    })
 }
 
-fn copy_row<const N: usize>(table: &CdfTable, row: usize) -> [u16; N] {
-    table.values[row * N..(row + 1) * N].try_into().unwrap()
-}
-
-impl Default for MvCdfs {
-    fn default() -> Self {
-        let mut bits = [[[0u16; 3]; 10]; 2];
-        for component in &mut bits {
-            for index in 0..10 {
-                component[index] = copy_row(&DEFAULT_MV_BIT_CDF, index);
+/// `drl_mode` for compound modes with a NEWMV/NearMV component.
+pub fn read_compound_ref_mv_index(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    stack: &MotionVectorStack,
+    mode: CompoundMode,
+    disable_cdf_update: bool,
+) -> Result<usize, InterError> {
+    let mut result = 0;
+    if mode == CompoundMode::NewNew {
+        for index in 0..2 {
+            if stack.count > index + 1 {
+                let bit = binary(
+                    decoder,
+                    cdfs,
+                    &DEFAULT_DRL_MODE_CDF,
+                    stack.drl_context(index),
+                    disable_cdf_update,
+                )?;
+                result = index + bit;
+                if bit == 0 {
+                    return Ok(result);
+                }
             }
         }
-        Self {
-            joint: copy_row(&DEFAULT_MV_JOINT_CDF, 0),
-            class: [
-                copy_row(&DEFAULT_MV_CLASS_CDF, 0),
-                copy_row(&DEFAULT_MV_CLASS_CDF, 1),
-            ],
-            class0_bit: [
-                copy_row(&DEFAULT_MV_CLASS0_BIT_CDF, 0),
-                copy_row(&DEFAULT_MV_CLASS0_BIT_CDF, 0),
-            ],
-            class0_fr: [
-                [
-                    copy_row(&DEFAULT_MV_CLASS0_FR_CDF, 0),
-                    copy_row(&DEFAULT_MV_CLASS0_FR_CDF, 1),
-                ],
-                [
-                    copy_row(&DEFAULT_MV_CLASS0_FR_CDF, 2),
-                    copy_row(&DEFAULT_MV_CLASS0_FR_CDF, 3),
-                ],
-            ],
-            class0_hp: [
-                copy_row(&DEFAULT_MV_CLASS0_HP_CDF, 0),
-                copy_row(&DEFAULT_MV_CLASS0_HP_CDF, 0),
-            ],
-            sign: [
-                copy_row(&DEFAULT_MV_SIGN_CDF, 0),
-                copy_row(&DEFAULT_MV_SIGN_CDF, 0),
-            ],
-            bits,
-            fr: [
-                copy_row(&DEFAULT_MV_FR_CDF, 0),
-                copy_row(&DEFAULT_MV_FR_CDF, 1),
-            ],
-            hp: [
-                copy_row(&DEFAULT_MV_HP_CDF, 0),
-                copy_row(&DEFAULT_MV_HP_CDF, 0),
-            ],
+    }
+    if mode.has_near_mv() {
+        for index in 1..3 {
+            if stack.count > index + 1 {
+                let bit = binary(
+                    decoder,
+                    cdfs,
+                    &DEFAULT_DRL_MODE_CDF,
+                    stack.drl_context(index),
+                    disable_cdf_update,
+                )?;
+                result = index + bit - 1;
+                if bit == 0 {
+                    return Ok(result);
+                }
+            }
         }
     }
+    Ok(result)
 }
 
 fn read_component(
@@ -1015,14 +1212,14 @@ pub fn assign_mv(
     disable_cdf_update: bool,
 ) -> Result<MotionVector, InterError> {
     Ok(match mode {
-        InterMode::Nearest => stack.candidates[0],
-        InterMode::Near => stack.candidates[(1 + ref_mv_idx).min(stack.candidates.len() - 1)],
+        InterMode::Nearest => stack.candidates[0][0],
+        InterMode::Near => stack.candidates[(1 + ref_mv_idx).min(stack.candidates.len() - 1)][0],
         InterMode::Global => global_mv,
         InterMode::New => {
             let reference = if stack.count > 1 {
-                stack.candidates[ref_mv_idx]
+                stack.candidates[ref_mv_idx][0]
             } else {
-                stack.candidates[0]
+                stack.candidates[0][0]
             };
             read_mv(
                 decoder,
@@ -1034,6 +1231,44 @@ pub fn assign_mv(
             )?
         }
     })
+}
+
+/// Assign both list vectors for a compound mode after the mode syntax.
+#[allow(clippy::too_many_arguments)]
+pub fn assign_compound_mv(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut MvCdfs,
+    stack: &MotionVectorStack,
+    ref_mv_idx: usize,
+    mode: CompoundMode,
+    global_mvs: [MotionVector; 2],
+    allow_high_precision_mv: bool,
+    force_integer_mv: bool,
+    disable_cdf_update: bool,
+) -> Result<[MotionVector; 2], InterError> {
+    let modes = [mode.ref0_mode(), mode.ref1_mode()];
+    let mut result = [MotionVector::default(); 2];
+    for list in 0..2 {
+        result[list] = match modes[list] {
+            InterMode::Nearest => stack.candidates[0][list],
+            InterMode::Near => {
+                stack.candidates[(1 + ref_mv_idx).min(stack.candidates.len() - 1)][list]
+            }
+            InterMode::Global => global_mvs[list],
+            InterMode::New => {
+                let position = if stack.count <= 1 { 0 } else { ref_mv_idx };
+                read_mv(
+                    decoder,
+                    cdfs,
+                    stack.candidates[position][list],
+                    allow_high_precision_mv,
+                    force_integer_mv,
+                    disable_cdf_update,
+                )?
+            }
+        };
+    }
+    Ok(result)
 }
 
 /// Read `motion_mode` for a single-reference block.

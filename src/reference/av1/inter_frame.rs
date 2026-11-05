@@ -115,10 +115,13 @@ impl ReferenceFrameStore {
     }
 
     pub fn load_cdfs(&self, slot: usize) -> Option<CdfState> {
-        self.slots
+        let mut cdfs = self
+            .slots
             .get(slot)
             .and_then(Option::as_ref)
-            .map(|slot| slot.cdfs.clone())
+            .map(|slot| slot.cdfs.clone())?;
+        cdfs.reset_symbol_counters();
+        Some(cdfs)
     }
 
     pub fn refresh(&mut self, flags: u8, frame: &IntraFrame, base_q_idx: u8, cdfs: &CdfState) {
@@ -199,10 +202,11 @@ fn source_start(
     }
 }
 
-fn predict_inter_block(
+fn inter_block_samples(
     reference: &IntraFrame,
-    current: &mut IntraFrame,
     plane: usize,
+    current_width: usize,
+    current_height: usize,
     block: InterBlock,
     block_col: usize,
     block_row: usize,
@@ -211,7 +215,7 @@ fn predict_inter_block(
     sub_x: u32,
     sub_y: u32,
     bit_depth: u32,
-) -> Result<(), InterFrameError> {
+) -> Result<Vec<u16>, InterFrameError> {
     let reference_plane = match plane {
         0 => &reference.y,
         1 => reference
@@ -224,26 +228,14 @@ fn predict_inter_block(
             .ok_or(InterFrameError::MissingPlane(plane))?,
         _ => return Err(InterFrameError::InvalidState("plane index")),
     };
-    let current_plane = match plane {
-        0 => &mut current.y,
-        1 => current
-            .u
-            .as_mut()
-            .ok_or(InterFrameError::MissingPlane(plane))?,
-        2 => current
-            .v
-            .as_mut()
-            .ok_or(InterFrameError::MissingPlane(plane))?,
-        _ => return Err(InterFrameError::InvalidState("plane index")),
-    };
     let scale = source_start(
         block_col,
         block_row,
         block.mv,
         sub_x,
         sub_y,
-        current_plane.width as u32,
-        current_plane.height as u32,
+        current_width as u32,
+        current_height as u32,
         reference_plane.width as u32,
         reference_plane.height as u32,
     );
@@ -283,6 +275,7 @@ fn predict_inter_block(
     } else {
         &REGULAR_8TAP
     };
+    let mut out = vec![0u16; width * height];
     for row in 0..height {
         let p = i64::from(scale.start_y & 1023) + i64::from(scale.step_y) * row as i64;
         let filter = vertical_filter[((p >> 6) & 15) as usize];
@@ -293,15 +286,195 @@ fn predict_inter_block(
                     * intermediate[((p >> 10) as usize + tap) * width + col];
             }
             let value = round2(sum, 11).clamp(0, i64::from(max)) as u16;
-            let dst_x = block_col + col;
-            let dst_y = block_row + row;
-            current_plane.data[dst_y * current_plane.stride + dst_x] = value;
+            out[row * width + col] = value;
+        }
+    }
+    Ok(out)
+}
+
+fn predict_inter_block(
+    reference: &IntraFrame,
+    current: &mut IntraFrame,
+    plane: usize,
+    block: InterBlock,
+    block_col: usize,
+    block_row: usize,
+    width: usize,
+    height: usize,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+) -> Result<(), InterFrameError> {
+    let current_width = match plane {
+        0 => current.y.width,
+        1 => {
+            current
+                .u
+                .as_ref()
+                .ok_or(InterFrameError::MissingPlane(plane))?
+                .width
+        }
+        2 => {
+            current
+                .v
+                .as_ref()
+                .ok_or(InterFrameError::MissingPlane(plane))?
+                .width
+        }
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    let current_height = match plane {
+        0 => current.y.height,
+        1 => {
+            current
+                .u
+                .as_ref()
+                .ok_or(InterFrameError::MissingPlane(plane))?
+                .height
+        }
+        2 => {
+            current
+                .v
+                .as_ref()
+                .ok_or(InterFrameError::MissingPlane(plane))?
+                .height
+        }
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    let samples = inter_block_samples(
+        reference,
+        plane,
+        current_width,
+        current_height,
+        block,
+        block_col,
+        block_row,
+        width,
+        height,
+        sub_x,
+        sub_y,
+        bit_depth,
+    )?;
+    let current_plane = match plane {
+        0 => &mut current.y,
+        1 => current
+            .u
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        2 => current
+            .v
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    for row in 0..height {
+        let start = (block_row + row) * current_plane.stride + block_col;
+        current_plane.data[start..start + width]
+            .copy_from_slice(&samples[row * width..(row + 1) * width]);
+    }
+    Ok(())
+}
+
+fn predict_compound_block(
+    reference0: &IntraFrame,
+    reference1: &IntraFrame,
+    current: &mut IntraFrame,
+    plane: usize,
+    first: InterBlock,
+    second: InterBlock,
+    block_col: usize,
+    block_row: usize,
+    width: usize,
+    height: usize,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+) -> Result<(), InterFrameError> {
+    let current_plane = match plane {
+        0 => &mut current.y,
+        1 => current
+            .u
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        2 => current
+            .v
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    let samples0 = inter_block_samples(
+        reference0,
+        plane,
+        current_plane.width,
+        current_plane.height,
+        first,
+        block_col,
+        block_row,
+        width,
+        height,
+        sub_x,
+        sub_y,
+        bit_depth,
+    )?;
+    let samples1 = inter_block_samples(
+        reference1,
+        plane,
+        current_plane.width,
+        current_plane.height,
+        second,
+        block_col,
+        block_row,
+        width,
+        height,
+        sub_x,
+        sub_y,
+        bit_depth,
+    )?;
+    for row in 0..height {
+        for col in 0..width {
+            let index = row * width + col;
+            let value = (u32::from(samples0[index]) + u32::from(samples1[index]) + 1) >> 1;
+            let dst = (block_row + row) * current_plane.stride + block_col + col;
+            current_plane.data[dst] = value as u16;
         }
     }
     Ok(())
 }
 
-/// Reconstruct an inter frame made entirely of single-reference blocks.
+#[allow(clippy::too_many_arguments)]
+fn predict_inter_or_compound_block(
+    reference0: &IntraFrame,
+    reference1: Option<&IntraFrame>,
+    current: &mut IntraFrame,
+    plane: usize,
+    block: InterBlock,
+    block_col: usize,
+    block_row: usize,
+    width: usize,
+    height: usize,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+) -> Result<(), InterFrameError> {
+    if let Some(reference1) = reference1 {
+        let second = InterBlock {
+            ref_frame: block.ref_frame1,
+            mv: block.mv1,
+            ..block
+        };
+        predict_compound_block(
+            reference0, reference1, current, plane, block, second, block_col, block_row, width,
+            height, sub_x, sub_y, bit_depth,
+        )
+    } else {
+        predict_inter_block(
+            reference0, current, plane, block, block_col, block_row, width, height, sub_x, sub_y,
+            bit_depth,
+        )
+    }
+}
+
+/// Reconstruct an inter frame with single and average-compound prediction.
 pub fn reconstruct_inter_frame(
     sequence: &SequenceHeader,
     header: &FrameHeader,
@@ -355,6 +528,16 @@ pub fn reconstruct_inter_frame(
             let reference = references
                 .get(ref_slot)
                 .ok_or(InterFrameError::MissingReference(inter.ref_frame))?;
+            let reference1 = if inter.ref_frame1 > INTRA_FRAME {
+                let slot = header.ref_frame_idx[(inter.ref_frame1 - 1) as usize] as usize;
+                Some(
+                    references
+                        .get(slot)
+                        .ok_or(InterFrameError::MissingReference(inter.ref_frame1))?,
+                )
+            } else {
+                None
+            };
             let plane_widths = [width, chroma_width, chroma_width];
             let plane_heights = [height, chroma_height, chroma_height];
             let planes = if sequence.color.mono_chrome { 1 } else { 3 };
@@ -386,8 +569,9 @@ pub fn reconstruct_inter_frame(
                 let block_height = (plane_size.height as usize)
                     .min(plane_heights[plane].saturating_sub(block_row));
                 if plane == 0 {
-                    predict_inter_block(
+                    predict_inter_or_compound_block(
                         reference,
+                        reference1,
                         &mut frame,
                         plane,
                         inter,
@@ -417,8 +601,9 @@ pub fn reconstruct_inter_frame(
                             })
                         });
                 if some_use_intra {
-                    predict_inter_block(
+                    predict_inter_or_compound_block(
                         reference,
+                        reference1,
                         &mut frame,
                         plane,
                         inter,
@@ -447,8 +632,19 @@ pub fn reconstruct_inter_frame(
                         let candidate_reference = references
                             .get(candidate_ref)
                             .ok_or(InterFrameError::MissingReference(candidate.ref_frame))?;
-                        predict_inter_block(
+                        let candidate_reference1 =
+                            if candidate.ref_frame1 > INTRA_FRAME {
+                                let cut = header.ref_frame_idx[(candidate.ref_frame1 - 1) as usize]
+                                    as usize;
+                                Some(references.get(cut).ok_or(
+                                    InterFrameError::MissingReference(candidate.ref_frame1),
+                                )?)
+                            } else {
+                                None
+                            };
+                        predict_inter_or_compound_block(
                             candidate_reference,
+                            candidate_reference1,
                             &mut frame,
                             plane,
                             candidate,
@@ -842,6 +1038,9 @@ mod tests {
                 ref_frame: 1,
                 mode: crate::reference::av1::inter::InterMode::Nearest,
                 mv: MotionVector::default(),
+                ref_frame1: crate::reference::av1::inter::NONE_FRAME,
+                mv1: MotionVector::default(),
+                compound_mode: None,
                 motion_mode: crate::reference::av1::inter::MotionMode::Simple,
                 interp_filter: [0, 0],
                 ref_mv_idx: 0,
@@ -856,6 +1055,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.y.data, frame.y.data);
+    }
+
+    #[test]
+    fn compound_average_rounds_the_two_predictions() {
+        let mut first = IntraFrame {
+            coded_width: 4,
+            coded_height: 4,
+            viewport_width: 4,
+            viewport_height: 4,
+            bit_depth: 8,
+            y: PlaneBuffer {
+                data: vec![10; 32],
+                width: 4,
+                height: 4,
+                stride: 8,
+            },
+            u: None,
+            v: None,
+        };
+        let second = IntraFrame {
+            y: PlaneBuffer {
+                data: vec![21; 32],
+                ..first.y.clone()
+            },
+            ..first.clone()
+        };
+        first.y.data.fill(0);
+        let block = |ref_frame| InterBlock {
+            ref_frame,
+            mode: InterMode::Nearest,
+            mv: MotionVector::default(),
+            ref_frame1: 2,
+            mv1: MotionVector::default(),
+            compound_mode: None,
+            motion_mode: crate::reference::av1::inter::MotionMode::Simple,
+            interp_filter: [0, 0],
+            ref_mv_idx: 0,
+        };
+        predict_compound_block(
+            &IntraFrame {
+                y: PlaneBuffer {
+                    data: vec![10; 32],
+                    ..first.y.clone()
+                },
+                ..first.clone()
+            },
+            &second,
+            &mut first,
+            0,
+            block(1),
+            block(2),
+            0,
+            0,
+            4,
+            4,
+            0,
+            0,
+            8,
+        )
+        .unwrap();
+        assert_eq!(first.y.data[0], 16);
     }
 
     fn visible_hash(plane: &PlaneBuffer) -> u64 {
@@ -1196,5 +1456,29 @@ mod tests {
             (0x793843d54eb6ac5f, 0xd52b385eb4c9d513, 0x338cc0e91d047c1e)
         );
         assert_eq!(inter_blocks.len(), 242);
+    }
+
+    #[test]
+    fn real_inter_frames_with_delta_q_match_libaom_after_context_fix() {
+        let data = include_bytes!("../../../tests/data/av1_inter_delta_q_320x240.ivf");
+        let (pictures, inter_blocks) = decode_two_picture_stream(data);
+        assert_eq!(pictures.len(), 3);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x4e58fc2c9de78af0, 0x7484f6164de4aacc, 0xc7f4a3e4acedc952),
+                (0xee7ab437b69011b8, 0xbea5591ae873e737, 0x2cb839cf8fccbd69),
+                (0x4a1bffa62af555fd, 0xc6e15cbd3a97dbea, 0x0c6771f50cfb1f1e),
+            ]
+        );
+
+        assert_eq!(inter_blocks.len(), 40);
     }
 }

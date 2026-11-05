@@ -48,8 +48,13 @@
 整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 89%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 85 个
-AV1 slice。第 85 slice 把 LR 参数网格接入 inter frame，并修正 `UseWienerCdf` /
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 86 个
+AV1 slice。第 86 slice 修正 coefficient CDF 必须按帧头 `base_q_idx` 选择，而不是按块级
+delta-q；补齐 4-high inter chroma skip context，并把 MV CDF 纳入 SavedCdf。新增三帧
+delta-q fixture，其 Y/U/V 均与 libaom **逐字节一致**。compound 的
+参考帧/MV 状态基础已接入，但 compound、masked 和 inter-intra 仍明确拒绝。第 85 slice
+把 LR 参数网格接入 inter frame，并修正
+`UseWienerCdf` /
 `UseSgrprojCdf` / `RestorationTypeCdf` 从 SavedCdf 的继承；restoration-enabled key+P
 fixture 的 P frame（242 个分区叶块）三平面与 libaom **逐字节一致**
 （MD5 `aabd1f611b39c59fda7d5c7c2877d7ec`）。第 84 slice 接入了
@@ -94,7 +99,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --all-targets                     # 1083 通过，27 个板级用例 ignore
+cargo test --all-targets                     # 1085 通过，27 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4

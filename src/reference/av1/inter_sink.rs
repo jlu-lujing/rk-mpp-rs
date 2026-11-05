@@ -19,9 +19,10 @@ use crate::reference::av1::delta::{read_delta_lf, read_delta_qindex, DeltaError}
 use crate::reference::av1::filter_intra::{filter_intra_direction, read_filter_intra};
 use crate::reference::av1::frame_header::FrameHeader;
 use crate::reference::av1::inter::{
-    assign_mv, find_mv_stack, global_motion_vector_from_params, read_inter_mode, read_is_inter,
-    read_motion_mode, read_ref_mv_index, read_single_ref_frame, InterBlock, InterError,
-    InterNeighbors, MotionGrid, MotionVector, MvCdfs, INTRA_FRAME, NONE_FRAME,
+    assign_compound_mv, assign_mv, find_mv_stack, global_motion_vector_from_params,
+    read_compound_mode, read_compound_ref_mv_index, read_inter_mode, read_is_inter,
+    read_motion_mode, read_ref_frames, read_ref_mv_index, CompoundMode, InterBlock, InterError,
+    InterNeighbors, MotionGrid, MotionVector, INTRA_FRAME, NONE_FRAME,
 };
 use crate::reference::av1::intra::{
     cfl_allowed, read_angle_delta_with_cdf, read_uv_mode_with_cdf, read_y_mode_with_cdf, IntraMode,
@@ -197,6 +198,7 @@ pub struct InterTileBlockSink {
     is_inter: Vec<bool>,
     refs: Vec<[i8; 2]>,
     modes: Vec<Option<crate::reference::av1::inter::InterMode>>,
+    compound_modes: Vec<Option<CompoundMode>>,
     mvs: Vec<[MotionVector; 2]>,
     y_modes: Vec<Option<IntraMode>>,
     uv_modes: Vec<Option<UvMode>>,
@@ -205,7 +207,6 @@ pub struct InterTileBlockSink {
     palettes: PaletteState,
     tx_grid: Vec<Option<TxSize>>,
     tx_type_grid: Vec<Option<TxType>>,
-    mv_cdfs: MvCdfs,
     current_qindex: u8,
     delta_lf: [i32; 4],
     read_deltas_for_sb: bool,
@@ -231,6 +232,7 @@ impl InterTileBlockSink {
             is_inter: vec![false; mi_cols * mi_rows],
             refs: vec![[INTRA_FRAME, NONE_FRAME]; mi_cols * mi_rows],
             modes: vec![None; mi_cols * mi_rows],
+            compound_modes: vec![None; mi_cols * mi_rows],
             mvs: vec![[MotionVector::default(); 2]; mi_cols * mi_rows],
             y_modes: vec![None; mi_cols * mi_rows],
             uv_modes: vec![None; mi_cols * mi_rows],
@@ -239,7 +241,6 @@ impl InterTileBlockSink {
             palettes: PaletteState::new(mi_cols, mi_rows),
             tx_grid: vec![None; mi_cols * mi_rows],
             tx_type_grid: vec![None; mi_cols * mi_rows],
-            mv_cdfs: MvCdfs::default(),
             current_qindex,
             delta_lf: [0; 4],
             read_deltas_for_sb: false,
@@ -673,7 +674,7 @@ impl InterTileBlockSink {
                     decoder,
                     cdfs,
                     tx_block.tx,
-                    coeff_q_context(qindex),
+                    coeff_q_context(self.config.base_q_index),
                     txb_ctx,
                     self.config.disable_cdf_update,
                 )
@@ -733,7 +734,7 @@ impl InterTileBlockSink {
                         max_y4,
                         tx_block.tx,
                         tx_type,
-                        coeff_q_context(qindex),
+                        coeff_q_context(self.config.base_q_index),
                         self.config.disable_cdf_update,
                     )
                     .map_err(TileEntropyError::Cdf)?
@@ -823,7 +824,9 @@ impl InterTileBlockSink {
         cdfs: &mut CdfState,
         block: DecodedBlock,
         ref_frame: i8,
+        ref_frame1: i8,
         mode: crate::reference::av1::inter::InterMode,
+        compound_mode: Option<CompoundMode>,
         motion_mode: crate::reference::av1::inter::MotionMode,
         skip_mode: bool,
         neighbors: &InterNeighbors,
@@ -836,8 +839,17 @@ impl InterTileBlockSink {
         let large = block.size.width.min(block.size.height) >= 8;
         let needs_filter = !skip_mode
             && motion_mode == crate::reference::av1::inter::MotionMode::Simple
-            && (!(large && mode == crate::reference::av1::inter::InterMode::Global)
-                || self.config.gm_types[(ref_frame - 1) as usize] == 0);
+            && match compound_mode {
+                Some(CompoundMode::GlobalGlobal) if large => {
+                    self.config.gm_types[(ref_frame - 1) as usize] == 0
+                        || self.config.gm_types[(ref_frame1 - 1) as usize] == 0
+                }
+                Some(_) => true,
+                None => {
+                    !(large && mode == crate::reference::av1::inter::InterMode::Global)
+                        || self.config.gm_types[(ref_frame - 1) as usize] == 0
+                }
+            };
         let mut filters = [0u8; 2];
         let directions = if self.config.enable_dual_filter { 2 } else { 1 };
         for dir in 0..directions {
@@ -858,16 +870,17 @@ impl InterTileBlockSink {
                             as usize;
                     }
                 }
-                let context = dir * 8
-                    + if left == above {
-                        left
-                    } else if left == 3 {
-                        above
-                    } else if above == 3 {
-                        left
-                    } else {
-                        3
-                    };
+                let neighbor_context = if left == above {
+                    left
+                } else if left == 3 {
+                    above
+                } else if above == 3 {
+                    left
+                } else {
+                    3
+                };
+                let context =
+                    (dir * 2 + usize::from(compound_mode.is_some())) * 4 + neighbor_context;
                 filters[dir] = cdfs.read_symbol(
                     decoder,
                     &DEFAULT_INTERP_FILTER_CDF,
@@ -893,11 +906,14 @@ impl InterTileBlockSink {
         uv_mode: Option<UvMode>,
     ) {
         let refs = inter
-            .map(|inter| [inter.ref_frame, NONE_FRAME])
+            .map(|inter| [inter.ref_frame, inter.ref_frame1])
             .unwrap_or([INTRA_FRAME, NONE_FRAME]);
         let is_inter = inter.is_some();
         let mode = inter.map(|inter| inter.mode);
-        let mv = inter.map(|inter| inter.mv).unwrap_or_default();
+        let compound_mode = inter.and_then(|inter| inter.compound_mode);
+        let mvs = inter
+            .map(|inter| [inter.mv, inter.mv1])
+            .unwrap_or([MotionVector::default(); 2]);
         let interp_filter = inter.map(|inter| inter.interp_filter).unwrap_or([0, 0]);
         let bw4 = block.size.num_4x4_wide() as usize;
         let bh4 = block.size.num_4x4_high() as usize;
@@ -909,7 +925,8 @@ impl InterTileBlockSink {
                 self.is_inter[index] = is_inter;
                 self.refs[index] = refs;
                 self.modes[index] = mode;
-                self.mvs[index] = [mv, MotionVector::default()];
+                self.compound_modes[index] = compound_mode;
+                self.mvs[index] = mvs;
                 self.interp_filters[index] = interp_filter;
                 self.skip_grid[index] = skip;
                 self.skip_modes[index] = skip_mode;
@@ -1081,7 +1098,7 @@ impl TileBlockSink for InterTileBlockSink {
             return Ok(());
         }
 
-        let ref_frame = read_single_ref_frame(
+        let ref_frames = read_ref_frames(
             decoder,
             cdfs,
             neighbors,
@@ -1090,14 +1107,27 @@ impl TileBlockSink for InterTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(Self::conversion)?;
-        let global_mv = global_motion_vector_from_params(
+        let is_compound = ref_frames[1] > INTRA_FRAME;
+        let global_mv0 = global_motion_vector_from_params(
             &self.config.gm_types,
             &self.config.gm_params,
-            ref_frame,
+            ref_frames[0],
             self.config.allow_high_precision_mv,
             self.config.force_integer_mv,
         )
         .map_err(Self::conversion)?;
+        let global_mv1 = if is_compound {
+            global_motion_vector_from_params(
+                &self.config.gm_types,
+                &self.config.gm_params,
+                ref_frames[1],
+                self.config.allow_high_precision_mv,
+                self.config.force_integer_mv,
+            )
+            .map_err(Self::conversion)?
+        } else {
+            MotionVector::default()
+        };
         let grid = MotionGrid {
             mi_cols: self.config.mi_cols,
             mi_rows: self.config.mi_rows,
@@ -1106,6 +1136,7 @@ impl TileBlockSink for InterTileBlockSink {
             is_inter: &self.is_inter,
             refs: &self.refs,
             modes: &self.modes,
+            compound_modes: &self.compound_modes,
             mvs: &self.mvs,
         };
         let stack = find_mv_stack(
@@ -1113,46 +1144,90 @@ impl TileBlockSink for InterTileBlockSink {
             block.row,
             block.col,
             block.size,
-            ref_frame,
-            global_mv,
+            ref_frames,
+            [global_mv0, global_mv1],
             self.config.allow_high_precision_mv,
             self.config.force_integer_mv,
             self.config.use_ref_frame_mvs,
         )
         .map_err(Self::conversion)?;
-        let mode = read_inter_mode(decoder, cdfs, &stack, self.config.disable_cdf_update)
+        let (mode, compound_mode, ref_mv_idx, mv0, mv1, motion_mode) = if is_compound {
+            let compound_mode =
+                read_compound_mode(decoder, cdfs, &stack, self.config.disable_cdf_update)
+                    .map_err(Self::conversion)?;
+            let ref_mv_idx = read_compound_ref_mv_index(
+                decoder,
+                cdfs,
+                &stack,
+                compound_mode,
+                self.config.disable_cdf_update,
+            )
             .map_err(Self::conversion)?;
-        let ref_mv_idx =
-            read_ref_mv_index(decoder, cdfs, &stack, mode, self.config.disable_cdf_update)
+            let mvs = assign_compound_mv(
+                decoder,
+                &mut cdfs.mv,
+                &stack,
+                ref_mv_idx,
+                compound_mode,
+                [global_mv0, global_mv1],
+                self.config.allow_high_precision_mv,
+                self.config.force_integer_mv,
+                self.config.disable_cdf_update,
+            )
+            .map_err(Self::conversion)?;
+            (
+                compound_mode.ref0_mode(),
+                Some(compound_mode),
+                ref_mv_idx,
+                mvs[0],
+                mvs[1],
+                crate::reference::av1::inter::MotionMode::Simple,
+            )
+        } else {
+            let mode = read_inter_mode(decoder, cdfs, &stack, self.config.disable_cdf_update)
                 .map_err(Self::conversion)?;
-        let mv = assign_mv(
-            decoder,
-            &mut self.mv_cdfs,
-            &stack,
-            ref_mv_idx,
-            mode,
-            global_mv,
-            self.config.allow_high_precision_mv,
-            self.config.force_integer_mv,
-            self.config.disable_cdf_update,
-        )
-        .map_err(Self::conversion)?;
-        let motion_mode = read_motion_mode(
-            decoder,
-            cdfs,
-            block.size,
-            self.config.is_motion_mode_switchable,
-            skip_mode,
-            self.config.disable_cdf_update,
-        )
-        .map_err(Self::conversion)?;
+            let ref_mv_idx =
+                read_ref_mv_index(decoder, cdfs, &stack, mode, self.config.disable_cdf_update)
+                    .map_err(Self::conversion)?;
+            let mv = assign_mv(
+                decoder,
+                &mut cdfs.mv,
+                &stack,
+                ref_mv_idx,
+                mode,
+                global_mv0,
+                self.config.allow_high_precision_mv,
+                self.config.force_integer_mv,
+                self.config.disable_cdf_update,
+            )
+            .map_err(Self::conversion)?;
+            let motion_mode = read_motion_mode(
+                decoder,
+                cdfs,
+                block.size,
+                self.config.is_motion_mode_switchable,
+                skip_mode,
+                self.config.disable_cdf_update,
+            )
+            .map_err(Self::conversion)?;
+            (
+                mode,
+                None,
+                ref_mv_idx,
+                mv,
+                MotionVector::default(),
+                motion_mode,
+            )
+        };
         let interp_filter = self
             .read_filter(
                 decoder,
                 cdfs,
                 block,
-                ref_frame,
+                ref_frames[0],
+                ref_frames[1],
                 mode,
+                compound_mode,
                 motion_mode,
                 skip_mode,
                 &neighbors,
@@ -1220,12 +1295,14 @@ impl TileBlockSink for InterTileBlockSink {
                 } else {
                     (self.config.sub_x, self.config.sub_y)
                 };
+                let residual_size = residual_size(block.size, sub_x, sub_y)
+                    .ok_or(TileEntropyError::Unsupported("invalid residual size"))?;
                 self.tile_context.clear_block(
                     plane,
                     block.col >> sub_x,
                     block.row >> sub_y,
-                    bw4 >> sub_x,
-                    bh4 >> sub_y,
+                    residual_size.num_4x4_wide() as usize,
+                    residual_size.num_4x4_high() as usize,
                 );
             }
         }
@@ -1277,7 +1354,7 @@ impl TileBlockSink for InterTileBlockSink {
                     decoder,
                     cdfs,
                     tx_block.tx,
-                    coeff_q_context(self.current_qindex),
+                    coeff_q_context(self.config.base_q_index),
                     txb_ctx,
                     self.config.disable_cdf_update,
                 )
@@ -1356,7 +1433,7 @@ impl TileBlockSink for InterTileBlockSink {
                         max_y4,
                         tx_block.tx,
                         tx_type,
-                        coeff_q_context(self.current_qindex),
+                        coeff_q_context(self.config.base_q_index),
                         self.config.disable_cdf_update,
                     )
                     .map_err(TileEntropyError::Cdf)?
@@ -1375,9 +1452,12 @@ impl TileBlockSink for InterTileBlockSink {
         }
 
         let inter = InterBlock {
-            ref_frame,
+            ref_frame: ref_frames[0],
             mode,
-            mv,
+            mv: mv0,
+            ref_frame1: ref_frames[1],
+            mv1,
+            compound_mode,
             motion_mode,
             interp_filter,
             ref_mv_idx,

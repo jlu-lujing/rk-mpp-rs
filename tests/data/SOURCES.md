@@ -28,6 +28,12 @@ cargo test --test fixture_manifest
   `--good --cpu-used=0 --passes=1 --i420` family of settings as the keyframe
   fixture; palette and intra-BC are disabled. The P frame has 242 partition
   leaves and is the SavedCdf inheritance/subexp regression for inter LR.
+- `av1_inter_delta_q_320x240.ivf` is the first three packets of a static
+  background plus moving `testsrc2` inset, encoded by libaom at CQ 50 with
+  delta-q enabled. It covers coefficient-CDF selection by frame `base_q_idx`
+  rather than the block's delta-adjusted qindex and exercises multiple
+  inter-frame CDF contexts. The three visible frames are byte-exact against
+  libaom.
 - `h264_i32_*` and `h264_i64_*` are local x264 CAVLC streams with FFmpeg
   yuv420p golden output. Their exact generating parameters are recorded in
   `ROADMAP.md` next to the pixel gates.

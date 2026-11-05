@@ -74,6 +74,7 @@
 | AV1 单参考预测语法 / MV stack | 完成首批：`inter.rs` 实现 `read_is_inter`、单参考 `read_ref_frames`、`new_mv/zero_mv/ref_mv`、`drl_mode`、8-entry 空间 MV stack、`lower_mv_precision`、MV joint/class/sign/frac/hp 和 `assign_mv`；真实 key+P fixture 的 20 个 inter block 参考帧/模式/MV 与 libaom trace 一致。compound、temporal MV、warp/OBMC 显式拒绝 |
 | AV1 参考帧 / 跨帧 CDF / 整数运动补偿 | 完成首批：八槽参考帧同时保存最终像素与 Backward CDF；保存时按规范清零 CDF counter。真实两帧 320×240 流从 keyframe 恢复到 P frame，单参考整数平移逐平面复制后，P frame Y/U/V 与 libaom 逐字节一致（FNV `dd5a7af1044fd871` / `930bef4f94807f25` / `930bef4f94807f25`）|
 | AV1 fractional inter / transform tree / 后处理 | 完成：16-phase 8-tap normative fractional MV 双阶段插值，≤4 样本维度使用 four-tap regular filter；支持 inter 残差、all-zero、inter transform type、`TX_MODE_SELECT` 的递归 transform tree、switchable interpolation filter、inter frame 内 intra block 的完整 mode/palette/filter-intra/CFL/residual、coefficient CDF q-context 跨帧 collapse。修复 skip 块 above/left level/DC-sign context 清零、NEARMV DRL 终值、NEWMV `RefMvIdx` 选择、sub-8x8 chroma 四象限 MV 预测和 FLIPADST 的空间翻转语义。真实 high-QP 320×240 key+P 流 327 个 P block 与 libaom trace 一致；LF+CDEF 与 restoration-enabled key+P fixture 的 P frame（242 个分区叶块）三平面均逐字节一致。`UseWienerCdf` / `UseSgrprojCdf` / `RestorationTypeCdf` 现在随 SavedCdf 跨帧继承，inter LR 已完成 |
+| AV1 inter 跨帧 CDF 基础 | 部分完成：coefficient CDF 按帧头 `base_q_idx` 固定选择，块级 delta-q 只改变反量化；4-high luma block 的 chroma coefficient context 使用子采样后的 residual size 清理；MV joint/class/sign/fraction CDF 并入 `CdfState`，随 SavedCdf 跨帧保存和恢复。新增三帧 delta-q fixture，三帧 Y/U/V 与 libaom 逐字节一致；compound 仍显式拒绝 |
 | AV1 块几何 / partition / intra 模式 | 完成：22 种 BLOCK_SIZES、上下文、`y_mode`/`intra_frame_y_mode`/`uv_mode`+CFL、`tx_depth`、块级 `read_tx_size`（lossless / largest / select 与 split chain）、32 张扫描表；128×128 分区按规范的 8 符号 CDF 读取，窄 16×4/4×16 仍按 `MiSize >= BLOCK_8X8` 消费 palette/angle-delta |
 | AV1 residual transform 布局 | 完成：`residual.rs` — 规范 `Subsampled_Size[22][2][2]`、chroma `get_tx_size`、>64 block 的 64x64 chunk、plane/raster transform block 坐标；4 个测试 |
 | AV1 系数语法 | 完成：EOB 类别与 extra bits、`coeff_base`/`eob`/`br`、signs/Golomb、`Quant[]`、tile 级 above/left 上下文 |
@@ -133,7 +134,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 85 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 86 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
@@ -151,5 +152,5 @@ CFL alpha、正确的 intra skip 语义，以及真实 320×240 keyframe 的整 
 fractional inter（含 residual 和 frame 内混合 intra/inter）均已用真实 key+P 流闭合到
 P frame 像素级，SavedCdf 与八槽参考帧管理开始工作。inter 去块、CDEF 与 LR 已逐字节闭合；
 compound/warp/OBMC 仍未完成。
-`cargo test --all-targets`：**1083 通过 / 0 失败 / 27 板级
+`cargo test --all-targets`：**1085 通过 / 0 失败 / 27 板级
 ignore**，`cargo fmt --check` 干净。
