@@ -262,12 +262,36 @@ pub fn decode_tile_partitions<S: TileBlockSink>(
     verify_exit: bool,
     sink: S,
 ) -> Result<TileDecodeResult<S>, TileEntropyError> {
+    decode_tile_partitions_with_cdfs(
+        payload,
+        frame,
+        tile,
+        sb_size,
+        disable_cdf_update,
+        verify_exit,
+        CdfState::new(),
+        sink,
+    )
+}
+
+/// Decode a tile starting from a saved frame CDF state.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_tile_partitions_with_cdfs<S: TileBlockSink>(
+    payload: &[u8],
+    frame: &FrameHeader,
+    tile: usize,
+    sb_size: u32,
+    disable_cdf_update: bool,
+    verify_exit: bool,
+    cdfs: CdfState,
+    sink: S,
+) -> Result<TileDecodeResult<S>, TileEntropyError> {
     let bounds = tile_bounds(frame, tile)?;
     let local_cols = bounds.mi_cols();
     let local_rows = bounds.mi_rows();
     let mut state = StatefulTile {
         decoder: SymbolDecoder::init(payload)?,
-        cdfs: CdfState::new(),
+        cdfs,
         sizes: vec![None; local_cols * local_rows],
         bounds,
         local_cols,

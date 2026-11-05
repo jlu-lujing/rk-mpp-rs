@@ -120,6 +120,19 @@ impl CdfState {
         self.tables[index].copy_from_slice(table.values);
         Ok(())
     }
+
+    /// Reset the adaptation counters stored after each row's terminal
+    /// probability. AV1 does this when it saves a tile context as the
+    /// reference frame's backward CDF context.
+    pub fn reset_symbol_counters(&mut self) {
+        for table in &mut self.tables {
+            for index in 1..table.len() {
+                if table[index - 1] == (1u16 << 15) {
+                    table[index] = 0;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -186,5 +199,17 @@ mod tests {
             state.row_mut(&DEFAULT_SKIP_CDF, usize::MAX, 3),
             Err(CdfStateError::BadRow { .. })
         ));
+    }
+
+    #[test]
+    fn reset_symbol_counters_zeroes_terminal_row_counters() {
+        let mut state = CdfState::new();
+        let mut decoder = SymbolDecoder::init(&[0xffu8; 16]).unwrap();
+        state
+            .read_symbol(&mut decoder, &DEFAULT_SKIP_CDF, 3, 3, false)
+            .unwrap();
+        assert_eq!(state.row_mut(&DEFAULT_SKIP_CDF, 3, 3).unwrap()[2], 1);
+        state.reset_symbol_counters();
+        assert_eq!(state.row_mut(&DEFAULT_SKIP_CDF, 3, 3).unwrap()[2], 0);
     }
 }

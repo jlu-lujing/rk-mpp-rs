@@ -45,13 +45,16 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 的 **PD/DECT 逆 telecine** 两遍路径（反向下拉 + 场序状态机）已接入：3:2 telecine 与逐行素材 **2/2 与 C probe 逐字节一致**，逐帧 `pd_flag/pd_types/dil_order/frm_mode/ratio` 也逐行相同，322x242/722x482/1366x768 等非 16 对齐尺寸同样逐字节；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成 82%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 86%）。
+整体约完成 83%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 87%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 81 个
-AV1 slice（最新为 §7.16 normative superres：真实 320×240 keyframe 从 213×240 coded frame
-按 denominator 12 上采样后进入 LR，重建前、去块后、CDEF 后、LR 后四个阶段的 Y/U/V 三平面
-都已与 libaom **逐像素一致**；此前为 palette plane 坐标、左右 upsampled directional phase、
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 82 个
+AV1 slice（最新为单参考帧、整数像素 inter：真实两帧 fixture 的第一帧 keyframe 和第二帧 P
+帧按顺序解码，20 个 inter block 的参考帧/模式/MV 与 libaom trace 一致，P 帧 Y/U/V 与
+libaom **逐字节一致**；该阶段同时接通 SavedCdf 跨帧恢复、CDF counter reset、参考帧像素槽和
+空间 MV stack。此前为 §7.16 normative superres：213×240 coded frame 按 denominator 12
+上采样到 320×240 后进入 LR，重建前、去块后、CDEF 后、LR 后四个阶段的 Y/U/V 三平面
+都已与 libaom **逐像素一致**；更早为 palette plane 坐标、左右 upsampled directional phase、
 CDEF、方向预测、反量化和按 plane 去块网格、4×4 `BlockDecoded` 可用性网格、
 inverse-identity 尺寸缩放、帧级 loop restoration、CDEF、去块、Y/U/V 帧级重建、
 palette/filter-intra 单 plane 像素预测、
@@ -65,7 +68,7 @@ partition/mode/skip/tx_depth、
 `ReferenceStream`、块级 transform 选择、
 统一帧内预测入口、帧头参考状态、tile-group 拆包、
 §5.9 完整帧头、§8.1 位流描述符、§5.2 OBU/IVF 解复用与 §5.5 序列头），
-逐项证据见 `docs/CAPABILITY.md` 的 M11 表与 `ROADMAP.md` 尾部；上文的 82% 是按里程碑
+逐项证据见 `docs/CAPABILITY.md` 的 M11 表与 `ROADMAP.md` 尾部；上文的 83% 是按里程碑
 工作量的加权估算，未按这批 slice 重算。
 
 ## 怎么验证的

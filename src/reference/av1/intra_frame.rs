@@ -27,7 +27,7 @@ pub struct PlaneBuffer {
 }
 
 impl PlaneBuffer {
-    fn new(width: usize, height: usize) -> Self {
+    pub(crate) fn new(width: usize, height: usize) -> Self {
         let stride = width.div_ceil(64) * 64;
         let allocated_height = height.div_ceil(64) * 64;
         Self {
