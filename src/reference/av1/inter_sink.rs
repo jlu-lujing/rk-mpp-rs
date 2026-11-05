@@ -1,10 +1,11 @@
-//! Inter-frame tile sink: single-reference, integer-translation blocks.
+//! Inter-frame tile sink for single references and average compound blocks.
 //!
-//! The first inter slice keeps the syntax boundary explicit: it consumes the
-//! complete mode/reference/MV syntax and records the motion state that later
-//! blocks use for MV prediction. Non-skip blocks, intra blocks inside an inter
-//! frame, compound prediction and fractional MVs are rejected until their
-//! reconstruction stages are implemented.
+//! The sink consumes the complete mode/reference/MV syntax and records the
+//! motion state that later blocks use for MV prediction. Average compound,
+//! fractional motion, residuals, mixed intra/inter blocks and inter
+//! post-filters are wired through the reconstruction path; masked or
+//! distance-weighted compound, warp/OBMC, temporal MVs and inter segmentation
+//! remain explicit errors.
 
 use crate::reference::av1::cdef::CdefIndexGrid;
 use crate::reference::av1::cdf_defaults::{
@@ -996,7 +997,6 @@ impl TileBlockSink for InterTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(TileEntropyError::Cdf)?;
-
         self.cdef
             .read(
                 decoder,

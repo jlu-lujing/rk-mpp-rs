@@ -1,9 +1,9 @@
-//! Pixel reconstruction for the first single-reference inter slice.
+//! Pixel reconstruction for AV1 inter frames.
 //!
-//! The tile sink has already decoded the reference, mode and integer MV. This
-//! module applies the normative motion-vector scaling and sample copy to the
-//! reference frame and maintains the eight AV1 reference-frame slots after
-//! post-processing.
+//! The tile sink has already decoded the references, modes and MVs. This module
+//! applies normative motion-vector scaling, filtered prediction, residual
+//! reconstruction and average compound blending, then maintains the eight AV1
+//! reference-frame slots after post-processing.
 
 use crate::reference::av1::cdf_state::CdfState;
 use crate::reference::av1::coeff::coeff_q_context;
@@ -28,6 +28,10 @@ use crate::reference::av1::seq_header::SequenceHeader;
 const REF_SCALE_SHIFT: u32 = 14;
 const SCALE_SUBPEL_BITS: u32 = 10;
 const SUBPEL_BITS: u32 = 4;
+const FILTER_BITS: u32 = 7;
+const ROUND0_BITS: u32 = 3;
+const COMPOUND_ROUND1_BITS: u32 = 7;
+const SINGLE_ROUND1_BITS: u32 = 2 * FILTER_BITS - ROUND0_BITS;
 
 /// `Subpel_Filters[EIGHTTAP_REGULAR]`, 16 phases x 8 taps.
 const REGULAR_8TAP: [[i16; 8]; 16] = [
@@ -202,7 +206,7 @@ fn source_start(
     }
 }
 
-fn inter_block_samples(
+fn inter_block_res(
     reference: &IntraFrame,
     plane: usize,
     current_width: usize,
@@ -215,7 +219,8 @@ fn inter_block_samples(
     sub_x: u32,
     sub_y: u32,
     bit_depth: u32,
-) -> Result<Vec<u16>, InterFrameError> {
+    round1: u32,
+) -> Result<Vec<i64>, InterFrameError> {
     let reference_plane = match plane {
         0 => &reference.y,
         1 => reference
@@ -266,30 +271,71 @@ fn inter_block_samples(
                 sum += i64::from(*coefficient)
                     * i64::from(reference_plane.data[src_y * reference_plane.stride + src_x]);
             }
-            intermediate[row * width + col] = round2(sum, 3);
+            let horizontal_bias = 1i64 << (bit_depth + FILTER_BITS - 1);
+            intermediate[row * width + col] = round2(sum + horizontal_bias, ROUND0_BITS);
         }
     }
-    let max = (1i32 << bit_depth) - 1;
     let vertical_filter = if height <= 4 {
         &REGULAR_4TAP
     } else {
         &REGULAR_8TAP
     };
-    let mut out = vec![0u16; width * height];
+    let mut out = vec![0i64; width * height];
     for row in 0..height {
         let p = i64::from(scale.start_y & 1023) + i64::from(scale.step_y) * row as i64;
         let filter = vertical_filter[((p >> 6) & 15) as usize];
         for col in 0..width {
-            let mut sum = 0i64;
+            let offset_bits = bit_depth + 2 * FILTER_BITS - ROUND0_BITS;
+            let mut sum = 1i64 << offset_bits;
             for (tap, coefficient) in filter.iter().enumerate() {
                 sum += i64::from(*coefficient)
                     * intermediate[((p >> 10) as usize + tap) * width + col];
             }
-            let value = round2(sum, 11).clamp(0, i64::from(max)) as u16;
-            out[row * width + col] = value;
+            out[row * width + col] = round2(sum, round1);
         }
     }
     Ok(out)
+}
+
+fn convolution_round_offset(bit_depth: u32, round1: u32) -> i64 {
+    let offset_bits = bit_depth + 2 * FILTER_BITS - ROUND0_BITS;
+    (1i64 << (offset_bits - round1)) + (1i64 << (offset_bits - round1 - 1))
+}
+
+fn inter_block_samples(
+    reference: &IntraFrame,
+    plane: usize,
+    current_width: usize,
+    current_height: usize,
+    block: InterBlock,
+    block_col: usize,
+    block_row: usize,
+    width: usize,
+    height: usize,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+) -> Result<Vec<u16>, InterFrameError> {
+    let max = (1i64 << bit_depth) - 1;
+    let round_offset = convolution_round_offset(bit_depth, SINGLE_ROUND1_BITS);
+    Ok(inter_block_res(
+        reference,
+        plane,
+        current_width,
+        current_height,
+        block,
+        block_col,
+        block_row,
+        width,
+        height,
+        sub_x,
+        sub_y,
+        bit_depth,
+        SINGLE_ROUND1_BITS,
+    )?
+    .into_iter()
+    .map(|res| (res - round_offset).clamp(0, max) as u16)
+    .collect())
 }
 
 fn predict_inter_block(
@@ -402,7 +448,7 @@ fn predict_compound_block(
             .ok_or(InterFrameError::MissingPlane(plane))?,
         _ => return Err(InterFrameError::InvalidState("plane index")),
     };
-    let samples0 = inter_block_samples(
+    let res0 = inter_block_res(
         reference0,
         plane,
         current_plane.width,
@@ -415,8 +461,9 @@ fn predict_compound_block(
         sub_x,
         sub_y,
         bit_depth,
+        COMPOUND_ROUND1_BITS,
     )?;
-    let samples1 = inter_block_samples(
+    let res1 = inter_block_res(
         reference1,
         plane,
         current_plane.width,
@@ -429,13 +476,18 @@ fn predict_compound_block(
         sub_x,
         sub_y,
         bit_depth,
+        COMPOUND_ROUND1_BITS,
     )?;
+    let round_offset = convolution_round_offset(bit_depth, COMPOUND_ROUND1_BITS);
+    let round_bits = 2 * FILTER_BITS - ROUND0_BITS - COMPOUND_ROUND1_BITS;
     for row in 0..height {
         for col in 0..width {
             let index = row * width + col;
-            let value = (u32::from(samples0[index]) + u32::from(samples1[index]) + 1) >> 1;
+            let max = (1i64 << bit_depth) - 1;
+            let average = (res0[index] + res1[index]) >> 1;
+            let value = round2(average - round_offset, round_bits).clamp(0, max) as u16;
             let dst = (block_row + row) * current_plane.stride + block_col + col;
-            current_plane.data[dst] = value as u16;
+            current_plane.data[dst] = value;
         }
     }
     Ok(())
@@ -1480,5 +1532,43 @@ mod tests {
         );
 
         assert_eq!(inter_blocks.len(), 40);
+    }
+
+    #[test]
+    fn real_average_compound_inter_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_compound_320x240.ivf");
+        let (pictures, inter_blocks) = decode_two_picture_stream(data);
+
+        assert_eq!(pictures.len(), 4);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x4e58fc2c9de78af0, 0x7484f6164de4aacc, 0xc7f4a3e4acedc952),
+                (0xee7ab437b69011b8, 0xbea5591ae873e737, 0x2cb839cf8fccbd69),
+                (0x4a1bffa62af555fd, 0xc6e15cbd3a97dbea, 0x0c6771f50cfb1f1e),
+                (0x39b67a234a3172ad, 0x4191e824f1fb0a98, 0xde088d10e6016818),
+            ]
+        );
+
+        assert_eq!(inter_blocks.len(), 38);
+        let block = inter_blocks
+            .iter()
+            .find(|block| block.block.row == 32 && block.block.col == 16)
+            .unwrap();
+        let inter = block.inter.unwrap();
+        assert_eq!(
+            inter.compound_mode,
+            Some(crate::reference::av1::inter::CompoundMode::NewNew)
+        );
+        assert_eq!((inter.ref_frame, inter.ref_frame1), (1, 4));
+        assert_eq!((inter.mv.row, inter.mv.col), (0, -18));
+        assert_eq!((inter.mv1.row, inter.mv1.col), (4, -12));
     }
 }

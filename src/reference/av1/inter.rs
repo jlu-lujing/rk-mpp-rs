@@ -1,16 +1,17 @@
-//! AV1 inter-prediction syntax and single-reference motion-vector prediction.
+//! AV1 inter-prediction syntax and spatial motion-vector prediction.
 //!
-//! This module implements the specification's single-reference path through
-//! `inter_block_mode_info()`: reference-frame signalling, the inter-mode
-//! symbols, the spatial motion-vector stack, and MV-difference decoding.  The
-//! tile sink owns the per-frame grids required by the spatial stack.
+//! This module implements `inter_block_mode_info()` for single and average
+//! compound references: reference-frame signalling, the inter-mode symbols,
+//! the spatial motion-vector stack, and MV-difference decoding. The tile sink
+//! owns the per-frame grids required by the spatial stack.
 //!
-//! Compound prediction, temporal motion-field candidates and warped motion are
-//! explicit errors rather than silently approximated.
+//! Masked/distance-weighted compound, temporal motion-field candidates and
+//! warped motion are explicit errors rather than silently approximated.
 
 use crate::reference::av1::cdf_defaults::{
-    CdfTable, DEFAULT_COMP_MODE_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_IS_INTER_CDF,
-    DEFAULT_MOTION_MODE_CDF, DEFAULT_NEW_MV_CDF, DEFAULT_REF_MV_CDF, DEFAULT_SINGLE_REF_CDF,
+    CdfTable, DEFAULT_COMP_BWD_REF_CDF, DEFAULT_COMP_MODE_CDF, DEFAULT_COMP_REF_CDF,
+    DEFAULT_COMP_REF_TYPE_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_MOTION_MODE_CDF,
+    DEFAULT_NEW_MV_CDF, DEFAULT_REF_MV_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_UNI_COMP_REF_CDF,
     DEFAULT_ZERO_MV_CDF,
 };
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError, MvCdfs};
@@ -203,6 +204,68 @@ fn check_backward(frame: i8) -> bool {
     (BWDREF_FRAME..=ALTREF_FRAME).contains(&frame)
 }
 
+fn comparison_context(left: usize, right: usize) -> usize {
+    match left.cmp(&right) {
+        std::cmp::Ordering::Less => 0,
+        std::cmp::Ordering::Equal => 1,
+        std::cmp::Ordering::Greater => 2,
+    }
+}
+
+fn is_compound_pair(refs: [i8; 2]) -> bool {
+    refs[0] > INTRA_FRAME && refs[1] > INTRA_FRAME
+}
+
+fn is_uni_compound_pair(refs: [i8; 2]) -> bool {
+    is_compound_pair(refs) && check_backward(refs[0]) == check_backward(refs[1])
+}
+
+fn comp_reference_type_context(neighbors: InterNeighbors) -> usize {
+    match (neighbors.above, neighbors.left) {
+        (Some(above), Some(left)) => {
+            let above_intra = above[0] <= INTRA_FRAME;
+            let left_intra = left[0] <= INTRA_FRAME;
+            if above_intra && left_intra {
+                2
+            } else if above_intra || left_intra {
+                let inter = if above_intra { left } else { above };
+                if is_compound_pair(inter) {
+                    1 + 2 * usize::from(is_uni_compound_pair(inter))
+                } else {
+                    2
+                }
+            } else {
+                let above_single = !is_compound_pair(above);
+                let left_single = !is_compound_pair(left);
+                if above_single && left_single {
+                    1 + 2 * usize::from(check_backward(above[0]) == check_backward(left[0]))
+                } else if above_single || left_single {
+                    let compound = if above_single { left } else { above };
+                    if is_uni_compound_pair(compound) {
+                        3 + usize::from(check_backward(above[0]) == check_backward(left[0]))
+                    } else {
+                        1
+                    }
+                } else if !is_uni_compound_pair(above) && !is_uni_compound_pair(left) {
+                    0
+                } else if !is_uni_compound_pair(above) || !is_uni_compound_pair(left) {
+                    2
+                } else {
+                    3 + usize::from((above[0] == BWDREF_FRAME) == (left[0] == BWDREF_FRAME))
+                }
+            }
+        }
+        (Some(edge), None) | (None, Some(edge)) => {
+            if edge[0] <= INTRA_FRAME || !is_compound_pair(edge) {
+                2
+            } else {
+                4 * usize::from(is_uni_compound_pair(edge))
+            }
+        }
+        (None, None) => 2,
+    }
+}
+
 fn reference_mode_context(neighbors: InterNeighbors) -> usize {
     let above = neighbors.above.map(|refs| {
         let intra = refs[0] <= INTRA_FRAME;
@@ -287,6 +350,139 @@ pub fn is_inter_context(
     }
 }
 
+fn read_compound_ref_frames(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    neighbors: InterNeighbors,
+    disable_cdf_update: bool,
+) -> Result<[i8; 2], InterError> {
+    let comp_type_ctx = comp_reference_type_context(neighbors);
+    let comp_type = cdfs.read_symbol(
+        decoder,
+        &DEFAULT_COMP_REF_TYPE_CDF,
+        comp_type_ctx * 3,
+        3,
+        disable_cdf_update,
+    )?;
+    if comp_type == 0 {
+        let fwd = count_set(
+            neighbors,
+            &[LAST_FRAME, LAST2_FRAME, LAST3_FRAME, GOLDEN_FRAME],
+        );
+        let bwd = count_set(neighbors, &[BWDREF_FRAME, ALTREF2_FRAME, ALTREF_FRAME]);
+        let p = binary(
+            decoder,
+            cdfs,
+            &DEFAULT_UNI_COMP_REF_CDF,
+            comparison_context(fwd, bwd) * 3,
+            disable_cdf_update,
+        )?;
+        if p != 0 {
+            return Ok([BWDREF_FRAME, ALTREF_FRAME]);
+        }
+        let last2 = count_refs(neighbors, LAST2_FRAME);
+        let last3 = count_refs(neighbors, LAST3_FRAME);
+        let golden = count_refs(neighbors, GOLDEN_FRAME);
+        let p1 = binary(
+            decoder,
+            cdfs,
+            &DEFAULT_UNI_COMP_REF_CDF,
+            comparison_context(last2, last3 + golden) * 3 + 1,
+            disable_cdf_update,
+        )?;
+        if p1 == 0 {
+            return Ok([LAST_FRAME, LAST2_FRAME]);
+        }
+        let p2 = binary(
+            decoder,
+            cdfs,
+            &DEFAULT_UNI_COMP_REF_CDF,
+            comparison_context(last3, golden) * 3 + 2,
+            disable_cdf_update,
+        )?;
+        return Ok(if p2 != 0 {
+            [LAST_FRAME, GOLDEN_FRAME]
+        } else {
+            [LAST_FRAME, LAST3_FRAME]
+        });
+    }
+
+    let last12 = count_refs(neighbors, LAST_FRAME) + count_refs(neighbors, LAST2_FRAME);
+    let last3gold = count_refs(neighbors, LAST3_FRAME) + count_refs(neighbors, GOLDEN_FRAME);
+    let p = binary(
+        decoder,
+        cdfs,
+        &DEFAULT_COMP_REF_CDF,
+        comparison_context(last12, last3gold) * 3,
+        disable_cdf_update,
+    )?;
+    let ref0 = if p == 0 {
+        let p1 = binary(
+            decoder,
+            cdfs,
+            &DEFAULT_COMP_REF_CDF,
+            comparison_context(
+                count_refs(neighbors, LAST_FRAME),
+                count_refs(neighbors, LAST2_FRAME),
+            ) * 3
+                + 1,
+            disable_cdf_update,
+        )?;
+        if p1 != 0 {
+            LAST2_FRAME
+        } else {
+            LAST_FRAME
+        }
+    } else {
+        let p2 = binary(
+            decoder,
+            cdfs,
+            &DEFAULT_COMP_REF_CDF,
+            comparison_context(
+                count_refs(neighbors, LAST3_FRAME),
+                count_refs(neighbors, GOLDEN_FRAME),
+            ) * 3
+                + 2,
+            disable_cdf_update,
+        )?;
+        if p2 != 0 {
+            GOLDEN_FRAME
+        } else {
+            LAST3_FRAME
+        }
+    };
+    let brfarf2 = count_refs(neighbors, BWDREF_FRAME) + count_refs(neighbors, ALTREF2_FRAME);
+    let arf = count_refs(neighbors, ALTREF_FRAME);
+    let pb = binary(
+        decoder,
+        cdfs,
+        &DEFAULT_COMP_BWD_REF_CDF,
+        comparison_context(brfarf2, arf) * 2,
+        disable_cdf_update,
+    )?;
+    let ref1 = if pb == 0 {
+        let p1 = binary(
+            decoder,
+            cdfs,
+            &DEFAULT_COMP_BWD_REF_CDF,
+            comparison_context(
+                count_refs(neighbors, BWDREF_FRAME),
+                count_refs(neighbors, ALTREF2_FRAME),
+            ) * 2
+                + 1,
+            disable_cdf_update,
+        )?;
+        if p1 != 0 {
+            ALTREF2_FRAME
+        } else {
+            BWDREF_FRAME
+        }
+    } else {
+        ALTREF_FRAME
+    };
+    Ok([ref0, ref1])
+}
+
 /// `read_ref_frames()` for single and compound references.
 pub fn read_ref_frames(
     decoder: &mut SymbolDecoder<'_>,
@@ -306,7 +502,7 @@ pub fn read_ref_frames(
             disable_cdf_update,
         )?;
         if compound != 0 {
-            return Err(InterError::Unsupported("compound reference"));
+            return read_compound_ref_frames(decoder, cdfs, neighbors, disable_cdf_update);
         }
     }
 
@@ -383,7 +579,7 @@ pub fn read_ref_frames(
     Ok([if p4 != 0 { LAST2_FRAME } else { LAST_FRAME }, NONE_FRAME])
 }
 
-/// Compatibility wrapper that rejects a decoded compound pair.
+/// Compatibility wrapper for callers that only accept a single reference.
 pub fn read_single_ref_frame(
     decoder: &mut SymbolDecoder<'_>,
     cdfs: &mut CdfState,
@@ -1053,14 +1249,19 @@ pub fn read_compound_mode(
     let symbol = cdfs.read_symbol(
         decoder,
         &crate::reference::av1::cdf_defaults::DEFAULT_COMPOUND_MODE_CDF,
-        usize::from(stack.compound_mode_context()) * 8,
-        8,
+        usize::from(stack.compound_mode_context()) * 9,
+        9,
         disable_cdf_update,
     )?;
     Ok(match symbol {
         0 => CompoundMode::NearestNearest,
         1 => CompoundMode::NearNear,
-        2..=7 => return Err(InterError::Unsupported("compound NEW/GLOBAL mode")),
+        2 => CompoundMode::NearestNew,
+        3 => CompoundMode::NewNearest,
+        4 => CompoundMode::NearNew,
+        5 => CompoundMode::NewNear,
+        6 => CompoundMode::GlobalGlobal,
+        7 => CompoundMode::NewNew,
         _ => return Err(InterError::InvalidSyntax("compound mode")),
     })
 }
@@ -1193,10 +1394,8 @@ pub fn read_mv(
             disable_cdf_update,
         )?;
     }
-    Ok(MotionVector::new(
-        reference.row + diff.row,
-        reference.col + diff.col,
-    ))
+    let result = MotionVector::new(reference.row + diff.row, reference.col + diff.col);
+    Ok(result)
 }
 
 /// Assign the MV for a single-reference mode after the mode syntax.

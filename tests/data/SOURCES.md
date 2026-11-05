@@ -34,6 +34,13 @@ cargo test --test fixture_manifest
   rather than the block's delta-adjusted qindex and exercises multiple
   inter-frame CDF contexts. The three visible frames are byte-exact against
   libaom.
+- `av1_inter_compound_320x240.ivf` is the four-frame static-background stream
+  encoded by libaom at CQ 50 with order hints, masked compound, inter-intra,
+  distance-weighted compound, one-sided compound, global motion, warped
+  motion, OBMC, temporal MVs, CDEF and loop restoration disabled. Its final
+  frame exercises uni- and bidirectional average compound prediction across
+  `NearestNearest`, `NearNear` and `NewNew`; all four rendered frames are
+  byte-exact against libaom.
 - `h264_i32_*` and `h264_i64_*` are local x264 CAVLC streams with FFmpeg
   yuv420p golden output. Their exact generating parameters are recorded in
   `ROADMAP.md` next to the pixel gates.

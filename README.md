@@ -45,14 +45,19 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 的 **PD/DECT 逆 telecine** 两遍路径（反向下拉 + 场序状态机）已接入：3:2 telecine 与逐行素材 **2/2 与 C probe 逐字节一致**，逐帧 `pd_flag/pd_types/dil_order/frm_mode/ratio` 也逐行相同，322x242/722x482/1366x768 等非 16 对齐尺寸同样逐字节；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 89%）。
+整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 86 个
-AV1 slice。第 86 slice 修正 coefficient CDF 必须按帧头 `base_q_idx` 选择，而不是按块级
-delta-q；补齐 4-high inter chroma skip context，并把 MV CDF 纳入 SavedCdf。新增三帧
-delta-q fixture，其 Y/U/V 均与 libaom **逐字节一致**。compound 的
-参考帧/MV 状态基础已接入，但 compound、masked 和 inter-intra 仍明确拒绝。第 85 slice
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 87 个
+AV1 slice。第 87 slice 恢复双参考帧解析，覆盖全部 8 种 compound mode 符号、compound DRL、
+双 MV 赋值和 normative average prediction。新增四帧 320×240 fixture，最终帧同时覆盖
+uni/bidirectional `NearestNearest`、`NearNear` 和 `NewNew`；四帧 Y/U/V 均与 libaom
+**逐字节一致**（frame 3 MD5 `b217ef76fa2e65327d3b4ecfa7ee1f36`）。masked/
+distance-weighted compound、inter-intra、warp/OBMC、temporal MV 和 inter segmentation
+仍未完成。第 86 slice
+修正 coefficient CDF 必须按帧头 `base_q_idx` 选择，而不是按块级 delta-q；补齐
+4-high inter chroma skip context，并把 MV CDF 纳入 SavedCdf。新增三帧 delta-q fixture，
+其 Y/U/V 均与 libaom **逐字节一致**。第 85 slice
 把 LR 参数网格接入 inter frame，并修正
 `UseWienerCdf` /
 `UseSgrprojCdf` / `RestorationTypeCdf` 从 SavedCdf 的继承；restoration-enabled key+P
@@ -99,7 +104,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --all-targets                     # 1085 通过，27 个板级用例 ignore
+cargo test --all-targets                     # 1086 通过，27 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
