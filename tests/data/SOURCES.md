@@ -22,6 +22,12 @@ cargo test --test fixture_manifest
   --enable-restoration=1 --enable-cdef=1 --enable-palette=0
   --enable-intrabc=0 --film-grain-test=0`. The first keyframe exercises
   SGRPROJ restoration after deblocking/CDEF.
+- `av1_inter_lr_320x240.ivf` is a second two-frame `testsrc2` encode with
+  restoration enabled so the inter frame carries chroma SGRPROJ parameters.
+  It uses 320x240 Main profile, 64x64 superblocks and the same libaom
+  `--good --cpu-used=0 --passes=1 --i420` family of settings as the keyframe
+  fixture; palette and intra-BC are disabled. The P frame has 242 partition
+  leaves and is the SavedCdf inheritance/subexp regression for inter LR.
 - `h264_i32_*` and `h264_i64_*` are local x264 CAVLC streams with FFmpeg
   yuv420p golden output. Their exact generating parameters are recorded in
   `ROADMAP.md` next to the pixel gates.

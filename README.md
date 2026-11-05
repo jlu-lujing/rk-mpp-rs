@@ -45,18 +45,22 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 的 **PD/DECT 逆 telecine** 两遍路径（反向下拉 + 场序状态机）已接入：3:2 telecine 与逐行素材 **2/2 与 C probe 逐字节一致**，逐帧 `pd_flag/pd_types/dil_order/frm_mode/ratio` 也逐行相同，322x242/722x482/1366x768 等非 16 对齐尺寸同样逐字节；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 88%）。
+整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 89%）。
 ROADMAP 顶层清单当前为
 93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 84 个
-AV1 slice：单参考 inter 现在覆盖 fractional MV 的 16-phase 8-tap 与 4-tap 双阶段插值、
-inter 残差和 transform type、frame 内 intra/inter 混合块、skip 的 above/left 系数上下文
-清零，以及 sub-8×8 chroma 按四个 luma MV 分象限预测。真实 high-QP 两帧 320×240 fixture
-的 327 个 P-frame block 与 libaom trace 一致，keyframe/P-frame 的 Y/U/V 均**逐字节一致**
-（P-frame MD5 `a6cb3249ce923e683934ce85fa5ba0e9`）。第 84 slice 又接入
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 85 个
+AV1 slice。第 85 slice 把 LR 参数网格接入 inter frame，并修正 `UseWienerCdf` /
+`UseSgrprojCdf` / `RestorationTypeCdf` 从 SavedCdf 的继承；restoration-enabled key+P
+fixture 的 P frame（242 个分区叶块）三平面与 libaom **逐字节一致**
+（MD5 `aabd1f611b39c59fda7d5c7c2877d7ec`）。第 84 slice 接入了
 `TX_MODE_SELECT` inter transform tree、switchable interpolation filter、inter deblock 和
-CDEF；新增 LF+CDEF 真实 key+P fixture 的 P frame 三平面与 libaom **逐字节一致**。此前为整数像素 inter：真实两帧
-fixture 的 20 个 inter block 参考帧/模式/MV 与 libaom trace 一致；更早为 §7.16 normative
+CDEF；LF+CDEF key+P fixture 的 P frame（255 个 inter block）三平面同样**逐字节一致**。
+单参考 inter 还覆盖 fractional MV 的 16-phase 8-tap 与 4-tap 双阶段插值、inter 残差和
+transform type、frame 内 intra/inter 混合块、skip 的 above/left 系数上下文清零，以及
+sub-8×8 chroma 按四个 luma MV 分象限预测。high-QP 320×240 fixture 的 327 个 P-frame
+block 与 libaom trace 一致（P-frame MD5 `a6cb3249ce923e683934ce85fa5ba0e9`）；更早的
+整数像素 inter fixture 的 20 个 inter block 参考帧/模式/MV 也与 libaom trace 一致。
+此前的 §7.16 normative
 superres：213×240 coded frame 按 denominator 12
 上采样到 320×240 后进入 LR，重建前、去块后、CDEF 后、LR 后四个阶段的 Y/U/V 三平面
 都已与 libaom **逐像素一致**；更早为 palette plane 坐标、左右 upsampled directional phase、
@@ -90,7 +94,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --all-targets                     # 1080 通过，27 个板级用例 ignore
+cargo test --all-targets                     # 1083 通过，27 个板级用例 ignore
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4

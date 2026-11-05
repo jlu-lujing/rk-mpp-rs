@@ -76,7 +76,6 @@ pub enum InterFrameError {
     InvalidState(&'static str),
     FractionalMotionVector(MotionVector),
     MissingPlane(usize),
-    UnsupportedPostFilter,
 }
 
 impl core::fmt::Display for InterFrameError {
@@ -313,9 +312,6 @@ pub fn reconstruct_inter_frame(
         return Err(InterFrameError::InvalidState(
             "inter driver received intra frame",
         ));
-    }
-    if header.uses_lr || header.use_superres {
-        return Err(InterFrameError::UnsupportedPostFilter);
     }
     let width = header.mi_cols * 4;
     let height = header.mi_rows * 4;
@@ -1162,5 +1158,43 @@ mod tests {
             (0x7e12b58bee2e77e1, 0x254c13003bd29764, 0x5c6c680c955ff66b)
         );
         assert_eq!(inter_blocks.len(), 255);
+    }
+
+    #[test]
+    fn real_inter_frame_applies_loop_restoration_and_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_lr_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let headers = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(&frame.header),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(headers.len(), 2);
+        assert!(headers[1].uses_lr);
+
+        let (pictures, inter_blocks) = decode_two_picture_stream(data);
+        assert_eq!(pictures.len(), 2);
+        assert_eq!(
+            (
+                visible_hash(&pictures[0].y),
+                visible_hash(pictures[0].u.as_ref().unwrap()),
+                visible_hash(pictures[0].v.as_ref().unwrap())
+            ),
+            (0x136f825011c9e4c1, 0xdd42c406c78ee0fd, 0xdc7484640931f714)
+        );
+        assert_eq!(
+            (
+                visible_hash(&pictures[1].y),
+                visible_hash(pictures[1].u.as_ref().unwrap()),
+                visible_hash(pictures[1].v.as_ref().unwrap())
+            ),
+            (0x793843d54eb6ac5f, 0xd52b385eb4c9d513, 0x338cc0e91d047c1e)
+        );
+        assert_eq!(inter_blocks.len(), 242);
     }
 }

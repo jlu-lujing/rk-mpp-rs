@@ -115,6 +115,7 @@ pub struct IntraTileBlockSink {
     read_deltas_for_sb: bool,
     current_sb: Option<(usize, usize)>,
     lr: LrTileState,
+    lr_cdfs_loaded: bool,
     pub blocks: Vec<IntraSyntaxBlock>,
 }
 
@@ -140,6 +141,7 @@ impl IntraTileBlockSink {
             read_deltas_for_sb: false,
             current_sb: None,
             lr,
+            lr_cdfs_loaded: false,
             blocks: Vec::new(),
         }
     }
@@ -279,8 +281,12 @@ impl TileBlockSink for IntraTileBlockSink {
         &mut self,
         block: DecodedBlock,
         decoder: &mut crate::reference::av1::symbol::SymbolDecoder<'_>,
-        _cdfs: &mut CdfState,
+        cdfs: &mut CdfState,
     ) -> Result<(), TileEntropyError> {
+        if !self.lr_cdfs_loaded {
+            self.lr.load_frame_cdfs(cdfs)?;
+            self.lr_cdfs_loaded = true;
+        }
         self.lr
             .read_lr(
                 decoder,
@@ -290,8 +296,11 @@ impl TileBlockSink for IntraTileBlockSink {
                 block.size.num_4x4_high() as usize,
                 self.config.allow_intrabc,
                 self.config.superres_denom,
+                self.config.disable_cdf_update,
             )
-            .map_err(Self::lr_as_tile)
+            .map_err(Self::lr_as_tile)?;
+        self.lr.store_frame_cdfs(cdfs)?;
+        Ok(())
     }
 
     fn decode_block(

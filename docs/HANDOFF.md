@@ -11,7 +11,7 @@ refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉�
 >4096 宽 P 帧与 **H.265 水平 tiles** 已按同一逐字节标准落地（tiles 见 ROADMAP 的
 `H.265 (rkvenc): uniform horizontal tiles`）；AV1 软件参考解码器已完成 fractional
 single-reference inter、inter residual、recursive transform tree、frame 内混合
-intra/inter，以及 inter deblock/CDEF。仍未闭合的前沿是 inter LR、
+intra/inter、inter deblock/CDEF 与 inter LR。仍未闭合的前沿是
 WPP、B 帧、多参考调度与 AV1 compound/warp/OBMC。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
@@ -127,7 +127,7 @@ WPP、B 帧、多参考调度与 AV1 compound/warp/OBMC。
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 1080 passed, 27 board-only ignored
+cargo test --all-targets      # 1083 passed, 27 board-only ignored
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -537,7 +537,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 1080 通过（27 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 1083 通过（27 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

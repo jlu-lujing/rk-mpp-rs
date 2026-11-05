@@ -15,6 +15,7 @@
 use crate::reference::av1::cdf_defaults::{
     DEFAULT_RESTORATION_TYPE_CDF, DEFAULT_USE_SGRPROJ_CDF, DEFAULT_USE_WIENER_CDF,
 };
+use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::lr_frame::{LrFrameParams, LrPlaneGeometry, MI_SIZE};
 use crate::reference::av1::restoration::{
     LrFilter, RestorationType, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_BITS, SGRPROJ_PRJ_SUBEXP_K,
@@ -243,11 +244,12 @@ pub fn read_restoration_type(
     decoder: &mut SymbolDecoder<'_>,
     cdf: &mut LrTileCdf,
     frame_type: RestorationType,
+    disable_cdf_update: bool,
 ) -> Result<RestorationType, LrSyntaxError> {
     match frame_type {
         RestorationType::None => Ok(RestorationType::None),
         RestorationType::Wiener => {
-            let symbol = decoder.read_symbol(&mut cdf.use_wiener)?;
+            let symbol = decoder.read_symbol_with(&mut cdf.use_wiener, disable_cdf_update)?;
             Ok(if symbol != 0 {
                 RestorationType::Wiener
             } else {
@@ -255,7 +257,7 @@ pub fn read_restoration_type(
             })
         }
         RestorationType::SelfGuided => {
-            let symbol = decoder.read_symbol(&mut cdf.use_sgrproj)?;
+            let symbol = decoder.read_symbol_with(&mut cdf.use_sgrproj, disable_cdf_update)?;
             Ok(if symbol != 0 {
                 RestorationType::SelfGuided
             } else {
@@ -263,7 +265,7 @@ pub fn read_restoration_type(
             })
         }
         RestorationType::Switchable => {
-            let symbol = decoder.read_symbol(&mut cdf.restoration_type)?;
+            let symbol = decoder.read_symbol_with(&mut cdf.restoration_type, disable_cdf_update)?;
             if symbol > 2 {
                 return Err(LrSyntaxError::BadRestorationType(symbol));
             }
@@ -320,6 +322,36 @@ impl LrTileState {
         }
     }
 
+    /// Seed the tile-local restoration CDFs from the frame context. `decode_tile`
+    /// copies these three rows before `read_lr` and the adapted rows remain part
+    /// of the tile context saved for later frames.
+    pub fn load_frame_cdfs(&mut self, cdfs: &mut CdfState) -> Result<(), CdfStateError> {
+        self.cdf
+            .use_wiener
+            .copy_from_slice(cdfs.row_mut(&DEFAULT_USE_WIENER_CDF, 0, 3)?);
+        self.cdf
+            .use_sgrproj
+            .copy_from_slice(cdfs.row_mut(&DEFAULT_USE_SGRPROJ_CDF, 0, 3)?);
+        self.cdf.restoration_type.copy_from_slice(cdfs.row_mut(
+            &DEFAULT_RESTORATION_TYPE_CDF,
+            0,
+            4,
+        )?);
+        Ok(())
+    }
+
+    /// Write the restoration rows back to the frame context after the
+    /// superblock's `read_lr` call.
+    pub fn store_frame_cdfs(&self, cdfs: &mut CdfState) -> Result<(), CdfStateError> {
+        cdfs.row_mut(&DEFAULT_USE_WIENER_CDF, 0, 3)?
+            .copy_from_slice(&self.cdf.use_wiener);
+        cdfs.row_mut(&DEFAULT_USE_SGRPROJ_CDF, 0, 3)?
+            .copy_from_slice(&self.cdf.use_sgrproj);
+        cdfs.row_mut(&DEFAULT_RESTORATION_TYPE_CDF, 0, 4)?
+            .copy_from_slice(&self.cdf.restoration_type);
+        Ok(())
+    }
+
     /// `read_lr( r, c, bSize )`: `r4`/`c4` are the superblock origin in 4x4
     /// luma units and `w4`/`h4` are `Num_4x4_Blocks_Wide/High[bSize]`.
     pub fn read_lr(
@@ -331,6 +363,7 @@ impl LrTileState {
         h4: usize,
         allow_intrabc: bool,
         superres_denom: Option<u32>,
+        disable_cdf_update: bool,
     ) -> Result<(), LrSyntaxError> {
         if allow_intrabc {
             return Ok(());
@@ -357,7 +390,7 @@ impl LrTileState {
             );
             for unit_row in rows.start..rows.end {
                 for unit_col in cols.start..cols.end {
-                    self.read_lr_unit(decoder, plane, unit_row, unit_col)?;
+                    self.read_lr_unit(decoder, plane, unit_row, unit_col, disable_cdf_update)?;
                 }
             }
         }
@@ -371,9 +404,14 @@ impl LrTileState {
         plane: usize,
         unit_row: usize,
         unit_col: usize,
+        disable_cdf_update: bool,
     ) -> Result<(), LrSyntaxError> {
-        let restoration_type =
-            read_restoration_type(decoder, &mut self.cdf, self.geometry[plane].frame_type)?;
+        let restoration_type = read_restoration_type(
+            decoder,
+            &mut self.cdf,
+            self.geometry[plane].frame_type,
+            disable_cdf_update,
+        )?;
         let filter = read_lr_params(decoder, plane, restoration_type, &mut self.refs)?;
         let geometry = self.geometry[plane];
         if !self
@@ -515,7 +553,7 @@ mod tests {
     fn zero_stream_selects_restore_none_for_a_wiener_frame() {
         let mut state = LrTileState::new(luma(64, 64, 64, RestorationType::Wiener));
         let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
-        state.read_lr_unit(&mut decoder, 0, 0, 0).unwrap();
+        state.read_lr_unit(&mut decoder, 0, 0, 0, false).unwrap();
         assert_eq!(state.params.planes[0][0], None);
         // The CDF adaptation counter records the one symbol read.
         assert_eq!(state.cdf.use_wiener[2], 1);
@@ -527,7 +565,7 @@ mod tests {
         force_symbol(&mut cdf.use_wiener, 1);
         let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
         assert_eq!(
-            read_restoration_type(&mut decoder, &mut cdf, RestorationType::Wiener).unwrap(),
+            read_restoration_type(&mut decoder, &mut cdf, RestorationType::Wiener, false).unwrap(),
             RestorationType::Wiener
         );
 
@@ -571,7 +609,8 @@ mod tests {
             force_symbol(&mut cdf.restoration_type, symbol);
             let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
             assert_eq!(
-                read_restoration_type(&mut decoder, &mut cdf, RestorationType::Switchable).unwrap(),
+                read_restoration_type(&mut decoder, &mut cdf, RestorationType::Switchable, false,)
+                    .unwrap(),
                 expected,
                 "symbol {symbol}"
             );
@@ -621,6 +660,47 @@ mod tests {
     }
 
     #[test]
+    fn restoration_cdfs_follow_the_saved_frame_context() {
+        let mut frame_cdfs = CdfState::new();
+        frame_cdfs
+            .row_mut(&DEFAULT_USE_WIENER_CDF, 0, 3)
+            .unwrap()
+            .copy_from_slice(&[1200, 32768, 7]);
+        frame_cdfs
+            .row_mut(&DEFAULT_USE_SGRPROJ_CDF, 0, 3)
+            .unwrap()
+            .copy_from_slice(&[1500, 32768, 11]);
+        frame_cdfs
+            .row_mut(&DEFAULT_RESTORATION_TYPE_CDF, 0, 4)
+            .unwrap()
+            .copy_from_slice(&[9000, 22000, 32768, 19]);
+
+        let mut state = LrTileState::new(luma(64, 64, 64, RestorationType::Wiener));
+        state.load_frame_cdfs(&mut frame_cdfs).unwrap();
+        assert_eq!(state.cdf.use_wiener, [1200, 32768, 7]);
+        assert_eq!(state.cdf.use_sgrproj, [1500, 32768, 11]);
+        assert_eq!(state.cdf.restoration_type, [9000, 22000, 32768, 19]);
+
+        state.cdf.use_wiener[0] = 1100;
+        state.store_frame_cdfs(&mut frame_cdfs).unwrap();
+        assert_eq!(
+            frame_cdfs.row_mut(&DEFAULT_USE_WIENER_CDF, 0, 3).unwrap(),
+            [1100, 32768, 7]
+        );
+    }
+
+    #[test]
+    fn disabled_update_leaves_the_restoration_cdf_unchanged() {
+        let mut state = LrTileState::new(luma(64, 64, 64, RestorationType::Wiener));
+        let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
+        state
+            .read_lr(&mut decoder, 0, 0, 16, 16, false, None, true)
+            .unwrap();
+        assert_eq!(state.cdf.use_wiener, DEFAULT_USE_WIENER_CDF.values);
+        assert_eq!(state.cdf.use_wiener[2], 0);
+    }
+
+    #[test]
     fn read_lr_visits_every_unit_of_a_superblock() {
         // 128x128 luma with 64-sample units -> 2 x 2 units.
         let mut state = LrTileState::new(luma(128, 128, 64, RestorationType::Wiener));
@@ -628,7 +708,7 @@ mod tests {
         assert_eq!(state.geometry[0].unit_cols, 2);
         let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
         state
-            .read_lr(&mut decoder, 0, 0, 32, 32, false, None)
+            .read_lr(&mut decoder, 0, 0, 32, 32, false, None, false)
             .unwrap();
         // One use_wiener symbol per unit, all four units visited.
         assert_eq!(state.cdf.use_wiener[2], 4);
@@ -649,7 +729,7 @@ mod tests {
         let mut state = LrTileState::new(geometry);
         let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
         state
-            .read_lr(&mut decoder, 0, 0, 16, 16, true, None)
+            .read_lr(&mut decoder, 0, 0, 16, 16, true, None, false)
             .unwrap();
         assert_eq!(
             state.cdf.use_wiener[2], 0,
@@ -658,7 +738,7 @@ mod tests {
 
         let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
         state
-            .read_lr(&mut decoder, 0, 0, 16, 16, false, None)
+            .read_lr(&mut decoder, 0, 0, 16, 16, false, None, false)
             .unwrap();
         assert_eq!(state.cdf.use_wiener[2], 1, "only the Y plane is read");
         assert_eq!(state.params.planes[1][0], None);
@@ -669,14 +749,14 @@ mod tests {
         let mut state = LrTileState::new(luma(256, 128, 64, RestorationType::Wiener));
         let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
         state
-            .read_lr(&mut decoder, 0, 0, 32, 32, false, None)
+            .read_lr(&mut decoder, 0, 0, 32, 32, false, None, false)
             .unwrap();
         let plain = state.cdf.use_wiener[2];
 
         let mut state = LrTileState::new(luma(256, 128, 64, RestorationType::Wiener));
         let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
         state
-            .read_lr(&mut decoder, 0, 0, 32, 32, false, Some(9))
+            .read_lr(&mut decoder, 0, 0, 32, 32, false, Some(9), false)
             .unwrap();
         let superres = state.cdf.use_wiener[2];
         assert_eq!(plain, 2 * 2);
@@ -688,7 +768,7 @@ mod tests {
         let mut state = LrTileState::new(luma(64, 64, 64, RestorationType::Wiener));
         let mut decoder = SymbolDecoder::init(&ZEROS).unwrap();
         assert_eq!(
-            state.read_lr_unit(&mut decoder, 0, 9, 0),
+            state.read_lr_unit(&mut decoder, 0, 9, 0, false),
             Err(LrSyntaxError::BadUnit {
                 plane: 0,
                 unit_row: 9,
@@ -706,7 +786,7 @@ mod tests {
         let ones = [0xffu8; 256];
         let mut decoder = SymbolDecoder::init(&ones).unwrap();
         state
-            .read_lr(&mut decoder, 0, 0, 2, 2, false, None)
+            .read_lr(&mut decoder, 0, 0, 2, 2, false, None, false)
             .unwrap();
         let params = state.into_params();
         assert!(params.planes[0][0].is_some());
