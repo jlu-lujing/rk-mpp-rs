@@ -76,6 +76,86 @@ const REGULAR_4TAP: [[i16; 8]; 16] = [
     [0, 0, -2, 8, 126, -4, 0, 0],
 ];
 
+/// `av1_sub_pel_filters_8smooth`.
+const SMOOTH_8TAP: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],
+    [0, 2, 28, 62, 34, 2, 0, 0],
+    [0, 0, 26, 62, 36, 4, 0, 0],
+    [0, 0, 22, 62, 40, 4, 0, 0],
+    [0, 0, 20, 60, 42, 6, 0, 0],
+    [0, 0, 18, 58, 44, 8, 0, 0],
+    [0, 0, 16, 56, 46, 10, 0, 0],
+    [0, -2, 16, 54, 48, 12, 0, 0],
+    [0, -2, 14, 52, 52, 14, -2, 0],
+    [0, 0, 12, 48, 54, 16, -2, 0],
+    [0, 0, 10, 46, 56, 16, 0, 0],
+    [0, 0, 8, 44, 58, 18, 0, 0],
+    [0, 0, 6, 42, 60, 20, 0, 0],
+    [0, 0, 4, 40, 62, 22, 0, 0],
+    [0, 0, 4, 36, 62, 26, 0, 0],
+    [0, 0, 2, 34, 62, 28, 2, 0],
+];
+
+/// `av1_sub_pel_filters_8sharp`.
+const SHARP_8TAP: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],
+    [-2, 2, -6, 126, 8, -2, 2, 0],
+    [-2, 6, -12, 124, 16, -6, 4, -2],
+    [-2, 8, -18, 120, 26, -10, 6, -2],
+    [-4, 10, -22, 116, 38, -14, 6, -2],
+    [-4, 10, -22, 108, 48, -18, 8, -2],
+    [-4, 10, -24, 100, 60, -20, 8, -2],
+    [-4, 10, -24, 90, 70, -22, 10, -2],
+    [-4, 12, -24, 80, 80, -24, 12, -4],
+    [-2, 10, -22, 70, 90, -24, 10, -4],
+    [-2, 8, -20, 60, 100, -24, 10, -4],
+    [-2, 8, -18, 48, 108, -22, 10, -4],
+    [-2, 6, -14, 38, 116, -22, 10, -4],
+    [-2, 6, -10, 26, 120, -18, 8, -2],
+    [-2, 4, -6, 16, 124, -12, 6, -2],
+    [0, 2, -2, 8, 126, -6, 2, -2],
+];
+
+/// `av1_bilinear_filters`.
+const BILINEAR_8TAP: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],
+    [0, 0, 0, 120, 8, 0, 0, 0],
+    [0, 0, 0, 112, 16, 0, 0, 0],
+    [0, 0, 0, 104, 24, 0, 0, 0],
+    [0, 0, 0, 96, 32, 0, 0, 0],
+    [0, 0, 0, 88, 40, 0, 0, 0],
+    [0, 0, 0, 80, 48, 0, 0, 0],
+    [0, 0, 0, 72, 56, 0, 0, 0],
+    [0, 0, 0, 64, 64, 0, 0, 0],
+    [0, 0, 0, 56, 72, 0, 0, 0],
+    [0, 0, 0, 48, 80, 0, 0, 0],
+    [0, 0, 0, 40, 88, 0, 0, 0],
+    [0, 0, 0, 32, 96, 0, 0, 0],
+    [0, 0, 0, 24, 104, 0, 0, 0],
+    [0, 0, 0, 16, 112, 0, 0, 0],
+    [0, 0, 0, 8, 120, 0, 0, 0],
+];
+
+/// `av1_sub_pel_filters_4smooth`.
+const SMOOTH_4TAP: [[i16; 8]; 16] = [
+    [0, 0, 0, 128, 0, 0, 0, 0],
+    [0, 0, 30, 62, 34, 2, 0, 0],
+    [0, 0, 26, 62, 36, 4, 0, 0],
+    [0, 0, 22, 62, 40, 4, 0, 0],
+    [0, 0, 20, 60, 42, 6, 0, 0],
+    [0, 0, 18, 58, 44, 8, 0, 0],
+    [0, 0, 16, 56, 46, 10, 0, 0],
+    [0, 0, 14, 54, 48, 12, 0, 0],
+    [0, 0, 12, 52, 52, 12, 0, 0],
+    [0, 0, 12, 48, 54, 14, 0, 0],
+    [0, 0, 10, 46, 56, 16, 0, 0],
+    [0, 0, 8, 44, 58, 18, 0, 0],
+    [0, 0, 6, 42, 60, 20, 0, 0],
+    [0, 0, 4, 40, 62, 22, 0, 0],
+    [0, 0, 4, 36, 62, 26, 0, 0],
+    [0, 0, 2, 34, 62, 30, 0, 0],
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterFrameError {
     MissingReference(i8),
@@ -208,6 +288,21 @@ fn source_start(
     }
 }
 
+fn interpolation_filter(
+    filter: u8,
+    length: usize,
+) -> Result<&'static [[i16; 8]; 16], InterFrameError> {
+    match (filter, length <= 4) {
+        (0, true) | (2, true) => Ok(&REGULAR_4TAP),
+        (1, true) => Ok(&SMOOTH_4TAP),
+        (0, false) => Ok(&REGULAR_8TAP),
+        (1, false) => Ok(&SMOOTH_8TAP),
+        (2, false) => Ok(&SHARP_8TAP),
+        (3, _) => Ok(&BILINEAR_8TAP),
+        _ => Err(InterFrameError::InvalidState("interpolation filter")),
+    }
+}
+
 fn inter_block_res(
     reference: &IntraFrame,
     plane: usize,
@@ -246,21 +341,12 @@ fn inter_block_res(
         reference_plane.width as u32,
         reference_plane.height as u32,
     );
-    if block.interp_filter != [0, 0] {
-        return Err(InterFrameError::InvalidState(
-            "only EIGHTTAP_REGULAR is implemented",
-        ));
-    }
     let last_x = reference_plane.width.saturating_sub(1);
     let last_y = reference_plane.height.saturating_sub(1);
     let intermediate_height =
         (((height.saturating_sub(1) as i64 * i64::from(scale.step_y)) + 1023) >> 10) as usize + 8;
     let mut intermediate = vec![0i64; intermediate_height * width];
-    let horizontal_filter = if width <= 4 {
-        &REGULAR_4TAP
-    } else {
-        &REGULAR_8TAP
-    };
+    let horizontal_filter = interpolation_filter(block.interp_filter[1], width)?;
     for row in 0..intermediate_height {
         for col in 0..width {
             let p = i64::from(scale.start_x) + i64::from(scale.step_x) * col as i64;
@@ -277,11 +363,7 @@ fn inter_block_res(
             intermediate[row * width + col] = round2(sum + horizontal_bias, ROUND0_BITS);
         }
     }
-    let vertical_filter = if height <= 4 {
-        &REGULAR_4TAP
-    } else {
-        &REGULAR_8TAP
-    };
+    let vertical_filter = interpolation_filter(block.interp_filter[0], height)?;
     let mut out = vec![0i64; width * height];
     for row in 0..height {
         let p = i64::from(scale.start_y & 1023) + i64::from(scale.step_y) * row as i64;
@@ -547,9 +629,10 @@ fn predict_compound_block(
         CompoundType::Average => None,
         CompoundType::DifferenceWeighted { mask_type } => {
             if plane == 0 {
-                Some(difference_weighted_mask(
-                    &res0, &res1, bit_depth, mask_type,
-                )?)
+                Some((
+                    difference_weighted_mask(&res0, &res1, bit_depth, mask_type)?,
+                    width,
+                ))
             } else {
                 let luma_col = block_col << sub_x;
                 let luma_row = block_row << sub_y;
@@ -585,9 +668,10 @@ fn predict_compound_block(
                     bit_depth,
                     COMPOUND_ROUND1_BITS,
                 )?;
-                Some(difference_weighted_mask(
-                    &luma_res0, &luma_res1, bit_depth, mask_type,
-                )?)
+                Some((
+                    difference_weighted_mask(&luma_res0, &luma_res1, bit_depth, mask_type)?,
+                    luma_width,
+                ))
             }
         }
         CompoundType::DistanceWeighted => {
@@ -595,9 +679,11 @@ fn predict_compound_block(
                 "distance-weighted compound prediction",
             ));
         }
-        CompoundType::Wedge { .. } => {
-            return Err(InterFrameError::InvalidState("wedge compound prediction"));
-        }
+        CompoundType::Wedge { index, sign } => Some((
+            crate::reference::av1::wedge::wedge_mask(first.size, index, sign)
+                .map_err(InterFrameError::InvalidState)?,
+            first.size.width as usize,
+        )),
     };
     let current_plane = match plane {
         0 => &mut current.y,
@@ -618,10 +704,10 @@ fn predict_compound_block(
             let index = row * width + col;
             let max = (1i64 << bit_depth) - 1;
             let blended = match &mask {
-                Some(mask) => {
+                Some((mask, mask_stride)) => {
                     let weight = i64::from(sample_compound_mask(
                         mask,
-                        width << sub_x,
+                        *mask_stride,
                         row,
                         col,
                         sub_x,
@@ -1213,6 +1299,7 @@ mod tests {
     };
     use crate::reference::av1::intra_sink::{IntraTileBlockSink, IntraTileConfig};
     use crate::reference::av1::obu::parse_ivf;
+    use crate::reference::av1::partition::BLOCK_SIZES;
     use crate::reference::av1::stream::{ReferenceStream, StreamEvent};
     use crate::reference::av1::tile_entropy::decode_tile_partitions_with_cdfs;
 
@@ -1247,6 +1334,7 @@ mod tests {
             &mut out,
             0,
             InterBlock {
+                size: BLOCK_SIZES[0],
                 ref_frame: 1,
                 mode: crate::reference::av1::inter::InterMode::Nearest,
                 mv: MotionVector::default(),
@@ -1296,6 +1384,7 @@ mod tests {
         };
         first.y.data.fill(0);
         let block = |ref_frame| InterBlock {
+            size: BLOCK_SIZES[0],
             ref_frame,
             mode: InterMode::Nearest,
             mv: MotionVector::default(),
@@ -1774,6 +1863,39 @@ mod tests {
                 (0x3fc460a4337801a2, 0x78aeee20ef3533cd, 0xbb57d25fe05cd369),
                 (0x8366f509fa718675, 0xb2323978a827835d, 0x44d96a63350ded41),
                 (0x89a893342f663d21, 0xda7358359f0f4adb, 0x91cff8e2e3d4f404),
+            ]
+        );
+        assert_eq!(inter_blocks.len(), 20);
+    }
+
+    #[test]
+    fn real_wedge_compound_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_wedge_compound_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        assert!(sequence.enable_masked_compound);
+        assert!(!sequence.enable_interintra_compound);
+        assert!(!sequence.enable_order_hint);
+
+        let (pictures, inter_blocks) = decode_two_picture_stream(data);
+        assert_eq!(pictures.len(), 5);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0xe191eac24026e71c, 0x8db5e9c0b091c76e, 0x5647612e67ea65bb),
+                (0x20dc365b67c6047d, 0x5d568d2a04691cb9, 0xbd6d0e3c6f40f286),
+                (0x60be86be4fceb27e, 0xfb059eef9bc6e8e4, 0xaf42fb75230725bd),
+                (0x5cfd3e1bb14dfd02, 0x3235fcddb17d33fe, 0xcb0352c4175f5b5f),
+                (0xed64d6041f846d81, 0xf37e53c3eccf0002, 0x5b0ab73fc940b883),
             ]
         );
         assert_eq!(inter_blocks.len(), 20);

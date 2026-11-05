@@ -1518,6 +1518,7 @@ impl TileBlockSink for InterTileBlockSink {
         }
 
         let inter = InterBlock {
+            size: block.size,
             ref_frame: ref_frames[0],
             mode,
             mv: mv0,

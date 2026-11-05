@@ -347,8 +347,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       降级为可解释的差异）
 - [ ] W6-4 VP9 全矩阵：profile 0/1/2/3、10-bit、分辨率/分块边界
 - [ ] W6-5 AV1 更宽 conformance：分辨率、10-bit 打包、film grain 组合；
-      average 与 difference-weighted compound 已由四/五帧 libaom 像素门闭合，
-      wedge/distance-weighted、inter-intra、warp/OBMC、temporal MV 与
+      average、difference-weighted 与 wedge compound 已由四/五帧 libaom 像素门闭合，
+      distance-weighted、inter-intra、warp/OBMC、temporal MV 与
       inter segmentation 仍未做
 - [ ] W6-6 HEVC SCC（调色板/屏幕内容）：若 C 无路径则记录为 C 缺失
 - [ ] W6-7 H.264 field-coded PAFF 复核（当前 MBAFF/PAFF 有覆盖，field-coded 单独补）

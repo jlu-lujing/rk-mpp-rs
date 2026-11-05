@@ -50,6 +50,12 @@ cargo test --test fixture_manifest
   It carries a displayed difference-weighted compound frame reached through
   `show_existing_frame`; all five visible Y/U/V frames are byte-exact against
   libaom.
+- `av1_inter_wedge_compound_320x240.ivf` uses the same five-frame source and
+  bitstream options, but a locally patched libaom encoder restricted its
+  compound RDO list to `COMPOUND_WEDGE` so this branch is deterministic. The
+  decoder oracle is the unmodified libaom decoder. The stream has two wedge
+  blocks (index/sign 7/0 and 6/1), and all five visible Y/U/V frames are
+  byte-exact against libaom.
 - `h264_i32_*` and `h264_i64_*` are local x264 CAVLC streams with FFmpeg
   yuv420p golden output. Their exact generating parameters are recorded in
   `ROADMAP.md` next to the pixel gates.

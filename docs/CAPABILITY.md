@@ -71,10 +71,11 @@
 | AV1 intra 帧级 CDEF | 完成：使用 tile 的 `cdef_idx`，在去块 Y 平面做 8×8 方向搜索、variance 调强和主/次方向滤波，并由 luma 方向推导 U/V；真实 keyframe 的 CDEF 后三平面哈希已锁定 |
 | AV1 intra 帧级 loop restoration | 完成：每个 superblock 在分区语法前消费 `read_lr`，保存每 plane 的 Wiener/SGRPROJ 网格；以 CDEF 输出和去块帧分别作为 `UpscaledCdefFrame` / `UpscaledCurrFrame` 驱动 §7.17 三平面恢复。新增 restoration-enabled 320×240 keyframe fixture，锁定重建前、去块后、CDEF 后、LR 后 12 个 Y/U/V 哈希 |
 | AV1 superresolution（§7.16） | 完成：完整 64-phase × 8-tap normative upscaler，按 plane 处理水平子采样和 frame/coded width 差异；CDEF 与 deblocked frame 分别上采样后进入 LR。新增 213×240 → 320×240、denominator 12 的真实 fixture，最终三平面与 libaom 逐像素一致 |
-| AV1 单参考 / compound 语法与 MV stack | 完成：`inter.rs` 实现 `read_is_inter`、单/双参考 `read_ref_frames`、uni/bidirectional compound 参考对、全部 8 种 compound mode、compound DRL、`new_mv/zero_mv/ref_mv`、compound group/type/mask 语法、8-entry 空间 MV stack、双列表 MV 赋值、`lower_mv_precision` 和 MV joint/class/sign/frac/hp。真实 key+P fixture 的 20 个单参考 block，以及四帧 compound fixture 的 38 个末帧 block 参考帧/模式/MV 均与 libaom trace 一致。wedge/distance-weighted compound、temporal MV、warp/OBMC 仍显式拒绝 |
+| AV1 单参考 / compound 语法与 MV stack | 完成：`inter.rs` 实现 `read_is_inter`、单/双参考 `read_ref_frames`、uni/bidirectional compound 参考对、全部 8 种 compound mode、compound DRL、`new_mv/zero_mv/ref_mv`、compound group/type/mask/wedge 语法、8-entry 空间 MV stack、双列表 MV 赋值、`lower_mv_precision` 和 MV joint/class/sign/frac/hp。真实 key+P fixture 的 20 个单参考 block，以及 compound fixture 的参考帧/模式/MV 均与 libaom trace 一致。distance-weighted compound、temporal MV、warp/OBMC 仍显式拒绝 |
 | AV1 参考帧 / 跨帧 CDF / 整数运动补偿 | 完成首批：八槽参考帧同时保存最终像素与 Backward CDF；保存时按规范清零 CDF counter。真实两帧 320×240 流从 keyframe 恢复到 P frame，单参考整数平移逐平面复制后，P frame Y/U/V 与 libaom 逐字节一致（FNV `dd5a7af1044fd871` / `930bef4f94807f25` / `930bef4f94807f25`）|
 | AV1 fractional inter / transform tree / 后处理 | 完成：16-phase 8-tap normative fractional MV 双阶段插值，≤4 样本维度使用 four-tap regular filter；支持 inter 残差、all-zero、inter transform type、`TX_MODE_SELECT` 的递归 transform tree、switchable interpolation filter、inter frame 内 intra block 的完整 mode/palette/filter-intra/CFL/residual、coefficient CDF q-context 跨帧 collapse。修复 skip 块 above/left level/DC-sign context 清零、NEARMV DRL 终值、NEWMV `RefMvIdx` 选择、sub-8x8 chroma 四象限 MV 预测和 FLIPADST 的空间翻转语义。真实 high-QP 320×240 key+P 流 327 个 P block 与 libaom trace 一致；LF+CDEF 与 restoration-enabled key+P fixture 的 P frame（242 个分区叶块）三平面均逐字节一致。`UseWienerCdf` / `UseSgrprojCdf` / `RestorationTypeCdf` 现在随 SavedCdf 跨帧继承，inter LR 已完成 |
-| AV1 average / difference-weighted compound inter | 完成：compound CDF 行宽按 `8 symbols + terminal + counter` 的 9 个 u16 读取，参考对、mode、DRL 和双 MV 全部接入空间 stack。average 复刻 libaom 两阶段 16-bit 路径（`round_0=3`、`round_1=7`、floor average、round offset 4096+2048、4-bit 最终舍入）。masked 路径读取 `comp_group_idx` 的 above/left 上下文、compound type 与 mask type，在 luma 高精度差值上生成 64 级 mask，并按色度采样规则下采样后执行同一 16-bit blend。四帧 average fixture 与五帧 difference-weighted fixture 的全部可见 Y/U/V 均逐字节一致；wedge/distance-weighted 与 inter-intra 未做 |
+| AV1 average / difference-weighted / wedge compound inter | 完成：compound CDF 行宽按 `8 symbols + terminal + counter` 的 9 个 u16 读取，参考对、mode、DRL 和双 MV 全部接入空间 stack。average 复刻 libaom 两阶段 16-bit 路径（`round_0=3`、`round_1=7`、floor average、round offset 4096+2048、4-bit 最终舍入）。masked 路径读取 `comp_group_idx` 的 above/left 上下文、compound type、mask type 或 wedge index/sign；difference mask 来自 luma 高精度差值，wedge 使用六张 64×64 master mask、9 种 block codebook 和 sign flip，二者都按色度采样规则下采样后执行同一 16-bit blend。average/difference/wedge 三组 fixture 的全部可见 Y/U/V 均逐字节一致；distance-weighted 与 inter-intra 未做 |
+| AV1 switchable interpolation filters | 完成：regular/smooth/sharp/bilinear 全部 16-phase kernel 接入二维插值；宽高 ≤4 时按规范切换 regular/smooth 四抽头版本，sharp 回退 regular 四抽头，bilinear 保持八抽头零填充核 |
 | AV1 inter 跨帧 CDF 基础 | 部分完成：coefficient CDF 按帧头 `base_q_idx` 固定选择，块级 delta-q 只改变反量化；4-high luma block 的 chroma coefficient context 使用子采样后的 residual size 清理；MV joint/class/sign/fraction CDF 并入 `CdfState`，随 SavedCdf 跨帧保存和恢复。新增三帧 delta-q fixture，三帧 Y/U/V 与 libaom 逐字节一致 |
 | AV1 块几何 / partition / intra 模式 | 完成：22 种 BLOCK_SIZES、上下文、`y_mode`/`intra_frame_y_mode`/`uv_mode`+CFL、`tx_depth`、块级 `read_tx_size`（lossless / largest / select 与 split chain）、32 张扫描表；128×128 分区按规范的 8 符号 CDF 读取，窄 16×4/4×16 仍按 `MiSize >= BLOCK_8X8` 消费 palette/angle-delta |
 | AV1 residual transform 布局 | 完成：`residual.rs` — 规范 `Subsampled_Size[22][2][2]`、chroma `get_tx_size`、>64 block 的 64x64 chunk、plane/raster transform block 坐标；4 个测试 |
@@ -101,7 +102,7 @@
 | AV1 stream 调度（IVF/OBU→frame→tile） | 完成：`stream.rs` — 按 packet/OBU 顺序产出 sequence/show-existing/coded-frame 事件，事件携带真实 tile ranges，并把帧头参考状态更新接在事件推进上；单 tile 与 2×2 fixture 均覆盖 |
 | AV1 intra tile block sink | 完成语法闭环：按规范的 Y mode→Y angle→UV mode→CFL alpha→UV angle 顺序消费，并处理 palette、filter-intra、tx depth 与逐 plane 系数；真实 320×240 keyframe 的整 tile（17944 bits）通过分区覆盖、全部残差上下文和 `exit_symbol()` 尾位校验，记录的 `Quant[]` 已接入帧级像素重建 |
 | AV1 tile 熵入口 / 分区驱动 | 完成：`tile_entropy.rs` — tile id→MI 边界、叶块回调、stateful partition CDF、图像边缘的折叠二符号/隐式 SPLIT、`HORZ_4`/`VERT_4` 越界保护；真实 2×2 fixture 与 320×240 单 tile keyframe 均通过 |
-| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240、无 film-grain keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF、§7.16 superres 与 LR；普通及 restoration-enabled fixture 的四个阶段均已锁定，213×240→320×240 superres fixture 的最终 Y/U/V 三平面也已与 libaom 逐像素一致。七条真实 320×240 inter fixture 分别闭合整数 inter、fractional/residual inter、inter LF+CDEF、inter LR、delta-q、average compound 和 difference-weighted compound；所有可见帧 Y/U/V 均与 libaom 逐字节一致。仍缺 wedge/distance-weighted compound、inter-intra、warp/OBMC、temporal MV、inter segmentation，以及更宽的 AV1 conformance/性能矩阵 |
+| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240、无 film-grain keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF、§7.16 superres 与 LR；普通及 restoration-enabled fixture 的四个阶段均已锁定，213×240→320×240 superres fixture 的最终 Y/U/V 三平面也已与 libaom 逐像素一致。八条真实 320×240 inter fixture 分别闭合整数 inter、fractional/residual inter、inter LF+CDEF、inter LR、delta-q、average/difference-weighted/wedge compound；所有可见帧 Y/U/V 均与 libaom 逐字节一致。仍缺 distance-weighted compound、inter-intra、warp/OBMC、temporal MV、inter segmentation，以及更宽的 AV1 conformance/性能矩阵 |
 
 ## 已知 C bug（本 crate 保留独立结果）
 
@@ -135,7 +136,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**93 完成 / 6 未完成**（含缩进子项为 131 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 88 个 slice：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 89 个 slice：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
@@ -152,7 +153,7 @@ CFL alpha、正确的 intra skip 语义，以及真实 320×240 keyframe 的整 
 和 213×240→320×240 superres keyframe 均已与 libaom 三平面逐像素一致；单参考整数与
 fractional inter（含 residual 和 frame 内混合 intra/inter）均已用真实 key+P 流闭合到
 P frame 像素级，SavedCdf 与八槽参考帧管理开始工作。inter 去块、CDEF 与 LR 已逐字节闭合；
-average 与 difference-weighted compound 的四/五帧回归也已三平面逐字节一致。
-wedge/distance-weighted compound、inter-intra、warp/OBMC 仍未完成。
-`cargo test --all-targets`：**1087 通过 / 0 失败 / 27 板级
+average、difference-weighted 与 wedge compound 的四/五帧回归也已三平面逐字节一致。
+distance-weighted compound、inter-intra、warp/OBMC 仍未完成。
+`cargo test --all-targets`：**1090 通过 / 0 失败 / 27 板级
 ignore**，`cargo fmt --check` 干净。

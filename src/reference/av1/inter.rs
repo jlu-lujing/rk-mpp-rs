@@ -147,6 +147,7 @@ pub enum MotionMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InterBlock {
+    pub size: BlockSize,
     pub ref_frame: i8,
     pub mode: InterMode,
     pub mv: MotionVector,

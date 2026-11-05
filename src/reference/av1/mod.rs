@@ -51,3 +51,4 @@ pub mod tile_group;
 pub mod tx;
 pub mod tx_type;
 pub mod upscale;
+pub mod wedge;
