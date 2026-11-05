@@ -289,8 +289,9 @@ pub fn decode_tile_partitions_with_cdfs<S: TileBlockSink>(
     let bounds = tile_bounds(frame, tile)?;
     let local_cols = bounds.mi_cols();
     let local_rows = bounds.mi_rows();
+    let decoder = SymbolDecoder::init(payload)?;
     let mut state = StatefulTile {
-        decoder: SymbolDecoder::init(payload)?,
+        decoder,
         cdfs,
         sizes: vec![None; local_cols * local_rows],
         bounds,

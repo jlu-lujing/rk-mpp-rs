@@ -51,7 +51,7 @@ pub struct IntraFrame {
     pub v: Option<PlaneBuffer>,
 }
 
-fn uv_mode(mode: UvMode) -> Option<IntraMode> {
+pub(crate) fn uv_mode(mode: UvMode) -> Option<IntraMode> {
     Some(match mode {
         UvMode::Dc => IntraMode::Dc,
         UvMode::V => IntraMode::V,
@@ -70,7 +70,7 @@ fn uv_mode(mode: UvMode) -> Option<IntraMode> {
     })
 }
 
-fn fill_modes(
+pub(crate) fn fill_modes(
     grid: &mut [Option<IntraMode>],
     cols: usize,
     block: &IntraSyntaxBlock,
@@ -87,7 +87,7 @@ fn fill_modes(
     }
 }
 
-fn neighbor_modes(
+pub(crate) fn neighbor_modes(
     grid: &[Option<IntraMode>],
     cols: usize,
     block: &IntraSyntaxBlock,
@@ -101,7 +101,7 @@ fn neighbor_modes(
     (above, left)
 }
 
-fn chroma_neighbor_modes(
+pub(crate) fn chroma_neighbor_modes(
     grid: &[Option<IntraMode>],
     cols: usize,
     rows: usize,

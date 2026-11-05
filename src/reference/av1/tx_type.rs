@@ -1,6 +1,7 @@
 //! AV1 transform-type sets and the intra transform-type symbol.
 
 use crate::reference::av1::cdf_defaults::{
+    DEFAULT_INTER_TX_TYPE_SET1_CDF, DEFAULT_INTER_TX_TYPE_SET2_CDF, DEFAULT_INTER_TX_TYPE_SET3_CDF,
     DEFAULT_INTRA_TX_TYPE_SET1_CDF, DEFAULT_INTRA_TX_TYPE_SET2_CDF,
 };
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
@@ -60,6 +61,42 @@ const INTRA_SET2: [TxType; 5] = [
     TxType::AdstDct,
     TxType::DctAdst,
 ];
+
+const INTER_SET1: [TxType; 16] = [
+    TxType::Idtx,
+    TxType::VDct,
+    TxType::HDct,
+    TxType::VAdst,
+    TxType::HAdst,
+    TxType::VFlipadst,
+    TxType::HFlipadst,
+    TxType::DctDct,
+    TxType::AdstDct,
+    TxType::DctAdst,
+    TxType::FlipadstDct,
+    TxType::DctFlipadst,
+    TxType::AdstAdst,
+    TxType::FlipadstFlipadst,
+    TxType::AdstFlipadst,
+    TxType::FlipadstAdst,
+];
+
+const INTER_SET2: [TxType; 12] = [
+    TxType::Idtx,
+    TxType::VDct,
+    TxType::HDct,
+    TxType::DctDct,
+    TxType::AdstDct,
+    TxType::DctAdst,
+    TxType::FlipadstDct,
+    TxType::DctFlipadst,
+    TxType::AdstAdst,
+    TxType::FlipadstFlipadst,
+    TxType::AdstFlipadst,
+    TxType::FlipadstAdst,
+];
+
+const INTER_SET3: [TxType; 2] = [TxType::Idtx, TxType::DctDct];
 
 impl TxType {
     pub fn row_kind(self) -> TxKind {
@@ -217,6 +254,51 @@ pub fn read_intra_tx_type_with_cdf(
     } else {
         INTRA_SET2[symbol]
     })
+}
+
+/// Decode the inter transform type from the tile's persistent CDF state.
+pub fn read_inter_tx_type_with_cdf(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    tx: TxSize,
+    q_index: u8,
+    reduced_tx_set: bool,
+    disable_cdf_update: bool,
+) -> Result<TxType, CdfStateError> {
+    let set = tx_set(tx, true, reduced_tx_set);
+    if set == TxSet::DctOnly || q_index == 0 {
+        return Ok(TxType::DctDct);
+    }
+    match set {
+        TxSet::Inter1 => {
+            let start = tx_sqr_index(tx) * 17;
+            Ok(INTER_SET1[cdfs.read_symbol(
+                decoder,
+                &DEFAULT_INTER_TX_TYPE_SET1_CDF,
+                start,
+                17,
+                disable_cdf_update,
+            )?])
+        }
+        TxSet::Inter2 => Ok(INTER_SET2[cdfs.read_symbol(
+            decoder,
+            &DEFAULT_INTER_TX_TYPE_SET2_CDF,
+            0,
+            13,
+            disable_cdf_update,
+        )?]),
+        TxSet::Inter3 => {
+            let start = tx_sqr_index(tx) * 3;
+            Ok(INTER_SET3[cdfs.read_symbol(
+                decoder,
+                &DEFAULT_INTER_TX_TYPE_SET3_CDF,
+                start,
+                3,
+                disable_cdf_update,
+            )?])
+        }
+        TxSet::DctOnly | TxSet::Intra1 | TxSet::Intra2 => Ok(TxType::DctDct),
+    }
 }
 
 #[cfg(test)]

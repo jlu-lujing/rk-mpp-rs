@@ -133,6 +133,30 @@ impl CdfState {
             }
         }
     }
+
+    /// AV1 keeps one active coefficient-CDF q-context per frame. When a tile
+    /// context is saved for `load_cdfs()`, copy that active group into all four
+    /// q-context slots so the next frame can use its own q index.
+    pub fn normalize_coeff_q_context(&mut self, q_context: usize) {
+        for (table, meta) in self.tables.iter_mut().zip(TABLES.iter()) {
+            let is_coeff_table = meta.name.starts_with("Default_Txb_Skip_Cdf")
+                || meta.name.starts_with("Default_Eob_Pt_")
+                || meta.name.starts_with("Default_Eob_Extra_Cdf")
+                || meta.name.starts_with("Default_Dc_Sign_Cdf")
+                || meta.name.starts_with("Default_Coeff_Base_Eob_Cdf")
+                || meta.name.starts_with("Default_Coeff_Base_Cdf")
+                || meta.name.starts_with("Default_Coeff_Br_Cdf");
+            if !is_coeff_table {
+                continue;
+            }
+            let group = table.len() / 4;
+            let source = q_context.min(3) * group..(q_context.min(3) + 1) * group;
+            let row = table[source].to_vec();
+            for q in 0..4 {
+                table[q * group..(q + 1) * group].copy_from_slice(&row);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -211,5 +235,25 @@ mod tests {
         assert_eq!(state.row_mut(&DEFAULT_SKIP_CDF, 3, 3).unwrap()[2], 1);
         state.reset_symbol_counters();
         assert_eq!(state.row_mut(&DEFAULT_SKIP_CDF, 3, 3).unwrap()[2], 0);
+    }
+
+    #[test]
+    fn coefficient_q_context_is_collapsed_when_a_frame_is_saved() {
+        use crate::reference::av1::cdf_defaults::DEFAULT_TXB_SKIP_CDF;
+
+        let mut state = CdfState::new();
+        let group = DEFAULT_TXB_SKIP_CDF.values.len() / 4;
+        state
+            .row_mut(&DEFAULT_TXB_SKIP_CDF, 2 * group, group)
+            .unwrap()[0] = 1234;
+        state.normalize_coeff_q_context(2);
+        for q in 0..4 {
+            assert_eq!(
+                state
+                    .row_mut(&DEFAULT_TXB_SKIP_CDF, q * group, group)
+                    .unwrap()[0],
+                1234
+            );
+        }
     }
 }

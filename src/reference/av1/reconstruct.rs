@@ -226,7 +226,7 @@ impl DecodedPlane {
             && self.cells[row as usize * self.cols + col as usize]
     }
 
-    fn mark(&mut self, x: usize, y: usize, width: usize, height: usize) {
+    pub(crate) fn mark(&mut self, x: usize, y: usize, width: usize, height: usize) {
         let x4 = x >> 2;
         let y4 = y >> 2;
         for row in y4..(y4 + (height >> 2)).min(self.rows) {

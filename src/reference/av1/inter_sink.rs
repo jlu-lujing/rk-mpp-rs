@@ -9,19 +9,35 @@
 use crate::reference::av1::cdef::CdefIndexGrid;
 use crate::reference::av1::cdf_defaults::DEFAULT_SKIP_MODE_CDF;
 use crate::reference::av1::cdf_state::CdfState;
+use crate::reference::av1::cfl::{read_cfl_alphas, CflAlphas};
+use crate::reference::av1::coeff::{coeff_q_context, read_all_zero_with_cdf, seg_eob};
+use crate::reference::av1::coeff_block::decode_coefficient_payload;
+use crate::reference::av1::context::TileContext;
 use crate::reference::av1::delta::{read_delta_lf, read_delta_qindex, DeltaError};
+use crate::reference::av1::filter_intra::{filter_intra_direction, read_filter_intra};
 use crate::reference::av1::frame_header::FrameHeader;
 use crate::reference::av1::inter::{
     assign_mv, find_mv_stack, global_motion_vector_from_params, read_inter_mode, read_is_inter,
     read_motion_mode, read_ref_mv_index, read_single_ref_frame, InterBlock, InterError,
     InterNeighbors, MotionGrid, MotionVector, MvCdfs, INTRA_FRAME, NONE_FRAME,
 };
+use crate::reference::av1::intra::{
+    cfl_allowed, read_angle_delta_with_cdf, read_uv_mode_with_cdf, read_y_mode_with_cdf, IntraMode,
+    UvMode,
+};
+use crate::reference::av1::intra_sink::{IntraSyntaxBlock, IntraSyntaxTx};
 use crate::reference::av1::lr_frame::{LrFrameParams, LrPlaneGeometry};
 use crate::reference::av1::lr_syntax::{LrSyntaxError, LrTileState};
+use crate::reference::av1::palette::{read_palette_tokens, PaletteError, PaletteState};
 use crate::reference::av1::partition::BlockSize;
+use crate::reference::av1::residual::{intra_residual_blocks, residual_size};
 use crate::reference::av1::seq_header::SequenceHeader;
 use crate::reference::av1::tile::DecodedBlock;
 use crate::reference::av1::tile_entropy::{TileBlockSink, TileEntropyError};
+use crate::reference::av1::tx::{read_tx_size_with_cdf, TxSize};
+use crate::reference::av1::tx_type::{
+    is_tx_type_in_set, read_inter_tx_type_with_cdf, read_intra_tx_type_with_cdf, tx_set, TxType,
+};
 
 #[derive(Debug, Clone)]
 pub struct InterTileConfig {
@@ -41,11 +57,17 @@ pub struct InterTileConfig {
     pub delta_lf_present: bool,
     pub delta_lf_res: u8,
     pub delta_lf_multi: bool,
+    pub tx_mode_select: bool,
+    pub reduced_tx_set: bool,
+    pub has_chroma: bool,
     pub cdef_enabled: bool,
     pub cdef_bits: u8,
     pub base_q_index: u8,
     pub superblock_mi: usize,
     pub allow_intrabc: bool,
+    pub allow_screen_content_tools: bool,
+    pub enable_filter_intra: bool,
+    pub enable_intra_edge_filter: bool,
     pub lr_geometry: Vec<LrPlaneGeometry>,
     pub superres_denom: Option<u32>,
     pub reference_select: bool,
@@ -91,6 +113,9 @@ impl InterTileConfig {
             delta_lf_present: header.delta_lf_present,
             delta_lf_res: header.delta_lf_res,
             delta_lf_multi: header.delta_lf_multi,
+            tx_mode_select: header.tx_mode == 2,
+            reduced_tx_set: header.reduced_tx_set,
+            has_chroma: !sequence.color.mono_chrome,
             cdef_enabled: sequence.enable_cdef,
             cdef_bits: header.cdef_bits,
             base_q_index: header.base_q_idx,
@@ -100,6 +125,9 @@ impl InterTileConfig {
                 16
             },
             allow_intrabc: header.allow_intrabc,
+            allow_screen_content_tools: header.allow_screen_content_tools != 0,
+            enable_filter_intra: sequence.enable_filter_intra,
+            enable_intra_edge_filter: sequence.enable_intra_edge_filter,
             lr_geometry: (0..sequence.color.num_planes)
                 .map(|plane| {
                     if header.uses_lr {
@@ -148,7 +176,11 @@ pub struct InterSyntaxBlock {
     pub skip: bool,
     pub qindex: u8,
     pub delta_lf: [i32; 4],
-    pub inter: InterBlock,
+    pub inter: Option<InterBlock>,
+    pub intra: Option<IntraSyntaxBlock>,
+    pub lossless: bool,
+    pub tx: TxSize,
+    pub transforms: Vec<crate::reference::av1::intra_sink::IntraSyntaxTx>,
 }
 
 pub struct InterTileBlockSink {
@@ -162,6 +194,11 @@ pub struct InterTileBlockSink {
     refs: Vec<[i8; 2]>,
     modes: Vec<Option<crate::reference::av1::inter::InterMode>>,
     mvs: Vec<[MotionVector; 2]>,
+    y_modes: Vec<Option<IntraMode>>,
+    uv_modes: Vec<Option<UvMode>>,
+    tile_context: TileContext,
+    palettes: PaletteState,
+    tx_grid: Vec<Option<TxSize>>,
     mv_cdfs: MvCdfs,
     current_qindex: u8,
     delta_lf: [i32; 4],
@@ -188,6 +225,11 @@ impl InterTileBlockSink {
             refs: vec![[INTRA_FRAME, NONE_FRAME]; mi_cols * mi_rows],
             modes: vec![None; mi_cols * mi_rows],
             mvs: vec![[MotionVector::default(); 2]; mi_cols * mi_rows],
+            y_modes: vec![None; mi_cols * mi_rows],
+            uv_modes: vec![None; mi_cols * mi_rows],
+            tile_context: TileContext::new(mi_cols, mi_rows),
+            palettes: PaletteState::new(mi_cols, mi_rows),
+            tx_grid: vec![None; mi_cols * mi_rows],
             mv_cdfs: MvCdfs::default(),
             current_qindex,
             delta_lf: [0; 4],
@@ -232,6 +274,344 @@ impl InterTileBlockSink {
 
     fn at(row: usize, col: usize, cols: usize) -> usize {
         row * cols + col
+    }
+
+    fn tx_extent(
+        grid: &[Option<TxSize>],
+        md_cols: usize,
+        row: isize,
+        col: isize,
+        horizontal: bool,
+    ) -> u32 {
+        let tx = if row < 0 || col < 0 {
+            None
+        } else {
+            grid.get(row as usize * md_cols + col as usize)
+                .copied()
+                .flatten()
+        };
+        match tx {
+            Some(tx) if horizontal => tx.width(),
+            Some(tx) => tx.height(),
+            None => 1,
+        }
+    }
+
+    fn has_chroma(&self, block: DecodedBlock) -> bool {
+        if !self.config.has_chroma {
+            return false;
+        }
+        let bw4 = block.size.num_4x4_wide() as usize;
+        let bh4 = block.size.num_4x4_high() as usize;
+        if bh4 == 1 && self.config.sub_y != 0 && block.row & 1 == 0 {
+            false
+        } else if bw4 == 1 && self.config.sub_x != 0 && block.col & 1 == 0 {
+            false
+        } else {
+            true
+        }
+    }
+
+    fn palette_as_tile(error: PaletteError) -> TileEntropyError {
+        match error {
+            PaletteError::Cdf(error) => TileEntropyError::Cdf(error),
+            PaletteError::Symbol(error) => TileEntropyError::Symbol(error),
+            PaletteError::BadPaletteSize(_) => TileEntropyError::Unsupported("palette size"),
+            PaletteError::MissingTokens => TileEntropyError::Unsupported("palette tokens"),
+            PaletteError::InvalidIndex(_) => TileEntropyError::Unsupported("palette color index"),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode_intra_syntax(
+        &mut self,
+        block: DecodedBlock,
+        decoder: &mut crate::reference::av1::symbol::SymbolDecoder<'_>,
+        cdfs: &mut CdfState,
+        segment_id: usize,
+        skip: bool,
+        qindex: u8,
+        delta_lf: [i32; 4],
+    ) -> Result<IntraSyntaxBlock, TileEntropyError> {
+        let mi_cols = self.config.mi_cols;
+        let mi_rows = self.config.mi_rows;
+        let has_chroma = self.has_chroma(block);
+        let y_mode =
+            read_y_mode_with_cdf(decoder, cdfs, block.size, self.config.disable_cdf_update)
+                .map_err(TileEntropyError::Cdf)?;
+        let angle_y = read_angle_delta_with_cdf(
+            decoder,
+            cdfs,
+            y_mode,
+            block.size,
+            self.config.disable_cdf_update,
+        )
+        .map_err(TileEntropyError::Cdf)?;
+        let lossless = false;
+        let uv_mode = if has_chroma {
+            Some(
+                read_uv_mode_with_cdf(
+                    decoder,
+                    cdfs,
+                    y_mode,
+                    cfl_allowed(block.size, lossless),
+                    self.config.disable_cdf_update,
+                )
+                .map_err(TileEntropyError::Cdf)?,
+            )
+        } else {
+            None
+        };
+        let cfl_alphas = if uv_mode == Some(UvMode::Cfl) {
+            read_cfl_alphas(decoder, cdfs, self.config.disable_cdf_update)
+                .map_err(TileEntropyError::Cdf)?
+        } else {
+            CflAlphas::default()
+        };
+        let angle_uv = match uv_mode {
+            Some(UvMode::Cfl) => 0,
+            Some(UvMode::Dc) => read_angle_delta_with_cdf(
+                decoder,
+                cdfs,
+                IntraMode::Dc,
+                block.size,
+                self.config.disable_cdf_update,
+            )
+            .map_err(TileEntropyError::Cdf)?,
+            Some(mode) => {
+                let mode = match mode {
+                    UvMode::V => IntraMode::V,
+                    UvMode::H => IntraMode::H,
+                    UvMode::D45 => IntraMode::D45,
+                    UvMode::D135 => IntraMode::D135,
+                    UvMode::D113 => IntraMode::D113,
+                    UvMode::D157 => IntraMode::D157,
+                    UvMode::D203 => IntraMode::D203,
+                    UvMode::D67 => IntraMode::D67,
+                    UvMode::Smooth => IntraMode::Smooth,
+                    UvMode::SmoothV => IntraMode::SmoothV,
+                    UvMode::SmoothH => IntraMode::SmoothH,
+                    UvMode::Paeth => IntraMode::Paeth,
+                    UvMode::Dc | UvMode::Cfl => unreachable!(),
+                };
+                read_angle_delta_with_cdf(
+                    decoder,
+                    cdfs,
+                    mode,
+                    block.size,
+                    self.config.disable_cdf_update,
+                )
+                .map_err(TileEntropyError::Cdf)?
+            }
+            None => 0,
+        };
+        let palette = self
+            .palettes
+            .read_mode_info(
+                decoder,
+                cdfs,
+                block.row,
+                block.col,
+                block.size,
+                y_mode,
+                uv_mode,
+                has_chroma,
+                self.config.allow_screen_content_tools,
+                self.config.disable_cdf_update,
+                self.config.bit_depth,
+            )
+            .map_err(Self::palette_as_tile)?;
+        let filter = read_filter_intra(
+            decoder,
+            cdfs,
+            block.size,
+            y_mode,
+            palette.y_size,
+            self.config.enable_filter_intra,
+            self.config.disable_cdf_update,
+        )
+        .map_err(TileEntropyError::Cdf)?;
+        let palette_tokens = read_palette_tokens(
+            decoder,
+            cdfs,
+            palette,
+            block.row,
+            block.col,
+            mi_rows,
+            mi_cols,
+            block.size,
+            self.config.sub_x,
+            self.config.sub_y,
+            self.config.disable_cdf_update,
+        )
+        .map_err(Self::palette_as_tile)?;
+        let above_width = Self::tx_extent(
+            &self.tx_grid,
+            mi_cols,
+            block.row as isize - 1,
+            block.col as isize,
+            true,
+        );
+        let left_height = Self::tx_extent(
+            &self.tx_grid,
+            mi_cols,
+            block.row as isize,
+            block.col as isize - 1,
+            false,
+        );
+        let tx = read_tx_size_with_cdf(
+            decoder,
+            cdfs,
+            block.size,
+            true,
+            lossless,
+            self.config.tx_mode_select,
+            above_width,
+            left_height,
+            self.config.disable_cdf_update,
+        )
+        .map_err(TileEntropyError::Cdf)?;
+        let bw4 = block.size.num_4x4_wide() as usize;
+        let bh4 = block.size.num_4x4_high() as usize;
+        for row in block.row..(block.row + bh4).min(mi_rows) {
+            for col in block.col..(block.col + bw4).min(mi_cols) {
+                self.tx_grid[Self::at(row, col, mi_cols)] = Some(tx);
+            }
+        }
+        let mut transforms = Vec::new();
+        if !skip {
+            let residual_blocks = intra_residual_blocks(
+                block.row,
+                block.col,
+                block.size,
+                tx,
+                has_chroma,
+                lossless,
+                self.config.sub_x,
+                self.config.sub_y,
+                mi_cols,
+                mi_rows,
+            );
+            for tx_block in residual_blocks {
+                let (sx, sy) = if tx_block.plane == 0 {
+                    (0, 0)
+                } else {
+                    (self.config.sub_x, self.config.sub_y)
+                };
+                let residual_size = residual_size(block.size, sx, sy)
+                    .ok_or(TileEntropyError::Unsupported("invalid residual size"))?;
+                let x4 = tx_block.x >> 2;
+                let y4 = tx_block.y >> 2;
+                let max_x4 = mi_cols >> sx;
+                let max_y4 = mi_rows >> sy;
+                let txb_ctx = self.tile_context.txb_skip_context(
+                    tx_block.plane,
+                    x4,
+                    y4,
+                    tx_block.tx,
+                    residual_size,
+                    max_x4,
+                    max_y4,
+                );
+                let all_zero = read_all_zero_with_cdf(
+                    decoder,
+                    cdfs,
+                    tx_block.tx,
+                    coeff_q_context(qindex),
+                    txb_ctx,
+                    self.config.disable_cdf_update,
+                )
+                .map_err(TileEntropyError::Cdf)?;
+                let tx_type = if all_zero {
+                    self.tile_context.update(
+                        tx_block.plane,
+                        x4,
+                        y4,
+                        (tx_block.tx.width() / 4) as usize,
+                        (tx_block.tx.height() / 4) as usize,
+                        0,
+                        0,
+                    );
+                    TxType::DctDct
+                } else if tx_block.plane == 0 {
+                    let dir = filter.mode.map(filter_intra_direction).unwrap_or(y_mode) as usize;
+                    read_intra_tx_type_with_cdf(
+                        decoder,
+                        cdfs,
+                        tx_block.tx,
+                        qindex,
+                        dir,
+                        self.config.reduced_tx_set,
+                        self.config.disable_cdf_update,
+                    )
+                    .map_err(TileEntropyError::Cdf)?
+                } else {
+                    let typ = crate::reference::av1::tx_type::uv_mode_tx_type(
+                        uv_mode.unwrap_or(UvMode::Dc),
+                    );
+                    let set = tx_set(tx_block.tx, false, self.config.reduced_tx_set);
+                    if is_tx_type_in_set(set, typ, false) {
+                        typ
+                    } else {
+                        TxType::DctDct
+                    }
+                };
+                let decoded = if all_zero {
+                    crate::reference::av1::coeff_block::DecodedCoeffs {
+                        all_zero: true,
+                        eob: 0,
+                        quant: vec![0; seg_eob(tx_block.tx) as usize],
+                        tx_type,
+                        dc_category: 0,
+                        cul_level: 0,
+                    }
+                } else {
+                    decode_coefficient_payload(
+                        decoder,
+                        cdfs,
+                        &mut self.tile_context,
+                        tx_block.plane,
+                        x4,
+                        y4,
+                        max_x4,
+                        max_y4,
+                        tx_block.tx,
+                        tx_type,
+                        coeff_q_context(qindex),
+                        self.config.disable_cdf_update,
+                    )
+                    .map_err(TileEntropyError::Cdf)?
+                };
+                transforms.push(IntraSyntaxTx {
+                    plane: tx_block.plane,
+                    x: tx_block.x,
+                    y: tx_block.y,
+                    tx: tx_block.tx,
+                    tx_type: decoded.tx_type,
+                    all_zero: decoded.all_zero,
+                    eob: decoded.eob,
+                    quant: decoded.quant,
+                });
+            }
+        }
+        Ok(IntraSyntaxBlock {
+            block,
+            segment_id,
+            skip,
+            lossless,
+            qindex,
+            delta_lf,
+            y_mode,
+            uv_mode,
+            cfl_alphas,
+            angle_y,
+            angle_uv,
+            filter_intra: filter.mode,
+            palette,
+            palette_tokens,
+            tx,
+            transforms,
+        })
     }
 
     fn neighbors(&self, block: DecodedBlock) -> InterNeighbors {
@@ -299,8 +679,16 @@ impl InterTileBlockSink {
         block: DecodedBlock,
         skip: bool,
         skip_mode: bool,
-        inter: InterBlock,
+        inter: Option<InterBlock>,
+        y_mode: Option<IntraMode>,
+        uv_mode: Option<UvMode>,
     ) {
+        let refs = inter
+            .map(|inter| [inter.ref_frame, NONE_FRAME])
+            .unwrap_or([INTRA_FRAME, NONE_FRAME]);
+        let is_inter = inter.is_some();
+        let mode = inter.map(|inter| inter.mode);
+        let mv = inter.map(|inter| inter.mv).unwrap_or_default();
         let bw4 = block.size.num_4x4_wide() as usize;
         let bh4 = block.size.num_4x4_high() as usize;
         for row in block.row..(block.row + bh4).min(self.config.mi_rows) {
@@ -308,12 +696,14 @@ impl InterTileBlockSink {
                 let index = Self::at(row, col, self.config.mi_cols);
                 self.decoded[index] = true;
                 self.sizes[index] = Some(block.size);
-                self.is_inter[index] = true;
-                self.refs[index] = [inter.ref_frame, NONE_FRAME];
-                self.modes[index] = Some(inter.mode);
-                self.mvs[index] = [inter.mv, MotionVector::default()];
+                self.is_inter[index] = is_inter;
+                self.refs[index] = refs;
+                self.modes[index] = mode;
+                self.mvs[index] = [mv, MotionVector::default()];
                 self.skip_grid[index] = skip;
                 self.skip_modes[index] = skip_mode;
+                self.y_modes[index] = y_mode;
+                self.uv_modes[index] = uv_mode;
             }
         }
     }
@@ -441,9 +831,36 @@ impl TileBlockSink for InterTileBlockSink {
         )
         .map_err(Self::conversion)?;
         if !is_inter {
-            return Err(TileEntropyError::Unsupported(
-                "intra block inside inter frame",
-            ));
+            let intra = self.decode_intra_syntax(
+                block,
+                decoder,
+                cdfs,
+                segment_id,
+                skip,
+                self.current_qindex,
+                self.delta_lf,
+            )?;
+            self.record_block(
+                block,
+                skip,
+                skip_mode,
+                None,
+                Some(intra.y_mode),
+                intra.uv_mode,
+            );
+            self.blocks.push(InterSyntaxBlock {
+                block,
+                segment_id,
+                skip,
+                qindex: self.current_qindex,
+                delta_lf: self.delta_lf,
+                inter: None,
+                intra: Some(intra.clone()),
+                lossless: intra.lossless,
+                tx: intra.tx,
+                transforms: intra.transforms.clone(),
+            });
+            return Ok(());
         }
 
         let ref_frame = read_single_ref_frame(
@@ -502,9 +919,6 @@ impl TileBlockSink for InterTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(Self::conversion)?;
-        if !mv.is_integer() {
-            return Err(TileEntropyError::Unsupported("fractional motion vector"));
-        }
         let motion_mode = read_motion_mode(
             decoder,
             cdfs,
@@ -515,8 +929,170 @@ impl TileBlockSink for InterTileBlockSink {
         )
         .map_err(Self::conversion)?;
         let interp_filter = self.read_filter(decoder).map_err(Self::conversion)?;
+        let bw4 = block.size.num_4x4_wide() as usize;
+        let bh4 = block.size.num_4x4_high() as usize;
+        let lossless = false;
+        let above_width = Self::tx_extent(
+            &self.tx_grid,
+            self.config.mi_cols,
+            block.row as isize - 1,
+            block.col as isize,
+            true,
+        );
+        let left_height = Self::tx_extent(
+            &self.tx_grid,
+            self.config.mi_cols,
+            block.row as isize,
+            block.col as isize - 1,
+            false,
+        );
+        let tx = if lossless {
+            TxSize::Tx4x4
+        } else if skip {
+            crate::reference::av1::tx::max_tx_size_rect(block.size)
+        } else {
+            read_tx_size_with_cdf(
+                decoder,
+                cdfs,
+                block.size,
+                true,
+                lossless,
+                self.config.tx_mode_select,
+                above_width,
+                left_height,
+                self.config.disable_cdf_update,
+            )
+            .map_err(TileEntropyError::Cdf)?
+        };
+        for row in block.row..(block.row + bh4).min(self.config.mi_rows) {
+            for col in block.col..(block.col + bw4).min(self.config.mi_cols) {
+                self.tx_grid[Self::at(row, col, self.config.mi_cols)] = Some(tx);
+            }
+        }
+        if skip {
+            let planes = if self.has_chroma(block) { 3 } else { 1 };
+            for plane in 0..planes {
+                let (sub_x, sub_y) = if plane == 0 {
+                    (0, 0)
+                } else {
+                    (self.config.sub_x, self.config.sub_y)
+                };
+                self.tile_context.clear_block(
+                    plane,
+                    block.col >> sub_x,
+                    block.row >> sub_y,
+                    bw4 >> sub_x,
+                    bh4 >> sub_y,
+                );
+            }
+        }
+
+        let mut transforms = Vec::new();
         if !skip {
-            return Err(TileEntropyError::Unsupported("inter residual"));
+            let has_chroma = self.has_chroma(block);
+            let residual_blocks = intra_residual_blocks(
+                block.row,
+                block.col,
+                block.size,
+                tx,
+                has_chroma,
+                lossless,
+                self.config.sub_x,
+                self.config.sub_y,
+                self.config.mi_cols,
+                self.config.mi_rows,
+            );
+            for tx_block in residual_blocks {
+                let (sx, sy) = if tx_block.plane == 0 {
+                    (0, 0)
+                } else {
+                    (self.config.sub_x, self.config.sub_y)
+                };
+                let residual_size = residual_size(block.size, sx, sy)
+                    .ok_or(TileEntropyError::Unsupported("invalid residual size"))?;
+                let x4 = tx_block.x >> 2;
+                let y4 = tx_block.y >> 2;
+                let max_x4 = self.config.mi_cols >> sx;
+                let max_y4 = self.config.mi_rows >> sy;
+                let txb_ctx = self.tile_context.txb_skip_context(
+                    tx_block.plane,
+                    x4,
+                    y4,
+                    tx_block.tx,
+                    residual_size,
+                    max_x4,
+                    max_y4,
+                );
+                let all_zero = read_all_zero_with_cdf(
+                    decoder,
+                    cdfs,
+                    tx_block.tx,
+                    coeff_q_context(self.current_qindex),
+                    txb_ctx,
+                    self.config.disable_cdf_update,
+                )
+                .map_err(TileEntropyError::Cdf)?;
+                let tx_type = if all_zero {
+                    self.tile_context.update(
+                        tx_block.plane,
+                        x4,
+                        y4,
+                        (tx_block.tx.width() / 4) as usize,
+                        (tx_block.tx.height() / 4) as usize,
+                        0,
+                        0,
+                    );
+                    TxType::DctDct
+                } else if tx_block.plane == 0 {
+                    read_inter_tx_type_with_cdf(
+                        decoder,
+                        cdfs,
+                        tx_block.tx,
+                        self.current_qindex,
+                        self.config.reduced_tx_set,
+                        self.config.disable_cdf_update,
+                    )
+                    .map_err(TileEntropyError::Cdf)?
+                } else {
+                    TxType::DctDct
+                };
+                let decoded = if all_zero {
+                    crate::reference::av1::coeff_block::DecodedCoeffs {
+                        all_zero: true,
+                        eob: 0,
+                        quant: vec![0; seg_eob(tx_block.tx) as usize],
+                        tx_type,
+                        dc_category: 0,
+                        cul_level: 0,
+                    }
+                } else {
+                    decode_coefficient_payload(
+                        decoder,
+                        cdfs,
+                        &mut self.tile_context,
+                        tx_block.plane,
+                        x4,
+                        y4,
+                        max_x4,
+                        max_y4,
+                        tx_block.tx,
+                        tx_type,
+                        coeff_q_context(self.current_qindex),
+                        self.config.disable_cdf_update,
+                    )
+                    .map_err(TileEntropyError::Cdf)?
+                };
+                transforms.push(crate::reference::av1::intra_sink::IntraSyntaxTx {
+                    plane: tx_block.plane,
+                    x: tx_block.x,
+                    y: tx_block.y,
+                    tx: tx_block.tx,
+                    tx_type: decoded.tx_type,
+                    all_zero: decoded.all_zero,
+                    eob: decoded.eob,
+                    quant: decoded.quant,
+                });
+            }
         }
 
         let inter = InterBlock {
@@ -527,14 +1103,18 @@ impl TileBlockSink for InterTileBlockSink {
             interp_filter,
             ref_mv_idx,
         };
-        self.record_block(block, skip, skip_mode, inter.clone());
+        self.record_block(block, skip, skip_mode, Some(inter), None, None);
         self.blocks.push(InterSyntaxBlock {
             block,
             segment_id,
             skip,
             qindex: self.current_qindex,
             delta_lf: self.delta_lf,
-            inter,
+            inter: Some(inter),
+            intra: None,
+            lossless,
+            tx,
+            transforms,
         });
         Ok(())
     }

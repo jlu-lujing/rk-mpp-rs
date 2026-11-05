@@ -571,6 +571,23 @@ impl TileBlockSink for IntraTileBlockSink {
                 self.tx_grid[r * mi_cols + c] = Some(tx);
             }
         }
+        if skip {
+            let planes = if has_chroma { 3 } else { 1 };
+            for plane in 0..planes {
+                let (sub_x, sub_y) = if plane == 0 {
+                    (0, 0)
+                } else {
+                    (self.config.sub_x, self.config.sub_y)
+                };
+                self.tile_context.clear_block(
+                    plane,
+                    block.col >> sub_x,
+                    block.row >> sub_y,
+                    bw4 >> sub_x,
+                    bh4 >> sub_y,
+                );
+            }
+        }
 
         let mut transforms = Vec::new();
         if !skip {

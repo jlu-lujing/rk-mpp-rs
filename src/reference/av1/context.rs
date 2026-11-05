@@ -105,6 +105,11 @@ impl TileContext {
         }
     }
 
+    /// A skipped transform block updates both coefficient contexts to zero.
+    pub fn clear_block(&mut self, plane: usize, x4: usize, y4: usize, w4: usize, h4: usize) {
+        self.update(plane, x4, y4, w4, h4, 0, 0);
+    }
+
     /// `all_zero` context from the current block's above/left levels.
     #[allow(clippy::too_many_arguments)]
     pub fn txb_skip_context(
@@ -196,6 +201,17 @@ mod tests {
         // Making the above pair positive tips the sum positive.
         ctx.above_dc[0][0] = 2;
         assert_eq!(ctx.dc_sign_context(0, 0, 0, 2, 2, 8, 8), 2);
+    }
+
+    #[test]
+    fn clearing_a_skipped_block_drops_stale_level_and_dc_contexts() {
+        let mut ctx = TileContext::new(16, 16);
+        ctx.update(0, 2, 3, 2, 2, 7, 1);
+        ctx.clear_block(0, 2, 3, 2, 2);
+        assert_eq!(ctx.above_level[0][2..4], [0, 0]);
+        assert_eq!(ctx.left_level[0][3..5], [0, 0]);
+        assert_eq!(ctx.above_dc[0][2..4], [0, 0]);
+        assert_eq!(ctx.left_dc[0][3..5], [0, 0]);
     }
 
     #[test]

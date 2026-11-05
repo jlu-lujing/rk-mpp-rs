@@ -802,26 +802,45 @@ pub fn read_ref_mv_index(
     mode: InterMode,
     disable_cdf_update: bool,
 ) -> Result<usize, InterError> {
-    let range: &[usize] = match mode {
-        InterMode::New => &[0, 1],
-        InterMode::Near => &[1, 2],
-        _ => return Ok(0),
-    };
-    let mut result = usize::from(mode == InterMode::Near);
-    for &index in range {
-        if stack.count > index + 1 {
-            let bit = binary(
-                decoder,
-                cdfs,
-                &DEFAULT_DRL_MODE_CDF,
-                stack.drl_context(index),
-                disable_cdf_update,
-            )?;
-            if bit == 0 {
-                return Ok(index - usize::from(mode == InterMode::Near));
+    let mut result = 0;
+    match mode {
+        InterMode::New => {
+            for index in 0..2 {
+                if stack.count > index + 1 {
+                    let bit = binary(
+                        decoder,
+                        cdfs,
+                        &DEFAULT_DRL_MODE_CDF,
+                        stack.drl_context(index),
+                        disable_cdf_update,
+                    )?;
+                    result = index + bit;
+                    if bit == 0 {
+                        return Ok(result);
+                    }
+                }
             }
-            result = index + 1;
         }
+        InterMode::Near => {
+            // NEARMV offsets the first implicit candidate, so the transmitted
+            // loop starts at one and subtracts that offset from ref_mv_idx.
+            for index in 1..3 {
+                if stack.count > index + 1 {
+                    let bit = binary(
+                        decoder,
+                        cdfs,
+                        &DEFAULT_DRL_MODE_CDF,
+                        stack.drl_context(index),
+                        disable_cdf_update,
+                    )?;
+                    result = index + bit - 1;
+                    if bit == 0 {
+                        return Ok(result);
+                    }
+                }
+            }
+        }
+        _ => {}
     }
     Ok(result)
 }
@@ -1000,7 +1019,7 @@ pub fn assign_mv(
         InterMode::Near => stack.candidates[(1 + ref_mv_idx).min(stack.candidates.len() - 1)],
         InterMode::Global => global_mv,
         InterMode::New => {
-            let reference = if stack.count > 1 && ref_mv_idx < 2 {
+            let reference = if stack.count > 1 {
                 stack.candidates[ref_mv_idx]
             } else {
                 stack.candidates[0]

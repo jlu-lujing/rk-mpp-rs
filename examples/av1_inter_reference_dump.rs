@@ -156,7 +156,12 @@ fn main() -> Result<(), String> {
             );
             (picture, decoded.cdfs)
         };
-        references.refresh(frame.header.refresh_frame_flags, &picture, &final_cdfs);
+        references.refresh(
+            frame.header.refresh_frame_flags,
+            &picture,
+            frame.header.base_q_idx,
+            &final_cdfs,
+        );
         write_frame(&output.join(format!("{shown:02}.yuv")), &picture)
             .map_err(|error| error.to_string())?;
         shown += 1;
