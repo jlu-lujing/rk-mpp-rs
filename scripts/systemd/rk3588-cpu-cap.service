@@ -1,0 +1,11 @@
+[Unit]
+Description=Cap RK3588 CPU frequencies for sustained low-power operation
+After=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rk3588-cpu-cap
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
