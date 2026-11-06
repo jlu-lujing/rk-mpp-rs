@@ -38,21 +38,22 @@
 //!
 //! # Reference lifetime and the DPB question
 //!
-//! W5-4 also names "DPB release timing". The decoder-side DPB in this repo
-//! already recycles frames when their DPB entry goes away (M2 checklist);
-//! when the DPB moves onto pooled buffers, each displayed frame holds one
-//! [`BufferHandle`], every consumer (reference list, user output port) takes
-//! a `try_clone`, and the frame returns to the pool exactly when the last
-//! consumer drops it — the same event C models as "unref count zero after
-//! output port dequeue". The state machine below is what makes that
-//! discipline checkable at run time instead of debug-assert-only.
+//! W5-4 also names "DPB release timing". VP8's decoder uses the shared pool for
+//! its frame surfaces, and H.264 owns separate NV12/colmv pools with one lease
+//! per frame slot. IDR and geometry changes drop old reference frames before
+//! clearing idle cache, preserving the fresh-IDR requirement. H.265, AV1 and
+//! VP9 still use fixed slot arrays and remain a separate migration. The raw
+//! [`BufferHandle`] API remains the explicit C-style get/release surface;
+//! [`BufferLease`] is the RAII wrapper for consumers that must not forget the
+//! final release.
 //!
 //! # Multi-session use
 //!
 //! The pool is `Send + Sync`; several task-queue workers may acquire from
-//! one pool concurrently. For rkvenc's one-session-per-process rule
-//! (HANDOFF §6.13) pool sharing is still fine — buffer allocation is not the
-//! serialised part, the session is; see [`super::task_queue::SessionGate`].
+//! one pool concurrently, including rkvenc workers: encoder row buffers and
+//! sessions are per-instance (the old one-session-per-process claim is
+//! retracted). When callers deliberately choose to share one session, use
+//! [`super::task_queue::SessionGate`] around that session only.
 
 use std::io;
 use std::ops::{Deref, DerefMut};
@@ -193,6 +194,18 @@ pub struct BufferHandle {
     id: u64,
 }
 
+/// Owning reference to one live pool buffer.
+///
+/// This is the RAII counterpart of a C `MppBuffer`: dropping the last lease
+/// performs `mpp_buffer_unref` and returns the storage to the pool cache.
+/// [`try_clone`](Self::try_clone) is `mpp_buffer_ref`. The underlying
+/// [`BufferHandle`] is intentionally not exposed, so a lease cannot be
+/// released twice or outlive its ownership accidentally.
+pub struct BufferLease<B: PoolBuffer + 'static> {
+    pool: BufferPool<B>,
+    handle: BufferHandle,
+}
+
 #[derive(Debug)]
 enum Occupancy<B> {
     Empty,
@@ -324,6 +337,49 @@ impl<B> Clone for BufferPool<B> {
     }
 }
 
+impl<B: PoolBuffer + 'static> BufferLease<B> {
+    /// `mpp_buffer_ref`: create another owner of the same live block.
+    pub fn try_clone(&self) -> Result<BufferLease<B>, PoolError> {
+        let handle = self.pool.try_clone(self.handle)?;
+        Ok(BufferLease {
+            pool: self.pool.clone(),
+            handle,
+        })
+    }
+
+    /// Outstanding owners, including this lease.
+    pub fn refs(&self) -> Option<u32> {
+        self.pool.refs(self.handle)
+    }
+
+    /// dma-buf fd for hardware jobs.
+    pub fn fd(&self) -> Option<i32> {
+        self.pool.fd(self.handle)
+    }
+
+    /// CPU read view; the pool lock pins the slot while the guard is alive.
+    pub fn data(&self) -> Result<PoolRef<'_, B>, PoolError> {
+        self.pool.data(self.handle)
+    }
+
+    /// CPU write view; the pool lock pins the slot while the guard is alive.
+    pub fn data_mut(&self) -> Result<PoolRefMut<'_, B>, PoolError> {
+        self.pool.data_mut(self.handle)
+    }
+
+    /// Share the underlying dma-buf without transferring lease ownership.
+    #[cfg(unix)]
+    pub fn dup_fd(&self) -> Result<std::os::fd::OwnedFd, PoolError> {
+        self.pool.dup_fd(self.handle)
+    }
+}
+
+impl<B: PoolBuffer + 'static> Drop for BufferLease<B> {
+    fn drop(&mut self) {
+        let _ = self.pool.release(self.handle);
+    }
+}
+
 impl BufferPool<DmaBuf> {
     /// Pool over the `system` dma-heap with at most `limit` buffers.
     /// Allocates lazily; nothing is opened until the first acquire.
@@ -372,6 +428,29 @@ impl<B: PoolBuffer + 'static> BufferPool<B> {
         timeout: PollTimeout,
     ) -> Result<BufferHandle, PoolError> {
         self.acquire_inner(size, timeout.duration(), Some(timeout))
+    }
+
+    /// RAII form of [`acquire`](Self::acquire). The last cloned lease to drop
+    /// returns the block to the cache.
+    pub fn acquire_lease(&self, size: usize) -> Result<BufferLease<B>, PoolError> {
+        let handle = self.acquire(size)?;
+        Ok(BufferLease {
+            pool: self.clone(),
+            handle,
+        })
+    }
+
+    /// RAII form of [`acquire_timeout`](Self::acquire_timeout).
+    pub fn acquire_lease_timeout(
+        &self,
+        size: usize,
+        timeout: PollTimeout,
+    ) -> Result<BufferLease<B>, PoolError> {
+        let handle = self.acquire_timeout(size, timeout)?;
+        Ok(BufferLease {
+            pool: self.clone(),
+            handle,
+        })
     }
 
     fn acquire_inner(
@@ -502,10 +581,14 @@ impl<B: PoolBuffer + 'static> BufferPool<B> {
     pub fn dup_fd(&self, handle: BufferHandle) -> Result<std::os::fd::OwnedFd, PoolError> {
         use std::os::fd::FromRawFd;
         let raw = self.fd(handle).ok_or(PoolError::Released)?;
+        // SAFETY: `raw` is a live dma-buf fd owned by the pool slot while
+        // `handle` remains live.
         let dup = unsafe { libc::dup(raw) };
         if dup < 0 {
             return Err(PoolError::Released);
         }
+        // SAFETY: `dup` is a fresh descriptor returned by dup and ownership is
+        // transferred exactly once to OwnedFd.
         Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(dup) })
     }
 
@@ -668,6 +751,30 @@ mod tests {
         assert_eq!(pool.release(h2), Ok(ReleaseEffect::Cached));
         assert_eq!(pool.refs(h2), None);
         let _ = pool.release(other);
+    }
+
+    #[test]
+    fn raii_leases_return_storage_when_the_last_owner_drops() {
+        let (pool, allocs) = fake_pool(1);
+        let lease = pool.acquire_lease(256).unwrap();
+        lease.data_mut().unwrap().fill(7);
+        assert_eq!(lease.data().unwrap()[0], 7);
+
+        let clone = lease.try_clone().unwrap();
+        assert_eq!(lease.refs(), Some(2));
+        assert_eq!(pool.stats().in_use, 1);
+
+        drop(lease);
+        assert_eq!(pool.stats().in_use, 1, "the clone still owns the buffer");
+        assert_eq!(pool.stats().cached, 0);
+
+        drop(clone);
+        assert_eq!(pool.stats().in_use, 0);
+        assert_eq!(pool.stats().cached, 1);
+
+        let again = pool.acquire_lease(256).unwrap();
+        assert_eq!(allocs.load(Ordering::SeqCst), 1, "cached lease was reused");
+        assert_eq!(again.refs(), Some(1));
     }
 
     #[test]

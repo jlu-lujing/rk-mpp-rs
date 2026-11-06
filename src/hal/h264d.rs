@@ -12,6 +12,7 @@ use crate::codec::h264::dpb::{FrameStore, PictureOrderCount, RefListEntry, Refer
 use crate::codec::h264::hw;
 use crate::codec::h264::parser::{Pps, SliceHeader, Sps};
 use crate::hal::vdpu34x_regs as reg;
+use crate::service::buffer_pool::{BufferLease, BufferPool, PoolError};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{
     Batch, Client, MppService, RcbInfo as RcbConfig, RegOffsetInfo, MPP_CMD_SET_RCB_INFO,
@@ -29,8 +30,8 @@ static CMV_DUMP_INDEX: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomi
 
 /// One decoded picture: NV12 planes plus its colmv buffer.
 pub struct Frame {
-    pub nv12: DmaBuf,
-    pub colmv: DmaBuf,
+    pub nv12: BufferLease<DmaBuf>,
+    pub colmv: BufferLease<DmaBuf>,
     pub width: usize,
     pub height: usize,
     pub hor_stride: usize,
@@ -38,12 +39,18 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn alloc(width: usize, height: usize, frame_mbs_only: bool) -> io::Result<Frame> {
+    pub fn acquire(
+        nv12_pool: &BufferPool<DmaBuf>,
+        colmv_pool: &BufferPool<DmaBuf>,
+        width: usize,
+        height: usize,
+        frame_mbs_only: bool,
+    ) -> Result<Frame, PoolError> {
         let hor_stride = align(width, 16);
         let ver_stride = align(height, 16);
         let y_size = hor_stride * ver_stride;
-        let nv12 = DmaBuf::alloc("system", y_size * 3 / 2, false)?;
-        let colmv = DmaBuf::alloc("system", colmv_size(width, height, frame_mbs_only), false)?;
+        let nv12 = acquire_frame_buffer(nv12_pool, y_size * 3 / 2)?;
+        let colmv = acquire_frame_buffer(colmv_pool, colmv_size(width, height, frame_mbs_only))?;
         Ok(Frame {
             nv12,
             colmv,
@@ -54,15 +61,31 @@ impl Frame {
         })
     }
 
-    /// Y plane as bytes (NV12 layout, 16-aligned stride).
-    pub fn y_plane(&self) -> &[u8] {
-        &self.nv12.as_slice()[..self.hor_stride * self.ver_stride]
+    pub fn nv12_fd(&self) -> u32 {
+        self.nv12.fd().expect("pooled H.264 frame has a dma-buf fd") as u32
     }
 
-    /// UV plane (interleaved) as bytes.
-    pub fn uv_plane(&self) -> &[u8] {
-        let y = self.hor_stride * self.ver_stride;
-        &self.nv12.as_slice()[y..y + y / 2]
+    pub fn colmv_fd(&self) -> u32 {
+        self.colmv
+            .fd()
+            .expect("pooled H.264 colmv has a dma-buf fd") as u32
+    }
+}
+
+fn acquire_frame_buffer(
+    pool: &BufferPool<DmaBuf>,
+    size: usize,
+) -> Result<BufferLease<DmaBuf>, PoolError> {
+    match pool.acquire_lease(size) {
+        Ok(lease) => Ok(lease),
+        Err(PoolError::Full) => {
+            // Cached surfaces from a previous size count toward the group
+            // limit. Only idle stock is discarded; live reference frames
+            // remain owned and still make a genuinely exhausted pool fail.
+            pool.clear();
+            pool.acquire_lease(size)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -233,7 +256,8 @@ pub struct H264d {
     spspps: DmaBuf,
     rps: DmaBuf,
     sclst: DmaBuf,
-    errinfo: DmaBuf,
+    /// Retained for the lifetime of the hardware session.
+    _errinfo: DmaBuf,
     rcb: DmaBuf,
     rcb_info: RcbInfo,
     rcb_info_supported: bool,
@@ -264,7 +288,7 @@ impl H264d {
             spspps,
             rps,
             sclst,
-            errinfo,
+            _errinfo: errinfo,
             rcb,
             rcb_info: RcbInfo::default(),
             rcb_info_supported,
@@ -284,6 +308,13 @@ impl H264d {
         hw.cabac.sync_write_end()?;
         hw.init_common();
         Ok(hw)
+    }
+
+    /// Reset the failed kernel job and replace the client session while
+    /// retaining this HAL's DMA tables. The next `decode` rebuilds and
+    /// resubmits its batch.
+    pub fn recover_session(&mut self) -> io::Result<()> {
+        self.svc.restart_after_hardware_error()
     }
 
     fn init_common(&mut self) {
@@ -353,8 +384,8 @@ impl H264d {
                 ((cur.hor_stride * cur.ver_stride) / 16) as u32,
             );
         write_current_picture_poc(r, sh, order);
-        r.set(reg::w130::REG130_DECOUT_BASE, cur.nv12.fd() as u32)
-            .set(reg::w131::REG131_COLMV_CUR_BASE, cur.colmv.fd() as u32)
+        r.set(reg::w130::REG130_DECOUT_BASE, cur.nv12_fd())
+            .set(reg::w131::REG131_COLMV_CUR_BASE, cur.colmv_fd())
             .set(reg::w128::REG128_RLC_BASE, 0)
             .set(reg::w197::REG197_CABACTBL_BASE, self.cabac.fd() as u32);
         // POC list (words 67..98) and per-ref flags (99..102), ref bases.
@@ -377,15 +408,15 @@ impl H264d {
             } else {
                 refs[resolved[i]].expect("resolved reference slot")
             };
-            r.w[164 + i] = fallback.nv12.fd() as u32;
-            r.w[181 + i] = fallback.colmv.fd() as u32;
+            r.w[164 + i] = fallback.nv12_fd();
+            r.w[181 + i] = fallback.colmv_fd();
         }
         let error_ref_index = select_error_reference(ref_frame_nums, sh.frame_num)
             .filter(|&i| refs.get(i).copied().flatten().is_some());
         let error_ref = error_ref_index
             .and_then(|i| refs.get(i).copied().flatten())
             .unwrap_or(cur);
-        r.set(reg::w132::REG132_ERROR_REF_BASE, error_ref.nv12.fd() as u32)
+        r.set(reg::w132::REG132_ERROR_REF_BASE, error_ref.nv12_fd())
             .set(
                 reg::w21::ERROR_INTRA_MODE,
                 error_intra_mode(error_ref_index.is_some(), pps.weighted_pred),
@@ -548,21 +579,25 @@ impl H264d {
         if self.rcb_info_supported && !self.rcb_scratch.is_empty() {
             self.batch.rcb_info(&self.rcb_scratch);
         }
-        self.svc.submit_batch(&mut self.batch)?;
-        self.svc.poll_hw_finish()?;
+        self.svc.submit_batch_recovering(&mut self.batch)?;
+        self.svc.poll_hw_finish_recovering()?;
         self.last_status = (readback[224], readback[226], readback[227]);
         self.last_hardware_error =
             hardware_status_error(readback[224], readback[225], readback[226], readback[227]);
+        if self.last_hardware_error {
+            let _ = self.svc.restart_after_hardware_error();
+        }
         if std::env::var_os("RFI_COLMV_DUMP").is_some() {
             use std::io::Write;
 
             let task = CMV_DUMP_INDEX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let path = format!("/tmp/rust_cmv_{task:02}.bin");
-            let _ = cur.colmv.sync_read_begin();
+            let view = cur.colmv.data().expect("pooled colmv stays live");
+            let _ = view.buffer().sync_read_begin();
             if let Ok(mut file) = std::fs::File::create(path) {
-                let _ = file.write_all(cur.colmv.as_slice());
+                let _ = file.write_all(&view);
             }
-            let _ = cur.colmv.sync_read_end();
+            let _ = view.buffer().sync_read_end();
         }
         Ok(())
     }
@@ -628,6 +663,7 @@ fn resolve_reference_slots(present: &[bool; 16]) -> [usize; 16] {
     })
 }
 
+#[cfg(test)]
 fn write_reference_high_pocs(r: &mut reg::Regs, resolved: &[usize; 16]) {
     write_reference_poc_high_bits(r, resolved, &SliceHeader::default());
 }

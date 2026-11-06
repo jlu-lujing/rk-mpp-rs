@@ -1,5 +1,9 @@
+use std::os::fd::AsRawFd;
+
+use rk_mpp_rs::hal::h264d::Frame;
 use rk_mpp_rs::service::buffer_pool::BufferPool;
 use rk_mpp_rs::service::task_queue::{PollTimeout, TaskOutcome, TaskQueue};
+use rk_mpp_rs::service::{Client, MppService};
 
 /// The pool tests in the library run against a fake allocator (a host has
 /// no dma-heap); these two exercise the real DmaBuf backend.
@@ -31,6 +35,22 @@ fn dma_heap_pool_reuses_across_release_and_refcount() {
     assert_eq!(pool.stats().allocations, 2);
     let _ = pool.release(d);
     let _ = pool.release(e);
+}
+
+#[test]
+#[ignore = "requires /dev/dma_heap/system and /dev/mpp_service"]
+fn lease_fd_maps_to_a_stable_iova_and_exports_a_duplicate_fd() {
+    let pool = BufferPool::new(1);
+    let lease = pool.acquire_lease(1 << 20).unwrap();
+    let fd = lease.fd().unwrap();
+    let duplicate = lease.dup_fd().unwrap();
+    assert_ne!(duplicate.as_raw_fd(), fd);
+
+    let service = MppService::open(Client::RkvDec as u32).unwrap();
+    let first = service.fd_to_iova(fd).unwrap();
+    let second = service.fd_to_iova(fd).unwrap();
+    assert_ne!(first, 0, "kernel returned a null IOVA");
+    assert_eq!(first, second, "mapping is stable for a live dma-buf");
 }
 
 #[test]
@@ -89,4 +109,27 @@ fn pool_feeds_queue_workers_under_concurrency() {
         );
     }
     assert!(pool.stats().allocations <= 8, "pool honoured its cap");
+}
+
+#[test]
+#[ignore = "requires /dev/dma_heap/system"]
+fn h264_dpb_frame_leases_return_to_their_pools() {
+    let nv12 = BufferPool::new(1);
+    let colmv = BufferPool::new(1);
+    let frame = Frame::acquire(&nv12, &colmv, 320, 240, true).unwrap();
+    let nv12_fd = frame.nv12_fd();
+    let colmv_fd = frame.colmv_fd();
+    assert_eq!(nv12.stats().in_use, 1);
+    assert_eq!(colmv.stats().in_use, 1);
+    drop(frame);
+
+    assert_eq!(nv12.stats().in_use, 0);
+    assert_eq!(colmv.stats().in_use, 0);
+    assert_eq!(nv12.stats().cached, 1);
+    assert_eq!(colmv.stats().cached, 1);
+    let reused = Frame::acquire(&nv12, &colmv, 320, 240, true).unwrap();
+    assert_eq!(reused.nv12_fd(), nv12_fd);
+    assert_eq!(reused.colmv_fd(), colmv_fd);
+    assert_eq!(nv12.stats().allocations, 1);
+    assert_eq!(colmv.stats().allocations, 1);
 }

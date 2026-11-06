@@ -3,6 +3,7 @@
 use std::io;
 
 use crate::hal::h264d::{Frame, H264d};
+use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
 
 use super::dpb::{Dpb, FrameStore, PictureOrderCount, RefListEntry, ReferenceFlags};
@@ -21,6 +22,9 @@ pub struct Picture {
     pub idr: bool,
     /// Planar YUV 4:2:0, tightly packed.
     pub yuv: Vec<u8>,
+    /// Tightly packed NV12 when `Decoder::set_output_nv12(true)` is enabled.
+    /// `yuv` is empty in that mode.
+    pub nv12: Option<Vec<u8>>,
     /// Raw interleaved chroma as the hardware wrote it (stride = width).
     pub raw_uv: Vec<u8>,
     /// MPP-compatible frame error mask (`0x10` invalid syntax/reference,
@@ -29,6 +33,52 @@ pub struct Picture {
     /// MPP drops this frame from the display path instead of exposing it as a
     /// retained error reference.
     pub discard: bool,
+}
+
+/// Bounded display-order reorder buffer for streaming output.
+pub struct DisplayReorder {
+    pending: Vec<Picture>,
+    max_reorder: usize,
+}
+
+impl DisplayReorder {
+    pub fn new(max_reorder: usize) -> Self {
+        Self {
+            pending: Vec::with_capacity(max_reorder.saturating_add(1)),
+            max_reorder: max_reorder.min(16),
+        }
+    }
+
+    pub fn push<F>(&mut self, picture: Picture, mut emit: F)
+    where
+        F: FnMut(Picture),
+    {
+        if picture.idr && !self.pending.is_empty() {
+            self.flush(&mut emit);
+        }
+        if !picture_is_output(&picture) {
+            return;
+        }
+        self.pending.push(picture);
+        self.pending.sort_by_key(|picture| picture.poc);
+        while self.pending.len() > self.max_reorder {
+            emit(self.pending.remove(0));
+        }
+    }
+
+    pub fn set_max_reorder(&mut self, max_reorder: usize) {
+        self.max_reorder = max_reorder.min(16);
+    }
+
+    pub fn flush<F>(&mut self, mut emit: F)
+    where
+        F: FnMut(Picture),
+    {
+        self.pending.sort_by_key(|picture| picture.poc);
+        for picture in self.pending.drain(..) {
+            emit(picture);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -47,6 +97,8 @@ pub struct Decoder {
     dpb: Dpb,
     hw: H264d,
     frames: Vec<Option<Frame>>,
+    nv12_pool: BufferPool<DmaBuf>,
+    colmv_pool: BufferPool<DmaBuf>,
     width: usize,
     height: usize,
     coded_height: usize,
@@ -57,6 +109,8 @@ pub struct Decoder {
     stream: Option<DmaBuf>,
     // Keep the interleaved chroma of every picture, for the debug dump only.
     capture_raw_uv: bool,
+    max_num_reorder_frames: usize,
+    output_nv12: bool,
 }
 
 impl Decoder {
@@ -67,6 +121,8 @@ impl Decoder {
             dpb: Dpb::new(1, 0),
             hw: H264d::open()?,
             frames: (0..17).map(|_| None).collect(),
+            nv12_pool: BufferPool::new(17),
+            colmv_pool: BufferPool::new(17),
             width: 0,
             height: 0,
             coded_height: 0,
@@ -75,6 +131,8 @@ impl Decoder {
             payload: Vec::new(),
             stream: None,
             capture_raw_uv: std::env::var("RFI_DUMP_UV").is_ok(),
+            max_num_reorder_frames: 16,
+            output_nv12: false,
         })
     }
 
@@ -83,13 +141,25 @@ impl Decoder {
         self.hw.last_status
     }
 
+    /// Recover the underlying hardware session after a watchdog/ioctl/status
+    /// failure. Decoder syntax and DPB state are intentionally retained; reset
+    /// only drops the failed kernel job.
+    pub fn recover_session(&mut self) -> io::Result<()> {
+        self.hw.recover_session()
+    }
+
     fn ensure_frame(&mut self, slot: usize, sps: &Sps) -> io::Result<()> {
         if self.frames[slot].is_none() {
-            self.frames[slot] = Some(Frame::alloc(
-                sps.coded_width as usize,
-                sps.coded_height as usize,
-                sps.frame_mbs_only,
-            )?);
+            self.frames[slot] = Some(
+                Frame::acquire(
+                    &self.nv12_pool,
+                    &self.colmv_pool,
+                    sps.coded_width as usize,
+                    sps.coded_height as usize,
+                    sps.frame_mbs_only,
+                )
+                .map_err(|error| io::Error::other(format!("H.264 frame pool: {error}")))?,
+            );
         }
         Ok(())
     }
@@ -116,6 +186,8 @@ impl Decoder {
                         self.coded_height = s.coded_height as usize;
                         self.frame_mbs_only = s.frame_mbs_only;
                         self.frames = (0..17).map(|_| None).collect();
+                        self.nv12_pool.clear();
+                        self.colmv_pool.clear();
                         self.pending_top = None;
                     }
                     self.sps[id] = Some(s);
@@ -139,6 +211,7 @@ impl Decoder {
         let sps = self.sps[(pps.sps_id as usize) % 32]
             .clone()
             .ok_or("missing SPS")?;
+        self.max_num_reorder_frames = sps.max_num_reorder_frames.unwrap_or(16).min(16) as usize;
         let idr = first_vcl.unit_type == parser::NAL_IDR;
         let sh: SliceHeader = parser::parse_slice_header(
             &first_vcl.rbsp,
@@ -161,6 +234,9 @@ impl Decoder {
         }
         if idr && paired_top.is_none() {
             self.dpb.clear();
+            self.frames = (0..17).map(|_| None).collect();
+            self.nv12_pool.clear();
+            self.colmv_pool.clear();
         }
         let fno = self.dpb.frame_num_offset(&sh, &sps, idr, false);
         let order = self.dpb.compute_picture_order(&sh, &sps, idr, fno);
@@ -176,8 +252,7 @@ impl Decoder {
         let slot = if let Some(top) = &paired_top {
             top.slot
         } else if idr {
-            self.frames.push(None);
-            self.frames.len() - 1
+            0
         } else {
             // Reuse a buffer no DPB entry points at any more; otherwise grow.
             // A buffer that still backs a reference must never be the output.
@@ -341,11 +416,15 @@ impl Decoder {
                 'F'
             };
             let path = format!("/tmp/rust_field_{:03}_{field}.nv12", order.frame);
-            let _ = cur.nv12.sync_read_begin();
+            let view = cur
+                .nv12
+                .data()
+                .map_err(|error| format!("H.264 field dump pool: {error}"))?;
+            let _ = view.buffer().sync_read_begin();
             if let Ok(mut file) = std::fs::File::create(path) {
-                let _ = file.write_all(cur.nv12.as_slice());
+                let _ = file.write_all(&view);
             }
-            let _ = cur.nv12.sync_read_end();
+            let _ = view.buffer().sync_read_end();
         }
 
         // 6. mark the DPB. Complementary fields occupy one frame store; the
@@ -438,20 +517,42 @@ impl Decoder {
 
         // 7. copy out (the dma-buf is CPU-cached, so sync before reading).
         // MPP never exposes pixel data for an invalid or hardware-errored job.
-        let (yuv, raw_uv) = if combined_err_info == 0 {
+        let (yuv, nv12, raw_uv) = if combined_err_info == 0 {
             let frame = self.frames[slot].as_ref().unwrap();
-            let _ = frame.nv12.sync_read_begin();
-            let yuv = crate::codec::yuv::nv12_to_planar(
-                frame.y_plane(),
-                frame.uv_plane(),
-                self.width,
-                self.height,
-                frame.hor_stride,
-            );
+            let view = frame
+                .nv12
+                .data()
+                .map_err(|error| format!("H.264 output pool: {error}"))?;
+            let y_size = frame.hor_stride * frame.ver_stride;
+            let y = &view[..y_size];
+            let uv = &view[y_size..y_size + y_size / 2];
+            let _ = view.buffer().sync_read_begin();
+            let (yuv, nv12) = if self.output_nv12 {
+                (
+                    Vec::new(),
+                    Some(crate::codec::yuv::nv12_to_packed(
+                        y,
+                        uv,
+                        self.width,
+                        self.height,
+                        frame.hor_stride,
+                    )),
+                )
+            } else {
+                (
+                    crate::codec::yuv::nv12_to_planar(
+                        y,
+                        uv,
+                        self.width,
+                        self.height,
+                        frame.hor_stride,
+                    ),
+                    None,
+                )
+            };
             // The interleaved chroma is only ever dumped by the debug path; the
             // hardware wrote it into the same buffer the planar copy just read.
             let raw_uv: Vec<u8> = if self.capture_raw_uv {
-                let uv = frame.uv_plane();
                 (0..self.height / 2)
                     .flat_map(|row| {
                         let off = row * frame.hor_stride;
@@ -461,10 +562,10 @@ impl Decoder {
             } else {
                 Vec::new()
             };
-            let _ = frame.nv12.sync_read_end();
-            (yuv, raw_uv)
+            let _ = view.buffer().sync_read_end();
+            (yuv, nv12, raw_uv)
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), None, Vec::new())
         };
         let output_reference = current_reference || top_reference;
         Ok(Some(Picture {
@@ -473,10 +574,22 @@ impl Decoder {
             poc: output_poc,
             idr: output_idr,
             yuv,
+            nv12,
             raw_uv,
             err_info: combined_err_info,
             discard: combined_err_info != 0 && !output_reference,
         }))
+    }
+
+    /// VUI display reorder depth for the active SPS.
+    pub fn max_num_reorder_frames(&self) -> usize {
+        self.max_num_reorder_frames
+    }
+
+    /// Select packed NV12 instead of planar I420 output. This removes the
+    /// chroma deinterleave pass for NV12-capable display/conversion consumers.
+    pub fn set_output_nv12(&mut self, enabled: bool) {
+        self.output_nv12 = enabled;
     }
 }
 
@@ -652,7 +765,7 @@ mod tests {
     use super::{
         build_slice_payload, complementary_fields, current_reference_state, finish_hardware_job,
         frame_error, hardware_rps_lists, pad_h264_payload, picture_is_output, sort_pictures_by_poc,
-        split_access_units, Picture, FRAME_ERR_DEC_HW_ERR, FRAME_ERR_DEC_INVALID,
+        split_access_units, DisplayReorder, Picture, FRAME_ERR_DEC_HW_ERR, FRAME_ERR_DEC_INVALID,
     };
     use crate::codec::h264::dpb::{RefListEntry, ReferenceFlags};
     use crate::codec::h264::parser::{split_annex_b, SliceHeader};
@@ -664,6 +777,7 @@ mod tests {
             poc,
             idr,
             yuv: Vec::new(),
+            nv12: None,
             raw_uv: Vec::new(),
             err_info: 0,
             discard: false,
@@ -697,6 +811,29 @@ mod tests {
         ];
         sort_pictures_by_poc(&mut pictures);
         assert_eq!(pictures.map(|picture| picture.poc), [0, 2, 4, 6]);
+    }
+
+    #[test]
+    fn streaming_reorder_is_bounded_and_display_ordered() {
+        let mut reorder = DisplayReorder::new(2);
+        let mut emitted = Vec::new();
+        for (poc, idr) in [(0, true), (2, false), (1, false), (4, false), (3, false)] {
+            reorder.push(picture(poc, idr), |picture| emitted.push(picture.poc));
+            assert!(reorder.pending.len() <= 2, "reorder exceeded its bound");
+        }
+        reorder.flush(|picture| emitted.push(picture.poc));
+        assert_eq!(emitted, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn streaming_reorder_flushes_the_previous_idr_epoch() {
+        let mut reorder = DisplayReorder::new(2);
+        let mut emitted = Vec::new();
+        reorder.push(picture(10, true), |picture| emitted.push(picture.poc));
+        reorder.push(picture(12, false), |picture| emitted.push(picture.poc));
+        reorder.push(picture(0, true), |picture| emitted.push(picture.poc));
+        reorder.flush(|picture| emitted.push(picture.poc));
+        assert_eq!(emitted, [10, 12, 0]);
     }
 
     #[test]

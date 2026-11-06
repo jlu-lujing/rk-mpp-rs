@@ -16,10 +16,10 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --all-targets` currently enumerates **1148 tests**. The regular
-suite passes **1118 / 0 failed / 30 ignored** on both the host and t6. All
-**30 board-only ignored tests** also pass on t6 under the current 80% OPP cap:
-26 hardware tests ran directly, and the four H.265 board-script tests ran from
+`cargo test --all-targets` currently enumerates **1149 tests**. The regular
+suite passes **1118 / 0 failed / 31 ignored** on both the host and t6. All
+**31 board-only ignored tests** also pass on t6 under the current 80% OPP cap:
+27 hardware tests ran directly, and the four H.265 board-script tests ran from
 the host with `BOARD=t6`. The two JPEG restart/rotate cases share a temporary
 input name and therefore need `--test-threads=1`.
 
@@ -35,6 +35,13 @@ Fixes required by the validation:
   lease can return to the pool. The declaration order makes this hold on every
   early `?` path too. This targets the t6 kernel list corruption observed in
   `mpp_dma_find_buffer_fd()`.
+- H.264 NV12 and colmv frame storage now uses separate counted pools. IDR and
+  geometry changes drop all old reference surfaces before clearing idle cache,
+  so the reference-less IDR still receives a fresh mapping. The seven-stream
+  H.264 regression, recovery-after-replacement, and a generated 15-frame /
+  three-IDR stream all match C MPP byte for byte. A dma-heap test confirms that
+  dropping the frame returns `in_use` to zero and the next acquire reuses the
+  same fds without another allocation.
 
 The W5-8 recovery gate exposed a stronger t6 driver failure on 2026-11-07.
 `RESET_SESSION` followed by an H.264 decode still blocked the whole board even
