@@ -23,6 +23,7 @@ ssh "$BOARD" "sed \
   -e 's/\"height\" : 1080/\"height\" : 720/' \
   $base_cfg > /tmp/hevc_tiles_enc.json"
 
+ssh "$BOARD" 'sudo rm -f /tmp/hevc_tiles_720p.hevc /tmp/hevc_tiles_encode.log'
 ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$libdir $enc \
   -i /tmp/hevc_tiles_src_nv12.yuv -o /tmp/hevc_tiles_720p.hevc \
   -w 1280 -h 720 -n 30 -f 0 -t 16777220 \

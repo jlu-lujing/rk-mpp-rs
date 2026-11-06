@@ -15,7 +15,7 @@ BOARD="${BOARD:-t6}"
 # Usage: scripts/board_h264_status_vs_mpp.sh
 set -uo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
@@ -29,16 +29,33 @@ if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && 
   exit 0
 fi
 
-ssh "$BOARD" "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame /tmp/rk-mpp-rs-1f.nv12 320 240 >/dev/null &&
-        rm -f $fixture && cp /tmp/rk-mpp-rs-1f.nv12 $fixture && cat /tmp/rk-mpp-rs-1f.nv12 >> $fixture &&
-        sudo rm -f /tmp/stat_c.txt /tmp/stat_rust.txt && stat -c "%n %s" $fixture"
+if ! ssh "$BOARD" 'set -e
+    cd ~/rk-mpp-rs
+    ./target/release/rk-mpp-rs probe-frame /tmp/rk-mpp-rs-1f.nv12 320 240 >/dev/null
+    sudo rm -f /tmp/rk-mpp-rs-status-2f.nv12
+    cp /tmp/rk-mpp-rs-1f.nv12 /tmp/rk-mpp-rs-status-2f.nv12
+    cat /tmp/rk-mpp-rs-1f.nv12 >> /tmp/rk-mpp-rs-status-2f.nv12
+    sudo rm -f /tmp/stat_c.txt /tmp/stat_c_raw.log /tmp/stat_rust.txt \
+      /tmp/rk-mpp-rs-status-c.264 /tmp/rk-mpp-rs-status-rust.264
+    stat -c "%n %s" /tmp/rk-mpp-rs-status-2f.nv12'; then
+  printf 'FAIL STATUS (could not prepare two-frame fixture)\n'
+  exit 1
+fi
 
 # The tracer prints the whole window per read; keep only the STATUS lines so the
 # comparison input stays small enough to reason about.
-ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=/tmp/mpp_trace.so timeout 180 $mpp_bin \
-    -i $fixture -o /tmp/rk-mpp-rs-status-c.264 -w 320 -h 240 -t 7 -f 0 -n 2 \
-    -rc 2 -qc 26:26:26:26:26 -v q 2>&1 |
-    grep -A1 'read_complete\[1\]@16384' > /tmp/stat_c.txt"
+if ! ssh "$BOARD" "set -e
+    sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=/tmp/mpp_trace.so \
+      timeout 180 $mpp_bin \
+      -i $fixture -o /tmp/rk-mpp-rs-status-c.264 \
+      -w 320 -h 240 -t 7 -f 0 -n 2 \
+      -rc 2 -qc 26:26:26:26:26 -v q \
+      > /tmp/stat_c_raw.log 2>&1
+    grep 'read_complete\\[1\\]@16384' /tmp/stat_c_raw.log > /tmp/stat_c.txt
+    test -s /tmp/stat_c.txt"; then
+  printf 'FAIL STATUS (C encoder did not emit the STATUS trace)\n'
+  exit 1
+fi
 
 ssh "$BOARD" "cd ~/rk-mpp-rs && sudo env RKMPP_STAT_DUMP=/tmp/stat_rust.txt \
     ./target/release/rk-mpp-rs h264-enc $fixture /tmp/rk-mpp-rs-status-rust.264 \

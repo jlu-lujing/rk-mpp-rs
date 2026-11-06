@@ -3,7 +3,7 @@ BOARD="${BOARD:-t6}"
 # HEVC regression: the CLI output must already be in display order.
 set -euo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
@@ -191,6 +191,7 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
     test -f /tmp/mpp-develop/test/cfg/enc/base_h265_1920x1080.json'; then
   if ! ssh "$BOARD" 'set -e
+      sudo rm -f /tmp/hevc_scaling.hevc /tmp/hevc_scaling_encode.log
       sed "0,/\"scaling_list\" : 0/s//\"scaling_list\" : 1/" \
         /tmp/mpp-develop/test/cfg/enc/base_h265_1920x1080.json \
         > /tmp/mpp-develop/scaling_list_h265.json
@@ -653,6 +654,8 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     test -f /tmp/mpp-develop/test/cfg/enc/frm_ltr_mark.json &&
     test -f /tmp/mpp-develop/test/cfg/enc/frm_ltr_use.json'; then
   if ! ssh "$BOARD" 'set -e
+      sudo rm -f /tmp/hevc_ltr_320.hevc /tmp/hevc_ltr_encode.log \
+        /tmp/hevc_ltr_dpb.log
       ffmpeg -loglevel error -y -f lavfi \
         -i testsrc2=size=320x320:rate=30 -frames:v 30 \
         -pix_fmt nv12 -f rawvideo /tmp/hevc_ltr_src.yuv
