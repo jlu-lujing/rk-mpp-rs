@@ -1,0 +1,228 @@
+# t6 validation — 2026-11-07
+
+This is the current integrated validation checkpoint after moving work from
+t62 back to the RK3588 reference board.
+
+## Environment
+
+- NanoPC-T6-LTS, RK3588, Debian 11.11, kernel 6.1.57
+- `librknnrt` 2.3.2, Rust 1.88.0
+- sustained 80% OPP cap enabled: little `performance` @1.416 GHz, big
+  `performance` @1.8 GHz (see `docs/t6-power.md`)
+- Source worktree synced from the local Mac checkout; `.git`, `refs`, `target`,
+  model directories and existing board data were preserved
+- `/tmp/mpp-old`, `/tmp/mpp-develop` and `/tmp/mpp_trace.so` restored from
+  `~/rk-mpp-oracles` with `scripts/setup_board_refs.sh`
+
+## Tests
+
+`cargo test --all-targets` currently enumerates **1148 tests**. The regular
+suite passes **1118 / 0 failed / 30 ignored** on both the host and t6. All
+**30 board-only ignored tests** also pass on t6 under the current 80% OPP cap:
+26 hardware tests ran directly, and the four H.265 board-script tests ran from
+the host with `BOARD=t6`. The two JPEG restart/rotate cases share a temporary
+input name and therefore need `--test-threads=1`.
+
+Fixes required by the validation:
+
+- `examples/iep_dump.rs` now supplies the new `DeinterlaceJob.pd_mode` field.
+- Fixture manifest ignores macOS AppleDouble `._*` transfer metadata.
+- VP8 stream-policy tests now assert the board-verified behavior: a torn final
+  packet is zero-padded and decoded; a shortened middle packet is submitted and
+  marks that picture with a hardware error instead of being classified as a
+  dropped parser packet.
+- Pooled JPEG workers now close their `MppService` before any shared dma-buf
+  lease can return to the pool. The declaration order makes this hold on every
+  early `?` path too. This targets the t6 kernel list corruption observed in
+  `mpp_dma_find_buffer_fd()`.
+
+The W5-8 recovery gate exposed a stronger t6 driver failure on 2026-11-07.
+`RESET_SESSION` followed by an H.264 decode still blocked the whole board even
+when a replacement fd was opened before closing the old one. Normal recovery
+therefore no longer issues reset: it closes the failed fd first and then opens
+and health-checks a fresh session. The reset-only diagnostic passes 32
+open/reset/query/drop cycles, but it is now an explicitly destructive example
+rather than part of the ignored-test suite. The close-before-open decode gate
+passes on the current t6 boot.
+
+The previous board disappearance was not thermal: package readings were
+38–39°C. The prior boot log ends with CPU6 soft-lockup and RCU stall while
+`rk-mpp-rs` is inside the vendor JPEG driver's
+`mpp_dma_find_buffer_fd()`/`mpp_dma_import_fd()` path. After fixing the
+service-before-lease lifetime, t6 completed **500 consecutive async demos**
+(3000 pooled JPEG jobs, three workers) without a lockup or MPP reset. The
+current 80% CPU cap reduces timing/current stress; it does not replace the
+lifetime fix and is not claimed as the root-cause fix by itself.
+
+## Board regression
+
+The current `FULL_QP=0 PERF_GATE=1 scripts/board_regress_all.sh` run passed
+every suite with `ALL SUITES OK`. The earlier full-QP run passed the entire
+24-cell H.264 QP matrix, but exposed stale `/tmp` output files in the HEVC
+tile/scaling/LTR generators and an empty C STATUS trace capture. Those harness
+bugs were fixed by cleaning root-owned outputs before generation and checking
+that the C trace is non-empty; the complete HEVC suite (13 PASS lines) and
+STATUS comparison (C 2 / Rust 2, all fields equal) were then rerun green.
+
+- reference setup
+- H.264, H.265, MPEG-2, MPEG-4, H.263 and VP8 decode
+- H.264 full 24-cell size/profile/QP matrix
+- H.264 CBR/VBR/AVBR, debreath and STATUS
+- asynchronous framework, AV1 film grain, IEP2, JPEG decode/encode and VP9
+  board tests
+
+The first pass exposed a sync-only false failure: board scripts packaged the
+local `.worktrees` and `refs` trees into every transfer, so tar returned
+nonzero when those large trees changed during the run. All board sync commands
+now exclude both; reference trees remain managed by
+`scripts/setup_board_refs.sh`. After restoring `/tmp` corpora from
+`~/rk-mpp-oracles/corpus`, the H.264 and HEVC decode suites were rerun and every
+case passed with no decoder SKIP.
+
+Performance gate:
+
+- H.264 720p: C MPP 121.5 FPS, Rust 283.8 FPS (**+133.7%**)
+- 1920×1080→640 RGB scale: 0.5060 ms (limit 0.65)
+- 1280×720→640 RGB scale: 1.1100 ms (limit 1.15)
+- 640×480→640 RGB scale: 0.4687 ms (limit 0.50)
+- 1930×1080→640 RGB scale: 1.4702 ms (limit 1.65)
+
+These are the current 80% OPP medians from 11 interleaved samples, so they are
+directly comparable to the current functional and stress results. The older
+uncapped-profile peaks are retained only as historical observations.
+
+The H.264 and HEVC `/tmp` corpora were restored from
+`~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and
+the HEVC suite passed every available large-profile, tile, slice, open-GOP,
+Main10, scaling-list and long-term-reference case before the final performance
+gate.
+
+The async framework gate also reports per-job queue wait, execution and
+turnaround time plus cumulative submitted/done/failed/cancelled counters.
+On t6, six JPEG decode jobs across three workers were byte-identical to the
+sync path with `submitted=6 done=6 failed=0 cancelled=0`.
+
+## H.264 streaming output
+
+On a 1080p30 High/B=2 stream:
+
+- VUI reorder depth resolves to **2**
+- Rust planar output is **byte-identical** to C MPP after NV12→planar
+  conversion (SHA-256 `aa049b832da5…dc36c6`)
+- Rust packed NV12 is **byte-identical** to C MPP NV12
+  (SHA-256 `1c2475b2cb0f…a06408`)
+- single-thread streaming decode median is about 0.29–0.44 s for 90 frames,
+  versus about 0.88–0.90 s for the C test program
+
+Five-process-boundary sweep, 1080p30:
+
+| path | sustained ≥30 FPS |
+| --- | ---: |
+| C MPP decode | **28 streams** |
+| Rust streaming decode | **26 streams** |
+
+## AV1 distance-weighted compound
+
+The software AV1 reference decoder now covers distance-weighted compound
+prediction. The order-hint lookup selects libaom's `fwd_offset`/`bck_offset`;
+the blend uses the normative truncating four-bit weighting before the shared
+compound round offset and final rounding.
+
+The checked-in fixture
+`tests/data/av1_inter_distance_weighted_320x240.ivf` contains one 32x16 and one
+8x8 distance block with weights `[11,5]` and `[13,3]`. On t6, all five visible
+Y/U/V frames are byte-identical between this decoder and the unmodified libaom
+decoder. The targeted unit test, all 12 inter-frame tests, and the complete
+fixture manifest pass locally and on t6.
+
+Inter-intra is also complete. Two isolated five-frame fixtures cover 15 smooth
+inter-intra blocks and nine wedge inter-intra blocks; together they exercise
+all four DC/V/H/Smooth modes plus multiple wedge indices. Every visible Y/U/V
+frame is byte-exact against libaom.
+
+OBMC now follows the normative above-first/left-second neighbour scan, reads
+`use_obmc_cdf`, keeps switchable interpolation syntax for OBMC blocks, and
+blends neighbour predictions with the 1–64 sample masks. The five-frame fixture
+contains 32 OBMC blocks and 232 OBMC mipixels; every visible Y/U/V frame is
+byte-exact against libaom.
+
+Local warped motion now gathers same-reference neighbour samples, derives the
+least-squares affine matrix and shear parameters, and runs libaom's 193-phase
+eight-tap warp filter. Its isolated fixture has 10 `WARPED_CAUSAL` blocks,
+including zero-MV blocks driven by projected neighbours; all five visible Y/U/V
+frames are byte-exact against libaom.
+
+Single-reference global warped motion now derives `GLOBALMV` at each block centre from
+`ROTZOOM/AFFINE` matrices and reuses the same warp predictor. A two-frame
+isolated ROTZOOM fixture exercises 756 global-warp blocks; both visible Y/U/V
+frames are byte-exact against libaom.
+
+Compound global warp keeps independent warp state for both references and
+supports distance-weighted and wedge blends with mixed warped/identity inputs.
+A four-frame isolated fixture covers three `GLOBAL_GLOBALMV` blocks; all four
+visible Y/U/V frames are byte-exact against libaom.
+
+Temporal MV prediction now stores an 8x8 motion field for each reference
+picture, projects it through order hints, and merges the projected candidates
+between the nearest and outer spatial scans. A three-frame isolated fixture
+covers 128 inter blocks; all visible Y/U/V frames are byte-exact against
+libaom.
+
+Inter segmentation now carries primary-reference segment maps, spatial and
+temporal segment-id prediction, forced reference/skip/global modes, and
+per-segment ALT_Q/ALT_LF/lossless state. A three-frame isolated fixture covers
+1050 nonzero segment blocks and is byte-exact against libaom on Y/U/V.
+
+Selected tx-size context now uses an inter neighbour's block extent even when
+the neighbour is not skipped, while transform-partition context keeps the
+separate skip-only override. The previously failing `av1_lr_320x240.ivf`
+key+P stream now decodes all 458 footprint blocks (356 inter), and both visible
+Y/U/V frames are byte-exact against libaom.
+
+The remaining AV1 software-reference gap is a wider conformance/performance
+matrix.
+
+The final `delta_lf_multi` syntax is now represented with libaom's four-row
+default CDF. Color frames maintain four independent loop-filter levels;
+monochrome frames consume only the two active rows. The generated CDF state is
+97 tables / 19,697 values and clones all four rows through SavedCdf. A real
+one-frame keyframe, produced by a temporary libaom copy with only
+`DEFAULT_DELTA_LF_MULTI=1`, is accepted by the unmodified `aomdec`; the Rust
+pre/deblock/CDEF/LR Y/U/V planes are byte-identical to its final YUV. The
+patched encoder's second inter frame is invalid, so the fixture deliberately
+contains one frame and makes no encoder-stability claim. The complete host
+`--all-targets` suite passes. A monochrome counterpart with the same patched
+encoder exercises `mono_chrome=1`; its Y plane is byte-identical to `aomdec`.
+That fixture exposed and now covers the missing mono UV-syntax gate and the
+single-plane deblock grid.
+
+## YOLO video chain
+
+`yolov8s.rknn`, 768×432 H.264 people video, 40 timed frames after 5 warmups,
+three interleaved rounds:
+
+The model file was not present under the t6 home after this reboot, so the
+end-to-end table below was not regenerated in this validation pass. Both CLIs
+were rebuilt successfully; the measurement is the last t6 result from the same
+source tree.
+
+| path | median latency | median throughput | detections |
+| --- | ---: | ---: | ---: |
+| C | 33.608 ms | 29.75 FPS | 3 / 40 frames |
+| Rust | **32.823 ms** | **30.47 FPS** | 3 / 40 frames |
+
+Rust is 2.34% faster and the detection statistics match in every round.
+
+## Playback
+
+- C: `mppvideodec → xvimagesink`
+- Rust: `h264_stream NV12 → rawvideoparse → xvimagesink`
+- A 12-second 1080p30 steady playback completes in 12.15 s for 8 C streams,
+  12.25 s for 12 C streams and 12.33 s for 16 C streams.
+- Rust completes 8 streams in 12.36 s; 12 streams take 12.90 s and 16 streams
+  take 17.27 s.
+
+Thus the current t6 playback guidance is: C up to about 16 near-real-time
+streams, Rust up to 8 stable streams with 12 streams borderline. The remaining
+Rust playback cost is the user-space NV12 pipe; direct DMABUF scanout is still
+the next performance step.
