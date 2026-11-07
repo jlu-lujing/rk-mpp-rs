@@ -216,25 +216,34 @@ fn reference_goldens() -> &'static [(usize, u8, usize, u64)] {
 
 #[test]
 #[ignore = "requires an RK3588 RKVENCP/RKVENC H.264 encoder and /dev/mpp_service access"]
-fn two_live_sessions_in_one_process_agree_with_the_reference() {
-    let streams: Vec<Vec<u8>> = (0..2)
-        .map(|_| {
-            std::thread::spawn(|| {
-                let input = probe_nv12(REFERENCE_WIDTH, REFERENCE_HEIGHT);
-                encode(&input, REFERENCE_WIDTH, REFERENCE_HEIGHT)
-            })
-        })
-        .map(|thread| thread.join().unwrap())
-        .collect();
-    for stream in &streams {
-        assert_eq!(stream, &streams[0], "live sessions must not interfere");
+fn concurrent_live_sessions_match_the_serial_reference() {
+    for &(width, height) in &[(64, 64), (320, 240), (640, 480)] {
+        let (_, _, goldens) = MULTI_SIZE_GOLDENS
+            .iter()
+            .find(|(w, h, _)| *w == width && *h == height)
+            .expect("size must have C goldens");
+        let input = probe_nv12(width, height);
+        let serial = encode(&input, width, height);
+        assert_reference_nals(&serial, width, height, goldens);
+
+        for sessions in [2, 3] {
+            let streams: Vec<Vec<u8>> = std::thread::scope(|scope| {
+                let threads: Vec<_> = (0..sessions)
+                    .map(|_| scope.spawn(|| encode(&input, width, height)))
+                    .collect();
+                threads
+                    .into_iter()
+                    .map(|thread| thread.join().unwrap())
+                    .collect()
+            });
+            for stream in &streams {
+                assert_eq!(
+                    stream, &serial,
+                    "{sessions} live {width}x{height} sessions must not interfere"
+                );
+            }
+        }
     }
-    assert_reference_nals(
-        &streams[0],
-        REFERENCE_WIDTH,
-        REFERENCE_HEIGHT,
-        reference_goldens(),
-    );
 }
 
 #[test]

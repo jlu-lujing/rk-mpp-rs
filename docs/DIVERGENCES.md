@@ -68,4 +68,4 @@ Dispositions:
 | Case | Disposition | Evidence |
 |---|---|---|
 | fences, multi-core CCU, secure mode | NOT IMPLEMENTED | Surveyed in `docs/framework-m10.md`; blocked on this kernel/board or on a TA. |
-| rkvenc multi-instance | NOT IMPLEMENTED | The reference itself supports one live session per process here. |
+| rkvenc multi-instance | **FIXED** | H.264 CIME extension lines and H.265 tile line buffers are session-owned. On t6, two and three live VEPU580 H.264 sessions in one process each produced the same stream as the serial run at 64x64, 320x240 and 640x480. The earlier one-session-per-process result came from stale goldens that also failed serially. |
