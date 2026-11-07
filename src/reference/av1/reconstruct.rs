@@ -291,6 +291,7 @@ pub fn reconstruct_intra_block_plane(
         left_mode,
         luma,
         None,
+        (0, 0),
     )
 }
 
@@ -311,6 +312,7 @@ pub(crate) fn reconstruct_intra_block_plane_with_grid(
     left_mode: Option<IntraMode>,
     luma: Option<ReconstructedLuma<'_>>,
     mut decoded: Option<&mut DecodedPlane>,
+    tile: (usize, usize),
 ) -> Result<(), &'static str> {
     let is_cfl = plane > 0 && syntax.uv_mode == Some(UvMode::Cfl);
     let (mode, angle_delta) = if plane == 0 {
@@ -329,6 +331,30 @@ pub(crate) fn reconstruct_intra_block_plane_with_grid(
     let ac_q = ac_q(bit_depth, qindex + q_delta.ac - q_delta.dc);
     let filter_type = intra_filter_type(above_mode, left_mode);
     let (plane_sub_x, plane_sub_y) = if plane == 0 { (0, 0) } else { (sub_x, sub_y) };
+    // `set_mi_row_col` clips the intra edges at the tile boundary instead of
+    // the picture boundary (`av1_common_int.h:1368`): `up_available =
+    // (mi_row > tile->mi_row_start)` and the same rule on the left. With
+    // chroma subsampling a block narrower or shorter than 8 samples needs one
+    // further sample column or row inside the tile before that edge counts as
+    // present, which is libaom's `chroma_{left,up}_available` refinement.
+    let block_mi_wide = syntax.block.size.num_4x4_wide() as usize;
+    let block_mi_high = syntax.block.size.num_4x4_high() as usize;
+    let tx_in_tile_above = |tx_y: usize| {
+        let mi_row = (tx_y << plane_sub_y) >> 2;
+        if plane > 0 && sub_y != 0 && block_mi_high < 2 {
+            mi_row >= tile.0 + 2
+        } else {
+            mi_row > tile.0
+        }
+    };
+    let tx_in_tile_left = |tx_x: usize| {
+        let mi_col = (tx_x << plane_sub_x) >> 2;
+        if plane > 0 && sub_x != 0 && block_mi_wide < 2 {
+            mi_col >= tile.1 + 2
+        } else {
+            mi_col > tile.1
+        }
+    };
     let block_x = (syntax.block.col * 4) >> plane_sub_x;
     let block_y = (syntax.block.row * 4) >> plane_sub_y;
 
@@ -347,17 +373,17 @@ pub(crate) fn reconstruct_intra_block_plane_with_grid(
                 let x4 = (tx.x >> 2) as isize;
                 let y4 = (tx.y >> 2) as isize;
                 (
-                    grid.at(x4, y4 - 1),
-                    grid.at(x4 - 1, y4),
-                    grid.at(x4 + (w >> 2) as isize, y4 - 1),
-                    grid.at(x4 - 1, y4 + (h >> 2) as isize),
+                    grid.at(x4, y4 - 1) && tx_in_tile_above(tx.y),
+                    grid.at(x4 - 1, y4) && tx_in_tile_left(tx.x),
+                    grid.at(x4 + (w >> 2) as isize, y4 - 1) && tx_in_tile_above(tx.y),
+                    grid.at(x4 - 1, y4 + (h >> 2) as isize) && tx_in_tile_left(tx.x),
                 )
             } else {
                 (
-                    tx.y > 0,
-                    tx.x > 0,
-                    tx.x + w < plane_width,
-                    tx.y + h < plane_height,
+                    tx.y > 0 && tx_in_tile_above(tx.y),
+                    tx.x > 0 && tx_in_tile_left(tx.x),
+                    tx.x + w < plane_width && tx_in_tile_above(tx.y),
+                    tx.y + h < plane_height && tx_in_tile_left(tx.x),
                 )
             };
         let palette_prediction = predict_palette_plane(

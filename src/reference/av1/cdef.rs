@@ -90,6 +90,31 @@ impl CdefIndexGrid {
         }
         Ok(Some(value))
     }
+
+    /// Copy the CDEF indices one tile transmitted into the frame-level grid.
+    ///
+    /// A 64x64 CDEF unit that straddles a tile boundary is transmitted once
+    /// per tile: libaom tracks this with `xd->cdef_transmitted`, which is
+    /// tile-local and reset at every superblock start (`decodemv.c:54`), and
+    /// writes the value into the shared mi-grid entry of the unit's first
+    /// block. Tiles are decoded in raster order, so the later tile is the one
+    /// whose index survives.
+    pub fn absorb_tile(
+        &mut self,
+        other: &Self,
+        mi_row_start: usize,
+        mi_row_end: usize,
+        mi_col_start: usize,
+        mi_col_end: usize,
+    ) {
+        for row in mi_row_start..mi_row_end.min(self.mi_rows) {
+            for col in mi_col_start..mi_col_end.min(self.mi_cols) {
+                if let Some(value) = other.get(row, col) {
+                    self.values[row * self.mi_cols + col] = i16::from(value);
+                }
+            }
+        }
+    }
 }
 
 /// `Div_Table[9]`, scaled by 1024.

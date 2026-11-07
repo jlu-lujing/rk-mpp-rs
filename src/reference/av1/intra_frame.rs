@@ -4,18 +4,24 @@ use crate::reference::av1::cdef::{
     cdef_direction, cdef_filter_block, cdef_luma_primary_strength, CdefIndexGrid, CdefRegion,
     PlaneView, CDEF_UV_DIR,
 };
+use crate::reference::av1::cdf_state::CdfState;
 use crate::reference::av1::deblock::{
     DeblockCell, DeblockEdgeInfo, DeblockGrid, DeblockPlane, SEG_LVL_ALT_LF_Y_V,
 };
 use crate::reference::av1::frame_header::FrameHeader;
 use crate::reference::av1::intra::{IntraMode, UvMode};
 use crate::reference::av1::intra_sink::IntraSyntaxBlock;
+use crate::reference::av1::intra_sink::{IntraTileBlockSink, IntraTileConfig};
 use crate::reference::av1::lr_frame::{apply_loop_restoration, LrFrameParams, LrPlaneGeometry};
 use crate::reference::av1::reconstruct::{
     reconstruct_intra_block_plane_with_grid, DecodedPlane, PlaneQDelta, ReconstructedLuma,
 };
 use crate::reference::av1::residual::plane_tx_size;
 use crate::reference::av1::seq_header::SequenceHeader;
+use crate::reference::av1::tile_entropy::{
+    decode_tile_partitions_with_cdfs, tile_bounds, TileEntropyError,
+};
+use crate::reference::av1::tile_group::ParsedTileGroup;
 use crate::reference::av1::upscale::upscale_plane;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,15 +93,34 @@ pub(crate) fn fill_modes(
     }
 }
 
+/// The tile (in mi units) that owns one block origin, as `set_mi_row_col`
+/// sees it. Blocks never straddle a tile boundary, so the block origin is
+/// enough to find its tile.
+pub(crate) fn tile_of(header: &FrameHeader, row: usize, col: usize) -> (usize, usize) {
+    let start_at_or_before = |starts: &[usize], at: usize| {
+        starts
+            .iter()
+            .copied()
+            .take_while(|&start| start <= at)
+            .last()
+            .unwrap_or(0)
+    };
+    (
+        start_at_or_before(&header.mi_row_starts, row),
+        start_at_or_before(&header.mi_col_starts, col),
+    )
+}
+
 pub(crate) fn neighbor_modes(
     grid: &[Option<IntraMode>],
     cols: usize,
     block: &IntraSyntaxBlock,
+    tile: (usize, usize),
 ) -> (Option<IntraMode>, Option<IntraMode>) {
-    let above = (block.block.row > 0)
+    let above = (block.block.row > tile.0)
         .then(|| grid[(block.block.row - 1) * cols + block.block.col])
         .flatten();
-    let left = (block.block.col > 0)
+    let left = (block.block.col > tile.1)
         .then(|| grid[block.block.row * cols + block.block.col - 1])
         .flatten();
     (above, left)
@@ -108,6 +133,7 @@ pub(crate) fn chroma_neighbor_modes(
     block: &IntraSyntaxBlock,
     sub_x: u32,
     sub_y: u32,
+    tile: (usize, usize),
 ) -> (Option<IntraMode>, Option<IntraMode>) {
     let mut above_row = block.block.row as isize - 1;
     let mut above_col = block.block.col as isize;
@@ -127,8 +153,16 @@ pub(crate) fn chroma_neighbor_modes(
         left_row += 1;
     }
 
+    // A sub-8 chroma block needs one extra mi of clearance inside the tile,
+    // matching `chroma_{up,left}_available` in `set_mi_row_col`.
+    let strict_up = sub_y != 0 && (block.block.size.num_4x4_high() as usize) < 2;
+    let strict_left = sub_x != 0 && (block.block.size.num_4x4_wide() as usize) < 2;
+    let in_tile = |row: isize, col: isize| {
+        row as usize >= tile.0 + usize::from(strict_up)
+            && col as usize >= tile.1 + usize::from(strict_left)
+    };
     let at = |row: isize, col: isize| {
-        (row >= 0 && col >= 0 && row < rows as isize && col < cols as isize)
+        (row >= 0 && col >= 0 && row < rows as isize && col < cols as isize && in_tile(row, col))
             .then(|| grid[row as usize * cols + col as usize])
             .flatten()
     };
@@ -190,7 +224,8 @@ pub fn reconstruct_intra_frame(
     };
 
     for block in blocks {
-        let (y_above, y_left) = neighbor_modes(&y_modes, header.mi_cols, block);
+        let block_tile = tile_of(header, block.block.row, block.block.col);
+        let (y_above, y_left) = neighbor_modes(&y_modes, header.mi_cols, block, block_tile);
         reconstruct_intra_block_plane_with_grid(
             &mut frame.y.data,
             frame.y.stride,
@@ -207,6 +242,7 @@ pub fn reconstruct_intra_frame(
             y_left,
             None,
             Some(&mut y_decoded),
+            block_tile,
         )?;
 
         let (uv_above, uv_left) = chroma_neighbor_modes(
@@ -216,6 +252,7 @@ pub fn reconstruct_intra_frame(
             block,
             sub_x,
             sub_y,
+            block_tile,
         );
         if block.transforms.iter().any(|tx| tx.plane == 1) {
             let u = frame
@@ -243,6 +280,7 @@ pub fn reconstruct_intra_frame(
                     height: frame.y.height,
                 }),
                 Some(&mut u_decoded),
+                block_tile,
             )?;
         }
         if block.transforms.iter().any(|tx| tx.plane == 2) {
@@ -271,6 +309,7 @@ pub fn reconstruct_intra_frame(
                     height: frame.y.height,
                 }),
                 Some(&mut v_decoded),
+                block_tile,
             )?;
         }
     }
@@ -758,6 +797,90 @@ pub fn apply_intra_loop_restoration(
     Ok(())
 }
 
+/// Frame-level syntax of one intra tile group.
+///
+/// The tiles of a tile group are independent entropy streams. libaom copies
+/// the frame coding state into `tile_data->tctx` before every tile
+/// (`decodeframe.c:3129`), so CDF adaptation never crosses a tile boundary,
+/// and the state carried into the next frame is the one belonging to
+/// `context_update_tile_id` rather than the last tile decoded
+/// (`decodeframe.c:5683`).
+pub struct IntraTileGroup {
+    /// Leaf blocks of every tile, in tile decode (raster) order.
+    pub blocks: Vec<IntraSyntaxBlock>,
+    /// Union of the CDEF indices transmitted by the tiles.
+    pub cdef: CdefIndexGrid,
+    /// Union of the loop-restoration parameters read by the tiles.
+    pub lr: LrFrameParams,
+    /// Final CDF state of `header.context_update_tile_id`.
+    pub cdfs: CdfState,
+}
+
+/// Decode every tile of an intra frame's tile group.
+///
+/// Each tile starts from `initial_cdfs`, exactly like libaom's per-tile copy
+/// of the frame coding state, and the returned block list stays in decode
+/// order so the frame-level reconstruction can keep using "already decoded"
+/// availability for above, left and above-right neighbours.
+pub fn decode_intra_tile_group(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    layout: &ParsedTileGroup,
+    payload: &[u8],
+    initial_cdfs: CdfState,
+) -> Result<IntraTileGroup, TileEntropyError> {
+    let config = IntraTileConfig::from_headers(sequence, header);
+    let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
+    let mut blocks = Vec::new();
+    let mut cdef = CdefIndexGrid::new(header.mi_cols, header.mi_rows);
+    let mut lr = LrFrameParams::for_geometry(&config.lr_geometry);
+    let mut cdfs = initial_cdfs.clone();
+    for range in &layout.tiles {
+        let decoded = decode_tile_partitions_with_cdfs(
+            &payload[range.bytes.clone()],
+            header,
+            range.tile,
+            sb_size,
+            header.disable_cdf_update,
+            true,
+            initial_cdfs.clone(),
+            IntraTileBlockSink::new(config.clone()),
+        )?;
+        let bounds = tile_bounds(header, range.tile)?;
+        cdef.absorb_tile(
+            decoded.sink.cdef_grid(),
+            bounds.mi_row_start,
+            bounds.mi_row_end,
+            bounds.mi_col_start,
+            bounds.mi_col_end,
+        );
+        merge_lr_params(&mut lr, decoded.sink.lr_params());
+        blocks.extend(decoded.sink.blocks);
+        if range.tile == header.context_update_tile_id as usize {
+            cdfs = decoded.cdfs;
+        }
+    }
+    Ok(IntraTileGroup {
+        blocks,
+        cdef,
+        lr,
+        cdfs,
+    })
+}
+
+/// Merge one tile's restoration parameters into the frame grid. A restoration
+/// unit straddling a tile boundary is read by both tiles, and the last tile in
+/// decode order is the one whose parameters libaom keeps.
+fn merge_lr_params(frame: &mut LrFrameParams, tile: &LrFrameParams) {
+    for (frame_plane, tile_plane) in frame.planes.iter_mut().zip(&tile.planes) {
+        for (slot, value) in frame_plane.iter_mut().zip(tile_plane) {
+            if value.is_some() {
+                *slot = *value;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1229,6 +1352,78 @@ mod tests {
         assert_ne!(picture.y, cdef.y);
         assert_ne!(picture.u, cdef.u);
         assert_ne!(picture.v, cdef.v);
+    }
+
+    #[test]
+    fn real_two_by_two_tile_keyframe_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_tiles_320x240_10.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let packets = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        let frame = packets
+            .iter()
+            .flatten()
+            .find_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        assert!(frame.header.frame_is_intra);
+        assert_eq!((frame.header.tile_cols, frame.header.tile_rows), (2, 2));
+        assert_eq!(frame.header.context_update_tile_id, 3);
+        assert!(!frame.header.uses_lr);
+        assert_eq!(frame.layout.tiles.len(), 4);
+
+        let group = decode_intra_tile_group(
+            sequence,
+            &frame.header,
+            &frame.layout,
+            frame.payload,
+            CdfState::new(),
+        )
+        .unwrap();
+
+        // Each tile owns one leaf block at its own origin, so four origins
+        // prove all four tile bitstreams were traversed. `decode_intra_tile_group`
+        // verifies the exit symbol per tile, so no tile may have read past or
+        // short of its own payload.
+        for tile in 0..4 {
+            let bounds = tile_bounds(&frame.header, tile).unwrap();
+            assert!(
+                group
+                    .blocks
+                    .iter()
+                    .any(|block| block.block.row == bounds.mi_row_start
+                        && block.block.col == bounds.mi_col_start),
+                "tile {tile} must contribute a block at its own origin",
+            );
+        }
+
+        let visible = |plane: &PlaneBuffer| {
+            plane
+                .data
+                .chunks_exact(plane.stride)
+                .take(plane.height)
+                .flat_map(|row| &row[..plane.width])
+                .fold(0xcbf29ce484222325u64, |hash, sample| {
+                    (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
+                })
+        };
+        let mut picture = reconstruct_intra_frame(sequence, &frame.header, &group.blocks).unwrap();
+        apply_intra_deblock(sequence, &frame.header, &group.blocks, &mut picture);
+        apply_intra_cdef(
+            sequence,
+            &frame.header,
+            &group.blocks,
+            &group.cdef,
+            &mut picture,
+        );
+        // Locked against `aomdec --rawvideo` frame 0 (whole-frame MD5
+        // 26ba5556975579b24a5cb591844f6226).
+        assert_eq!(visible(&picture.y), 0xe4c15c7e09f4c973);
+        assert_eq!(visible(picture.u.as_ref().unwrap()), 0x7f75e286318ce612);
+        assert_eq!(visible(picture.v.as_ref().unwrap()), 0xb3d6a9d8663b3bc1);
     }
 
     #[test]

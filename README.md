@@ -48,8 +48,13 @@
 整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 94 项完成、6 项未完成（含缩进子项为 132 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 101 个
-AV1 slice。第 101 slice 用真实单色 libaom keyframe 闭合 mono multi-LF：Rust 不再错误
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 102 个
+AV1 slice。第 102 slice 把它推进到真正的多 tile：一次 tile group 里每个 tile 都从帧初始
+CDF 重新开始（对应 libaom 的 `tile_data->tctx = *cm->fc`），帧末 CDF 取
+`context_update_tile_id` 那个 tile，而 intra 邻块可用性按 **tile 边界**裁剪
+（`up_available = mi_row > tile->mi_row_start`）。真实 2×2 tile keyframe 的四个 tile 各自
+走完自己的码流（逐 tile `exit_symbol` 校验），三平面与 `aomdec` **逐字节一致**。
+第 101 slice 用真实单色 libaom keyframe 闭合 mono multi-LF：Rust 不再错误
 读取 UV mode/残差，deblock 只建立单平面网格，最终 Y 与 `aomdec` **逐字节一致**。
 第 100 slice 用真实单帧 libaom keyframe 闭合彩色 `delta_lf_multi`：帧头明确为
 `delta_q=1 / delta_lf=1 / multi=1`，Rust 的 pre/deblock/CDEF/LR 三平面与未修改的

@@ -18,7 +18,7 @@ use crate::reference::av1::inter::{
 use crate::reference::av1::inter_sink::InterSyntaxBlock;
 use crate::reference::av1::intra_frame::{
     apply_cdef_with_skip_grid, apply_deblock_grids, chroma_neighbor_modes, fill_modes,
-    neighbor_modes, uv_mode, IntraFrame, PlaneBuffer,
+    neighbor_modes, tile_of, uv_mode, IntraFrame, PlaneBuffer,
 };
 use crate::reference::av1::partition::{block_size_index, BlockSize};
 use crate::reference::av1::predict::{intra_filter_type, predict_intra, IntraEdges};
@@ -2014,7 +2014,8 @@ pub fn reconstruct_inter_frame(
                 intra,
                 intra.uv_mode.and_then(uv_mode),
             );
-            let (y_above, y_left) = neighbor_modes(&y_modes, header.mi_cols, intra);
+            let intra_tile = tile_of(header, intra.block.row, intra.block.col);
+            let (y_above, y_left) = neighbor_modes(&y_modes, header.mi_cols, intra, intra_tile);
             reconstruct_intra_block_plane_with_grid(
                 &mut frame.y.data,
                 frame.y.stride,
@@ -2031,6 +2032,7 @@ pub fn reconstruct_inter_frame(
                 y_left,
                 None,
                 Some(&mut y_decoded),
+                intra_tile,
             )?;
             let (uv_above, uv_left) = chroma_neighbor_modes(
                 &uv_modes,
@@ -2039,6 +2041,7 @@ pub fn reconstruct_inter_frame(
                 intra,
                 sub_x,
                 sub_y,
+                intra_tile,
             );
             if intra.transforms.iter().any(|tx| tx.plane == 1) {
                 let u = frame.u.as_mut().ok_or(InterFrameError::MissingPlane(1))?;
@@ -2063,6 +2066,7 @@ pub fn reconstruct_inter_frame(
                         height: frame.y.height,
                     }),
                     Some(&mut u_decoded),
+                    intra_tile,
                 )?;
             }
             if intra.transforms.iter().any(|tx| tx.plane == 2) {
@@ -2088,6 +2092,7 @@ pub fn reconstruct_inter_frame(
                         height: frame.y.height,
                     }),
                     Some(&mut v_decoded),
+                    intra_tile,
                 )?;
             }
         } else {

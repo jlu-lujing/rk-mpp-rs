@@ -369,7 +369,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       fixture 闭合；inter segmentation 的 map、temporal prediction 与 features
       已由三帧隔离 fixture 闭合；`delta_lf_multi` 的 luma/U/V 四路
       与单色两路 CDF 状态已实现；真实彩色 keyframe 锁定三平面，真实单色
-      keyframe 锁定 Y 平面，并覆盖 UV 语法门控与单平面 deblock
+      keyframe 锁定 Y 平面，并覆盖 UV 语法门控与单平面 deblock；
+      真实 2×2 tile keyframe 已闭合逐 tile 熵独立（每 tile 从帧初始 CDF 重启、帧末 CDF
+      取 `context_update_tile_id`）与 tile 边界裁剪的 intra 邻块/CDEF 传输，三平面逐字节；
+      tile 化 inter 帧仍未做
 - [ ] W6-6 HEVC SCC（调色板/屏幕内容）：若 C 无路径则记录为 C 缺失
 - [ ] W6-7 H.264 field-coded PAFF 复核（当前 MBAFF/PAFF 有覆盖，field-coded 单独补）
 - [ ] W6-8 非 16 对齐尺寸的字节级路径（JPEG 已有；编码器受 harness 限制，需自建 C 驱动）
