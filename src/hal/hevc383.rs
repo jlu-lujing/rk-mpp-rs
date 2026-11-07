@@ -20,8 +20,8 @@ const CABAC_ALIGNED: usize = 7 * 4096;
 const SPSPPS_ALIGNED: usize = 4096;
 const RPS_SIZE: usize = 400 * 8;
 const RPS_ALIGNED: usize = 4096;
-const SCALING_LIST_SIZE: usize = 81 * 1360;
-const SCALING_LIST_ALIGNED: usize = 27 * 4096;
+const SCALING_LIST_BUFFER_SIZE: usize = 81 * hw::SCALING_LIST_TABLE_SIZE;
+const SCALING_LIST_ALIGNED: usize = (SCALING_LIST_BUFFER_SIZE + 4095) / 4096 * 4096;
 const SPSPPS_OFFSET: usize = CABAC_ALIGNED;
 const RPS_OFFSET: usize = SPSPPS_OFFSET + SPSPPS_ALIGNED;
 const SCALING_LIST_OFFSET: usize = RPS_OFFSET + RPS_ALIGNED;
@@ -175,6 +175,14 @@ fn rcb_upper(length: usize, coeff: usize) -> usize {
     2 * align(length * coeff, RCB_ALIGNMENT)
 }
 
+fn scaling_list_slot(sps: &Sps, pps: &Pps) -> usize {
+    if pps.scaling_list.is_some() {
+        pps.pps_id as usize + 16
+    } else {
+        sps.sps_id as usize
+    }
+}
+
 fn align(value: usize, alignment: usize) -> usize {
     value.div_ceil(alignment) * alignment
 }
@@ -272,14 +280,15 @@ impl Hevc383 {
     ) {
         let packet = hw::build_pps_packet_383(sps, pps, poc, ref_pocs, ref_errors, ref_present);
         let rps = hw::build_sps_rps_from_sps(sps);
-        let scaling = hw::build_scaling_list_packet(sps, pps);
+        let scaling = hw::build_scaling_list_packet_383(sps, pps);
         let buf = self.bufs.as_mut_slice();
         buf[SPSPPS_OFFSET..SPSPPS_OFFSET + PPS_PACKET_383_SIZE].copy_from_slice(&packet);
         buf[RPS_OFFSET..RPS_OFFSET + RPS_SIZE].copy_from_slice(&rps[..RPS_SIZE]);
         self.scaling_list_offset = scaling.map(|table| {
-            buf[SCALING_LIST_OFFSET..SCALING_LIST_OFFSET + SCALING_LIST_SIZE]
-                .copy_from_slice(&table);
-            SCALING_LIST_OFFSET as u32
+            let slot = scaling_list_slot(sps, pps);
+            let offset = SCALING_LIST_OFFSET + slot * hw::SCALING_LIST_TABLE_SIZE;
+            buf[offset..offset + table.len()].copy_from_slice(&table);
+            offset as u32
         });
         if std::env::var_os("RFI_HEVC383_DUMP").is_some() {
             let _ = std::fs::write(format!("/tmp/rust_h265383_pps_{task:02}.bin"), packet);
@@ -454,5 +463,23 @@ mod tests {
         assert_eq!(rcb.sizes[8], 0);
         assert_eq!(rcb.sizes[9], 0);
         assert!(rcb.upper_sizes.iter().sum::<usize>() <= rcb.total);
+    }
+
+    #[test]
+    fn hevc_scaling_lists_use_separate_sps_and_pps_slots() {
+        let mut sps = Sps {
+            sps_id: 7,
+            ..Default::default()
+        };
+        let mut pps = Pps {
+            pps_id: 5,
+            ..Default::default()
+        };
+        assert_eq!(scaling_list_slot(&sps, &pps), 7);
+
+        pps.scaling_list = Some(crate::codec::hevc::parser::ScalingList::default_hevc());
+        assert_eq!(scaling_list_slot(&sps, &pps), 21);
+        sps.sps_id = 8;
+        assert_eq!(scaling_list_slot(&sps, &pps), 21);
     }
 }

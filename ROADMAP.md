@@ -1677,8 +1677,8 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1165
-      enumerated / 1131 regular pass / 0 failed / 34 board-only ignored, and
+      The current t6 `cargo test --release --all-targets` run is 1167
+      enumerated / 1133 regular pass / 0 failed / 34 board-only ignored, and
       the release library suite is 978 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
@@ -3163,12 +3163,13 @@ pipeline uses.
   The first VDPU383 H.264 640x480 12-frame High-profile path is byte-identical
   to stock C MPP on lf1 (`615ee129c46e10f7fb4cb2cf8af3cb370523f7605abee7e7315e073a4421b112`
   on both sides), with `global_cfg`/`rps` word-identical for the first two
-  frames. The VDPU383 H.265 initial matrix is 7/7 byte-identical: single IDR,
-  640x480 IPPP, B-pyramid, Main10, 2x2 tiles, real WPP (five entry points) and
-  1280x720 WPP. Its 176-byte global packet matches the patched C dump and is
-  pinned by FNV `0xe97a26406128e428`. DSLICE/scaling-list/error rows, VP9/AV1/
-  AVS2, VEPU510, VPU720 and VDPP2 remain in progress.
-- Tests: `cargo test --release --all-targets` enumerates 1165 tests: 1131
+  frames. The VDPU383 H.265 initial matrix is 10/10 byte-identical: single IDR,
+  640x480 IPPP, B-pyramid, Main10, 2x2 tiles, real WPP (five entry points),
+  1280x720 WPP, JCT-VC DSLICE, and explicit SPS/PPS scaling lists. Its 176-byte
+  global packet matches the patched C dump and is pinned by FNV
+  `0xe97a26406128e428`. LTR/error rows, VP9/AV1/AVS2, VEPU510, VPU720 and
+  VDPP2 remain in progress.
+- Tests: `cargo test --release --all-targets` enumerates 1167 tests: 1133
   regular pass and 34 ignored hardware tests on t6. All 34 board-only tests
   pass under the current 80% OPP cap.
   Coverage includes OBU/frame-header/CDF/PicParams snapshots, AV1 software

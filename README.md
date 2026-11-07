@@ -22,9 +22,9 @@
   驱动它（见 ROADMAP 的能力表）。
 - **RK3576 正在适配，尚不属于完整保证范围。** 已确认
   VDPU383/VEPU510/VPU720/VDPP2，且 RK3576 H.264 640x480 12 帧已与 C MPP
-  逐字节；VDPU383 H.265 初始 7/7 矩阵（Main/Main10、B、tiles、真实 WPP、
-  1280x720）也已逐字节。DSLICE、scaling-list/error rows、VP9/AV1、编码、
-  JPEG、VDPP2 和 H.264 完整边界矩阵仍在推进。
+  逐字节；VDPU383 H.265 初始 10/10 矩阵（Main/Main10、B、tiles、真实 WPP、
+  1280x720、JCT-VC DSLICE、SPS/PPS scaling list）也已逐字节。LTR/error rows、
+  VP9/AV1、编码、JPEG、VDPP2 和 H.264 完整边界矩阵仍在推进。
   其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
   固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
@@ -161,7 +161,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1165 枚举；1131 常规通过，34 个硬件 ignored 另跑通过
+cargo test --release --all-targets           # t6：1167 枚举；1133 常规通过，34 个硬件 ignored 另跑通过
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -174,7 +174,7 @@ ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h265_lowdelay_vs_mpp.sh      # H.265 逐 slice packet：4/4
 ./scripts/board_h265_roi_vs_mpp.sh           # H.265 ROI/QP map：4/4
 ./scripts/board_h265_tile_vs_mpp.sh          # H.265 水平 tiles：2/2
-BOARD=luck2 ./scripts/board_rk3576_h265_vs_mpp.sh # RK3576 VDPU383：7/7
+BOARD=luck2 ./scripts/board_rk3576_h265_vs_mpp.sh # RK3576 VDPU383：10/10
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh

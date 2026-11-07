@@ -450,6 +450,77 @@ pub fn build_scaling_list_packet(sps: &Sps, pps: &Pps) -> Option<Vec<u8>> {
     Some(table)
 }
 
+/// Build the VDPU383 scaling-list table.
+///
+/// VDPU383 uses a different table layout from VDPU34x: the 8x8/16x16/32x32
+/// classes are emitted as four 4x4 blocks in column-major order, and the
+/// 32x32 class stores all six entries rather than only entries 0 and 3.
+/// This follows `hal_vdpu383_record_scaling_list()`.
+pub fn build_scaling_list_packet_383(sps: &Sps, pps: &Pps) -> Option<Vec<u8>> {
+    if !sps.scaling_list_enabled {
+        return None;
+    }
+    let mut scaling = pps
+        .scaling_list
+        .clone()
+        .or_else(|| sps.scaling_list.clone())
+        .unwrap_or_else(super::parser::ScalingList::default_hevc);
+    if sps.chroma_format_idc == 3 {
+        for matrix in [1usize, 2, 4, 5] {
+            scaling.matrices[3][matrix] = scaling.matrices[2][matrix];
+        }
+        for matrix in [1usize, 2, 4, 5] {
+            scaling.dc[1][matrix] = scaling.dc[0][matrix];
+        }
+    }
+
+    let mut table = vec![0u8; SCALING_LIST_TABLE_SIZE];
+    let mut offset = 0usize;
+    for matrix in 0..6 {
+        let input = &scaling.matrices[0][matrix];
+        for row in 0..4 {
+            table[offset..offset + 4].copy_from_slice(&[
+                input[row],
+                input[row + 4],
+                input[row + 8],
+                input[row + 12],
+            ]);
+            offset += 4;
+        }
+    }
+
+    for size in 1..4 {
+        for matrix in 0..6 {
+            let input = &scaling.matrices[size][matrix];
+            for block_x in [0usize, 4] {
+                for block_y in [0usize, 4] {
+                    let pos = block_y * 8 + block_x;
+                    for row in 0..4 {
+                        table[offset..offset + 4].copy_from_slice(&[
+                            input[pos + row],
+                            input[pos + row + 8],
+                            input[pos + row + 16],
+                            input[pos + row + 24],
+                        ]);
+                        offset += 4;
+                    }
+                }
+            }
+        }
+    }
+
+    for matrix in 0..6 {
+        table[offset..offset + 16].copy_from_slice(&scaling.matrices[0][matrix][..16]);
+        offset += 16;
+    }
+    table[offset..offset + 6].copy_from_slice(&scaling.dc[0]);
+    offset += 6;
+    table[offset..offset + 6].copy_from_slice(&scaling.dc[1]);
+    offset += 6;
+    debug_assert_eq!(offset, SCALING_LIST_TABLE_SIZE - 4);
+    Some(table)
+}
+
 fn transpose_square(data: &mut [u8], size: usize) {
     debug_assert_eq!(data.len(), size * size);
     for row in 0..size {
@@ -652,6 +723,30 @@ mod packet_tests {
         let transposed: [u8; 16] = std::array::from_fn(|i| matrix[(i % 4) * 4 + i / 4]);
         assert_eq!(table[..16], transposed);
         assert_eq!(table[1248..1264], matrix);
+    }
+
+    #[test]
+    fn vdpu383_scaling_list_uses_the_vdpu383_block_layout() {
+        let mut sps = sps();
+        sps.scaling_list_enabled = true;
+        let mut scaling = crate::codec::hevc::parser::ScalingList::default_hevc();
+        scaling.matrices[1][0] = std::array::from_fn(|i| i as u8);
+        scaling.matrices[3][1] = std::array::from_fn(|i| 100 + i as u8);
+        sps.scaling_list = Some(scaling.clone());
+
+        let table = build_scaling_list_packet_383(&sps, &pps()).unwrap();
+        assert_eq!(
+            &table[96..112],
+            &[0, 8, 16, 24, 1, 9, 17, 25, 2, 10, 18, 26, 3, 11, 19, 27]
+        );
+        assert_eq!(
+            &table[864 + 64..864 + 80],
+            &[100, 108, 116, 124, 101, 109, 117, 125, 102, 110, 118, 126, 103, 111, 119, 127]
+        );
+        assert_eq!(&table[1248..1264], &scaling.matrices[0][0][..16]);
+        assert_eq!(&table[1344..1350], &scaling.dc[0]);
+        assert_eq!(&table[1350..1356], &scaling.dc[1]);
+        assert!(table[1356..].iter().all(|byte| *byte == 0));
     }
 
     #[test]

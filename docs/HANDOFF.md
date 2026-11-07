@@ -477,12 +477,13 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
 - 前两帧 VDPU383 `global_cfg` 和 `rps` 也与 C 调试 dump 逐 word 相同。
   关键板级差异是 704 stride、未压缩 colmv，以及 DPB flags/MVC layer ids
   共用一个 32-bit word。
-- H.265 初始 7/7 矩阵已在 lf1 通过：320×240 单 IDR、640×480 IPPP 与
-  B-pyramid、Main10、2×2 tiles、真实 WPP（640×360，5 个 entry point）和
-  1280×720 WPP；Rust/YUV 与 C MPP 逐字节相同。176-byte VDPU383 global
-  packet 与 C dump 相同，单测固定 FNV `0xe97a26406128e428`。
-- H.265 的 DSLICE、显式 scaling list、错误注入和更宽 conformance 矩阵仍需
-  lf1 实跑；`scripts/board_rk3576_h265_vs_mpp.sh` 是当前入口。
+- H.265 初始 10/10 矩阵已在 lf1 通过：320×240 单 IDR、640×480 IPPP 与
+  B-pyramid、Main10、2×2 tiles、真实 WPP（640×360，5 个 entry point）、
+  1280×720 WPP、JCT-VC DSLICE，以及显式 SPS/PPS scaling list；Rust/YUV 与
+  C MPP 逐字节相同。176-byte VDPU383 global packet 与 C dump 相同，单测固定
+  FNV `0xe97a26406128e428`。
+- H.265 的 LTR/错误注入和更宽 conformance 矩阵仍需 lf1 实跑；
+  `scripts/board_rk3576_h265_vs_mpp.sh` 是当前入口。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
 - 下一步：把同一 VDPU383 方法推进到 VP9/AV1/AVS2，再做 VEPU510、

@@ -26,18 +26,27 @@ t62 back to the RK3588 reference board.
 
 ## 2026-11-08 RK3576 / lf1 H.265 bring-up
 
-- The VDPU383 hardware matrix is **7/7** on lf1: 320x240 single IDR, 640x480
+- The VDPU383 hardware matrix is **10/10** on lf1: 320x240 single IDR, 640x480
   IPPP and B-pyramid, Main10, 2x2 tiles, real WPP at 640x360 and WPP at
-  1280x720. Every planar YUV output matches stock C MPP byte-for-byte.
+  1280x720, JCT-VC DSLICE, and explicit SPS/PPS scaling-list streams. Every
+  planar YUV output matches stock C MPP byte-for-byte.
 - The WPP streams are verified by `trace_headers` with
   `entropy_coding_sync_enabled_flag = 1` and five entry points. The 1280x720
   C/Rust output SHA-256 is
   `5f124bd7c91877106abe010904de7eeeb129d17a09ddde1d0cc06818bbd3b156`.
+- JCT-VC DSLICE (50 frames at 1920x1080) hashes to
+  `0f28bd89c091b103b3fe3722fa9e8435d96eee414a6c33c29658b4728ec62bc7`.
+  Explicit SPS/PPS scaling-list streams hash to
+  `ecdaee4973148a40faa39e2dafc322507c5cc2d53e33a02fb08537e7a53668ec`
+  and `66baaeb67679a189873f22fb3752caa368d598b72b94d07828f0077a3969e4d0`.
 - The 176-byte VDPU383 SPS/PPS/POC packet matches the patched C dump byte-for-
   byte; its offline FNV lock is `0xe97a26406128e428`. RCB offset/length pairs,
   zero CABAC base and `global_len=0xc` are covered by the same path.
-- RK3576 H.265 is an initial core-path closure. DSLICE, explicit scaling-list,
-  LTR/error injection and wider conformance streams still need lf1 evidence.
+- The scaling-list table is 1360 bytes per slot and uses `sps_id * 1360` or
+  `(pps_id + 16) * 1360`; the VDPU383 builder stores the six 32x32 matrices in
+  the source-defined block-column-major order.
+- RK3576 H.265 is an initial core-path closure. LTR/error injection and wider
+  conformance streams still need lf1 evidence.
 
 ## Environment
 
@@ -52,8 +61,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1165 tests**. The
-regular suite passes **1131 / 0 failed / 34 ignored** on t6. All **34
+`cargo test --release --all-targets` currently enumerates **1167 tests**. The
+regular suite passes **1133 / 0 failed / 34 ignored** on t6. All **34
 board-only ignored tests** also pass under the current 80% OPP cap: the prior
 31-test matrix plus the new HEVC, AV1 and VP9 DPB lease gates. The two JPEG
 restart/rotate cases share a temporary input name and therefore need
