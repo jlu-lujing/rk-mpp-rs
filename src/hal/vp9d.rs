@@ -84,15 +84,11 @@ impl Frame {
     }
 
     pub fn video_fd(&self) -> u32 {
-        self.video
-            .fd()
-            .expect("pooled VP9 video has a dma-buf fd") as u32
+        self.video.fd().expect("pooled VP9 video has a dma-buf fd") as u32
     }
 
     pub fn colmv_fd(&self) -> u32 {
-        self.colmv
-            .fd()
-            .expect("pooled VP9 colmv has a dma-buf fd") as u32
+        self.colmv.fd().expect("pooled VP9 colmv has a dma-buf fd") as u32
     }
 }
 

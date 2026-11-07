@@ -73,16 +73,18 @@ impl Decoder {
 
     fn ensure_frame(&mut self, slot: usize) -> io::Result<()> {
         if self.frames[slot].is_none() {
-            self.frames[slot] = Some(Frame::acquire(
-                &self.video_pool,
-                &self.colmv_pool,
-                self.width,
-                self.height,
-                self.ctu_size,
-                self.bit_depth,
-                self.chroma_format,
-            )
-            .map_err(|error| io::Error::other(format!("HEVC frame pool: {error}")))?);
+            self.frames[slot] = Some(
+                Frame::acquire(
+                    &self.video_pool,
+                    &self.colmv_pool,
+                    self.width,
+                    self.height,
+                    self.ctu_size,
+                    self.bit_depth,
+                    self.chroma_format,
+                )
+                .map_err(|error| io::Error::other(format!("HEVC frame pool: {error}")))?,
+            );
         }
         Ok(())
     }

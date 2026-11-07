@@ -105,15 +105,11 @@ impl Frame {
     }
 
     pub fn video_fd(&self) -> u32 {
-        self.video
-            .fd()
-            .expect("pooled HEVC frame has a dma-buf fd") as u32
+        self.video.fd().expect("pooled HEVC frame has a dma-buf fd") as u32
     }
 
     pub fn colmv_fd(&self) -> u32 {
-        self.colmv
-            .fd()
-            .expect("pooled HEVC colmv has a dma-buf fd") as u32
+        self.colmv.fd().expect("pooled HEVC colmv has a dma-buf fd") as u32
     }
 
     pub fn alloc(
@@ -551,18 +547,15 @@ impl HevcHw {
             r.w[164 + i] = source.video_fd();
             r.w[181 + i] = source.colmv_fd();
         }
-        r.set(
-            reg::w132::REG132_ERROR_REF_BASE,
-            error_ref.video_fd(),
-        )
-        .set(
-            reg::w21::ERROR_INTRA_MODE,
-            error_intra_mode(error_ref_index.is_some()),
-        )
-        .set(reg::w128::REG128_RLC_BASE, 0)
-        .set(reg::w129::REG129_RLCWRITE_BASE, 0)
-        .set(reg::w13::TIMEOUT_MODE, 1)
-        .set(reg::w11::BUF_EMPTY_EN, 1);
+        r.set(reg::w132::REG132_ERROR_REF_BASE, error_ref.video_fd())
+            .set(
+                reg::w21::ERROR_INTRA_MODE,
+                error_intra_mode(error_ref_index.is_some()),
+            )
+            .set(reg::w128::REG128_RLC_BASE, 0)
+            .set(reg::w129::REG129_RLCWRITE_BASE, 0)
+            .set(reg::w13::TIMEOUT_MODE, 1)
+            .set(reg::w11::BUF_EMPTY_EN, 1);
         // IRAP (IDR_W_RADL / IDR_N_LP) tells the decoder to reset its state.
         let idr = sh.slice_type == 2 && matches!(nal_type, 19 | 20);
         r.set(reg::w13::CUR_PIC_IS_IDR, idr as u32);
@@ -700,10 +693,7 @@ impl HevcHw {
             let task = COLMV_DUMP_INDEX.fetch_add(1, Ordering::Relaxed);
             let video = cur.video.data().expect("pooled video stays live");
             let _ = video.buffer().sync_read_begin();
-            let _ = std::fs::write(
-                format!("/tmp/rust_hevc_frame_{task:02}.yuv"),
-                &video[..],
-            );
+            let _ = std::fs::write(format!("/tmp/rust_hevc_frame_{task:02}.yuv"), &video[..]);
             let _ = video.buffer().sync_read_end();
         } else if std::env::var_os("RFI_HEVC_COLMV_DUMP").is_some() {
             use std::io::Write;

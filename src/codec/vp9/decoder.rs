@@ -373,9 +373,7 @@ impl Decoder {
                 self.frames.len() - 1
             });
         if index >= MAX_FRAME_SLOTS {
-            return Err(std::io::Error::other(
-                "VP9 DPB exhausted all frame slots",
-            ));
+            return Err(std::io::Error::other("VP9 DPB exhausted all frame slots"));
         }
         self.frames[index] = Some(Frame::acquire(
             &self.video_pool,
