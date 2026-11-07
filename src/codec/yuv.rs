@@ -7,6 +7,26 @@
 //! the hardware job itself.  This module reads each byte exactly once, eight
 //! bytes per load, which is also what the compiler can vectorise.
 
+/// Copy one 8-bit NV12 frame into tightly packed NV12, removing only the
+/// hardware row stride. This keeps chroma interleaved for NV12-capable display
+/// and conversion consumers and avoids the planar deinterleave pass.
+pub fn nv12_to_packed(y: &[u8], uv: &[u8], width: usize, height: usize, stride: usize) -> Vec<u8> {
+    let chroma_height = height / 2;
+    let luma_size = width * height;
+    let chroma_size = width * chroma_height;
+    let mut out = Vec::with_capacity(luma_size + chroma_size);
+    for row in 0..height {
+        let src = row * stride;
+        out.extend_from_slice(&y[src..src + width]);
+    }
+    for row in 0..chroma_height {
+        let src = row * stride;
+        out.extend_from_slice(&uv[src..src + width]);
+    }
+    debug_assert_eq!(out.len(), luma_size + chroma_size);
+    out
+}
+
 /// One 8-bit NV12 frame (luma plane, then interleaved UV plane, both `stride`
 /// bytes wide) into a tightly packed planar YUV 4:2:0 buffer.
 ///
@@ -236,6 +256,20 @@ mod tests {
                 "{width}x{height} stride {stride}"
             );
         }
+    }
+
+    #[test]
+    fn packed_nv12_removes_stride_without_reordering_chroma() {
+        let (y, uv) = frames(8, 4, 16);
+        let got = nv12_to_packed(&y, &uv, 8, 4, 16);
+        let mut want = Vec::new();
+        for row in 0..4 {
+            want.extend_from_slice(&y[row * 16..row * 16 + 8]);
+        }
+        for row in 0..2 {
+            want.extend_from_slice(&uv[row * 16..row * 16 + 8]);
+        }
+        assert_eq!(got, want);
     }
 
     #[test]

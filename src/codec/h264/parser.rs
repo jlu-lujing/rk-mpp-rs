@@ -256,6 +256,9 @@ pub struct Sps {
     pub direct_8x8_inference: bool,
     pub frame_crop: Option<(u32, u32, u32, u32)>,
     pub vui_timing: Option<(u32, u32)>,
+    /// Display reorder depth from VUI bitstream restrictions. Missing VUI
+    /// restrictions use the H.264 maximum of 16 pictures.
+    pub max_num_reorder_frames: Option<u32>,
 }
 
 const HIGH_PROFILES: &[u8] = &[100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135];
@@ -370,7 +373,9 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, SpsError> {
     sps.height = h;
 
     if r.read_bit()? == 1 {
-        sps.vui_timing = parse_vui(&mut r)?;
+        let vui = parse_vui(&mut r)?;
+        sps.vui_timing = vui.timing;
+        sps.max_num_reorder_frames = vui.max_num_reorder_frames;
     }
     Ok(sps)
 }
@@ -390,7 +395,12 @@ fn skip_scaling_list(r: &mut BitReader<'_>, size: usize) -> Result<(), SpsError>
     Ok(())
 }
 
-fn parse_vui(r: &mut BitReader<'_>) -> Result<Option<(u32, u32)>, SpsError> {
+struct Vui {
+    timing: Option<(u32, u32)>,
+    max_num_reorder_frames: Option<u32>,
+}
+
+fn parse_vui(r: &mut BitReader<'_>) -> Result<Vui, SpsError> {
     if r.read_bit()? == 1 {
         let idc = r.read_bits(8)?;
         if idc == 255 {
@@ -429,14 +439,20 @@ fn parse_vui(r: &mut BitReader<'_>) -> Result<Option<(u32, u32)>, SpsError> {
         r.skip(1)?;
     }
     r.skip(1)?; // pic_struct_present_flag
+    let mut max_num_reorder_frames = None;
     if r.read_bit()? == 1 {
         r.skip(1)?;
         let _ = r.read_ue()?;
         let _ = r.read_ue()?;
         let _ = r.read_ue()?;
         let _ = r.read_ue()?;
+        max_num_reorder_frames = Some(r.read_ue()?);
+        let _ = r.read_ue()?; // max_dec_frame_buffering
     }
-    Ok(timing)
+    Ok(Vui {
+        timing,
+        max_num_reorder_frames,
+    })
 }
 
 fn skip_hrd(r: &mut BitReader<'_>) -> Result<(), SpsError> {
@@ -539,27 +555,6 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<Pps, SpsError> {
         pps.second_chroma_qp_offset = r.read_se()?;
     }
     Ok(pps)
-}
-
-fn read_weight_table(r: &mut BitReader<'_>, refs: u32, chroma: bool) -> Result<(), SpsError> {
-    if refs > 32 {
-        return Err(SpsError::Unsupported("weight table refs"));
-    }
-    for _ in 0..refs {
-        if r.read_bit()? == 1 {
-            let _ = r.read_se()?;
-            let _ = r.read_se()?;
-        }
-        if chroma {
-            if r.read_bit()? == 1 {
-                for _ in 0..2 {
-                    let _ = r.read_se()?;
-                    let _ = r.read_se()?;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Reference-list reordering operation (modification_of_pic_nums_idc).
