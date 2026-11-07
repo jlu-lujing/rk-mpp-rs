@@ -3,8 +3,10 @@
 use std::io;
 
 use crate::hal::h264d::{Frame, H264d};
+use crate::hal::h264d383::H264d383;
 use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{SocProfile, VideoDecodeHal};
 
 use super::dpb::{Dpb, FrameStore, PictureOrderCount, RefListEntry, ReferenceFlags};
 use super::parser::{self, Pps, SliceHeader, Sps};
@@ -95,7 +97,8 @@ pub struct Decoder {
     sps: Vec<Option<Sps>>,
     pps: Vec<Option<Pps>>,
     dpb: Dpb,
-    hw: H264d,
+    hw: H264Hardware,
+    vdpu383: bool,
     frames: Vec<Option<Frame>>,
     nv12_pool: BufferPool<DmaBuf>,
     colmv_pool: BufferPool<DmaBuf>,
@@ -113,13 +116,107 @@ pub struct Decoder {
     output_nv12: bool,
 }
 
+enum H264Hardware {
+    Vdpu34x(H264d),
+    Vdpu383(H264d383),
+}
+
+impl H264Hardware {
+    fn decode(
+        &mut self,
+        sps: &Sps,
+        pps: &Pps,
+        sh: &SliceHeader,
+        order: PictureOrderCount,
+        dpb: &[Option<&FrameStore>],
+        lists: [&[RefListEntry]; 3],
+        cur: &Frame,
+        refs: &[Option<&Frame>],
+        ref_pocs: &[i32],
+        ref_flags: &[Option<ReferenceFlags>],
+        ref_frame_nums: &[u32],
+        stream: &DmaBuf,
+        stream_len: usize,
+        idr: bool,
+    ) -> io::Result<()> {
+        match self {
+            Self::Vdpu34x(hw) => hw.decode(
+                sps,
+                pps,
+                sh,
+                order,
+                dpb,
+                lists,
+                cur,
+                refs,
+                ref_pocs,
+                ref_flags,
+                ref_frame_nums,
+                stream,
+                stream_len,
+                idr,
+            ),
+            Self::Vdpu383(hw) => hw.decode(
+                sps,
+                pps,
+                sh,
+                order,
+                dpb,
+                lists,
+                cur,
+                refs,
+                ref_pocs,
+                ref_flags,
+                ref_frame_nums,
+                stream,
+                stream_len,
+                idr,
+            ),
+        }
+    }
+
+    fn status(&self) -> (u32, u32, u32) {
+        match self {
+            Self::Vdpu34x(hw) => hw.last_status,
+            Self::Vdpu383(hw) => hw.last_status,
+        }
+    }
+
+    fn last_hardware_error(&self) -> bool {
+        match self {
+            Self::Vdpu34x(hw) => hw.last_hardware_error,
+            Self::Vdpu383(hw) => hw.last_hardware_error,
+        }
+    }
+
+    fn recover_session(&mut self) -> io::Result<()> {
+        match self {
+            Self::Vdpu34x(hw) => hw.recover_session(),
+            Self::Vdpu383(hw) => hw.recover_session(),
+        }
+    }
+}
+
 impl Decoder {
     pub fn new() -> io::Result<Decoder> {
+        let profile = SocProfile::detect()?;
+        let vdpu383 = profile.video_decode == VideoDecodeHal::Vdpu383;
+        let hw = match profile.video_decode {
+            VideoDecodeHal::Vdpu34x => H264Hardware::Vdpu34x(H264d::open()?),
+            VideoDecodeHal::Vdpu383 => H264Hardware::Vdpu383(H264d383::open()?),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("no H.264 decode HAL for {:?}", other),
+                ));
+            }
+        };
         Ok(Decoder {
             sps: (0..32).map(|_| None).collect(),
             pps: (0..256).map(|_| None).collect(),
             dpb: Dpb::new(1, 0),
-            hw: H264d::open()?,
+            hw,
+            vdpu383,
             frames: (0..17).map(|_| None).collect(),
             nv12_pool: BufferPool::new(17),
             colmv_pool: BufferPool::new(17),
@@ -138,19 +235,27 @@ impl Decoder {
 
     /// Register read-back after the last job: (reg001, reg045, reg076).
     pub fn status(&self) -> (u32, u32, u32) {
-        self.hw.last_status
+        self.hw.status()
     }
 
     /// Recover the underlying hardware session after a watchdog/ioctl/status
     /// failure. Decoder syntax and DPB state are intentionally retained; reset
     /// only drops the failed kernel job.
     pub fn recover_session(&mut self) -> io::Result<()> {
-        self.hw.recover_session()
+        H264Hardware::recover_session(&mut self.hw)
     }
 
     fn ensure_frame(&mut self, slot: usize, sps: &Sps) -> io::Result<()> {
         if self.frames[slot].is_none() {
-            self.frames[slot] = Some(
+            let frame = if self.vdpu383 {
+                Frame::acquire_vdpu383(
+                    &self.nv12_pool,
+                    &self.colmv_pool,
+                    sps.coded_width as usize,
+                    sps.coded_height as usize,
+                    sps.frame_mbs_only,
+                )
+            } else {
                 Frame::acquire(
                     &self.nv12_pool,
                     &self.colmv_pool,
@@ -158,7 +263,9 @@ impl Decoder {
                     sps.coded_height as usize,
                     sps.frame_mbs_only,
                 )
-                .map_err(|error| io::Error::other(format!("H.264 frame pool: {error}")))?,
+            };
+            self.frames[slot] = Some(
+                frame.map_err(|error| io::Error::other(format!("H.264 frame pool: {error}")))?,
             );
         }
         Ok(())
@@ -388,7 +495,7 @@ impl Decoder {
                 payload_len,
                 idr,
             )?;
-            Ok(self.hw.last_hardware_error)
+            Ok(self.hw.last_hardware_error())
         })?;
         if std::env::var_os("RFI_FIELD_TRACE").is_some() {
             eprintln!(

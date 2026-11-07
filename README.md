@@ -20,9 +20,11 @@
   19（vepu JPEG）、28（IEP）。client 12（AVS+）能绑定但尚无 conformance 流，
   因此**未实现、不宣称**；client 3（vdpu2-pp）会绑定，但本源码里没有任何解码器
   驱动它（见 ROADMAP 的能力表）。
-- **其他 Rockchip SoC 未验证。** 代码不把板型写死（有 `probe` 能力探测，HAL 按硬件块分层），
-  因此可能在别的板子上编译甚至运行，但那不属于承诺范围：不同代的 VEPU/VDEC
-  寄存器布局、STATUS 语义和固件行为都不同，需要各自取证。
+- **RK3576 正在适配，尚不属于完整保证范围。** 已确认
+  VDPU383/VEPU510/VPU720/VDPP2，且 RK3576 H.264 640x480 12 帧已与 C MPP
+  逐字节；H.265/VP9/AV1、编码、JPEG、VDPP2 和 H.264 完整边界矩阵仍在推进。
+  其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
+  固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
   rkvdec 拒收 H.265 4:2:2 / 4:4:4。
 - 未来扩展到其他 SoC 的工作与成本见 [docs/PLAN.md](docs/PLAN.md) 的 W12 与决策 D2；
@@ -260,6 +262,7 @@ tests/data/       C 侧真实输出构成的 golden / fixture
 - [docs/T6_VALIDATION.md](docs/T6_VALIDATION.md) —— 2026-11-06 的 t6 全量测试、板级回归、性能与播放结果
 - [docs/DIVERGENCES.md](docs/DIVERGENCES.md) —— 已知与 C 的差异登记：必须修 / 已证 C bug / 无 oracle
 - [docs/HANDOFF.md](docs/HANDOFF.md) —— 交接：下一步、板子工具链、易错清单
+- [docs/rk3576.md](docs/rk3576.md) —— RK3576 硬件代际、C MPP 基线与 Rust 适配进度
 - [docs/h264d_hw.md](docs/h264d_hw.md) —— rkvdec H.264 硬件契约（从 C 提取）
 - [docs/superpowers/](docs/superpowers/) —— 历史计划与设计稿（带状态说明）
 

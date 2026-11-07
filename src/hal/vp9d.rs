@@ -16,6 +16,7 @@ use crate::codec::vp9::parser::{FrameKind, Header};
 use crate::hal::vdpu34x_regs as reg;
 use crate::service::buffer_pool::{BufferLease, BufferPool};
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{require_video_decode, VideoDecodeHal};
 use crate::service::{
     Batch, Client, MppService, RcbInfo as RcbConfig, RegOffsetInfo, MPP_CMD_SET_RCB_INFO,
 };
@@ -351,6 +352,7 @@ pub struct Vp9d {
 
 impl Vp9d {
     pub fn open() -> io::Result<Vp9d> {
+        require_video_decode(VideoDecodeHal::Vdpu34x)?;
         let svc = MppService::open(Client::RkvDec as u32)?;
         let rcb_info_supported = svc.cmd_supported(MPP_CMD_SET_RCB_INFO);
         let probe = DmaBuf::alloc("system", PROBE_BUFFER_SIZE, false)?;

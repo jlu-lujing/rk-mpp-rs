@@ -12,6 +12,7 @@ use rk_mpp_rs::hal::jpege;
 use rk_mpp_rs::scale;
 use rk_mpp_rs::service::buffer_pool::BufferPool;
 use rk_mpp_rs::service::dma_heap;
+use rk_mpp_rs::service::soc;
 use rk_mpp_rs::service::MppService;
 
 use rk_mpp_rs::service::*;
@@ -2545,7 +2546,7 @@ fn main() {
                     if std::env::var("RFI_DUMP_UV").is_ok() {
                         std::fs::write("/tmp/raw_uv.bin", &pic.raw_uv).ok();
                     }
-                    if i < 3 {
+                    if i < 3 && pic.yuv.len() >= pic.width * pic.height {
                         let y = &pic.yuv[..pic.width * pic.height];
                         let sum: u64 = y.iter().map(|v| *v as u64).sum();
                         let maxv = y.iter().copied().max().unwrap_or(0);
@@ -2556,6 +2557,18 @@ fn main() {
                             pic.height,
                             sum as f64 / y.len() as f64,
                             maxv,
+                            dec.status().0,
+                            dec.status().1,
+                            dec.status().2
+                        );
+                    } else if i < 3 {
+                        println!(
+                            "  frame {i}: poc={} {}x{} err={:#x} yuv_bytes={} status={:08x}/{:08x}/{:08x}",
+                            pic.poc,
+                            pic.width,
+                            pic.height,
+                            pic.err_info,
+                            pic.yuv.len(),
                             dec.status().0,
                             dec.status().1,
                             dec.status().2
@@ -3706,6 +3719,31 @@ fn main() {
         return;
     }
     println!("rk-mpp-rs probe");
+    match soc::SocProfile::detect() {
+        Ok(profile) => {
+            println!(
+                "  soc: {:?}   model: {}",
+                profile.id,
+                if profile.model.is_empty() {
+                    "unknown"
+                } else {
+                    &profile.model
+                }
+            );
+            println!(
+                "  compatible: {}",
+                profile.compatible_tokens().collect::<Vec<_>>().join(", ")
+            );
+            println!(
+                "  expected HAL: decode={:?} encode={:?} jpeg={:?} vdpp={:?}",
+                profile.video_decode,
+                profile.video_encode,
+                profile.jpeg_encode,
+                profile.video_post_processor
+            );
+        }
+        Err(error) => println!("  soc detect failed: {error}"),
+    }
 
     let t = Instant::now();
     let opened = MppService::open(VPU_CLIENT_JPEG_DEC);

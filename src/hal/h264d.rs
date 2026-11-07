@@ -14,6 +14,7 @@ use crate::codec::h264::parser::{Pps, SliceHeader, Sps};
 use crate::hal::vdpu34x_regs as reg;
 use crate::service::buffer_pool::{BufferLease, BufferPool, PoolError};
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{require_video_decode, VideoDecodeHal};
 use crate::service::{
     Batch, Client, MppService, RcbInfo as RcbConfig, RegOffsetInfo, MPP_CMD_SET_RCB_INFO,
 };
@@ -51,6 +52,35 @@ impl Frame {
         let y_size = hor_stride * ver_stride;
         let nv12 = acquire_frame_buffer(nv12_pool, y_size * 3 / 2)?;
         let colmv = acquire_frame_buffer(colmv_pool, colmv_size(width, height, frame_mbs_only))?;
+        Ok(Frame {
+            nv12,
+            colmv,
+            width,
+            height,
+            hor_stride,
+            ver_stride,
+        })
+    }
+
+    /// RK3576's decoder frame-slot policy uses the "128 odd plus 64" stride.
+    /// VDPU383 colmv is the uncompressed 16-byte-unit map, not the VDPU34x
+    /// compressed map used by the RK3588 path.
+    pub fn acquire_vdpu383(
+        nv12_pool: &BufferPool<DmaBuf>,
+        colmv_pool: &BufferPool<DmaBuf>,
+        width: usize,
+        height: usize,
+        frame_mbs_only: bool,
+    ) -> Result<Frame, PoolError> {
+        let hor_stride = align(width, 128) + 64;
+        let ver_stride = align(height, 16);
+        let y_size = hor_stride * ver_stride;
+        let nv12 = acquire_frame_buffer(nv12_pool, y_size * 3 / 2)?;
+        let mut colmv_bytes = align(width, 64) * align(height, 16);
+        if !frame_mbs_only {
+            colmv_bytes *= 2;
+        }
+        let colmv = acquire_frame_buffer(colmv_pool, colmv_bytes)?;
         Ok(Frame {
             nv12,
             colmv,
@@ -274,6 +304,7 @@ pub struct H264d {
 
 impl H264d {
     pub fn open() -> io::Result<H264d> {
+        require_video_decode(VideoDecodeHal::Vdpu34x)?;
         let svc = MppService::open(Client::RkvDec as u32)?;
         let rcb_info_supported = svc.cmd_supported(MPP_CMD_SET_RCB_INFO);
         let cabac = DmaBuf::alloc("system", CABAC_SIZE, false)?;

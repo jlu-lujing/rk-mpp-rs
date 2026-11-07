@@ -12,6 +12,7 @@ use crate::codec::av1::cdf::{Av1Cdf, CDF_SIZE, MV_CDF_OFFSET};
 use crate::codec::av1::picparams::Av1PicParams;
 use crate::service::buffer_pool::{BufferLease, BufferPool};
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{require_video_decode, VideoDecodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
 mod film_grain;
@@ -246,6 +247,7 @@ pub struct Av1d {
 
 impl Av1d {
     pub fn open() -> io::Result<Self> {
+        require_video_decode(VideoDecodeHal::Vdpu34x)?;
         Ok(Self {
             svc: MppService::open(Client::Av1Dec as u32)?,
             probability_in: DmaBuf::alloc(AV1_FRAME_HEAP, PROBABILITY_BUFFER_SIZE, false)?,

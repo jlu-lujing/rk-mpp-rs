@@ -13,6 +13,7 @@ use crate::codec::hevc::parser::{Pps, SliceHeader, Sps};
 use crate::hal::vdpu34x_regs as reg;
 use crate::service::buffer_pool::{BufferLease, BufferPool, PoolError};
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{require_video_decode, VideoDecodeHal};
 use crate::service::{
     Client, MppService, RcbInfo as RcbConfig, RegOffsetInfo, MPP_CMD_SET_RCB_INFO,
 };
@@ -381,6 +382,7 @@ pub struct HevcHw {
 
 impl HevcHw {
     pub fn open() -> io::Result<HevcHw> {
+        require_video_decode(VideoDecodeHal::Vdpu34x)?;
         // The board's hardware mask advertises a dedicated HEVC decode client
         // (bit 8) next to rkvdec (bit 9); try it first, falling back to rkvdec.
         let client = std::env::var("RFI_HEVC_CLIENT")

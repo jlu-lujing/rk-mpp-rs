@@ -3,6 +3,27 @@
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
 
+## 2026-11-08 W5-4 pool closeout
+
+- H.265 lease test passed; the HEVC board suite is **13 PASS / 1 SKIP /
+  0 FAIL**. The SKIP remains the named `/tmp/t720.hevc` C-reference absence.
+- AV1 lease test passed, 353 AV1 library tests passed, and the 8/10-bit film
+  grain hardware output matched libaom.
+- VP9 lease test passed, 18 VP9 library tests passed, and all three hardware
+  matrices (show-existing, error-resilient segmentation, lossless/tiled/odd
+  sizes) passed.
+
+## 2026-11-08 RK3576 / lf1 H.264 bring-up
+
+- Board: Luckfox Omni3576, RK3576, Linux 6.1.75, C MPP 1.0.11.
+- 640×480 High profile, 12 moving frames: Rust VDPU383 and stock C MPP both
+  SHA-256
+  `615ee129c46e10f7fb4cb2cf8af3cb370523f7605abee7e7315e073a4421b112`.
+- VDPU383 `global_cfg` and `rps` for the first two frames match the patched C
+  dumps word-for-word.
+- t6 RK3588 fallback from the same branch: all seven H.264 decoder fixtures
+  passed, proving the VDPU34x path remains intact.
+
 ## Environment
 
 - NanoPC-T6-LTS, RK3588, Debian 11.11, kernel 6.1.57

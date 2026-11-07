@@ -19,6 +19,7 @@ use std::io;
 use std::ops::Range;
 
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{require_jpeg_encode, JpegEncodeHal};
 use crate::service::{Batch, Client, MppBatCmd, MppService, RegOffsetInfo};
 
 use super::jpege_tables as tables;
@@ -628,6 +629,7 @@ pub struct Vepu2Jpeg {
 
 impl Vepu2Jpeg {
     pub fn open() -> io::Result<Self> {
+        require_jpeg_encode(JpegEncodeHal::Vepu2)?;
         Ok(Self {
             svc: MppService::open(Client::Vepu2Jpeg as u32)?,
             input: None,

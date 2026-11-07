@@ -20,6 +20,7 @@ use crate::codec::h264::sei;
 use crate::codec::rc::model as rc_model;
 use crate::reference::cabac::Context;
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RcbInfo, RegOffsetInfo, SliceInfo};
 
 use super::h264e_vepu580_template as template;
@@ -668,6 +669,7 @@ pub struct Vepu580H264 {
 
 impl Vepu580H264 {
     pub fn open(config: EncoderConfig) -> Result<Self, String> {
+        require_video_encode(VideoEncodeHal::Vepu580)?;
         validate_reference_config(&config)?;
         verified_on_board(&config)?;
         let input_size = input_size(&config)?;

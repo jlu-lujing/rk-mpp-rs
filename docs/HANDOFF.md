@@ -465,6 +465,24 @@ VP8 与 H.264/HEVC/AV1/VP9 的池化帧已经真正持有 DPB lease；H.265
 保留 DPB 引用，AV1 只复用非参考帧，VP9 保护 hardware previous/last
 colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成的队列基础设施。
 
+### 5.6.1 W12 RK3576 bring-up（新板，不是 RK3588 的别名）
+
+- lf1 是 Luckfox Omni3576 / RK3576，使用 VDPU383、VEPU510、VPU720 和
+  VDPP2；不能复用 RK3588 的 VDPU34x/VEPU580 寄存器写法。
+- `service::soc` 已按 device-tree compatible 选择 HAL，RK3588-only 入口在
+  RK3576 上显式拒绝；`probe` 会打印 SoC、模型和预期代际。
+- 已生成 276-word VDPU383 寄存器表，并完成首个 H.264 硬件路径。lf1 的
+  640×480、12 帧 High profile 动画面与官方 C MPP 逐字节，SHA-256 均为
+  `615ee129c46e10f7fb4cb2cf8af3cb370523f7605abee7e7315e073a4421b112`。
+- 前两帧 VDPU383 `global_cfg` 和 `rps` 也与 C 调试 dump 逐 word 相同。
+  关键板级差异是 704 stride、未压缩 colmv，以及 DPB flags/MVC layer ids
+  共用一个 32-bit word。
+- t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
+  RK3588。
+- 下一步：把同一 VDPU383 方法推进到 H.265/VP9/AV1/AVS2，再做 VEPU510、
+  VPU720 与 VDPP2。RK3576 未被硬件暴露的 VP8/MPEG-2/MPEG-4/H.263 要由
+  能力矩阵明确拒绝。
+
 ### 5.7 解码器边缘
 
 - AVS+/AVS2（client 12 可绑定，但无 conformance 流；AVS2 该板无）

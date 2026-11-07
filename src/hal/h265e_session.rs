@@ -16,6 +16,7 @@ use crate::codec::h265::encoder::{SliceSplit, SyntaxOptions, MPP_ENC_SPLIT_OUT_L
 use crate::codec::h265::roi::{build_tables as build_roi_tables, RoiRegion};
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
 
 use super::h265e::{
@@ -200,6 +201,7 @@ impl Vepu580H265 {
     }
 
     fn open_inner(width: usize, height: usize, qp: u32, long_term: bool) -> Result<Self, String> {
+        require_video_encode(VideoEncodeHal::Vepu580)?;
         if width == 0 || height == 0 {
             return Err("H.265 session needs a non-zero picture".into());
         }

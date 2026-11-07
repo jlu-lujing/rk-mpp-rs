@@ -10,6 +10,7 @@ pub mod decoder;
 pub mod dpb;
 pub mod encoder;
 pub mod hw;
+pub mod hw383;
 pub mod parser;
 pub mod regs;
 pub mod sei;

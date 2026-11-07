@@ -7,6 +7,7 @@
 pub mod buffer_pool;
 pub mod dma_heap;
 pub mod iep_session;
+pub mod soc;
 pub mod task_queue;
 
 use std::ffi::CString;

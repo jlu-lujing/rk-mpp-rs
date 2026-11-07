@@ -3159,6 +3159,11 @@ pipeline uses.
 
 ## Verification
 
+- **RK3576 / lf1:** device-tree selects VDPU383/VEPU510/VPU720/VDPP2.
+  The first VDPU383 H.264 640x480 12-frame High-profile path is byte-identical
+  to stock C MPP on lf1 (`615ee129c46e10f7fb4cb2cf8af3cb370523f7605abee7e7315e073a4421b112`
+  on both sides), with `global_cfg`/`rps` word-identical for the first two
+  frames. H.265/VP9/AV1/AVS2, VEPU510, VPU720 and VDPP2 remain in progress.
 - Tests: `cargo test --all-targets` enumerates 1151 tests: 1120 regular pass
   and 31 ignored hardware tests on both host and t6. All 31 board-only tests
   pass under the current 80% OPP cap; the prior 27-test snapshot is superseded.
