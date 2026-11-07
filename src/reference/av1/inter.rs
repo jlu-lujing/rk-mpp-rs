@@ -712,6 +712,15 @@ impl MotionVectorStack {
 pub struct MotionGrid<'a> {
     pub mi_cols: usize,
     pub mi_rows: usize,
+    /// mi bounds of the tile whose block is being decoded. `is_inside`
+    /// (`mvref_common.h:68`) keeps every single-point candidate (up-left,
+    /// above-right, below-left and the extra probes) inside the tile, while
+    /// the straight `scan_row`/`scan_col` walks are unclipped and do see the
+    /// blocks of a tile decoded earlier.
+    pub tile_row_start: usize,
+    pub tile_row_end: usize,
+    pub tile_col_start: usize,
+    pub tile_col_end: usize,
     pub decoded: &'a [bool],
     pub sizes: &'a [Option<BlockSize>],
     pub is_inter: &'a [bool],
@@ -725,6 +734,14 @@ pub struct MotionGrid<'a> {
 impl MotionGrid<'_> {
     fn inside(&self, row: isize, col: isize) -> bool {
         row >= 0 && col >= 0 && (row as usize) < self.mi_rows && (col as usize) < self.mi_cols
+    }
+
+    /// `is_inside` from `mvref_common.h`.
+    fn inside_tile(&self, row: isize, col: isize) -> bool {
+        row >= self.tile_row_start as isize
+            && row < self.tile_row_end as isize
+            && col >= self.tile_col_start as isize
+            && col < self.tile_col_end as isize
     }
 
     fn index(&self, row: usize, col: usize) -> usize {
@@ -901,6 +918,12 @@ impl StackBuilder<'_> {
         {
             return None;
         }
+        // `add_tpl_ref_mv()` (`mvref_common.c:342`) runs the same
+        // `is_inside(&xd->tile, ...)` test as the single-point candidates, so a
+        // probe that lands in a neighbouring tile contributes nothing.
+        if !self.grid.inside_tile(position_row, position_col) {
+            return None;
+        }
         let candidate =
             temporal.candidate((position_row as usize) >> 1, (position_col as usize) >> 1)?;
         let mut mvs = [MotionVector::default(); 2];
@@ -922,6 +945,35 @@ impl StackBuilder<'_> {
         }
         self.add_to_stack(mvs, 2);
         Some(mvs)
+    }
+
+    /// `scan_row` behind the `abs(max_row_offset) >= 1` gate of
+    /// `setup_ref_mv_list`, which `up_available` (and therefore the tile) drives.
+    fn scan_row_if(
+        &mut self,
+        available: bool,
+        delta_row: isize,
+        block_row: usize,
+        block_col: usize,
+        size: BlockSize,
+    ) {
+        if available {
+            self.scan_row(delta_row, block_row, block_col, size);
+        }
+    }
+
+    /// `scan_col` counterpart of [`Self::scan_row_if`].
+    fn scan_col_if(
+        &mut self,
+        available: bool,
+        delta_col: isize,
+        block_row: usize,
+        block_col: usize,
+        size: BlockSize,
+    ) {
+        if available {
+            self.scan_col(delta_col, block_row, block_col, size);
+        }
     }
 
     fn scan_row(&mut self, delta_row: isize, block_row: usize, block_col: usize, size: BlockSize) {
@@ -1004,6 +1056,7 @@ impl StackBuilder<'_> {
 
     fn scan_point(&mut self, row: isize, col: isize) -> bool {
         if !self.grid.inside(row, col)
+            || !self.grid.inside_tile(row, col)
             || !self.grid.decoded[self.grid.index(row as usize, col as usize)]
         {
             return false;
@@ -1028,7 +1081,14 @@ impl StackBuilder<'_> {
         }
     }
 
-    fn extra_search(&mut self, block_row: usize, block_col: usize, size: BlockSize) {
+    fn extra_search(
+        &mut self,
+        block_row: usize,
+        block_col: usize,
+        size: BlockSize,
+        up_available: bool,
+        left_available: bool,
+    ) {
         let w4 = (size.num_4x4_wide() as usize)
             .min(16)
             .min(self.grid.mi_cols.saturating_sub(block_col));
@@ -1048,7 +1108,15 @@ impl StackBuilder<'_> {
                 } else {
                     (block_row as isize + index as isize, block_col as isize - 1)
                 };
-                if !self.grid.inside(row, col) {
+                // `setup_ref_mv_list` runs these probes behind
+                // `abs(max_row_offset) >= 1` / `abs(max_col_offset) >= 1`.
+                if pass == 0 && !up_available {
+                    break;
+                }
+                if pass == 1 && !left_available {
+                    break;
+                }
+                if !self.grid.inside(row, col) || !self.grid.inside_tile(row, col) {
                     break;
                 }
                 if self.is_compound {
@@ -1226,10 +1294,50 @@ pub fn find_mv_stack(
         new_mv_count: 0,
     };
 
-    builder.scan_row(-1, block_row, block_col, size);
+    // `setup_ref_mv_list` only fills `max_row_offset`/`max_col_offset` when
+    // `up_available`/`left_available` hold, `set_mi_row_col` gates those on the
+    // tile, and `find_valid_{row,col}_offset` clamps the offsets to it. So a
+    // block near the top or left edge of its tile loses the deeper scans
+    // entirely, even though the neighbouring tile is already decoded.
+    const MVREF_ROW_COLS: isize = 3;
+    let block_row_i = block_row as isize;
+    let block_col_i = block_col as isize;
+    let row_adj = isize::from(size.num_4x4_high() < 2 && (block_row & 1) == 1);
+    let col_adj = isize::from(size.num_4x4_wide() < 2 && (block_col & 1) == 1);
+    let max_row_offset = if block_row_i > builder.grid.tile_row_start as isize {
+        let base = if size.num_4x4_high() < 2 {
+            -(2 << 1) + row_adj
+        } else {
+            -(MVREF_ROW_COLS << 1) + row_adj
+        };
+        base.clamp(
+            builder.grid.tile_row_start as isize - block_row_i,
+            builder.grid.tile_row_end as isize - block_row_i - 1,
+        )
+    } else {
+        0
+    };
+    let max_col_offset = if block_col_i > builder.grid.tile_col_start as isize {
+        let base = if size.num_4x4_wide() < 2 {
+            -(2 << 1) + col_adj
+        } else {
+            -(MVREF_ROW_COLS << 1) + col_adj
+        };
+        base.clamp(
+            builder.grid.tile_col_start as isize - block_col_i,
+            builder.grid.tile_col_end as isize - block_col_i - 1,
+        )
+    } else {
+        0
+    };
+    let up_available = max_row_offset.abs() >= 1;
+    let left_available = max_col_offset.abs() >= 1;
+    let row_scan_allowed = |depth: isize| depth <= max_row_offset.abs();
+    let col_scan_allowed = |depth: isize| depth <= max_col_offset.abs();
+    builder.scan_row_if(up_available, -1, block_row, block_col, size);
     let mut found_above = builder.found;
     builder.found = false;
-    builder.scan_col(-1, block_row, block_col, size);
+    builder.scan_col_if(left_available, -1, block_row, block_col, size);
     let found_left = builder.found;
     if size.num_4x4_wide().max(size.num_4x4_high()) <= 16 {
         builder.found = false;
@@ -1319,18 +1427,18 @@ pub fn find_mv_stack(
     let mut total_above = found_above;
     let mut total_left = found_left;
     builder.found = false;
-    builder.scan_row(-3, block_row, block_col, size);
+    builder.scan_row_if(row_scan_allowed(3), -3, block_row, block_col, size);
     total_above |= builder.found;
     builder.found = false;
-    builder.scan_col(-3, block_row, block_col, size);
+    builder.scan_col_if(col_scan_allowed(3), -3, block_row, block_col, size);
     total_left |= builder.found;
     builder.found = false;
-    if size.num_4x4_high() > 1 {
+    if size.num_4x4_high() > 1 && row_scan_allowed(5) {
         builder.scan_row(-5, block_row, block_col, size);
         total_above |= builder.found;
     }
     builder.found = false;
-    if size.num_4x4_wide() > 1 {
+    if size.num_4x4_wide() > 1 && col_scan_allowed(5) {
         builder.scan_col(-5, block_row, block_col, size);
         total_left |= builder.found;
     }
@@ -1339,7 +1447,7 @@ pub fn find_mv_stack(
     builder.sort(0, num_nearest);
     builder.sort(num_nearest, builder.stack.count);
     if builder.stack.count < 2 {
-        builder.extra_search(block_row, block_col, size);
+        builder.extra_search(block_row, block_col, size, up_available, left_available);
     }
     builder.clamp(block_row, block_col, size);
 

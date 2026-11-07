@@ -25,7 +25,7 @@ use crate::reference::av1::palette::{
     read_palette_tokens, PaletteError, PaletteModeInfo, PaletteState, PaletteTokens,
 };
 use crate::reference::av1::residual::{intra_residual_blocks, residual_size};
-use crate::reference::av1::segment::{SegmentMap, SegmentState};
+use crate::reference::av1::segment::{SegmentCarry, SegmentMap, SegmentState};
 use crate::reference::av1::seq_header::SequenceHeader;
 use crate::reference::av1::tile::DecodedBlock;
 use crate::reference::av1::tile_entropy::{TileBlockSink, TileEntropyError};
@@ -38,6 +38,10 @@ use crate::reference::av1::tx_type::{
 pub struct IntraTileConfig {
     pub mi_cols: usize,
     pub mi_rows: usize,
+    /// mi origin of the tile being decoded; segment-id spatial prediction and
+    /// the seg-id-predicted context clip here, not at the picture edge.
+    pub tile_row_start: usize,
+    pub tile_col_start: usize,
     pub sub_x: u32,
     pub sub_y: u32,
     pub bit_depth: u32,
@@ -126,6 +130,7 @@ impl IntraTileBlockSink {
     pub fn new(config: IntraTileConfig) -> Self {
         let mi_cols = config.mi_cols;
         let mi_rows = config.mi_rows;
+        let (tile_row_start, tile_col_start) = (config.tile_row_start, config.tile_col_start);
         let current_qindex = config.base_q_index;
         let previous_segment_map = config.previous_segment_map.clone();
         let last_active_seg_id = config.last_active_seg_id;
@@ -133,12 +138,16 @@ impl IntraTileBlockSink {
         Self {
             config,
             tile_context: TileContext::new(mi_cols, mi_rows),
-            segments: SegmentState::with_previous(
-                mi_cols,
-                mi_rows,
-                last_active_seg_id,
-                previous_segment_map,
-            ),
+            segments: {
+                let mut segments = SegmentState::with_previous(
+                    mi_cols,
+                    mi_rows,
+                    last_active_seg_id,
+                    previous_segment_map,
+                );
+                segments.set_tile_origin(tile_row_start, tile_col_start);
+                segments
+            },
             palettes: PaletteState::new(mi_cols, mi_rows),
             cdef: CdefIndexGrid::new(mi_cols, mi_rows),
             skip_grid: vec![false; mi_cols * mi_rows],
@@ -153,6 +162,19 @@ impl IntraTileBlockSink {
             lr_cdfs_loaded: false,
             blocks: Vec::new(),
         }
+    }
+
+    /// The segment state libaom keeps in the frame: a tile must see the ids an
+    /// earlier tile wrote.
+    pub fn segment_carry(&self) -> SegmentCarry {
+        self.segments.carry()
+    }
+
+    /// Continue a fresh sink from the segment ids of the previous tile.
+    #[must_use]
+    pub fn with_segment_carry(mut self, carry: SegmentCarry) -> Self {
+        self.segments.restore_carry(&carry);
+        self
     }
 
     pub fn cdef_grid(&self) -> &CdefIndexGrid {
@@ -229,6 +251,14 @@ impl IntraTileBlockSink {
 }
 
 impl IntraTileConfig {
+    /// Point the tile-boundary clipping at one tile.
+    #[must_use]
+    pub fn with_tile_origin(mut self, tile_row_start: usize, tile_col_start: usize) -> Self {
+        self.tile_row_start = tile_row_start;
+        self.tile_col_start = tile_col_start;
+        self
+    }
+
     pub fn from_headers(seq: &SequenceHeader, header: &FrameHeader) -> Self {
         let mut segment_skip = [false; 8];
         let mut segment_alt_q = [0; 8];
@@ -241,6 +271,8 @@ impl IntraTileConfig {
         Self {
             mi_cols: header.mi_cols,
             mi_rows: header.mi_rows,
+            tile_row_start: 0,
+            tile_col_start: 0,
             sub_x: u32::from(seq.color.subsampling_x),
             sub_y: u32::from(seq.color.subsampling_y),
             bit_depth: u32::from(seq.color.bit_depth),
@@ -783,6 +815,8 @@ mod tests {
         IntraTileConfig {
             mi_cols: 32,
             mi_rows: 32,
+            tile_row_start: 0,
+            tile_col_start: 0,
             sub_x: 1,
             sub_y: 1,
             bit_depth: 8,

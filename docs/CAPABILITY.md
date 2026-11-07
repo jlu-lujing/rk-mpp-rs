@@ -136,7 +136,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**94 完成 / 6 未完成**（含缩进子项为 132 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 102 个 slice（含真实 2×2 tile tile-group 的逐 tile 熵闭合与像素门）：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 102 个 slice（含真实 2×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动与五组 tile 裁剪规则已落地，但 2×2 inter fixture 未过门、已 `#[ignore]`）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在

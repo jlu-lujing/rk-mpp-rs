@@ -139,6 +139,8 @@ struct StatefulTile<'a, S> {
     bounds: TileBounds,
     local_cols: usize,
     local_rows: usize,
+    frame_cols: usize,
+    frame_rows: usize,
     blocks: Vec<DecodedBlock>,
     sink: S,
     error: Option<TileEntropyError>,
@@ -187,8 +189,14 @@ impl<S: TileBlockSink> PartitionSource for StatefulTile<'_, S> {
             .then(|| self.sizes[row * self.local_cols + col - 1])
             .flatten();
         let half = (size.num_4x4_wide() / 2) as usize;
-        let has_rows = row + half < self.local_rows;
-        let has_cols = col + half < self.local_cols;
+        // `decode_block_in_sb()` derives these from the *frame*
+        // (`(mi_row + hbs) < cm->mi_params.mi_rows`) and clips the walk to the
+        // tile through the walk bounds instead. Deriving them from the tile
+        // swaps the full partition CDF for the two-symbol edge CDF at every
+        // node that merely touches a tile edge, which desynchronises any
+        // frame with more than one tile.
+        let has_rows = self.bounds.mi_row_start + row + half < self.frame_rows;
+        let has_cols = self.bounds.mi_col_start + col + half < self.frame_cols;
         let choice = read_partition_with_cdf_bounded(
             &mut self.decoder,
             &mut self.cdfs,
@@ -297,6 +305,8 @@ pub fn decode_tile_partitions_with_cdfs<S: TileBlockSink>(
         bounds,
         local_cols,
         local_rows,
+        frame_cols: frame.mi_cols,
+        frame_rows: frame.mi_rows,
         blocks: Vec::new(),
         sink,
         error: None,

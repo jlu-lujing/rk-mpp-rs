@@ -70,12 +70,25 @@ impl SegmentMap {
     }
 }
 
+/// Snapshot of the frame-level segment state at a tile boundary.
+#[derive(Debug, Clone)]
+pub struct SegmentCarry {
+    ids: Vec<u8>,
+    predicted: Vec<bool>,
+}
+
 /// Per-frame segment-id grid, temporal-prediction flags and `LastActiveSegId`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentState {
     pub mi_cols: usize,
     pub mi_rows: usize,
     pub last_active: usize,
+    /// mi origin of the tile being decoded. `av1_get_spatial_seg_pred` and
+    /// `av1_get_pred_context_seg_id` only read the neighbours when
+    /// `up_available`/`left_available` hold, and `set_mi_row_col` gates those on
+    /// the tile, while the segment map itself stays frame-level.
+    pub tile_row_start: usize,
+    pub tile_col_start: usize,
     previous: Option<SegmentMap>,
     ids: Vec<u8>,
     predicted: Vec<bool>,
@@ -97,6 +110,8 @@ impl SegmentState {
             mi_cols,
             mi_rows,
             last_active,
+            tile_row_start: 0,
+            tile_col_start: 0,
             previous,
             ids: vec![u8::MAX; mi_cols * mi_rows],
             predicted: vec![false; mi_cols * mi_rows],
@@ -131,19 +146,48 @@ impl SegmentState {
         }
     }
 
+    /// The part of the segment state that libaom keeps in the frame's mi grid:
+    /// the id each cell already carries and whether it was predicted. Tiles are
+    /// decoded in raster order, so the next tile must see the cells an earlier
+    /// tile wrote and must not see the cells a later tile has not reached.
+    pub fn carry(&self) -> SegmentCarry {
+        SegmentCarry {
+            ids: self.ids.clone(),
+            predicted: self.predicted.clone(),
+        }
+    }
+
+    /// Point the clipping at one tile.
+    pub fn set_tile_origin(&mut self, tile_row_start: usize, tile_col_start: usize) {
+        self.tile_row_start = tile_row_start;
+        self.tile_col_start = tile_col_start;
+    }
+
+    /// Continue from a state carried across a tile boundary.
+    pub fn restore_carry(&mut self, carry: &SegmentCarry) {
+        if carry.ids.len() == self.ids.len() {
+            self.ids.copy_from_slice(&carry.ids);
+            self.predicted.copy_from_slice(&carry.predicted);
+        }
+    }
+
     fn neighbor(&self, row: isize, col: isize) -> Option<usize> {
-        if row < 0 || col < 0 {
+        if row < 0 || col < 0 || !self.inside_tile(row, col) {
             return None;
         }
         self.get(row as usize, col as usize)
     }
 
     fn predicted_neighbor(&self, row: isize, col: isize) -> bool {
-        if row < 0 || col < 0 {
+        if row < 0 || col < 0 || !self.inside_tile(row, col) {
             return false;
         }
         self.was_predicted(row as usize, col as usize)
             .unwrap_or(false)
+    }
+
+    fn inside_tile(&self, row: isize, col: isize) -> bool {
+        row as usize >= self.tile_row_start && col as usize >= self.tile_col_start
     }
 
     fn spatial_prediction(&self, row: usize, col: usize) -> (usize, usize) {

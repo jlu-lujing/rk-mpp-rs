@@ -17,6 +17,7 @@ use crate::reference::av1::reconstruct::{
     reconstruct_intra_block_plane_with_grid, DecodedPlane, PlaneQDelta, ReconstructedLuma,
 };
 use crate::reference::av1::residual::plane_tx_size;
+use crate::reference::av1::segment::{SegmentCarry, SegmentMap};
 use crate::reference::av1::seq_header::SequenceHeader;
 use crate::reference::av1::tile_entropy::{
     decode_tile_partitions_with_cdfs, tile_bounds, TileEntropyError,
@@ -812,6 +813,8 @@ pub struct IntraTileGroup {
     pub cdef: CdefIndexGrid,
     /// Union of the loop-restoration parameters read by the tiles.
     pub lr: LrFrameParams,
+    /// Segment ids of the whole frame.
+    pub segment_map: SegmentMap,
     /// Final CDF state of `header.context_update_tile_id`.
     pub cdfs: CdfState,
 }
@@ -835,7 +838,19 @@ pub fn decode_intra_tile_group(
     let mut cdef = CdefIndexGrid::new(header.mi_cols, header.mi_rows);
     let mut lr = LrFrameParams::for_geometry(&config.lr_geometry);
     let mut cdfs = initial_cdfs.clone();
+    let mut segments: Option<SegmentCarry> = None;
+    let mut segment_map: Option<SegmentMap> = None;
     for range in &layout.tiles {
+        let bounds = tile_bounds(header, range.tile)?;
+        let sink = IntraTileBlockSink::new(
+            config
+                .clone()
+                .with_tile_origin(bounds.mi_row_start, bounds.mi_col_start),
+        );
+        let sink = match segments.take() {
+            Some(carry) => sink.with_segment_carry(carry),
+            None => sink,
+        };
         let decoded = decode_tile_partitions_with_cdfs(
             &payload[range.bytes.clone()],
             header,
@@ -844,9 +859,8 @@ pub fn decode_intra_tile_group(
             header.disable_cdf_update,
             true,
             initial_cdfs.clone(),
-            IntraTileBlockSink::new(config.clone()),
+            sink,
         )?;
-        let bounds = tile_bounds(header, range.tile)?;
         cdef.absorb_tile(
             decoded.sink.cdef_grid(),
             bounds.mi_row_start,
@@ -855,15 +869,20 @@ pub fn decode_intra_tile_group(
             bounds.mi_col_end,
         );
         merge_lr_params(&mut lr, decoded.sink.lr_params());
+        segments = Some(decoded.sink.segment_carry());
+        segment_map = Some(decoded.sink.segment_map());
         blocks.extend(decoded.sink.blocks);
         if range.tile == header.context_update_tile_id as usize {
             cdfs = decoded.cdfs;
         }
     }
+    let segment_map =
+        segment_map.unwrap_or_else(|| SegmentMap::new(header.mi_cols, header.mi_rows));
     Ok(IntraTileGroup {
         blocks,
         cdef,
         lr,
+        segment_map,
         cdfs,
     })
 }
@@ -871,7 +890,7 @@ pub fn decode_intra_tile_group(
 /// Merge one tile's restoration parameters into the frame grid. A restoration
 /// unit straddling a tile boundary is read by both tiles, and the last tile in
 /// decode order is the one whose parameters libaom keeps.
-fn merge_lr_params(frame: &mut LrFrameParams, tile: &LrFrameParams) {
+pub(crate) fn merge_lr_params(frame: &mut LrFrameParams, tile: &LrFrameParams) {
     for (frame_plane, tile_plane) in frame.planes.iter_mut().zip(&tile.planes) {
         for (slot, value) in frame_plane.iter_mut().zip(tile_plane) {
             if value.is_some() {

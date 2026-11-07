@@ -372,7 +372,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       keyframe 锁定 Y 平面，并覆盖 UV 语法门控与单平面 deblock；
       真实 2×2 tile keyframe 已闭合逐 tile 熵独立（每 tile 从帧初始 CDF 重启、帧末 CDF
       取 `context_update_tile_id`）与 tile 边界裁剪的 intra 邻块/CDEF 传输，三平面逐字节；
-      tile 化 inter 帧仍未做
+      tile 化 inter 帧仍未做（`decode_inter_tile_group` 与五组 tile 裁剪规则已写好，2×2 inter fixture 以 ignore 记录待修）
 - [ ] W6-6 HEVC SCC（调色板/屏幕内容）：若 C 无路径则记录为 C 缺失
 - [ ] W6-7 H.264 field-coded PAFF 复核（当前 MBAFF/PAFF 有覆盖，field-coded 单独补）
 - [ ] W6-8 非 16 对齐尺寸的字节级路径（JPEG 已有；编码器受 harness 限制，需自建 C 驱动）

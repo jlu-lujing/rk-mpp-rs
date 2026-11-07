@@ -41,7 +41,7 @@ use crate::reference::av1::lr_syntax::{LrSyntaxError, LrTileState};
 use crate::reference::av1::palette::{read_palette_tokens, PaletteError, PaletteState};
 use crate::reference::av1::partition::BlockSize;
 use crate::reference::av1::residual::{intra_residual_blocks, residual_size, ResidualTxBlock};
-use crate::reference::av1::segment::{SegmentMap, SegmentState};
+use crate::reference::av1::segment::{SegmentCarry, SegmentMap, SegmentState};
 use crate::reference::av1::seq_header::SequenceHeader;
 use crate::reference::av1::temporal::TemporalMotionField;
 use crate::reference::av1::tile::DecodedBlock;
@@ -61,6 +61,14 @@ use crate::reference::av1::warped::{
 #[derive(Debug, Clone)]
 pub struct InterTileConfig {
     pub mi_cols: usize,
+    /// mi origin of the tile currently being decoded. `set_mi_row_col` clips
+    /// every neighbour-context read at the tile boundary rather than the
+    /// picture boundary (`up_available = mi_row > tile->mi_row_start`), while
+    /// the MV stack scans keep reading the frame-wide mi state.
+    pub tile_row_start: usize,
+    pub tile_row_end: usize,
+    pub tile_col_start: usize,
+    pub tile_col_end: usize,
     pub mi_rows: usize,
     pub sub_x: u32,
     pub sub_y: u32,
@@ -147,6 +155,10 @@ impl InterTileConfig {
             segmentation_temporal_update: header.segmentation_temporal_update,
             seg_id_pre_skip: header.seg_id_pre_skip,
             last_active_seg_id: usize::from(header.last_active_seg_id),
+            tile_row_start: 0,
+            tile_row_end: header.mi_rows,
+            tile_col_start: 0,
+            tile_col_end: header.mi_cols,
             segment_alt_q,
             segment_lossless: header.lossless_array,
             segment_skip,
@@ -285,10 +297,109 @@ pub struct InterTileBlockSink {
     pub blocks: Vec<InterSyntaxBlock>,
 }
 
+/// The neighbour state libaom keeps in the frame-wide mi grid.
+///
+/// A tile sees the blocks an earlier tile in decode order wrote and cannot see
+/// the blocks a later tile has not reached, which is libaom's `mv_proj` poc
+/// check reading a freshly zeroed mi grid. Everything that is genuinely
+/// tile-local in libaom stays out of this struct: the coefficient and partition
+/// above/left contexts (`av1_zero(td->cb_buffer_base.dqcoeff)` per tile), the
+/// palette neighbourhood, the CDEF transmission flags, and the per-tile
+/// `current_base_qindex` reset.
+#[derive(Debug, Clone)]
+pub struct InterNeighbourState {
+    decoded: Vec<bool>,
+    sizes: Vec<Option<BlockSize>>,
+    is_inter: Vec<bool>,
+    refs: Vec<[i8; 2]>,
+    modes: Vec<Option<crate::reference::av1::inter::InterMode>>,
+    compound_modes: Vec<Option<CompoundMode>>,
+    compound_groups: Vec<u8>,
+    compound_indices: Vec<u8>,
+    mvs: Vec<[MotionVector; 2]>,
+    y_modes: Vec<Option<IntraMode>>,
+    uv_modes: Vec<Option<UvMode>>,
+    interp_filters: Vec<[u8; 2]>,
+    skip_grid: Vec<bool>,
+    skip_modes: Vec<bool>,
+    tx_grid: Vec<Option<TxSize>>,
+    tx_type_grid: Vec<Option<TxType>>,
+    segments: SegmentCarry,
+}
+
+impl InterTileBlockSink {
+    /// Take the frame-level neighbour state at a tile boundary.
+    pub fn neighbour_state(&self) -> InterNeighbourState {
+        InterNeighbourState {
+            decoded: self.decoded.clone(),
+            sizes: self.sizes.clone(),
+            is_inter: self.is_inter.clone(),
+            refs: self.refs.clone(),
+            modes: self.modes.clone(),
+            compound_modes: self.compound_modes.clone(),
+            compound_groups: self.compound_groups.clone(),
+            compound_indices: self.compound_indices.clone(),
+            mvs: self.mvs.clone(),
+            y_modes: self.y_modes.clone(),
+            uv_modes: self.uv_modes.clone(),
+            interp_filters: self.interp_filters.clone(),
+            skip_grid: self.skip_grid.clone(),
+            skip_modes: self.skip_modes.clone(),
+            tx_grid: self.tx_grid.clone(),
+            tx_type_grid: self.tx_type_grid.clone(),
+            segments: self.segments.carry(),
+        }
+    }
+
+    /// Continue a fresh sink from the neighbour state of the previous tile.
+    #[must_use]
+    pub fn with_neighbour_state(mut self, state: InterNeighbourState) -> Self {
+        if state.decoded.len() == self.decoded.len() {
+            self.decoded = state.decoded;
+            self.sizes = state.sizes;
+            self.is_inter = state.is_inter;
+            self.refs = state.refs;
+            self.modes = state.modes;
+            self.compound_modes = state.compound_modes;
+            self.compound_groups = state.compound_groups;
+            self.compound_indices = state.compound_indices;
+            self.mvs = state.mvs;
+            self.y_modes = state.y_modes;
+            self.uv_modes = state.uv_modes;
+            self.interp_filters = state.interp_filters;
+            self.skip_grid = state.skip_grid;
+            self.skip_modes = state.skip_modes;
+            self.tx_grid = state.tx_grid;
+            self.tx_type_grid = state.tx_type_grid;
+            self.segments.restore_carry(&state.segments);
+        }
+        self
+    }
+}
+
+impl InterTileConfig {
+    /// Point the neighbour-context clipping at one tile.
+    #[must_use]
+    pub fn with_tile_origin(
+        mut self,
+        tile_row_start: usize,
+        tile_row_end: usize,
+        tile_col_start: usize,
+        tile_col_end: usize,
+    ) -> Self {
+        self.tile_row_start = tile_row_start;
+        self.tile_row_end = tile_row_end;
+        self.tile_col_start = tile_col_start;
+        self.tile_col_end = tile_col_end;
+        self
+    }
+}
+
 impl InterTileBlockSink {
     pub fn new(config: InterTileConfig) -> Self {
         let mi_cols = config.mi_cols;
         let mi_rows = config.mi_rows;
+        let (tile_row_start, tile_col_start) = (config.tile_row_start, config.tile_col_start);
         let current_qindex = config.base_q_index;
         let previous_segment_map = config.previous_segment_map.clone();
         let last_active_seg_id = config.last_active_seg_id;
@@ -312,12 +423,16 @@ impl InterTileBlockSink {
             interp_filters: vec![[0, 0]; mi_cols * mi_rows],
             tile_context: TileContext::new(mi_cols, mi_rows),
             palettes: PaletteState::new(mi_cols, mi_rows),
-            segments: SegmentState::with_previous(
-                mi_cols,
-                mi_rows,
-                last_active_seg_id,
-                previous_segment_map,
-            ),
+            segments: {
+                let mut segments = SegmentState::with_previous(
+                    mi_cols,
+                    mi_rows,
+                    last_active_seg_id,
+                    previous_segment_map,
+                );
+                segments.set_tile_origin(tile_row_start, tile_col_start);
+                segments
+            },
             tx_grid: vec![None; mi_cols * mi_rows],
             tx_type_grid: vec![None; mi_cols * mi_rows],
             current_qindex,
@@ -330,20 +445,36 @@ impl InterTileBlockSink {
         }
     }
 
+    /// The above-neighbour cell a *context* may read, or `None` at the tile
+    /// boundary. `set_mi_row_col` nulls `xd->above_mbmi` when
+    /// `mi_row == tile->mi_row_start`, so the tile edge behaves exactly like the
+    /// picture edge for every context, including the carried state of a tile
+    /// decoded earlier.
+    fn above_context_index(&self, row: usize, col: usize) -> Option<usize> {
+        (row > self.config.tile_row_start).then(|| Self::at(row - 1, col, self.config.mi_cols))
+    }
+
+    /// `left_available` counterpart of [`Self::above_context_index`].
+    fn left_context_index(&self, row: usize, col: usize) -> Option<usize> {
+        (col > self.config.tile_col_start).then(|| Self::at(row, col - 1, self.config.mi_cols))
+    }
+
     fn above_tx_width(&self, block: DecodedBlock, row: usize, col: usize) -> u32 {
         if row == block.row && row == 0 {
             return 64;
         }
         if row == block.row {
-            let index = Self::at(row - 1, col, self.config.mi_cols);
+            let Some(index) = self.above_context_index(row, col) else {
+                return 64;
+            };
             if self.skip_grid[index] && self.is_inter[index] {
                 return self.sizes[index].map_or(64, |size| size.width);
             }
         }
-        if row == 0 {
+        let Some(index) = self.above_context_index(row, col) else {
             return 64;
-        }
-        self.tx_grid[Self::at(row - 1, col, self.config.mi_cols)].map_or(0, TxSize::width)
+        };
+        self.tx_grid[index].map_or(0, TxSize::width)
     }
 
     fn left_tx_height(&self, block: DecodedBlock, row: usize, col: usize) -> u32 {
@@ -351,22 +482,23 @@ impl InterTileBlockSink {
             return 64;
         }
         if col == block.col {
-            let index = Self::at(row, col - 1, self.config.mi_cols);
+            let Some(index) = self.left_context_index(row, col) else {
+                return 64;
+            };
             if self.skip_grid[index] && self.is_inter[index] {
                 return self.sizes[index].map_or(64, |size| size.height);
             }
         }
-        if col == 0 {
+        let Some(index) = self.left_context_index(row, col) else {
             return 64;
-        }
-        self.tx_grid[Self::at(row, col - 1, self.config.mi_cols)].map_or(0, TxSize::height)
+        };
+        self.tx_grid[index].map_or(0, TxSize::height)
     }
 
     fn selected_tx_above_width(&self, block: DecodedBlock) -> u32 {
-        if block.row == 0 {
+        let Some(index) = self.above_context_index(block.row, block.col) else {
             return 0;
-        }
-        let index = Self::at(block.row - 1, block.col, self.config.mi_cols);
+        };
         if self.is_inter[index] {
             self.sizes[index].map_or(0, |size| size.width)
         } else {
@@ -375,10 +507,9 @@ impl InterTileBlockSink {
     }
 
     fn selected_tx_left_height(&self, block: DecodedBlock) -> u32 {
-        if block.col == 0 {
+        let Some(index) = self.left_context_index(block.row, block.col) else {
             return 0;
-        }
-        let index = Self::at(block.row, block.col - 1, self.config.mi_cols);
+        };
         if self.is_inter[index] {
             self.sizes[index].map_or(0, |size| size.height)
         } else {
@@ -845,12 +976,17 @@ impl InterTileBlockSink {
     }
 
     fn neighbors(&self, block: DecodedBlock) -> InterNeighbors {
-        let above = (block.row > 0
-            && self.decoded[Self::at(block.row - 1, block.col, self.config.mi_cols)])
-        .then(|| self.refs[Self::at(block.row - 1, block.col, self.config.mi_cols)]);
-        let left = (block.col > 0
-            && self.decoded[Self::at(block.row, block.col - 1, self.config.mi_cols)])
-        .then(|| self.refs[Self::at(block.row, block.col - 1, self.config.mi_cols)]);
+        // `av1_get_reference_mode_context` reads `xd->above_mbmi` and
+        // `xd->left_mbmi` under `up_available`/`left_available`, which
+        // `set_mi_row_col` gates on the tile, not the picture.
+        let above = self
+            .above_context_index(block.row, block.col)
+            .filter(|&index| self.decoded[index])
+            .map(|index| self.refs[index]);
+        let left = self
+            .left_context_index(block.row, block.col)
+            .filter(|&index| self.decoded[index])
+            .map(|index| self.refs[index]);
         InterNeighbors { above, left }
     }
 
@@ -1082,15 +1218,11 @@ impl InterTileBlockSink {
             return Ok(false);
         }
         let mut ctx = 0usize;
-        if block.row > 0 {
-            ctx += usize::from(
-                self.skip_modes[Self::at(block.row - 1, block.col, self.config.mi_cols)],
-            );
+        if let Some(index) = self.above_context_index(block.row, block.col) {
+            ctx += usize::from(self.skip_modes[index]);
         }
-        if block.col > 0 {
-            ctx += usize::from(
-                self.skip_modes[Self::at(block.row, block.col - 1, self.config.mi_cols)],
-            );
+        if let Some(index) = self.left_context_index(block.row, block.col) {
+            ctx += usize::from(self.skip_modes[index]);
         }
         Ok(cdfs.read_symbol(
             decoder,
@@ -1628,6 +1760,10 @@ impl TileBlockSink for InterTileBlockSink {
             compound_modes: &self.compound_modes,
             mvs: &self.mvs,
             temporal: self.config.temporal_motion.as_ref(),
+            tile_row_start: self.config.tile_row_start,
+            tile_row_end: self.config.tile_row_end,
+            tile_col_start: self.config.tile_col_start,
+            tile_col_end: self.config.tile_col_end,
         };
         let stack = find_mv_stack(
             grid,

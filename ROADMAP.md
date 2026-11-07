@@ -1646,6 +1646,37 @@ in what order the evidence gets produced.
       open: the fixture's frames 1-9 need the same tile loop in the inter
       driver.
 
+      **Multi-tile inter (open, 2026-11-07):** the inter driver now has the same
+      tile loop (`decode_inter_tile_group`), and five neighbour rules were taken
+      from the libaom source: the frame-level mi state (modes, references, MVs,
+      segment ids) is *carried* across tile boundaries
+      (`InterNeighbourState` + `SegmentCarry`, because `scan_row_mbmi`/
+      `scan_col_mbmi` read the frame grid with no tile clip), while every
+      neighbour *context* is clipped at the tile
+      (`av1_get_reference_mode_context`, `get_tx_size_context_from_neighbors`,
+      `read_skip_mode`, `av1_get_spatial_seg_pred`/`av1_get_pred_context_seg_id`
+      are all gated on `up_available`/`left_available`), the single-point MV
+      candidates are clipped by `is_inside()` (`mvref_common.h:68`), and the
+      straight scans only run when `max_row_offset`/`max_col_offset` — which
+      `find_valid_{row,col}_offset` clamps to the tile — permit that depth, and
+      the partition symbol set is bounded by the **frame** extent
+      (`decode_block_in_sb()` uses `cm->mi_params.mi_rows/mi_cols`, not the tile
+      extent, and clips the walk to the tile through the loop bounds instead).
+      All of these are no-ops for single-tile streams (the 17 existing inter
+      fixtures still match byte for byte), and they did make tile 0 of a 2x2
+      inter frame decode to completion with 226 leaf blocks, but the fixture
+      does not close yet: in the second coded frame (order hint 8) tile 1
+      diverges on the *first block's `skip`*, runs ahead to 53 of libaom's 87
+      blocks, and finally exhausts its 318-byte slice (`ExitSymbol TooManyBits`
+      at bit 2544). `real_two_by_two_tile_inter_frames_match_libaom` is
+      therefore `#[ignore]`d with that reason rather than counted as done.
+      Tooling note for whoever picks this up: the trace build prints per-block
+      ground truth with tile bounds under `AOM_BLOCK_TRACE=1`
+      (`/private/tmp/aom-ref-3.13.1/build-trace`), 30 of its trace strings were
+      fixed to emit real newlines, and **its `bsize=` field is not the spec
+      `BlockSize` enum** — inferring pixel sizes from it produces phantom
+      mismatches, so compare `row`/`col`/`mv`/`skip` instead.
+
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
       display extension, picture header, picture coding extension, quant matrix

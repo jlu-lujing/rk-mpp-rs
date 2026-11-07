@@ -5,6 +5,7 @@
 //! reconstruction and average compound blending, then maintains the eight AV1
 //! reference-frame slots after post-processing.
 
+use crate::reference::av1::cdef::CdefIndexGrid;
 use crate::reference::av1::cdf_state::CdfState;
 use crate::reference::av1::coeff::coeff_q_context;
 use crate::reference::av1::deblock::{
@@ -15,11 +16,14 @@ use crate::reference::av1::inter::{
     CompoundType, InterBlock, InterIntraMode, InterMode, MotionMode, MotionVector, ALTREF2_FRAME,
     ALTREF_FRAME, BWDREF_FRAME, GOLDEN_FRAME, INTRA_FRAME, LAST2_FRAME, LAST_FRAME, NONE_FRAME,
 };
-use crate::reference::av1::inter_sink::InterSyntaxBlock;
+use crate::reference::av1::inter_sink::{
+    InterNeighbourState, InterSyntaxBlock, InterTileBlockSink, InterTileConfig,
+};
 use crate::reference::av1::intra_frame::{
     apply_cdef_with_skip_grid, apply_deblock_grids, chroma_neighbor_modes, fill_modes,
-    neighbor_modes, tile_of, uv_mode, IntraFrame, PlaneBuffer,
+    merge_lr_params, neighbor_modes, tile_of, uv_mode, IntraFrame, PlaneBuffer,
 };
+use crate::reference::av1::lr_frame::LrFrameParams;
 use crate::reference::av1::partition::{block_size_index, BlockSize};
 use crate::reference::av1::predict::{intra_filter_type, predict_intra, IntraEdges};
 use crate::reference::av1::quant::{ac_q, dc_q};
@@ -35,6 +39,10 @@ use crate::reference::av1::temporal::{
     REFMVS_LIMIT,
 };
 use crate::reference::av1::tile::DecodedBlock;
+use crate::reference::av1::tile_entropy::{
+    decode_tile_partitions_with_cdfs, tile_bounds, TileEntropyError,
+};
+use crate::reference::av1::tile_group::ParsedTileGroup;
 use crate::reference::av1::warped::{warp_block_res, warp_block_samples, WarpParams};
 
 const REF_SCALE_SHIFT: u32 = 14;
@@ -2260,22 +2268,144 @@ pub fn apply_inter_cdef(
     apply_cdef_with_skip_grid(sequence, header, &skip_grid, cdef_grid, frame);
 }
 
+/// Frame-level syntax of one inter tile group.
+///
+/// Tiles are independent entropy streams, but they share the frame's motion
+/// state: libaom keeps modes, references and MVs in the frame mi grid, so a
+/// tile sees the blocks an earlier tile decoded (`scan_row_mbmi` reads
+/// `xd->mi[...]` with no tile clipping, and cells a later tile has not written
+/// yet fail `is_inter_block`), while every *neighbour context* is still clipped
+/// at the tile boundary by `set_mi_row_col`.
+pub struct InterTileGroup {
+    /// Leaf blocks of every tile, in tile decode (raster) order.
+    pub blocks: Vec<InterSyntaxBlock>,
+    /// Union of the CDEF indices transmitted by the tiles.
+    pub cdef: CdefIndexGrid,
+    /// Union of the loop-restoration parameters read by the tiles.
+    pub lr: LrFrameParams,
+    /// Segment ids of the whole frame.
+    pub segment_map: SegmentMap,
+    /// Final CDF state of `header.context_update_tile_id`.
+    pub cdfs: CdfState,
+}
+
+/// Decode every tile of an inter frame's tile group.
+pub fn decode_inter_tile_group(
+    header: &FrameHeader,
+    layout: &ParsedTileGroup,
+    payload: &[u8],
+    config: InterTileConfig,
+    initial_cdfs: CdfState,
+) -> Result<InterTileGroup, TileEntropyError> {
+    let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
+    let mut blocks = Vec::new();
+    let mut cdef = CdefIndexGrid::new(header.mi_cols, header.mi_rows);
+    let mut lr = LrFrameParams::for_geometry(&config.lr_geometry);
+    let mut cdfs = initial_cdfs.clone();
+    let mut neighbour: Option<InterNeighbourState> = None;
+    let mut segment_map: Option<SegmentMap> = None;
+    for range in &layout.tiles {
+        let bounds = tile_bounds(header, range.tile)?;
+        let sink = InterTileBlockSink::new(config.clone().with_tile_origin(
+            bounds.mi_row_start,
+            bounds.mi_row_end,
+            bounds.mi_col_start,
+            bounds.mi_col_end,
+        ));
+        let sink = match neighbour.take() {
+            Some(state) => sink.with_neighbour_state(state),
+            None => sink,
+        };
+        let decoded = decode_tile_partitions_with_cdfs(
+            &payload[range.bytes.clone()],
+            header,
+            range.tile,
+            sb_size,
+            header.disable_cdf_update,
+            true,
+            initial_cdfs.clone(),
+            sink,
+        )?;
+        cdef.absorb_tile(
+            decoded.sink.cdef_grid(),
+            bounds.mi_row_start,
+            bounds.mi_row_end,
+            bounds.mi_col_start,
+            bounds.mi_col_end,
+        );
+        merge_lr_params(&mut lr, decoded.sink.lr_params());
+        neighbour = Some(decoded.sink.neighbour_state());
+        segment_map = Some(decoded.sink.segment_map());
+        blocks.extend(decoded.sink.blocks);
+        if range.tile == header.context_update_tile_id as usize {
+            cdfs = decoded.cdfs;
+        }
+    }
+    let segment_map =
+        segment_map.unwrap_or_else(|| SegmentMap::new(header.mi_cols, header.mi_rows));
+    Ok(InterTileGroup {
+        blocks,
+        cdef,
+        lr,
+        segment_map,
+        cdfs,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::reference::av1::cdf_state::CdfState;
     use crate::reference::av1::frame_header::PRIMARY_REF_NONE;
     use crate::reference::av1::inter::{CompoundMode, InterMode};
-    use crate::reference::av1::inter_sink::{InterTileBlockSink, InterTileConfig};
     use crate::reference::av1::intra_frame::{
         apply_intra_cdef, apply_intra_deblock, apply_intra_loop_restoration,
-        reconstruct_intra_frame, upscale_frame,
+        decode_intra_tile_group, reconstruct_intra_frame, upscale_frame,
     };
-    use crate::reference::av1::intra_sink::{IntraTileBlockSink, IntraTileConfig};
     use crate::reference::av1::obu::parse_ivf;
     use crate::reference::av1::partition::BLOCK_SIZES;
     use crate::reference::av1::stream::{ReferenceStream, StreamEvent};
-    use crate::reference::av1::tile_entropy::decode_tile_partitions_with_cdfs;
+
+    #[test]
+    #[ignore = "multi-tile inter syntax is open: tile 1 diverges on the first block's skip"]
+    fn real_two_by_two_tile_inter_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_tiles_320x240_10.ivf");
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 10, "one picture per aomdec frame");
+        assert_eq!(inter_frames.len(), 9);
+        assert!(
+            inter_frames
+                .iter()
+                .all(|blocks| blocks.iter().any(|block| block.inter.is_some())),
+            "every non-key frame must carry inter blocks",
+        );
+
+        // Locked against `aomdec --rawvideo`: all ten visible frames, each
+        // decoded from four independent tiles that share the frame motion state.
+        let expected: [(u64, u64, u64); 10] = [
+            (0xe4c15c7e09f4c973, 0x7f75e286318ce612, 0xb3d6a9d8663b3bc1),
+            (0xb00762c1a12e1707, 0xb1e3848cea781f74, 0xdb841ec2077e7b3d),
+            (0x682789ba575cb6a3, 0xecce1176fc86c1bc, 0x46f646d998ca7f0c),
+            (0x26b01c23a0ece2e8, 0x299adb14adf501ef, 0xe538705f3a64d453),
+            (0x65855b518c137e07, 0x33237f4c8dd6995c, 0x1ce4cefbcb2ea12e),
+            (0x86866abe1013fce0, 0x7201e9c886fcf6d0, 0xf9b558c8932f33ae),
+            (0x1ef014be4aaab150, 0x1c99dd5896a4a189, 0xf302868cd1539a42),
+            (0x1f40b5c0f477f2dd, 0xd5e43a2cc3de7d13, 0x27eab2fcdd888f8b),
+            (0x23b4527112ec34de, 0x1ada25836fa0b94c, 0xbaff89390d9abeee),
+            (0x48ca494c917f6e9f, 0x410bd711b62dd0fb, 0xccdf5f938278f0ef),
+        ];
+        for (index, (picture, want)) in pictures.iter().zip(expected).enumerate() {
+            assert_eq!(
+                (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap()),
+                ),
+                want,
+                "frame {index} diverges from aomdec",
+            );
+        }
+    }
 
     #[test]
     fn signed_rounding_matches_the_spec() {
@@ -2444,47 +2574,36 @@ mod tests {
                     frame.header.ref_frame_idx[frame.header.primary_ref_frame as usize] as usize;
                 references.load_cdfs(slot).unwrap()
             };
-            let tile = &frame.layout.tiles[0];
             let final_cdfs;
             let current_blocks;
             let segment_map;
             let picture = if frame.header.frame_is_intra {
-                let config = IntraTileConfig::from_headers(sequence, &frame.header);
-                let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
-                let decoded = decode_tile_partitions_with_cdfs(
-                    &frame.payload[tile.bytes.clone()],
+                let group = decode_intra_tile_group(
+                    sequence,
                     &frame.header,
-                    tile.tile,
-                    sb_size,
-                    false,
-                    true,
+                    &frame.layout,
+                    frame.payload,
                     initial_cdfs,
-                    IntraTileBlockSink::new(config),
                 )
                 .unwrap();
-                final_cdfs = decoded.cdfs;
+                final_cdfs = group.cdfs;
                 let mut picture =
-                    reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap();
+                    reconstruct_intra_frame(sequence, &frame.header, &group.blocks).unwrap();
                 if frame
                     .header
                     .loop_filter_level
                     .iter()
                     .any(|level| *level != 0)
                 {
-                    apply_intra_deblock(
-                        sequence,
-                        &frame.header,
-                        &decoded.sink.blocks,
-                        &mut picture,
-                    );
+                    apply_intra_deblock(sequence, &frame.header, &group.blocks, &mut picture);
                 }
                 let deblocked = picture.clone();
                 if sequence.enable_cdef && !frame.header.coded_lossless {
                     apply_intra_cdef(
                         sequence,
                         &frame.header,
-                        &decoded.sink.blocks,
-                        decoded.sink.cdef_grid(),
+                        &group.blocks,
+                        &group.cdef,
                         &mut picture,
                     );
                 }
@@ -2494,62 +2613,49 @@ mod tests {
                 apply_intra_loop_restoration(
                     sequence,
                     &frame.header,
-                    decoded.sink.lr_params(),
+                    &group.lr,
                     &deblocked,
                     &mut picture,
                 )
                 .unwrap();
                 current_blocks = Vec::new();
-                segment_map = decoded.sink.segment_map();
+                segment_map = group.segment_map;
                 picture
             } else {
                 let config = InterTileConfig::from_headers(sequence, &frame.header)
                     .with_reference_order_hints(frame.reference_order_hints)
                     .with_temporal_motion(references.temporal_motion(sequence, &frame.header))
                     .with_previous_segment_map(references.primary_segment_map(&frame.header));
-                let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
-                let decoded = decode_tile_partitions_with_cdfs(
-                    &frame.payload[tile.bytes.clone()],
+                let group = decode_inter_tile_group(
                     &frame.header,
-                    tile.tile,
-                    sb_size,
-                    false,
-                    true,
+                    &frame.layout,
+                    frame.payload,
+                    config,
                     initial_cdfs,
-                    InterTileBlockSink::new(config),
                 )
                 .unwrap();
-                current_blocks = decoded.sink.blocks.clone();
-                segment_map = decoded.sink.segment_map();
-                inter_frames.push(decoded.sink.blocks.clone());
-                final_cdfs = decoded.cdfs;
-                let mut picture = reconstruct_inter_frame(
-                    sequence,
-                    &frame.header,
-                    &decoded.sink.blocks,
-                    &references,
-                )
-                .unwrap();
+                current_blocks = group.blocks.clone();
+                segment_map = group.segment_map;
+                inter_frames.push(group.blocks.clone());
+                final_cdfs = group.cdfs;
+                let mut picture =
+                    reconstruct_inter_frame(sequence, &frame.header, &group.blocks, &references)
+                        .unwrap();
                 if frame
                     .header
                     .loop_filter_level
                     .iter()
                     .any(|level| *level != 0)
                 {
-                    apply_inter_deblock(
-                        sequence,
-                        &frame.header,
-                        &decoded.sink.blocks,
-                        &mut picture,
-                    );
+                    apply_inter_deblock(sequence, &frame.header, &group.blocks, &mut picture);
                 }
                 let deblocked = picture.clone();
                 if sequence.enable_cdef && !frame.header.coded_lossless {
                     apply_inter_cdef(
                         sequence,
                         &frame.header,
-                        &decoded.sink.blocks,
-                        decoded.sink.cdef_grid(),
+                        &group.blocks,
+                        &group.cdef,
                         &mut picture,
                     );
                 }
@@ -2559,7 +2665,7 @@ mod tests {
                 apply_intra_loop_restoration(
                     sequence,
                     &frame.header,
-                    decoded.sink.lr_params(),
+                    &group.lr,
                     &deblocked,
                     &mut picture,
                 )
