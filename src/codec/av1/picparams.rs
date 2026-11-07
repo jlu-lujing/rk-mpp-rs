@@ -185,6 +185,8 @@ impl Default for PicReference {
         // C initializes the whole DXVA structure with memset(0). Deriving
         // Default would leave the ABI padding before `wmmat` uninitialized,
         // making even a "matching" field assignment nondeterministic.
+        // SAFETY: this repr(C) C-ABI struct contains only integer fields, so
+        // all-zero is a valid initialized value including its explicit padding.
         unsafe { std::mem::zeroed() }
     }
 }
@@ -259,6 +261,9 @@ pub struct Av1PicParams {
 impl Default for Av1PicParams {
     fn default() -> Self {
         // All-zero initialisation mirrors the C `memset(pp, 0, sizeof(*pp))`.
+        // SAFETY: this repr(C) hardware ABI struct admits an all-zero value;
+        // pointers are represented as integer-address fields and are not
+        // dereferenced by Default.
         unsafe { std::mem::zeroed() }
     }
 }

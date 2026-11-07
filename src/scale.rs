@@ -358,6 +358,8 @@ fn fast_row(
     #[cfg(target_arch = "aarch64")]
     {
         if mode == MapMode::General {
+            // SAFETY: NEON was checked above, and row_bilinear validates every
+            // 64-byte source window and output chunk before loading/storing.
             return unsafe { kernels::row_bilinear(r0, r1, out, general, wy) };
         }
         let (step, offset) = match mode {
@@ -383,6 +385,8 @@ fn fast_row(
                 }
                 let stride = step * 3;
                 if wy == 0 {
+                    // SAFETY: NEON is available; row_interp bounds-checks every
+                    // source window and output chunk.
                     return unsafe { kernels::row_interp(r0, out, stride, offset * 3, weight) };
                 }
                 let pixels = out.len() / 3;
@@ -390,13 +394,19 @@ fn fast_row(
                 scratch0.resize(pixels * 3, 0);
                 scratch1.clear();
                 scratch1.resize(pixels * 3, 0);
+                // SAFETY: both scratch rows are sized for the output, NEON is
+                // available, and each call performs its own bounds checks.
                 let n0 = unsafe { kernels::row_interp(r0, scratch0, stride, offset * 3, weight) };
                 let n1 = unsafe { kernels::row_interp(r1, scratch1, stride, offset * 3, weight) };
                 let pixels = n0.min(n1);
+                // SAFETY: row_combine additionally clamps to the shortest of
+                // all three slices, so the scratch/output lengths are safe.
                 let bytes = unsafe { kernels::row_combine(scratch0, scratch1, out, wy) };
                 return pixels.min(bytes / 3);
             }
         };
+        // SAFETY: NEON is available and row_decimate validates its source
+        // window before each vector load and output store.
         unsafe { kernels::row_decimate(r0, out, step * 3, offset * 3) }
     }
     #[cfg(not(target_arch = "aarch64"))]
@@ -490,6 +500,10 @@ mod kernels {
     /// shift. Floor division through the negative product matches the
     /// scalar `(a * (256 - w) + b * w) >> 8` exactly, because
     /// `floor((256a + m) / 256) = a + floor(m / 256)`.
+    ///
+    /// # Safety
+    /// Requires NEON, which is guaranteed by the `target_feature` attribute
+    /// on callers executing this function.
     #[target_feature(enable = "neon")]
     unsafe fn interp8(a: uint8x8_t, b: uint8x8_t, w: int16x8_t, neg8: int16x8_t) -> uint8x8_t {
         let a16 = vmovl_u8(a);
@@ -587,6 +601,8 @@ mod kernels {
         i
     }
 
+    /// # Safety
+    /// Requires NEON and a readable 64-byte window at `src`.
     #[target_feature(enable = "neon")]
     unsafe fn interpolate_chunk(
         src: *const u8,
@@ -1040,6 +1056,8 @@ mod tests {
     fn the_gather_kernel_equals_pixel_by_pixel_picking() {
         let src = lcg_bytes(300 * 3);
         let mut out = vec![9u8; 100 * 3];
+        // SAFETY: the test is aarch64-only and sizes the source/output for the
+        // row_decimate bounds checks.
         let n = unsafe { kernels::row_decimate(&src, &mut out, 9, 3) };
         assert_eq!(n % 4, 0);
         for p in 0..n {
@@ -1063,6 +1081,8 @@ mod tests {
             for stride in [6usize, 9, 12, 18] {
                 let src = lcg_bytes(160 * 3);
                 let mut out = vec![0u8; 20 * 3];
+                // SAFETY: the test is aarch64-only and allocates the complete
+                // source/output windows expected by row_interp.
                 let n = unsafe { kernels::row_interp(&src, &mut out, stride, 0, weight) };
                 assert_eq!(n, 20);
                 for p in 0..n {
@@ -1089,6 +1109,8 @@ mod tests {
             let t = lcg_bytes(70);
             let u = lcg_bytes(70);
             let mut out = vec![0u8; 64];
+            // SAFETY: the test is aarch64-only and all three slices are at
+            // least the requested output length.
             let n = unsafe { kernels::row_combine(&t, &u, &mut out, wy) };
             assert_eq!(n, 64);
             let iwy = 256 - wy;

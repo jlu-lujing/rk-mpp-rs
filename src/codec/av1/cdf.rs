@@ -391,10 +391,14 @@ fn from_bytes<T>(bytes: &[u8]) -> T {
 }
 
 fn as_bytes<T>(value: &T) -> &[u8] {
+    // SAFETY: the returned shared byte slice covers exactly one live T and
+    // cannot outlive `value`; every initialized byte may be inspected as u8.
     unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
 fn as_bytes_mut<T>(value: &mut T) -> &mut [u8] {
+    // SAFETY: the unique borrow guarantees no aliasing, the slice covers
+    // exactly one live T, and callers use this for byte-addressed ABI copies.
     unsafe { std::slice::from_raw_parts_mut((value as *mut T).cast::<u8>(), size_of::<T>()) }
 }
 

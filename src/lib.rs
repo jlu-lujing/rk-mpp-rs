@@ -21,8 +21,10 @@ use service::{MppService, VPU_CLIENT_JPEG_DEC};
 /// Decoder state kept across frames (buffers, tables, scaler).
 pub struct Decoder {
     svc: MppService,
-    table: DmaBuf,
-    stream: DmaBuf,
+    /// Kept alive because its fd is programmed into `regs`.
+    _table: DmaBuf,
+    /// Kept alive because its fd is programmed into `regs`.
+    _stream: DmaBuf,
     output: DmaBuf,
     scaler: scale::Scaler,
     info: jpeg::JpegInfo,
@@ -64,8 +66,8 @@ impl Decoder {
 
         Ok(Decoder {
             svc,
-            table,
-            stream,
+            _table: table,
+            _stream: stream,
             output,
             scaler: scale::Scaler::new(dst_w, dst_h),
             stream_len: data.len(),
@@ -81,10 +83,10 @@ impl Decoder {
     pub fn frame(&mut self, dst: &mut [u8]) -> Result<(i32, i32, f32), String> {
         assert_eq!(dst.len(), self.dst_w * self.dst_h * 3);
         self.svc
-            .submit_regs(&self.regs.words)
+            .submit_regs_recovering(&self.regs.words)
             .map_err(|e| format!("submit: {e}"))?;
         self.svc
-            .poll_hw_finish()
+            .poll_hw_finish_recovering()
             .map_err(|e| format!("poll: {e}"))?;
         self.output
             .sync_read_begin()
@@ -116,10 +118,15 @@ impl Decoder {
 /// Opaque handle for the C side.
 pub struct RkDec(Decoder);
 
+fn jpeg_dst_len(width: usize, height: usize) -> Option<usize> {
+    width.checked_mul(height)?.checked_mul(3)
+}
+
 /// Open a decoder for `path`, producing `dst_w` x `dst_h` RGB888 frames.
 ///
 /// # Safety
-/// `path` must be a NUL-terminated string.
+/// `path` must be a NUL-terminated string. `out_w` and `out_h` must each be
+/// null or point to writable `u32` storage for the duration of the call.
 #[no_mangle]
 pub unsafe extern "C" fn rk_jpeg_open(
     path: *const c_char,
@@ -131,6 +138,8 @@ pub unsafe extern "C" fn rk_jpeg_open(
     if path.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: the caller guarantees `path` is NUL-terminated; the null case
+    // was checked above and CStr only borrows until the call returns.
     let p = match CStr::from_ptr(path).to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
@@ -138,9 +147,12 @@ pub unsafe extern "C" fn rk_jpeg_open(
     match Decoder::open(p, dst_w as usize, dst_h as usize) {
         Ok(d) => {
             if !out_w.is_null() {
+                // SAFETY: the caller guarantees non-null out pointers are
+                // writable u32 storage.
                 *out_w = d.src_size().0 as u32;
             }
             if !out_h.is_null() {
+                // SAFETY: same contract as out_w above.
                 *out_h = d.src_size().1 as u32;
             }
             Box::into_raw(Box::new(RkDec(d)))
@@ -152,7 +164,10 @@ pub unsafe extern "C" fn rk_jpeg_open(
 /// Decode one frame into `dst` (dst_w * dst_h * 3 bytes, RGB888, padded 114).
 ///
 /// # Safety
-/// `h` must come from `rk_jpeg_open` and `dst` must have room for the frame.
+/// `h` must come from `rk_jpeg_open` and remain exclusively borrowed for this
+/// call. `dst` must address `dst_w * dst_h * 3` writable bytes. `pad_left`,
+/// `pad_top` and `scale`, when non-null, must point to writable storage of
+/// their declared types.
 #[no_mangle]
 pub unsafe extern "C" fn rk_jpeg_frame(
     h: *mut RkDec,
@@ -164,18 +179,27 @@ pub unsafe extern "C" fn rk_jpeg_frame(
     if h.is_null() || dst.is_null() {
         return -1;
     }
+    // SAFETY: the caller guarantees this is a live, exclusively-borrowed
+    // handle returned by rk_jpeg_open.
     let dec = &mut (*h).0;
-    let n = dec.dst_w * dec.dst_h * 3;
+    let Some(n) = jpeg_dst_len(dec.dst_w, dec.dst_h) else {
+        return -1;
+    };
+    // SAFETY: the caller guarantees dst points to n writable bytes and is not
+    // aliased by another live reference for this call.
     let slice = std::slice::from_raw_parts_mut(dst, n);
     match dec.frame(slice) {
         Ok((pl, pt, s)) => {
             if !pad_left.is_null() {
+                // SAFETY: non-null output pointers are writable per contract.
                 *pad_left = pl;
             }
             if !pad_top.is_null() {
+                // SAFETY: same contract as pad_left.
                 *pad_top = pt;
             }
             if !scale.is_null() {
+                // SAFETY: same contract as pad_left.
                 *scale = s;
             }
             0
@@ -189,6 +213,20 @@ pub unsafe extern "C" fn rk_jpeg_frame(
 #[no_mangle]
 pub unsafe extern "C" fn rk_jpeg_close(h: *mut RkDec) {
     if !h.is_null() {
+        // SAFETY: the caller transfers ownership of a handle created by
+        // rk_jpeg_open and guarantees it is not used again.
         drop(Box::from_raw(h));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::jpeg_dst_len;
+
+    #[test]
+    fn c_api_output_size_checks_both_multiplications() {
+        assert_eq!(jpeg_dst_len(640, 640), Some(1_228_800));
+        assert_eq!(jpeg_dst_len(usize::MAX, 2), None);
+        assert_eq!(jpeg_dst_len(usize::MAX / 2, 3), None);
     }
 }
