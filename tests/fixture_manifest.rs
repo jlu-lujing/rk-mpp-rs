@@ -9,7 +9,9 @@ fn files_under(root: &Path, dir: &Path, output: &mut Vec<PathBuf>) {
             files_under(root, &path, output);
         } else {
             let name = path.file_name().and_then(|name| name.to_str()).unwrap();
-            if name != "SHA256SUMS" && name != "SOURCES.md" {
+            // macOS tar/rsync may create AppleDouble metadata beside real
+            // fixtures. They are transfer artifacts, not fixture content.
+            if name != "SHA256SUMS" && name != "SOURCES.md" && !name.starts_with("._") {
                 output.push(path.strip_prefix(root).unwrap().to_path_buf());
             }
         }
