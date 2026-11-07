@@ -5,7 +5,7 @@
 //! `Default_*_Cdf` array in the specification's row-major order. `shape` keeps the
 //! declared dimension expressions so a reader can trace a flat index back.
 //!
-//! 96 tables, 19677 values, FNV-1a 0x51e03c92d3f21448.
+//! 97 tables, 19697 values, FNV-1a 0x7e85769cd6cb2bdc.
 
 /// One specification table: the declared shape and its flat row-major values.
 pub struct CdfTable {
@@ -625,6 +625,15 @@ pub static DEFAULT_DELTA_LF_CDF: CdfTable = CdfTable {
     name: "Default_Delta_Lf_Cdf",
     shape: &["DELTA_LF_SMALL + 2"],
     values: &[28160, 32120, 32677, 32768, 0],
+};
+
+pub static DEFAULT_DELTA_LF_MULTI_CDF: CdfTable = CdfTable {
+    name: "Default_Delta_Lf_Multi_Cdf",
+    shape: &["FRAME_LF_COUNT", "DELTA_LF_SMALL + 2"],
+    values: &[
+        28160, 32120, 32677, 32768, 0, 28160, 32120, 32677, 32768, 0, 28160, 32120, 32677, 32768,
+        0, 28160, 32120, 32677, 32768, 0,
+    ],
 };
 
 pub static DEFAULT_INTRA_TX_TYPE_SET1_CDF: CdfTable = CdfTable {
@@ -2045,7 +2054,7 @@ pub static DEFAULT_COEFF_BR_CDF: CdfTable = CdfTable {
 };
 
 /// Every generated table, in specification order.
-pub static TABLES: [&CdfTable; 96] = [
+pub static TABLES: [&CdfTable; 97] = [
     &DEFAULT_INTRA_FRAME_Y_MODE_CDF,
     &DEFAULT_Y_MODE_CDF,
     &DEFAULT_UV_MODE_CFL_NOT_ALLOWED_CDF,
@@ -2109,6 +2118,7 @@ pub static TABLES: [&CdfTable; 96] = [
     &DEFAULT_PALETTE_UV_MODE_CDF,
     &DEFAULT_DELTA_Q_CDF,
     &DEFAULT_DELTA_LF_CDF,
+    &DEFAULT_DELTA_LF_MULTI_CDF,
     &DEFAULT_INTRA_TX_TYPE_SET1_CDF,
     &DEFAULT_INTRA_TX_TYPE_SET2_CDF,
     &DEFAULT_INTER_TX_TYPE_SET1_CDF,
@@ -2148,20 +2158,11 @@ pub static TABLES: [&CdfTable; 96] = [
 mod tests {
     use super::*;
 
-    fn fnv(values: &[u16]) -> u64 {
-        values
-            .iter()
-            .fold(0xcbf29ce484222325u64, |mut hash, value| {
-                hash ^= u64::from(*value);
-                hash.wrapping_mul(0x100000001b3)
-            })
-    }
-
     #[test]
     fn the_generated_set_matches_the_specification_extract() {
-        assert_eq!(TABLES.len(), 96);
+        assert_eq!(TABLES.len(), 97);
         let total: usize = TABLES.iter().map(|table| table.values.len()).sum();
-        assert_eq!(total, 19677);
+        assert_eq!(total, 19697);
         let mut hash = 0xcbf29ce484222325u64;
         for table in TABLES {
             for value in table.values {
@@ -2169,7 +2170,7 @@ mod tests {
                 hash = hash.wrapping_mul(0x100000001b3);
             }
         }
-        assert_eq!(hash, 0x51e03c92d3f21448);
+        assert_eq!(hash, 0x7e85_769c_d6cb_2bdc);
     }
 
     #[test]

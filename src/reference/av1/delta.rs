@@ -1,6 +1,8 @@
 //! AV1 block-level delta-q and delta-LF syntax.
 
-use crate::reference::av1::cdf_defaults::{DEFAULT_DELTA_LF_CDF, DEFAULT_DELTA_Q_CDF};
+use crate::reference::av1::cdf_defaults::{
+    CdfTable, DEFAULT_DELTA_LF_CDF, DEFAULT_DELTA_LF_MULTI_CDF, DEFAULT_DELTA_Q_CDF,
+};
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError};
 use crate::reference::av1::symbol::SymbolDecoder;
 use crate::reference::av1::symbol::SymbolError;
@@ -13,7 +15,6 @@ pub const MAX_LOOP_FILTER: i32 = 63;
 pub enum DeltaError {
     Cdf(CdfStateError),
     Symbol(SymbolError),
-    MultiDeltaLfUnsupported,
 }
 
 impl From<CdfStateError> for DeltaError {
@@ -58,40 +59,71 @@ pub fn read_delta_qindex(
     Ok((i32::from(current_qindex) + (reduced << delta_q_res)).clamp(1, 255) as u8)
 }
 
-/// Update one `DeltaLF` value. The generated defaults contain the single
-/// `TileDeltaLFCdf`; multi-LF uses different tables and is rejected until those
-/// are represented rather than decoding against the wrong distribution.
+/// Update the frame's delta-LF state. Non-multi mode carries one base level;
+/// multi mode carries four independent levels whose final two are absent for
+/// monochrome frames, matching libaom's `av1_num_planes` count.
 #[allow(clippy::too_many_arguments)]
 pub fn read_delta_lf(
     decoder: &mut SymbolDecoder<'_>,
     cdfs: &mut CdfState,
-    delta_lf: i32,
+    current: [i32; 4],
     delta_lf_present: bool,
     multi: bool,
     read_deltas: bool,
     delta_lf_res: u8,
     skip_at_superblock_size: bool,
     disable_cdf_update: bool,
-) -> Result<i32, DeltaError> {
+    has_chroma: bool,
+) -> Result<[i32; 4], DeltaError> {
     if !delta_lf_present || !read_deltas || skip_at_superblock_size {
-        return Ok(delta_lf);
+        return Ok(current);
     }
+    let mut next = current;
     if multi {
-        return Err(DeltaError::MultiDeltaLfUnsupported);
+        let count = if has_chroma { 4 } else { 2 };
+        for (index, value) in next.iter_mut().enumerate().take(count) {
+            let delta = read_delta_lf_symbol(
+                decoder,
+                cdfs,
+                &DEFAULT_DELTA_LF_MULTI_CDF,
+                index * (DELTA_LF_SMALL as usize + 2),
+                disable_cdf_update,
+            )?;
+            *value =
+                (current[index] + (delta << delta_lf_res)).clamp(-MAX_LOOP_FILTER, MAX_LOOP_FILTER);
+        }
+    } else {
+        let delta =
+            read_delta_lf_symbol(decoder, cdfs, &DEFAULT_DELTA_LF_CDF, 0, disable_cdf_update)?;
+        next[0] = (current[0] + (delta << delta_lf_res)).clamp(-MAX_LOOP_FILTER, MAX_LOOP_FILTER);
     }
-    let mut abs =
-        cdfs.read_symbol(decoder, &DEFAULT_DELTA_LF_CDF, 0, 5, disable_cdf_update)? as u32;
+    Ok(next)
+}
+
+fn read_delta_lf_symbol(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    table: &CdfTable,
+    start: usize,
+    disable_cdf_update: bool,
+) -> Result<i32, DeltaError> {
+    let mut abs = cdfs.read_symbol(
+        decoder,
+        table,
+        start,
+        DELTA_LF_SMALL as usize + 2,
+        disable_cdf_update,
+    )? as u32;
     if abs == DELTA_LF_SMALL {
         let n = decoder.read_literal(3)? + 1;
         let bits = decoder.read_literal(n)?;
         abs = bits + (1 << n) + 1;
     }
     if abs == 0 {
-        return Ok(delta_lf);
+        return Ok(0);
     }
     let sign = decoder.read_literal(1)?;
-    let reduced = if sign != 0 { -(abs as i32) } else { abs as i32 };
-    Ok((delta_lf + (reduced << delta_lf_res)).clamp(-MAX_LOOP_FILTER, MAX_LOOP_FILTER))
+    Ok(if sign != 0 { -(abs as i32) } else { abs as i32 })
 }
 
 #[cfg(test)]
@@ -120,36 +152,59 @@ mod tests {
             read_delta_lf(
                 &mut decoder,
                 &mut cdfs,
-                7,
+                [7; 4],
                 true,
                 false,
                 true,
                 0,
                 true,
                 false,
+                true,
             )
             .unwrap(),
-            7
+            [7; 4]
         );
     }
 
     #[test]
-    fn multi_delta_lf_is_rejected() {
-        let mut decoder = SymbolDecoder::init(&[0u8; 8]).unwrap();
-        let mut cdfs = CdfState::new();
-        assert_eq!(
-            read_delta_lf(
-                &mut decoder,
-                &mut cdfs,
-                0,
-                true,
-                true,
-                true,
-                0,
-                false,
-                false,
-            ),
-            Err(DeltaError::MultiDeltaLfUnsupported)
+    fn multi_delta_lf_reads_one_independent_level_per_active_filter() {
+        let input = [0x5au8; 32];
+        let mut color_decoder = SymbolDecoder::init(&input).unwrap();
+        let mut color_cdfs = CdfState::new();
+        let color = read_delta_lf(
+            &mut color_decoder,
+            &mut color_cdfs,
+            [2, -1, 3, -4],
+            true,
+            true,
+            true,
+            0,
+            false,
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(color.iter().all(|level| level.abs() <= MAX_LOOP_FILTER));
+
+        let mut mono_decoder = SymbolDecoder::init(&input).unwrap();
+        let mut mono_cdfs = CdfState::new();
+        let mono = read_delta_lf(
+            &mut mono_decoder,
+            &mut mono_cdfs,
+            [2, -1, 3, -4],
+            true,
+            true,
+            true,
+            0,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(&mono[2..], &[3, -4], "monochrome keeps chroma slots idle");
+        assert_ne!(
+            color_cdfs, mono_cdfs,
+            "color multi-LF adapts all four independent rows"
         );
     }
 }

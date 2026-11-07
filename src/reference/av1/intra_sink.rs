@@ -25,7 +25,7 @@ use crate::reference::av1::palette::{
     read_palette_tokens, PaletteError, PaletteModeInfo, PaletteState, PaletteTokens,
 };
 use crate::reference::av1::residual::{intra_residual_blocks, residual_size};
-use crate::reference::av1::segment::SegmentState;
+use crate::reference::av1::segment::{SegmentMap, SegmentState};
 use crate::reference::av1::seq_header::SequenceHeader;
 use crate::reference::av1::tile::DecodedBlock;
 use crate::reference::av1::tile_entropy::{TileBlockSink, TileEntropyError};
@@ -43,10 +43,13 @@ pub struct IntraTileConfig {
     pub bit_depth: u32,
     pub key_frame: bool,
     pub segmentation_enabled: bool,
+    pub segmentation_update_map: bool,
     pub seg_id_pre_skip: bool,
     pub last_active_seg_id: usize,
+    pub segment_alt_q: [i32; 8],
     pub segment_lossless: [bool; 8],
     pub segment_skip: [bool; 8],
+    pub previous_segment_map: Option<SegmentMap>,
     pub allow_screen_content_tools: bool,
     pub enable_filter_intra: bool,
     pub enable_intra_edge_filter: bool,
@@ -58,6 +61,7 @@ pub struct IntraTileConfig {
     pub delta_lf_present: bool,
     pub delta_lf_res: u8,
     pub delta_lf_multi: bool,
+    pub has_chroma: bool,
     pub cdef_enabled: bool,
     pub cdef_bits: u8,
     pub base_q_index: u8,
@@ -110,7 +114,6 @@ pub struct IntraTileBlockSink {
     uv_modes: Vec<Option<UvMode>>,
     tx_grid: Vec<Option<TxSize>>,
     current_qindex: u8,
-    coeff_q_ctx: usize,
     delta_lf: [i32; 4],
     read_deltas_for_sb: bool,
     current_sb: Option<(usize, usize)>,
@@ -124,11 +127,18 @@ impl IntraTileBlockSink {
         let mi_cols = config.mi_cols;
         let mi_rows = config.mi_rows;
         let current_qindex = config.base_q_index;
+        let previous_segment_map = config.previous_segment_map.clone();
+        let last_active_seg_id = config.last_active_seg_id;
         let lr = LrTileState::new(config.lr_geometry.clone());
         Self {
             config,
             tile_context: TileContext::new(mi_cols, mi_rows),
-            segments: SegmentState::new(mi_cols, mi_rows, 0),
+            segments: SegmentState::with_previous(
+                mi_cols,
+                mi_rows,
+                last_active_seg_id,
+                previous_segment_map,
+            ),
             palettes: PaletteState::new(mi_cols, mi_rows),
             cdef: CdefIndexGrid::new(mi_cols, mi_rows),
             skip_grid: vec![false; mi_cols * mi_rows],
@@ -136,7 +146,6 @@ impl IntraTileBlockSink {
             uv_modes: vec![None; mi_cols * mi_rows],
             tx_grid: vec![None; mi_cols * mi_rows],
             current_qindex,
-            coeff_q_ctx: coeff_q_context(current_qindex),
             delta_lf: [0; 4],
             read_deltas_for_sb: false,
             current_sb: None,
@@ -154,6 +163,10 @@ impl IntraTileBlockSink {
         &self.lr.params
     }
 
+    pub fn segment_map(&self) -> SegmentMap {
+        self.segments.snapshot()
+    }
+
     fn neighbor<T: Copy>(grid: &[T], mi_cols: usize, row: isize, col: isize) -> Option<T> {
         if row < 0 || col < 0 {
             return None;
@@ -162,6 +175,9 @@ impl IntraTileBlockSink {
     }
 
     fn has_chroma(&self, block: DecodedBlock) -> bool {
+        if !self.config.has_chroma {
+            return false;
+        }
         let bw4 = block.size.num_4x4_wide() as usize;
         let bh4 = block.size.num_4x4_high() as usize;
         if bh4 == 1 && self.config.sub_y != 0 && block.row & 1 == 0 {
@@ -177,7 +193,6 @@ impl IntraTileBlockSink {
         match error {
             DeltaError::Cdf(error) => TileEntropyError::Cdf(error),
             DeltaError::Symbol(error) => TileEntropyError::Symbol(error),
-            DeltaError::MultiDeltaLfUnsupported => TileEntropyError::Unsupported("delta_lf_multi"),
         }
     }
 
@@ -216,8 +231,12 @@ impl IntraTileBlockSink {
 impl IntraTileConfig {
     pub fn from_headers(seq: &SequenceHeader, header: &FrameHeader) -> Self {
         let mut segment_skip = [false; 8];
+        let mut segment_alt_q = [0; 8];
         for (segment, enabled) in segment_skip.iter_mut().enumerate() {
             *enabled = header.feature_enabled[segment][6];
+            if header.feature_enabled[segment][0] {
+                segment_alt_q[segment] = header.feature_data[segment][0];
+            }
         }
         Self {
             mi_cols: header.mi_cols,
@@ -227,10 +246,13 @@ impl IntraTileConfig {
             bit_depth: u32::from(seq.color.bit_depth),
             key_frame: header.frame_is_intra,
             segmentation_enabled: header.segmentation_enabled,
+            segmentation_update_map: header.segmentation_update_map,
             seg_id_pre_skip: header.seg_id_pre_skip,
             last_active_seg_id: header.last_active_seg_id as usize,
+            segment_alt_q,
             segment_lossless: header.lossless_array,
             segment_skip,
+            previous_segment_map: None,
             allow_screen_content_tools: header.allow_screen_content_tools != 0,
             enable_filter_intra: seq.enable_filter_intra,
             enable_intra_edge_filter: seq.enable_intra_edge_filter,
@@ -242,6 +264,7 @@ impl IntraTileConfig {
             delta_lf_present: header.delta_lf_present,
             delta_lf_res: header.delta_lf_res,
             delta_lf_multi: header.delta_lf_multi,
+            has_chroma: !seq.color.mono_chrome,
             cdef_enabled: seq.enable_cdef,
             cdef_bits: header.cdef_bits,
             base_q_index: header.base_q_idx,
@@ -414,20 +437,27 @@ impl TileBlockSink for IntraTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(Self::delta_as_tile)?;
-        let delta = read_delta_lf(
+        self.delta_lf = read_delta_lf(
             decoder,
             cdfs,
-            self.delta_lf[0],
+            self.delta_lf,
             self.config.delta_lf_present,
             self.config.delta_lf_multi,
             self.read_deltas_for_sb,
             self.config.delta_lf_res,
             skip_sb,
             self.config.disable_cdf_update,
+            self.config.has_chroma,
         )
         .map_err(Self::delta_as_tile)?;
-        self.delta_lf[0] = delta;
         self.read_deltas_for_sb = false;
+        let block_qindex = (i32::from(self.current_qindex)
+            + if self.config.segmentation_enabled {
+                self.config.segment_alt_q[segment_id]
+            } else {
+                0
+            })
+        .clamp(0, 255) as u8;
 
         let y_mode = if self.config.key_frame {
             read_intra_frame_y_mode_with_cdf(
@@ -633,7 +663,7 @@ impl TileBlockSink for IntraTileBlockSink {
                     max_x4,
                     max_y4,
                 );
-                let q_ctx = self.coeff_q_ctx;
+                let q_ctx = coeff_q_context(self.config.base_q_index);
                 let all_zero = read_all_zero_with_cdf(
                     decoder,
                     cdfs,
@@ -660,7 +690,7 @@ impl TileBlockSink for IntraTileBlockSink {
                         decoder,
                         cdfs,
                         tx_block.tx,
-                        self.current_qindex,
+                        block_qindex,
                         dir,
                         self.config.reduced_tx_set,
                         self.config.disable_cdf_update,
@@ -726,7 +756,7 @@ impl TileBlockSink for IntraTileBlockSink {
             segment_id,
             skip,
             lossless,
-            qindex: self.current_qindex,
+            qindex: block_qindex,
             delta_lf: self.delta_lf,
             y_mode,
             uv_mode,
@@ -758,10 +788,13 @@ mod tests {
             bit_depth: 8,
             key_frame: true,
             segmentation_enabled: false,
+            segmentation_update_map: false,
             seg_id_pre_skip: false,
             last_active_seg_id: 0,
+            segment_alt_q: [0; 8],
             segment_lossless: [false; 8],
             segment_skip: [false; 8],
+            previous_segment_map: None,
             allow_screen_content_tools: false,
             enable_filter_intra: false,
             enable_intra_edge_filter: false,
@@ -773,6 +806,7 @@ mod tests {
             delta_lf_present: false,
             delta_lf_res: 0,
             delta_lf_multi: false,
+            has_chroma: true,
             cdef_enabled: false,
             cdef_bits: 0,
             base_q_index: 64,

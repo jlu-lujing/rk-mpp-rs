@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. Uniform horizontal tiles are byte-exact over two cells (`auto_tile` at 320x240 across IDR+P, forced two columns at 4608x64), with a traced C tile job differing in no non-address word of any section. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. WPP, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 89 AV1 slices covering the symbol decoder, complete mutable tile CDF state wired into partition/intra-mode/skip/tx-depth/coefficients/all-zero, default CDFs, partition, the stateful tile partition driver (`tile_entropy.rs`), transform type/set selection, complete transform-block coefficient consumption, segment/angle-delta/block-delta/CDEF-index state, filter-intra, complete palette color/token maps, CFL alpha syntax, corrected intra-skip mode consumption, the first full real-keyframe intra tile entropy closure, the unified intra predictor (all modes, edge construction/filtering/upsampling, nonzero H/V angle deltas, chroma filter-type neighbours, 4x4 BlockDecoded availability), the column-major Quant-to-transform bridge and standard/palette/filter-intra/CFL plane reconstruction, the YUV frame-level intra reconstructor with superblock-aligned plane padding, plane-specific deblock grids, CDEF, normative superresolution and loop restoration, intra transform-block reconstruction/writeback, residual transform layout (subsampled sizes, chunks and plane/raster order), inverse transforms matching specification Round2, rectangular pre-scaling, size-dependent inverse identity, dqDenom, and libaom 4x4 IDTX/4x4/8x4 H_DCT/8x4 DCT_ADST/4x4 DCT_ADST/4x8 DCT_DCT/16x32 DC vectors, LR subexp/tile-CDF syntax, the frame/stripe driver, the section 7.14 loop filter, the section 8.1/5.2/5.5 bitstream layer (descriptors, OBU+IVF demux, full sequence header, validated on 50 real fixture frames), the section 5.9 uncompressed frame header (validated on 112 real frame headers across eight IVFs, cross-checked with ffmpeg trace_headers), real tile-group splitting (single and 2x2 tile fixtures), sequential SavedGmParams/loop-filter reference-state updates across those eight streams, a packet/OBU/frame/tile `ReferenceStream`, single-reference, average, difference-weighted and wedge compound inter syntax with spatial MV prediction, all eight compound-mode symbols, compound DRL, dual-MV assignment, compound group contexts, masked compound type/mask syntax, difference-weighted luma/chroma masks, all 16 wedge masters/codebooks/sign flips, regular/smooth/sharp/bilinear interpolation kernels, SavedCdf frame-to-frame restoration and counter reset, an eight-slot reference pixel/CDF store, integer and fractional translational motion compensation, inter residual transform decoding, recursive inter transform trees, mixed intra/inter blocks, skip coefficient-context reset, sub-8x8 chroma motion prediction, inter deblock/CDEF, inter LR with restoration CDF inheritance, frame-base-q coefficient CDF selection, and cross-frame MV CDF state; ordinary, restoration-enabled and 213x240->320x240 superres keyframes are pixel-exact against libaom through LR, and eight real 320x240 inter fixtures are byte-exact on every visible frame. Distance-weighted compound, inter-intra, warp/OBMC, temporal MV fields, segmentation in inter frames, and wider conformance remain** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 101 AV1 slices covering the symbol decoder, complete mutable tile CDF state wired into partition/intra-mode/skip/tx-depth/coefficients/all-zero, default CDFs, partition, the stateful tile partition driver (`tile_entropy.rs`), transform type/set selection, complete transform-block coefficient consumption, segment/angle-delta/block-delta/CDEF-index state, filter-intra, complete palette color/token maps, CFL alpha syntax, corrected intra-skip mode consumption, the first full real-keyframe intra tile entropy closure, the unified intra predictor (all modes, edge construction/filtering/upsampling, nonzero H/V angle deltas, chroma filter-type neighbours, 4x4 BlockDecoded availability), the column-major Quant-to-transform bridge and standard/palette/filter-intra/CFL plane reconstruction, the YUV frame-level intra reconstructor with superblock-aligned plane padding, plane-specific deblock grids, CDEF, normative superresolution and loop restoration, intra transform-block reconstruction/writeback, residual transform layout (subsampled sizes, chunks and plane/raster order), inverse transforms matching specification Round2, rectangular pre-scaling, size-dependent inverse identity, dqDenom, and libaom 4x4 IDTX/4x4/8x4 H_DCT/8x4 DCT_ADST/4x4 DCT_ADST/4x8 DCT_DCT/16x32 DC vectors, LR subexp/tile-CDF syntax, the frame/stripe driver, the section 7.14 loop filter, the section 8.1/5.2/5.5 bitstream layer (descriptors, OBU+IVF demux, full sequence header, validated on 50 real fixture frames), the section 5.9 uncompressed frame header (validated on 112 real frame headers across eight IVFs, cross-checked with ffmpeg trace_headers), real tile-group splitting (single and 2x2 tile fixtures), sequential SavedGmParams/loop-filter reference-state updates across those eight streams, a packet/OBU/frame/tile `ReferenceStream`, single-reference, average, distance-weighted, difference-weighted, wedge compound, inter-intra, OBMC, local and single-reference/compound global warped-motion syntax with spatial MV prediction, all eight compound-mode symbols, compound DRL, dual-MV assignment, compound group contexts, masked compound type/mask syntax, difference-weighted luma/chroma masks, all 16 wedge masters/codebooks/sign flips, regular/smooth/sharp/bilinear interpolation kernels, SavedCdf frame-to-frame restoration and counter reset, an eight-slot reference pixel/CDF store, integer and fractional translational motion compensation, inter residual transform decoding, recursive inter transform trees, mixed intra/inter blocks, skip coefficient-context reset, sub-8x8 chroma motion prediction, inter deblock/CDEF, inter LR with restoration CDF inheritance, frame-base-q coefficient CDF selection, cross-frame MV CDF state, temporal motion-field storage/projection, and color/monochrome four-row `delta_lf_multi` keyframe pixel gates; ordinary, restoration-enabled and 213x240->320x240 superres keyframes are pixel-exact against libaom through LR, and sixteen real 320x240 inter fixtures are byte-exact on every visible frame. WPP, B frames, multi-reference scheduling, and wider conformance remain** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -1498,6 +1498,124 @@ in what order the evidence gets produced.
       `cargo test --all-targets`: 1090 passed / 0 failed / 27 board-only
       ignored; `cargo fmt --check` clean. Distance-weighted compound,
       inter-intra, warp/OBMC, temporal MVs and inter segmentation remain.
+      **Ninetieth slice:** distance-weighted compound prediction now follows
+      libaom's order-hint assignment exactly. `quant_dist_weight` selects the
+      quantisation bucket, `quant_dist_lookup_table` supplies
+      `fwd_offset`/`bck_offset`, and the first/second predictions are combined
+      with the normative truncating four-bit weighting before the shared round
+      offset and final four-bit rounding. A five-frame 320x240 fixture generated
+      by a fixture-only encoder contains one 32x16 and one 8x8 distance block
+      with weights `[11,5]` and `[13,3]`; all five visible Y/U/V frames are
+      byte-exact against the unmodified libaom decoder. `cargo test --all-targets`
+      and the t6 board matrix are recorded in `docs/T6_VALIDATION.md`.
+      Warp/OBMC, temporal MVs and inter segmentation remain.
+      **Ninety-first slice:** single-reference inter-intra prediction now reads
+      the `interintra_cdf`, DC/V/H/Smooth mode, wedge-inter-intra flag and wedge
+      index in the normative order. Reconstruction blends the current-frame
+      intra predictor with inter prediction using libaom's 16-line smooth masks
+      or the sign-0 wedge mask, with subsampled chroma masks and the normative
+      six-bit alpha rounding. Two isolated five-frame fixtures cover 15 smooth
+      blocks and nine wedge blocks, collectively exercising all four
+      inter-intra modes; all visible Y/U/V frames are byte-exact against
+      libaom.
+      **Ninety-second slice:** OBMC now scans overlappable neighbours in the
+      normative above-first/left-second order, classifies Simple/OBMC/warped
+      availability, and reads the two-symbol `use_obmc_cdf`. OBMC blocks retain
+      switchable interpolation syntax. Reconstruction generates above and left
+      neighbours with their first reference/MV/filter, handles 4x4-pair chroma
+      placement, applies the 1/2/4/8/16/32/64 masks in order, and blends against
+      the current base predictor with six-bit alpha rounding. A five-frame
+      fixture covers 32 OBMC blocks and 232 mipixels, including above and left
+      neighbours and 4:2:0 chroma; every visible Y/U/V frame is byte-exact
+      against libaom. `cargo test --all-targets`: 1126 enumerated tests / 0
+      failed / 27 board-only ignored; `cargo fmt --check` clean. Local warped
+      motion, temporal MVs and inter segmentation remain.
+      **Ninety-third slice:** local warped motion now collects centre-MV
+      samples from same-reference neighbours, applies libaom's sample-distance
+      filter, and solves the least-squares affine matrix with the normative
+      divisor lookup, clamps and shear validation. Prediction uses libaom's
+      193-phase eight-tap warp filter with support for 8/10-bit YUV and AOM's
+      sub-8x8 chroma translational fallback. A five-frame isolated fixture
+      contains 10 `WARPED_CAUSAL` blocks, including zero-MV blocks driven only
+      by projected neighbours; every visible Y/U/V frame is byte-exact against
+      libaom. `cargo test --all-targets`: 1127 enumerated tests / 0 failed / 27
+      board-only ignored; `cargo fmt --check` clean. Global warped motion,
+      temporal MVs and inter segmentation remain.
+      **Ninety-fourth slice:** single-reference global warped motion now computes the normative
+      block-centre `GLOBALMV` from `ROTZOOM/AFFINE` matrices, including the
+      specification's reversed translation assignment and integer/high-precision
+      conversion. Global matrices reuse the validated affine/shear derivation
+      and 193-phase warp predictor; negative filter phases follow AOM's
+      non-signed rounding. A two-frame isolated ROTZOOM fixture contains 756
+      global-warp blocks, and both visible Y/U/V frames are byte-exact against
+      libaom. `cargo test --all-targets`: 1128 enumerated tests / 0 failed / 27
+      board-only ignored; `cargo fmt --check` clean. Compound global warp,
+      temporal MVs and inter segmentation remain.
+      **Ninety-fifth slice:** compound global warp now carries an independent
+      global matrix/warp state for each reference. Warp prediction exposes the
+      compound round-1 intermediate precision, allowing either reference to use
+      affine warping while the other remains translational/identity. Average,
+      distance-weighted and masked wedge paths reuse this per-reference result.
+      A four-frame isolated stream covers three `GLOBAL_GLOBALMV` blocks across
+      distance-weighted and wedge blends; all four visible Y/U/V frames are
+      byte-exact against libaom. `cargo test --all-targets`: 1129 enumerated
+      tests / 0 failed / 27 board-only ignored; `cargo fmt --check` clean.
+      Temporal MVs and inter segmentation remain.
+      **Ninety-sixth slice:** reference frames now retain an 8x8 motion field
+      containing the side-0 reference and MV for each cell. The decoder
+      projects prior fields into the current frame using the normative
+      order-hint distances and block-position limits, then merges temporal
+      candidates with the spatial nearest/outer stack scans and the required
+      global-MV mode context bit. A three-frame isolated fixture covers 128
+      inter blocks; all visible Y/U/V frames are byte-exact against libaom.
+      `cargo test --all-targets`: 1130 enumerated tests / 0 failed / 27
+      board-only ignored; `cargo fmt --check` clean.
+      **Ninety-seventh slice:** inter-frame segmentation now carries the primary
+      reference segment map, spatial and temporal segment-id prediction,
+      segment-forced reference/skip/global-MV modes, and per-segment ALT_Q,
+      ALT_LF and lossless state. A three-frame isolated fixture exercises ALT_Q
+      on the keyframe and 1050 nonzero segment IDs on the temporal-predicted P
+      frame; all visible Y/U/V frames are byte-exact against libaom.
+      `cargo test --all-targets`: 1134 enumerated tests / 0 failed / 27
+      board-only ignored; `cargo fmt --check` clean.
+      **Ninety-eighth slice:** selected transform-size context now uses an
+      inter neighbour's block extent even when that neighbour is not skipped;
+      transform-partition context retains the separate skip-only override.
+      This closes the previous `av1_lr_320x240.ivf` tile-tail failure: its
+      key+P stream now decodes all 458 footprint blocks (356 inter) and both
+      visible Y/U/V frames are byte-exact against libaom.
+      `cargo test --all-targets`: 1135 enumerated tests / 0 failed / 27
+      board-only ignored; `cargo fmt --check` clean.
+      **Ninety-ninth slice:** `delta_lf_multi` now uses libaom's four-row
+      `default_delta_lf_multi_cdf` rather than the single-channel table. Color
+      frames decode four independent luma/U/V filters; monochrome frames decode
+      the two active rows and leave chroma state untouched. The generated CDF
+      set grows to 97 tables / 19,697 values, and SavedCdf clones all four rows.
+      The full `reference::av1` suite passes 338/338, including a test that
+      distinguishes the four-row and two-row consumption paths.
+      **One-hundredth slice:** the four-row `delta_lf_multi` path now has a
+      real one-frame libaom pixel gate. A local libaom 3.13.1 copy changes only
+      `DEFAULT_DELTA_LF_MULTI` from 0 to 1; FFmpeg `trace_headers` confirms
+      delta-q, delta-LF and `delta_lf_multi=1`, and the unmodified `aomdec`
+      accepts the stream. The fixture SHA-256 is
+      `94ba5502...20b7dcd`; Rust's pre/deblock/CDEF/LR Y/U/V planes are
+      byte-identical to the unmodified decoder's final output
+      (`4fd081ed...ebda79`). The fixture stops at one frame because the patched
+      encoder emits invalid tile data on its second inter frame; this records
+      decoder evidence without claiming the upstream-disabled encoder path is
+      generally stable. `cargo test --all-targets`: 1147 enumerated / 1117
+      regular pass / 0 failed / 30 board-only ignored; the host count later
+      moved to 1148/1118 with the monochrome follow-up.
+      **One-hundred-first slice:** a monochrome counterpart uses the same
+      patched single-frame encoder path with `--monochrome`. FFmpeg confirms
+      `mono_chrome=1` and `delta_lf_multi=1`; Rust initially desynchronised at
+      tile-tail `ExitSymbol`, then exposed a missing global chroma gate in the
+      intra sink. The fix stops UV mode/residual reads for monochrome blocks.
+      Deblocking now builds one grid for a one-plane frame instead of always
+      constructing three. The reconstructed Y plane is byte-identical to
+      `aomdec` (SHA-256 `b7127618...2b5429`), and the fixture records only the
+      two active LF rows. `cargo test --all-targets`: 1148 enumerated / 1118
+      regular pass / 0 failed / 30 board-only ignored on both host and t6.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -2912,13 +3030,22 @@ pipeline uses.
       stops the hardware in C either), `PollTimeout` confined to the
       `MppPollType` domain (-1 / 0 / 1..8000). Multi-session is prepared for:
       each job carries its own session fd (`new(n)` = n concurrent sessions),
-      and a `SessionGate` serialises rkvenc to one live session until the
-      shared line-buffer question is solved - the gate keeps concurrency 1,
-      which a unit test asserts. `scripts/board_framework_async_vs_sync.sh`
+      including rkvenc: two and three live VEPU580 H.264 sessions in one
+      process were checked at 64x64, 320x240 and 640x480 and each matched the
+      serial C result. `SessionGate` remains an optional serialiser for
+      callers that intentionally share one session, not a process-wide
+      restriction. `scripts/board_framework_async_vs_sync.sh`
       decodes a photograph six times through the queue and against the sync
       path: identical md5s, six callbacks, pool reuse under cap, sync path
       unchanged (all PASS), plus an ignored hardware test locking the same
       shape.
+- [x] **Queue timing and cumulative metrics (W5-9).** Every completion event
+      carries queue-wait, execution and turnaround time. `TaskQueue::metrics`
+      reports submitted/done/failed/cancelled totals, aggregate waits and
+      high-water marks for queued/running jobs without changing scheduling or
+      hardware submission. Host tests cover delayed jobs and queued
+      cancellation; the t6 async JPEG demo prints and validates the same
+      counters alongside its byte-identical sync comparison.
  - [ ] dma-fence in/out, buffer import/export - surveyed, not implementable on
        this vintage: `refs/mpp` has no fence surface at all (the command table
        ends at 0x404, `MppReqV1`/kmpp/vcodec_service carry no fence fields, the
@@ -2928,8 +3055,11 @@ pipeline uses.
        protocol that exists.
  - [ ] multi-core (CCU) distribution - a service-level `SET_SESSION_FD` question,
        parked behind the queue work that is now in.
- - [ ] secure/TA mode - only `MPP_FLAGS_SECURE_MODE` is surfaced; no TA on this
-       board to verify against (decision D3).
+ - [~] secure/TA mode - `MPP_FLAGS_SECURE_MODE` is surfaced for protocol
+       completeness, and every batch carrying it is refused with
+       `ErrorKind::Unsupported` before ioctl. No TA or kernel capability query
+       exists on this board, so the secure data path remains unimplemented
+       (decision D3).
  - [x] **Reference-counted frame buffer pool** (`src/service/buffer_pool.rs`)
        over the real dma-heap backend. `acquire` / `release` / `try_clone` model
        `mpp_buffer_get` / `unref` / `ref` with an `Empty / Cached / Live{refs}`
@@ -2937,19 +3067,38 @@ pipeline uses.
        asserted - double release and use-after-release are errors, a partially
        released block is never handed out, over-capacity acquires fail the way
        `limit_config` returns NULL (with Block/Ms wait variants on top), best-fit
-       reuse replaces exact-size buckets. Two ignored hardware tests run against
-       `/dev/dma_heap/system`: reuse returns the same dma-buf across
+       reuse replaces exact-size buckets. `BufferLease` supplies the RAII
+       `get/ref/unref` form: its drop releases the final reference on normal and
+       error paths without exposing a second manual-release token. The async JPEG
+       demo now uses leases for all three per-job buffers. VP8 DPB slots own
+       leases directly, and H.264 NV12/colmv now use separate frame pools:
+       IDR/geometry changes drop old reference surfaces before clearing only
+       idle cache. A 15-frame, three-IDR H.264 stream is byte-identical to C on
+       t6, and a hardware regression proves lease drop returns `in_use` to zero
+       and reuses the same fds without another allocation. Ten host
+       tests cover the state machine and lease lifetime. Three ignored hardware tests run against
+       `/dev/dma_heap/system` and `/dev/mpp_service`: reuse returns the same dma-buf across
        release/re-acquire and refuses to recycle an in-flight one; a concurrent
-       32-job stream drains through the pool within its cap (`ok` on t6).
+       32-job stream drains through the pool within its cap; and a live lease
+       exports both a duplicate fd and a stable non-null IOVA. Pooled JPEG
+       workers declare `MppService` after every lease so reverse drop order
+       closes the kernel client before the shared dma-buf can return to the
+       pool, including early-error paths. This prevents another worker from
+       reusing an fd while the old service still owns its kernel import; 500
+       consecutive async demos (3000 jobs, three workers) pass without lockup or
+       MPP reset on t6.
 
 ## Verification
 
-- Tests: `cargo test --all-targets` (512 passed across all targets, twenty ignored
-  board-only tests: parsers, AV1 OBU/frame-header/CDF/PicParams snapshots,
-  global-motion reconstruction, tile ranges and packet assembly, POC types
-  0/1/2, DPB/MMCO/RPS, registers,
-  tables, VP9 probability snapshots, packed 10-bit conversion, scaler and
-  NEON). The CLI test also verifies that damaged H.264
+- Tests: `cargo test --all-targets` enumerates 1149 tests: 1118 regular pass
+  and 31 ignored hardware tests on both host and t6. All 31 board-only tests
+  pass under the current 80% OPP cap; the prior 27-test snapshot is superseded.
+  Coverage includes OBU/frame-header/CDF/PicParams snapshots, AV1 software
+  pixel fixtures through key+P LR and segmentation, global-motion
+  reconstruction, tile ranges and packet assembly, POC types 0/1/2,
+  DPB/MMCO/RPS, registers, tables, VP9 probability snapshots, packed 10-bit
+  conversion, queue timing/metrics, scaler and NEON. The CLI test also verifies
+  that damaged H.264
   and H.265 input returns a non-zero exit status, including the no-access-unit
   path observed on the board. Four ignored hardware tests repeat a cached VP9
   picture through `show_existing_frame`, exercise the 1280x720

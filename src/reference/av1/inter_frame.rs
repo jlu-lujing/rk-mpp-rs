@@ -10,22 +10,32 @@ use crate::reference::av1::coeff::coeff_q_context;
 use crate::reference::av1::deblock::{
     DeblockCell, DeblockEdgeInfo, DeblockGrid, SEG_LVL_ALT_LF_Y_V,
 };
-use crate::reference::av1::frame_header::FrameHeader;
+use crate::reference::av1::frame_header::{get_relative_dist, FrameHeader, PRIMARY_REF_NONE};
 use crate::reference::av1::inter::{
-    CompoundType, InterBlock, InterMode, MotionVector, INTRA_FRAME,
+    CompoundType, InterBlock, InterIntraMode, InterMode, MotionMode, MotionVector, ALTREF2_FRAME,
+    ALTREF_FRAME, BWDREF_FRAME, GOLDEN_FRAME, INTRA_FRAME, LAST2_FRAME, LAST_FRAME, NONE_FRAME,
 };
 use crate::reference::av1::inter_sink::InterSyntaxBlock;
 use crate::reference::av1::intra_frame::{
     apply_cdef_with_skip_grid, apply_deblock_grids, chroma_neighbor_modes, fill_modes,
     neighbor_modes, uv_mode, IntraFrame, PlaneBuffer,
 };
+use crate::reference::av1::partition::{block_size_index, BlockSize};
+use crate::reference::av1::predict::{intra_filter_type, predict_intra, IntraEdges};
 use crate::reference::av1::quant::{ac_q, dc_q};
 use crate::reference::av1::reconstruct::{
     quant_to_plane_order, reconstruct_block, reconstruct_intra_block_plane_with_grid, DecodedPlane,
     PlaneQDelta, ReconstructedLuma,
 };
 use crate::reference::av1::residual::{plane_tx_size, residual_size};
+use crate::reference::av1::segment::SegmentMap;
 use crate::reference::av1::seq_header::SequenceHeader;
+use crate::reference::av1::temporal::{
+    block_position, project_mv, FrameMotionField, FrameMv, TemporalMotionField, TemporalMv,
+    REFMVS_LIMIT,
+};
+use crate::reference::av1::tile::DecodedBlock;
+use crate::reference::av1::warped::{warp_block_res, warp_block_samples, WarpParams};
 
 const REF_SCALE_SHIFT: u32 = 14;
 const SCALE_SUBPEL_BITS: u32 = 10;
@@ -34,6 +44,16 @@ const FILTER_BITS: u32 = 7;
 const ROUND0_BITS: u32 = 3;
 const COMPOUND_ROUND1_BITS: u32 = 7;
 const SINGLE_ROUND1_BITS: u32 = 2 * FILTER_BITS - ROUND0_BITS;
+const II_WEIGHTS_1D: [u8; 128] = [
+    60, 58, 56, 54, 52, 50, 48, 47, 45, 44, 42, 41, 39, 38, 37, 35, 34, 33, 32, 31, 30, 29, 28, 27,
+    26, 25, 24, 23, 22, 22, 21, 20, 19, 19, 18, 18, 17, 16, 16, 15, 15, 14, 14, 13, 13, 12, 12, 12,
+    11, 11, 10, 10, 10, 9, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 4, 4, 4, 4,
+    4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+];
+const II_SIZE_SCALES: [u8; 22] = [
+    32, 16, 16, 16, 8, 8, 8, 4, 4, 4, 2, 2, 2, 1, 1, 1, 8, 8, 4, 4, 2, 2,
+];
 
 /// `Subpel_Filters[EIGHTTAP_REGULAR]`, 16 phases x 8 taps.
 const REGULAR_8TAP: [[i16; 8]; 16] = [
@@ -186,6 +206,74 @@ pub struct ReferenceFrameStore {
 struct ReferenceSlot {
     frame: IntraFrame,
     cdfs: CdfState,
+    order_hint: u8,
+    motion_field: Option<FrameMotionField>,
+    segment_map: SegmentMap,
+}
+
+fn build_frame_motion_field(
+    sequence: &SequenceHeader,
+    header: &FrameHeader,
+    blocks: &[InterSyntaxBlock],
+    reference_order_hints: [u8; 7],
+) -> FrameMotionField {
+    let mvs_cols = (header.mi_cols + 1) >> 1;
+    let mvs_rows = (header.mi_rows + 1) >> 1;
+    let mut cells = vec![None; mvs_cols * mvs_rows];
+    for syntax in blocks {
+        let Some(inter) = syntax.inter else {
+            continue;
+        };
+        let width = inter.size.num_4x4_wide() as usize;
+        let height = inter.size.num_4x4_high() as usize;
+        let start_row = syntax.block.row >> 1;
+        let start_col = syntax.block.col >> 1;
+        let cell_rows = (height + 1) >> 1;
+        let cell_cols = (width + 1) >> 1;
+        let mut selected = None;
+        for (list, reference) in [inter.ref_frame, inter.ref_frame1].into_iter().enumerate() {
+            if reference <= INTRA_FRAME {
+                continue;
+            }
+            let side = if sequence.enable_order_hint {
+                get_relative_dist(
+                    i32::from(reference_order_hints[(reference - 1) as usize]),
+                    i32::from(header.order_hint),
+                    true,
+                    sequence.order_hint_bits,
+                )
+            } else {
+                0
+            };
+            if side > 0
+                || (sequence.enable_order_hint
+                    && reference_order_hints[(reference - 1) as usize] == header.order_hint)
+            {
+                continue;
+            }
+            let mv = if list == 0 { inter.mv } else { inter.mv1 };
+            if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
+                continue;
+            }
+            selected = Some(FrameMv {
+                ref_frame: reference,
+                mv,
+            });
+        }
+        if let Some(selected) = selected {
+            for row in start_row..(start_row + cell_rows).min(mvs_rows) {
+                for col in start_col..(start_col + cell_cols).min(mvs_cols) {
+                    cells[row * mvs_cols + col] = Some(selected);
+                }
+            }
+        }
+    }
+    FrameMotionField {
+        mi_rows: header.mi_rows,
+        mi_cols: header.mi_cols,
+        ref_order_hints: reference_order_hints,
+        cells,
+    }
 }
 
 impl ReferenceFrameStore {
@@ -200,6 +288,13 @@ impl ReferenceFrameStore {
             .map(|slot| &slot.frame)
     }
 
+    pub fn get_order_hint(&self, slot: usize) -> Option<u8> {
+        self.slots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .map(|slot| slot.order_hint)
+    }
+
     pub fn load_cdfs(&self, slot: usize) -> Option<CdfState> {
         let mut cdfs = self
             .slots
@@ -210,15 +305,177 @@ impl ReferenceFrameStore {
         Some(cdfs)
     }
 
-    pub fn refresh(&mut self, flags: u8, frame: &IntraFrame, base_q_idx: u8, cdfs: &CdfState) {
+    /// The primary-reference segment map used by inter temporal prediction.
+    pub fn primary_segment_map(&self, header: &FrameHeader) -> Option<SegmentMap> {
+        if !header.segmentation_enabled || header.primary_ref_frame == PRIMARY_REF_NONE {
+            return None;
+        }
+        let slot = usize::from(header.ref_frame_idx[header.primary_ref_frame as usize]);
+        self.slots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .map(|slot| slot.segment_map.clone())
+            .filter(|map| map.mi_cols == header.mi_cols && map.mi_rows == header.mi_rows)
+    }
+
+    pub fn temporal_motion(
+        &self,
+        sequence: &SequenceHeader,
+        header: &FrameHeader,
+    ) -> TemporalMotionField {
+        let mvs_cols = (header.mi_cols + 1) >> 1;
+        let mvs_rows = ((header.mi_rows + 16) >> 1).max((header.mi_rows + 1) >> 1);
+        let mut field = TemporalMotionField {
+            mi_rows: header.mi_rows,
+            mi_cols: header.mi_cols,
+            mvs_rows,
+            mvs_cols,
+            current_order_hint: header.order_hint,
+            enable_order_hint: sequence.enable_order_hint,
+            order_hint_bits: sequence.order_hint_bits,
+            ref_order_hints: [0; 7],
+            cells: vec![None; mvs_rows * mvs_cols],
+        };
+        for (index, slot) in header.ref_frame_idx.iter().enumerate() {
+            field.ref_order_hints[index] = self.get_order_hint(usize::from(*slot)).unwrap_or(0);
+        }
+        if !header.use_ref_frame_mvs || !sequence.enable_order_hint {
+            return field;
+        }
+
+        let current_ref_order_hints = field.ref_order_hints;
+        let mut ref_stamp = 2;
+        let last_slot = usize::from(header.ref_frame_idx[(LAST_FRAME - 1) as usize]);
+        if let Some(start) = self.slots.get(last_slot).and_then(Option::as_ref) {
+            let is_lst_overlay = start
+                .motion_field
+                .as_ref()
+                .map(|motion| {
+                    motion.ref_order_hints[(ALTREF_FRAME - 1) as usize]
+                        == current_ref_order_hints[(GOLDEN_FRAME - 1) as usize]
+                })
+                .unwrap_or(false);
+            if !is_lst_overlay {
+                let _ = self.project_motion_field(sequence, header, LAST_FRAME, 2, &mut field);
+            }
+            ref_stamp -= 1;
+        }
+        for (reference, direction) in [(BWDREF_FRAME, 0), (ALTREF2_FRAME, 0), (ALTREF_FRAME, 0)] {
+            let reference_hint = current_ref_order_hints[(reference - 1) as usize];
+            if ref_stamp < 0 {
+                break;
+            }
+            if get_relative_dist(
+                i32::from(reference_hint),
+                i32::from(header.order_hint),
+                true,
+                sequence.order_hint_bits,
+            ) > 0
+                && self.project_motion_field(sequence, header, reference, direction, &mut field)
+            {
+                ref_stamp -= 1;
+            }
+        }
+        if ref_stamp >= 0 {
+            let _ = self.project_motion_field(sequence, header, LAST2_FRAME, 2, &mut field);
+        }
+        field
+    }
+
+    fn project_motion_field(
+        &self,
+        sequence: &SequenceHeader,
+        header: &FrameHeader,
+        start_frame: i8,
+        direction: i32,
+        output: &mut TemporalMotionField,
+    ) -> bool {
+        let slot = usize::from(header.ref_frame_idx[(start_frame - 1) as usize]);
+        let Some(start) = self.slots.get(slot).and_then(Option::as_ref) else {
+            return false;
+        };
+        let Some(motion) = start.motion_field.as_ref() else {
+            return false;
+        };
+        if motion.mi_rows != header.mi_rows || motion.mi_cols != header.mi_cols {
+            return false;
+        }
+        let mut start_to_current = get_relative_dist(
+            i32::from(start.order_hint),
+            i32::from(header.order_hint),
+            true,
+            sequence.order_hint_bits,
+        );
+        if direction == 2 {
+            start_to_current = -start_to_current;
+        }
+        if start_to_current.abs() > 31 {
+            return false;
+        }
+        let start_cols = (motion.mi_cols + 1) >> 1;
+        let start_rows = (motion.mi_rows + 1) >> 1;
+        for block_row in 0..start_rows {
+            for block_col in 0..start_cols {
+                let Some(candidate) = motion.cells[block_row * start_cols + block_col] else {
+                    continue;
+                };
+                let reference_hint = motion.ref_order_hints[(candidate.ref_frame - 1) as usize];
+                let reference_offset = get_relative_dist(
+                    i32::from(start.order_hint),
+                    i32::from(reference_hint),
+                    true,
+                    sequence.order_hint_bits,
+                );
+                if reference_offset <= 0 || reference_offset > 31 {
+                    continue;
+                }
+                let projected = project_mv(candidate.mv, start_to_current, reference_offset);
+                let Some((row, col)) = block_position(
+                    block_row,
+                    block_col,
+                    projected,
+                    direction >> 1,
+                    header.mi_rows,
+                    header.mi_cols,
+                ) else {
+                    continue;
+                };
+                let index = row * output.mvs_cols + col;
+                output.cells[index] = Some(TemporalMv {
+                    mv: candidate.mv,
+                    ref_frame_offset: reference_offset,
+                });
+            }
+        }
+        true
+    }
+
+    pub fn refresh(
+        &mut self,
+        sequence: &SequenceHeader,
+        header: &FrameHeader,
+        blocks: &[InterSyntaxBlock],
+        frame: &IntraFrame,
+        cdfs: &CdfState,
+        segment_map: SegmentMap,
+    ) {
+        let mut reference_order_hints = [0u8; 7];
+        for (index, slot) in header.ref_frame_idx.iter().enumerate() {
+            reference_order_hints[index] = self.get_order_hint(usize::from(*slot)).unwrap_or(0);
+        }
+        let motion_field = (!header.frame_is_intra)
+            .then(|| build_frame_motion_field(sequence, header, blocks, reference_order_hints));
         let mut saved_cdfs = cdfs.clone();
-        saved_cdfs.normalize_coeff_q_context(coeff_q_context(base_q_idx));
+        saved_cdfs.normalize_coeff_q_context(coeff_q_context(header.base_q_idx));
         saved_cdfs.reset_symbol_counters();
         for slot in 0..self.slots.len() {
-            if flags & (1 << slot) != 0 {
+            if header.refresh_frame_flags & (1 << slot) != 0 {
                 self.slots[slot] = Some(ReferenceSlot {
                     frame: frame.clone(),
                     cdfs: saved_cdfs.clone(),
+                    order_hint: header.order_hint,
+                    motion_field: motion_field.clone(),
+                    segment_map: segment_map.clone(),
                 });
             }
         }
@@ -478,6 +735,176 @@ fn sample_compound_mask(
     }
 }
 
+fn neighbor_modes_at(
+    grid: &[Option<crate::reference::av1::intra::IntraMode>],
+    cols: usize,
+    row: usize,
+    col: usize,
+) -> (
+    Option<crate::reference::av1::intra::IntraMode>,
+    Option<crate::reference::av1::intra::IntraMode>,
+) {
+    let above = (row > 0).then(|| grid[(row - 1) * cols + col]).flatten();
+    let left = (col > 0).then(|| grid[row * cols + col - 1]).flatten();
+    (above, left)
+}
+
+fn chroma_neighbor_modes_at(
+    grid: &[Option<crate::reference::av1::intra::IntraMode>],
+    cols: usize,
+    rows: usize,
+    row: usize,
+    col: usize,
+    sub_x: u32,
+    sub_y: u32,
+) -> (
+    Option<crate::reference::av1::intra::IntraMode>,
+    Option<crate::reference::av1::intra::IntraMode>,
+) {
+    let mut above_row = row as isize - 1;
+    let mut above_col = col as isize;
+    if sub_x != 0 && col & 1 == 0 {
+        above_col += 1;
+    }
+    if sub_y != 0 && row & 1 != 0 {
+        above_row -= 1;
+    }
+
+    let mut left_row = row as isize;
+    let mut left_col = col as isize - 1;
+    if sub_x != 0 && col & 1 != 0 {
+        left_col -= 1;
+    }
+    if sub_y != 0 && row & 1 == 0 {
+        left_row += 1;
+    }
+
+    let at = |row: isize, col: isize| {
+        (row >= 0 && col >= 0 && row < rows as isize && col < cols as isize)
+            .then(|| grid[row as usize * cols + col as usize])
+            .flatten()
+    };
+    (at(above_row, above_col), at(left_row, left_col))
+}
+
+fn smooth_interintra_mask(
+    mode: InterIntraMode,
+    size: BlockSize,
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    let scale = usize::from(II_SIZE_SCALES[block_size_index(size)]);
+    let mut mask = vec![0u8; width * height];
+    for row in 0..height {
+        for col in 0..width {
+            let index = match mode {
+                InterIntraMode::V => row * scale,
+                InterIntraMode::H => col * scale,
+                InterIntraMode::Smooth => row.min(col) * scale,
+                InterIntraMode::Dc => {
+                    mask[row * width + col] = 32;
+                    continue;
+                }
+            };
+            mask[row * width + col] = II_WEIGHTS_1D[index];
+        }
+    }
+    mask
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blend_interintra(
+    current: &mut IntraFrame,
+    plane: usize,
+    interintra: crate::reference::av1::inter::InterIntra,
+    block_size: BlockSize,
+    plane_size: BlockSize,
+    block_mi_row: usize,
+    block_mi_col: usize,
+    mi_cols: usize,
+    mi_rows: usize,
+    block_col: usize,
+    block_row: usize,
+    width: usize,
+    height: usize,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+    enable_intra_edge_filter: bool,
+    filter_type: u8,
+) -> Result<(), InterFrameError> {
+    let current_plane = match plane {
+        0 => &mut current.y,
+        1 => current
+            .u
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        2 => current
+            .v
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    let have_above = block_mi_row > 0;
+    let have_left = block_mi_col > 0;
+    let have_above_right = block_mi_col + (block_size.num_4x4_wide() as usize) < mi_cols;
+    let have_below_left = block_mi_row + (block_size.num_4x4_high() as usize) < mi_rows;
+    let edges = IntraEdges::from_plane(
+        &current_plane.data,
+        current_plane.stride,
+        block_col,
+        block_row,
+        width,
+        height,
+        have_above,
+        have_left,
+        have_above_right,
+        have_below_left,
+        current_plane.width - 1,
+        current_plane.height - 1,
+        bit_depth,
+    );
+    debug_assert!(width.is_power_of_two() && height.is_power_of_two());
+    let intra = predict_intra(
+        interintra.mode.intra_mode(),
+        &edges,
+        width.trailing_zeros(),
+        height.trailing_zeros(),
+        0,
+        enable_intra_edge_filter,
+        filter_type,
+        bit_depth,
+    );
+    let wedge = interintra
+        .wedge_index
+        .map(|index| {
+            crate::reference::av1::wedge::wedge_mask(block_size, index, 0)
+                .map(|mask| (mask, block_size.width as usize))
+        })
+        .transpose()
+        .map_err(InterFrameError::InvalidState)?;
+    let smooth = wedge
+        .is_none()
+        .then(|| smooth_interintra_mask(interintra.mode, plane_size, width, height));
+    for row in 0..height {
+        for col in 0..width {
+            let weight = if let Some((mask, stride)) = &wedge {
+                i64::from(sample_compound_mask(mask, *stride, row, col, sub_x, sub_y))
+            } else {
+                i64::from(smooth.as_ref().expect("smooth mask")[row * width + col])
+            };
+            let dst = (block_row + row) * current_plane.stride + block_col + col;
+            let inter = i64::from(current_plane.data[dst]);
+            let prediction = round2(
+                weight * i64::from(intra[row * width + col]) + (64 - weight) * inter,
+                6,
+            );
+            current_plane.data[dst] = prediction as u16;
+        }
+    }
+    Ok(())
+}
+
 fn predict_inter_block(
     reference: &IntraFrame,
     current: &mut IntraFrame,
@@ -561,6 +988,132 @@ fn predict_inter_block(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn predict_warped_block(
+    reference: &IntraFrame,
+    current: &mut IntraFrame,
+    plane: usize,
+    params: WarpParams,
+    block_col: usize,
+    block_row: usize,
+    width: usize,
+    height: usize,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+) -> Result<(), InterFrameError> {
+    let reference_plane = match plane {
+        0 => &reference.y,
+        1 => reference
+            .u
+            .as_ref()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        2 => reference
+            .v
+            .as_ref()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    let samples = warp_block_samples(
+        &reference_plane.data,
+        reference_plane.stride,
+        reference_plane.width,
+        reference_plane.height,
+        params,
+        block_col,
+        block_row,
+        width,
+        height,
+        sub_x,
+        sub_y,
+        bit_depth,
+    )
+    .map_err(InterFrameError::InvalidState)?;
+    let current_plane = match plane {
+        0 => &mut current.y,
+        1 => current
+            .u
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        2 => current
+            .v
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    for row in 0..height {
+        let start = (block_row + row) * current_plane.stride + block_col;
+        current_plane.data[start..start + width]
+            .copy_from_slice(&samples[row * width..(row + 1) * width]);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inter_or_warp_res(
+    reference: &IntraFrame,
+    plane: usize,
+    current_width: usize,
+    current_height: usize,
+    block: InterBlock,
+    block_col: usize,
+    block_row: usize,
+    width: usize,
+    height: usize,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+    round1: u32,
+) -> Result<Vec<i64>, InterFrameError> {
+    if width >= 8 && height >= 8 {
+        if let Some(params) = block.warp {
+            let reference_plane = match plane {
+                0 => &reference.y,
+                1 => reference
+                    .u
+                    .as_ref()
+                    .ok_or(InterFrameError::MissingPlane(plane))?,
+                2 => reference
+                    .v
+                    .as_ref()
+                    .ok_or(InterFrameError::MissingPlane(plane))?,
+                _ => return Err(InterFrameError::InvalidState("plane index")),
+            };
+            return warp_block_res(
+                &reference_plane.data,
+                reference_plane.stride,
+                reference_plane.width,
+                reference_plane.height,
+                params,
+                block_col,
+                block_row,
+                width,
+                height,
+                sub_x,
+                sub_y,
+                bit_depth,
+                Some(round1),
+            )
+            .map_err(InterFrameError::InvalidState);
+        }
+    }
+    inter_block_res(
+        reference,
+        plane,
+        current_width,
+        current_height,
+        block,
+        block_col,
+        block_row,
+        width,
+        height,
+        sub_x,
+        sub_y,
+        bit_depth,
+        round1,
+    )
+}
+
 fn predict_compound_block(
     reference0: &IntraFrame,
     reference1: &IntraFrame,
@@ -595,7 +1148,7 @@ fn predict_compound_block(
         }
         _ => return Err(InterFrameError::InvalidState("plane index")),
     };
-    let res0 = inter_block_res(
+    let res0 = inter_or_warp_res(
         reference0,
         plane,
         current_width,
@@ -610,7 +1163,7 @@ fn predict_compound_block(
         bit_depth,
         COMPOUND_ROUND1_BITS,
     )?;
-    let res1 = inter_block_res(
+    let res1 = inter_or_warp_res(
         reference1,
         plane,
         current_width,
@@ -625,6 +1178,17 @@ fn predict_compound_block(
         bit_depth,
         COMPOUND_ROUND1_BITS,
     )?;
+    let distance_weights = if compound_type == CompoundType::DistanceWeighted {
+        let weights = first
+            .distance_weights
+            .ok_or(InterFrameError::InvalidState("distance weights"))?;
+        if u16::from(weights[0]) + u16::from(weights[1]) != 16 {
+            return Err(InterFrameError::InvalidState("distance weights"));
+        }
+        Some(weights)
+    } else {
+        None
+    };
     let mask = match compound_type {
         CompoundType::Average => None,
         CompoundType::DifferenceWeighted { mask_type } => {
@@ -638,7 +1202,7 @@ fn predict_compound_block(
                 let luma_row = block_row << sub_y;
                 let luma_width = (width << sub_x).min(current.y.width.saturating_sub(luma_col));
                 let luma_height = (height << sub_y).min(current.y.height.saturating_sub(luma_row));
-                let luma_res0 = inter_block_res(
+                let luma_res0 = inter_or_warp_res(
                     reference0,
                     0,
                     current.y.width,
@@ -653,7 +1217,7 @@ fn predict_compound_block(
                     bit_depth,
                     COMPOUND_ROUND1_BITS,
                 )?;
-                let luma_res1 = inter_block_res(
+                let luma_res1 = inter_or_warp_res(
                     reference1,
                     0,
                     current.y.width,
@@ -674,11 +1238,7 @@ fn predict_compound_block(
                 ))
             }
         }
-        CompoundType::DistanceWeighted => {
-            return Err(InterFrameError::InvalidState(
-                "distance-weighted compound prediction",
-            ));
-        }
+        CompoundType::DistanceWeighted => None,
         CompoundType::Wedge { index, sign } => Some((
             crate::reference::av1::wedge::wedge_mask(first.size, index, sign)
                 .map_err(InterFrameError::InvalidState)?,
@@ -703,19 +1263,23 @@ fn predict_compound_block(
         for col in 0..width {
             let index = row * width + col;
             let max = (1i64 << bit_depth) - 1;
-            let blended = match &mask {
-                Some((mask, mask_stride)) => {
-                    let weight = i64::from(sample_compound_mask(
-                        mask,
-                        *mask_stride,
-                        row,
-                        col,
-                        sub_x,
-                        sub_y,
-                    ));
-                    (weight * res0[index] + (64 - weight) * res1[index]) >> 6
+            let blended = if let Some(weights) = distance_weights {
+                (i64::from(weights[0]) * res0[index] + i64::from(weights[1]) * res1[index]) >> 4
+            } else {
+                match &mask {
+                    Some((mask, mask_stride)) => {
+                        let weight = i64::from(sample_compound_mask(
+                            mask,
+                            *mask_stride,
+                            row,
+                            col,
+                            sub_x,
+                            sub_y,
+                        ));
+                        (weight * res0[index] + (64 - weight) * res1[index]) >> 6
+                    }
+                    None => (res0[index] + res1[index]) >> 1,
                 }
-                None => (res0[index] + res1[index]) >> 1,
             };
             let value = round2(blended - round_offset, round_bits).clamp(0, max) as u16;
             let dst = (block_row + row) * current_plane.stride + block_col + col;
@@ -739,11 +1303,50 @@ fn predict_inter_or_compound_block(
     sub_x: u32,
     sub_y: u32,
     bit_depth: u32,
+    enable_intra_edge_filter: bool,
+    filter_type: u8,
+    block_mi_row: usize,
+    block_mi_col: usize,
+    mi_cols: usize,
+    mi_rows: usize,
 ) -> Result<(), InterFrameError> {
-    if let Some(reference1) = reference1 {
+    if let Some(interintra) = block.interintra {
+        predict_inter_block(
+            reference0, current, plane, block, block_col, block_row, width, height, sub_x, sub_y,
+            bit_depth,
+        )?;
+        let plane_size = if plane == 0 {
+            block.size
+        } else {
+            residual_size(block.size, sub_x, sub_y)
+                .ok_or(InterFrameError::InvalidState("invalid inter-intra size"))?
+        };
+        blend_interintra(
+            current,
+            plane,
+            interintra,
+            block.size,
+            plane_size,
+            block_mi_row,
+            block_mi_col,
+            mi_cols,
+            mi_rows,
+            block_col,
+            block_row,
+            width,
+            height,
+            sub_x,
+            sub_y,
+            bit_depth,
+            enable_intra_edge_filter,
+            filter_type,
+        )
+    } else if let Some(reference1) = reference1 {
         let second = InterBlock {
             ref_frame: block.ref_frame1,
             mv: block.mv1,
+            warp: block.warp1,
+            warp1: None,
             ..block
         };
         predict_compound_block(
@@ -765,11 +1368,322 @@ fn predict_inter_or_compound_block(
                 .ok_or(InterFrameError::InvalidState("compound type"))?,
         )
     } else {
+        if width >= 8 && height >= 8 {
+            if let Some(params) = block.warp {
+                return predict_warped_block(
+                    reference0, current, plane, params, block_col, block_row, width, height, sub_x,
+                    sub_y, bit_depth,
+                );
+            }
+        }
         predict_inter_block(
             reference0, current, plane, block, block_col, block_row, width, height, sub_x, sub_y,
             bit_depth,
         )
     }
+}
+
+#[derive(Clone, Copy)]
+struct ObmcNeighbor {
+    rel_row: usize,
+    rel_col: usize,
+    width_mi: usize,
+    height_mi: usize,
+    inter: InterBlock,
+}
+
+fn obmc_mask(length: usize) -> Option<&'static [u8]> {
+    const MASK_1: [u8; 1] = [64];
+    const MASK_2: [u8; 2] = [45, 64];
+    const MASK_4: [u8; 4] = [39, 50, 59, 64];
+    const MASK_8: [u8; 8] = [36, 42, 48, 53, 57, 61, 64, 64];
+    const MASK_16: [u8; 16] = [
+        34, 37, 40, 43, 46, 49, 52, 54, 56, 58, 60, 61, 64, 64, 64, 64,
+    ];
+    const MASK_32: [u8; 32] = [
+        33, 35, 36, 38, 40, 41, 43, 44, 45, 47, 48, 50, 51, 52, 53, 55, 56, 57, 58, 59, 60, 60, 61,
+        62, 64, 64, 64, 64, 64, 64, 64, 64,
+    ];
+    const MASK_64: [u8; 64] = [
+        33, 34, 35, 35, 36, 37, 38, 39, 40, 40, 41, 42, 43, 44, 44, 44, 45, 46, 47, 47, 48, 49, 50,
+        51, 51, 51, 52, 52, 53, 54, 55, 56, 56, 56, 57, 57, 58, 58, 59, 60, 60, 60, 60, 60, 61, 62,
+        62, 62, 62, 62, 63, 63, 63, 63, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+    ];
+    Some(match length {
+        1 => &MASK_1,
+        2 => &MASK_2,
+        4 => &MASK_4,
+        8 => &MASK_8,
+        16 => &MASK_16,
+        32 => &MASK_32,
+        64 => &MASK_64,
+        _ => return None,
+    })
+}
+
+fn obmc_neighbors_above(
+    block: DecodedBlock,
+    motion_grid: &[Option<InterBlock>],
+    size_grid: &[Option<BlockSize>],
+    mi_cols: usize,
+) -> Vec<ObmcNeighbor> {
+    if block.row == 0 {
+        return Vec::new();
+    }
+    let width = block.size.num_4x4_wide() as usize;
+    let end_col = (block.col + width).min(mi_cols);
+    let mut col = block.col;
+    let mut result = Vec::new();
+    while col < end_col {
+        let mut lookup_col = col;
+        let initial = (block.row - 1) * mi_cols + lookup_col;
+        let mut step = size_grid[initial]
+            .map_or(1, |size| size.num_4x4_wide() as usize)
+            .min(16);
+        if step == 1 {
+            col &= !1;
+            lookup_col = col + 1;
+            if lookup_col >= mi_cols {
+                break;
+            }
+            step = 2;
+        }
+        let index = (block.row - 1) * mi_cols + lookup_col;
+        if let Some(inter) = motion_grid[index] {
+            if col >= block.col {
+                result.push(ObmcNeighbor {
+                    rel_row: 0,
+                    rel_col: col - block.col,
+                    width_mi: width.min(step),
+                    height_mi: step,
+                    inter,
+                });
+            }
+        }
+        col += step;
+    }
+    result
+}
+
+fn obmc_neighbors_left(
+    block: DecodedBlock,
+    motion_grid: &[Option<InterBlock>],
+    size_grid: &[Option<BlockSize>],
+    mi_cols: usize,
+    mi_rows: usize,
+) -> Vec<ObmcNeighbor> {
+    if block.col == 0 {
+        return Vec::new();
+    }
+    let height = block.size.num_4x4_high() as usize;
+    let end_row = (block.row + height).min(mi_rows);
+    let mut row = block.row;
+    let mut result = Vec::new();
+    while row < end_row {
+        let mut lookup_row = row;
+        let initial = lookup_row * mi_cols + block.col - 1;
+        let mut step = size_grid[initial]
+            .map_or(1, |size| size.num_4x4_high() as usize)
+            .min(16);
+        if step == 1 {
+            row &= !1;
+            lookup_row = row + 1;
+            if lookup_row >= mi_rows {
+                break;
+            }
+            step = 2;
+        }
+        let index = lookup_row * mi_cols + block.col - 1;
+        if let Some(inter) = motion_grid[index] {
+            if row >= block.row {
+                result.push(ObmcNeighbor {
+                    rel_row: row - block.row,
+                    rel_col: 0,
+                    width_mi: step,
+                    height_mi: height.min(step),
+                    inter,
+                });
+            }
+        }
+        row += step;
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blend_obmc_region(
+    current: &mut IntraFrame,
+    plane: usize,
+    reference_store: &ReferenceFrameStore,
+    header: &FrameHeader,
+    neighbor: InterBlock,
+    block_col: usize,
+    block_row: usize,
+    width: usize,
+    height: usize,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+    vertical: bool,
+) -> Result<(), InterFrameError> {
+    if width == 0 || height == 0 || neighbor.ref_frame <= INTRA_FRAME {
+        return Ok(());
+    }
+    let slot = header.ref_frame_idx[(neighbor.ref_frame - 1) as usize] as usize;
+    let reference = reference_store
+        .get(slot)
+        .ok_or(InterFrameError::MissingReference(neighbor.ref_frame))?;
+    let first = InterBlock {
+        ref_frame1: NONE_FRAME,
+        mv1: MotionVector::default(),
+        compound_mode: None,
+        compound_type: None,
+        distance_weights: None,
+        interintra: None,
+        motion_mode: MotionMode::Simple,
+        warp: None,
+        warp1: None,
+        ..neighbor
+    };
+    let (current_width, current_height) = match plane {
+        0 => (current.y.width, current.y.height),
+        1 => {
+            let plane = current
+                .u
+                .as_ref()
+                .ok_or(InterFrameError::MissingPlane(plane))?;
+            (plane.width, plane.height)
+        }
+        2 => {
+            let plane = current
+                .v
+                .as_ref()
+                .ok_or(InterFrameError::MissingPlane(plane))?;
+            (plane.width, plane.height)
+        }
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    let width = width.min(current_width.saturating_sub(block_col));
+    let height = height.min(current_height.saturating_sub(block_row));
+    let prediction = inter_block_samples(
+        reference,
+        plane,
+        current_width,
+        current_height,
+        first,
+        block_col,
+        block_row,
+        width,
+        height,
+        sub_x,
+        sub_y,
+        bit_depth,
+    )?;
+    let mask = obmc_mask(if vertical { height } else { width })
+        .ok_or(InterFrameError::InvalidState("OBMC mask length"))?;
+    let current_plane = match plane {
+        0 => &mut current.y,
+        1 => current
+            .u
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        2 => current
+            .v
+            .as_mut()
+            .ok_or(InterFrameError::MissingPlane(plane))?,
+        _ => return Err(InterFrameError::InvalidState("plane index")),
+    };
+    for row in 0..height {
+        for col in 0..width {
+            let weight = i64::from(if vertical { mask[row] } else { mask[col] });
+            let dst = (block_row + row) * current_plane.stride + block_col + col;
+            let base = i64::from(current_plane.data[dst]);
+            let adjacent = i64::from(prediction[row * width + col]);
+            current_plane.data[dst] = round2(weight * base + (64 - weight) * adjacent, 6) as u16;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_obmc_block(
+    block: DecodedBlock,
+    current: &mut IntraFrame,
+    motion_grid: &[Option<InterBlock>],
+    size_grid: &[Option<BlockSize>],
+    references: &ReferenceFrameStore,
+    header: &FrameHeader,
+    sub_x: u32,
+    sub_y: u32,
+    bit_depth: u32,
+    planes: usize,
+) -> Result<(), InterFrameError> {
+    let above = obmc_neighbors_above(block, motion_grid, size_grid, header.mi_cols);
+    let left = obmc_neighbors_left(
+        block,
+        motion_grid,
+        size_grid,
+        header.mi_cols,
+        header.mi_rows,
+    );
+    for plane in 0..planes {
+        let plane_sub_x = if plane == 0 { 0 } else { sub_x };
+        let plane_sub_y = if plane == 0 { 0 } else { sub_y };
+        let plane_size = if plane == 0 {
+            block.size
+        } else {
+            let Some(size) = residual_size(block.size, sub_x, sub_y) else {
+                continue;
+            };
+            size
+        };
+        let small_plane = matches!(
+            (plane_size.width, plane_size.height),
+            (4, 4) | (8, 4) | (4, 8)
+        );
+        let block_col = (block.col >> plane_sub_x) * 4;
+        let block_row = (block.row >> plane_sub_y) * 4;
+        let overlap_height = (block.size.height.min(64) as usize / 2) >> plane_sub_y;
+        let overlap_width = (block.size.width.min(64) as usize / 2) >> plane_sub_x;
+
+        if !small_plane {
+            for neighbor in &above {
+                blend_obmc_region(
+                    current,
+                    plane,
+                    references,
+                    header,
+                    neighbor.inter,
+                    block_col + ((neighbor.rel_col * 4) >> plane_sub_x),
+                    block_row,
+                    (neighbor.width_mi * 4) >> plane_sub_x,
+                    overlap_height,
+                    plane_sub_x,
+                    plane_sub_y,
+                    bit_depth,
+                    true,
+                )?;
+            }
+        }
+        for neighbor in &left {
+            blend_obmc_region(
+                current,
+                plane,
+                references,
+                header,
+                neighbor.inter,
+                block_col,
+                block_row + ((neighbor.rel_row * 4) >> plane_sub_y),
+                overlap_width,
+                (neighbor.height_mi * 4) >> plane_sub_y,
+                plane_sub_x,
+                plane_sub_y,
+                bit_depth,
+                false,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Reconstruct an inter frame with single and compound prediction.
@@ -804,6 +1718,7 @@ pub fn reconstruct_inter_frame(
     let mut y_modes = vec![None; header.mi_cols * header.mi_rows];
     let mut uv_modes = vec![None; header.mi_cols * header.mi_rows];
     let mut motion_grid = vec![None; header.mi_cols * header.mi_rows];
+    let mut size_grid = vec![None; header.mi_cols * header.mi_rows];
     let mut y_decoded = DecodedPlane::new(header.mi_cols, header.mi_rows, 0, 0);
     let mut u_decoded = DecodedPlane::new(header.mi_cols, header.mi_rows, sub_x, sub_y);
     let mut v_decoded = DecodedPlane::new(header.mi_cols, header.mi_rows, sub_x, sub_y);
@@ -821,7 +1736,29 @@ pub fn reconstruct_inter_frame(
     };
 
     for block in blocks {
+        for row in block.block.row
+            ..(block.block.row + block.block.size.num_4x4_high() as usize).min(header.mi_rows)
+        {
+            for col in block.block.col
+                ..(block.block.col + block.block.size.num_4x4_wide() as usize).min(header.mi_cols)
+            {
+                size_grid[row * header.mi_cols + col] = Some(block.block.size);
+            }
+        }
         if let Some(inter) = block.inter {
+            let (y_above, y_left) =
+                neighbor_modes_at(&y_modes, header.mi_cols, block.block.row, block.block.col);
+            let (uv_above, uv_left) = chroma_neighbor_modes_at(
+                &uv_modes,
+                header.mi_cols,
+                header.mi_rows,
+                block.block.row,
+                block.block.col,
+                sub_x,
+                sub_y,
+            );
+            let y_filter_type = intra_filter_type(y_above, y_left);
+            let uv_filter_type = intra_filter_type(uv_above, uv_left);
             let ref_slot = header.ref_frame_idx[(inter.ref_frame - 1) as usize] as usize;
             let reference = references
                 .get(ref_slot)
@@ -880,6 +1817,12 @@ pub fn reconstruct_inter_frame(
                         plane_sub_x,
                         plane_sub_y,
                         bit_depth,
+                        sequence.enable_intra_edge_filter,
+                        y_filter_type,
+                        block.block.row,
+                        block.block.col,
+                        header.mi_cols,
+                        header.mi_rows,
                     )?;
                     continue;
                 }
@@ -912,6 +1855,12 @@ pub fn reconstruct_inter_frame(
                         plane_sub_x,
                         plane_sub_y,
                         bit_depth,
+                        sequence.enable_intra_edge_filter,
+                        uv_filter_type,
+                        block.block.row,
+                        block.block.col,
+                        header.mi_cols,
+                        header.mi_rows,
                     )?;
                     continue;
                 }
@@ -953,9 +1902,29 @@ pub fn reconstruct_inter_frame(
                             plane_sub_x,
                             plane_sub_y,
                             bit_depth,
+                            sequence.enable_intra_edge_filter,
+                            uv_filter_type,
+                            block.block.row,
+                            block.block.col,
+                            header.mi_cols,
+                            header.mi_rows,
                         )?;
                     }
                 }
+            }
+            if inter.motion_mode == MotionMode::Obmc {
+                apply_obmc_block(
+                    block.block,
+                    &mut frame,
+                    &motion_grid,
+                    &size_grid,
+                    references,
+                    header,
+                    sub_x,
+                    sub_y,
+                    bit_depth,
+                    planes,
+                )?;
             }
             for tx in &block.transforms {
                 let (plane, dc_delta, ac_delta) = match tx.plane {
@@ -1257,10 +2226,10 @@ pub fn apply_inter_deblock(
 ) {
     let sub_x = u32::from(sequence.color.subsampling_x);
     let sub_y = u32::from(sequence.color.subsampling_y);
-    let vertical = (0..3)
+    let vertical = (0..sequence.color.num_planes)
         .map(|plane| deblock_grid(header, blocks, true, plane, sub_x, sub_y))
         .collect::<Vec<_>>();
-    let horizontal = (0..3)
+    let horizontal = (0..sequence.color.num_planes)
         .map(|plane| deblock_grid(header, blocks, false, plane, sub_x, sub_y))
         .collect::<Vec<_>>();
     apply_deblock_grids(header, &vertical, &horizontal, sub_x, sub_y, frame);
@@ -1291,7 +2260,7 @@ mod tests {
     use super::*;
     use crate::reference::av1::cdf_state::CdfState;
     use crate::reference::av1::frame_header::PRIMARY_REF_NONE;
-    use crate::reference::av1::inter::InterMode;
+    use crate::reference::av1::inter::{CompoundMode, InterMode};
     use crate::reference::av1::inter_sink::{InterTileBlockSink, InterTileConfig};
     use crate::reference::av1::intra_frame::{
         apply_intra_cdef, apply_intra_deblock, apply_intra_loop_restoration,
@@ -1342,7 +2311,11 @@ mod tests {
                 mv1: MotionVector::default(),
                 compound_mode: None,
                 compound_type: None,
+                distance_weights: None,
+                interintra: None,
                 motion_mode: crate::reference::av1::inter::MotionMode::Simple,
+                warp: None,
+                warp1: None,
                 interp_filter: [0, 0],
                 ref_mv_idx: 0,
             },
@@ -1392,7 +2365,11 @@ mod tests {
             mv1: MotionVector::default(),
             compound_mode: None,
             compound_type: Some(CompoundType::Average),
+            distance_weights: None,
+            interintra: None,
             motion_mode: crate::reference::av1::inter::MotionMode::Simple,
+            warp: None,
+            warp1: None,
             interp_filter: [0, 0],
             ref_mv_idx: 0,
         };
@@ -1433,14 +2410,14 @@ mod tests {
             })
     }
 
-    fn decode_two_picture_stream(data: &[u8]) -> (Vec<IntraFrame>, Vec<InterSyntaxBlock>) {
+    fn decode_picture_stream(data: &[u8]) -> (Vec<IntraFrame>, Vec<Vec<InterSyntaxBlock>>) {
         let ivf = parse_ivf(data).unwrap();
         let mut stream = ReferenceStream::new();
         let events = stream.parse_ivf(&ivf).unwrap();
         let sequence = stream.sequence().unwrap();
         let mut references = ReferenceFrameStore::new();
         let mut pictures = Vec::new();
-        let mut inter_blocks = Vec::new();
+        let mut inter_frames = Vec::new();
 
         for event in events.iter().flatten() {
             if let StreamEvent::ShowExisting(header) = event {
@@ -1464,6 +2441,8 @@ mod tests {
             };
             let tile = &frame.layout.tiles[0];
             let final_cdfs;
+            let current_blocks;
+            let segment_map;
             let picture = if frame.header.frame_is_intra {
                 let config = IntraTileConfig::from_headers(sequence, &frame.header);
                 let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
@@ -1515,9 +2494,14 @@ mod tests {
                     &mut picture,
                 )
                 .unwrap();
+                current_blocks = Vec::new();
+                segment_map = decoded.sink.segment_map();
                 picture
             } else {
-                let config = InterTileConfig::from_headers(sequence, &frame.header);
+                let config = InterTileConfig::from_headers(sequence, &frame.header)
+                    .with_reference_order_hints(frame.reference_order_hints)
+                    .with_temporal_motion(references.temporal_motion(sequence, &frame.header))
+                    .with_previous_segment_map(references.primary_segment_map(&frame.header));
                 let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
                 let decoded = decode_tile_partitions_with_cdfs(
                     &frame.payload[tile.bytes.clone()],
@@ -1530,7 +2514,9 @@ mod tests {
                     InterTileBlockSink::new(config),
                 )
                 .unwrap();
-                inter_blocks = decoded.sink.blocks.clone();
+                current_blocks = decoded.sink.blocks.clone();
+                segment_map = decoded.sink.segment_map();
+                inter_frames.push(decoded.sink.blocks.clone());
                 final_cdfs = decoded.cdfs;
                 let mut picture = reconstruct_inter_frame(
                     sequence,
@@ -1576,16 +2562,23 @@ mod tests {
                 picture
             };
             references.refresh(
-                frame.header.refresh_frame_flags,
+                sequence,
+                &frame.header,
+                &current_blocks,
                 &picture,
-                frame.header.base_q_idx,
                 &final_cdfs,
+                segment_map,
             );
             if frame.header.show_frame {
                 pictures.push(picture);
             }
         }
-        (pictures, inter_blocks)
+        (pictures, inter_frames)
+    }
+
+    fn decode_two_picture_stream(data: &[u8]) -> (Vec<IntraFrame>, Vec<InterSyntaxBlock>) {
+        let (pictures, mut inter_frames) = decode_picture_stream(data);
+        (pictures, inter_frames.pop().unwrap_or_default())
     }
 
     #[test]
@@ -1774,6 +2767,32 @@ mod tests {
     }
 
     #[test]
+    fn real_mixed_intra_inter_tx_context_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_lr_320x240.ivf");
+        let (pictures, blocks) = decode_two_picture_stream(data);
+        assert_eq!(pictures.len(), 2);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x9a98c493231c827b, 0x21132b144973900c, 0x5b3443d30cb8abd7),
+                (0x02aa93cebd88f224, 0xd65506d1606b7ba7, 0xf81fd49b7783f352),
+            ]
+        );
+        assert_eq!(blocks.len(), 458);
+        assert_eq!(
+            blocks.iter().filter(|block| block.inter.is_some()).count(),
+            356
+        );
+    }
+
+    #[test]
     fn real_inter_frames_with_delta_q_match_libaom_after_context_fix() {
         let data = include_bytes!("../../../tests/data/av1_inter_delta_q_320x240.ivf");
         let (pictures, inter_blocks) = decode_two_picture_stream(data);
@@ -1795,6 +2814,358 @@ mod tests {
         );
 
         assert_eq!(inter_blocks.len(), 40);
+    }
+
+    #[test]
+    fn smooth_interintra_masks_match_the_normative_weights() {
+        let size = BLOCK_SIZES[3];
+        let dc = smooth_interintra_mask(InterIntraMode::Dc, size, 8, 8);
+        assert!(dc.iter().all(|value| *value == 32));
+
+        let vertical = smooth_interintra_mask(InterIntraMode::V, size, 8, 8);
+        let horizontal = smooth_interintra_mask(InterIntraMode::H, size, 8, 8);
+        let smooth = smooth_interintra_mask(InterIntraMode::Smooth, size, 8, 8);
+        for row in 0..8 {
+            for col in 0..8 {
+                assert_eq!(vertical[row * 8 + col], II_WEIGHTS_1D[row * 16]);
+                assert_eq!(horizontal[row * 8 + col], II_WEIGHTS_1D[col * 16]);
+                assert_eq!(smooth[row * 8 + col], II_WEIGHTS_1D[row.min(col) * 16]);
+            }
+        }
+    }
+
+    #[test]
+    fn real_smooth_interintra_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_interintra_smooth_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        assert!(sequence.enable_interintra_compound);
+        assert!(!sequence.enable_masked_compound);
+
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 5);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x65820d2149447476, 0x8d8d4cf76702b654, 0xe868959f13276360),
+                (0xde44dc6bd617a3eb, 0xe5147a4ba1e0accb, 0xd71b3e5cbb57147d),
+                (0x398b260ca400a637, 0x5f01766f59a52bde, 0xbcb425a3e849dc64),
+                (0xcd107160e7e6f57d, 0xf662f2a93c0da2d7, 0x91d0e12436a5854b),
+                (0x2a9156967e567bdf, 0x9c4017c7b2921557, 0xd64e6ae153c17f37),
+            ]
+        );
+
+        let blocks = inter_frames
+            .iter()
+            .flatten()
+            .filter_map(|syntax| syntax.inter)
+            .filter_map(|inter| inter.interintra.map(|interintra| (inter, interintra)))
+            .collect::<Vec<_>>();
+        assert_eq!(blocks.len(), 15);
+        assert!(blocks.iter().all(|(inter, interintra)| {
+            inter.ref_frame1 == INTRA_FRAME && interintra.wedge_index.is_none()
+        }));
+        assert!(blocks
+            .iter()
+            .any(|(_, interintra)| interintra.mode == InterIntraMode::V));
+        assert!(blocks
+            .iter()
+            .any(|(_, interintra)| interintra.mode == InterIntraMode::H));
+        assert!(blocks
+            .iter()
+            .any(|(_, interintra)| interintra.mode == InterIntraMode::Smooth));
+    }
+
+    #[test]
+    fn real_wedge_interintra_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_interintra_wedge_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        assert!(sequence.enable_interintra_compound);
+        assert!(!sequence.enable_masked_compound);
+
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 5);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0xc19ba2000554501b, 0x2a846b4a7ec85873, 0x934d3f2be4138428),
+                (0xf922eadddf4c3ae7, 0x1b26c72f0df03a0c, 0xae3de71079e72d8c),
+                (0x454a0a97f2b3b1b1, 0x589d51fc7354fb85, 0x39b049e1b2d7d099),
+                (0x1fbb5438d5686089, 0xcaf63827a132e836, 0xad8d167a53fc3932),
+                (0x2dad928218620daf, 0xcc66d8ba3bd64405, 0xec1f44eedee8c1a3),
+            ]
+        );
+
+        let blocks = inter_frames
+            .iter()
+            .flatten()
+            .filter_map(|syntax| syntax.inter)
+            .filter_map(|inter| inter.interintra.map(|interintra| (inter, interintra)))
+            .collect::<Vec<_>>();
+        assert_eq!(blocks.len(), 9);
+        assert!(blocks.iter().all(|(inter, interintra)| {
+            inter.ref_frame1 == INTRA_FRAME && interintra.wedge_index.is_some()
+        }));
+        let dc = blocks
+            .iter()
+            .find(|(_, interintra)| interintra.mode == InterIntraMode::Dc)
+            .unwrap();
+        assert_eq!(dc.1.mode, InterIntraMode::Dc);
+        assert_eq!(dc.1.wedge_index, Some(6));
+    }
+
+    #[test]
+    fn real_obmc_inter_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_obmc_320x240.ivf");
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 5);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0xc19ba2000554501b, 0x2a846b4a7ec85873, 0x934d3f2be4138428),
+                (0x5f5ce0ef87c74696, 0xcbbd90d8c635ec12, 0xb55695910e9b4721),
+                (0x956cce0de7cd0e2c, 0x4733e5d99e76e697, 0x9292bed5c52e85de),
+                (0x3cea5dbe44754fc3, 0xb7700a49b016afbf, 0xba93574ee2bf9412),
+                (0x19a04e55312c0029, 0x87ef465b0d79ad77, 0x14cb302639a6acc7),
+            ]
+        );
+        let obmc_blocks = inter_frames
+            .iter()
+            .flatten()
+            .filter_map(|syntax| syntax.inter)
+            .filter(|inter| inter.motion_mode == MotionMode::Obmc)
+            .collect::<Vec<_>>();
+        assert_eq!(obmc_blocks.len(), 32);
+        assert!(obmc_blocks.iter().any(|inter| inter.ref_frame == 7));
+        assert!(obmc_blocks.iter().any(|inter| inter.mv.row != 0));
+    }
+
+    #[test]
+    fn real_local_warped_motion_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_warped_320x240.ivf");
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 5);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x918d0530d1feecd9, 0x1d85883c86fcbdbe, 0x0e550e0877a7e742),
+                (0x7090b3e808a470a8, 0xc66fc6f9f2e14c43, 0x3620d76cca27251b),
+                (0x74408035b023950c, 0x3e5891fb9f4c2b9e, 0x650928c86b2cef32),
+                (0xb2ee8e53ef7d9357, 0x726f53df51c75981, 0xb29bfa04526a802b),
+                (0x6f5b99c30a67500e, 0xc883f8bec7a33157, 0xbd31fbb0390a6a75),
+            ]
+        );
+        let warped = inter_frames
+            .iter()
+            .flatten()
+            .filter_map(|syntax| syntax.inter)
+            .filter(|inter| inter.motion_mode == MotionMode::LocalWarp)
+            .collect::<Vec<_>>();
+        assert_eq!(warped.len(), 10);
+        assert!(warped.iter().all(|inter| inter.warp.is_some()));
+        assert!(warped.iter().any(|inter| {
+            let matrix = inter.warp.unwrap().matrix;
+            matrix != [0, 0, 1 << 16, 0, 0, 1 << 16]
+        }));
+    }
+
+    #[test]
+    fn real_global_warped_motion_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_global_warped_320x240.ivf");
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 2);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x406d0805c7eb56b4, 0x94e9b79e9c8373ff, 0x936fcf6f42619786),
+                (0x03df613f1188494, 0xc1d0b4eb09a7076b, 0xb10a346b120d1a8e),
+            ]
+        );
+        let global = inter_frames
+            .iter()
+            .flatten()
+            .filter_map(|syntax| syntax.inter)
+            .filter(|inter| {
+                inter.mode == InterMode::Global
+                    && inter.motion_mode == MotionMode::Simple
+                    && inter.warp.is_some()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(global.len(), 756);
+        assert!(global
+            .iter()
+            .all(|inter| inter.ref_frame == crate::reference::av1::inter::LAST_FRAME));
+    }
+
+    #[test]
+    fn real_global_warp_compound_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_global_warp_compound_320x240.ivf");
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 4);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x203491d03c8ac843, 0xdc35b7ebcd4eecdd, 0xf1f5baa1c32e4472),
+                (0x24b240c72352849d, 0xc3ef74b23898f939, 0x943da4164cbddac4),
+                (0x5635f7c99f72d884, 0x478360d6c54309f5, 0x325d143fa2cf92ca),
+                (0x8bb9fa9fddfe4fe2, 0x947b6dc789d7e5ac, 0x3dc67ca226742fc9),
+            ]
+        );
+        let global_compound = inter_frames
+            .iter()
+            .flatten()
+            .filter_map(|syntax| syntax.inter)
+            .filter(|inter| {
+                inter.compound_mode == Some(CompoundMode::GlobalGlobal)
+                    && (inter.warp.is_some() || inter.warp1.is_some())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(global_compound.len(), 3);
+        assert!(global_compound
+            .iter()
+            .any(|inter| matches!(inter.compound_type, Some(CompoundType::DistanceWeighted))));
+        assert!(global_compound
+            .iter()
+            .any(|inter| matches!(inter.compound_type, Some(CompoundType::Wedge { .. }))));
+    }
+
+    #[test]
+    fn real_temporal_motion_field_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_temporal_mv_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let headers = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(&frame.header),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(headers.len(), 3);
+        assert!(headers[1].use_ref_frame_mvs);
+        assert!(headers[2].use_ref_frame_mvs);
+
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 3);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x61b96b84e4bdc0f8, 0xdb9392766abafc2a, 0x067de1b4a2fc42ac),
+                (0x156730fec968b729, 0x567bb50a75473b19, 0x57ee9c438bde8948),
+                (0x9c178429ea526093, 0x72f7a2ebfa2aef6c, 0x2be2987011717aa1),
+            ]
+        );
+        assert_eq!(inter_frames.iter().flatten().count(), 128);
+    }
+
+    #[test]
+    fn real_segment_maps_alt_q_and_temporal_prediction_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_segment_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let headers = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(&frame.header),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(headers.len(), 3);
+        assert!(headers[0].segmentation_enabled);
+        assert_eq!(headers[0].last_active_seg_id, 7);
+        assert!(headers[0]
+            .feature_enabled
+            .iter()
+            .all(|features| features[0]));
+        assert!(headers[2].segmentation_enabled);
+        assert!(headers[2].segmentation_update_map);
+        assert!(headers[2].segmentation_temporal_update);
+        assert_eq!(headers[2].last_active_seg_id, 7);
+
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 3);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x42c4af21492b57a, 0x930bef4f94807f25, 0x930bef4f94807f25),
+                (0x7a1c3a043269c142, 0x930bef4f94807f25, 0x930bef4f94807f25),
+                (0x157e20c668b537db, 0x930bef4f94807f25, 0x930bef4f94807f25),
+            ]
+        );
+        assert_eq!(
+            inter_frames.iter().map(Vec::len).collect::<Vec<_>>(),
+            [168, 1286]
+        );
+        let mut segment_counts = [0usize; 8];
+        for block in inter_frames[1].iter().filter(|block| block.inter.is_some()) {
+            segment_counts[block.segment_id] += 1;
+        }
+        assert_eq!(segment_counts, [1, 0, 2, 0, 253, 4, 791, 0]);
     }
 
     #[test]
@@ -1866,6 +3237,66 @@ mod tests {
             ]
         );
         assert_eq!(inter_blocks.len(), 20);
+    }
+
+    #[test]
+    fn real_distance_weighted_compound_frames_match_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_distance_weighted_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        assert!(sequence.enable_order_hint);
+        assert!(sequence.enable_jnt_comp);
+        assert!(!sequence.enable_ref_frame_mvs);
+
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 5);
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|picture| (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap())
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0x98a09f65a8531836, 0x6ae74b5d387bd11e, 0x5d54ab813a34334b),
+                (0x22a99dcee877eb7d, 0x5fe7584e9e1e37c6, 0x9392a532aa09f88b),
+                (0x17cc27fd11ea1af6, 0x43e5401099ed2c59, 0xb301ae5256567552),
+                (0xaf81ec791640e3a0, 0xc5d5aa4e09283f06, 0x05975faacc2956ac),
+                (0xddde28e4ea1b96bf, 0x8653ff333eec5e3f, 0xf440be7760baf7f9),
+            ]
+        );
+
+        let distance_blocks = inter_frames
+            .iter()
+            .flatten()
+            .filter_map(|syntax| syntax.inter)
+            .filter(|inter| inter.compound_type == Some(CompoundType::DistanceWeighted))
+            .collect::<Vec<_>>();
+        assert_eq!(distance_blocks.len(), 2);
+
+        let first = distance_blocks[0];
+        assert_eq!(
+            (first.size.name, first.ref_frame, first.ref_frame1),
+            ("BLOCK_32X16", 1, 7)
+        );
+        assert_eq!(first.compound_mode, Some(CompoundMode::NearestNearest));
+        assert_eq!((first.mv.row, first.mv.col), (0, 0));
+        assert_eq!((first.mv1.row, first.mv1.col), (0, 0));
+        assert_eq!(first.distance_weights, Some([11, 5]));
+
+        let second = distance_blocks[1];
+        assert_eq!(
+            (second.size.name, second.ref_frame, second.ref_frame1),
+            ("BLOCK_8X8", 1, 7)
+        );
+        assert_eq!(second.compound_mode, Some(CompoundMode::NearestNearest));
+        assert_eq!((second.mv.row, second.mv.col), (-4, 0));
+        assert_eq!((second.mv1.row, second.mv1.col), (-4, 0));
+        assert_eq!(second.distance_weights, Some([13, 3]));
     }
 
     #[test]

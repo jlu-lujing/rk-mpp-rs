@@ -5,20 +5,24 @@
 //! the spatial motion-vector stack, and MV-difference decoding. The tile sink
 //! owns the per-frame grids required by the spatial stack.
 //!
-//! Wedge compound, distance-weighted compound, temporal motion-field
-//! candidates and warped motion are explicit errors rather than silently
-//! approximated.
+//! Inter-intra, wedge/distance-weighted compound, local warp and global warp
+//! are decoded here; temporal motion-field candidates remain an explicit error
+//! rather than a silently approximated path.
 
 use crate::reference::av1::cdf_defaults::{
     CdfTable, DEFAULT_COMPOUND_TYPE_CDF, DEFAULT_COMP_BWD_REF_CDF, DEFAULT_COMP_MODE_CDF,
-    DEFAULT_COMP_REF_CDF, DEFAULT_COMP_REF_TYPE_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_IS_INTER_CDF,
-    DEFAULT_MOTION_MODE_CDF, DEFAULT_NEW_MV_CDF, DEFAULT_REF_MV_CDF, DEFAULT_SINGLE_REF_CDF,
-    DEFAULT_UNI_COMP_REF_CDF, DEFAULT_WEDGE_INDEX_CDF, DEFAULT_ZERO_MV_CDF,
+    DEFAULT_COMP_REF_CDF, DEFAULT_COMP_REF_TYPE_CDF, DEFAULT_DRL_MODE_CDF, DEFAULT_INTER_INTRA_CDF,
+    DEFAULT_INTER_INTRA_MODE_CDF, DEFAULT_IS_INTER_CDF, DEFAULT_MOTION_MODE_CDF,
+    DEFAULT_NEW_MV_CDF, DEFAULT_REF_MV_CDF, DEFAULT_SINGLE_REF_CDF, DEFAULT_UNI_COMP_REF_CDF,
+    DEFAULT_USE_OBMC_CDF, DEFAULT_WEDGE_INDEX_CDF, DEFAULT_WEDGE_INTER_INTRA_CDF,
+    DEFAULT_ZERO_MV_CDF,
 };
 use crate::reference::av1::cdf_state::{CdfState, CdfStateError, MvCdfs};
 use crate::reference::av1::frame_header::{FrameHeader, GlobalMotionType, WARPEDMODEL_PREC_BITS};
-use crate::reference::av1::partition::{block_size_index, BlockSize, BLOCK_SIZES};
+use crate::reference::av1::partition::{block_size_index, size_group, BlockSize, BLOCK_SIZES};
 use crate::reference::av1::symbol::{SymbolDecoder, SymbolError};
+use crate::reference::av1::temporal::TemporalMotionField;
+use crate::reference::av1::warped::WarpParams;
 
 pub const INTRA_FRAME: i8 = 0;
 pub const LAST_FRAME: i8 = 1;
@@ -139,10 +143,53 @@ impl CompoundType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterIntraMode {
+    Dc,
+    V,
+    H,
+    Smooth,
+}
+
+impl InterIntraMode {
+    fn from_symbol(symbol: usize) -> Option<Self> {
+        Some(match symbol {
+            0 => Self::Dc,
+            1 => Self::V,
+            2 => Self::H,
+            3 => Self::Smooth,
+            _ => return None,
+        })
+    }
+
+    pub fn intra_mode(self) -> crate::reference::av1::intra::IntraMode {
+        use crate::reference::av1::intra::IntraMode;
+        match self {
+            Self::Dc => IntraMode::Dc,
+            Self::V => IntraMode::V,
+            Self::H => IntraMode::H,
+            Self::Smooth => IntraMode::Smooth,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterIntra {
+    pub mode: InterIntraMode,
+    pub wedge_index: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MotionMode {
     Simple,
     Obmc,
     LocalWarp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionModeAllowed {
+    Simple,
+    Obmc,
+    Warped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +202,11 @@ pub struct InterBlock {
     pub mv1: MotionVector,
     pub compound_mode: Option<CompoundMode>,
     pub compound_type: Option<CompoundType>,
+    pub distance_weights: Option<[u8; 2]>,
+    pub interintra: Option<InterIntra>,
     pub motion_mode: MotionMode,
+    pub warp: Option<WarpParams>,
+    pub warp1: Option<WarpParams>,
     pub interp_filter: [u8; 2],
     pub ref_mv_idx: usize,
 }
@@ -668,6 +719,7 @@ pub struct MotionGrid<'a> {
     pub modes: &'a [Option<InterMode>],
     pub compound_modes: &'a [Option<CompoundMode>],
     pub mvs: &'a [[MotionVector; 2]],
+    pub temporal: Option<&'a TemporalMotionField>,
 }
 
 impl MotionGrid<'_> {
@@ -684,10 +736,13 @@ impl MotionGrid<'_> {
     }
 }
 
-/// `setup_global_mv()` for the translational subset.
+/// Resolve a global motion vector at the centre of a block.
 pub fn global_motion_vector(
     header: &FrameHeader,
     reference: i8,
+    size: BlockSize,
+    mi_row: usize,
+    mi_col: usize,
     allow_high_precision_mv: bool,
     force_integer_mv: bool,
 ) -> Result<MotionVector, InterError> {
@@ -695,15 +750,29 @@ pub fn global_motion_vector(
         &header.gm_types,
         &header.gm_params,
         reference,
+        size,
+        mi_row,
+        mi_col,
         allow_high_precision_mv,
         force_integer_mv,
     )
+}
+
+fn round_motion_signed(value: i64, shift: u32) -> i64 {
+    if value < 0 {
+        -((value.unsigned_abs() + (1u64 << (shift - 1))) as i64 >> shift)
+    } else {
+        (value + (1i64 << (shift - 1))) >> shift
+    }
 }
 
 pub fn global_motion_vector_from_params(
     gm_types: &[u8; 7],
     gm_params: &[[i32; 6]; 7],
     reference: i8,
+    size: BlockSize,
+    mi_row: usize,
+    mi_col: usize,
     allow_high_precision_mv: bool,
     force_integer_mv: bool,
 ) -> Result<MotionVector, InterError> {
@@ -711,17 +780,35 @@ pub fn global_motion_vector_from_params(
         return Err(InterError::InvalidSyntax("global motion needs a reference"));
     }
     let index = (reference - LAST_FRAME) as usize;
+    let matrix = gm_params[index];
     let mut mv = match GlobalMotionType::from_bits(gm_types[index]) {
         GlobalMotionType::Identity => MotionVector::default(),
         GlobalMotionType::Translation => MotionVector::new(
-            gm_params[index][0] >> (WARPEDMODEL_PREC_BITS - 3),
-            gm_params[index][1] >> (WARPEDMODEL_PREC_BITS - 3),
+            matrix[0] >> (WARPEDMODEL_PREC_BITS - 3),
+            matrix[1] >> (WARPEDMODEL_PREC_BITS - 3),
         ),
         GlobalMotionType::RotZoom | GlobalMotionType::Affine => {
-            return Err(InterError::Unsupported("warped global motion"))
+            let x = mi_col as i64 * 4 + i64::from(size.width / 2) - 1;
+            let y = mi_row as i64 * 4 + i64::from(size.height / 2) - 1;
+            let tx = (i64::from(matrix[2]) - (1i64 << WARPEDMODEL_PREC_BITS)) * x
+                + i64::from(matrix[3]) * y
+                + i64::from(matrix[0]);
+            let ty = i64::from(matrix[4]) * x
+                + (i64::from(matrix[5]) - (1i64 << WARPEDMODEL_PREC_BITS)) * y
+                + i64::from(matrix[1]);
+            let convert = |value: i64| {
+                if allow_high_precision_mv {
+                    round_motion_signed(value, WARPEDMODEL_PREC_BITS - 3)
+                } else {
+                    round_motion_signed(value, WARPEDMODEL_PREC_BITS - 2) * 2
+                }
+            };
+            MotionVector::new(convert(ty) as i32, convert(tx) as i32)
         }
     };
-    mv.lower_precision(allow_high_precision_mv, force_integer_mv);
+    if force_integer_mv {
+        mv.lower_precision(allow_high_precision_mv, true);
+    }
     Ok(mv)
 }
 
@@ -795,6 +882,46 @@ impl StackBuilder<'_> {
             self.found = true;
             self.add_to_stack([mv, MotionVector::default()], weight);
         }
+    }
+
+    fn add_temporal_candidate(
+        &mut self,
+        block_row: usize,
+        block_col: usize,
+        offset_row: isize,
+        offset_col: isize,
+    ) -> Option<[MotionVector; 2]> {
+        let temporal = self.grid.temporal?;
+        let position_row = block_row as isize + offset_row + if block_row & 1 == 0 { 1 } else { 0 };
+        let position_col = block_col as isize + offset_col + if block_col & 1 == 0 { 1 } else { 0 };
+        if position_row < 0
+            || position_col < 0
+            || position_row >= temporal.mi_rows as isize
+            || position_col >= temporal.mi_cols as isize
+        {
+            return None;
+        }
+        let candidate =
+            temporal.candidate((position_row as usize) >> 1, (position_col as usize) >> 1)?;
+        let mut mvs = [MotionVector::default(); 2];
+        for list in 0..=usize::from(self.is_compound) {
+            let reference = self.ref_frames[list];
+            let reference_hint = temporal.ref_order_hints[(reference - 1) as usize];
+            let current_offset = crate::reference::av1::frame_header::get_relative_dist(
+                i32::from(temporal.current_order_hint),
+                i32::from(reference_hint),
+                temporal.enable_order_hint,
+                temporal.order_hint_bits,
+            );
+            mvs[list] = crate::reference::av1::temporal::project_mv(
+                candidate.mv,
+                current_offset,
+                candidate.ref_frame_offset,
+            );
+            mvs[list].lower_precision(self.allow_high_precision_mv, self.force_integer_mv);
+        }
+        self.add_to_stack(mvs, 2);
+        Some(mvs)
     }
 
     fn scan_row(&mut self, delta_row: isize, block_row: usize, block_col: usize, size: BlockSize) {
@@ -1081,9 +1208,6 @@ pub fn find_mv_stack(
     force_integer_mv: bool,
     use_ref_frame_mvs: bool,
 ) -> Result<MotionVectorStack, InterError> {
-    if use_ref_frame_mvs {
-        return Err(InterError::Unsupported("temporal motion field"));
-    }
     let mut builder = StackBuilder {
         stack: MotionVectorStack {
             candidates: [[MotionVector::default(); 2]; 8],
@@ -1120,6 +1244,71 @@ pub fn find_mv_stack(
     let num_new = builder.new_mv_count;
     for weight in &mut builder.stack.weights[..num_nearest] {
         *weight += REF_CAT_LEVEL;
+    }
+
+    let mut temporal_global_bit = false;
+    if use_ref_frame_mvs {
+        if builder.grid.temporal.is_some() {
+            let height_mi = size.num_4x4_high() as isize;
+            let width_mi = size.num_4x4_wide() as isize;
+            let vertical_offset = height_mi.max(4);
+            let horizontal_offset = width_mi.max(4);
+            let end_row = height_mi.min(16);
+            let end_col = width_mi.min(16);
+            let step_row = if height_mi >= 16 { 4 } else { 2 };
+            let step_col = if width_mi >= 16 { 4 } else { 2 };
+            let mut base_available = false;
+            let mut row_offset = 0;
+            while row_offset < end_row {
+                let mut col_offset = 0;
+                while col_offset < end_col {
+                    let candidate = builder
+                        .add_temporal_candidate(block_row, block_col, row_offset, col_offset);
+                    if row_offset == 0 && col_offset == 0 {
+                        base_available = candidate.is_some();
+                        if let Some(candidate) = candidate {
+                            let far = if builder.is_compound {
+                                (candidate[0].row - global_mvs[0].row).abs() >= 16
+                                    || (candidate[0].col - global_mvs[0].col).abs() >= 16
+                                    || (candidate[1].row - global_mvs[1].row).abs() >= 16
+                                    || (candidate[1].col - global_mvs[1].col).abs() >= 16
+                            } else {
+                                (candidate[0].row - global_mvs[0].row).abs() >= 16
+                                    || (candidate[0].col - global_mvs[0].col).abs() >= 16
+                            };
+                            temporal_global_bit |= far;
+                        }
+                    }
+                    col_offset += step_col;
+                }
+                row_offset += step_row;
+            }
+            if !base_available {
+                temporal_global_bit = true;
+            } else {
+                let allow_extension =
+                    height_mi >= 2 && height_mi < 16 && width_mi >= 2 && width_mi < 16;
+                if allow_extension {
+                    let sb_row = (block_row & 15) as isize;
+                    let sb_col = (block_col & 15) as isize;
+                    for (offset_row, offset_col) in [
+                        (vertical_offset, -2),
+                        (vertical_offset, horizontal_offset),
+                        (vertical_offset - 2, horizontal_offset),
+                    ] {
+                        let row = sb_row + offset_row;
+                        let col = sb_col + offset_col;
+                        if !(0..16).contains(&row) || !(0..16).contains(&col) {
+                            continue;
+                        }
+                        let _ = builder
+                            .add_temporal_candidate(block_row, block_col, offset_row, offset_col);
+                    }
+                }
+            }
+        } else {
+            temporal_global_bit = true;
+        }
     }
 
     builder.found = false;
@@ -1159,7 +1348,8 @@ pub fn find_mv_stack(
         1 => (3 - usize::from(num_new.min(1)), 2 + total_matches),
         _ => (5 - usize::from(num_new.min(1)), 5),
     };
-    builder.stack.mode_context = (new_mv_ctx | (ref_mv_ctx << 4)) as u8;
+    builder.stack.mode_context =
+        (new_mv_ctx | (ref_mv_ctx << 4) | (usize::from(temporal_global_bit) << 3)) as u8;
     const COMPOUND_MODE_CTX_MAP: [[u8; 5]; 3] = [[0, 1, 1, 1, 1], [1, 2, 3, 4, 4], [4, 4, 5, 6, 7]];
     builder.stack.compound_mode_context =
         COMPOUND_MODE_CTX_MAP[(ref_mv_ctx >> 1).min(2)][new_mv_ctx.min(4)];
@@ -1286,11 +1476,73 @@ pub fn read_compound_mode(
     })
 }
 
-fn wedge_compound_allowed(size: BlockSize) -> bool {
+pub(crate) fn wedge_compound_allowed(size: BlockSize) -> bool {
     matches!(
         (size.width, size.height),
         (8, 8) | (8, 16) | (16, 8) | (16, 16) | (16, 32) | (32, 16) | (32, 32) | (8, 32) | (32, 8)
     )
+}
+
+pub fn interintra_allowed(size: BlockSize, ref_frames: [i8; 2]) -> bool {
+    size.width >= 8
+        && size.height >= 8
+        && size.width <= 32
+        && size.height <= 32
+        && ref_frames[0] > INTRA_FRAME
+        && ref_frames[1] <= INTRA_FRAME
+}
+
+/// Read the single-reference inter-intra decision after `assign_mv()`.
+pub fn read_interintra(
+    decoder: &mut SymbolDecoder<'_>,
+    cdfs: &mut CdfState,
+    size: BlockSize,
+    disable_cdf_update: bool,
+) -> Result<Option<InterIntra>, InterError> {
+    let group = usize::from(size_group(size));
+    debug_assert!(group > 0);
+    let interintra = cdfs.read_symbol(
+        decoder,
+        &DEFAULT_INTER_INTRA_CDF,
+        (group - 1) * 3,
+        3,
+        disable_cdf_update,
+    )?;
+    if interintra == 0 {
+        return Ok(None);
+    }
+    let mode = cdfs.read_symbol(
+        decoder,
+        &DEFAULT_INTER_INTRA_MODE_CDF,
+        (group - 1) * 5,
+        5,
+        disable_cdf_update,
+    )?;
+    let mode =
+        InterIntraMode::from_symbol(mode).ok_or(InterError::InvalidSyntax("inter-intra mode"))?;
+    let wedge_index = if wedge_compound_allowed(size) {
+        let use_wedge = cdfs.read_symbol(
+            decoder,
+            &DEFAULT_WEDGE_INTER_INTRA_CDF,
+            block_size_index(size) * 3,
+            3,
+            disable_cdf_update,
+        )?;
+        if use_wedge != 0 {
+            Some(cdfs.read_symbol(
+                decoder,
+                &DEFAULT_WEDGE_INDEX_CDF,
+                block_size_index(size) * 17,
+                17,
+                disable_cdf_update,
+            )? as u8)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Ok(Some(InterIntra { mode, wedge_index }))
 }
 
 /// Read the masked/average compound type selected after `comp_group_idx`.
@@ -1539,35 +1791,170 @@ pub fn assign_compound_mv(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn motion_mode_allowed(
+    size: BlockSize,
+    mode: InterMode,
+    ref_frame1: i8,
+    overlappable_neighbors: usize,
+    force_integer_mv: bool,
+    global_motion_type: u8,
+    projected_refs: usize,
+    allow_warped_motion: bool,
+    reference_is_scaled: bool,
+) -> MotionModeAllowed {
+    if overlappable_neighbors == 0 {
+        return MotionModeAllowed::Simple;
+    }
+    let motion_variation_size = size.width.min(size.height) >= 8;
+    if !force_integer_mv
+        && mode == InterMode::Global
+        && global_motion_type > 0
+        && motion_variation_size
+    {
+        return MotionModeAllowed::Simple;
+    }
+    if !motion_variation_size || ref_frame1 > INTRA_FRAME {
+        return MotionModeAllowed::Simple;
+    }
+    if projected_refs >= 1 && allow_warped_motion && !force_integer_mv && !reference_is_scaled {
+        MotionModeAllowed::Warped
+    } else {
+        MotionModeAllowed::Obmc
+    }
+}
+
 /// Read `motion_mode` for a single-reference block.
 pub fn read_motion_mode(
     decoder: &mut SymbolDecoder<'_>,
     cdfs: &mut CdfState,
     size: BlockSize,
-    switchable: bool,
-    skip_mode: bool,
+    last_allowed: MotionModeAllowed,
     disable_cdf_update: bool,
 ) -> Result<MotionMode, InterError> {
-    if !switchable || skip_mode || size.width < 8 || size.height < 8 {
-        return Ok(MotionMode::Simple);
-    }
     let index = BLOCK_SIZES.iter().position(|entry| *entry == size).unwrap();
-    match cdfs.read_symbol(
-        decoder,
-        &DEFAULT_MOTION_MODE_CDF,
-        index * 4,
-        4,
-        disable_cdf_update,
-    )? {
+    let symbol = match last_allowed {
+        MotionModeAllowed::Simple => return Ok(MotionMode::Simple),
+        MotionModeAllowed::Obmc => cdfs.read_symbol(
+            decoder,
+            &DEFAULT_USE_OBMC_CDF,
+            index * 3,
+            3,
+            disable_cdf_update,
+        )?,
+        MotionModeAllowed::Warped => cdfs.read_symbol(
+            decoder,
+            &DEFAULT_MOTION_MODE_CDF,
+            index * 4,
+            4,
+            disable_cdf_update,
+        )?,
+    };
+    match symbol {
         0 => Ok(MotionMode::Simple),
-        1 => Err(InterError::Unsupported("OBMC")),
-        _ => Err(InterError::Unsupported("local warped motion")),
+        1 => Ok(MotionMode::Obmc),
+        2 if last_allowed == MotionModeAllowed::Warped => Ok(MotionMode::LocalWarp),
+        _ => Err(InterError::InvalidSyntax("motion mode")),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_mode_allowed_matches_overlap_global_and_warp_preconditions() {
+        let size = BLOCK_SIZES
+            .iter()
+            .find(|size| size.name == "BLOCK_16X16")
+            .copied()
+            .unwrap();
+
+        assert_eq!(
+            motion_mode_allowed(
+                size,
+                InterMode::Nearest,
+                NONE_FRAME,
+                0,
+                false,
+                0,
+                1,
+                true,
+                false,
+            ),
+            MotionModeAllowed::Simple
+        );
+        assert_eq!(
+            motion_mode_allowed(
+                size,
+                InterMode::Nearest,
+                NONE_FRAME,
+                1,
+                false,
+                0,
+                0,
+                true,
+                false,
+            ),
+            MotionModeAllowed::Obmc
+        );
+        assert_eq!(
+            motion_mode_allowed(
+                size,
+                InterMode::Global,
+                NONE_FRAME,
+                1,
+                false,
+                1,
+                1,
+                true,
+                false,
+            ),
+            MotionModeAllowed::Simple
+        );
+        assert_eq!(
+            motion_mode_allowed(
+                size,
+                InterMode::Nearest,
+                NONE_FRAME,
+                1,
+                false,
+                0,
+                1,
+                true,
+                false,
+            ),
+            MotionModeAllowed::Warped
+        );
+        assert_eq!(
+            motion_mode_allowed(
+                size,
+                InterMode::Nearest,
+                NONE_FRAME,
+                1,
+                true,
+                0,
+                1,
+                true,
+                false,
+            ),
+            MotionModeAllowed::Obmc
+        );
+        assert_eq!(
+            motion_mode_allowed(
+                size,
+                InterMode::Nearest,
+                LAST_FRAME,
+                1,
+                false,
+                0,
+                1,
+                true,
+                false,
+            ),
+            MotionModeAllowed::Simple
+        );
+    }
 
     #[test]
     fn motion_vector_lowering_matches_integer_and_half_pel_rules() {

@@ -403,10 +403,10 @@ pub fn apply_intra_deblock(
 ) {
     let sub_x = u32::from(sequence.color.subsampling_x);
     let sub_y = u32::from(sequence.color.subsampling_y);
-    let vertical = (0..3)
+    let vertical = (0..sequence.color.num_planes)
         .map(|plane| deblock_grid(header, blocks, true, plane, sub_x, sub_y))
         .collect::<Vec<_>>();
-    let horizontal = (0..3)
+    let horizontal = (0..sequence.color.num_planes)
         .map(|plane| deblock_grid(header, blocks, false, plane, sub_x, sub_y))
         .collect::<Vec<_>>();
     apply_deblock_grids(header, &vertical, &horizontal, sub_x, sub_y, frame);
@@ -869,6 +869,262 @@ mod tests {
             (0xb84936b022b0f93a, 0x60a6b7d4f51e600c, 0xec0da83a8ba1394e)
         );
         assert_eq!(restored, cdef);
+    }
+
+    #[test]
+    fn real_palette_and_delta_lf_keyframe_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_delta_lf_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let packets = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        let frame = packets
+            .iter()
+            .flatten()
+            .find_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        assert!(frame.header.delta_q_present);
+        assert!(frame.header.delta_lf_present);
+
+        let config = IntraTileConfig::from_headers(sequence, &frame.header);
+        let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
+        let tile = &frame.layout.tiles[0];
+        let decoded = decode_tile_partitions(
+            &frame.payload[tile.bytes.clone()],
+            &frame.header,
+            tile.tile,
+            sb_size,
+            false,
+            true,
+            IntraTileBlockSink::new(config),
+        )
+        .unwrap();
+        let mut picture =
+            reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap();
+        let hash = |plane: &PlaneBuffer| {
+            plane
+                .data
+                .iter()
+                .fold(0xcbf29ce484222325u64, |hash, sample| {
+                    (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
+                })
+        };
+        let hashes = |picture: &IntraFrame| {
+            (
+                hash(&picture.y),
+                hash(picture.u.as_ref().unwrap()),
+                hash(picture.v.as_ref().unwrap()),
+            )
+        };
+
+        assert_eq!(
+            hashes(&picture),
+            (0xffe3910c45a2ece7, 0xbf7b5fb6fb9f7e39, 0x0f9c50fac95c7c2c)
+        );
+        apply_intra_deblock(sequence, &frame.header, &decoded.sink.blocks, &mut picture);
+        let deblocked = picture.clone();
+        assert_eq!(
+            hashes(&picture),
+            (0xe741b59de826134e, 0xe20d5256a0dd85cd, 0x8c0e1a73fbd21dd1)
+        );
+        apply_intra_cdef(
+            sequence,
+            &frame.header,
+            &decoded.sink.blocks,
+            decoded.sink.cdef_grid(),
+            &mut picture,
+        );
+        assert_eq!(
+            hashes(&picture),
+            (0xfa2f3c46bb96aa22, 0x4ec746390246903d, 0x6b11349dffa07825)
+        );
+        apply_intra_loop_restoration(
+            sequence,
+            &frame.header,
+            decoded.sink.lr_params(),
+            &deblocked,
+            &mut picture,
+        )
+        .unwrap();
+        assert_eq!(
+            hashes(&picture),
+            (0x249c4589ab9f3602, 0xa05707ca85dc367d, 0x58d1046d57bc1b52)
+        );
+    }
+
+    #[test]
+    fn real_delta_lf_multi_keyframe_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_delta_lf_multi_key_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let packets = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        let frame = packets
+            .iter()
+            .flatten()
+            .find_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        assert!(frame.header.delta_q_present);
+        assert!(frame.header.delta_lf_present);
+        assert!(frame.header.delta_lf_multi);
+
+        let config = IntraTileConfig::from_headers(sequence, &frame.header);
+        let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
+        let tile = &frame.layout.tiles[0];
+        let decoded = decode_tile_partitions(
+            &frame.payload[tile.bytes.clone()],
+            &frame.header,
+            tile.tile,
+            sb_size,
+            false,
+            true,
+            IntraTileBlockSink::new(config),
+        )
+        .unwrap();
+        assert!(decoded
+            .sink
+            .blocks
+            .iter()
+            .any(|block| block.delta_lf.iter().any(|&level| level != 0)));
+
+        let mut picture =
+            reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap();
+        let hash = |plane: &PlaneBuffer| {
+            plane
+                .data
+                .iter()
+                .fold(0xcbf29ce484222325u64, |hash, sample| {
+                    (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
+                })
+        };
+        let hashes = |picture: &IntraFrame| {
+            (
+                hash(&picture.y),
+                hash(picture.u.as_ref().unwrap()),
+                hash(picture.v.as_ref().unwrap()),
+            )
+        };
+
+        assert_eq!(
+            hashes(&picture),
+            (0xeb9b2cc39c06674e, 0xc5ee9b96833e35f2, 0x96b616e2e5cdcb47)
+        );
+        apply_intra_deblock(sequence, &frame.header, &decoded.sink.blocks, &mut picture);
+        let deblocked = picture.clone();
+        assert_eq!(
+            hashes(&picture),
+            (0xdb03a8f1bb5fb80b, 0x6c2d4841f33c2335, 0xba08c50fdef95767)
+        );
+        apply_intra_cdef(
+            sequence,
+            &frame.header,
+            &decoded.sink.blocks,
+            decoded.sink.cdef_grid(),
+            &mut picture,
+        );
+        assert_eq!(
+            hashes(&picture),
+            (0x299169e913b55a11, 0x9859f6acc76be850, 0x50ac86fa68ba1155)
+        );
+        apply_intra_loop_restoration(
+            sequence,
+            &frame.header,
+            decoded.sink.lr_params(),
+            &deblocked,
+            &mut picture,
+        )
+        .unwrap();
+        assert_eq!(
+            hashes(&picture),
+            (0x299169e913b55a11, 0x9859f6acc76be850, 0x50ac86fa68ba1155)
+        );
+    }
+
+    #[test]
+    fn real_monochrome_delta_lf_multi_keyframe_matches_libaom_y() {
+        let data = include_bytes!("../../../tests/data/av1_delta_lf_multi_mono_key_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let packets = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        assert!(sequence.color.mono_chrome);
+        assert_eq!(sequence.color.num_planes, 1);
+        let frame = packets
+            .iter()
+            .flatten()
+            .find_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        assert!(frame.header.delta_q_present);
+        assert!(frame.header.delta_lf_present);
+        assert!(frame.header.delta_lf_multi);
+
+        let config = IntraTileConfig::from_headers(sequence, &frame.header);
+        let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
+        let tile = &frame.layout.tiles[0];
+        let decoded = decode_tile_partitions(
+            &frame.payload[tile.bytes.clone()],
+            &frame.header,
+            tile.tile,
+            sb_size,
+            false,
+            true,
+            IntraTileBlockSink::new(config),
+        )
+        .unwrap();
+        assert!(decoded
+            .sink
+            .blocks
+            .iter()
+            .any(|block| block.delta_lf[..2].iter().any(|&level| level != 0)));
+        assert!(decoded
+            .sink
+            .blocks
+            .iter()
+            .all(|block| block.delta_lf[2..] == [0, 0]));
+
+        let mut picture =
+            reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks).unwrap();
+        assert!(picture.u.is_none());
+        assert!(picture.v.is_none());
+        let hash = |plane: &PlaneBuffer| {
+            plane
+                .data
+                .iter()
+                .fold(0xcbf29ce484222325u64, |hash, sample| {
+                    (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
+                })
+        };
+
+        assert_eq!(hash(&picture.y), 0xec18ba5f6a8f7560);
+        apply_intra_deblock(sequence, &frame.header, &decoded.sink.blocks, &mut picture);
+        let deblocked = picture.clone();
+        assert_eq!(hash(&picture.y), 0xd64b69724edf8fb8);
+        apply_intra_cdef(
+            sequence,
+            &frame.header,
+            &decoded.sink.blocks,
+            decoded.sink.cdef_grid(),
+            &mut picture,
+        );
+        assert_eq!(hash(&picture.y), 0x5aad36d5f317ba64);
+        apply_intra_loop_restoration(
+            sequence,
+            &frame.header,
+            decoded.sink.lr_params(),
+            &deblocked,
+            &mut picture,
+        )
+        .unwrap();
+        assert_eq!(hash(&picture.y), 0x5aad36d5f317ba64);
     }
 
     #[test]

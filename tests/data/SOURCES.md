@@ -50,6 +50,104 @@ cargo test --test fixture_manifest
   It carries a displayed difference-weighted compound frame reached through
   `show_existing_frame`; all five visible Y/U/V frames are byte-exact against
   libaom.
+- `av1_inter_distance_weighted_320x240.ivf` uses a five-frame
+  320x240 static-background plus moving-inset source. A fixture-only libaom
+  v3.6.0 encoder build restricted the compound-type RDO list to
+  `COMPOUND_DISTWTD`, suppressed wedge/difference candidates, and disabled
+  skip mode. It was encoded at CQ 42 with
+  `--good --cpu-used=0 --passes=1 --fps=30/1 --i420 --sb-size=64
+  --lag-in-frames=5 --enable-masked-comp=1 --enable-dist-wtd-comp=1
+  --enable-interintra-comp=0 --enable-order-hint=1
+  --enable-onesided-comp=1 --enable-global-motion=0
+  --enable-warped-motion=0 --enable-obmc=0 --enable-ref-frame-mvs=0
+  --enable-palette=0 --enable-intrabc=0 --deltaq-mode=0 --enable-cdef=0
+  --enable-restoration=0 --loopfilter-control=0`. The stream contains one
+  32x16 and one 8x8 distance-weighted block with weights `[11,5]` and
+  `[13,3]`. The unmodified libaom decoder and Rust reference decoder are
+  byte-exact for all five visible Y/U/V frames.
+- `av1_inter_interintra_smooth_320x240.ivf` is a five-frame 320x240 stream
+  encoded at CQ 20 with inter-intra enabled, smooth inter-intra enabled and
+  wedge inter-intra disabled. It covers H, V and SMOOTH masks over 15
+  inter-intra blocks. All five visible Y/U/V frames are byte-exact against
+  libaom.
+- `av1_inter_interintra_wedge_320x240.ivf` uses the same inter-intra isolation
+  settings with smooth inter-intra disabled and wedge inter-intra enabled at
+  CQ 40. Its nine inter-intra blocks cover DC, V and H modes plus several wedge
+  indices. All five visible Y/U/V frames are byte-exact against libaom.
+- `av1_inter_obmc_320x240.ivf` is a five-frame 320x240 static-background plus
+  moving-inset stream encoded at CQ 40 with OBMC enabled and inter-intra,
+  masked/distance-weighted compound, one-sided compound, global/warped motion,
+  reference-frame MVs, deblocking, CDEF and loop restoration disabled. It
+  contains 32 OBMC blocks and 232 OBMC mipixels, exercising both above and left
+  neighbour prediction plus 4:2:0 chroma overlap. All five visible Y/U/V frames
+  are byte-exact against libaom.
+- `av1_inter_warped_320x240.ivf` re-encodes the same five decoded frames at CQ
+  40 with libaom's `--good --cpu-used=0 --passes=1 --lag-in-frames=5`
+  settings. Local warped motion is enabled, while OBMC, global motion,
+  temporal/reference-frame MVs, compound modes, palette, intra-BC, delta-q,
+  deblocking, CDEF and loop restoration are disabled. It contains 10
+  `WARPED_CAUSAL` blocks, including zero-MV blocks driven entirely by projected
+  neighbour samples. All five visible Y/U/V frames are byte-exact against
+  libaom.
+- `av1_inter_global_warped_320x240.ivf` is a two-frame procedural noise source
+  with a deterministic global zoom/rotation. It was encoded at CQ 40 with
+  zero-lag libaom `--good --cpu-used=0 --passes=1`, global motion enabled and
+  local warped motion, OBMC, temporal/reference-frame MVs, compound modes,
+  palette, intra-BC, angle delta, filter-intra, edge filtering, smooth intra,
+  CFL, delta-q, deblocking, CDEF and loop restoration disabled. The `LAST`
+  reference is a `ROTZOOM` model and 756 blocks use `GlobalMV + warp`; both
+  visible Y/U/V frames are byte-exact against libaom.
+- `av1_inter_global_warp_compound_320x240.ivf` extends the affine-noise source
+  to four frames and enables one-sided, distance-weighted and masked compound
+  while keeping local warp, OBMC, temporal/reference-frame MVs, inter-intra,
+  palette, intra-BC, optional intra tools, delta-q and all post-filters off. It
+  contains three `GLOBAL_GLOBALMV` blocks: two distance-weighted blocks and one
+  wedge block with a warped global reference and an identity reference. All four
+  visible Y/U/V frames are byte-exact against libaom.
+- `av1_inter_temporal_mv_320x240.ivf` is a three-frame 320x240
+  static-background plus moving-inset source encoded at CQ 40 with zero lag.
+  Reference-frame MVs are enabled, while global/local warp, OBMC, compound,
+  inter-intra, palette, intra-BC, optional intra tools, delta-q and all
+  post-filters are disabled. The two inter frames exercise reference motion
+  field storage, projection and stack merge across 128 inter blocks; all three
+  visible Y/U/V frames are byte-exact against libaom.
+- `av1_delta_lf_320x240.ivf` is one 320x240 frame from FFmpeg
+  `testsrc2`, encoded by libaom 3.13.1 `aomenc` at CQ 32 with
+  `--deltaq-mode=3 --enable-tpl-model=1 --delta-lf-mode=1`. The keyframe
+  carries both delta-q and delta-LF syntax and uses palette prediction. Its
+  final Y/U/V bytes match `aomdec` exactly; pre/deblock/CDEF/LR hashes are
+  locked as stage regressions, including the sub-8x8 chroma palette map origin
+  and the rule that zero base luma loop-filter levels disable the frame filter.
+- `av1_delta_lf_multi_key_320x240.ivf` is the first frame of the same five-frame
+  source (raw YUV SHA-256 `1c479f80a55b1bd0b929118d06fe971de8e9a2dee7dcd5190e01cdfecaef65aa`).
+  Its local libaom 3.13.1 encoder copy changes only
+  `DEFAULT_DELTA_LF_MULTI` from 0 to 1; the remaining encoder options match the
+  single-LF fixture above. FFmpeg `trace_headers` confirms delta-q, delta-LF and
+  `delta_lf_multi=1` on the keyframe. The unmodified `aomdec` decodes it to
+  YUV SHA-256 `4fd081edb7454717ba162b3962fcb238acc6b6faaf0c22ffd31e57edb0ebda79`;
+  all Rust pre/deblock/CDEF/LR planes match that output. The fixture stops at
+  one frame because the same patched encoder produces invalid tile data on its
+  second inter frame. This is a decoder fixture, not a claim that libaom's
+  disabled multi-LF encoder path is generally stable.
+- `av1_delta_lf_multi_mono_key_320x240.ivf` uses the same patched encoder and
+  first source frame with `--monochrome`. FFmpeg `trace_headers` confirms
+  `mono_chrome=1`, delta-q, delta-LF and `delta_lf_multi=1`. The unmodified
+  `aomdec` decodes it successfully. Rust reconstructs only a Y plane and matches
+  the reference Y bytes exactly (SHA-256
+  `b7127618be4ae2c9647363e4c0734a34d8cf0c1bddbe429fca70ee94472b5429`);
+  the decoder consumes only the two active multi-LF CDF rows. Like the color
+  fixture, this is a one-frame decoder gate rather than a general stability
+  claim for the patched encoder.
+- `av1_inter_segment_320x240.ivf` is the first three IVF packets of a
+  four-frame 320x240 procedural contrast source encoded at CQ 40 by libaom
+  `aomenc` with `--aq-mode=1 --lag-in-frames=2`. Global/local warp, OBMC,
+  reference-frame MVs, compound, inter-intra, palette, intra-BC, optional intra
+  tools, delta-q, CDEF, loop restoration and deblocking are disabled. The
+  keyframe and final inter frame enable ALT_Q for all eight segments; the final
+  frame also enables temporal segment-map prediction and contains 1050 nonzero
+  segment IDs across 791 segment-6, 253 segment-4, four segment-5 and two
+  segment-2 inter blocks. All three visible Y/U/V frames are byte-exact against
+  libaom.
 - `av1_inter_wedge_compound_320x240.ivf` uses the same five-frame source and
   bitstream options, but a locally patched libaom encoder restricted its
   compound RDO list to `COMPOUND_WEDGE` so this branch is deterministic. The

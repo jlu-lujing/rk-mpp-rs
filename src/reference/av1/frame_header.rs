@@ -34,7 +34,10 @@ pub const TOTAL_REFS_PER_FRAME: usize = 8;
 pub const NUM_REF_FRAMES: usize = 8;
 pub const MAX_SEGMENTS: usize = 8;
 pub const SEG_LVL_MAX: usize = 8;
+pub const SEG_LVL_ALT_Q: usize = 0;
 pub const SEG_LVL_REF_FRAME: usize = 5;
+pub const SEG_LVL_SKIP: usize = 6;
+pub const SEG_LVL_GLOBALMV: usize = 7;
 pub const SEG_LVL_ALT_LF_Y_V: usize = 1;
 pub const MAX_LOOP_FILTER: i32 = 63;
 pub const PRIMARY_REF_NONE: u8 = 7;
@@ -66,6 +69,40 @@ pub const DEFAULT_LF_MODE_DELTAS: [i32; 2] = [0, 0];
 const SEG_FEATURE_BITS: [usize; SEG_LVL_MAX] = [8, 6, 6, 6, 6, 3, 0, 0];
 const SEG_FEATURE_SIGNED: [bool; SEG_LVL_MAX] = [true, true, true, true, true, false, false, false];
 const SEG_FEATURE_MAX: [i32; SEG_LVL_MAX] = [255, 63, 63, 63, 63, 7, 0, 0];
+
+/// The part of `Segmentation` saved with a decoded reference frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentationState {
+    pub enabled: bool,
+    pub feature_enabled: [[bool; SEG_LVL_MAX]; MAX_SEGMENTS],
+    pub feature_data: [[i32; SEG_LVL_MAX]; MAX_SEGMENTS],
+    pub last_active_seg_id: u8,
+    pub seg_id_pre_skip: bool,
+}
+
+impl Default for SegmentationState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            feature_enabled: [[false; SEG_LVL_MAX]; MAX_SEGMENTS],
+            feature_data: [[0; SEG_LVL_MAX]; MAX_SEGMENTS],
+            last_active_seg_id: 0,
+            seg_id_pre_skip: false,
+        }
+    }
+}
+
+impl SegmentationState {
+    pub fn from_header(header: &FrameHeader) -> Self {
+        Self {
+            enabled: header.segmentation_enabled,
+            feature_enabled: header.feature_enabled,
+            feature_data: header.feature_data,
+            last_active_seg_id: header.last_active_seg_id,
+            seg_id_pre_skip: header.seg_id_pre_skip,
+        }
+    }
+}
 
 /// `frame_type` as transmitted by `f(2)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,12 +197,15 @@ pub struct FrameHeaderState {
     pub saved_lf_ref_deltas: [[i32; TOTAL_REFS_PER_FRAME]; NUM_REF_FRAMES],
     /// `SavedLoopFilterModeDeltas[refFrame][mode]`.
     pub saved_lf_mode_deltas: [[i32; 2]; NUM_REF_FRAMES],
+    /// `SavedSegmentation[refFrame]`.
+    pub saved_segmentation: [SegmentationState; NUM_REF_FRAMES],
     /// `PrevGmParams[ref][idx]`; the past-independence default is
     /// `1 << WARPEDMODEL_PREC_BITS` for `idx % 3 == 2` and zero elsewhere.
     pub prev_gm_params: [[i32; 6]; REFS_PER_FRAME],
     /// Saved by `load_previous()` when `primary_ref_frame != PRIMARY_REF_NONE`.
     pub prev_lf_ref_deltas: [i32; TOTAL_REFS_PER_FRAME],
     pub prev_lf_mode_deltas: [i32; 2],
+    pub prev_segmentation: SegmentationState,
     pub prev_frame_id: u32,
     pub temporal_id: u8,
     pub spatial_id: u8,
@@ -202,9 +242,11 @@ impl Default for FrameHeaderState {
             ]; REFS_PER_FRAME]; NUM_REF_FRAMES],
             saved_lf_ref_deltas: [DEFAULT_LF_REF_DELTAS; NUM_REF_FRAMES],
             saved_lf_mode_deltas: [DEFAULT_LF_MODE_DELTAS; NUM_REF_FRAMES],
+            saved_segmentation: [SegmentationState::default(); NUM_REF_FRAMES],
             prev_gm_params,
             prev_lf_ref_deltas: DEFAULT_LF_REF_DELTAS,
             prev_lf_mode_deltas: DEFAULT_LF_MODE_DELTAS,
+            prev_segmentation: SegmentationState::default(),
             prev_frame_id: 0,
             temporal_id: 0,
             spatial_id: 0,
@@ -224,6 +266,7 @@ impl FrameHeaderState {
                 self.prev_gm_params = self.saved_gm_params[slot];
                 self.prev_lf_ref_deltas = self.saved_lf_ref_deltas[slot];
                 self.prev_lf_mode_deltas = self.saved_lf_mode_deltas[slot];
+                self.prev_segmentation = self.saved_segmentation[slot];
             }
             return;
         }
@@ -242,11 +285,13 @@ impl FrameHeaderState {
             self.saved_gm_params[slot] = header.gm_params;
             self.saved_lf_ref_deltas[slot] = header.loop_filter_ref_deltas;
             self.saved_lf_mode_deltas[slot] = header.loop_filter_mode_deltas;
+            self.saved_segmentation[slot] = SegmentationState::from_header(header);
         }
         self.prev_frame_id = header.current_frame_id;
         self.prev_gm_params = header.gm_params;
         self.prev_lf_ref_deltas = header.loop_filter_ref_deltas;
         self.prev_lf_mode_deltas = header.loop_filter_mode_deltas;
+        self.prev_segmentation = SegmentationState::from_header(header);
     }
 }
 
@@ -1020,6 +1065,10 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn segmentation_params(&mut self) -> Result<(), FrameHeaderError> {
+        self.h.feature_enabled = [[false; SEG_LVL_MAX]; MAX_SEGMENTS];
+        self.h.feature_data = [[0; SEG_LVL_MAX]; MAX_SEGMENTS];
+        self.h.last_active_seg_id = 0;
+        self.h.seg_id_pre_skip = false;
         self.h.segmentation_enabled = self.flag()?;
         if self.h.segmentation_enabled {
             if self.h.primary_ref_frame == PRIMARY_REF_NONE {
@@ -1049,6 +1098,17 @@ impl<'a, 'b> Parser<'a, 'b> {
                         }
                     }
                 }
+            } else {
+                let slot = self.h.ref_frame_idx[self.h.primary_ref_frame as usize] as usize;
+                let saved = if slot < NUM_REF_FRAMES {
+                    self.state.saved_segmentation[slot].clone()
+                } else {
+                    self.state.prev_segmentation.clone()
+                };
+                self.h.feature_enabled = saved.feature_enabled;
+                self.h.feature_data = saved.feature_data;
+                self.h.last_active_seg_id = saved.last_active_seg_id;
+                self.h.seg_id_pre_skip = saved.seg_id_pre_skip;
             }
         }
         for i in 0..MAX_SEGMENTS {
@@ -1086,15 +1146,17 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn compute_lossless(&mut self) -> Result<(), FrameHeaderError> {
-        // get_qindex(1, segmentId) ignores SEG_LVL_ALT_Q, so every segment
-        // sees base_q_idx.
-        let qindex = self.h.base_q_idx;
         let deltas_zero = self.h.delta_q_y_dc == 0
             && self.h.delta_q_u_dc == 0
             && self.h.delta_q_u_ac == 0
             && self.h.delta_q_v_dc == 0
             && self.h.delta_q_v_ac == 0;
         for segment in 0..MAX_SEGMENTS {
+            let qindex = if self.h.segmentation_enabled && self.h.feature_enabled[segment][0] {
+                (i32::from(self.h.base_q_idx) + self.h.feature_data[segment][0]).clamp(0, 255) as u8
+            } else {
+                self.h.base_q_idx
+            };
             self.h.lossless_array[segment] = qindex == 0 && deltas_zero;
             if self.h.using_qmatrix {
                 for plane in 0..3 {

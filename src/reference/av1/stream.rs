@@ -60,6 +60,7 @@ impl core::fmt::Display for StreamError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameTiles<'a> {
     pub header: FrameHeader,
+    pub reference_order_hints: [u8; 8],
     pub payload: &'a [u8],
     pub layout: ParsedTileGroup,
 }
@@ -78,6 +79,7 @@ pub struct ReferenceStream {
     sequence: Option<SequenceHeader>,
     state: FrameHeaderState,
     pending_header: Option<FrameHeader>,
+    pending_reference_order_hints: [u8; 8],
 }
 
 impl Default for ReferenceStream {
@@ -92,6 +94,7 @@ impl ReferenceStream {
             sequence: None,
             state: FrameHeaderState::default(),
             pending_header: None,
+            pending_reference_order_hints: [0; 8],
         }
     }
 
@@ -127,10 +130,12 @@ impl ReferenceStream {
                     if parts.header.show_existing_frame {
                         return Err(StreamError::ShowExistingInFrameObu);
                     }
+                    let reference_order_hints = self.state.ref_order_hints;
                     self.state.apply_frame(&parts.header);
                     let layout = parse_tile_group(parts.tile_group_payload, &parts.header, 0)?;
                     events.push(StreamEvent::CodedFrame(FrameTiles {
                         header: parts.header,
+                        reference_order_hints,
                         payload: parts.tile_group_payload,
                         layout,
                     }));
@@ -143,6 +148,7 @@ impl ReferenceStream {
                         self.state.apply_frame(&header);
                         events.push(StreamEvent::ShowExisting(header));
                     } else {
+                        self.pending_reference_order_hints = self.state.ref_order_hints;
                         self.state.apply_frame(&header);
                         self.pending_header = Some(header);
                     }
@@ -159,6 +165,7 @@ impl ReferenceStream {
                     let layout = parse_tile_group(obu.payload, &header, 0)?;
                     events.push(StreamEvent::CodedFrame(FrameTiles {
                         header,
+                        reference_order_hints: self.pending_reference_order_hints,
                         payload: obu.payload,
                         layout,
                     }));

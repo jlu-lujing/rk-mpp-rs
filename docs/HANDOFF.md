@@ -7,13 +7,17 @@
 提升；结果与 C 不一致即视为缺陷，除非另外证明 C 是 bug。功能前沿（tiles/WPP/SAO、B 帧、
 refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉。
 
-**该口径之后的实际推进（截至 2026-11-05）**：deblock/SAO 细调、H.264 two-pass deflicker、
+**该口径之后的实际推进（截至 2026-11-07）**：deblock/SAO 细调、H.264 two-pass deflicker、
 >4096 宽 P 帧与 **H.265 水平 tiles** 已按同一逐字节标准落地（tiles 见 ROADMAP 的
 `H.265 (rkvenc): uniform horizontal tiles`）；AV1 软件参考解码器已完成 fractional
 single-reference inter、inter residual、recursive transform tree、frame 内混合
-intra/inter、inter deblock/CDEF、inter LR、average/difference-weighted/wedge compound。
-仍未闭合的前沿是 distance-weighted compound、inter-intra、warp/OBMC、temporal MV、
-WPP、B 帧与多参考调度。
+intra/inter、inter deblock/CDEF、inter LR、average/distance-weighted/difference-weighted/wedge
+compound、inter-intra、OBMC、local warp、单参考/compound global warped motion 与 temporal
+MV fields，以及 inter segmentation 的 segment map、temporal prediction 与 segment
+features；`delta_lf_multi` 的四路 CDF 路径已由真实彩色 keyframe 三平面与单色 Y 平面像素门
+闭合，单色门同时修正 UV 语法门控和 deblock 单平面网格；混合 intra/inter selected tx
+context 也已闭合完整 `av1_lr` key+P 流。
+仍未闭合的前沿是 WPP、B 帧与多参考调度。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -22,6 +26,11 @@ WPP、B 帧与多参考调度。
 `/tmp/mpp-old`、`/tmp/mpp-develop`、`/tmp/mpp_trace.so` 会被清理，权威副本仍在
 `~/rk-mpp-oracles`，先运行 `scripts/setup_board_refs.sh` 回填。所有板级脚本默认
 `BOARD="${BOARD:-t6}"`。
+
+t6 当前持久化使用硬件最高频率的 80% OPP：little 1.416 GHz、big 1.8 GHz，
+governor 固定为 `performance`。pooled JPEG 必须保证 `MppService` 在任何共享
+dma-buf lease 归还前关闭；旧顺序曾让驱动在 `mpp_dma_find_buffer_fd()` 自旋锁死。
+当前顺序已通过 500 轮 async demo / 3000 jobs 压测。
 
 本文以仓库现状为准；接手时先跑 `git rev-parse --short HEAD` 和
 `git status --short`，不要相信本文记录的历史提交号。`README.md` 是最新状态速览，
@@ -128,7 +137,7 @@ WPP、B 帧与多参考调度。
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --all-targets      # 1090 passed, 27 board-only ignored
+cargo test --all-targets      # host/t6 均 1118 passed；31 个硬件 ignored 另跑通过
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -184,7 +193,7 @@ H.264/H.265 普通 slice split 与低延迟逐 slice packet 都已在 t6 上通�
 | `src/hal/h264e.rs` | VEPU580 H.264 编码器：缓冲、寄存器、提交、STATUS 读取 |
 | `src/codec/rc/` | 码率控制移植（`data.rs` = MppDataV2，`model.rs` = rc_model_v2 的 CBR/VBR） |
 | `src/scale.rs` | 自研 RGB 缩放/letterbox（替代 RGA，比 RGA 快 2.9–3.8×） |
-| `src/reference/` | 自研软件参考解码器（M11：CABAC、HEVC 反变换、H.264 CAVLC/4×4+8×8 扫描/反量化/残差/DC；AV1 key/intra 滤波链、SavedCdf、单参考 integer/fractional inter、average/difference-weighted/wedge compound、inter residual 与 frame 内混合 intra/inter） |
+| `src/reference/` | 自研软件参考解码器（M11：CABAC、HEVC 反变换、H.264 CAVLC/4×4+8×8 扫描/反量化/残差/DC；AV1 key/intra 滤波链、SavedCdf、单参考 integer/fractional inter、average/distance-weighted/difference-weighted/wedge compound、inter-intra、OBMC、local warp、单参考/compound global warp 与 temporal MV fields、inter residual 与 frame 内混合 intra/inter） |
 | `scripts/board_*.sh` | 板上验证脚本（回归、吞吐、寄存器捕获） |
 | `tools/` | 取证工具：ioctl tracer、C 探针、寄存器 diff、字段生成器 |
 | `tests/data/` | 所有 golden/fixture（C 侧真实输出） |
@@ -445,10 +454,15 @@ H.264/VEPU580 编码已做到：
 
 ### 5.6 M10 framework（29k，最大缺口）
 
-未动：异步任务队列 + 完成回调、dma-fence in/out、buffer import/export、
-多核 CCU 分发、secure/TA、帧缓冲池引用计数（DPB 池已部分存在）。
-现有只有同步 submit+poll（`src/service/`）。建议顺序：任务队列 → fence →
-buffer 池引用计数 → 多核 → secure（secure 需设备支持，可能无法验证）。
+已闭合：同步 submit+poll；异步任务队列、完成回调/wait/bounded event；
+每任务排队/执行/端到端耗时，以及 submitted/done/failed/cancelled 和队列高水位
+统计；引用计数 dma-heap 池、import/dup_fd、池复用和并发压测。
+`scripts/board_framework_async_vs_sync.sh` 与 `framework_async_hw`/
+`framework_pool_hw` 已在 t6 通过。
+
+仍缺：内核协议没有 dma-fence；多核 CCU、secure/TA 无可用接口或设备；
+VP8 与 H.264 的池化帧已经真正持有 DPB lease；H.265/AV1/VP9 仍待迁移。
+下一步优先做真实 STATUS 异常恢复与剩余 DPB 池化，而不是重复已完成的队列基础设施。
 
 ### 5.7 解码器边缘
 
@@ -538,7 +552,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --all-targets` 必须 1090 通过（27 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --all-targets` 必须 1118 通过（31 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

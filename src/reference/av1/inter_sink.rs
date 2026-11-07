@@ -2,15 +2,15 @@
 //!
 //! The sink consumes the complete mode/reference/MV syntax and records the
 //! motion state that later blocks use for MV prediction. Average and
-//! difference-weighted compound, fractional motion, residuals, mixed
-//! intra/inter blocks and inter post-filters are wired through the
-//! reconstruction path; wedge/distance-weighted compound, warp/OBMC, temporal
-//! MVs and inter segmentation remain explicit errors.
+//! difference/distance/wedge compound, inter-intra, fractional motion,
+//! residuals, mixed intra/inter blocks, temporal segmentation and inter
+//! post-filters are wired through the reconstruction path. Local/global warp
+//! and OBMC are decoded.
 
 use crate::reference::av1::cdef::CdefIndexGrid;
 use crate::reference::av1::cdf_defaults::{
-    DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_INTERP_FILTER_CDF, DEFAULT_SKIP_MODE_CDF,
-    DEFAULT_TXFM_SPLIT_CDF,
+    DEFAULT_COMPOUND_IDX_CDF, DEFAULT_COMP_GROUP_IDX_CDF, DEFAULT_INTERP_FILTER_CDF,
+    DEFAULT_SKIP_MODE_CDF, DEFAULT_TXFM_SPLIT_CDF,
 };
 use crate::reference::av1::cdf_state::CdfState;
 use crate::reference::av1::cfl::{read_cfl_alphas, CflAlphas};
@@ -19,13 +19,17 @@ use crate::reference::av1::coeff_block::decode_coefficient_payload;
 use crate::reference::av1::context::TileContext;
 use crate::reference::av1::delta::{read_delta_lf, read_delta_qindex, DeltaError};
 use crate::reference::av1::filter_intra::{filter_intra_direction, read_filter_intra};
-use crate::reference::av1::frame_header::FrameHeader;
+use crate::reference::av1::frame_header::{
+    get_relative_dist, FrameHeader, SEG_LVL_ALT_Q, SEG_LVL_GLOBALMV, SEG_LVL_REF_FRAME,
+    SEG_LVL_SKIP,
+};
 use crate::reference::av1::inter::{
     assign_compound_mv, assign_mv, find_mv_stack, global_motion_vector_from_params,
-    read_compound_mode, read_compound_ref_mv_index, read_compound_type, read_inter_mode,
-    read_is_inter, read_motion_mode, read_ref_frames, read_ref_mv_index, CompoundMode,
-    CompoundType, InterBlock, InterError, InterNeighbors, MotionGrid, MotionVector, ALTREF_FRAME,
-    INTRA_FRAME, NONE_FRAME,
+    interintra_allowed, motion_mode_allowed, read_compound_mode, read_compound_ref_mv_index,
+    read_compound_type, read_inter_mode, read_interintra, read_is_inter, read_motion_mode,
+    read_ref_frames, read_ref_mv_index, CompoundMode, CompoundType, InterBlock, InterError,
+    InterNeighbors, MotionGrid, MotionModeAllowed, MotionVector, ALTREF_FRAME, INTRA_FRAME,
+    LAST_FRAME, NONE_FRAME,
 };
 use crate::reference::av1::intra::{
     cfl_allowed, read_angle_delta_with_cdf, read_uv_mode_with_cdf, read_y_mode_with_cdf, IntraMode,
@@ -37,12 +41,21 @@ use crate::reference::av1::lr_syntax::{LrSyntaxError, LrTileState};
 use crate::reference::av1::palette::{read_palette_tokens, PaletteError, PaletteState};
 use crate::reference::av1::partition::BlockSize;
 use crate::reference::av1::residual::{intra_residual_blocks, residual_size, ResidualTxBlock};
+use crate::reference::av1::segment::{SegmentMap, SegmentState};
 use crate::reference::av1::seq_header::SequenceHeader;
+use crate::reference::av1::temporal::TemporalMotionField;
 use crate::reference::av1::tile::DecodedBlock;
 use crate::reference::av1::tile_entropy::{TileBlockSink, TileEntropyError};
+
+const MAX_FRAME_DISTANCE: i32 = 31;
+const QUANT_DIST_WEIGHT: [[i32; 2]; 4] = [[2, 3], [2, 5], [2, 7], [1, MAX_FRAME_DISTANCE]];
+const QUANT_DIST_LOOKUP: [[u8; 2]; 4] = [[9, 7], [11, 5], [12, 4], [13, 3]];
 use crate::reference::av1::tx::{max_tx_size_rect, read_tx_size_with_cdf, split_tx_size, TxSize};
 use crate::reference::av1::tx_type::{
     is_tx_type_in_set, read_inter_tx_type_with_cdf, read_intra_tx_type_with_cdf, tx_set, TxType,
+};
+use crate::reference::av1::warped::{
+    find_projection, select_samples, ProjectionSample, WarpParams,
 };
 
 #[derive(Debug, Clone)]
@@ -53,10 +66,16 @@ pub struct InterTileConfig {
     pub sub_y: u32,
     pub bit_depth: u32,
     pub segmentation_enabled: bool,
+    pub segmentation_update_map: bool,
+    pub segmentation_temporal_update: bool,
     pub seg_id_pre_skip: bool,
+    pub last_active_seg_id: usize,
+    pub segment_alt_q: [i32; 8],
+    pub segment_lossless: [bool; 8],
     pub segment_skip: [bool; 8],
     pub segment_ref_frame: [Option<i8>; 8],
     pub segment_globalmv: [bool; 8],
+    pub previous_segment_map: Option<SegmentMap>,
     pub disable_cdf_update: bool,
     pub delta_q_present: bool,
     pub delta_q_res: u8,
@@ -78,16 +97,24 @@ pub struct InterTileConfig {
     pub superres_denom: Option<u32>,
     pub reference_select: bool,
     pub skip_mode_present: bool,
+    pub skip_mode_frame: [u8; 2],
     pub allow_high_precision_mv: bool,
     pub force_integer_mv: bool,
     pub use_ref_frame_mvs: bool,
+    pub temporal_motion: Option<TemporalMotionField>,
     pub is_filter_switchable: bool,
     pub interpolation_filter: u8,
     pub enable_dual_filter: bool,
     pub is_motion_mode_switchable: bool,
     pub allow_warped_motion: bool,
+    pub enable_interintra_compound: bool,
     pub enable_masked_compound: bool,
     pub enable_order_hint: bool,
+    pub enable_dist_wtd_comp: bool,
+    pub order_hint_bits: u8,
+    pub current_order_hint: u8,
+    pub reference_order_hints: [u8; 8],
+    pub ref_frame_idx: [u8; 7],
     pub gm_types: [u8; 7],
     pub gm_params: [[i32; 6]; 7],
 }
@@ -97,12 +124,17 @@ impl InterTileConfig {
         let mut segment_skip = [false; 8];
         let mut segment_ref_frame = [None; 8];
         let mut segment_globalmv = [false; 8];
+        let mut segment_alt_q = [0; 8];
         for segment in 0..8 {
-            segment_skip[segment] = header.feature_enabled[segment][6];
-            if header.feature_enabled[segment][5] {
-                segment_ref_frame[segment] = Some(header.feature_data[segment][5] as i8);
+            if header.feature_enabled[segment][SEG_LVL_ALT_Q] {
+                segment_alt_q[segment] = header.feature_data[segment][SEG_LVL_ALT_Q];
             }
-            segment_globalmv[segment] = header.feature_enabled[segment][7];
+            segment_skip[segment] = header.feature_enabled[segment][SEG_LVL_SKIP];
+            if header.feature_enabled[segment][SEG_LVL_REF_FRAME] {
+                segment_ref_frame[segment] =
+                    Some(header.feature_data[segment][SEG_LVL_REF_FRAME] as i8);
+            }
+            segment_globalmv[segment] = header.feature_enabled[segment][SEG_LVL_GLOBALMV];
         }
         Self {
             mi_cols: header.mi_cols,
@@ -111,10 +143,16 @@ impl InterTileConfig {
             sub_y: u32::from(sequence.color.subsampling_y),
             bit_depth: u32::from(sequence.color.bit_depth),
             segmentation_enabled: header.segmentation_enabled,
+            segmentation_update_map: header.segmentation_update_map,
+            segmentation_temporal_update: header.segmentation_temporal_update,
             seg_id_pre_skip: header.seg_id_pre_skip,
+            last_active_seg_id: usize::from(header.last_active_seg_id),
+            segment_alt_q,
+            segment_lossless: header.lossless_array,
             segment_skip,
             segment_ref_frame,
             segment_globalmv,
+            previous_segment_map: None,
             disable_cdf_update: header.disable_cdf_update,
             delta_q_present: header.delta_q_present,
             delta_q_res: header.delta_q_res,
@@ -163,19 +201,42 @@ impl InterTileConfig {
             superres_denom: header.use_superres.then_some(header.superres_denom),
             reference_select: header.reference_select,
             skip_mode_present: header.skip_mode_present,
+            skip_mode_frame: header.skip_mode_frame,
             allow_high_precision_mv: header.allow_high_precision_mv,
             force_integer_mv: header.force_integer_mv != 0,
             use_ref_frame_mvs: header.use_ref_frame_mvs,
+            temporal_motion: None,
             is_filter_switchable: header.is_filter_switchable,
             interpolation_filter: header.interpolation_filter,
             enable_dual_filter: sequence.enable_dual_filter,
             is_motion_mode_switchable: header.is_motion_mode_switchable,
             allow_warped_motion: header.allow_warped_motion,
+            enable_interintra_compound: sequence.enable_interintra_compound,
             enable_masked_compound: sequence.enable_masked_compound,
             enable_order_hint: sequence.enable_order_hint,
+            enable_dist_wtd_comp: sequence.enable_jnt_comp,
+            order_hint_bits: sequence.order_hint_bits,
+            current_order_hint: header.order_hint,
+            reference_order_hints: [0; 8],
+            ref_frame_idx: header.ref_frame_idx,
             gm_types: header.gm_types,
             gm_params: header.gm_params,
         }
+    }
+
+    pub fn with_reference_order_hints(mut self, hints: [u8; 8]) -> Self {
+        self.reference_order_hints = hints;
+        self
+    }
+
+    pub fn with_temporal_motion(mut self, motion: TemporalMotionField) -> Self {
+        self.temporal_motion = Some(motion);
+        self
+    }
+
+    pub fn with_previous_segment_map(mut self, map: Option<SegmentMap>) -> Self {
+        self.previous_segment_map = map;
+        self
     }
 }
 
@@ -205,12 +266,14 @@ pub struct InterTileBlockSink {
     modes: Vec<Option<crate::reference::av1::inter::InterMode>>,
     compound_modes: Vec<Option<CompoundMode>>,
     compound_groups: Vec<u8>,
+    compound_indices: Vec<u8>,
     mvs: Vec<[MotionVector; 2]>,
     y_modes: Vec<Option<IntraMode>>,
     uv_modes: Vec<Option<UvMode>>,
     interp_filters: Vec<[u8; 2]>,
     tile_context: TileContext,
     palettes: PaletteState,
+    segments: SegmentState,
     tx_grid: Vec<Option<TxSize>>,
     tx_type_grid: Vec<Option<TxType>>,
     current_qindex: u8,
@@ -227,6 +290,8 @@ impl InterTileBlockSink {
         let mi_cols = config.mi_cols;
         let mi_rows = config.mi_rows;
         let current_qindex = config.base_q_index;
+        let previous_segment_map = config.previous_segment_map.clone();
+        let last_active_seg_id = config.last_active_seg_id;
         let lr = LrTileState::new(config.lr_geometry.clone());
         Self {
             config,
@@ -240,12 +305,19 @@ impl InterTileBlockSink {
             modes: vec![None; mi_cols * mi_rows],
             compound_modes: vec![None; mi_cols * mi_rows],
             compound_groups: vec![0; mi_cols * mi_rows],
+            compound_indices: vec![1; mi_cols * mi_rows],
             mvs: vec![[MotionVector::default(); 2]; mi_cols * mi_rows],
             y_modes: vec![None; mi_cols * mi_rows],
             uv_modes: vec![None; mi_cols * mi_rows],
             interp_filters: vec![[0, 0]; mi_cols * mi_rows],
             tile_context: TileContext::new(mi_cols, mi_rows),
             palettes: PaletteState::new(mi_cols, mi_rows),
+            segments: SegmentState::with_previous(
+                mi_cols,
+                mi_rows,
+                last_active_seg_id,
+                previous_segment_map,
+            ),
             tx_grid: vec![None; mi_cols * mi_rows],
             tx_type_grid: vec![None; mi_cols * mi_rows],
             current_qindex,
@@ -288,6 +360,30 @@ impl InterTileBlockSink {
             return 64;
         }
         self.tx_grid[Self::at(row, col - 1, self.config.mi_cols)].map_or(0, TxSize::height)
+    }
+
+    fn selected_tx_above_width(&self, block: DecodedBlock) -> u32 {
+        if block.row == 0 {
+            return 0;
+        }
+        let index = Self::at(block.row - 1, block.col, self.config.mi_cols);
+        if self.is_inter[index] {
+            self.sizes[index].map_or(0, |size| size.width)
+        } else {
+            self.tx_grid[index].map_or(0, TxSize::width)
+        }
+    }
+
+    fn selected_tx_left_height(&self, block: DecodedBlock) -> u32 {
+        if block.col == 0 {
+            return 0;
+        }
+        let index = Self::at(block.row, block.col - 1, self.config.mi_cols);
+        if self.is_inter[index] {
+            self.sizes[index].map_or(0, |size| size.height)
+        } else {
+            self.tx_grid[index].map_or(0, TxSize::height)
+        }
     }
 
     fn txfm_partition_context(
@@ -412,6 +508,10 @@ impl InterTileBlockSink {
         &self.lr.params
     }
 
+    pub fn segment_map(&self) -> SegmentMap {
+        self.segments.snapshot()
+    }
+
     fn conversion(error: InterError) -> TileEntropyError {
         match error {
             InterError::Cdf(error) => TileEntropyError::Cdf(error),
@@ -425,7 +525,6 @@ impl InterTileBlockSink {
         match error {
             DeltaError::Cdf(error) => TileEntropyError::Cdf(error),
             DeltaError::Symbol(error) => TileEntropyError::Symbol(error),
-            DeltaError::MultiDeltaLfUnsupported => TileEntropyError::Unsupported("delta_lf_multi"),
         }
     }
 
@@ -438,27 +537,6 @@ impl InterTileBlockSink {
 
     fn at(row: usize, col: usize, cols: usize) -> usize {
         row * cols + col
-    }
-
-    fn tx_extent(
-        grid: &[Option<TxSize>],
-        md_cols: usize,
-        row: isize,
-        col: isize,
-        horizontal: bool,
-    ) -> u32 {
-        let tx = if row < 0 || col < 0 {
-            None
-        } else {
-            grid.get(row as usize * md_cols + col as usize)
-                .copied()
-                .flatten()
-        };
-        match tx {
-            Some(tx) if horizontal => tx.width(),
-            Some(tx) => tx.height(),
-            None => 1,
-        }
     }
 
     fn has_chroma(&self, block: DecodedBlock) -> bool {
@@ -495,6 +573,7 @@ impl InterTileBlockSink {
         segment_id: usize,
         skip: bool,
         qindex: u8,
+        lossless: bool,
         delta_lf: [i32; 4],
     ) -> Result<IntraSyntaxBlock, TileEntropyError> {
         let mi_cols = self.config.mi_cols;
@@ -511,7 +590,6 @@ impl InterTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(TileEntropyError::Cdf)?;
-        let lossless = false;
         let uv_mode = if has_chroma {
             Some(
                 read_uv_mode_with_cdf(
@@ -609,20 +687,8 @@ impl InterTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(Self::palette_as_tile)?;
-        let above_width = Self::tx_extent(
-            &self.tx_grid,
-            mi_cols,
-            block.row as isize - 1,
-            block.col as isize,
-            true,
-        );
-        let left_height = Self::tx_extent(
-            &self.tx_grid,
-            mi_cols,
-            block.row as isize,
-            block.col as isize - 1,
-            false,
-        );
+        let above_width = self.selected_tx_above_width(block);
+        let left_height = self.selected_tx_left_height(block);
         let tx = read_tx_size_with_cdf(
             decoder,
             cdfs,
@@ -788,6 +854,216 @@ impl InterTileBlockSink {
         InterNeighbors { above, left }
     }
 
+    fn overlappable_above(&self, block: DecodedBlock) -> usize {
+        if block.row == 0 {
+            return 0;
+        }
+        let end_col = (block.col + block.size.num_4x4_wide() as usize).min(self.config.mi_cols);
+        let mut col = block.col;
+        let mut count = 0;
+        while col < end_col {
+            let mut index = Self::at(block.row - 1, col, self.config.mi_cols);
+            let mut step = self.sizes[index]
+                .map_or(1, |size| size.num_4x4_wide() as usize)
+                .min(16);
+            if step == 1 {
+                col &= !1;
+                if col + 1 >= self.config.mi_cols {
+                    break;
+                }
+                index = Self::at(block.row - 1, col + 1, self.config.mi_cols);
+                step = 2;
+            }
+            if self.decoded[index] && self.is_inter[index] {
+                count += 1;
+            }
+            col += step;
+        }
+        count
+    }
+
+    fn overlappable_left(&self, block: DecodedBlock) -> usize {
+        if block.col == 0 {
+            return 0;
+        }
+        let end_row = (block.row + block.size.num_4x4_high() as usize).min(self.config.mi_rows);
+        let mut row = block.row;
+        let mut count = 0;
+        while row < end_row {
+            let mut index = Self::at(row, block.col - 1, self.config.mi_cols);
+            let mut step = self.sizes[index]
+                .map_or(1, |size| size.num_4x4_high() as usize)
+                .min(16);
+            if step == 1 {
+                row &= !1;
+                if row + 1 >= self.config.mi_rows {
+                    break;
+                }
+                index = Self::at(row + 1, block.col - 1, self.config.mi_cols);
+                step = 2;
+            }
+            if self.decoded[index] && self.is_inter[index] {
+                count += 1;
+            }
+            row += step;
+        }
+        count
+    }
+
+    fn projected_ref(&self, index: usize, ref_frame: i8) -> bool {
+        self.decoded[index] && self.is_inter[index] && self.refs[index] == [ref_frame, NONE_FRAME]
+    }
+
+    fn projection_sample(
+        &self,
+        index: usize,
+        ref_frame: i8,
+        row_offset: i32,
+        row_sign: i32,
+        col_offset: i32,
+        col_sign: i32,
+    ) -> Option<ProjectionSample> {
+        if !self.projected_ref(index, ref_frame) {
+            return None;
+        }
+        let size = self.sizes[index]?;
+        let x = col_offset * 4 + col_sign * (size.width as i32 / 2) - 1;
+        let y = row_offset * 4 + row_sign * (size.height as i32 / 2) - 1;
+        let source = [x * 8, y * 8];
+        let mv = self.mvs[index][0];
+        Some(ProjectionSample {
+            source,
+            destination: [source[0] + mv.col, source[1] + mv.row],
+        })
+    }
+
+    fn projection_samples(&self, block: DecodedBlock, ref_frame: i8) -> Vec<ProjectionSample> {
+        let width = block.size.num_4x4_wide() as usize;
+        let height = block.size.num_4x4_high() as usize;
+        let mut top_left = block.row > 0 && block.col > 0;
+        let mut top_right = block.row > 0 && block.col + width < self.config.mi_cols;
+        let mut samples = Vec::with_capacity(8);
+        let push = |samples: &mut Vec<ProjectionSample>, sample: Option<ProjectionSample>| {
+            if samples.len() < 8 {
+                if let Some(sample) = sample {
+                    samples.push(sample);
+                }
+            }
+        };
+
+        if block.row > 0 {
+            let first = Self::at(block.row - 1, block.col, self.config.mi_cols);
+            let above_width = self.sizes[first].map_or(1, |size| size.num_4x4_wide() as usize);
+            if width <= above_width {
+                let col_offset = -((block.col as i32) % above_width as i32);
+                if col_offset < 0 {
+                    top_left = false;
+                }
+                if col_offset + above_width as i32 > width as i32 {
+                    top_right = false;
+                }
+                push(
+                    &mut samples,
+                    self.projection_sample(first, ref_frame, 0, -1, col_offset, 1),
+                );
+            } else {
+                let mut offset = 0;
+                while offset < width.min(self.config.mi_cols - block.col) {
+                    let index = Self::at(block.row - 1, block.col + offset, self.config.mi_cols);
+                    push(
+                        &mut samples,
+                        self.projection_sample(index, ref_frame, 0, -1, offset as i32, 1),
+                    );
+                    let above_width = self.sizes[index]
+                        .map_or(1, |size| size.num_4x4_wide() as usize)
+                        .max(1);
+                    offset += above_width;
+                }
+            }
+        }
+
+        if block.col > 0 {
+            let first = Self::at(block.row, block.col - 1, self.config.mi_cols);
+            let left_height = self.sizes[first].map_or(1, |size| size.num_4x4_high() as usize);
+            if height <= left_height {
+                let row_offset = -((block.row as i32) % left_height as i32);
+                if row_offset < 0 {
+                    top_left = false;
+                }
+                push(
+                    &mut samples,
+                    self.projection_sample(first, ref_frame, row_offset, 1, 0, -1),
+                );
+            } else {
+                let mut offset = 0;
+                while offset < height.min(self.config.mi_rows - block.row) {
+                    let index = Self::at(block.row + offset, block.col - 1, self.config.mi_cols);
+                    push(
+                        &mut samples,
+                        self.projection_sample(index, ref_frame, offset as i32, 1, 0, -1),
+                    );
+                    let left_height = self.sizes[index]
+                        .map_or(1, |size| size.num_4x4_high() as usize)
+                        .max(1);
+                    offset += left_height;
+                }
+            }
+        }
+
+        if top_left {
+            push(
+                &mut samples,
+                self.projection_sample(
+                    Self::at(block.row - 1, block.col - 1, self.config.mi_cols),
+                    ref_frame,
+                    0,
+                    -1,
+                    0,
+                    -1,
+                ),
+            );
+        }
+        if top_right {
+            push(
+                &mut samples,
+                self.projection_sample(
+                    Self::at(block.row - 1, block.col + width, self.config.mi_cols),
+                    ref_frame,
+                    0,
+                    -1,
+                    width as i32,
+                    1,
+                ),
+            );
+        }
+        samples
+    }
+
+    fn motion_mode_allowed(
+        &self,
+        block: DecodedBlock,
+        mode: crate::reference::av1::inter::InterMode,
+        ref_frames: [i8; 2],
+    ) -> MotionModeAllowed {
+        let above = self.overlappable_above(block);
+        let neighbors = if above != 0 {
+            above
+        } else {
+            self.overlappable_left(block)
+        };
+        motion_mode_allowed(
+            block.size,
+            mode,
+            ref_frames[1],
+            neighbors,
+            self.config.force_integer_mv,
+            self.config.gm_types[(ref_frames[0] - 1) as usize],
+            self.projection_samples(block, ref_frames[0]).len(),
+            self.config.allow_warped_motion,
+            self.config.superres_denom.is_some(),
+        )
+    }
+
     fn read_skip_mode(
         &self,
         decoder: &mut crate::reference::av1::symbol::SymbolDecoder<'_>,
@@ -844,19 +1120,22 @@ impl InterTileBlockSink {
         }
 
         let large = block.size.width.min(block.size.height) >= 8;
-        let needs_filter = !skip_mode
-            && motion_mode == crate::reference::av1::inter::MotionMode::Simple
-            && match compound_mode {
-                Some(CompoundMode::GlobalGlobal) if large => {
-                    self.config.gm_types[(ref_frame - 1) as usize] == 0
-                        || self.config.gm_types[(ref_frame1 - 1) as usize] == 0
-                }
-                Some(_) => true,
-                None => {
-                    !(large && mode == crate::reference::av1::inter::InterMode::Global)
-                        || self.config.gm_types[(ref_frame - 1) as usize] == 0
-                }
-            };
+        let needs_filter =
+            !skip_mode
+                && motion_mode != crate::reference::av1::inter::MotionMode::LocalWarp
+                && match compound_mode {
+                    Some(CompoundMode::GlobalGlobal) if large => self.config.gm_types
+                        [(ref_frame - 1) as usize]
+                        == crate::reference::av1::frame_header::GlobalMotionType::Translation as u8
+                        || self.config.gm_types[(ref_frame1 - 1) as usize]
+                            == crate::reference::av1::frame_header::GlobalMotionType::Translation
+                                as u8,
+                    Some(_) => true,
+                    None => !(large && mode == crate::reference::av1::inter::InterMode::Global)
+                        || self.config.gm_types[(ref_frame - 1) as usize]
+                            == crate::reference::av1::frame_header::GlobalMotionType::Translation
+                                as u8,
+                };
         let mut filters = [0u8; 2];
         let directions = if self.config.enable_dual_filter { 2 } else { 1 };
         for dir in 0..directions {
@@ -929,6 +1208,98 @@ impl InterTileBlockSink {
         (above + left).min(5)
     }
 
+    fn compound_index_context(
+        &self,
+        block: DecodedBlock,
+        ref_frames: [i8; 2],
+        neighbors: &InterNeighbors,
+    ) -> usize {
+        let bck_hint = self.config.reference_order_hints
+            [self.config.ref_frame_idx[(ref_frames[0] - 1) as usize] as usize];
+        let fwd_hint = self.config.reference_order_hints
+            [self.config.ref_frame_idx[(ref_frames[1] - 1) as usize] as usize];
+        let current = i32::from(self.config.current_order_hint);
+        let fwd = get_relative_dist(
+            i32::from(fwd_hint),
+            current,
+            self.config.enable_order_hint,
+            self.config.order_hint_bits,
+        )
+        .abs();
+        let bck = get_relative_dist(
+            current,
+            i32::from(bck_hint),
+            self.config.enable_order_hint,
+            self.config.order_hint_bits,
+        )
+        .abs();
+        let context = |refs: Option<[i8; 2]>, row: usize, col: usize| match refs {
+            Some(refs) => {
+                if refs[1] > INTRA_FRAME {
+                    usize::from(self.compound_indices[Self::at(row, col, self.config.mi_cols)])
+                } else if refs[0] == ALTREF_FRAME {
+                    1
+                } else {
+                    0
+                }
+            }
+            None => 0,
+        };
+        let above = if block.row > 0 {
+            context(neighbors.above, block.row.saturating_sub(1), block.col)
+        } else {
+            0
+        };
+        let left = if block.col > 0 {
+            context(neighbors.left, block.row, block.col.saturating_sub(1))
+        } else {
+            0
+        };
+        above + left + 3 * usize::from(fwd == bck)
+    }
+
+    fn distance_weights(&self, ref_frames: [i8; 2]) -> [u8; 2] {
+        let bck_hint = self.config.reference_order_hints
+            [self.config.ref_frame_idx[(ref_frames[0] - 1) as usize] as usize];
+        let fwd_hint = self.config.reference_order_hints
+            [self.config.ref_frame_idx[(ref_frames[1] - 1) as usize] as usize];
+        let current = i32::from(self.config.current_order_hint);
+        let d0 = get_relative_dist(
+            i32::from(fwd_hint),
+            current,
+            self.config.enable_order_hint,
+            self.config.order_hint_bits,
+        )
+        .abs()
+        .clamp(0, MAX_FRAME_DISTANCE);
+        let d1 = get_relative_dist(
+            current,
+            i32::from(bck_hint),
+            self.config.enable_order_hint,
+            self.config.order_hint_bits,
+        )
+        .abs()
+        .clamp(0, MAX_FRAME_DISTANCE);
+        let order = usize::from(d0 <= d1);
+        let index = if d0 == 0 || d1 == 0 {
+            3
+        } else {
+            (0..3)
+                .find(|index| {
+                    let c0 = QUANT_DIST_WEIGHT[*index][order];
+                    let c1 = QUANT_DIST_WEIGHT[*index][1 - order];
+                    let d0_c0 = d0 * c0;
+                    let d1_c1 = d1 * c1;
+                    (d0 > d1 && d0_c0 < d1_c1) || (d0 <= d1 && d0_c0 > d1_c1)
+                })
+                .unwrap_or(3)
+        };
+        [
+            QUANT_DIST_LOOKUP[index][order],
+            QUANT_DIST_LOOKUP[index][1 - order],
+        ]
+    }
+
     fn record_block(
         &mut self,
         block: DecodedBlock,
@@ -948,10 +1319,14 @@ impl InterTileBlockSink {
             .and_then(|inter| inter.compound_type)
             .map(CompoundType::comp_group_idx)
             .unwrap_or(0);
+        let compound_index = usize::from(!matches!(
+            inter.and_then(|inter| inter.compound_type),
+            Some(CompoundType::DistanceWeighted)
+        )) as u8;
+        let interp_filter = inter.map(|inter| inter.interp_filter).unwrap_or([0, 0]);
         let mvs = inter
             .map(|inter| [inter.mv, inter.mv1])
             .unwrap_or([MotionVector::default(); 2]);
-        let interp_filter = inter.map(|inter| inter.interp_filter).unwrap_or([0, 0]);
         let bw4 = block.size.num_4x4_wide() as usize;
         let bh4 = block.size.num_4x4_high() as usize;
         for row in block.row..(block.row + bh4).min(self.config.mi_rows) {
@@ -964,6 +1339,7 @@ impl InterTileBlockSink {
                 self.modes[index] = mode;
                 self.compound_modes[index] = compound_mode;
                 self.compound_groups[index] = compound_group;
+                self.compound_indices[index] = compound_index;
                 self.mvs[index] = mvs;
                 self.interp_filters[index] = interp_filter;
                 self.skip_grid[index] = skip;
@@ -1008,32 +1384,75 @@ impl TileBlockSink for InterTileBlockSink {
         decoder: &mut crate::reference::av1::symbol::SymbolDecoder<'_>,
         cdfs: &mut CdfState,
     ) -> Result<(), TileEntropyError> {
-        if self.config.segmentation_enabled {
-            return Err(TileEntropyError::Unsupported("segmentation in inter frame"));
-        }
-        if self.config.enable_order_hint {
-            return Err(TileEntropyError::Unsupported("order-hint inter frame"));
-        }
-        let segment_id = 0usize;
+        let bw4 = block.size.num_4x4_wide() as usize;
+        let bh4 = block.size.num_4x4_high() as usize;
+        let preskip_segment = if self.config.segmentation_enabled && self.config.seg_id_pre_skip {
+            Some(
+                self.segments
+                    .read_inter_segment_id(
+                        decoder,
+                        cdfs,
+                        block.row,
+                        block.col,
+                        bw4,
+                        bh4,
+                        true,
+                        false,
+                        self.config.segmentation_enabled,
+                        self.config.segmentation_update_map,
+                        self.config.segmentation_temporal_update,
+                        self.config.seg_id_pre_skip,
+                        self.config.disable_cdf_update,
+                    )
+                    .map_err(TileEntropyError::Cdf)?,
+            )
+        } else {
+            None
+        };
+        let initial_segment_id = preskip_segment.unwrap_or(0);
         let skip_mode = self
-            .read_skip_mode(decoder, cdfs, block, segment_id)
+            .read_skip_mode(decoder, cdfs, block, initial_segment_id)
             .map_err(Self::conversion)?;
-        if skip_mode {
-            return Err(TileEntropyError::Unsupported("skip mode"));
-        }
-
         let above_skip = block.row > 0
             && self.skip_grid[Self::at(block.row - 1, block.col, self.config.mi_cols)];
         let left_skip = block.col > 0
             && self.skip_grid[Self::at(block.row, block.col - 1, self.config.mi_cols)];
-        let skip = crate::reference::av1::block::read_skip_with_cdf(
-            decoder,
-            cdfs,
-            above_skip,
-            left_skip,
-            self.config.disable_cdf_update,
-        )
-        .map_err(TileEntropyError::Cdf)?;
+        let skip = if skip_mode {
+            true
+        } else if self.config.segmentation_enabled && self.config.segment_skip[initial_segment_id] {
+            true
+        } else {
+            crate::reference::av1::block::read_skip_with_cdf(
+                decoder,
+                cdfs,
+                above_skip,
+                left_skip,
+                self.config.disable_cdf_update,
+            )
+            .map_err(TileEntropyError::Cdf)?
+        };
+        let segment_id = match preskip_segment {
+            Some(segment_id) => segment_id,
+            None => self
+                .segments
+                .read_inter_segment_id(
+                    decoder,
+                    cdfs,
+                    block.row,
+                    block.col,
+                    bw4,
+                    bh4,
+                    false,
+                    skip,
+                    self.config.segmentation_enabled,
+                    self.config.segmentation_update_map,
+                    self.config.segmentation_temporal_update,
+                    self.config.seg_id_pre_skip,
+                    self.config.disable_cdf_update,
+                )
+                .map_err(TileEntropyError::Cdf)?,
+        };
+        let lossless = self.config.segment_lossless[segment_id];
         self.cdef
             .read(
                 decoder,
@@ -1041,7 +1460,7 @@ impl TileBlockSink for InterTileBlockSink {
                 block.col,
                 block.size,
                 skip,
-                false,
+                lossless,
                 self.config.cdef_enabled,
                 false,
                 self.config.cdef_bits,
@@ -1068,20 +1487,27 @@ impl TileBlockSink for InterTileBlockSink {
             self.config.disable_cdf_update,
         )
         .map_err(Self::delta_as_tile)?;
-        let delta_lf = read_delta_lf(
+        self.delta_lf = read_delta_lf(
             decoder,
             cdfs,
-            self.delta_lf[0],
+            self.delta_lf,
             self.config.delta_lf_present,
             self.config.delta_lf_multi,
             self.read_deltas_for_sb,
             self.config.delta_lf_res,
             skip_sb,
             self.config.disable_cdf_update,
+            self.config.has_chroma,
         )
         .map_err(Self::delta_as_tile)?;
-        self.delta_lf[0] = delta_lf;
         self.read_deltas_for_sb = false;
+        let block_qindex = (i32::from(self.current_qindex)
+            + if self.config.segmentation_enabled {
+                self.config.segment_alt_q[segment_id]
+            } else {
+                0
+            })
+        .clamp(0, 255) as u8;
 
         let neighbors = self.neighbors(block);
         let above_intra = neighbors
@@ -1092,16 +1518,24 @@ impl TileBlockSink for InterTileBlockSink {
             .left
             .map(|refs| refs[0] <= INTRA_FRAME)
             .unwrap_or(true);
-        let is_inter = read_is_inter(
-            decoder,
-            cdfs,
-            neighbors.above.is_some(),
-            neighbors.left.is_some(),
-            above_intra,
-            left_intra,
-            self.config.disable_cdf_update,
-        )
-        .map_err(Self::conversion)?;
+        let is_inter = if skip_mode {
+            true
+        } else if let Some(ref_frame) = self.config.segment_ref_frame[segment_id] {
+            ref_frame > INTRA_FRAME
+        } else if self.config.segment_globalmv[segment_id] {
+            true
+        } else {
+            read_is_inter(
+                decoder,
+                cdfs,
+                neighbors.above.is_some(),
+                neighbors.left.is_some(),
+                above_intra,
+                left_intra,
+                self.config.disable_cdf_update,
+            )
+            .map_err(Self::conversion)?
+        };
         if !is_inter {
             let intra = self.decode_intra_syntax(
                 block,
@@ -1109,7 +1543,8 @@ impl TileBlockSink for InterTileBlockSink {
                 cdfs,
                 segment_id,
                 skip,
-                self.current_qindex,
+                block_qindex,
+                lossless,
                 self.delta_lf,
             )?;
             self.record_block(
@@ -1124,7 +1559,7 @@ impl TileBlockSink for InterTileBlockSink {
                 block,
                 segment_id,
                 skip,
-                qindex: self.current_qindex,
+                qindex: block_qindex,
                 delta_lf: self.delta_lf,
                 inter: None,
                 intra: Some(intra.clone()),
@@ -1135,20 +1570,34 @@ impl TileBlockSink for InterTileBlockSink {
             return Ok(());
         }
 
-        let ref_frames = read_ref_frames(
-            decoder,
-            cdfs,
-            neighbors,
-            block.size,
-            self.config.reference_select,
-            self.config.disable_cdf_update,
-        )
-        .map_err(Self::conversion)?;
+        let ref_frames = if skip_mode {
+            [
+                LAST_FRAME + self.config.skip_mode_frame[0] as i8,
+                LAST_FRAME + self.config.skip_mode_frame[1] as i8,
+            ]
+        } else if let Some(ref_frame) = self.config.segment_ref_frame[segment_id] {
+            [ref_frame, NONE_FRAME]
+        } else if self.config.segment_skip[segment_id] || self.config.segment_globalmv[segment_id] {
+            [LAST_FRAME, NONE_FRAME]
+        } else {
+            read_ref_frames(
+                decoder,
+                cdfs,
+                neighbors,
+                block.size,
+                self.config.reference_select,
+                self.config.disable_cdf_update,
+            )
+            .map_err(Self::conversion)?
+        };
         let is_compound = ref_frames[1] > INTRA_FRAME;
         let global_mv0 = global_motion_vector_from_params(
             &self.config.gm_types,
             &self.config.gm_params,
             ref_frames[0],
+            block.size,
+            block.row,
+            block.col,
             self.config.allow_high_precision_mv,
             self.config.force_integer_mv,
         )
@@ -1158,6 +1607,9 @@ impl TileBlockSink for InterTileBlockSink {
                 &self.config.gm_types,
                 &self.config.gm_params,
                 ref_frames[1],
+                block.size,
+                block.row,
+                block.col,
                 self.config.allow_high_precision_mv,
                 self.config.force_integer_mv,
             )
@@ -1175,6 +1627,7 @@ impl TileBlockSink for InterTileBlockSink {
             modes: &self.modes,
             compound_modes: &self.compound_modes,
             mvs: &self.mvs,
+            temporal: self.config.temporal_motion.as_ref(),
         };
         let stack = find_mv_stack(
             grid,
@@ -1188,7 +1641,40 @@ impl TileBlockSink for InterTileBlockSink {
             self.config.use_ref_frame_mvs,
         )
         .map_err(Self::conversion)?;
-        let (mode, compound_mode, ref_mv_idx, mv0, mv1, motion_mode) = if is_compound {
+        let segment_forces_global =
+            self.config.segment_skip[segment_id] || self.config.segment_globalmv[segment_id];
+        let (mode, compound_mode, ref_mv_idx, mv0, mv1, motion_mode) = if skip_mode {
+            let compound_mode = CompoundMode::NearestNearest;
+            let mvs = assign_compound_mv(
+                decoder,
+                &mut cdfs.mv,
+                &stack,
+                0,
+                compound_mode,
+                [global_mv0, global_mv1],
+                self.config.allow_high_precision_mv,
+                self.config.force_integer_mv,
+                self.config.disable_cdf_update,
+            )
+            .map_err(Self::conversion)?;
+            (
+                compound_mode.ref0_mode(),
+                Some(compound_mode),
+                0,
+                mvs[0],
+                mvs[1],
+                crate::reference::av1::inter::MotionMode::Simple,
+            )
+        } else if segment_forces_global {
+            (
+                crate::reference::av1::inter::InterMode::Global,
+                None,
+                0,
+                global_mv0,
+                MotionVector::default(),
+                crate::reference::av1::inter::MotionMode::Simple,
+            )
+        } else if is_compound {
             let compound_mode =
                 read_compound_mode(decoder, cdfs, &stack, self.config.disable_cdf_update)
                     .map_err(Self::conversion)?;
@@ -1238,50 +1724,122 @@ impl TileBlockSink for InterTileBlockSink {
                 self.config.disable_cdf_update,
             )
             .map_err(Self::conversion)?;
-            let motion_mode = read_motion_mode(
-                decoder,
-                cdfs,
-                block.size,
-                self.config.is_motion_mode_switchable,
-                skip_mode,
-                self.config.disable_cdf_update,
-            )
-            .map_err(Self::conversion)?;
             (
                 mode,
                 None,
                 ref_mv_idx,
                 mv,
                 MotionVector::default(),
-                motion_mode,
+                crate::reference::av1::inter::MotionMode::Simple,
             )
         };
-        let compound_type = if is_compound {
+        let interintra = if !skip_mode
+            && !is_compound
+            && self.config.enable_interintra_compound
+            && interintra_allowed(block.size, ref_frames)
+        {
+            read_interintra(decoder, cdfs, block.size, self.config.disable_cdf_update)
+                .map_err(Self::conversion)?
+        } else {
+            None
+        };
+        let (motion_mode, mut warp) = if !is_compound
+            && interintra.is_none()
+            && !skip_mode
+            && self.config.is_motion_mode_switchable
+        {
+            let last_allowed = self.motion_mode_allowed(block, mode, ref_frames);
+            let selected = read_motion_mode(
+                decoder,
+                cdfs,
+                block.size,
+                last_allowed,
+                self.config.disable_cdf_update,
+            )
+            .map_err(Self::conversion)?;
+            let warp = if selected == crate::reference::av1::inter::MotionMode::LocalWarp {
+                let mut samples = self.projection_samples(block, ref_frames[0]);
+                if samples.len() > 1 {
+                    select_samples(&mut samples, mv0, block.size);
+                }
+                find_projection(&samples, block.size, mv0, block.row, block.col)
+            } else {
+                None
+            };
+            (selected, warp)
+        } else {
+            (motion_mode, None)
+        };
+        let mut warp1 = None;
+        if mode == crate::reference::av1::inter::InterMode::Global
+            && self.config.gm_types[(ref_frames[0] - 1) as usize]
+                >= crate::reference::av1::frame_header::GlobalMotionType::RotZoom as u8
+        {
+            warp = WarpParams::from_matrix(self.config.gm_params[(ref_frames[0] - 1) as usize]);
+        }
+        if is_compound
+            && compound_mode == Some(CompoundMode::GlobalGlobal)
+            && self.config.gm_types[(ref_frames[1] - 1) as usize]
+                >= crate::reference::av1::frame_header::GlobalMotionType::RotZoom as u8
+        {
+            warp1 = WarpParams::from_matrix(self.config.gm_params[(ref_frames[1] - 1) as usize]);
+        }
+        let ref_frame1 = if interintra.is_some() {
+            INTRA_FRAME
+        } else {
+            ref_frames[1]
+        };
+        let compound_type = if skip_mode {
+            Some(CompoundType::Average)
+        } else if is_compound {
             let masked_compound_used = self.config.enable_masked_compound
                 && !skip_mode
                 && block.size.width.min(block.size.height) >= 8;
-            if masked_compound_used {
+            let comp_group_idx = if masked_compound_used {
                 let context = self.compound_group_context(block, &neighbors);
-                let comp_group_idx = cdfs.read_symbol(
+                cdfs.read_symbol(
                     decoder,
                     &DEFAULT_COMP_GROUP_IDX_CDF,
                     context * 3,
                     3,
                     self.config.disable_cdf_update,
-                )? as u8;
-                Some(
-                    read_compound_type(
-                        decoder,
-                        cdfs,
-                        block.size,
-                        comp_group_idx,
-                        self.config.disable_cdf_update,
-                    )
-                    .map_err(Self::conversion)?,
-                )
+                )? as u8
             } else {
-                Some(CompoundType::Average)
-            }
+                0
+            };
+            Some(if comp_group_idx == 0 {
+                if self.config.enable_dist_wtd_comp && !skip_mode {
+                    let context = self.compound_index_context(block, ref_frames, &neighbors);
+                    let compound_idx = cdfs.read_symbol(
+                        decoder,
+                        &DEFAULT_COMPOUND_IDX_CDF,
+                        context * 3,
+                        3,
+                        self.config.disable_cdf_update,
+                    )?;
+                    if compound_idx != 0 {
+                        CompoundType::Average
+                    } else {
+                        CompoundType::DistanceWeighted
+                    }
+                } else {
+                    CompoundType::Average
+                }
+            } else {
+                read_compound_type(
+                    decoder,
+                    cdfs,
+                    block.size,
+                    comp_group_idx,
+                    self.config.disable_cdf_update,
+                )
+                .map_err(Self::conversion)?
+            })
+        } else {
+            None
+        };
+        let distance_weights = if compound_type == Some(CompoundType::DistanceWeighted) {
+            Some(self.distance_weights(ref_frames))
         } else {
             None
         };
@@ -1291,7 +1849,7 @@ impl TileBlockSink for InterTileBlockSink {
                 cdfs,
                 block,
                 ref_frames[0],
-                ref_frames[1],
+                ref_frame1,
                 mode,
                 compound_mode,
                 motion_mode,
@@ -1301,21 +1859,8 @@ impl TileBlockSink for InterTileBlockSink {
             .map_err(Self::conversion)?;
         let bw4 = block.size.num_4x4_wide() as usize;
         let bh4 = block.size.num_4x4_high() as usize;
-        let lossless = false;
-        let above_width = Self::tx_extent(
-            &self.tx_grid,
-            self.config.mi_cols,
-            block.row as isize - 1,
-            block.col as isize,
-            true,
-        );
-        let left_height = Self::tx_extent(
-            &self.tx_grid,
-            self.config.mi_cols,
-            block.row as isize,
-            block.col as isize - 1,
-            false,
-        );
+        let above_width = self.selected_tx_above_width(block);
+        let left_height = self.selected_tx_left_height(block);
         let variable_tx = !lossless && !skip && self.config.tx_mode_select && !block.size.is_4x4();
         let (tx, luma_tx_blocks) = if lossless {
             (TxSize::Tx4x4, Vec::new())
@@ -1451,7 +1996,7 @@ impl TileBlockSink for InterTileBlockSink {
                         decoder,
                         cdfs,
                         tx_block.tx,
-                        self.current_qindex,
+                        block_qindex,
                         self.config.reduced_tx_set,
                         self.config.disable_cdf_update,
                     )
@@ -1522,11 +2067,15 @@ impl TileBlockSink for InterTileBlockSink {
             ref_frame: ref_frames[0],
             mode,
             mv: mv0,
-            ref_frame1: ref_frames[1],
+            ref_frame1,
             mv1,
             compound_mode,
             compound_type,
+            distance_weights,
+            interintra,
             motion_mode,
+            warp,
+            warp1,
             interp_filter,
             ref_mv_idx,
         };
@@ -1535,7 +2084,7 @@ impl TileBlockSink for InterTileBlockSink {
             block,
             segment_id,
             skip,
-            qindex: self.current_qindex,
+            qindex: block_qindex,
             delta_lf: self.delta_lf,
             inter: Some(inter),
             intra: None,

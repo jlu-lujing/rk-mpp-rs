@@ -58,12 +58,13 @@ fn print_hashes(stage: &str, frame: &IntraFrame) {
             (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
         })
     };
+    let hash_plane = |plane: Option<&PlaneBuffer>| plane.map(|plane| hash(&plane.data));
     eprintln!(
         "rk stage={stage} hashes={:x?}",
         (
             hash(&frame.y.data),
-            hash(&frame.u.as_ref().unwrap().data),
-            hash(&frame.v.as_ref().unwrap().data),
+            hash_plane(frame.u.as_ref()),
+            hash_plane(frame.v.as_ref()),
         )
     );
 }

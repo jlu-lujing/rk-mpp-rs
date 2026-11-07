@@ -136,11 +136,13 @@ pub fn predict_palette_plane(
     if map.width == 0 || map.height == 0 {
         return Err(PaletteError::MissingTokens);
     }
+    let map_x = (block_x / map.width) * map.width;
+    let map_y = (block_y / map.height) * map.height;
     let mut out = vec![0u16; w * h];
     for row in 0..h {
-        let source_y = (tx_y + row).min(block_y + map.height - 1) - block_y;
+        let source_y = (tx_y + row).clamp(map_y, map_y + map.height - 1) - map_y;
         for col in 0..w {
-            let source_x = (tx_x + col).min(block_x + map.width - 1) - block_x;
+            let source_x = (tx_x + col).clamp(map_x, map_x + map.width - 1) - map_x;
             let index = map.indices[source_y * map.width + source_x];
             if usize::from(index) >= size {
                 return Err(PaletteError::InvalidIndex(index));

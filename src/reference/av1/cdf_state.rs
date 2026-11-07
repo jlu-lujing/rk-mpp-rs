@@ -277,8 +277,8 @@ mod tests {
     #[test]
     fn state_copies_every_generated_table() {
         let state = CdfState::new();
-        assert_eq!(state.table_count(), 96);
-        assert_eq!(state.value_count(), 19_677);
+        assert_eq!(state.table_count(), 97);
+        assert_eq!(state.value_count(), 19_697);
         for (actual, default) in state.tables.iter().zip(TABLES.iter()) {
             assert_eq!(actual.as_slice(), default.values, "{}", default.name);
         }

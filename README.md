@@ -43,17 +43,53 @@
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices 的 5-packet 与 10-packet 矩阵**逐 packet 一致**。RK3588 默认四 band 多核路径已实现，1920x1080/1288x722、旋转 90/270 以及 322x242/1366x768 stride 矩阵**逐字节** |
 | H.265 编码 | 固定 QP 的 **IDR + P GOP**（最多 5 帧、含动画面）、**CBR/VBR/AVBR**、**GDR/intra-refresh**、**ROI/QP map** 与 **deblock/SAO 细调** 均**板上整条逐字节**；GDR 覆盖 320x240/640x480 × row/column 4/4，ROI 覆盖相对/绝对 QP、force-intra、多 region 与 640x480 4/4，deblock beta/tc、disable、SAO luma/chroma 与 loop-filter 为 4/4。**水平 tiles** 为 **2/2 逐字节**（`auto_tile` 320x240 覆盖 IDR+P 共 9 NAL、4608x64 强制两列共 7 NAL），tile 作业的寄存器镜像与 C trace 除 dma-buf fd 外**无一个非地址字不同**；C 对 tile 首帧没有跨会话稳定结果（同参数连跑两次连解码像素都不同），两侧各先跑一趟丢弃作业后才可比，见 DIVERGENCES。BY_CTU/BY_BYTE slice split 普通整 AU **3/3**；`MPP_ENC_SPLIT_OUT_LOWDELAY` 为 **4/4 逐字节、逐 packet 一致**，覆盖 320x240、640x480 和 6 帧 IDR+P，其中 40-slice 格跨越 32 项 FIFO。吞吐 4/4 不慢于 C：320x240/640x480/720p Rust 快 15.8%/3.6%/13.8%，1080p 为 149 ms vs C 147 ms（慢 1.3%，平手门内）。10-bit 经 C 探针确认 t6 VEPU580 以 `int_sta=0x100` 拒绝、无 packet，Rust 显式拒绝。**WPP、B 帧与多参考在 C 参考里就不存在**（`m_entropyCodingSyncEnabledFlag` 恒为 0、编码层无 `B_FRAME`、`num_ref = 1`），没有可重写的目标；tiles 与逐 slice low-delay 输出的组合被显式拒绝（C 侧行为未证）；harness 的 `-g 60`（解析成 `gop_len=0` 的病态 smart-GOP）按 BY-DESIGN 拒绝，有效 GOP 形式逐字节 |
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 的 **PD/DECT 逆 telecine** 两遍路径（反向下拉 + 场序状态机）已接入：3:2 telecine 与逐行素材 **2/2 与 C probe 逐字节一致**，逐帧 `pd_flag/pd_types/dil_order/frm_mode/ratio` 也逐行相同，322x242/722x482/1366x768 等非 16 对齐尺寸同样逐字节；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
-| framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件）、引用计数 dma-heap 缓冲池；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
+| framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件、排队/执行/端到端耗时与成功/失败/取消累计统计）、引用计数 dma-heap 缓冲池；pooled JPEG 保证先关闭 MPP service 再归还共享 dma-buf，t6 连续 3000 jobs 压测通过；H.264 NV12/colmv DPB 已改为独立 pool lease 并通过多 IDR/C 逐字节；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
 整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-93 项完成、6 项未完成（含缩进子项为 131 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 89 个
-AV1 slice。第 89 slice 完成 wedge compound：六张 64×64 master mask、9 种 block codebook、
+94 项完成、6 项未完成（含缩进子项为 132 / 11）；未完成项里有硬件不存在、无 conformance
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 101 个
+AV1 slice。第 101 slice 用真实单色 libaom keyframe 闭合 mono multi-LF：Rust 不再错误
+读取 UV mode/残差，deblock 只建立单平面网格，最终 Y 与 `aomdec` **逐字节一致**。
+第 100 slice 用真实单帧 libaom keyframe 闭合彩色 `delta_lf_multi`：帧头明确为
+`delta_q=1 / delta_lf=1 / multi=1`，Rust 的 pre/deblock/CDEF/LR 三平面与未修改的
+`aomdec` 最终 YUV **逐字节一致**。第 99 slice 将 luma/U/V 四路切换为 libaom 的四行
+`default_delta_lf_multi_cdf`，单色流只消费两路主动 CDF。第 98 slice 修正混合
+intra/inter frame 的 selected tx-size context：相邻 inter
+block 的宽高必须覆盖 transform-context，不能在非 skip 时退回邻居 tx extent。原先卡在
+tile 尾部的 `av1_lr_320x240.ivf` 现已完成 key+P 全熵解码，458 个 footprint block
+中的 356 个 inter block 及两帧 Y/U/V 均与 libaom 逐字节一致。第 97 slice 完成 inter segmentation：key/inter frame 均支持 segment-id
+空间预测、temporal segment-map prediction、segment 强制 reference/skip/global MV，以及
+`ALT_Q` block qindex、`ALT_LF` 和 lossless 传播。三帧隔离流的 key 与 P 帧覆盖 1050 个
+非零 segment block，Y/U/V 与 libaom **逐字节一致**。第 96 slice 完成 temporal MV fields：参考帧保存 8×8 motion field，按 order
+hint 投影到当前帧，并在 spatial nearest/outer scans 之间合并 temporal candidates；
+global-mode context 同步接入。三帧隔离 fixture 覆盖 128 个 inter block，Y/U/V 与 libaom
+**逐字节一致**。第 95 slice 完成 compound global warp：两个 reference 各自保留矩阵/warp
+状态，distance-weighted 与 wedge compound 可分别 warp 或平移，并复用 compound round-1
+中间精度。四帧隔离流含 3 个 `GLOBAL_GLOBALMV` block，Y/U/V 与 libaom **逐字节一致**。
+第 94 slice 完成单参考 global warped motion：按块中心从 `ROTZOOM/AFFINE` 矩阵求
+`GLOBALMV`、复用 affine/shear 与 193-phase warp filter，并处理 AOM 对负 phase 的
+非 signed rounding。两帧 `ROTZOOM` 隔离 fixture 含 756 个 global-warp block，Y/U/V 与
+libaom **逐字节一致**。第 93 slice 完成
+local warped motion：从同参考的单参考邻块中心 MV 收集
+least-squares 样本，按当前 MV 过滤异常点，推导 affine 矩阵与 shear 参数，并用 libaom
+的 193-phase 8-tap warp filter 生成 Y/UV 预测。五帧隔离 fixture 含 10 个
+`WARPED_CAUSAL` block，Y/U/V 与 libaom **逐字节一致**。第 92 slice 完成 OBMC：按 above-first/left-second
+扫描可重叠邻块，读取 `use_obmc_cdf`，用邻块单参考 MV/滤波生成当前块边缘预测，再按
+normative 1–64 长度 mask 做 above/left 顺序混合；五帧 fixture 覆盖 32 个 OBMC block、
+232 个 OBMC mipixel，全部 Y/U/V 与 libaom 逐字节一致。第 91 slice 完成 inter-intra：在单参考 MV 后读取 inter-intra
+标志、DC/V/H/Smooth 模式、可选 wedge 与 index，并用当前帧邻域 intra 预测和 normative
+smooth/wedge mask 与 inter 预测混合；smooth 与 wedge 两组 fixture 合计覆盖 24 个
+inter-intra block，Y/U/V 全部逐字节一致。
+第 90 slice 完成 distance-weighted compound：按 frame order hint 选择
+`quant_dist_weight`/`quant_dist_lookup_table`，复刻 libaom 的 `fwd_offset`/`bck_offset`
+分配与 4-bit 加权、round offset 和最终 4-bit 舍入。新增五帧 320×240 隔离 fixture，
+覆盖 32×16 与 8×8 距离块、权重 `[11,5]` 和 `[13,3]`；全部 Y/U/V 与 libaom **逐字节一致**。
+warp/OBMC、temporal MV 和 inter segmentation 仍未完成。第 89 slice
+完成 wedge compound：六张 64×64 master mask、9 种 block codebook、
 sign flip、luma/chroma 采样和 masked 16-bit blend 均接入；同时补齐
 regular/smooth/sharp/bilinear 四种 switchable interpolation filter。五帧 wedge fixture
-的全部 Y/U/V 与 libaom **逐字节一致**。distance-weighted compound、inter-intra、
-warp/OBMC、temporal MV 和 inter segmentation 仍未完成。第 88 slice 接入 compound mode group、masked compound type 和
+的全部 Y/U/V 与 libaom **逐字节一致**。第 88 slice 接入 compound mode group、masked compound type 和
 difference-weighted prediction：`comp_group_idx` 邻域上下文、`compound_type_cdf`、
 mask type、luma difference mask 及 16-bit masked blend 均按 libaom 实现；可见帧按
 `show_frame`/show-existing 顺序输出。五帧 fixture 的全部 Y/U/V 与 libaom
@@ -61,9 +97,8 @@ mask type、luma difference mask 及 16-bit masked blend 均按 libaom 实现；
 恢复双参考帧解析，覆盖全部 8 种 compound mode 符号、compound DRL、
 双 MV 赋值和 normative average prediction。新增四帧 320×240 fixture，最终帧同时覆盖
 uni/bidirectional `NearestNearest`、`NearNear` 和 `NewNew`；四帧 Y/U/V 均与 libaom
-**逐字节一致**（frame 3 MD5 `b217ef76fa2e65327d3b4ecfa7ee1f36`）。masked/
-distance-weighted compound、inter-intra、warp/OBMC、temporal MV 和 inter segmentation
-仍未完成。第 86 slice
+**逐字节一致**（frame 3 MD5 `b217ef76fa2e65327d3b4ecfa7ee1f36`）。masked compound、
+warp/OBMC、temporal MV 和 inter segmentation 仍未完成。第 86 slice
 修正 coefficient CDF 必须按帧头 `base_q_idx` 选择，而不是按块级 delta-q；补齐
 4-high inter chroma skip context，并把 MV CDF 纳入 SavedCdf。新增三帧 delta-q fixture，
 其 Y/U/V 均与 libaom **逐字节一致**。第 85 slice
@@ -113,7 +148,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --all-targets                     # 1090 通过，27 个板级用例 ignore
+cargo test --all-targets                     # host/t6：1149 枚举；1118 常规通过，31 个硬件 ignored 另跑通过
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -138,6 +173,30 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 | 解码 / 编码 | 当前证据只支持“**不比 C 慢**”（VP9 实测：720p 进程 wall-clock C 72 ms / Rust 69 ms，短流约 2×；内部 loop 计时差异属口径不同，不作为百分比结论）。同一二进制在 t62 的 720p H.264 结果可从 72.9 ms 漂到 120.1 ms；旧的高速百分比是未做交错采样时的高噪声样本，不再作为结论 |
 | RGB letterbox（替换 RGA） | 1080p→640: 0.84 ms vs RGA 3.21 ms；1:1: 0.53 vs 1.50 |
 
+### H.264 流式播放路径
+
+`h264_stream` 使用 VUI 的 `max_num_reorder_frames` 做有界 POC 重排，不再把整段
+视频收进 `Vec<Picture>`。1080p30 High/B=2 的 90 帧样片上，旧 `h264dec`
+需要约 279 MB RSS，流式路径约 17 MB；输出 planar YUV 与旧全文件排序结果
+逐字节一致。同一测试中解码循环由约 955 ms 降到 545 ms。
+
+```bash
+# 丢弃输出，测流式解码
+./target/release/h264_stream in.264
+
+# 输出 planar YUV，或向播放器管道输出
+./target/release/h264_stream in.264 out.yuv
+./target/release/h264_stream in.264 - |
+  gst-launch-1.0 -q fdsrc fd=0 ! \
+    rawvideoparse format=i420 width=1920 height=1080 framerate=30/1 ! \
+    waylandsink
+```
+
+这使 1080p30 的 Rust 纯解码上限从 24 路提高到 26 路（C MPP 约 28 路）。
+真实多窗口播放目前支持约 8 路；12 路会被 stdout planar-YUV 管道和 Wayland
+拷贝压垮。下一步应把 decoded frame/DMA-BUF 直接交给 DRM/Wayland sink，避免
+每帧 3.1 MB 的用户态传输。
+
 ## 用法
 
 硬件 probe（无参数）：`rk-mpp-rs`
@@ -147,6 +206,7 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 | `decode <jpg> <out.rgb> [1\|2\|4\|8]` | JPEG 解码到 RGB（下采样） |
 | `jpeg-info <jpg>` / `jpeg-enc <in.yuv> <out.jpg> <w> <h> [quant] [fmt] [input] [rst<mcus>] [splitout:lowdelay]` | JPEG 解析 / 编码与逐 restart band packet |
 | `h264 <file>` / `h264dec <in.264> <out.yuv>` | H.264 语法打印 / 解码 |
+| `h264_stream <in.264> [out.yuv|-]` | 有界 POC 重排的流式 H.264 解码与输出 |
 | `hevc` / `hevcdec <in.265> <out.yuv>` / `hevcpps` / `hevcdpb` | H.265 语法、PPS、DPB 打印与解码 |
 | `av1dec <in.ivf> <out.yuv>` / `vp9dec <in.ivf> <out.yuv>` / `vp8dec <in.ivf> <out.yuv>` / `vp8` | AV1、VP9、VP8 |
 | `m2v` / `m2vdec <in.m2v> <out.yuv>` / `mp4dec <in.m4v> <out.yuv>` / `h263dec <in.263> <out.yuv>` | MPEG-2 / MPEG-4 / H.263 |
@@ -188,6 +248,7 @@ tests/data/       C 侧真实输出构成的 golden / fixture
 
 - [ROADMAP.md](ROADMAP.md) —— 逐 capability 的进度台账与证据（权威）
 - [docs/PLAN.md](docs/PLAN.md) —— 完整未来计划：全部剩余工作、阶段出口、依赖与风险
+- [docs/T6_VALIDATION.md](docs/T6_VALIDATION.md) —— 2026-11-06 的 t6 全量测试、板级回归、性能与播放结果
 - [docs/DIVERGENCES.md](docs/DIVERGENCES.md) —— 已知与 C 的差异登记：必须修 / 已证 C bug / 无 oracle
 - [docs/HANDOFF.md](docs/HANDOFF.md) —— 交接：下一步、板子工具链、易错清单
 - [docs/h264d_hw.md](docs/h264d_hw.md) —— rkvdec H.264 硬件契约（从 C 提取）

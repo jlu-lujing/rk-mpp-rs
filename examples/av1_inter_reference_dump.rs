@@ -103,7 +103,7 @@ fn main() -> Result<(), String> {
                 .load_cdfs(slot)
                 .ok_or_else(|| format!("missing saved CDF slot {slot}"))?
         };
-        let (picture, final_cdfs) = if frame.header.frame_is_intra {
+        let (picture, final_cdfs, current_blocks, segment_map) = if frame.header.frame_is_intra {
             let config = IntraTileConfig::from_headers(sequence, &frame.header);
             let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
             let tile = &frame.layout.tiles[0];
@@ -117,7 +117,7 @@ fn main() -> Result<(), String> {
                 initial_cdfs,
                 IntraTileBlockSink::new(config),
             )
-            .map_err(|error| format!("{error:?}"))?;
+            .map_err(|error| format!("coded frame {coded}: {error:?}"))?;
             let mut picture =
                 reconstruct_intra_frame(sequence, &frame.header, &decoded.sink.blocks)?;
             if frame.header.loop_filter_level[0] != 0 || frame.header.loop_filter_level[1] != 0 {
@@ -147,9 +147,13 @@ fn main() -> Result<(), String> {
             if frame.header.use_superres {
                 let _ = cdef;
             }
-            (picture, decoded.cdfs)
+            let segment_map = decoded.sink.segment_map();
+            (picture, decoded.cdfs, Vec::new(), segment_map)
         } else {
-            let config = InterTileConfig::from_headers(sequence, &frame.header);
+            let config = InterTileConfig::from_headers(sequence, &frame.header)
+                .with_reference_order_hints(frame.reference_order_hints)
+                .with_temporal_motion(references.temporal_motion(sequence, &frame.header))
+                .with_previous_segment_map(references.primary_segment_map(&frame.header));
             let sb_size = if config.superblock_mi == 32 { 128 } else { 64 };
             let tile = &frame.layout.tiles[0];
             let decoded = decode_tile_partitions_with_cdfs(
@@ -162,7 +166,7 @@ fn main() -> Result<(), String> {
                 initial_cdfs,
                 InterTileBlockSink::new(config),
             )
-            .map_err(|error| format!("{error:?}"))?;
+            .map_err(|error| format!("coded frame {coded}: {error:?}"))?;
             let mut picture =
                 reconstruct_inter_frame(sequence, &frame.header, &decoded.sink.blocks, &references)
                     .map_err(|error| error.to_string())?;
@@ -197,13 +201,21 @@ fn main() -> Result<(), String> {
                 sequence.enable_cdef && !frame.header.coded_lossless,
                 frame.header.uses_lr
             );
-            (picture, decoded.cdfs)
+            let segment_map = decoded.sink.segment_map();
+            (
+                picture,
+                decoded.cdfs,
+                decoded.sink.blocks.clone(),
+                segment_map,
+            )
         };
         references.refresh(
-            frame.header.refresh_frame_flags,
+            sequence,
+            &frame.header,
+            &current_blocks,
             &picture,
-            frame.header.base_q_idx,
             &final_cdfs,
+            segment_map,
         );
         if frame.header.show_frame {
             write_frame(&output.join(format!("{shown:02}.yuv")), &picture)

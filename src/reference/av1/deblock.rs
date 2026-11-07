@@ -571,6 +571,9 @@ pub fn loop_filter_frame(
     subsampling_x: u32,
     subsampling_y: u32,
 ) {
+    if params.level[0] == 0 && params.level[1] == 0 {
+        return;
+    }
     for (index, plane) in planes.iter_mut().enumerate() {
         if index != 0 && params.level[index + 1] == 0 {
             continue;
@@ -621,6 +624,9 @@ pub fn loop_filter_frame_dual_grid(
     subsampling_x: u32,
     subsampling_y: u32,
 ) {
+    if params.level[0] == 0 && params.level[1] == 0 {
+        return;
+    }
     assert_eq!(vertical_grid.mi_cols, horizontal_grid.mi_cols);
     assert_eq!(vertical_grid.mi_rows, horizontal_grid.mi_rows);
     for (index, plane) in planes.iter_mut().enumerate() {
@@ -679,6 +685,9 @@ pub fn loop_filter_frame_plane_grids(
     subsampling_x: u32,
     subsampling_y: u32,
 ) {
+    if params.level[0] == 0 && params.level[1] == 0 {
+        return;
+    }
     assert_eq!(vertical_grids.len(), planes.len());
     assert_eq!(horizontal_grids.len(), planes.len());
     for (index, plane) in planes.iter_mut().enumerate() {
@@ -976,8 +985,11 @@ mod tests {
             filter_size: 4,
         };
         let grid = DeblockGrid::uniform(4, 4, cell);
+        let mut no_filter = params(0);
+        no_filter.delta_enabled = true;
+        no_filter.ref_deltas[0] = 63;
         let mut planes = [original.clone()];
-        loop_filter_frame(&mut planes, &params(0), &grid, 16, 16, 0, 0);
+        loop_filter_frame(&mut planes, &no_filter, &grid, 16, 16, 0, 0);
         assert_eq!(planes[0].samples, original.samples);
     }
 
