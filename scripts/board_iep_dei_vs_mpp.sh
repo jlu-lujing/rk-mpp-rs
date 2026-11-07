@@ -25,7 +25,7 @@ set -uo pipefail
 W="${1:-720}"
 H="${2:-480}"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 

@@ -9,7 +9,7 @@ BOARD="${BOARD:-t6}"
 # Usage: BOARD=t6 scripts/board_iep_modes_vs_probe.sh
 set -uo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude '._*' -cf - . |
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
 

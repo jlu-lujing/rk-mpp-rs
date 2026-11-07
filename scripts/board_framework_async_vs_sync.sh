@@ -18,7 +18,7 @@ set -uo pipefail
 JOBS="${JOBS:-6}"
 WORKERS="${WORKERS:-3}"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
 
@@ -71,6 +71,7 @@ fi
 #    release or grows the pool, so the total never exceeds the cap.
 callbacks=$(printf '%s' "$async_log" | sed -n 's/.*callbacks=\([0-9]*\).*/\1/p' | head -1)
 allocations=$(printf '%s' "$async_log" | sed -n 's/.*allocations=\([0-9]*\).*/\1/p' | head -1)
+in_use=$(printf '%s' "$async_log" | sed -n 's/.*in_use=\([0-9]*\).*/\1/p' | head -1)
 if [ "$callbacks" = "$JOBS" ]; then
   echo "PASS completion callbacks: $callbacks of $JOBS jobs"
 else
@@ -82,6 +83,12 @@ if [ -n "$allocations" ] && [ "$allocations" -le "$cap" ]; then
   echo "PASS pool allocations $allocations <= capacity $cap (reuse works)"
 else
   echo "FAIL pool allocations '$allocations' exceeds capacity $cap or missing"
+  fail=1
+fi
+if [ "$in_use" = "0" ]; then
+  echo "PASS every worker lease returned its pool buffer"
+else
+  echo "FAIL pool still has in_use='$in_use' buffers after all workers"
   fail=1
 fi
 

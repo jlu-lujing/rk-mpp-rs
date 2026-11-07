@@ -60,7 +60,7 @@ fi
 # Build the crate on the board (the header path is pure host code but the compare
 # runs our release binary against the reference stream).
 if [ -z "$SKIP" ]; then
-  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock -cf - . |
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
     ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
   ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 fi
