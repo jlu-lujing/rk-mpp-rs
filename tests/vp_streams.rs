@@ -155,29 +155,36 @@ fn vp9_parsers_see_packet_damage_as_packet_verdicts() {
     );
 }
 
-/// Policy outcome on a container that stops the run: recorded once, no
-/// pictures, `stopped_early`. Needs the hardware only to build the decoder.
+/// A torn final packet matches `mpi_dec_test`: the complete frames survive,
+/// the declared tail is zero-padded, and the container fault is recorded
+/// without stopping the run.
 #[test]
 #[ignore = "board-only: opens /dev/mpp_service"]
-fn vp8_stream_policy_stops_on_container_damage() {
+fn vp8_stream_policy_recovers_a_torn_final_packet() {
     let mut decoder = rk_mpp_rs::codec::vp8::decoder::Decoder::new().expect("vdpu2");
     let data = std::fs::read("tests/data/vp8_320x240_12_ip.ivf").expect("fixture");
     let outcome = decoder.decode_stream(&data[..data.len() - 3]);
-    assert!(outcome.stopped_early);
-    assert!(outcome.pictures.is_empty());
+    assert!(!outcome.stopped_early);
+    assert_eq!(outcome.pictures.len(), 12);
     assert_eq!(
         outcome.dropped.len(),
         1,
         "the container itself is the fault"
     );
     assert!(outcome.dropped[0].reason.starts_with("container:"));
+    let stats = decoder.pool_stats();
+    assert_eq!(stats.in_use, 0, "all DPB leases returned after flush");
+    assert!(
+        stats.allocations <= 16,
+        "DPB reuse honoured its 16-slot cap"
+    );
 }
 
-/// The core claim of the policy: one damaged packet costs exactly that
-/// picture, not the stream. Board-verified shape.
+/// A shortened middle packet is submitted like the C harness does. The run
+/// continues, but the hardware marks that picture as failed.
 #[test]
 #[ignore = "board-only: opens /dev/mpp_service"]
-fn vp8_stream_policy_pays_only_for_the_damaged_packet() {
+fn vp8_stream_policy_marks_a_damaged_middle_packet() {
     let data = std::fs::read("tests/data/vp8_320x240_12_ip.ivf").expect("fixture");
     let mut clean = rk_mpp_rs::codec::vp8::decoder::Decoder::new().expect("vdpu2");
     let clean = clean.decode_stream(&data);
@@ -195,15 +202,43 @@ fn vp8_stream_policy_pays_only_for_the_damaged_packet() {
     let mut damaged_decoder = rk_mpp_rs::codec::vp8::decoder::Decoder::new().expect("vdpu2");
     let outcome = damaged_decoder.decode_stream(&damaged);
     assert!(!outcome.stopped_early, "one packet must not stop the run");
+    assert!(outcome.dropped.is_empty());
+    assert_eq!(outcome.pictures.len(), clean.pictures.len());
     assert_eq!(
-        outcome.dropped.len(),
+        outcome
+            .pictures
+            .iter()
+            .filter(|picture| picture.err_info != 0)
+            .count(),
         1,
-        "one packet pays: {:?}",
-        outcome.dropped
+        "exactly the damaged middle picture carries the hardware error"
     );
+
+    // The failed STATUS word forces a replacement mpp_service session.
+    // Decode the clean stream through that same decoder and compare every
+    // visible plane, proving the next job did not land on a wedged session.
+    let recovered = damaged_decoder.decode_stream(&data);
     assert!(
-        outcome.pictures.len() <= clean.pictures.len(),
-        "the decoder may lose the damaged picture, not more"
+        !recovered.stopped_early && recovered.dropped.is_empty(),
+        "clean stream must decode after hardware recovery: {:?}",
+        recovered.dropped
+    );
+    assert_eq!(recovered.pictures.len(), clean.pictures.len());
+    for (index, (got, expected)) in recovered
+        .pictures
+        .iter()
+        .zip(clean.pictures.iter())
+        .enumerate()
+    {
+        assert_eq!(got.err_info, 0, "picture {index} retained an error");
+        assert_eq!((got.width, got.height), (expected.width, expected.height));
+        assert_eq!(got.yuv, expected.yuv, "picture {index} pixels differ");
+    }
+    let stats = damaged_decoder.pool_stats();
+    assert_eq!(stats.in_use, 0, "all DPB leases returned after recovery");
+    assert!(
+        stats.allocations <= 16,
+        "recovery work stayed within the pool cap"
     );
 }
 
