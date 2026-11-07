@@ -725,7 +725,7 @@ impl Vepu2Jpeg {
 
         if let Some(plan) = config.multi_core_plan() {
             let result = encode_multi_core(
-                &self.svc,
+                &mut self.svc,
                 input_fd,
                 output,
                 &mut self.scratch,
@@ -754,14 +754,15 @@ impl Vepu2Jpeg {
         batch.reg_offsets(&registers.offsets);
         batch.reg_read(&mut registers.words, 0);
         self.svc
-            .submit_batch(&mut batch)
+            .submit_batch_recovering(&mut batch)
             .map_err(|e| format!("JPEG encoder submit: {e}"))?;
         self.svc
-            .poll_hw_finish()
+            .poll_hw_finish_recovering()
             .map_err(|e| format!("JPEG encoder poll: {e}"))?;
 
         let status = registers.words[IRQ_CONFIG] & STATUS_MASK;
         if status != 0 {
+            let _ = self.svc.restart_after_hardware_error();
             return Err(format!(
                 "VEPU2 JPEG hardware error 0x{status:02x} (reg109=0x{:08x})",
                 registers.words[IRQ_CONFIG]
@@ -770,6 +771,7 @@ impl Vepu2Jpeg {
 
         let hardware_bits = registers.words[STREAM_CAPACITY];
         if hardware_bits & 7 != 0 {
+            let _ = self.svc.restart_after_hardware_error();
             return Err(format!(
                 "VEPU2 JPEG returned a non-byte stream length ({hardware_bits} bits)"
             ));
@@ -778,6 +780,7 @@ impl Vepu2Jpeg {
             .checked_add(hardware_bits as usize / 8)
             .ok_or_else(|| "JPEG stream length overflow".to_string())?;
         if stream_len <= prepared.bytes.len() || stream_len > config.output_capacity {
+            let _ = self.svc.restart_after_hardware_error();
             return Err(format!(
                 "invalid VEPU2 JPEG output length {stream_len} (header {}, capacity {})",
                 prepared.bytes.len(),
@@ -868,7 +871,7 @@ fn packet_ranges(stream: &[u8], config: EncoderConfig) -> Result<Vec<Range<usize
 }
 
 fn encode_multi_core(
-    svc: &MppService,
+    svc: &mut MppService,
     input_fd: i32,
     output: &mut DmaBuf,
     scratch: &mut Vec<DmaBuf>,
@@ -1025,10 +1028,10 @@ fn encode_multi_core(
             batch.delimit(&bat_cmd);
         }
     }
-    svc.submit_batch_streaming(&mut batch)
+    svc.submit_batch_streaming_recovering(&mut batch)
         .map_err(|e| format!("JPEG multi-core submit: {e}"))?;
     for _ in 0..plan.bands.len() {
-        svc.poll_hw_finish()
+        svc.poll_hw_finish_recovering()
             .map_err(|e| format!("JPEG multi-core poll: {e}"))?;
     }
 

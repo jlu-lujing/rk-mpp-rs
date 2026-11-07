@@ -147,9 +147,20 @@ pub fn run_job(
         .reg_write(registers, 0)
         .reg_read(&mut readback, 0)
         .reg_offsets(offsets);
-    svc.submit_batch(&mut batch)?;
-    svc.poll_hw_finish()?;
-    Ok(readback[REG_IRQ])
+    svc.submit_batch_recovering(&mut batch)?;
+    svc.poll_hw_finish_recovering()?;
+    let irq = readback[REG_IRQ];
+    if irq & IRQ_FAILURE != 0 {
+        // Return the original IRQ word so the codec can mark this picture as
+        // failed, but rebuild the kernel session before another job can use it.
+        svc.restart_after_hardware_error().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("VDPU2 job failed (irq={irq:#010x}); session recovery failed: {error}"),
+            )
+        })?;
+    }
+    Ok(irq)
 }
 
 /// Append a register image to `path` in the text the C HAL debug dumps use, so

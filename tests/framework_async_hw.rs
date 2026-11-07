@@ -41,6 +41,14 @@ fn async_queue_decodes_byte_identical_to_sync_path() {
         log.contains("callbacks=6"),
         "one completion callback per job: {log}"
     );
+    assert!(
+        log.contains("queue submitted=6 done=6 failed=0 cancelled=0"),
+        "queue metrics cover every job: {log}"
+    );
+    assert!(
+        log.contains("avg_wait_ms=") && log.contains("avg_run_ms="),
+        "queue timings are reported: {log}"
+    );
 
     let sync_bytes = std::fs::read(&sync_path).unwrap();
     let async_bytes = std::fs::read(&async_path).unwrap();

@@ -150,6 +150,32 @@ pub struct TaskEvent {
     pub outcome: TaskOutcome,
     pub queued_depth: usize,
     pub running: usize,
+    pub timing: TaskTiming,
+}
+
+/// Per-task queue and execution timings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskTiming {
+    /// Time spent waiting between submit and the worker starting the job.
+    pub queue_wait: Duration,
+    /// Time spent inside the job body.
+    pub run_time: Duration,
+    /// Submit-to-finish latency (queued + running).
+    pub turnaround: Duration,
+}
+
+/// Cumulative queue counters since construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskMetrics {
+    pub submitted: u64,
+    pub done: u64,
+    pub failed: u64,
+    pub cancelled: u64,
+    pub total_queue_wait: Duration,
+    pub total_run_time: Duration,
+    pub total_turnaround: Duration,
+    pub max_queued: usize,
+    pub max_running: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +196,9 @@ struct Slot {
     state: SlotState,
     cancel_requested: bool,
     outcome: Option<TaskOutcome>,
+    queued_at: Instant,
+    started_at: Option<Instant>,
+    finished_at: Option<Instant>,
 }
 
 /// Thread-free task bookkeeping. All ordering and slot-reuse rules the
@@ -191,6 +220,7 @@ pub struct Scheduler {
     slots: Vec<Option<Slot>>,
     next_id: TaskId,
     next_seq: u64,
+    metrics: TaskMetrics,
 }
 
 impl Scheduler {
@@ -200,6 +230,7 @@ impl Scheduler {
             slots: (0..capacity).map(|_| None).collect(),
             next_id: 1,
             next_seq: 0,
+            metrics: TaskMetrics::default(),
         }
     }
 
@@ -210,13 +241,18 @@ impl Scheduler {
         self.next_id += 1;
         let seq = self.next_seq;
         self.next_seq += 1;
+        self.metrics.submitted += 1;
         self.slots[slot] = Some(Slot {
             id,
             seq,
             state: SlotState::Queued,
             cancel_requested: false,
             outcome: None,
+            queued_at: Instant::now(),
+            started_at: None,
+            finished_at: None,
         });
+        self.metrics.max_queued = self.metrics.max_queued.max(self.queued_depth());
         Some(id)
     }
 
@@ -229,28 +265,41 @@ impl Scheduler {
             .filter(|(_, s)| s.as_ref().is_some_and(|sl| sl.state == SlotState::Queued))
             .min_by_key(|(_, s)| s.as_ref().map(|sl| sl.seq).unwrap_or(u64::MAX))?
             .0;
-        let slot = self.slots[slot].as_mut()?;
-        slot.state = SlotState::Running;
-        Some(slot.id)
+        let id = {
+            let slot = self.slots[slot].as_mut()?;
+            slot.state = SlotState::Running;
+            slot.started_at = Some(Instant::now());
+            slot.id
+        };
+        self.metrics.max_running = self.metrics.max_running.max(self.running_count());
+        Some(id)
     }
 
     pub fn cancel(&mut self, id: TaskId) -> Cancel {
         let Some(idx) = self.slot_of(id) else {
             return Cancel::Missing;
         };
-        let slot = self.slots[idx].as_mut().unwrap();
-        match slot.state {
-            SlotState::Queued => {
-                slot.state = SlotState::Finished;
-                slot.outcome = Some(TaskOutcome::Cancelled);
-                Cancel::Removed
+        let (result, timing) = {
+            let slot = self.slots[idx].as_mut().unwrap();
+            match slot.state {
+                SlotState::Queued => {
+                    slot.state = SlotState::Finished;
+                    slot.outcome = Some(TaskOutcome::Cancelled);
+                    slot.finished_at = Some(Instant::now());
+                    (Cancel::Removed, Some(Self::timing_for(slot)))
+                }
+                SlotState::Running => {
+                    slot.cancel_requested = true;
+                    (Cancel::Flagged, None)
+                }
+                _ => (Cancel::Missing, None),
             }
-            SlotState::Running => {
-                slot.cancel_requested = true;
-                Cancel::Flagged
-            }
-            _ => Cancel::Missing,
+        };
+        if let Some(timing) = timing {
+            self.record_timing(timing);
+            self.metrics.cancelled += 1;
         }
+        result
     }
 
     /// Move a `Running` task to `Finished`. A cancel flag set while the job
@@ -260,16 +309,27 @@ impl Scheduler {
         let Some(idx) = self.slot_of(id) else {
             return;
         };
-        let slot = self.slots[idx].as_mut().unwrap();
-        if slot.state != SlotState::Running {
-            return;
+        let (outcome, timing) = {
+            let slot = self.slots[idx].as_mut().unwrap();
+            if slot.state != SlotState::Running {
+                return;
+            }
+            slot.state = SlotState::Finished;
+            let outcome = if slot.cancel_requested {
+                TaskOutcome::Cancelled
+            } else {
+                outcome
+            };
+            slot.outcome = Some(outcome.clone());
+            slot.finished_at = Some(Instant::now());
+            (outcome, Self::timing_for(slot))
+        };
+        self.record_timing(timing);
+        match outcome {
+            TaskOutcome::Done => self.metrics.done += 1,
+            TaskOutcome::Failed(_) => self.metrics.failed += 1,
+            TaskOutcome::Cancelled => self.metrics.cancelled += 1,
         }
-        slot.state = SlotState::Finished;
-        slot.outcome = Some(if slot.cancel_requested {
-            TaskOutcome::Cancelled
-        } else {
-            outcome
-        });
     }
 
     /// Reclaim a finished task's slot, returning its outcome.
@@ -302,6 +362,32 @@ impl Scheduler {
         self.slots
             .iter()
             .position(|s| s.as_ref().is_some_and(|sl| sl.id == id))
+    }
+
+    fn timing_for(slot: &Slot) -> TaskTiming {
+        let finished = slot.finished_at.unwrap_or_else(Instant::now);
+        let started = slot.started_at.unwrap_or(finished);
+        TaskTiming {
+            queue_wait: started.saturating_duration_since(slot.queued_at),
+            run_time: finished.saturating_duration_since(started),
+            turnaround: finished.saturating_duration_since(slot.queued_at),
+        }
+    }
+
+    fn record_timing(&mut self, timing: TaskTiming) {
+        self.metrics.total_queue_wait += timing.queue_wait;
+        self.metrics.total_run_time += timing.run_time;
+        self.metrics.total_turnaround += timing.turnaround;
+    }
+
+    fn timing_of(&self, id: TaskId) -> Option<TaskTiming> {
+        let slot = self.slots.get(self.slot_of(id)?)?.as_ref()?;
+        slot.finished_at?;
+        Some(Self::timing_for(slot))
+    }
+
+    pub fn metrics(&self) -> TaskMetrics {
+        self.metrics
     }
 
     pub fn live_count(&self) -> usize {
@@ -511,19 +597,20 @@ impl TaskQueue {
             let delivered = if result == Cancel::Removed {
                 let entry = core.pending.remove(&id);
                 let outcome = core.scheduler.peek(id).cloned();
-                (entry.and_then(|e| e.callback), outcome)
+                let timing = core.scheduler.timing_of(id).unwrap_or_default();
+                (entry.and_then(|e| e.callback), outcome, timing)
             } else {
-                (None, None)
+                (None, None, TaskTiming::default())
             };
             self.shared.done_cv.notify_all();
             self.shared.space_cv.notify_one();
             (result, delivered)
         };
         if result == Cancel::Removed {
-            if let (Some(cb), Some(outcome)) = delivered {
+            if let (Some(cb), Some(outcome), timing) = delivered {
                 cb(id, outcome.clone());
                 let (depth, running) = self.depths();
-                publish_event(&self.shared, id, outcome, depth, running);
+                publish_event(&self.shared, id, outcome, depth, running, timing);
             }
         }
         result
@@ -575,6 +662,11 @@ impl TaskQueue {
             core.scheduler.live_count(),
             core.scheduler.capacity(),
         )
+    }
+
+    /// Cumulative submission/completion timings and high-water marks.
+    pub fn metrics(&self) -> TaskMetrics {
+        self.shared.core.lock().unwrap().scheduler.metrics()
     }
 
     fn depths(&self) -> (usize, usize) {
@@ -647,11 +739,16 @@ fn worker_loop(shared: Arc<Shared>) {
             Some(job) => job(),
             None => continue,
         };
-        let (callback, delivered) = {
+        let (callback, delivered, timing) = {
             let mut core = shared.core.lock().unwrap();
             core.scheduler.finish(id, outcome);
             let outcome = core.scheduler.peek(id).cloned();
-            (core.pending.remove(&id).and_then(|e| e.callback), outcome)
+            let timing = core.scheduler.timing_of(id).unwrap_or_default();
+            (
+                core.pending.remove(&id).and_then(|e| e.callback),
+                outcome,
+                timing,
+            )
         };
         if let (Some(cb), Some(outcome)) = (callback, delivered.clone()) {
             cb(id, outcome);
@@ -666,12 +763,19 @@ fn worker_loop(shared: Arc<Shared>) {
         shared.done_cv.notify_all();
         shared.space_cv.notify_one();
         if let Some(outcome) = delivered {
-            publish_event(&shared, id, outcome, depth, running);
+            publish_event(&shared, id, outcome, depth, running, timing);
         }
     }
 }
 
-fn publish_event(shared: &Shared, id: TaskId, outcome: TaskOutcome, depth: usize, running: usize) {
+fn publish_event(
+    shared: &Shared,
+    id: TaskId,
+    outcome: TaskOutcome,
+    depth: usize,
+    running: usize,
+    timing: TaskTiming,
+) {
     let mut events = shared.events.lock().unwrap();
     if let Some(tx) = events.as_mut() {
         let event = TaskEvent {
@@ -679,6 +783,7 @@ fn publish_event(shared: &Shared, id: TaskId, outcome: TaskOutcome, depth: usize
             outcome,
             queued_depth: depth,
             running,
+            timing,
         };
         // Best-effort trace, documented on TaskEvent.
         let _ = tx.try_send(event);
@@ -1082,6 +1187,96 @@ mod tests {
                 Err(e) => panic!("event stream ended early: {e}"),
             }
         }
+    }
+
+    #[test]
+    fn event_and_metrics_report_queue_and_execution_timings() {
+        let (queue, rx) = TaskQueue::with_capacity_and_events(1, 4);
+        let first = queue
+            .submit(
+                || {
+                    std::thread::sleep(Duration::from_millis(80));
+                    done()
+                },
+                |_, _| {},
+            )
+            .unwrap();
+        let second = queue
+            .submit(
+                || {
+                    std::thread::sleep(Duration::from_millis(20));
+                    done()
+                },
+                |_, _| {},
+            )
+            .unwrap();
+        assert_eq!(queue.wait(first, PollTimeout::Block), Some(done()));
+        assert_eq!(queue.wait(second, PollTimeout::Block), Some(done()));
+
+        let mut events = HashMap::new();
+        for _ in 0..2 {
+            let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            events.insert(event.id, event);
+        }
+        let second_event = &events[&second];
+        assert!(
+            second_event.timing.queue_wait >= Duration::from_millis(40),
+            "second job waited behind the first: {:?}",
+            second_event.timing
+        );
+        assert!(second_event.timing.run_time >= Duration::from_millis(10));
+        assert_eq!(
+            second_event.timing.turnaround,
+            second_event.timing.queue_wait + second_event.timing.run_time
+        );
+        assert_eq!(second_event.queued_depth, 0);
+        assert_eq!(second_event.running, 0);
+
+        let metrics = queue.metrics();
+        assert_eq!(metrics.submitted, 2);
+        assert_eq!(metrics.done, 2);
+        assert_eq!(metrics.failed, 0);
+        assert_eq!(metrics.cancelled, 0);
+        assert!(metrics.max_queued >= 1);
+        assert_eq!(metrics.max_running, 1);
+        assert!(metrics.total_queue_wait >= Duration::from_millis(40));
+        assert!(metrics.total_run_time >= Duration::from_millis(60));
+        assert_eq!(
+            metrics.total_turnaround,
+            metrics.total_queue_wait + metrics.total_run_time
+        );
+    }
+
+    #[test]
+    fn queued_cancellation_counts_without_run_time() {
+        let (queue, rx) = TaskQueue::with_capacity_and_events(1, 3);
+        let blocker = queue
+            .submit(
+                || {
+                    std::thread::sleep(Duration::from_millis(100));
+                    done()
+                },
+                |_, _| {},
+            )
+            .unwrap();
+        let cancelled = queue
+            .submit(|| panic!("cancelled job must not run"), |_, _| {})
+            .unwrap();
+        assert_eq!(queue.cancel(cancelled), Cancel::Removed);
+
+        let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(event.id, cancelled);
+        assert_eq!(event.outcome, TaskOutcome::Cancelled);
+        assert_eq!(event.timing.run_time, Duration::ZERO);
+        assert_eq!(event.timing.turnaround, event.timing.queue_wait);
+        assert_eq!(queue.wait(blocker, PollTimeout::Block), Some(done()));
+
+        let metrics = queue.metrics();
+        assert_eq!(metrics.submitted, 2);
+        assert_eq!(metrics.done, 1);
+        assert_eq!(metrics.cancelled, 1);
+        assert_eq!(metrics.failed, 0);
+        assert!(metrics.total_run_time >= event.timing.run_time + Duration::from_millis(80));
     }
 
     #[test]

@@ -263,10 +263,10 @@ impl IepDeinterlace {
         batch.reg_write(&params, 0);
         batch.reg_read(&mut output, 0);
         self.svc
-            .submit_batch_plain(&mut batch)
+            .submit_batch_plain_recovering(&mut batch)
             .map_err(|e| format!("IEP submit: {e}"))?;
         self.svc
-            .poll_hw_finish()
+            .poll_hw_finish_recovering()
             .map_err(|e| format!("IEP poll: {e}"))?;
 
         for d in self.dst.iter_mut() {

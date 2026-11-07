@@ -61,6 +61,7 @@ const BASE_ENC_RSL: usize = 36;
 const BASE_SRC_FILL: usize = 37;
 const BASE_SRC_STRD0: usize = 45;
 const BASE_SRC_STRD1: usize = 46;
+#[cfg(test)]
 const BASE_RC_CFG: usize = 52;
 const BASE_ME_RNGE: usize = 60;
 const BASE_ME_CACH: usize = 62;
@@ -914,7 +915,7 @@ impl Vepu580H264 {
         batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
         batch.reg_read(&mut status, STATUS_OFFSET);
         self.svc
-            .submit_batch(&mut batch)
+            .submit_batch_recovering(&mut batch)
             .map_err(|e| format!("H.264 register submit: {e}"))?;
         let mut slice_lengths = Vec::new();
         if self.config.split_out & encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 && !save_pass1 {
@@ -939,18 +940,20 @@ impl Vepu580H264 {
             }
         } else {
             self.svc
-                .poll_hw_finish()
+                .poll_hw_finish_recovering()
                 .map_err(|e| format!("H.264 poll: {e}"))?;
         }
 
         let errors = hw_status[0] & HW_ERROR_MASK;
         if errors != 0 {
+            let _ = self.svc.restart_after_hardware_error();
             return Err(format!(
                 "VEPU580 H.264 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
                 hw_status[0]
             ));
         }
         if hw_status[0] & 1 == 0 {
+            let _ = self.svc.restart_after_hardware_error();
             return Err(format!(
                 "VEPU580 H.264 completed ioctl without enc_done (int_sta=0x{:08x})",
                 hw_status[0]
@@ -959,6 +962,7 @@ impl Vepu580H264 {
 
         let payload_len = status[0] as usize;
         if payload_len < 8 || payload_len > self.output.len() {
+            let _ = self.svc.restart_after_hardware_error();
             return Err(format!(
                 "invalid VEPU580 H.264 length {payload_len} (capacity {})",
                 self.output.len()
@@ -4542,7 +4546,7 @@ mod tests {
         // Off: no sweep at all, whatever the numbers say.
         assert_eq!(config().gdr_refresh_length(), 0);
         // A zero count is refused rather than divided by.
-        let mut zero = gdr_config(GdrMode::Row, 0, 60);
+        let zero = gdr_config(GdrMode::Row, 0, 60);
         assert!(zero.validate().is_err());
     }
 

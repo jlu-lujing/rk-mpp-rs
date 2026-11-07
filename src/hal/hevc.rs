@@ -661,10 +661,13 @@ impl HevcHw {
         if self.rcb_info_supported && !self.rcb_scratch.is_empty() {
             self.batch.rcb_info(&self.rcb_scratch);
         }
-        self.svc.submit_batch(&mut self.batch)?;
-        self.svc.poll_hw_finish()?;
+        self.svc.submit_batch_recovering(&mut self.batch)?;
+        self.svc.poll_hw_finish_recovering()?;
         self.last_status = (readback[224], readback[225], readback[230]);
         self.last_hardware_error = hardware_status_error(readback[224]);
+        if self.last_hardware_error {
+            let _ = self.svc.restart_after_hardware_error();
+        }
         if std::env::var_os("RFI_HEVC_FRAME_DUMP").is_some() {
             let task = COLMV_DUMP_INDEX.fetch_add(1, Ordering::Relaxed);
             let _ = cur.video.sync_read_begin();

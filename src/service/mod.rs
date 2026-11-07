@@ -12,6 +12,7 @@ pub mod task_queue;
 use std::ffi::CString;
 use std::io;
 use std::os::raw::{c_int, c_ulong};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
@@ -98,17 +99,35 @@ const _: () = assert!(std::mem::size_of::<MppBatCmd>() == 16);
 pub struct MppService {
     fd: c_int,
     client_type: u32,
+    session_resets: AtomicU64,
+    reset_failures: AtomicU64,
+    session_reopens: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecoveryStats {
+    pub session_resets: u64,
+    pub reset_failures: u64,
+    pub session_reopens: u64,
 }
 
 impl MppService {
     /// Open the device and announce which hardware block we are going to drive.
     pub fn open(client_type: u32) -> io::Result<Self> {
         let path = CString::new(MPP_SERVICE_PATH).unwrap();
+        // SAFETY: `path` is a live NUL-terminated string, and open does not
+        // retain the caller's pointer.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        let svc = MppService { fd, client_type };
+        let svc = MppService {
+            fd,
+            client_type,
+            session_resets: AtomicU64::new(0),
+            reset_failures: AtomicU64::new(0),
+            session_reopens: AtomicU64::new(0),
+        };
         svc.call(
             MPP_CMD_INIT_CLIENT_TYPE,
             &client_type as *const u32 as u64,
@@ -134,12 +153,7 @@ impl MppService {
             offset: 0,
             data_ptr: data,
         };
-        let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
-        if r < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(r)
-        }
+        ioctl_mpp(self.fd, &mut req)
     }
 
     /// Send the register file for one job and wait for the hardware.
@@ -151,11 +165,15 @@ impl MppService {
             offset: 0,
             data_ptr: regs.as_ptr() as u64,
         };
-        let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
-        if r < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        ioctl_mpp(self.fd, &mut req)?;
         Ok(())
+    }
+
+    pub fn submit_regs_recovering(&mut self, regs: &[u32]) -> io::Result<()> {
+        match self.submit_regs(regs) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.recovery_error(error)),
+        }
     }
 
     /// Poll until the job finishes, with a deadline.
@@ -187,6 +205,19 @@ impl MppService {
         }
     }
 
+    /// Poll a submitted job and reset the kernel session if polling fails.
+    ///
+    /// The original error remains the returned error class (for example
+    /// `TimedOut`); its message records whether reset succeeded. This is the
+    /// path HALs use after submission, so a watchdog/ioctl failure does not
+    /// leave the next job attached to a dead session.
+    pub fn poll_hw_finish_recovering(&mut self) -> io::Result<()> {
+        match self.poll_hw_finish() {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.recovery_error(error)),
+        }
+    }
+
     /// The unbounded ioctl, kept for kernels without `POLL_NON_BLOCK`.
     pub fn poll_hw_finish_blocking(&self) -> io::Result<()> {
         // Linux mpp_service uses the no-payload form of POLL_HW_FINISH when
@@ -199,10 +230,7 @@ impl MppService {
             offset: 0,
             data_ptr: 0,
         };
-        let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
-        if r < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        ioctl_mpp(self.fd, &mut req)?;
         Ok(())
     }
 
@@ -220,15 +248,11 @@ impl MppService {
             offset: 0,
             data_ptr: 0,
         };
-        let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
-        if r < 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EAGAIN) {
-                return Ok(false);
-            }
-            return Err(err);
+        match ioctl_mpp(self.fd, &mut req) {
+            Ok(_) => Ok(true),
+            Err(error) if error.raw_os_error() == Some(libc::EAGAIN) => Ok(false),
+            Err(error) => Err(error),
         }
-        Ok(true)
     }
 
     /// Hardware support bitmask (bit N == VPU_CLIENT_* N is present).
@@ -248,7 +272,7 @@ impl MppService {
 
 impl Drop for MppService {
     fn drop(&mut self) {
-        unsafe { libc::close(self.fd) };
+        self.close_fd();
     }
 }
 
@@ -476,18 +500,16 @@ impl MppService {
         if batch.reqs.is_empty() {
             return Ok(());
         }
+        reject_secure_requests(batch)?;
         batch.finalize_flags(false);
-        let r = unsafe {
-            libc::ioctl(
-                self.fd,
-                MPP_IOC_CFG_V1,
-                batch.reqs.as_mut_ptr() as *mut MppReqV1,
-            )
-        };
-        if r < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
+        ioctl_mpp(self.fd, batch.reqs.as_mut_ptr())?;
+        Ok(())
+    }
+
+    pub fn submit_batch_plain_recovering(&mut self, batch: &mut Batch) -> io::Result<()> {
+        match self.submit_batch_plain(batch) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.recovery_error(error)),
         }
     }
 
@@ -496,18 +518,16 @@ impl MppService {
         if batch.reqs.is_empty() {
             return Ok(());
         }
+        reject_secure_requests(batch)?;
         batch.finalize_flags(true);
-        let r = unsafe {
-            libc::ioctl(
-                self.fd,
-                MPP_IOC_CFG_V1,
-                batch.reqs.as_mut_ptr() as *mut MppReqV1,
-            )
-        };
-        if r < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
+        ioctl_mpp(self.fd, batch.reqs.as_mut_ptr())?;
+        Ok(())
+    }
+
+    pub fn submit_batch_recovering(&mut self, batch: &mut Batch) -> io::Result<()> {
+        match self.submit_batch(batch) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.recovery_error(error)),
         }
     }
 
@@ -518,14 +538,19 @@ impl MppService {
         if batch.reqs.is_empty() {
             return Ok(());
         }
+        reject_secure_requests(batch)?;
         batch.finalize_flags(true);
         for req in &mut batch.reqs {
-            let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, req as *mut MppReqV1) };
-            if r < 0 {
-                return Err(io::Error::last_os_error());
-            }
+            ioctl_mpp(self.fd, req)?;
         }
         Ok(())
+    }
+
+    pub fn submit_batch_streaming_recovering(&mut self, batch: &mut Batch) -> io::Result<()> {
+        match self.submit_batch_streaming(batch) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.recovery_error(error)),
+        }
     }
 
     /// Is this command implemented by the running kernel?
@@ -549,8 +574,71 @@ impl MppService {
         command_supported(cmd, &caps)
     }
 
+    /// Issue `MPP_CMD_RESET_SESSION`.
+    ///
+    /// This clears the kernel job, but on t6 it is not sufficient to make an
+    /// already-used fd reusable: submitting the next job to that fd can block
+    /// forever. A replacement opened before the reset fd was closed also
+    /// wedged the next H.264 submit. Normal error recovery therefore never
+    /// issues this command; it closes the old fd before reopening.
     pub fn reset_session(&self) -> io::Result<()> {
-        self.call(MPP_CMD_RESET_SESSION, 0, 0).map(|_| ())
+        match self.call(MPP_CMD_RESET_SESSION, 0, 0) {
+            Ok(_) => {
+                self.session_resets.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(error) => {
+                self.reset_failures.fetch_add(1, Ordering::Relaxed);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn recovery_stats(&self) -> RecoveryStats {
+        RecoveryStats {
+            session_resets: self.session_resets.load(Ordering::Relaxed),
+            reset_failures: self.reset_failures.load(Ordering::Relaxed),
+            session_reopens: self.session_reopens.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Replace a failed client session without issuing `RESET_SESSION`.
+    ///
+    /// t6 proved that reset poisons the hardware even when a replacement fd is
+    /// opened first: the next H.264 submit blocks the whole driver. The safe
+    /// recovery path therefore closes the failed descriptor before opening the
+    /// replacement, then verifies the replacement with `QUERY_HW_ID`.
+    pub fn restart_after_hardware_error(&mut self) -> io::Result<()> {
+        self.close_fd();
+        let replacement = MppService::open(self.client_type)?;
+        replacement.hw_id()?;
+        replacement.session_resets.store(
+            self.session_resets.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        replacement.reset_failures.store(
+            self.reset_failures.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        replacement.session_reopens.store(
+            self.session_reopens.load(Ordering::Relaxed) + 1,
+            Ordering::Relaxed,
+        );
+        *self = replacement;
+        Ok(())
+    }
+
+    fn close_fd(&mut self) {
+        if self.fd >= 0 {
+            // SAFETY: this object exclusively owns the descriptor returned by
+            // `open`; the -1 guard makes close idempotent during recovery.
+            unsafe { libc::close(self.fd) };
+            self.fd = -1;
+        }
+    }
+
+    fn recovery_error(&mut self, error: io::Error) -> io::Error {
+        attach_recovery_result(error, self.restart_after_hardware_error())
     }
 
     /// dma-buf fd -> IOVA, for callers that patch addresses themselves.
@@ -582,8 +670,18 @@ impl MppService {
             count_ret: 0,
         };
         let cfg_size = std::mem::size_of::<Cfg>();
-        let slice_bytes = slices.len() * std::mem::size_of::<SliceInfo>();
-        let mut buf = vec![0u8; cfg_size + slice_bytes];
+        let slice_bytes = slices
+            .len()
+            .checked_mul(std::mem::size_of::<SliceInfo>())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "slice table overflow"))?;
+        let total_bytes = cfg_size
+            .checked_add(slice_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "poll buffer overflow"))?;
+        let request_size = u32::try_from(total_bytes)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "poll buffer too large"))?;
+        let mut buf = vec![0u8; total_bytes];
+        // SAFETY: `buf` is allocated for both sections. The source `Cfg` is
+        // a live POD value and the destination spans exactly `cfg_size`.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 &c as *const Cfg as *const u8,
@@ -594,14 +692,13 @@ impl MppService {
         let mut req = MppReqV1 {
             cmd: MPP_CMD_POLL_HW_IRQ,
             flag: MPP_FLAGS_LAST_MSG | MPP_FLAGS_REG_OFFSET_ALONE,
-            size: (cfg_size + slice_bytes) as u32,
+            size: request_size,
             offset: 0,
             data_ptr: buf.as_mut_ptr() as u64,
         };
-        let r = unsafe { libc::ioctl(self.fd, MPP_IOC_CFG_V1, &mut req as *mut MppReqV1) };
-        if r < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        ioctl_mpp(self.fd, &mut req)?;
+        // SAFETY: the kernel wrote the poll header into the mapped request
+        // buffer; offset 12 is the `count_ret` i32 in its ABI layout.
         let count = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(12).cast::<i32>()) };
         if count < 0 || count as usize > slices.len() {
             return Err(io::Error::new(
@@ -611,9 +708,58 @@ impl MppService {
         }
         for (index, slice) in slices.iter_mut().enumerate().take(count as usize) {
             let offset = cfg_size + index * std::mem::size_of::<SliceInfo>();
+            // SAFETY: `count` was bounded above by `slices.len()`, so this
+            // offset addresses one complete u32 inside the allocated buffer.
             slice.val = unsafe { std::ptr::read_unaligned(buf.as_ptr().add(offset).cast::<u32>()) };
         }
         Ok(count as usize)
+    }
+}
+
+fn attach_recovery_result(error: io::Error, recovery: io::Result<()>) -> io::Error {
+    match recovery {
+        Ok(()) => io::Error::new(error.kind(), format!("{error}; hardware session reopened")),
+        Err(reopen) => io::Error::new(
+            error.kind(),
+            format!("{error}; hardware session recovery failed: {reopen}"),
+        ),
+    }
+}
+
+fn ioctl_mpp(fd: c_int, request: *mut MppReqV1) -> io::Result<c_int> {
+    retry_interrupted(|| {
+        // SAFETY: callers pass a live `MppReqV1` or request-chain pointer with
+        // the layout and size encoded by MPP_IOC_CFG_V1.
+        let result = unsafe { libc::ioctl(fd, MPP_IOC_CFG_V1, request) };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(result)
+        }
+    })
+}
+
+fn retry_interrupted(mut call: impl FnMut() -> io::Result<c_int>) -> io::Result<c_int> {
+    loop {
+        match call() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            result => return result,
+        }
+    }
+}
+
+fn reject_secure_requests(batch: &Batch) -> io::Result<()> {
+    if batch
+        .reqs
+        .iter()
+        .any(|request| request.flag & MPP_FLAGS_SECURE_MODE != 0)
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "secure MPP/TA mode is unavailable and is refused",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -630,12 +776,80 @@ mod tests {
     use super::*;
 
     #[test]
+    fn interrupted_ioctls_are_retried_but_real_errors_are_returned() {
+        let mut interrupted_calls = 0;
+        let recovered = retry_interrupted(|| {
+            interrupted_calls += 1;
+            if interrupted_calls < 3 {
+                Err(io::Error::from(io::ErrorKind::Interrupted))
+            } else {
+                Ok(7)
+            }
+        })
+        .unwrap();
+        assert_eq!(recovered, 7);
+        assert_eq!(interrupted_calls, 3);
+
+        let mut failed_calls = 0;
+        let failed = retry_interrupted(|| {
+            failed_calls += 1;
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(failed_calls, 1);
+    }
+
+    #[test]
+    fn secure_requests_are_refused_before_any_ioctl() {
+        let mut batch = Batch::new();
+        let value = 0u32;
+        batch.push(
+            MPP_CMD_SET_REG_WRITE,
+            MPP_FLAGS_SECURE_MODE,
+            4,
+            0,
+            &value as *const u32 as u64,
+        );
+        let error = reject_secure_requests(&batch).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("secure MPP/TA"));
+
+        batch.clear();
+        batch.push(MPP_CMD_SET_REG_WRITE, 0, 4, 0, &value as *const u32 as u64);
+        assert!(reject_secure_requests(&batch).is_ok());
+    }
+
+    #[test]
     fn command_capabilities_exclude_unimplemented_rcb_info() {
         let caps = [0x3, 0x103, 0x203, 0x302, 0x404];
 
         assert!(command_supported(MPP_CMD_SET_REG_ADDR_OFFSET, &caps));
         assert!(!command_supported(MPP_CMD_SET_RCB_INFO, &caps));
         assert!(command_supported(MPP_CMD_POLL_HW_FINISH, &caps));
+    }
+
+    #[test]
+    fn recovery_errors_preserve_the_original_kind_and_record_reopen_result() {
+        let recovered =
+            attach_recovery_result(io::Error::new(io::ErrorKind::TimedOut, "watchdog"), Ok(()));
+        assert_eq!(recovered.kind(), io::ErrorKind::TimedOut);
+        assert!(recovered.to_string().contains("session reopened"));
+
+        let failed = attach_recovery_result(
+            io::Error::from_raw_os_error(libc::EIO),
+            Err(io::Error::from_raw_os_error(libc::ENOMEM)),
+        );
+        assert_eq!(
+            failed.kind(),
+            io::Error::from_raw_os_error(libc::EIO).kind()
+        );
+        let text = failed.to_string();
+        assert!(text.contains("recovery failed"), "{text}");
+        assert!(
+            text.contains("Cannot allocate memory") || text.contains("12"),
+            "{text}"
+        );
     }
 
     #[test]

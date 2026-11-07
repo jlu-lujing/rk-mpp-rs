@@ -391,11 +391,14 @@ impl Av1d {
                 "AV1 hardware submission skipped by RK_MPP_AV1_DRY_RUN",
             ));
         }
-        self.svc.submit_batch(&mut self.batch)?;
-        self.svc.poll_hw_finish()?;
+        self.svc.submit_batch_recovering(&mut self.batch)?;
+        self.svc.poll_hw_finish_recovering()?;
 
         self.last_status = (readback[1], readback[261], readback[262]);
         self.last_hardware_error = readback[1] & (1 << 12) == 0;
+        if self.last_hardware_error {
+            let _ = self.svc.restart_after_hardware_error();
+        }
         self.probability_out.sync_read_begin()?;
         self.last_probability.clear();
         self.last_probability

@@ -1,8 +1,8 @@
 # M10 framework: task queue, buffer pool, dma-fence survey (W5 subset)
 
-Status: the queue and the pool are implemented and unit-tested on the host;
-board verification is scripted but not yet run (this worktree must not
-touch t6). The fence entry below is a survey, not an implementation.
+Status: the queue, timing/metrics and the pool are implemented and verified on
+host and t6. The fence entry below remains a protocol survey, not an
+implementation.
 ROADMAP draft entries live at the bottom; the ledger itself is updated by
 whoever lands the board evidence.
 
@@ -29,7 +29,10 @@ Two halves:
   TaskOutcome + Send`, i.e. the closure runs the whole sync path (its own
   `MppService` session included) on the worker. Outcome is delivered
   exactly once to a callback, to any `wait(id, PollTimeout)` waiter (first
-  taker retires the slot), and to a bounded best-effort event channel.
+  taker retires the slot), and to a bounded best-effort event channel. Every
+  event carries queue-wait, execution and turnaround timing. `TaskQueue::metrics`
+  exposes cumulative submitted/done/failed/cancelled counts, aggregate timing
+  and queued/running high-water marks (W5-9).
 
 `PollTimeout` mirrors `MppPollType` exactly (`BLOCK` −1, `NON_BLOCK` 0,
 1..=8000 ms, −2 and >8000 rejected) and is reused by the pool's timed
@@ -57,12 +60,31 @@ Refcounted dma-heap group mirroring `mpp/base/mpp_buffer.c`:
   use-after-release return `PoolError::Released` (C: debug-assert or UB);
   a partially released block stays invisible to new acquires (C trusts the
   caller); monotonic ids mean a recycled slot never aliases an old handle.
+- `acquire_lease` / `BufferLease::try_clone` are the RAII forms of
+  get/ref. The last lease to drop performs `unref`, including error paths,
+  so a DPB owner or output consumer cannot silently leak its final reference.
+  The explicit `BufferHandle` surface remains for C-style code and diagnostics.
+  The async JPEG demo now uses leases for its table, stream and output blocks;
+  every `?` path releases them automatically. VP8's DPB slots own leases
+  directly, and H.264's NV12/colmv pair now uses separate pools. H.264 drops
+  every old frame lease on IDR or geometry change, clears only idle cache, then
+  acquires a fresh surface, preserving the reference-less-IDR requirement.
+  H.265, AV1 and VP9 still use their existing fixed-slot recycling and remain a
+  later migration.
+- Pooled JPEG jobs declare `MppService` after all buffer leases, so reverse
+  drop order closes the kernel client before a shared dma-buf can return to
+  the pool, including every early-error path. The t6 driver retains DMA import
+  state until client close; releasing the leases first allowed another worker
+  to reuse those fds while the old service still owned the import. A prior
+  boot ended in a CPU6 soft lockup at `mpp_dma_find_buffer_fd()`. After this
+  ordering fix, 500 consecutive async demos (3000 jobs, three workers) completed
+  without a lockup or MPP reset under the 80% OPP cap.
 - `import` (external block → cache) and `dup_fd` (raw fd sharing, private
   copy) are the import/export corners of W5-4; the DPB-release-timing
   question is handled by the same refcount discipline — see the module
   doc-comment.
 - Backend is generic (`PoolBuffer`): the host test suite runs on a counting
-  fake (allocation counts are the reuse witness), the real `DmaBuf` backend
+  fake (allocation counts and lease-drop reuse are the witness), the real `DmaBuf` backend
   is exercised by the ignored `tests/framework_pool_hw.rs` on the board.
 - `DmaBuf` gained `unsafe impl Send` (no thread affinity on a dma-buf
   borrow checker), deliberately not `Sync` — this is what lets pooled
@@ -105,57 +127,94 @@ state machine change.
 
 - **Multi-instance (W5-5)**: the queue is instance-agnostic; each job owns
   its session fd, so `TaskQueue::new(n)` is already n concurrent sessions —
-  proven on jpegd (decoders never had the rkvenc restriction; the async
-  demo runs 6 jobs / 3 workers today). rkvenc keeps its one-live-session
-  rule (HANDOFF §6.13, `setup_ext_line_bufs` writes process-shared row
-  buffers). Until the line buffers become per-session, rkvenc jobs either
-  get a 1-worker queue or share their session through
-  `task_queue::SessionGate` — the gate test proves workers cannot interleave
-  into the session section. When W5-5 lands it is a HAL-side change
-  (per-session line buffers); queue and pool need nothing.
+  proven on jpegd (the async demo runs 6 jobs / 3 workers today) and on
+  rkvenc. The earlier one-session-per-process claim came from stale H.264
+  goldens that also failed when run serially and is retracted. H.264's
+  `ext_line_buf` and H.265's tile line buffers are members of their encoder
+  sessions, not process globals. On t6, two and three live VEPU580 H.264
+  sessions at 64x64, 320x240 and 640x480 produced one distinct stream each,
+  equal to the serial result and the C reference. `task_queue::SessionGate`
+  remains available when callers deliberately share one session, but it is
+  no longer a correctness requirement.
 - **CCU (W5-6)**: driver-side multi-session batching is `MPP_CMD_SET_SESSION_FD`
   (`osal/driver/mpp_server.c` batches per-session task lists into one
   batch ioctl). This belongs to the service layer below the queue; the
   queue's only future obligation is that one job maps to one session,
   which holds by construction.
 - **Secure (W5-7)**: `MPP_FLAGS_SECURE_MODE` (0x10000) is exposed as a
-  constant; no code sets it. The test board has no TA, so per decision D3
-  the implementation posture is "expose the bit, refuse secure work,
-  record as unverified".
+  constant for protocol completeness. Every batch submit rejects a request
+  carrying that bit with `ErrorKind::Unsupported` before issuing an ioctl.
+  The test board has no TA and the kernel exposes no capability query, so per
+  decision D3 the secure data path remains unimplemented and unverified.
 
-## 5. ROADMAP draft entries (English, for the ledger owner)
+## 5. Hardware recovery (W5-8)
 
-Draft — only the first has host-side evidence; tick nothing until the
-board script has been run.
+`POLL_HW_FINISH` timeouts and abnormal STATUS now enter a shared recovery
+path. A direct `MPP_CMD_RESET_SESSION` is deliberately *not* considered
+sufficient: t6 accepted 16 idle resets and reported the client alive, but the
+next H.264 job submitted to the same fd wedged the driver and required a board
+reboot. Opening a replacement fd before closing the reset fd was also unsafe:
+the next decode blocked the entire driver. Normal recovery therefore never
+issues `RESET_SESSION`; it closes the failed descriptor first, opens a fresh
+`MppService`, health-checks `QUERY_HW_ID`, preserves counters and drops the
+placeholder. DMA buffers stay allocated; the next job re-registers them. Every
+service ioctl first retries `EINTR`; an interrupted syscall is not a hardware
+failure and must not tear down a healthy session.
+
+The normal hardware gate covers repeated close/reopen without reset and H.264
+decode output after reconnection. The old 32-cycle open/reset/query/drop probe
+is now an explicitly destructive example,
+`examples/reset_session_probe.rs`; it is not part of `cargo test -- --ignored`
+and must not be followed by a decode job without a board reboot first. This
+prevents a diagnostic from poisoning a later hardware test in the same run.
+
+The shared legacy VDPU2 path (VP8, MPEG-2, MPEG-4 and H.263) now treats
+`IRQ_ERROR | IRQ_BUFFER` as a session-recovery boundary as well. It still
+returns the original interrupt word so the damaged picture is marked, but the
+next picture opens on a healthy session. The VP8 damage fixture decodes a clean
+stream through the same decoder afterward and compares every visible plane;
+that assertion is board-only and runs with the recovery suite.
+
+## 6. ROADMAP draft entries (English, for the ledger owner)
+
+Draft — mirrored here for context; the authoritative ledger is `ROADMAP.md`.
 
 ```
-- [ ] W5 task queue (M10): async submit with worker threads, MppPollType
+- [x] W5 task queue (M10): async submit with worker threads, MppPollType
       wait domain, cancellation (queued removes, running flags),
       completion callback + waiter + bounded event trace. Scheduler
       state machine unit-tested (FIFO service, out-of-order completion,
       slot reuse, id monotonicity, capacity pinning). 18 unit tests.
-      Board: scripts/board_framework_async_vs_sync.sh pending.
-- [ ] W5 buffer pool (M10): refcounted dma-heap group with a
+      Board: scripts/board_framework_async_vs_sync.sh passes on t6.
+- [x] W5 buffer pool (M10): refcounted dma-heap group with a
       Queued/Cached/Live{refs} state machine; double release and
       use-after-release reported instead of C's assert/UB; limit policy
       = mpp_buffer_group_limit_config (fail, no eviction); optional
-      Block/Ms acquire on the MppPollType domain; import/dup_fd. 9 host
-      tests (fake backend) + 2 board tests (DmaBuf) pending.
+      Block/Ms acquire on the MppPollType domain; import/dup_fd; RAII
+      BufferLease cloning/drop. 10 host tests (fake backend) + 3 board
+      tests (DmaBuf fd→IOVA/dup and concurrent queue use) pass.
 - [ ] W5 dma-fence (M10): survey only — the MPP tree and this board's
       service protocol expose no fence ioctl (see docs/framework-m10.md
       §3); poll_hw_finish_try ships as the host-visible poll surface,
       kernel errno contract unverified.
 ```
 
-## 6. Commands for the orchestrator (board)
+## 7. Commands for the orchestrator (board)
 
 ```bash
 # 1. build + async==sync byte check + pool tallies (the new suite)
 ./scripts/board_framework_async_vs_sync.sh
-# 2. the two ignored integration tests (jpegd + dma-heap):
+# 2. the four ignored integration tests (jpegd + three dma-heap/IOVA):
 ssh -n t6 'export PATH=$HOME/.cargo/bin:$PATH; cd ~/rk-mpp-rs && \
   cargo test --test framework_async_hw --test framework_pool_hw -- --ignored --test-threads=1'
 # 3. regression gate - sync path must be unmoved:
 ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 ./scripts/board_h264_cbr_vs_mpp.sh
+# 4. W5-8 recovery (replaces a failed session and then decodes a clean stream):
+./scripts/board_framework_recovery.sh
+# 5. W5-5 multi-instance encoder matrix:
+ssh -n t6 'export PATH=$HOME/.cargo/bin:$PATH; cd ~/rk-mpp-rs && \
+  cargo test --test h264_encoder_hw \
+  concurrent_live_sessions_match_the_serial_reference \
+  -- --ignored --nocapture --test-threads=1'
 ```

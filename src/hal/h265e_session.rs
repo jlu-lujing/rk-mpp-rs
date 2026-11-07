@@ -417,7 +417,7 @@ impl Vepu580H265 {
             }
         } else {
             self.service
-                .poll_hw_finish()
+                .poll_hw_finish_recovering()
                 .map_err(|e| format!("H.265 poll: {e}"))?;
         }
         Ok(())
@@ -767,18 +767,20 @@ impl Vepu580H265 {
             batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
             batch.reg_read(&mut status, STATUS_OFFSET);
             self.service
-                .submit_batch(&mut batch)
+                .submit_batch_recovering(&mut batch)
                 .map_err(|e| format!("H.265 register submit: {e}"))?;
             self.poll_picture(tile.is_some(), &mut slice_lengths)?;
 
             let errors = hw_status[0] & HW_ERROR_MASK;
             if errors != 0 {
+                let _ = self.service.restart_after_hardware_error();
                 return Err(format!(
                     "VEPU580 H.265 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
                     hw_status[0]
                 ));
             }
             if hw_status[0] & 1 == 0 {
+                let _ = self.service.restart_after_hardware_error();
                 return Err(format!(
                     "VEPU580 H.265 completed ioctl without enc_done (int_sta=0x{:08x})",
                     hw_status[0]
@@ -787,6 +789,7 @@ impl Vepu580H265 {
 
             let length = status[0] as usize;
             if length == 0 || length > self.output.len().saturating_sub(stream_len) {
+                let _ = self.service.restart_after_hardware_error();
                 return Err(format!(
                     "invalid VEPU580 H.265 length {length} at offset {stream_len} (capacity {})",
                     self.output.len()

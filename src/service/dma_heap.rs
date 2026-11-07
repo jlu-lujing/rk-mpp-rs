@@ -48,27 +48,49 @@ pub struct DmaBuf {
 // buffers to task-queue worker threads.
 unsafe impl Send for DmaBuf {}
 
+fn heap_allocation_len(len: usize) -> io::Result<usize> {
+    const PAGE: usize = 4096;
+    if len == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "dma-heap allocation length must be non-zero",
+        ));
+    }
+    len.div_ceil(PAGE)
+        .checked_mul(PAGE)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "dma-heap length overflow"))
+}
+
 impl DmaBuf {
     /// Allocate `len` bytes from a dma-heap and map them into our address space.
     pub fn alloc(heap: &str, len: usize, cached: bool) -> io::Result<Self> {
+        let allocation_len = heap_allocation_len(len)?;
         let path = CString::new(format!("/dev/dma_heap/{}", heap)).unwrap();
+        // SAFETY: `path` is a live NUL-terminated string for the duration of
+        // the call, and open does not retain the caller's pointer.
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        let page = 4096usize;
         let mut data = DmaHeapAllocationData {
-            len: ((len + page - 1) / page * page) as u64,
+            len: allocation_len as u64,
             fd: 0,
             fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
             heap_flags: 0,
         };
+        // SAFETY: `fd` is the open dma-heap descriptor and `data` is a live,
+        // correctly sized `DMA_HEAP_IOCTL_ALLOC` payload for this ioctl.
         let r = unsafe { libc::ioctl(fd, DMA_HEAP_IOCTL_ALLOC, &mut data as *mut _) };
+        // SAFETY: this local heap descriptor is owned here and is not reused
+        // after the close, whether the allocation ioctl succeeded or failed.
         unsafe { libc::close(fd) };
         if r < 0 {
             return Err(io::Error::last_os_error());
         }
 
+        // SAFETY: `data.fd` is the dma-buf fd returned by the successful heap
+        // allocation. The mapping is read/write, shared and exactly the
+        // page-aligned allocation length accepted by the kernel.
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -80,6 +102,8 @@ impl DmaBuf {
             )
         };
         if ptr == libc::MAP_FAILED {
+            // SAFETY: the heap returned this fd, mmap failed without retaining
+            // it, and no other owner exists yet.
             unsafe { libc::close(data.fd as c_int) };
             return Err(io::Error::last_os_error());
         }
@@ -92,6 +116,8 @@ impl DmaBuf {
         // are fixed-size and only partially rewritten for each frame, so
         // stale contents from a previous allocation can change decode output.
         buf.sync_write_begin()?;
+        // SAFETY: `ptr` maps `data.len` writable bytes, and `data.len` still
+        // describes that mapping at this point.
         unsafe { std::ptr::write_bytes(ptr, 0, data.len as usize) };
         buf.sync_write_end()?;
         let _ = cached;
@@ -107,10 +133,14 @@ impl DmaBuf {
     }
 
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `ptr` owns a live mapping of `len` bytes, and `&mut self`
+        // guarantees this is the only Rust view with write access.
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 
     pub fn as_slice(&self) -> &[u8] {
+        // SAFETY: `ptr` owns a live mapping of `len` bytes. Shared access is
+        // sound because mutable access requires `&mut DmaBuf`.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 
@@ -140,6 +170,8 @@ impl DmaBuf {
             flags: u64,
         }
         let mut s = Sync { flags };
+        // SAFETY: this is a live dma-buf fd and `s` matches the
+        // `struct dma_buf_sync` payload expected by DMA_BUF_IOCTL_SYNC.
         let r = unsafe { libc::ioctl(self.fd, DMA_BUF_IOCTL_SYNC, &mut s as *mut Sync) };
         if r < 0 {
             Err(io::Error::last_os_error())
@@ -151,6 +183,10 @@ impl DmaBuf {
 
 impl Drop for DmaBuf {
     fn drop(&mut self) {
+        // SAFETY: both the mapping and fd were created together by `alloc`,
+        // are owned solely by this DmaBuf, and are each released exactly once.
+        // munmap may report a diagnostic for an external unmap, but the fd is
+        // still valid to close immediately afterward.
         unsafe {
             libc::munmap(self.ptr as *mut c_void, self.len);
             libc::close(self.fd);
@@ -160,7 +196,22 @@ impl Drop for DmaBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::DMA_BUF_IOCTL_SYNC;
+    use super::{heap_allocation_len, DMA_BUF_IOCTL_SYNC};
+
+    #[test]
+    fn allocation_length_rejects_zero_and_overflow() {
+        assert_eq!(heap_allocation_len(1).unwrap(), 4096);
+        assert_eq!(heap_allocation_len(4096).unwrap(), 4096);
+        assert_eq!(heap_allocation_len(4097).unwrap(), 8192);
+        assert_eq!(
+            heap_allocation_len(0).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            heap_allocation_len(usize::MAX).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
 
     #[test]
     fn sync_ioctl_encodes_dma_buf_sync_size() {

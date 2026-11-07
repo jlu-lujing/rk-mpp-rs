@@ -473,7 +473,7 @@ fn decode_to_rgb(
     let rgb = std::env::var("RKMPP_NV12").is_err();
     let output_geometry = decode::geometry(&info, rgb, downscale).map_err(|e| e.to_string())?;
 
-    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+    let mut svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
 
     // table buffer, stream buffer, output buffer
     let mut table_buf = dma_heap::DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false)
@@ -498,9 +498,10 @@ fn decode_to_rgb(
     })
     .map_err(|e| e.to_string())?;
 
-    svc.submit_regs(&regs.words)
+    svc.submit_regs_recovering(&regs.words)
         .map_err(|e| format!("submit: {e}"))?;
-    svc.poll_hw_finish().map_err(|e| format!("poll: {e}"))?;
+    svc.poll_hw_finish_recovering()
+        .map_err(|e| format!("poll: {e}"))?;
 
     out_buf
         .sync_read_begin()
@@ -572,7 +573,7 @@ fn pipeline(path: &str, iters: usize, out_path: &str) -> Result<(f64, f64, f64),
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     let info = jpeg::parse(&data).map_err(|e| e.to_string())?;
     let tables = tables::Tables::build(&info).map_err(|e| format!("{e:?}"))?;
-    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+    let mut svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
 
     let mut table_buf = dma_heap::DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false)
         .map_err(|e| e.to_string())?;
@@ -602,8 +603,9 @@ fn pipeline(path: &str, iters: usize, out_path: &str) -> Result<(f64, f64, f64),
 
     // warmup
     for _ in 0..5 {
-        svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
-        svc.poll_hw_finish().map_err(|e| e.to_string())?;
+        svc.submit_regs_recovering(&regs.words)
+            .map_err(|e| e.to_string())?;
+        svc.poll_hw_finish_recovering().map_err(|e| e.to_string())?;
         scaler.letterbox_strided(
             out_buf.as_slice(),
             geom.stride_bytes,
@@ -618,8 +620,9 @@ fn pipeline(path: &str, iters: usize, out_path: &str) -> Result<(f64, f64, f64),
     let mut t_sync = 0.0;
     for _ in 0..iters {
         let a = Instant::now();
-        svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
-        svc.poll_hw_finish().map_err(|e| e.to_string())?;
+        svc.submit_regs_recovering(&regs.words)
+            .map_err(|e| e.to_string())?;
+        svc.poll_hw_finish_recovering().map_err(|e| e.to_string())?;
         let b = Instant::now();
         // The decoder wrote through the IOMMU; invalidate before CPU reads.
         let sb = Instant::now();
@@ -661,7 +664,7 @@ fn bench_decode(
     let info = jpeg::parse(&data).map_err(|e| e.to_string())?;
     let tables = tables::Tables::build(&info).map_err(|e| format!("{e:?}"))?;
     let output_geometry = decode::geometry(&info, true, downscale).map_err(|e| e.to_string())?;
-    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+    let mut svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
 
     let mut table_buf = dma_heap::DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false)
         .map_err(|e| e.to_string())?;
@@ -686,13 +689,15 @@ fn bench_decode(
 
     // warmup
     for _ in 0..5 {
-        svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
-        svc.poll_hw_finish().map_err(|e| e.to_string())?;
+        svc.submit_regs_recovering(&regs.words)
+            .map_err(|e| e.to_string())?;
+        svc.poll_hw_finish_recovering().map_err(|e| e.to_string())?;
     }
     let t = Instant::now();
     for _ in 0..iters {
-        svc.submit_regs(&regs.words).map_err(|e| e.to_string())?;
-        svc.poll_hw_finish().map_err(|e| e.to_string())?;
+        svc.submit_regs_recovering(&regs.words)
+            .map_err(|e| e.to_string())?;
+        svc.poll_hw_finish_recovering().map_err(|e| e.to_string())?;
     }
     let ms = us(t.elapsed()) / iters as f64 / 1000.0;
     Ok((ms, geom.out_width, geom.out_height))
@@ -708,7 +713,7 @@ fn decode_job_sync(
 ) -> Result<Vec<u8>, String> {
     let tables = tables::Tables::build(info).map_err(|e| format!("{e:?}"))?;
     let output_geometry = decode::geometry(info, true, downscale).map_err(|e| e.to_string())?;
-    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+    let mut svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
     let mut table_buf = dma_heap::DmaBuf::alloc("system", tables::RKD_TABLE_SIZE, false)
         .map_err(|e| e.to_string())?;
     table_buf.as_mut_slice()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
@@ -727,9 +732,10 @@ fn decode_job_sync(
         downscale,
     })
     .map_err(|e| e.to_string())?;
-    svc.submit_regs(&regs.words)
+    svc.submit_regs_recovering(&regs.words)
         .map_err(|e| format!("submit: {e}"))?;
-    svc.poll_hw_finish().map_err(|e| format!("poll: {e}"))?;
+    svc.poll_hw_finish_recovering()
+        .map_err(|e| format!("poll: {e}"))?;
     out_buf
         .sync_read_begin()
         .map_err(|e| format!("dma-buf read sync: {e}"))?;
@@ -742,7 +748,8 @@ fn decode_job_sync(
 }
 
 /// The worker-side async job: the identical ioctl sequence, but every block
-/// comes from the refcounted pool and returns to it before the job ends.
+/// comes from the refcounted pool through an RAII lease. Normal completion and
+/// every early `?` return both release the leases.
 fn decode_job_pooled(
     data: &[u8],
     info: &jpeg::JpegInfo,
@@ -751,33 +758,37 @@ fn decode_job_pooled(
 ) -> Result<Vec<u8>, String> {
     let tables = tables::Tables::build(info).map_err(|e| format!("{e:?}"))?;
     let output_geometry = decode::geometry(info, true, downscale).map_err(|e| e.to_string())?;
-    let svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
-    let table_h = pool
-        .acquire(tables::RKD_TABLE_SIZE)
+    let table = pool
+        .acquire_lease(tables::RKD_TABLE_SIZE)
         .map_err(|e| format!("pool table: {e}"))?;
-    let stream_h = pool
-        .acquire(data.len().max(1))
+    let stream = pool
+        .acquire_lease(data.len().max(1))
         .map_err(|e| format!("pool stream: {e}"))?;
-    let out_h = pool
-        .acquire(output_geometry.frame_size)
+    let output = pool
+        .acquire_lease(output_geometry.frame_size)
         .map_err(|e| format!("pool output: {e}"))?;
-    pool.data_mut(table_h).unwrap()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
-    pool.data_mut(stream_h).unwrap()[..data.len()].copy_from_slice(data);
+    table.data_mut().unwrap()[..tables::RKD_TABLE_SIZE].copy_from_slice(tables.as_slice());
+    stream.data_mut().unwrap()[..data.len()].copy_from_slice(data);
     let (regs, geom) = decode::build(&decode::Job {
         info,
-        table_fd: pool.fd(table_h).unwrap(),
-        stream_fd: pool.fd(stream_h).unwrap(),
+        table_fd: table.fd().unwrap(),
+        stream_fd: stream.fd().unwrap(),
         stream_len: data.len(),
-        output_fd: pool.fd(out_h).unwrap(),
+        output_fd: output.fd().unwrap(),
         rgb: true,
         downscale,
     })
     .map_err(|e| e.to_string())?;
-    svc.submit_regs(&regs.words)
+    // Declare the service after every pool lease: on both success and an early
+    // `?`, Rust drops locals in reverse order, so the kernel client closes
+    // before any shared dma-buf returns to the pool.
+    let mut svc = MppService::open(VPU_CLIENT_JPEG_DEC).map_err(|e| e.to_string())?;
+    svc.submit_regs_recovering(&regs.words)
         .map_err(|e| format!("submit: {e}"))?;
-    svc.poll_hw_finish().map_err(|e| format!("poll: {e}"))?;
+    svc.poll_hw_finish_recovering()
+        .map_err(|e| format!("poll: {e}"))?;
     let frame = {
-        let view = pool.data(out_h).map_err(|e| format!("pool view: {e}"))?;
+        let view = output.data().map_err(|e| format!("pool view: {e}"))?;
         // The job's own thread invalidates its mapping before the read, the
         // same DMA_BUF_SYNC contract the sync path obeys.
         view.buffer()
@@ -790,9 +801,12 @@ fn decode_job_pooled(
             .map_err(|e| format!("dma-buf read sync end: {e}"))?;
         frame
     };
-    let _ = pool.release(table_h);
-    let _ = pool.release(stream_h);
-    let _ = pool.release(out_h);
+    // The t6 driver keeps the service's DMA imports alive until its client fd
+    // closes. Releasing pooled dma-buf leases first lets another worker reuse
+    // the same fds while the old service still owns kernel-side import state;
+    // that path has previously ended in `mpp_dma_find_buffer_fd()` spinning on
+    // CPU6. Close this service before any lease can return to the pool.
+    drop(svc);
     Ok(frame)
 }
 
@@ -886,6 +900,7 @@ fn async_demo(path: &str, jobs: usize, workers: usize, out_path: &str) -> Result
         }
     }
     let stats = pool.stats();
+    let queue_metrics = queue.metrics();
     println!(
         "async-demo: {jobs} jobs, {workers} workers, {per_job_ms:.3} ms/job; \
          identical={identical} callbacks={}",
@@ -894,6 +909,18 @@ fn async_demo(path: &str, jobs: usize, workers: usize, out_path: &str) -> Result
     println!(
         "async-demo: pool slots={} cached={} in_use={} allocations={}",
         stats.slots, stats.cached, stats.in_use, stats.allocations
+    );
+    println!(
+        "async-demo: queue submitted={} done={} failed={} cancelled={} \
+         avg_wait_ms={:.3} avg_run_ms={:.3} max_queued={} max_running={}",
+        queue_metrics.submitted,
+        queue_metrics.done,
+        queue_metrics.failed,
+        queue_metrics.cancelled,
+        queue_metrics.total_queue_wait.as_secs_f64() * 1000.0 / jobs as f64,
+        queue_metrics.total_run_time.as_secs_f64() * 1000.0 / jobs as f64,
+        queue_metrics.max_queued,
+        queue_metrics.max_running
     );
     if !out_path.is_empty() {
         // Job 0's frame on disk so an external md5 can check the whole
@@ -2493,14 +2520,22 @@ fn main() {
             }
         };
         use std::io::Write;
-        let mut pictures = Vec::with_capacity(aus.len());
+        let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
+        let mut reorder = rk_mpp_rs::codec::h264::DisplayReorder::new(dec.max_num_reorder_frames());
+        let mut decode_time = std::time::Duration::ZERO;
+        let mut decoded = 0usize;
+        let mut written = 0usize;
+        let mut write_error = None;
         let mut failed = false;
-        let t = Instant::now();
         for (i, au) in aus.iter().enumerate() {
             let t0 = Instant::now();
-            match dec.decode_access_unit(au) {
+            let decoded_picture = dec.decode_access_unit(au);
+            decode_time += t0.elapsed();
+            reorder.set_max_reorder(dec.max_num_reorder_frames());
+            match decoded_picture {
                 _ if false => {}
                 Ok(Some(pic)) => {
+                    decoded += 1;
                     if i < 3 && std::env::var_os("RKMPP_TRACE").is_some() {
                         println!(
                             "    frame {i} submit+poll: {:.2} ms",
@@ -2526,7 +2561,15 @@ fn main() {
                             dec.status().2
                         );
                     }
-                    pictures.push(pic);
+                    reorder.push(pic, |pic| {
+                        if write_error.is_none() {
+                            if let Err(e) = out.write_all(&pic.yuv) {
+                                write_error = Some(e);
+                            } else {
+                                written += 1;
+                            }
+                        }
+                    });
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -2536,24 +2579,24 @@ fn main() {
                 }
             }
         }
-        let decode_ms = t.elapsed().as_secs_f64() * 1000.0;
-        rk_mpp_rs::codec::h264::sort_pictures_by_poc(&mut pictures);
-        let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
-        let decoded = pictures.len();
-        let n = pictures
-            .iter()
-            .filter(|pic| rk_mpp_rs::codec::h264::decoder::picture_is_output(pic))
-            .count();
-        for pic in pictures
-            .iter()
-            .filter(|pic| rk_mpp_rs::codec::h264::decoder::picture_is_output(pic))
-        {
-            out.write_all(&pic.yuv).expect("write frame");
-        }
+        reorder.flush(|pic| {
+            if write_error.is_none() {
+                if let Err(e) = out.write_all(&pic.yuv) {
+                    write_error = Some(e);
+                } else {
+                    written += 1;
+                }
+            }
+        });
         out.flush().ok();
+        if let Some(e) = write_error {
+            eprintln!("write output: {e}");
+            failed = true;
+        }
+        let decode_ms = decode_time.as_secs_f64() * 1000.0;
         println!(
-            "decoded {decoded} frames ({n} output) in {decode_ms:.1} ms ({:.1} fps), POC-sorted output",
-            n as f64 / (decode_ms / 1000.0)
+            "decoded {decoded} frames ({written} output) in {decode_ms:.1} ms ({:.1} fps), POC-sorted output",
+            written as f64 / (decode_ms / 1000.0)
         );
         if failed {
             std::process::exit(1);
