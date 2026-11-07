@@ -229,15 +229,25 @@ fn build_frame_motion_field(
     let mvs_rows = (header.mi_rows + 1) >> 1;
     let mut cells = vec![None; mvs_cols * mvs_rows];
     for syntax in blocks {
-        let Some(inter) = syntax.inter else {
-            continue;
-        };
-        let width = inter.size.num_4x4_wide() as usize;
-        let height = inter.size.num_4x4_high() as usize;
+        let width = syntax.block.size.num_4x4_wide() as usize;
+        let height = syntax.block.size.num_4x4_high() as usize;
         let start_row = syntax.block.row >> 1;
         let start_col = syntax.block.col >> 1;
         let cell_rows = (height + 1) >> 1;
         let cell_cols = (width + 1) >> 1;
+        // `av1_copy_frame_mvs()` clears every motion-field cell covered by a
+        // syntax block before deciding whether that block contributes an MV.
+        // This matters when a later intra block shares a half-resolution cell
+        // with an earlier inter block: leaving the earlier MV behind fabricates
+        // an invalid temporal candidate and changes `mode_context`.
+        for row in start_row..(start_row + cell_rows).min(mvs_rows) {
+            for col in start_col..(start_col + cell_cols).min(mvs_cols) {
+                cells[row * mvs_cols + col] = None;
+            }
+        }
+        let Some(inter) = syntax.inter else {
+            continue;
+        };
         let mut selected = None;
         for (list, reference) in [inter.ref_frame, inter.ref_frame1].into_iter().enumerate() {
             if reference <= INTRA_FRAME {
@@ -1220,8 +1230,8 @@ fn predict_compound_block(
                     luma_row,
                     luma_width,
                     luma_height,
-                    sub_x,
-                    sub_y,
+                    0,
+                    0,
                     bit_depth,
                     COMPOUND_ROUND1_BITS,
                 )?;
@@ -1235,8 +1245,8 @@ fn predict_compound_block(
                     luma_row,
                     luma_width,
                     luma_height,
-                    sub_x,
-                    sub_y,
+                    0,
+                    0,
                     bit_depth,
                     COMPOUND_ROUND1_BITS,
                 )?;
@@ -2367,12 +2377,11 @@ mod tests {
     use crate::reference::av1::stream::{ReferenceStream, StreamEvent};
 
     #[test]
-    #[ignore = "multi-tile inter syntax is open: tile 1 diverges on the first block's skip"]
     fn real_two_by_two_tile_inter_frames_match_libaom() {
         let data = include_bytes!("../../../tests/data/av1_tiles_320x240_10.ivf");
         let (pictures, inter_frames) = decode_picture_stream(data);
         assert_eq!(pictures.len(), 10, "one picture per aomdec frame");
-        assert_eq!(inter_frames.len(), 9);
+        assert_eq!(inter_frames.len(), 10);
         assert!(
             inter_frames
                 .iter()

@@ -102,7 +102,7 @@
 | AV1 stream 调度（IVF/OBU→frame→tile） | 完成：`stream.rs` — 按 packet/OBU 顺序产出 sequence/show-existing/coded-frame 事件，事件携带真实 tile ranges，并把帧头参考状态更新接在事件推进上；单 tile 与 2×2 fixture 均覆盖 |
 | AV1 intra tile block sink | 完成语法闭环：按规范的 Y mode→Y angle→UV mode→CFL alpha→UV angle 顺序消费，并处理 palette、filter-intra、tx depth 与逐 plane 系数；真实 320×240 keyframe 的整 tile（17944 bits）通过分区覆盖、全部残差上下文和 `exit_symbol()` 尾位校验，记录的 `Quant[]` 已接入帧级像素重建 |
 | AV1 tile 熵入口 / 分区驱动 | 完成：`tile_entropy.rs` — tile id→MI 边界、叶块回调、stateful partition CDF、图像边缘的折叠二符号/隐式 SPLIT、`HORZ_4`/`VERT_4` 越界保护；真实 2×2 fixture 与 320×240 单 tile keyframe 均通过 |
-| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240、无 film-grain keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF、§7.16 superres 与 LR；普通及 restoration-enabled fixture 的四个阶段均已锁定，213×240→320×240 superres fixture 的最终 Y/U/V 三平面也已与 libaom 逐像素一致。十七条真实 320×240 inter fixture 分别闭合整数 inter、fractional/residual inter、inter LF+CDEF、inter LR、delta-q、average/distance-weighted/difference-weighted/wedge compound、smooth/wedge inter-intra、OBMC、local warp、单参考与 compound global warp、temporal MV、inter segmentation 与混合 intra/inter selected tx context；所有可见帧 Y/U/V 均与 libaom 逐字节一致。十七条真实 320×240 inter fixture 与一个 2×2 tile 的真实 keyframe 覆盖了逐 tile 独立熵解码：每个 tile 都从帧初始 CDF 重新开始，帧末 CDF 取 `context_update_tile_id`，intra 邻块可用性与 CDEF 单元传输按 tile 边界裁剪。仍缺 tile 化 inter 帧与更宽的 AV1 conformance/性能矩阵 |
+| AV1 全帧码流解码 / libaom 像素比对 | 部分：真实 320×240、无 film-grain keyframe 已从 OBU/序列头/帧头/tile 熵层生成 Y/U/V 三平面，并完成帧级去块、CDEF、§7.16 superres 与 LR；普通及 restoration-enabled fixture 的四个阶段均已锁定，213×240→320×240 superres fixture 的最终 Y/U/V 三平面也已与 libaom 逐像素一致。十七条单 tile 的真实 320×240 inter fixture 分别闭合整数 inter、fractional/residual inter、inter LF+CDEF、inter LR、delta-q、average/distance-weighted/difference-weighted/wedge compound、smooth/wedge inter-intra、OBMC、local warp、单参考与 compound global warp、temporal MV、inter segmentation 与混合 intra/inter selected tx context；所有可见帧 Y/U/V 均与 libaom 逐字节一致。额外的 2×2 tile fixture 覆盖 keyframe 与后续 10 个 inter coded frame：每个 tile 都从帧初始 CDF 重新开始，帧末 CDF 取 `context_update_tile_id`，帧级 mi/segment 状态跨 tile 携带而邻块上下文、MV 单点候选、OBMC/projection 与 CDEF 单元按 tile 裁剪；temporal motion-field 还按 half-res cell 清除 intra 覆盖、保留 base-invalid 时的 extension probes 并按 order hint 应用参考符号，difference-weighted chroma mask 则在 luma 域重算。全部显示帧 Y/U/V 与 `aomdec` 逐字节一致。仍缺更宽的 AV1 conformance/性能矩阵 |
 
 ## 已知 C bug（本 crate 保留独立结果）
 
@@ -136,7 +136,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**94 完成 / 6 未完成**（含缩进子项为 132 / 11）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 102 个 slice（含真实 2×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动与五组 tile 裁剪规则已落地，但 2×2 inter fixture 未过门、已 `#[ignore]`）：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 103 个 slice（含真实 2×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
@@ -165,5 +165,6 @@ stack 合并，128 个 inter block 的三平面与 libaom 逐字节一致。segm
 key/inter `ALT_Q`、temporal segment-map prediction 与 1050 个非零 segment block，三帧
 Y/U/V 也与 libaom 逐字节一致。完整 `av1_lr` key+P 流还覆盖非 skip inter 邻居的 selected
 tx-size context，458 个 footprint block 与两帧 Y/U/V 均逐字节一致。
-`cargo test --all-targets`：host 与 t6 均为 **1150 个测试枚举 / 1119 常规通过 / 0 失败**；
-31 个板级 ignored 测试也已逐项通过。完整 t6 回归与性能闸门见 `docs/T6_VALIDATION.md`。
+host `cargo test --all-targets` 为 **1151 个测试枚举 / 1120 常规通过 / 0 失败 / 31 个板级 ignored**；
+t6 `cargo test --release --lib` 为 **978 passed / 0 failed**。31 个板级 ignored 测试已有逐项通过记录，
+完整 t6 回归与性能闸门见 `docs/T6_VALIDATION.md`。

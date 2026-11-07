@@ -991,10 +991,11 @@ impl InterTileBlockSink {
     }
 
     fn overlappable_above(&self, block: DecodedBlock) -> usize {
-        if block.row == 0 {
+        if block.row == self.config.tile_row_start {
             return 0;
         }
-        let end_col = (block.col + block.size.num_4x4_wide() as usize).min(self.config.mi_cols);
+        let end_col =
+            (block.col + block.size.num_4x4_wide() as usize).min(self.config.tile_col_end);
         let mut col = block.col;
         let mut count = 0;
         while col < end_col {
@@ -1019,10 +1020,11 @@ impl InterTileBlockSink {
     }
 
     fn overlappable_left(&self, block: DecodedBlock) -> usize {
-        if block.col == 0 {
+        if block.col == self.config.tile_col_start {
             return 0;
         }
-        let end_row = (block.row + block.size.num_4x4_high() as usize).min(self.config.mi_rows);
+        let end_row =
+            (block.row + block.size.num_4x4_high() as usize).min(self.config.tile_row_end);
         let mut row = block.row;
         let mut count = 0;
         while row < end_row {
@@ -1076,8 +1078,10 @@ impl InterTileBlockSink {
     fn projection_samples(&self, block: DecodedBlock, ref_frame: i8) -> Vec<ProjectionSample> {
         let width = block.size.num_4x4_wide() as usize;
         let height = block.size.num_4x4_high() as usize;
-        let mut top_left = block.row > 0 && block.col > 0;
-        let mut top_right = block.row > 0 && block.col + width < self.config.mi_cols;
+        let mut top_left =
+            block.row > self.config.tile_row_start && block.col > self.config.tile_col_start;
+        let mut top_right =
+            block.row > self.config.tile_row_start && block.col + width < self.config.tile_col_end;
         let mut samples = Vec::with_capacity(8);
         let push = |samples: &mut Vec<ProjectionSample>, sample: Option<ProjectionSample>| {
             if samples.len() < 8 {
@@ -1087,7 +1091,7 @@ impl InterTileBlockSink {
             }
         };
 
-        if block.row > 0 {
+        if block.row > self.config.tile_row_start {
             let first = Self::at(block.row - 1, block.col, self.config.mi_cols);
             let above_width = self.sizes[first].map_or(1, |size| size.num_4x4_wide() as usize);
             if width <= above_width {
@@ -1104,7 +1108,7 @@ impl InterTileBlockSink {
                 );
             } else {
                 let mut offset = 0;
-                while offset < width.min(self.config.mi_cols - block.col) {
+                while offset < width.min(self.config.tile_col_end - block.col) {
                     let index = Self::at(block.row - 1, block.col + offset, self.config.mi_cols);
                     push(
                         &mut samples,
@@ -1118,7 +1122,7 @@ impl InterTileBlockSink {
             }
         }
 
-        if block.col > 0 {
+        if block.col > self.config.tile_col_start {
             let first = Self::at(block.row, block.col - 1, self.config.mi_cols);
             let left_height = self.sizes[first].map_or(1, |size| size.num_4x4_high() as usize);
             if height <= left_height {
@@ -1132,7 +1136,7 @@ impl InterTileBlockSink {
                 );
             } else {
                 let mut offset = 0;
-                while offset < height.min(self.config.mi_rows - block.row) {
+                while offset < height.min(self.config.tile_row_end - block.row) {
                     let index = Self::at(block.row + offset, block.col - 1, self.config.mi_cols);
                     push(
                         &mut samples,
@@ -1545,10 +1549,16 @@ impl TileBlockSink for InterTileBlockSink {
         let skip_mode = self
             .read_skip_mode(decoder, cdfs, block, initial_segment_id)
             .map_err(Self::conversion)?;
-        let above_skip = block.row > 0
-            && self.skip_grid[Self::at(block.row - 1, block.col, self.config.mi_cols)];
-        let left_skip = block.col > 0
-            && self.skip_grid[Self::at(block.row, block.col - 1, self.config.mi_cols)];
+        // `set_mi_row_col` gates `up_available`/`left_available` on the tile,
+        // so the tile edge behaves like the picture edge for the skip
+        // context even when the carried frame grid holds decoded blocks from
+        // an earlier tile.
+        let above_skip = self
+            .above_context_index(block.row, block.col)
+            .is_some_and(|index| self.skip_grid[index]);
+        let left_skip = self
+            .left_context_index(block.row, block.col)
+            .is_some_and(|index| self.skip_grid[index]);
         let skip = if skip_mode {
             true
         } else if self.config.segmentation_enabled && self.config.segment_skip[initial_segment_id] {

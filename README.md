@@ -48,8 +48,12 @@
 整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 94 项完成、6 项未完成（含缩进子项为 132 / 11）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 102 个
-AV1 slice。第 102 slice 把它推进到真正的多 tile：一次 tile group 里每个 tile 都从帧初始
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
+AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
+帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
+的 intra-cell 清除、base-invalid 时仍执行 extension probes、order-hint sign bias、
+overlapping half-res block 清理和 4:2:0 difference-weighted mask 的 luma 域取样。
+全部显示帧 Y/U/V 与 `aomdec` **逐字节一致**。第 102 slice 把它推进到真正的多 tile：一次 tile group 里每个 tile 都从帧初始
 CDF 重新开始（对应 libaom 的 `tile_data->tctx = *cm->fc`），帧末 CDF 取
 `context_update_tile_id` 那个 tile，而 intra 邻块可用性按 **tile 边界**裁剪
 （`up_available = mi_row > tile->mi_row_start`）。真实 2×2 tile keyframe 的四个 tile 各自

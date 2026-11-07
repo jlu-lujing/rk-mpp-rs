@@ -744,6 +744,25 @@ impl MotionGrid<'_> {
             && col < self.tile_col_end as isize
     }
 
+    fn reference_sign_bias(&self, reference: i8) -> bool {
+        let Some(temporal) = self.temporal else {
+            return false;
+        };
+        let Some(hint) = temporal
+            .ref_order_hints
+            .get((reference - 1) as usize)
+            .copied()
+        else {
+            return false;
+        };
+        crate::reference::av1::frame_header::get_relative_dist(
+            i32::from(hint),
+            i32::from(temporal.current_order_hint),
+            temporal.enable_order_hint,
+            temporal.order_hint_bits,
+        ) > 0
+    }
+
     fn index(&self, row: usize, col: usize) -> usize {
         row * self.mi_cols + col
     }
@@ -1196,8 +1215,12 @@ impl StackBuilder<'_> {
                 continue;
             }
             let mut mv = self.grid.mvs[index][list];
-            // The supported path requires order hints to be disabled, so all
-            // RefFrameSignBias values are zero and no sign inversion is needed.
+            if self.grid.reference_sign_bias(candidate_ref)
+                != self.grid.reference_sign_bias(self.ref_frames[0])
+            {
+                mv.row = -mv.row;
+                mv.col = -mv.col;
+            }
             mv.lower_precision(self.allow_high_precision_mv, self.force_integer_mv);
             let candidate = [mv, MotionVector::default()];
             let found = (0..self.stack.count).any(|i| self.stack.candidates[i] == candidate);
@@ -1235,9 +1258,14 @@ impl StackBuilder<'_> {
                     id_mvs[list][id_counts[list]] = candidate_mv;
                     id_counts[list] += 1;
                 } else if diff_counts[list] < 2 {
-                    // The order-hint path is rejected by the caller, so every
-                    // RefFrameSignBias is zero and the vector is not inverted.
-                    diff_mvs[list][diff_counts[list]] = candidate_mv;
+                    let oriented = if self.grid.reference_sign_bias(candidate_ref)
+                        != self.grid.reference_sign_bias(self.ref_frames[list])
+                    {
+                        MotionVector::new(-candidate_mv.row, -candidate_mv.col)
+                    } else {
+                        candidate_mv
+                    };
+                    diff_mvs[list][diff_counts[list]] = oriented;
                     diff_counts[list] += 1;
                 }
             }
@@ -1359,8 +1387,8 @@ pub fn find_mv_stack(
         if builder.grid.temporal.is_some() {
             let height_mi = size.num_4x4_high() as isize;
             let width_mi = size.num_4x4_wide() as isize;
-            let vertical_offset = height_mi.max(4);
-            let horizontal_offset = width_mi.max(4);
+            let vertical_offset = height_mi.max(2);
+            let horizontal_offset = width_mi.max(2);
             let end_row = height_mi.min(16);
             let end_col = width_mi.min(16);
             let step_row = if height_mi >= 16 { 4 } else { 2 };
@@ -1393,25 +1421,24 @@ pub fn find_mv_stack(
             }
             if !base_available {
                 temporal_global_bit = true;
-            } else {
-                let allow_extension =
-                    height_mi >= 2 && height_mi < 16 && width_mi >= 2 && width_mi < 16;
-                if allow_extension {
-                    let sb_row = (block_row & 15) as isize;
-                    let sb_col = (block_col & 15) as isize;
-                    for (offset_row, offset_col) in [
-                        (vertical_offset, -2),
-                        (vertical_offset, horizontal_offset),
-                        (vertical_offset - 2, horizontal_offset),
-                    ] {
-                        let row = sb_row + offset_row;
-                        let col = sb_col + offset_col;
-                        if !(0..16).contains(&row) || !(0..16).contains(&col) {
-                            continue;
-                        }
-                        let _ = builder
-                            .add_temporal_candidate(block_row, block_col, offset_row, offset_col);
+            }
+            let allow_extension =
+                height_mi >= 2 && height_mi < 16 && width_mi >= 2 && width_mi < 16;
+            if allow_extension {
+                let sb_row = (block_row & 15) as isize;
+                let sb_col = (block_col & 15) as isize;
+                for (offset_row, offset_col) in [
+                    (vertical_offset, -2),
+                    (vertical_offset, horizontal_offset),
+                    (vertical_offset - 2, horizontal_offset),
+                ] {
+                    let row = sb_row + offset_row;
+                    let col = sb_col + offset_col;
+                    if !(0..16).contains(&row) || !(0..16).contains(&col) {
+                        continue;
                     }
+                    let _ = builder
+                        .add_temporal_candidate(block_row, block_col, offset_row, offset_col);
                 }
             }
         } else {

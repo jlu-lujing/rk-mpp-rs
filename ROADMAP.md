@@ -119,7 +119,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M8 | H.265 encode (rkvenc) + JPEG encode (vepu) | 12k | **JPEG baseline 4:2:0, restart markers, rotation, packed YUV/RGB input, low-delay packet output and RK3588 default four-band multi-core partitioning including 90/270 rotation are board-byte-exact. H.265 fixed-QP IDR/P GOP, CBR/VBR/AVBR, GDR/intra-refresh, ROI/QP map, BY_CTU/BY_BYTE slice split and per-slice low-delay packet output are board-byte-exact. The low-delay matrix covers 3-slice, 9-packet byte-split, a 40-slice FIFO crossing and six IDR+P pictures; ROI covers relative/absolute QP, force-intra, multiple regions and a 640x480 grid. Deblock beta/tc/disable, SAO luma/chroma disable and loop-filter controls are byte-exact over four cells. Uniform horizontal tiles are byte-exact over two cells (`auto_tile` at 320x240 across IDR+P, forced two columns at 4608x64), with a traced C tile job differing in no non-address word of any section. The H.265 throughput matrix passes 4/4: Rust is 15.8% faster at 320x240, 3.6% at 640x480 and 13.8% at 720p; 1080p is 149 ms versus C's 147 ms, within the tie/noise gate. A 10-bit probe confirms the t6 VEPU580 rejects the job with int_sta=0x100 and no packet, so Rust rejects it explicitly. WPP, B frames and multi-reference scheduling remain feature work.** |
 | M9 | Post-processor: deinterlace, scale, format conversion | 8k | **IEP2 modes I5O2, I5O1T/B, I2O2, I1O1T/B, DISABLE and BYPASS are byte-identical over both raw dst slots against a parameterized C client-28 probe: 9/9, including TFF/BFF and 1280x720. The 4:2:0/4:2:2 x SP/planar x UV/VU format matrix is 6/6. IEP2 contains only deinterlace parameters; the legacy `/dev/iep` scale API has no device node/driver on t6, and VDPP (client 29) is absent. Hardware scale/crop is therefore not reachable on this board. See the note below** |
 | M10 | Framework: task queue, async completion, dma fences, multi-core CCU, secure mode | 29k | **task queue with completion callbacks and the reference-counted buffer pool are ported (host state machines plus three ignored board assertions); fences, multi-core CCU and secure mode are surveyed and blocked on this kernel/board - see the entries below** |
-| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 102 AV1 slices covering the symbol decoder, complete mutable tile CDF state wired into partition/intra-mode/skip/tx-depth/coefficients/all-zero, default CDFs, partition, the stateful tile partition driver (`tile_entropy.rs`), transform type/set selection, complete transform-block coefficient consumption, segment/angle-delta/block-delta/CDEF-index state, filter-intra, complete palette color/token maps, CFL alpha syntax, corrected intra-skip mode consumption, the first full real-keyframe intra tile entropy closure, the unified intra predictor (all modes, edge construction/filtering/upsampling, nonzero H/V angle deltas, chroma filter-type neighbours, 4x4 BlockDecoded availability), the column-major Quant-to-transform bridge and standard/palette/filter-intra/CFL plane reconstruction, the YUV frame-level intra reconstructor with superblock-aligned plane padding, plane-specific deblock grids, CDEF, normative superresolution and loop restoration, intra transform-block reconstruction/writeback, residual transform layout (subsampled sizes, chunks and plane/raster order), inverse transforms matching specification Round2, rectangular pre-scaling, size-dependent inverse identity, dqDenom, and libaom 4x4 IDTX/4x4/8x4 H_DCT/8x4 DCT_ADST/4x4 DCT_ADST/4x8 DCT_DCT/16x32 DC vectors, LR subexp/tile-CDF syntax, the frame/stripe driver, the section 7.14 loop filter, the section 8.1/5.2/5.5 bitstream layer (descriptors, OBU+IVF demux, full sequence header, validated on 50 real fixture frames), the section 5.9 uncompressed frame header (validated on 112 real frame headers across eight IVFs, cross-checked with ffmpeg trace_headers), real tile-group splitting (single and 2x2 tile fixtures), multi-tile tile-group decode in which every tile restarts from the frame coding state, takes its intra edges from inside its own tile and contributes to the frame CDEF grid, and sequential SavedGmParams/loop-filter reference-state updates across those eight streams, a packet/OBU/frame/tile `ReferenceStream`, single-reference, average, distance-weighted, difference-weighted, wedge compound, inter-intra, OBMC, local and single-reference/compound global warped-motion syntax with spatial MV prediction, all eight compound-mode symbols, compound DRL, dual-MV assignment, compound group contexts, masked compound type/mask syntax, difference-weighted luma/chroma masks, all 16 wedge masters/codebooks/sign flips, regular/smooth/sharp/bilinear interpolation kernels, SavedCdf frame-to-frame restoration and counter reset, an eight-slot reference pixel/CDF store, integer and fractional translational motion compensation, inter residual transform decoding, recursive inter transform trees, mixed intra/inter blocks, skip coefficient-context reset, sub-8x8 chroma motion prediction, inter deblock/CDEF, inter LR with restoration CDF inheritance, frame-base-q coefficient CDF selection, cross-frame MV CDF state, temporal motion-field storage/projection, and color/monochrome four-row `delta_lf_multi` keyframe pixel gates; ordinary, restoration-enabled and 213x240->320x240 superres keyframes are pixel-exact against libaom through LR, and sixteen real 320x240 inter fixtures are byte-exact on every visible frame. WPP, B frames, multi-reference scheduling, and wider conformance remain** |
+| M11 | Software reference decoders (our own ground truth, no ffmpeg) | — | **in progress: H.264 CAVLC/CABAC I-slice reconstruction (P/B-slice CABAC open), HEVC transforms, and 103 AV1 slices covering the symbol decoder, complete mutable tile CDF state wired into partition/intra-mode/skip/tx-depth/coefficients/all-zero, default CDFs, partition, the stateful tile partition driver (`tile_entropy.rs`), transform type/set selection, complete transform-block coefficient consumption, segment/angle-delta/block-delta/CDEF-index state, filter-intra, complete palette color/token maps, CFL alpha syntax, corrected intra-skip mode consumption, the first full real-keyframe intra tile entropy closure, the unified intra predictor (all modes, edge construction/filtering/upsampling, nonzero H/V angle deltas, chroma filter-type neighbours, 4x4 BlockDecoded availability), the column-major Quant-to-transform bridge and standard/palette/filter-intra/CFL plane reconstruction, the YUV frame-level intra reconstructor with superblock-aligned plane padding, plane-specific deblock grids, CDEF, normative superresolution and loop restoration, intra transform-block reconstruction/writeback, residual transform layout (subsampled sizes, chunks and plane/raster order), inverse transforms matching specification Round2, rectangular pre-scaling, size-dependent inverse identity, dqDenom, and libaom 4x4 IDTX/4x4/8x4 H_DCT/8x4 DCT_ADST/4x4 DCT_ADST/4x8 DCT_DCT/16x32 DC vectors, LR subexp/tile-CDF syntax, the frame/stripe driver, the section 7.14 loop filter, the section 8.1/5.2/5.5 bitstream layer (descriptors, OBU+IVF demux, full sequence header, validated on 50 real fixture frames), the section 5.9 uncompressed frame header (validated on 112 real frame headers across eight IVFs, cross-checked with ffmpeg trace_headers), real tile-group splitting (single and 2x2 tile fixtures), multi-tile tile-group decode in which every tile restarts from the frame coding state while frame-level inter neighbour state is carried and every tile-local context is clipped, and sequential SavedGmParams/loop-filter reference-state updates across those eight streams, a packet/OBU/frame/tile `ReferenceStream`, single-reference, average, distance-weighted, difference-weighted, wedge compound, inter-intra, OBMC, local and single-reference/compound global warped-motion syntax with spatial MV prediction, all eight compound-mode symbols, compound DRL, dual-MV assignment, compound group contexts, masked compound type/mask syntax, difference-weighted luma/chroma masks, all 16 wedge masters/codebooks/sign flips, regular/smooth/sharp/bilinear interpolation kernels, SavedCdf frame-to-frame restoration and counter reset, an eight-slot reference pixel/CDF store, integer and fractional translational motion compensation, inter residual transform decoding, recursive inter transform trees, mixed intra/inter blocks, skip coefficient-context reset, sub-8x8 chroma motion prediction, inter deblock/CDEF, inter LR with restoration CDF inheritance, frame-base-q coefficient CDF selection, cross-frame MV CDF state, temporal motion-field storage/projection with intra-cell clearing, order-hint sign bias and base-invalid extension probes, and color/monochrome four-row `delta_lf_multi` keyframe pixel gates; ordinary, restoration-enabled and 213x240->320x240 superres keyframes are pixel-exact against libaom through LR, seventeen single-tile and one 2x2-tile real inter fixture are byte-exact on every visible frame. WPP, B frames, multi-reference scheduling, and wider conformance remain** |
 
 Future work is planned in full in [docs/PLAN.md](docs/PLAN.md): thirteen
 workstreams covering every open item here, their dependencies, phase exits, the
@@ -1642,11 +1642,10 @@ in what order the evidence gets produced.
       under a per-tile `exit_symbol()` check, and the deblocked and CDEF'ed
       Y/U/V planes match `aomdec` frame 0 (FNV `e4c15c7e09f4c973` /
       `7f75e286318ce612` / `b3d6a9d8663b3bc1`, whole-frame MD5
-      `26ba5556975579b24a5cb591844f6226`). Inter frames with tiles remain
-      open: the fixture's frames 1-9 need the same tile loop in the inter
-      driver.
+      `26ba5556975579b24a5cb591844f6226`). Inter frames with tiles are closed
+      by the next slice.
 
-      **Multi-tile inter (open, 2026-11-07):** the inter driver now has the same
+      **One-hundred-third slice:** the inter driver now has the same
       tile loop (`decode_inter_tile_group`), and five neighbour rules were taken
       from the libaom source: the frame-level mi state (modes, references, MVs,
       segment ids) is *carried* across tile boundaries
@@ -1662,20 +1661,25 @@ in what order the evidence gets produced.
       the partition symbol set is bounded by the **frame** extent
       (`decode_block_in_sb()` uses `cm->mi_params.mi_rows/mi_cols`, not the tile
       extent, and clips the walk to the tile through the loop bounds instead).
-      All of these are no-ops for single-tile streams (the 17 existing inter
-      fixtures still match byte for byte), and they did make tile 0 of a 2x2
-      inter frame decode to completion with 226 leaf blocks, but the fixture
-      does not close yet: in the second coded frame (order hint 8) tile 1
-      diverges on the *first block's `skip`*, runs ahead to 53 of libaom's 87
-      blocks, and finally exhausts its 318-byte slice (`ExitSymbol TooManyBits`
-      at bit 2544). `real_two_by_two_tile_inter_frames_match_libaom` is
-      therefore `#[ignore]`d with that reason rather than counted as done.
-      Tooling note for whoever picks this up: the trace build prints per-block
-      ground truth with tile bounds under `AOM_BLOCK_TRACE=1`
-      (`/private/tmp/aom-ref-3.13.1/build-trace`), 30 of its trace strings were
-      fixed to emit real newlines, and **its `bsize=` field is not the spec
-      `BlockSize` enum** — inferring pixel sizes from it produces phantom
-      mismatches, so compare `row`/`col`/`mv`/`skip` instead.
+      All of these are no-ops for single-tile streams. Closing the 10-frame
+      2x2 fixture exposed three more temporal-state rules. A saved motion-field
+      cell is cleared for every syntax block before an inter block may write
+      it, so a later intra block removes the earlier overlapping inter MV
+      (`av1_copy_frame_mvs`). Temporal extension probes still run when the base
+      probe is invalid; otherwise `mode_context` loses the global bit and the
+      following mode CDF desynchronises. Their offsets use a two-MI minimum,
+      and single-reference extension candidates apply `RefFrameSignBias`
+      before deduplication. The compound extension path also keeps its
+      candidate immutable while trying both reference lists, because in-place
+      sign inversion of list 0 corrupted the exact-reference candidate in
+      list 1. Finally, a difference-weighted chroma mask recomputes its luma
+      source with `subsampling=0,0`; reusing chroma subsampling halved the
+      fractional luma MV and changed the first mask columns. The formal
+      `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
+      ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
+      Host `cargo test --all-targets` is 1151 enumerated / 1120 regular pass /
+      0 failed / 31 board-only ignored, and t6 `cargo test --release --lib` is
+      978 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3150,7 +3154,7 @@ pipeline uses.
 
 ## Verification
 
-- Tests: `cargo test --all-targets` enumerates 1150 tests: 1119 regular pass
+- Tests: `cargo test --all-targets` enumerates 1151 tests: 1120 regular pass
   and 31 ignored hardware tests on both host and t6. All 31 board-only tests
   pass under the current 80% OPP cap; the prior 27-test snapshot is superseded.
   Coverage includes OBU/frame-header/CDF/PicParams snapshots, AV1 software

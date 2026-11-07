@@ -264,3 +264,11 @@ environment-gated debug traces still present in the worktree (palette map
 origin in `src/reference/av1/palette.rs`, frame-header dump in
 `examples/av1_reference_dump.rs`) were removed before committing, so neither
 entered history.
+
+## Multi-tile inter re-verification (2026-11-08)
+
+The 2x2-tile inter fixture now has a non-ignored ten-picture Y/U/V gate.  On
+t6 under the persistent 80 % OPP cap, the targeted release test passed
+(`1 passed`, `0 failed`) and the complete release library suite passed
+(`978 passed`, `0 failed`, `0 ignored`).  The host all-target suite enumerated
+1151 tests and finished with `1120 passed`, `0 failed`, `31 ignored`.
