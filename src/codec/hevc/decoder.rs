@@ -3,8 +3,10 @@
 use std::io;
 
 use crate::hal::hevc::{ChromaFormat, Frame, HevcHw};
+use crate::hal::hevc383::Hevc383;
 use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{SocProfile, VideoDecodeHal};
 
 use super::dpb::{Dpb, FrameStore};
 use super::parser::{self, NalUnit, Pps, SliceHeader, Sps};
@@ -35,7 +37,8 @@ pub struct Decoder {
     sps: Vec<Option<Sps>>,
     pps: Vec<Option<Pps>>,
     dpb: Dpb,
-    hw: HevcHw,
+    hw: HevcHardware,
+    vdpu383: bool,
     frames: Vec<Option<Frame>>,
     video_pool: BufferPool<DmaBuf>,
     colmv_pool: BufferPool<DmaBuf>,
@@ -47,13 +50,95 @@ pub struct Decoder {
     poc_epoch: u32,
 }
 
+enum HevcHardware {
+    Vdpu34x(HevcHw),
+    Vdpu383(Hevc383),
+}
+
+impl HevcHardware {
+    #[allow(clippy::too_many_arguments)]
+    fn decode(
+        &mut self,
+        sps: &Sps,
+        pps: &Pps,
+        sh: &SliceHeader,
+        poc: i32,
+        cur: &Frame,
+        refs: &[Option<&Frame>],
+        ref_pocs: &[i32],
+        ref_errors: &[bool],
+        stream: &DmaBuf,
+        raw_len: usize,
+        slice_count: u32,
+        nal_type: u8,
+    ) -> io::Result<()> {
+        match self {
+            Self::Vdpu34x(hw) => hw.decode(
+                sps,
+                pps,
+                sh,
+                poc,
+                cur,
+                refs,
+                ref_pocs,
+                ref_errors,
+                stream,
+                raw_len,
+                slice_count,
+                nal_type,
+            ),
+            Self::Vdpu383(hw) => hw.decode(
+                sps,
+                pps,
+                sh,
+                poc,
+                cur,
+                refs,
+                ref_pocs,
+                ref_errors,
+                stream,
+                raw_len,
+                slice_count,
+                nal_type,
+            ),
+        }
+    }
+
+    fn status(&self) -> (u32, u32, u32) {
+        match self {
+            Self::Vdpu34x(hw) => hw.last_status,
+            Self::Vdpu383(hw) => hw.last_status,
+        }
+    }
+
+    fn last_hardware_error(&self) -> bool {
+        match self {
+            Self::Vdpu34x(hw) => hw.last_hardware_error,
+            Self::Vdpu383(hw) => hw.last_hardware_error,
+        }
+    }
+}
+
 impl Decoder {
     pub fn new() -> io::Result<Decoder> {
+        let profile = SocProfile::detect()?;
+        let vdpu383 = profile.video_decode == VideoDecodeHal::Vdpu383;
+        let hw = match profile.video_decode {
+            VideoDecodeHal::Vdpu34x => HevcHardware::Vdpu34x(HevcHw::open()?),
+            VideoDecodeHal::Vdpu383 => HevcHardware::Vdpu383(Hevc383::open()?),
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("no H.265 decode HAL for {:?}", other),
+                ));
+            }
+        };
         Ok(Decoder {
             sps: (0..16).map(|_| None).collect(),
             pps: (0..64).map(|_| None).collect(),
             dpb: Dpb::new(),
-            hw: HevcHw::open()?,
+            hw,
+            vdpu383,
             frames: (0..17).map(|_| None).collect(),
             video_pool: BufferPool::new(17),
             colmv_pool: BufferPool::new(17),
@@ -68,12 +153,22 @@ impl Decoder {
 
     /// Register read-back after the last job: (reg224, reg225, reg230).
     pub fn status(&self) -> (u32, u32, u32) {
-        self.hw.last_status
+        self.hw.status()
     }
 
     fn ensure_frame(&mut self, slot: usize) -> io::Result<()> {
         if self.frames[slot].is_none() {
-            self.frames[slot] = Some(
+            let frame = if self.vdpu383 {
+                Frame::acquire_vdpu383(
+                    &self.video_pool,
+                    &self.colmv_pool,
+                    self.width,
+                    self.height,
+                    self.ctu_size,
+                    self.bit_depth,
+                    self.chroma_format,
+                )
+            } else {
                 Frame::acquire(
                     &self.video_pool,
                     &self.colmv_pool,
@@ -83,8 +178,9 @@ impl Decoder {
                     self.bit_depth,
                     self.chroma_format,
                 )
-                .map_err(|error| io::Error::other(format!("HEVC frame pool: {error}")))?,
-            );
+            };
+            self.frames[slot] =
+                Some(frame.map_err(|error| io::Error::other(format!("HEVC frame pool: {error}")))?);
         }
         Ok(())
     }
@@ -257,7 +353,7 @@ impl Decoder {
                     first.unit_type,
                 )
                 .map_err(|e| e.to_string())?;
-            frame_error(false, self.hw.last_hardware_error)
+            frame_error(false, self.hw.last_hardware_error())
         };
 
         if !sh.dependent {

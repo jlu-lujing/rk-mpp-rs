@@ -132,6 +132,43 @@ impl Frame {
         )
         .map_err(|error| io::Error::other(format!("HEVC frame pool: {error}")))
     }
+
+    pub fn acquire_vdpu383(
+        video_pool: &BufferPool<DmaBuf>,
+        colmv_pool: &BufferPool<DmaBuf>,
+        width: usize,
+        height: usize,
+        ctu: usize,
+        bit_depth: u32,
+        chroma_format: ChromaFormat,
+    ) -> Result<Frame, PoolError> {
+        let hor_stride = align(width, 128) + 64;
+        let ver_stride = align(height, 16);
+        let hor_bytes = (hor_stride * bit_depth as usize + 7) / 8;
+        let y_size = hor_bytes * ver_stride;
+        let frame_size = y_size + y_size * chroma_format.uv_size_factor() / 2;
+        let video = video_pool.acquire_lease_reclaiming_idle(frame_size)?;
+        let colmv =
+            colmv_pool.acquire_lease_reclaiming_idle(hevc383_colmv_size(width, height, ctu))?;
+        Ok(Frame {
+            video,
+            colmv,
+            width,
+            height,
+            hor_stride: hor_bytes,
+            ver_stride,
+            bit_depth,
+            chroma_format,
+        })
+    }
+}
+
+fn hevc383_colmv_size(width: usize, height: usize, ctu: usize) -> usize {
+    let seg_w = 64 * 16 * 16 / ctu;
+    let seg_h = ctu;
+    let cnt_w = align(width, seg_w) / seg_w;
+    let cnt_h = align(height, seg_h) / seg_h;
+    2 * cnt_w * cnt_h * 64 * 16
 }
 
 /// MPP aligns coded width to 64 pixels, then converts the bit depth to a byte

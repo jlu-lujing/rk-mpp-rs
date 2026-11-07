@@ -93,6 +93,7 @@ pub fn build_slice_rps(set: &ShortTermRps) -> Vec<u8> {
 
 /// Size of the SPS/PPS hardware packet (`fifo_len = 14` u64 words).
 pub const PPS_PACKET_SIZE: usize = 14 * 8;
+pub const PPS_PACKET_383_SIZE: usize = 22 * 8;
 
 /// Build the 112-byte SPS+PPS packet (`hal_h265d_v345_output_pps_packet`).
 ///
@@ -219,6 +220,154 @@ pub fn build_pps_packet(sps: &Sps, pps: &Pps) -> Vec<u8> {
     w.put(0, 6);
     w.align_ones(64);
     w.bytes_n(PPS_PACKET_SIZE)
+}
+
+/// VDPU383's 176-byte global packet. Unlike the VDPU34x packet this carries
+/// the current/reference POC state before the tile geometry.
+pub fn build_pps_packet_383(
+    sps: &Sps,
+    pps: &Pps,
+    current_poc: i32,
+    ref_pocs: &[i32],
+    ref_errors: &[bool],
+    ref_present: &[bool],
+) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.put(sps.vps_id, 4);
+    w.put(sps.sps_id, 4);
+    w.put(sps.chroma_format_idc, 2);
+    w.put(sps.width, 16);
+    w.put(sps.height, 16);
+    w.put(sps.bit_depth_luma - 8, 3);
+    w.put(sps.bit_depth_chroma - 8, 3);
+    w.put(sps.log2_max_pic_order_cnt_lsb, 5);
+    w.put(sps.log2_diff_max_min_cb, 2);
+    w.put(sps.log2_min_cb, 3);
+    w.put(sps.log2_min_tb, 3);
+    w.put(sps.log2_diff_max_min_tb, 2);
+    w.put(sps.max_transform_hierarchy_depth_inter, 3);
+    w.put(sps.max_transform_hierarchy_depth_intra, 3);
+    w.put(sps.scaling_list_enabled as u32, 1);
+    w.put(sps.amp_enabled as u32, 1);
+    w.put(sps.sao_enabled as u32, 1);
+    w.put(sps.pcm_enabled as u32, 1);
+    w.put(
+        if sps.pcm_enabled {
+            sps.pcm_bit_depth_luma
+        } else {
+            0
+        },
+        4,
+    );
+    w.put(
+        if sps.pcm_enabled {
+            sps.pcm_bit_depth_chroma
+        } else {
+            0
+        },
+        4,
+    );
+    w.put(sps.pcm_loop_filter_disabled as u32, 1);
+    w.put(sps.pcm_log2_diff_max_min_cb, 3);
+    w.put(
+        if sps.pcm_enabled {
+            sps.pcm_log2_min_cb
+        } else {
+            0
+        },
+        3,
+    );
+    w.put(sps.num_short_term_ref_pic_sets, 7);
+    w.put(sps.long_term_ref_pics_present as u32, 1);
+    w.put(sps.num_long_term_ref_pics, 6);
+    w.put(sps.temporal_mvp_enabled as u32, 1);
+    w.put(sps.strong_intra_smoothing as u32, 1);
+    // SPS extensions not represented by the current parser default to zero.
+    w.put(0, 2);
+    w.put(sps.strong_intra_smoothing as u32, 1);
+    w.put(0, 4);
+    w.put(sps.max_dec_pic_buffering.saturating_sub(1), 4);
+    w.put(sps.separate_colour_plane as u32, 1);
+    w.put(0, 2);
+
+    w.put(pps.pps_id, 6);
+    w.put(pps.sps_id, 4);
+    w.put(pps.dependent_slice_segments as u32, 1);
+    w.put(pps.output_flag_present as u32, 1);
+    w.put(pps.num_extra_slice_header_bits, 13);
+    w.put(pps.sign_data_hiding as u32, 1);
+    w.put(pps.cabac_init_present as u32, 1);
+    w.put(pps.num_ref_idx_l0_default_active, 4);
+    w.put(pps.num_ref_idx_l1_default_active, 4);
+    w.put((pps.init_qp - 26) as u32, 7);
+    w.put(pps.constrained_intra_pred as u32, 1);
+    w.put(pps.transform_skip_enabled as u32, 1);
+    w.put(pps.cu_qp_delta_enabled as u32, 1);
+    w.put(
+        (sps.log2_min_cb + sps.log2_diff_max_min_cb).saturating_sub(pps.diff_cu_qp_delta_depth),
+        3,
+    );
+    w.put(pps.cb_qp_offset as u32, 5);
+    w.put(pps.cr_qp_offset as u32, 5);
+    w.put(pps.slice_chroma_qp_offsets_present as u32, 1);
+    w.put(pps.weighted_pred as u32, 1);
+    w.put(pps.weighted_bipred as u32, 1);
+    w.put(pps.transquant_bypass as u32, 1);
+    w.put(pps.tiles_enabled as u32, 1);
+    w.put(pps.entropy_coding_sync as u32, 1);
+    w.put(pps.loop_filter_across_slices as u32, 1);
+    w.put(pps.loop_filter_across_tiles as u32, 1);
+    w.put(pps.deblocking_filter_override_enabled as u32, 1);
+    w.put(pps.pps_deblocking_filter_disabled as u32, 1);
+    w.put(pps.beta_offset_div2 as u32, 4);
+    w.put(pps.tc_offset_div2 as u32, 4);
+    w.put(pps.lists_modification_present as u32, 1);
+    w.put(pps.log2_parallel_merge_level, 3);
+    w.put(pps.slice_segment_header_extension_present as u32, 1);
+    w.put(0, 3);
+
+    w.put(0, 2); // log2_max_transform_skip_block_size - 2
+    w.put(0, 1); // cross_component_prediction_enabled_flag
+    w.put(0, 1); // chroma_qp_offset_list_enabled_flag
+    w.put(sps.log2_min_cb + sps.log2_diff_max_min_cb, 3);
+    w.put(0, 30); // six 5-bit cb offsets
+    w.put(0, 30); // six 5-bit cr offsets
+    w.put(0, 3); // chroma_qp_offset_list_len_minus1
+    w.put(0xffff, 16);
+    w.put(0, 1);
+    w.put(0, 6);
+    w.put(0, 1);
+    w.put(0, 1);
+
+    w.put(0, 3);
+    w.put(current_poc as u32, 32);
+    for i in 0..15 {
+        w.put(ref_pocs.get(i).copied().unwrap_or(0) as u32, 32);
+    }
+    w.put(0, 32);
+    for i in 0..15 {
+        let valid = ref_present.get(i).copied().unwrap_or(false)
+            && !ref_errors.get(i).copied().unwrap_or(true);
+        w.put(valid as u32, 1);
+    }
+    w.put(0, 1);
+
+    let (cols, rows) = if pps.tiles_enabled {
+        (pps.tile_columns, pps.tile_rows)
+    } else {
+        (1, 1)
+    };
+    w.put(cols, 5);
+    w.put(rows, 5);
+    let (col_width, row_height) = tile_geometry(sps, pps);
+    for i in 0..20 {
+        w.put(col_width.get(i).copied().unwrap_or(0), 12);
+    }
+    for i in 0..22 {
+        w.put(row_height.get(i).copied().unwrap_or(0), 12);
+    }
+    w.align(64);
+    w.bytes_n(PPS_PACKET_383_SIZE)
 }
 
 /// Build the vdpu34x scaling-list packet. MPP source:
@@ -360,7 +509,7 @@ fn tile_geometry(sps: &Sps, pps: &Pps) -> (Vec<u32>, Vec<u32>) {
 #[cfg(test)]
 mod packet_tests {
     use super::*;
-    use crate::codec::hevc::parser::{parse_pps, Pps, Sps};
+    use crate::codec::hevc::parser::{parse_pps, parse_sps, split_annex_b, Pps, Sps};
 
     fn sps() -> Sps {
         Sps {
@@ -543,6 +692,34 @@ mod packet_tests {
         // MPP stores each tile dimension minus one.
         assert_eq!(&read_12(256)[..3], [6, 8, 3]);
         assert_eq!(&read_12(256 + 20 * 12)[..2], [4, 6]);
+    }
+
+    #[test]
+    fn vdpu383_global_packet_matches_the_rk3576_c_dump() {
+        let stream = include_bytes!("../../../tests/data/h265e_c_fixqp_qp26_320x240.265");
+        let nals = split_annex_b(stream);
+        let sps = parse_sps(
+            &nals
+                .iter()
+                .find(|nal| nal.unit_type == 33)
+                .expect("SPS")
+                .rbsp,
+        )
+        .unwrap();
+        let pps = parse_pps(
+            &nals
+                .iter()
+                .find(|nal| nal.unit_type == 34)
+                .expect("PPS")
+                .rbsp,
+        )
+        .unwrap();
+        let packet = build_pps_packet_383(&sps, &pps, 0, &[0; 15], &[true; 15], &[false; 15]);
+        let hash = packet.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+        assert_eq!(packet.len(), PPS_PACKET_383_SIZE);
+        assert_eq!(hash, 0xe97a26406128e428);
     }
 }
 

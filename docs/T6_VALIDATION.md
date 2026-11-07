@@ -24,6 +24,21 @@ t62 back to the RK3588 reference board.
 - t6 RK3588 fallback from the same branch: all seven H.264 decoder fixtures
   passed, proving the VDPU34x path remains intact.
 
+## 2026-11-08 RK3576 / lf1 H.265 bring-up
+
+- The VDPU383 hardware matrix is **7/7** on lf1: 320x240 single IDR, 640x480
+  IPPP and B-pyramid, Main10, 2x2 tiles, real WPP at 640x360 and WPP at
+  1280x720. Every planar YUV output matches stock C MPP byte-for-byte.
+- The WPP streams are verified by `trace_headers` with
+  `entropy_coding_sync_enabled_flag = 1` and five entry points. The 1280x720
+  C/Rust output SHA-256 is
+  `5f124bd7c91877106abe010904de7eeeb129d17a09ddde1d0cc06818bbd3b156`.
+- The 176-byte VDPU383 SPS/PPS/POC packet matches the patched C dump byte-for-
+  byte; its offline FNV lock is `0xe97a26406128e428`. RCB offset/length pairs,
+  zero CABAC base and `global_len=0xc` are covered by the same path.
+- RK3576 H.265 is an initial core-path closure. DSLICE, explicit scaling-list,
+  LTR/error injection and wider conformance streams still need lf1 evidence.
+
 ## Environment
 
 - NanoPC-T6-LTS, RK3588, Debian 11.11, kernel 6.1.57
@@ -37,8 +52,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1163 tests**. The
-regular suite passes **1129 / 0 failed / 34 ignored** on t6. All **34
+`cargo test --release --all-targets` currently enumerates **1165 tests**. The
+regular suite passes **1131 / 0 failed / 34 ignored** on t6. All **34
 board-only ignored tests** also pass under the current 80% OPP cap: the prior
 31-test matrix plus the new HEVC, AV1 and VP9 DPB lease gates. The two JPEG
 restart/rotate cases share a temporary input name and therefore need
