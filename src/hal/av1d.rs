@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::codec::av1::cdf::{Av1Cdf, CDF_SIZE, MV_CDF_OFFSET};
 use crate::codec::av1::picparams::Av1PicParams;
+use crate::service::buffer_pool::{BufferLease, BufferPool};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
@@ -127,8 +128,8 @@ impl Default for Av1DmaBuffers {
 /// `display` is the post-processed surface returned to callers: NV12 for
 /// 8-bit and Rockchip packed 4:2:0 for 10-bit.
 pub struct Frame {
-    pub tile_output: DmaBuf,
-    pub display: DmaBuf,
+    pub tile_output: BufferLease<DmaBuf>,
+    pub display: BufferLease<DmaBuf>,
     pub width: usize,
     pub height: usize,
     pub display_hor_stride: usize,
@@ -140,7 +141,17 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub(crate) fn alloc(
+    pub fn new_tile_pool(limit: usize) -> BufferPool<DmaBuf> {
+        BufferPool::with_allocator(limit, |len| DmaBuf::alloc(AV1_FRAME_HEAP, len, false))
+    }
+
+    pub fn new_display_pool(limit: usize) -> BufferPool<DmaBuf> {
+        BufferPool::with_allocator(limit, |len| DmaBuf::alloc(AV1_DISPLAY_HEAP, len, false))
+    }
+
+    pub fn acquire(
+        tile_pool: &BufferPool<DmaBuf>,
+        display_pool: &BufferPool<DmaBuf>,
         max_width: usize,
         max_height: usize,
         width: usize,
@@ -151,8 +162,12 @@ impl Frame {
         let layout = frame_layout(max_width, max_height, bit_depth);
         let display = display_layout(width, height, bit_depth)?;
         Ok(Self {
-            tile_output: DmaBuf::alloc(AV1_FRAME_HEAP, layout.tile_output_size, false)?,
-            display: DmaBuf::alloc(AV1_DISPLAY_HEAP, display.allocation_size, false)?,
+            tile_output: tile_pool
+                .acquire_lease_reclaiming_idle(layout.tile_output_size)
+                .map_err(|error| io::Error::other(format!("AV1 tile pool: {error}")))?,
+            display: display_pool
+                .acquire_lease_reclaiming_idle(display.allocation_size)
+                .map_err(|error| io::Error::other(format!("AV1 display pool: {error}")))?,
             width,
             height,
             display_hor_stride: display.hor_stride,
@@ -164,14 +179,16 @@ impl Frame {
         })
     }
 
-    pub fn y_plane(&self) -> &[u8] {
-        let size = self.display_hor_stride * self.display_ver_stride;
-        &self.display.as_slice()[..size]
+    pub fn tile_output_fd(&self) -> u32 {
+        self.tile_output
+            .fd()
+            .expect("pooled AV1 tile output has a dma-buf fd") as u32
     }
 
-    pub fn uv_plane(&self) -> &[u8] {
-        let y_size = self.display_hor_stride * self.display_ver_stride;
-        &self.display.as_slice()[y_size..y_size + y_size / 2]
+    pub fn display_fd(&self) -> u32 {
+        self.display
+            .fd()
+            .expect("pooled AV1 display output has a dma-buf fd") as u32
     }
 }
 
@@ -329,10 +346,10 @@ impl Av1d {
 
         let mut reference_fds = [None; AV1_MAX_PIC_BUFFERS];
         for (destination, frame) in reference_fds.iter_mut().zip(references) {
-            *destination = frame.map(|frame| frame.tile_output.fd() as u32);
+            *destination = frame.map(Frame::tile_output_fd);
         }
         let buffers = Av1DmaBuffers {
-            current_output: current.tile_output.fd() as u32,
+            current_output: current.tile_output_fd(),
             references: reference_fds,
             stream: stream.fd() as u32,
             stream_len: u32::try_from(stream_data.len())
@@ -344,7 +361,7 @@ impl Av1d {
             filter: self.filter.as_ref().unwrap().fd() as u32,
             tile: self.tile.fd() as u32,
             film_grain: self.film_grain.fd() as u32,
-            display_output: current.display.fd() as u32,
+            display_output: current.display_fd(),
             display_hor_stride: current.display_hor_stride as u32,
             display_ver_stride: current.display_ver_stride as u32,
             display_yuv420sp: params.bitdepth <= 8,

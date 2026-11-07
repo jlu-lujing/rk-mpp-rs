@@ -3135,12 +3135,17 @@ pipeline uses.
        `get/ref/unref` form: its drop releases the final reference on normal and
        error paths without exposing a second manual-release token. The async JPEG
        demo now uses leases for all three per-job buffers. VP8 DPB slots own
-       leases directly, and H.264 NV12/colmv now use separate frame pools:
-       IDR/geometry changes drop old reference surfaces before clearing only
-       idle cache. A 15-frame, three-IDR H.264 stream is byte-identical to C on
-       t6, and a hardware regression proves lease drop returns `in_use` to zero
-       and reuses the same fds without another allocation. Ten host
-       tests cover the state machine and lease lifetime. Three ignored hardware tests run against
+       leases directly; H.264 NV12/colmv, HEVC video/colmv, AV1
+       tile-output/display and VP9 video/colmv now use RAII frame pools.
+       H.264 IDR/geometry changes drop old reference surfaces before clearing
+       only idle cache. HEVC keeps DPB-owned surfaces, AV1 drops non-reference
+       frames before reuse, and VP9 protects its hardware `previous/last`
+       colmv fds. A 15-frame, three-IDR H.264 stream is byte-identical to C on
+       t6; HEVC passes 13 fixtures (1 named SKIP), AV1 passes 353 lib tests plus
+       film grain 8/10-bit, and VP9 passes 18 lib tests plus three hardware
+       matrices. Four ignored pool tests prove lease drop returns `in_use` to
+       zero and reuses the same fds without another allocation. Ten host
+       tests cover the state machine and lease lifetime. Three generic hardware tests run against
        `/dev/dma_heap/system` and `/dev/mpp_service`: reuse returns the same dma-buf across
        release/re-acquire and refuses to recycle an in-flight one; a concurrent
        32-job stream drains through the pool within its cap; and a live lease

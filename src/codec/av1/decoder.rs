@@ -11,6 +11,8 @@ use crate::codec::av1::assembler::{Av1CodedFrame, Av1PacketEvent, Av1PacketParse
 use crate::codec::av1::parser::{split_obus, SequenceHeader};
 use crate::codec::av1::picparams::{Av1PicParams, PicParamsPointers};
 use crate::hal::av1d::{Av1RegisterState, Av1d, Frame, AV1_MAX_PIC_BUFFERS};
+use crate::service::buffer_pool::BufferPool;
+use crate::service::dma_heap::DmaBuf;
 
 pub const FRAME_ERR_DEC_INVALID: u32 = 0x10;
 pub const FRAME_ERR_DEC_HW_ERR: u32 = 0x100;
@@ -37,6 +39,8 @@ pub struct Decoder {
     parser: Av1PacketParser,
     hw: Av1d,
     frames: Vec<Option<Frame>>,
+    tile_pool: BufferPool<DmaBuf>,
+    display_pool: BufferPool<DmaBuf>,
     reference_slots: [Option<Reference>; 8],
     register_state: Av1RegisterState,
     next_poc: u32,
@@ -48,6 +52,8 @@ impl Decoder {
             parser: Av1PacketParser::new(),
             hw: Av1d::open()?,
             frames: Vec::new(),
+            tile_pool: Frame::new_tile_pool(AV1_MAX_PIC_BUFFERS),
+            display_pool: Frame::new_display_pool(AV1_MAX_PIC_BUFFERS),
             reference_slots: [None; 8],
             register_state: Av1RegisterState::default(),
             next_poc: 1,
@@ -277,7 +283,7 @@ impl Decoder {
             bit_depth: frame.bit_depth,
             poc,
             yuv: if err_info == 0 {
-                copy_planar(frame)
+                copy_planar(frame)?
             } else {
                 Vec::new()
             },
@@ -315,6 +321,11 @@ impl Decoder {
         let width = coded.header.width as usize;
         let height = coded.header.height as usize;
         let bit_depth = u32::from(sequence.bit_depth);
+        for (index, frame) in self.frames.iter_mut().enumerate() {
+            if !live.contains(&index) {
+                *frame = None;
+            }
+        }
         let reusable = self.frames.iter().enumerate().find_map(|(index, frame)| {
             let matches_layout = frame.as_ref().is_some_and(|frame| {
                 frame.max_width == max_width
@@ -335,7 +346,9 @@ impl Decoder {
                     .as_ref()
                     .map_or(index as u8, |frame| frame.texture_index);
                 self.frames[index] = Some(
-                    Frame::alloc(
+                    Frame::acquire(
+                        &self.tile_pool,
+                        &self.display_pool,
                         max_width,
                         max_height,
                         width,
@@ -357,7 +370,9 @@ impl Decoder {
         if texture_index >= AV1_MAX_PIC_BUFFERS {
             return Err("AV1 DPB exhausted all 24 texture slots".into());
         }
-        let frame = Frame::alloc(
+        let frame = Frame::acquire(
+            &self.tile_pool,
+            &self.display_pool,
             max_width,
             max_height,
             width,
@@ -421,7 +436,7 @@ impl Decoder {
             bit_depth: frame.bit_depth,
             poc: reference.poc,
             yuv: if reference.err_info == 0 {
-                copy_planar(frame)
+                copy_planar(frame)?
             } else {
                 Vec::new()
             },
@@ -430,19 +445,24 @@ impl Decoder {
     }
 }
 
-fn copy_planar(frame: &Frame) -> Vec<u8> {
+fn copy_planar(frame: &Frame) -> Result<Vec<u8>, String> {
     let traced = std::env::var_os("RK_MPP_AV1_TRACE").is_some();
     let start = Instant::now();
-    let _ = frame.display.sync_read_begin();
+    let display = frame
+        .display
+        .data()
+        .map_err(|error| format!("AV1 display view: {error}"))?;
+    let size = frame.display_hor_stride * frame.display_ver_stride;
+    let _ = display.buffer().sync_read_begin();
     let output = copy_planar_data(
         frame.width,
         frame.height,
         frame.display_hor_stride,
         frame.bit_depth,
-        frame.y_plane(),
-        frame.uv_plane(),
+        &display[..size],
+        &display[size..size + size / 2],
     );
-    let _ = frame.display.sync_read_end();
+    let _ = display.buffer().sync_read_end();
     if traced {
         eprintln!(
             "av1-copy {}x{} bitdepth={} bytes={} elapsed_us={}",
@@ -453,7 +473,7 @@ fn copy_planar(frame: &Frame) -> Vec<u8> {
             start.elapsed().as_micros()
         );
     }
-    output
+    Ok(output)
 }
 
 fn copy_planar_data(

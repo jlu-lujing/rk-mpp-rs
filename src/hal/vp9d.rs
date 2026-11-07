@@ -14,6 +14,7 @@ use crate::codec::vp9::hw::{
 };
 use crate::codec::vp9::parser::{FrameKind, Header};
 use crate::hal::vdpu34x_regs as reg;
+use crate::service::buffer_pool::{BufferLease, BufferPool};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{
     Batch, Client, MppService, RcbInfo as RcbConfig, RegOffsetInfo, MPP_CMD_SET_RCB_INFO,
@@ -32,8 +33,8 @@ const REG_READBACK_WORDS: usize = 278;
 /// 16-line vertical alignment, followed by a 4:2:0 semi-planar chroma plane.
 /// MPP reserves a 9 / 5 stride-area tail beyond the visible 3 / 2 NV12 data.
 pub struct Frame {
-    pub video: DmaBuf,
-    pub colmv: DmaBuf,
+    pub video: BufferLease<DmaBuf>,
+    pub colmv: BufferLease<DmaBuf>,
     pub width: usize,
     pub height: usize,
     pub hor_stride: usize,
@@ -42,10 +43,28 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn alloc(width: usize, height: usize, bit_depth: u32) -> io::Result<Frame> {
+    pub fn new_video_pool(limit: usize) -> BufferPool<DmaBuf> {
+        BufferPool::new(limit)
+    }
+
+    pub fn new_colmv_pool(limit: usize) -> BufferPool<DmaBuf> {
+        BufferPool::new(limit)
+    }
+
+    pub fn acquire(
+        video_pool: &BufferPool<DmaBuf>,
+        colmv_pool: &BufferPool<DmaBuf>,
+        width: usize,
+        height: usize,
+        bit_depth: u32,
+    ) -> io::Result<Frame> {
         let (hor_stride, ver_stride, frame_size) = frame_layout(width, height, bit_depth);
-        let video = DmaBuf::alloc("system", frame_size, false)?;
-        let colmv = DmaBuf::alloc("system", colmv_size(width, height), false)?;
+        let video = video_pool
+            .acquire_lease_reclaiming_idle(frame_size)
+            .map_err(|error| io::Error::other(format!("VP9 video pool: {error}")))?;
+        let colmv = colmv_pool
+            .acquire_lease_reclaiming_idle(colmv_size(width, height))
+            .map_err(|error| io::Error::other(format!("VP9 colmv pool: {error}")))?;
         Ok(Frame {
             video,
             colmv,
@@ -57,13 +76,22 @@ impl Frame {
         })
     }
 
-    pub fn y_plane(&self) -> &[u8] {
-        &self.video.as_slice()[..self.hor_stride * self.ver_stride]
+    pub fn alloc(width: usize, height: usize, bit_depth: u32) -> io::Result<Frame> {
+        let video_pool = Self::new_video_pool(1);
+        let colmv_pool = Self::new_colmv_pool(1);
+        Self::acquire(&video_pool, &colmv_pool, width, height, bit_depth)
     }
 
-    pub fn uv_plane(&self) -> &[u8] {
-        let y = self.hor_stride * self.ver_stride;
-        &self.video.as_slice()[y..y + y / 2]
+    pub fn video_fd(&self) -> u32 {
+        self.video
+            .fd()
+            .expect("pooled VP9 video has a dma-buf fd") as u32
+    }
+
+    pub fn colmv_fd(&self) -> u32 {
+        self.colmv
+            .fd()
+            .expect("pooled VP9 colmv has a dma-buf fd") as u32
     }
 }
 
@@ -565,7 +593,7 @@ impl Vp9d {
         }
 
         let previous_colmv_fd = select_previous_colmv(
-            current.colmv.fd() as u32,
+            current.colmv_fd(),
             intra,
             header.error_resilient_mode,
             self.last.show_frame,
@@ -869,8 +897,8 @@ fn configure_addresses(
 ) {
     r.w[128] = stream.fd() as u32;
     r.w[129] = stream.fd() as u32;
-    r.w[130] = current.video.fd() as u32;
-    r.w[131] = current.colmv.fd() as u32;
+    r.w[130] = current.video_fd();
+    r.w[131] = current.colmv_fd();
     let rcb_fd = rcb.fd() as u32;
     r.w[133] = rcb_fd;
     r.w[134] = rcb_fd;
@@ -894,11 +922,11 @@ fn configure_addresses(
     r.w[172] = context_prob.fd() as u32;
     for (index, reference) in references.iter().enumerate() {
         if let Some((frame, _)) = reference {
-            r.w[164 + index] = frame.video.fd() as u32;
-            r.w[181 + index] = frame.colmv.fd() as u32;
+            r.w[164 + index] = frame.video_fd();
+            r.w[181 + index] = frame.colmv_fd();
         } else {
-            r.w[164 + index] = current.video.fd() as u32;
-            r.w[181 + index] = current.colmv.fd() as u32;
+            r.w[164 + index] = current.video_fd();
+            r.w[181 + index] = current.colmv_fd();
         }
     }
     r.w[170] = previous_colmv_fd;

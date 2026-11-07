@@ -327,11 +327,12 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [x] W5-2 异步提交 + 完成回调（18 条宿主单测；`SessionGate` 可作为显式共享
       单会话时的可选串行器，不是每进程单会话的正确性要求）
 - [ ] W5-3 dma-fence in/out：`MPP_CMD_SET_FENCE`、fence 数组、poll 集成
-- [~] W5-4 缓冲池：引用计数、in-flight 状态机与 RAII `BufferLease` 已落地
-      （10 宿主 + 3 板级 ignore，含 lease fd→IOVA/dup 门）；VP8 DPB 已改用
-      通用缓冲池并在 slot 消亡时 RAII 归还；H.264 NV12/colmv 也已改为
-      独立 pool lease，IDR/分辨率变化会释放旧 frame 并清 idle cache。
-      H.265/AV1/VP9 仍用各自固定的 slot 缓冲复用。pooled JPEG 现在先关闭
+- [x] W5-4 缓冲池：引用计数、in-flight 状态机与 RAII `BufferLease` 已落地
+      （10 宿主 + 7 板级 ignore，含 lease fd→IOVA/dup 门）；VP8 DPB 已改用
+      通用缓冲池并在 slot 消亡时 RAII 归还；H.264/HEVC/AV1/VP9 的
+      DPB surface 均持有 lease。H.264 在 IDR/分辨率变化时释放旧 frame；
+      HEVC 只保留 DPB 引用；AV1 复用前释放非参考帧；VP9 显式保护硬件
+      `previous/last` colmv fd。pooled JPEG 现在先关闭
       `MppService` 再归还共享
       dma-buf，修复旧 drop 顺序把 fd 过早暴露给其他 worker 的内核 import 竞态；
       t6 连续 3000 jobs 压测无 lockup/reset。

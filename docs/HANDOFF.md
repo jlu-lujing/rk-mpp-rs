@@ -460,9 +460,10 @@ H.264/VEPU580 编码已做到：
 `scripts/board_framework_async_vs_sync.sh` 与 `framework_async_hw`/
 `framework_pool_hw` 已在 t6 通过。
 
-仍缺：内核协议没有 dma-fence；多核 CCU、secure/TA 无可用接口或设备；
-VP8 与 H.264 的池化帧已经真正持有 DPB lease；H.265/AV1/VP9 仍待迁移。
-下一步优先做真实 STATUS 异常恢复与剩余 DPB 池化，而不是重复已完成的队列基础设施。
+仍缺：内核协议没有 dma-fence；多核 CCU、secure/TA 无可用接口或设备。
+VP8 与 H.264/HEVC/AV1/VP9 的池化帧已经真正持有 DPB lease；H.265
+保留 DPB 引用，AV1 只复用非参考帧，VP9 保护 hardware previous/last
+colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成的队列基础设施。
 
 ### 5.7 解码器边缘
 

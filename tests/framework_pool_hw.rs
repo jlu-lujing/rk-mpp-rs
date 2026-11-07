@@ -1,12 +1,16 @@
 use std::os::fd::AsRawFd;
 
+use rk_mpp_rs::hal::av1d::Frame as Av1Frame;
 use rk_mpp_rs::hal::h264d::Frame;
+use rk_mpp_rs::hal::hevc as hevc_hal;
+use rk_mpp_rs::hal::vp9d::Frame as Vp9Frame;
 use rk_mpp_rs::service::buffer_pool::BufferPool;
 use rk_mpp_rs::service::task_queue::{PollTimeout, TaskOutcome, TaskQueue};
 use rk_mpp_rs::service::{Client, MppService};
 
 /// The pool tests in the library run against a fake allocator (a host has
-/// no dma-heap); these two exercise the real DmaBuf backend.
+/// no dma-heap); these tests exercise the real DmaBuf backend and every
+/// codec's DPB lease pair.
 #[test]
 #[ignore = "requires /dev/dma_heap/system"]
 fn dma_heap_pool_reuses_across_release_and_refcount() {
@@ -131,5 +135,92 @@ fn h264_dpb_frame_leases_return_to_their_pools() {
     assert_eq!(reused.nv12_fd(), nv12_fd);
     assert_eq!(reused.colmv_fd(), colmv_fd);
     assert_eq!(nv12.stats().allocations, 1);
+    assert_eq!(colmv.stats().allocations, 1);
+}
+
+#[test]
+#[ignore = "requires /dev/dma_heap/system"]
+fn hevc_dpb_frame_leases_return_to_their_pools() {
+    let video = BufferPool::new(1);
+    let colmv = BufferPool::new(1);
+    let frame = hevc_hal::Frame::acquire(
+        &video,
+        &colmv,
+        320,
+        240,
+        64,
+        8,
+        hevc_hal::ChromaFormat::Yuv420,
+    )
+    .unwrap();
+    let video_fd = frame.video_fd();
+    let colmv_fd = frame.colmv_fd();
+    assert_eq!(video.stats().in_use, 1);
+    assert_eq!(colmv.stats().in_use, 1);
+    drop(frame);
+
+    assert_eq!(video.stats().in_use, 0);
+    assert_eq!(colmv.stats().in_use, 0);
+    assert_eq!(video.stats().cached, 1);
+    assert_eq!(colmv.stats().cached, 1);
+    let reused = hevc_hal::Frame::acquire(
+        &video,
+        &colmv,
+        320,
+        240,
+        64,
+        8,
+        hevc_hal::ChromaFormat::Yuv420,
+    )
+    .unwrap();
+    assert_eq!(reused.video_fd(), video_fd);
+    assert_eq!(reused.colmv_fd(), colmv_fd);
+    assert_eq!(video.stats().allocations, 1);
+    assert_eq!(colmv.stats().allocations, 1);
+}
+
+#[test]
+#[ignore = "requires /dev/dma_heap/system, system-dma32 and system-uncached-dma32"]
+fn av1_dpb_frame_leases_return_to_their_pools() {
+    let tile = Av1Frame::new_tile_pool(1);
+    let display = Av1Frame::new_display_pool(1);
+    let frame = Av1Frame::acquire(&tile, &display, 320, 240, 320, 240, 8, 0).unwrap();
+    let tile_fd = frame.tile_output_fd();
+    let display_fd = frame.display_fd();
+    assert_eq!(tile.stats().in_use, 1);
+    assert_eq!(display.stats().in_use, 1);
+    drop(frame);
+
+    assert_eq!(tile.stats().in_use, 0);
+    assert_eq!(display.stats().in_use, 0);
+    assert_eq!(tile.stats().cached, 1);
+    assert_eq!(display.stats().cached, 1);
+    let reused = Av1Frame::acquire(&tile, &display, 320, 240, 320, 240, 8, 0).unwrap();
+    assert_eq!(reused.tile_output_fd(), tile_fd);
+    assert_eq!(reused.display_fd(), display_fd);
+    assert_eq!(tile.stats().allocations, 1);
+    assert_eq!(display.stats().allocations, 1);
+}
+
+#[test]
+#[ignore = "requires /dev/dma_heap/system"]
+fn vp9_dpb_frame_leases_return_to_their_pools() {
+    let video = Vp9Frame::new_video_pool(1);
+    let colmv = Vp9Frame::new_colmv_pool(1);
+    let frame = Vp9Frame::acquire(&video, &colmv, 320, 240, 8).unwrap();
+    let video_fd = frame.video_fd();
+    let colmv_fd = frame.colmv_fd();
+    assert_eq!(video.stats().in_use, 1);
+    assert_eq!(colmv.stats().in_use, 1);
+    drop(frame);
+
+    assert_eq!(video.stats().in_use, 0);
+    assert_eq!(colmv.stats().in_use, 0);
+    assert_eq!(video.stats().cached, 1);
+    assert_eq!(colmv.stats().cached, 1);
+    let reused = Vp9Frame::acquire(&video, &colmv, 320, 240, 8).unwrap();
+    assert_eq!(reused.video_fd(), video_fd);
+    assert_eq!(reused.colmv_fd(), colmv_fd);
+    assert_eq!(video.stats().allocations, 1);
     assert_eq!(colmv.stats().allocations, 1);
 }

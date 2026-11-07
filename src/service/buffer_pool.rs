@@ -440,6 +440,26 @@ impl<B: PoolBuffer + 'static> BufferPool<B> {
         })
     }
 
+    /// Acquire a lease for a surface whose geometry changed.
+    ///
+    /// Cached buffers from the previous geometry still occupy the pool limit
+    /// even though they cannot satisfy this request once every live reference
+    /// is already in use. Drop idle stock and retry; live DPB leases remain
+    /// counted and a genuinely exhausted pool still returns [`PoolError::Full`].
+    pub fn acquire_lease_reclaiming_idle(
+        &self,
+        size: usize,
+    ) -> Result<BufferLease<B>, PoolError> {
+        match self.acquire_lease(size) {
+            Ok(lease) => Ok(lease),
+            Err(PoolError::Full) => {
+                self.clear();
+                self.acquire_lease(size)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// RAII form of [`acquire_timeout`](Self::acquire_timeout).
     pub fn acquire_lease_timeout(
         &self,

@@ -3,6 +3,7 @@
 use std::io;
 
 use crate::hal::vp9d::{Frame, Vp9d};
+use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
 
 use super::capability;
@@ -48,6 +49,7 @@ pub struct StreamOutcome {
 
 pub const FRAME_ERR_DEC_INVALID: u32 = 0x10;
 pub const FRAME_ERR_DEC_HW_ERR: u32 = 0x100;
+const MAX_FRAME_SLOTS: usize = 12;
 
 #[derive(Debug, Clone, Copy)]
 struct Reference {
@@ -72,6 +74,8 @@ pub struct Decoder {
     parser: Parser,
     hw: Vp9d,
     frames: Vec<Option<Frame>>,
+    video_pool: BufferPool<DmaBuf>,
+    colmv_pool: BufferPool<DmaBuf>,
     reference_map: [Option<Reference>; 8],
     /// Packet staging buffer, reused and grown across pictures the way the
     /// VP8 decoder's stream buffer is.
@@ -89,6 +93,8 @@ impl Decoder {
             parser: Parser::new(),
             hw: Vp9d::open()?,
             frames: Vec::new(),
+            video_pool: Frame::new_video_pool(MAX_FRAME_SLOTS),
+            colmv_pool: Frame::new_colmv_pool(MAX_FRAME_SLOTS),
             reference_map: [None; 8],
             stream: None,
             next_poc: 1,
@@ -280,7 +286,7 @@ impl Decoder {
             height: frame.height,
             poc,
             yuv: if err_info == 0 {
-                copy_planar(frame)
+                copy_planar(frame).map_err(PacketError::Internal)?
             } else {
                 Vec::new()
             },
@@ -309,7 +315,7 @@ impl Decoder {
             height: frame.height,
             poc: reference.poc,
             yuv: if reference.err_info == 0 {
-                copy_planar(frame)
+                copy_planar(frame).map_err(PacketError::Internal)?
             } else {
                 Vec::new()
             },
@@ -349,31 +355,35 @@ impl Decoder {
             live_count += 1;
         }
         let hardware_live_colmv = self.hw.colmv_liveness_fds();
-        let reusable = self.frames.iter().enumerate().find_map(|(index, frame)| {
-            let frame = frame.as_ref()?;
-            (!live[..live_count].contains(&index)
-                && !hardware_live_colmv.contains(&Some(frame.colmv.fd() as u32))
-                && frame.width == header.width as usize
-                && frame.height == header.height as usize
-                && frame.bit_depth == header.bit_depth as u32)
-                .then_some(index)
-        });
-        let index = if let Some(index) = reusable {
-            index
-        } else {
-            let frame = Frame::alloc(
-                header.width as usize,
-                header.height as usize,
-                header.bit_depth as u32,
-            )?;
-            if let Some(index) = self.frames.iter().position(Option::is_none) {
-                self.frames[index] = Some(frame);
-                index
-            } else {
-                self.frames.push(Some(frame));
-                self.frames.len() - 1
+        for (index, entry) in self.frames.iter_mut().enumerate() {
+            if let Some(frame) = entry.as_ref() {
+                let referenced = live[..live_count].contains(&index);
+                let hardware_live = hardware_live_colmv.contains(&Some(frame.colmv_fd()));
+                if !referenced && !hardware_live {
+                    *entry = None;
+                }
             }
-        };
+        }
+        let index = self
+            .frames
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or_else(|| {
+                self.frames.push(None);
+                self.frames.len() - 1
+            });
+        if index >= MAX_FRAME_SLOTS {
+            return Err(std::io::Error::other(
+                "VP9 DPB exhausted all frame slots",
+            ));
+        }
+        self.frames[index] = Some(Frame::acquire(
+            &self.video_pool,
+            &self.colmv_pool,
+            header.width as usize,
+            header.height as usize,
+            header.bit_depth as u32,
+        )?);
         Ok(index)
     }
 }
@@ -419,18 +429,23 @@ fn frame_error(reference_error: bool, hardware_error: bool) -> u32 {
     }
 }
 
-fn copy_planar(frame: &Frame) -> Vec<u8> {
-    let _ = frame.video.sync_read_begin();
+fn copy_planar(frame: &Frame) -> Result<Vec<u8>, String> {
+    let video = frame
+        .video
+        .data()
+        .map_err(|error| format!("VP9 video view: {error}"))?;
+    let y_size = frame.hor_stride * frame.ver_stride;
+    let _ = video.buffer().sync_read_begin();
     let out = copy_planar_data(
         frame.width,
         frame.height,
         frame.hor_stride,
         frame.bit_depth,
-        frame.y_plane(),
-        frame.uv_plane(),
+        &video[..y_size],
+        &video[y_size..y_size + y_size / 2],
     );
-    let _ = frame.video.sync_read_end();
-    out
+    let _ = video.buffer().sync_read_end();
+    Ok(out)
 }
 
 fn copy_planar_data(

@@ -1,4 +1,4 @@
-# t6 validation — 2026-11-07
+# t6 validation — 2026-11-08
 
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.

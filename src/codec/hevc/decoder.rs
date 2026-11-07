@@ -3,6 +3,7 @@
 use std::io;
 
 use crate::hal::hevc::{ChromaFormat, Frame, HevcHw};
+use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
 
 use super::dpb::{Dpb, FrameStore};
@@ -36,6 +37,8 @@ pub struct Decoder {
     dpb: Dpb,
     hw: HevcHw,
     frames: Vec<Option<Frame>>,
+    video_pool: BufferPool<DmaBuf>,
+    colmv_pool: BufferPool<DmaBuf>,
     width: usize,
     height: usize,
     bit_depth: u32,
@@ -52,6 +55,8 @@ impl Decoder {
             dpb: Dpb::new(),
             hw: HevcHw::open()?,
             frames: (0..17).map(|_| None).collect(),
+            video_pool: BufferPool::new(17),
+            colmv_pool: BufferPool::new(17),
             width: 0,
             height: 0,
             bit_depth: 8,
@@ -68,15 +73,27 @@ impl Decoder {
 
     fn ensure_frame(&mut self, slot: usize) -> io::Result<()> {
         if self.frames[slot].is_none() {
-            self.frames[slot] = Some(Frame::alloc(
+            self.frames[slot] = Some(Frame::acquire(
+                &self.video_pool,
+                &self.colmv_pool,
                 self.width,
                 self.height,
                 self.ctu_size,
                 self.bit_depth,
                 self.chroma_format,
-            )?);
+            )
+            .map_err(|error| io::Error::other(format!("HEVC frame pool: {error}")))?);
         }
         Ok(())
+    }
+
+    fn release_frames_outside_dpb(&mut self) {
+        let live: Vec<usize> = self.dpb.frames().iter().map(|frame| frame.buf).collect();
+        for (index, frame) in self.frames.iter_mut().enumerate() {
+            if frame.is_some() && !live.contains(&index) {
+                *frame = None;
+            }
+        }
     }
 
     /// Decode one access unit (all NAL units of one picture).
@@ -98,11 +115,16 @@ impl Decoder {
                         || self.bit_depth != bit_depth
                         || self.chroma_format != chroma_format
                     {
+                        self.dpb.clear();
+                        for frame in &mut self.frames {
+                            *frame = None;
+                        }
+                        self.video_pool.clear();
+                        self.colmv_pool.clear();
                         self.width = s.width as usize;
                         self.height = s.height as usize;
                         self.bit_depth = bit_depth;
                         self.chroma_format = chroma_format;
-                        self.frames = (0..17).map(|_| None).collect();
                         self.ctu_size = 1 << (s.log2_min_cb + s.log2_diff_max_min_cb);
                     }
                     self.sps[id] = Some(s);
@@ -130,7 +152,6 @@ impl Decoder {
             .next()
             .ok_or("missing slice header")?;
 
-        let is_irap = first.is_irap();
         if starts_new_display_epoch(first.unit_type) {
             self.poc_epoch = self.poc_epoch.saturating_add(1);
         }
@@ -139,17 +160,12 @@ impl Decoder {
             .dpb
             .compute_poc(&sh, &sps, resets_picture_order_count(first.unit_type));
 
-        // Output buffer: fresh per picture, never reused (learned from H.264).
-        let slot = if is_irap {
-            self.frames.push(None);
-            self.frames.len() - 1
-        } else {
-            match self.frames.iter().position(|f| f.is_none()) {
-                Some(b) => b,
-                None => {
-                    self.frames.push(None);
-                    self.frames.len() - 1
-                }
+        self.release_frames_outside_dpb();
+        let slot = match self.frames.iter().position(Option::is_none) {
+            Some(slot) => slot,
+            None => {
+                self.frames.push(None);
+                self.frames.len() - 1
             }
         };
         self.ensure_frame(slot).map_err(|e| e.to_string())?;
@@ -266,22 +282,27 @@ impl Decoder {
                 long_term: false,
             });
         }
+        self.release_frames_outside_dpb();
 
         let yuv = if err_info == 0 {
             let frame = self.frames[slot].as_ref().unwrap();
-            let _ = frame.video.sync_read_begin();
-            let y = frame.y_plane();
-            let uv = frame.uv_plane();
+            let video = frame
+                .video
+                .data()
+                .map_err(|error| format!("HEVC frame view: {error}"))?;
+            let _ = video.buffer().sync_read_begin();
+            let y_size = frame.hor_stride * frame.ver_stride;
+            let uv_size = y_size * frame.chroma_format.uv_size_factor() / 2;
             let yuv = copy_planar(
-                y,
-                uv,
+                &video[..y_size],
+                &video[y_size..y_size + uv_size],
                 self.width,
                 self.height,
                 frame.hor_stride,
                 frame.bit_depth,
                 frame.chroma_format,
             );
-            let _ = frame.video.sync_read_end();
+            let _ = video.buffer().sync_read_end();
             yuv
         } else {
             Vec::new()

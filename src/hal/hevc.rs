@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::codec::hevc::hw;
 use crate::codec::hevc::parser::{Pps, SliceHeader, Sps};
 use crate::hal::vdpu34x_regs as reg;
+use crate::service::buffer_pool::{BufferLease, BufferPool, PoolError};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{
     Client, MppService, RcbInfo as RcbConfig, RegOffsetInfo, MPP_CMD_SET_RCB_INFO,
@@ -53,7 +54,7 @@ impl ChromaFormat {
         }
     }
 
-    fn uv_size_factor(self) -> usize {
+    pub(crate) fn uv_size_factor(self) -> usize {
         match self {
             Self::Monochrome => 0,
             Self::Yuv420 => 1,
@@ -66,8 +67,8 @@ impl ChromaFormat {
 /// One decoded picture plus its colmv buffer. `video` contains the luma plane
 /// followed by the chroma planes in the layout emitted by vdpu34x.
 pub struct Frame {
-    pub video: DmaBuf,
-    pub colmv: DmaBuf,
+    pub video: BufferLease<DmaBuf>,
+    pub colmv: BufferLease<DmaBuf>,
     pub width: usize,
     pub height: usize,
     pub hor_stride: usize,
@@ -77,17 +78,19 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn alloc(
+    pub fn acquire(
+        video_pool: &BufferPool<DmaBuf>,
+        colmv_pool: &BufferPool<DmaBuf>,
         width: usize,
         height: usize,
         ctu: usize,
         bit_depth: u32,
         chroma_format: ChromaFormat,
-    ) -> io::Result<Frame> {
+    ) -> Result<Frame, PoolError> {
         let (hor_stride, ver_stride, frame_size) =
             frame_layout(width, height, bit_depth, chroma_format);
-        let video = DmaBuf::alloc("system", frame_size, false)?;
-        let colmv = DmaBuf::alloc("system", colmv_size(width, height, ctu), false)?;
+        let video = video_pool.acquire_lease_reclaiming_idle(frame_size)?;
+        let colmv = colmv_pool.acquire_lease_reclaiming_idle(colmv_size(width, height, ctu))?;
         Ok(Frame {
             video,
             colmv,
@@ -100,14 +103,37 @@ impl Frame {
         })
     }
 
-    pub fn y_plane(&self) -> &[u8] {
-        &self.video.as_slice()[..self.hor_stride * self.ver_stride]
+    pub fn video_fd(&self) -> u32 {
+        self.video
+            .fd()
+            .expect("pooled HEVC frame has a dma-buf fd") as u32
     }
 
-    pub fn uv_plane(&self) -> &[u8] {
-        let y = self.hor_stride * self.ver_stride;
-        let uv_size = y * self.chroma_format.uv_size_factor() / 2;
-        &self.video.as_slice()[y..y + uv_size]
+    pub fn colmv_fd(&self) -> u32 {
+        self.colmv
+            .fd()
+            .expect("pooled HEVC colmv has a dma-buf fd") as u32
+    }
+
+    pub fn alloc(
+        width: usize,
+        height: usize,
+        ctu: usize,
+        bit_depth: u32,
+        chroma_format: ChromaFormat,
+    ) -> io::Result<Frame> {
+        let video_pool = BufferPool::new(1);
+        let colmv_pool = BufferPool::new(1);
+        Frame::acquire(
+            &video_pool,
+            &colmv_pool,
+            width,
+            height,
+            ctu,
+            bit_depth,
+            chroma_format,
+        )
+        .map_err(|error| io::Error::other(format!("HEVC frame pool: {error}")))
     }
 }
 
@@ -474,8 +500,8 @@ impl HevcHw {
         r.set(reg::w12::WAIT_RESET_EN, 1);
         r.w[65] = poc as u32;
 
-        r.set(reg::w130::REG130_DECOUT_BASE, cur.video.fd() as u32)
-            .set(reg::w131::REG131_COLMV_CUR_BASE, cur.colmv.fd() as u32)
+        r.set(reg::w130::REG130_DECOUT_BASE, cur.video_fd())
+            .set(reg::w131::REG131_COLMV_CUR_BASE, cur.colmv_fd())
             .set(reg::w161::REG161_PPS_HEAD_BASE, self.bufs.fd() as u32)
             .set(reg::w163::REG163_RPS_BASE, self.bufs.fd() as u32)
             .set(reg::w197::REG197_CABACTBL_BASE, self.bufs.fd() as u32)
@@ -520,12 +546,12 @@ impl HevcHw {
                 None if error_ref_index.is_some() => error_ref,
                 None => fallback,
             };
-            r.w[164 + i] = source.video.fd() as u32;
-            r.w[181 + i] = source.colmv.fd() as u32;
+            r.w[164 + i] = source.video_fd();
+            r.w[181 + i] = source.colmv_fd();
         }
         r.set(
             reg::w132::REG132_ERROR_REF_BASE,
-            error_ref.video.fd() as u32,
+            error_ref.video_fd(),
         )
         .set(
             reg::w21::ERROR_INTRA_MODE,
@@ -670,22 +696,24 @@ impl HevcHw {
         }
         if std::env::var_os("RFI_HEVC_FRAME_DUMP").is_some() {
             let task = COLMV_DUMP_INDEX.fetch_add(1, Ordering::Relaxed);
-            let _ = cur.video.sync_read_begin();
+            let video = cur.video.data().expect("pooled video stays live");
+            let _ = video.buffer().sync_read_begin();
             let _ = std::fs::write(
                 format!("/tmp/rust_hevc_frame_{task:02}.yuv"),
-                cur.video.as_slice(),
+                &video[..],
             );
-            let _ = cur.video.sync_read_end();
+            let _ = video.buffer().sync_read_end();
         } else if std::env::var_os("RFI_HEVC_COLMV_DUMP").is_some() {
             use std::io::Write;
 
             let task = COLMV_DUMP_INDEX.fetch_add(1, Ordering::Relaxed);
             let path = format!("/tmp/rust_hevc_cmv_{task:02}.bin");
-            let _ = cur.colmv.sync_read_begin();
+            let colmv = cur.colmv.data().expect("pooled colmv stays live");
+            let _ = colmv.buffer().sync_read_begin();
             if let Ok(mut file) = std::fs::File::create(path) {
-                let _ = file.write_all(cur.colmv.as_slice());
+                let _ = file.write_all(&colmv);
             }
-            let _ = cur.colmv.sync_read_end();
+            let _ = colmv.buffer().sync_read_end();
         }
         if std::env::var("RFI_HEVC_STATUS").is_ok() {
             eprintln!(

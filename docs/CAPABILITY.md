@@ -47,7 +47,7 @@
 | IEP2 PD/DECT 逆 telecine | 完成 | 场序 + pulldown 状态机；telecine/逐行 + 322×242/722×482/1366×768 共 5/5，逐字节且逐帧状态相同 |
 | VDPP（client 29） | 不存在 | RK3588 无该硬件；10-bit↔8-bit/HDR 随之不可验证 |
 | legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行 |
-| 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264 NV12/colmv DPB 均持有 lease；t6 async demo 与同步路径逐字节，多 IDR H.264 与 C 逐字节 |
+| 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264/HEVC/AV1/VP9 DPB surface 均持有 lease；t6 async demo、H.264/HEVC/AV1/VP9 池化边界测试全过 |
 | fence / 多核 CCU / secure | 受内核限制 | 该内核/驱动不暴露对应接口，未伪造 |
 
 ## 软件参考解码器（M11，自研 ground truth）

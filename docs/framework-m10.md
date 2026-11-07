@@ -66,11 +66,13 @@ Refcounted dma-heap group mirroring `mpp/base/mpp_buffer.c`:
   The explicit `BufferHandle` surface remains for C-style code and diagnostics.
   The async JPEG demo now uses leases for its table, stream and output blocks;
   every `?` path releases them automatically. VP8's DPB slots own leases
-  directly, and H.264's NV12/colmv pair now uses separate pools. H.264 drops
-  every old frame lease on IDR or geometry change, clears only idle cache, then
-  acquires a fresh surface, preserving the reference-less-IDR requirement.
-  H.265, AV1 and VP9 still use their existing fixed-slot recycling and remain a
-  later migration.
+  directly. H.264's NV12/colmv, HEVC's video/colmv, AV1's
+  tile-output/display and VP9's video/colmv pairs all use frame leases.
+  H.264 drops every old frame lease on IDR or geometry change, clears only
+  idle cache, then acquires a fresh surface, preserving the reference-less-IDR
+  requirement. HEVC releases only surfaces outside the DPB; AV1 releases
+  non-reference pictures before reuse; VP9 additionally protects the hardware
+  previous/last colmv fds.
 - Pooled JPEG jobs declare `MppService` after all buffer leases, so reverse
   drop order closes the kernel client before a shared dma-buf can return to
   the pool, including every early-error path. The t6 driver retains DMA import
