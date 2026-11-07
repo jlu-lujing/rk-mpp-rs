@@ -233,3 +233,34 @@ Thus the current t6 playback guidance is: C up to about 16 near-real-time
 streams, Rust up to 8 stable streams with 12 streams borderline. The remaining
 Rust playback cost is the user-space NV12 pipe; direct DMABUF scanout is still
 the next performance step.
+
+## Post-commit re-verification (2026-11-07)
+
+The batch that had accumulated in the worktree since the 80 % cap checkpoint is
+now landed as ten commits (`6f5d644` .. `4691f29`): the H.264 VUI reorder depth
+and packed-NV12 helper that `684d9c2` needed in order to build, the
+close-before-open session recovery on every submit/poll path, VP8 DPB surfaces
+on the shared pool, the concurrent VEPU580 session gate, AV1 reference slices
+90-101, the unsafe-contract annotations and C-API overflow guard, the new
+bench/probe tools, the sync-tar excludes, and the plan and checklist updates
+(top level is now 94 completed / 6 open, 132 / 11 with sub-items).
+
+Re-run against the committed tree:
+
+| gate | result |
+|---|---|
+| host `cargo test --all-targets --offline` | 1149 enumerated: 1118 passed, 0 failed, 31 ignored |
+| `cargo fmt --all --check`, `git diff --check` | clean |
+| t6 `cargo test --release --all-targets -- --ignored --test-threads=1` | all 31 board-only tests executed, 0 failed |
+| `scripts/board_regress.sh` | H.264 7/7 byte-exact |
+| `scripts/board_regress_hevc.sh` | 13 PASS, 1 SKIP (`/tmp/t720.hevc` C reference output absent on this boot) |
+| `scripts/board_framework_recovery.sh` | 3/3 (two close-before-open replacements, one VDPU2 damaged-packet gate) |
+| `scripts/board_framework_async_vs_sync.sh` | ALL PASS: 6/6 jobs identical, `submitted=6 done=6 failed=0 cancelled=0`, avg wait 2.134 ms, avg run 4.937 ms, 9 pool allocations under a cap of 10 |
+| `scripts/board_iep_modes_vs_probe.sh` | 9 PASS, 0 FAIL |
+
+Environment for this run: kernel 6.1.57 with the persistent cap service active
+(`policy0` 1,416,000 kHz, `policy4`/`policy6` 1,800,000 kHz). Two
+environment-gated debug traces still present in the worktree (palette map
+origin in `src/reference/av1/palette.rs`, frame-header dump in
+`examples/av1_reference_dump.rs`) were removed before committing, so neither
+entered history.
