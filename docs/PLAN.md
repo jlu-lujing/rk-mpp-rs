@@ -324,15 +324,31 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 按依赖顺序：
 
 - [x] W5-1 任务队列与状态机：`QUEUE/START/POLL/FLUSH/RESET`，与 C 语义一致
-- [x] W5-2 异步提交 + 完成回调（18 条宿主单测；`SessionGate` 正面处理每进程单会话限制）
+- [x] W5-2 异步提交 + 完成回调（18 条宿主单测；`SessionGate` 可作为显式共享
+      单会话时的可选串行器，不是每进程单会话的正确性要求）
 - [ ] W5-3 dma-fence in/out：`MPP_CMD_SET_FENCE`、fence 数组、poll 集成
-- [~] W5-4 缓冲池：引用计数与 in-flight 状态机已落地（9 宿主 + 2 板级 ignore）；
-      fd↔iova import/export 与 DPB 释放时机接入未做。
-- [ ] W5-5 多实例：解决 rkvenc `setup_ext_line_bufs` 的共享行缓冲（每进程单会话限制）
+- [~] W5-4 缓冲池：引用计数、in-flight 状态机与 RAII `BufferLease` 已落地
+      （10 宿主 + 3 板级 ignore，含 lease fd→IOVA/dup 门）；VP8 DPB 已改用
+      通用缓冲池并在 slot 消亡时 RAII 归还；H.264 NV12/colmv 也已改为
+      独立 pool lease，IDR/分辨率变化会释放旧 frame 并清 idle cache。
+      H.265/AV1/VP9 仍用各自固定的 slot 缓冲复用。pooled JPEG 现在先关闭
+      `MppService` 再归还共享
+      dma-buf，修复旧 drop 顺序把 fd 过早暴露给其他 worker 的内核 import 竞态；
+      t6 连续 3000 jobs 压测无 lockup/reset。
+- [x] W5-5 多实例：H.264 的 CIME extension 与 H.265 tile line buffer 都是
+      session-owned；t6 上 1/2/3 线程在 64x64/320x240/640x480 产出一致且
+      与 C 参考相同，旧的“每进程单会话”结论已撤回
 - [ ] W5-6 多核 CCU：分发与回退（若该 SoC 无 CCU，则只做单核路径并记录）
-- [ ] W5-7 secure/TA：能力探测；无 TA 时明确拒绝（决策 D3）
-- [ ] W5-8 错误恢复：HW 超时、`int_sta` 异常、reset 路径、资源不泄漏（RAII）
-- [ ] W5-9 统计与追踪：任务耗时、队列深度、可选 trace 钩子
+- [~] W5-7 secure/TA：无 TA 可验；服务层现已在任何 secure batch 下发前
+      返回 `Unsupported`，但仍需真实 TA/kernel 提供能力探测接口后才能实现安全路径
+- [~] W5-8 错误恢复：HW timeout 进入 close/reopen recovery，legacy VDPU2
+      IRQ 错误可恢复，session replacement/fd 生命周期板级 3/3；RESET_SESSION
+      仅保留显式破坏性诊断。仍需真实 STATUS 异常注入和 H.265 首 tile 与
+      recovery 组合门。
+- [x] W5-9 统计与追踪：`TaskTiming` 记录排队、执行和端到端耗时；
+      `TaskMetrics` 累计 submitted/done/failed/cancelled、总耗时和
+      max queued/running；现有 bounded event channel 同步携带每任务 timing。
+      host 单测与 t6 async-demo 同路径验证。
 
 验收：并发多任务/多实例压测无泄漏（valgrind/asan 或 fd 计数）、fence 顺序正确、
 与我方同步路径输出一致；与 C MPP 的同场景行为对照（不要求逐字节，要求语义等价）。
@@ -348,8 +364,12 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W6-4 VP9 全矩阵：profile 0/1/2/3、10-bit、分辨率/分块边界
 - [ ] W6-5 AV1 更宽 conformance：分辨率、10-bit 打包、film grain 组合；
       average、difference-weighted 与 wedge compound 已由四/五帧 libaom 像素门闭合，
-      distance-weighted、inter-intra、warp/OBMC、temporal MV 与
-      inter segmentation 仍未做
+      distance-weighted、smooth/wedge inter-intra、OBMC、local warped motion、
+      单参考/compound global warped motion 与 temporal MV fields 已由隔离
+      fixture 闭合；inter segmentation 的 map、temporal prediction 与 features
+      已由三帧隔离 fixture 闭合；`delta_lf_multi` 的 luma/U/V 四路
+      与单色两路 CDF 状态已实现；真实彩色 keyframe 锁定三平面，真实单色
+      keyframe 锁定 Y 平面，并覆盖 UV 语法门控与单平面 deblock
 - [ ] W6-6 HEVC SCC（调色板/屏幕内容）：若 C 无路径则记录为 C 缺失
 - [ ] W6-7 H.264 field-coded PAFF 复核（当前 MBAFF/PAFF 有覆盖，field-coded 单独补）
 - [ ] W6-8 非 16 对齐尺寸的字节级路径（JPEG 已有；编码器受 harness 限制，需自建 C 驱动）
@@ -409,11 +429,15 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 13. W9 可靠性与安全（M，约 5–8 天）
 
-- [ ] W9-1 `unsafe` 审计：所有 ioctl/mmap/FFI 边界加 SAFETY 注释与不变量
+- [~] W9-1 `unsafe` 审计：`service` 的 ioctl/mmap/dma-buf/dup 边界与 C ABI
+      入口已补 SAFETY 不变量和长度溢出检查；NEON 调度与 AV1 C-ABI
+      `zeroed`/字节视图也已补不变量。codec/reference 其余 `unsafe` 块仍需逐项复核
 - [ ] W9-2 cargo-fuzz：语法解析器（H.264/HEVC/AV1/VP9/JPEG/MPEG）
 - [ ] W9-3 错误注入：假 STATUS、超时、EINVAL、ENOMEM
 - [ ] W9-4 资源泄漏：fd/mmap 计数测试，长时间循环（1e6 次提交）
-- [ ] W9-5 clippy 全绿（`-D warnings` 视情况）
+- [~] W9-5 clippy 全绿（`-D warnings` 视情况）：普通
+      `cargo check --all-targets` 已零 warning；`clippy -D warnings` 仍有大量
+      既有风格/复杂度 findings，尚未作为硬门启用。
 
 验收：fuzz 24h 无崩溃；错误路径全部返回 `Result` 且不泄漏。
 
@@ -477,7 +501,7 @@ W5 可以与 W1/W2 并行（不同人/不同上下文），但 W7 必须等 W5�
 | R3 | H.265 编码规模被低估 | 主线延期 | 先做固定 QP 的 I 帧最小闭环，再逐特性；用寄存器 diff 驱动 |
 | R4 | framework 无 C 侧语义文档 | 行为偏差 | 以 `mpi_*_test` 行为为 oracle；写对照测试 |
 | R5 | secure/TA 无设备支持 | 无法验证 | 能力探测 + 明确拒绝；文档标注"未验证" |
-| R6 | 多实例共享行缓冲 | 并发不可用 | 单独立项（W5-5），先用锁/串行保底 |
+| R6 | 多实例共享行缓冲 | 并发不可用 | **已处置（W5-5）**：行缓冲为 session-owned，t6 多线程编码验证通过；锁/`SessionGate` 仅保留为显式共享单会话时的可选策略 |
 | R7 | conformance 流不可得（AVS） | 无法证明 | 明确记录"无流不可验"，不伪造证据 |
 | R8 | 性能回归悄悄发生 | 违反目标 | W8-5 把吞吐门槛纳入回归脚本 |
 
