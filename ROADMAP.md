@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      Host `cargo test --all-targets` is 1151 enumerated / 1120 regular pass /
-      0 failed / 31 board-only ignored, and t6 `cargo test --release --lib` is
-      978 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1163
+      enumerated / 1129 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 978 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3164,9 +3164,9 @@ pipeline uses.
   to stock C MPP on lf1 (`615ee129c46e10f7fb4cb2cf8af3cb370523f7605abee7e7315e073a4421b112`
   on both sides), with `global_cfg`/`rps` word-identical for the first two
   frames. H.265/VP9/AV1/AVS2, VEPU510, VPU720 and VDPP2 remain in progress.
-- Tests: `cargo test --all-targets` enumerates 1151 tests: 1120 regular pass
-  and 31 ignored hardware tests on both host and t6. All 31 board-only tests
-  pass under the current 80% OPP cap; the prior 27-test snapshot is superseded.
+- Tests: `cargo test --release --all-targets` enumerates 1163 tests: 1129
+  regular pass and 34 ignored hardware tests on t6. All 34 board-only tests
+  pass under the current 80% OPP cap.
   Coverage includes OBU/frame-header/CDF/PicParams snapshots, AV1 software
   pixel fixtures through key+P LR and segmentation, global-motion
   reconstruction, tile ranges and packet assembly, POC types 0/1/2,

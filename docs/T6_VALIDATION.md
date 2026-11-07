@@ -37,12 +37,12 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --all-targets` currently enumerates **1149 tests**. The regular
-suite passes **1118 / 0 failed / 31 ignored** on both the host and t6. All
-**31 board-only ignored tests** also pass on t6 under the current 80% OPP cap:
-27 hardware tests ran directly, and the four H.265 board-script tests ran from
-the host with `BOARD=t6`. The two JPEG restart/rotate cases share a temporary
-input name and therefore need `--test-threads=1`.
+`cargo test --release --all-targets` currently enumerates **1163 tests**. The
+regular suite passes **1129 / 0 failed / 34 ignored** on t6. All **34
+board-only ignored tests** also pass under the current 80% OPP cap: the prior
+31-test matrix plus the new HEVC, AV1 and VP9 DPB lease gates. The two JPEG
+restart/rotate cases share a temporary input name and therefore need
+`--test-threads=1`.
 
 Fixes required by the validation:
 

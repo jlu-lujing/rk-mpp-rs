@@ -75,7 +75,10 @@ pub struct SocProfile {
 impl SocProfile {
     pub fn detect() -> io::Result<Self> {
         let compatible = read_dt_string(COMPATIBLE_PATH)?;
-        let model = read_dt_string(MODEL_PATH).unwrap_or_default();
+        let model = read_dt_string(MODEL_PATH)
+            .unwrap_or_default()
+            .trim_end_matches('\0')
+            .to_owned();
         Ok(Self::from_device_tree(&compatible, &model))
     }
 

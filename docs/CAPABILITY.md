@@ -166,6 +166,6 @@ stack 合并，128 个 inter block 的三平面与 libaom 逐字节一致。segm
 key/inter `ALT_Q`、temporal segment-map prediction 与 1050 个非零 segment block，三帧
 Y/U/V 也与 libaom 逐字节一致。完整 `av1_lr` key+P 流还覆盖非 skip inter 邻居的 selected
 tx-size context，458 个 footprint block 与两帧 Y/U/V 均逐字节一致。
-host `cargo test --all-targets` 为 **1151 个测试枚举 / 1120 常规通过 / 0 失败 / 31 个板级 ignored**；
-t6 `cargo test --release --lib` 为 **978 passed / 0 failed**。31 个板级 ignored 测试已有逐项通过记录，
+t6 `cargo test --release --all-targets` 为 **1163 个测试枚举 / 1129 常规通过 / 0 失败 / 34 个板级 ignored**；
+t6 `cargo test --release --lib` 为 **978 passed / 0 failed**。34 个板级 ignored 测试已有逐项通过记录，
 完整 t6 回归与性能闸门见 `docs/T6_VALIDATION.md`。
