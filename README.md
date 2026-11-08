@@ -81,7 +81,7 @@
 
 整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-95 项完成、6 项未完成（含缩进子项为 133 / 10）；未完成项里有硬件不存在、无 conformance
+100 项完成、6 项未完成（含缩进子项为 138 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
 AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
@@ -179,12 +179,13 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.7 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.8 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
 - 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
-- 优先编解码器：H.264、H.265/HEVC、VP9、AV1、VP8 和 MJPEG/JPEG decode；
+- 优先编解码器：H.264、H.265/HEVC、VP9、AV1、VP8、MPEG-2、MPEG-4、
+  H.263 和 MJPEG/JPEG decode；
   H.264/H.265 VEPU580/VEPU510 及 JPEG VEPU2/VPU720 encode
 
 接口接受内存中的任意分块码流，不绑定文件路径。一个 decoder handle 可持续
@@ -199,6 +200,10 @@ IVF/WebM 解复用属于调用方。VP8 只在 t6 的 vdpu2 提供，lf1/RK3576 
 C MPP 和 Rust 都不存在该 decoder。新的
 V1 接口暂不宣称 RGB888，历史
 `rk_jpeg_open/frame/close` RGB 接口继续保留给 `rknn-fastinfer`。
+
+MPEG-2/MPEG-4/H.263 使用同一 handle 接收任意分块 elementary stream；现有
+内部 decoder 以完整 stream 为状态边界，因此这三类格式在 EOS/flush 时统一
+产出所有待显示帧。
 
 板级 C/C++ 门：
 

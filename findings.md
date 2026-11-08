@@ -91,6 +91,11 @@
   `0a6bbff3…326096` (I420). RK3576 C MPP reports "unable to create dec vp8
   ... unsupported"; the Rust handle also rejects create, so lf1 is a hardware
   SKIP rather than a masked failure.
+- The legacy MPEG-2/MPEG-4/H.263 front ends only expose whole-stream decode, so
+  the shared API buffers arbitrary chunks and emits all display frames at
+  EOS/flush. This is an explicit latency boundary, not packet-level decode.
+- Verified legacy NV12 hashes on t6 are MPEG-2 `2dc97045…6371e`, MPEG-4
+  `33cde882…64580`, H.263 `4a2a9312…c2f45e`; I420 equivalents also match.
 - JPEG restart interval 20 matches the CLI output at lf1
   `0ccf41ea…82997` and t6 `25254033…df748a`.
 - Verified VP9 SHA-256 values are

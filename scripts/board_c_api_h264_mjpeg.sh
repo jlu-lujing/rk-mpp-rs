@@ -110,6 +110,22 @@ c_h265_i420=/tmp/rk_mpp_c_api_h265_c.i420
 c_h265_10_packed=/tmp/rk_mpp_c_api_h265_10_c.packed
 c_h265_10_planar=/tmp/rk_mpp_c_api_h265_10_c.i420p10
 c_api_h265_10=/tmp/rk_mpp_c_api_h265_10.i420p10
+mpeg2=tests/data/m2v_320x240_12.m2v
+mpeg4=tests/data/mp4_320x240_12_ip.m4v
+h263=tests/data/h263_cif_12_ip.263
+legacy_ok=0
+c_mpeg2=/tmp/rk_mpp_c_api_mpeg2_c.nv12
+c_api_mpeg2=/tmp/rk_mpp_c_api_mpeg2.nv12
+c_mpeg2_i420=/tmp/rk_mpp_c_api_mpeg2_c.i420
+c_api_mpeg2_i420=/tmp/rk_mpp_c_api_mpeg2.i420
+c_mpeg4=/tmp/rk_mpp_c_api_mpeg4_c.nv12
+c_api_mpeg4=/tmp/rk_mpp_c_api_mpeg4.nv12
+c_mpeg4_i420=/tmp/rk_mpp_c_api_mpeg4_c.i420
+c_api_mpeg4_i420=/tmp/rk_mpp_c_api_mpeg4.i420
+c_h263=/tmp/rk_mpp_c_api_h263_c.nv12
+c_api_h263=/tmp/rk_mpp_c_api_h263.nv12
+c_h263_i420=/tmp/rk_mpp_c_api_h263_c.i420
+c_api_h263_i420=/tmp/rk_mpp_c_api_h263.i420
 vp9_p0=tests/data/vp9_p0_lossless_320x240_12.ivf
 vp9_p2=tests/data/vp9_p2_10bit_lossless_320x240_12.ivf
 c_vp9_p0=/tmp/rk_mpp_c_api_vp9_p0_c.nv12
@@ -309,6 +325,62 @@ LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_decoder h265 i420p10 53 \
     "$c_api_h265_10" "$h265_10"
 cmp "$c_h265_10_planar" "$c_api_h265_10"
+
+rm -f "$c_mpeg2"
+if [ ! -x /tmp/mpp-develop/build/test/mpi_dec_test ] ||
+    [ ! -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 ]; then
+    printf 'SKIP MPEG-2/MPEG-4/H.263 (legacy C MPP oracle unavailable)\n'
+elif LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+    timeout 120 /tmp/mpp-develop/build/test/mpi_dec_test \
+    -i "$mpeg2" -t 2 -w 320 -h 240 -n 10 -o "$c_mpeg2" -v q \
+    < /dev/null > /tmp/rk_mpp_c_api_mpeg2_c.log 2>&1; then
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -f rawvideo -pixel_format nv12 -video_size 320x240 \
+        -i "$c_mpeg2" -pix_fmt yuv420p -f rawvideo "$c_mpeg2_i420"
+    LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+        /tmp/rk_mpp_c_api_decoder mpeg2 nv12 113 "$c_api_mpeg2" "$mpeg2"
+    cmp "$c_mpeg2" "$c_api_mpeg2"
+    LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+        /tmp/rk_mpp_c_api_decoder mpeg2 i420 211 "$c_api_mpeg2_i420" "$mpeg2"
+    cmp "$c_mpeg2_i420" "$c_api_mpeg2_i420"
+
+    rm -f "$c_mpeg4"
+    LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+        timeout 120 /tmp/mpp-develop/build/test/mpi_dec_test \
+        -i "$mpeg4" -t 4 -w 320 -h 240 -n 12 -o "$c_mpeg4" -v q \
+        < /dev/null > /tmp/rk_mpp_c_api_mpeg4_c.log 2>&1
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -f rawvideo -pixel_format nv12 -video_size 320x240 \
+        -i "$c_mpeg4" -pix_fmt yuv420p -f rawvideo "$c_mpeg4_i420"
+    LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+        /tmp/rk_mpp_c_api_decoder mpeg4 nv12 127 "$c_api_mpeg4" "$mpeg4"
+    cmp "$c_mpeg4" "$c_api_mpeg4"
+    LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+        /tmp/rk_mpp_c_api_decoder mpeg4 i420 191 "$c_api_mpeg4_i420" "$mpeg4"
+    cmp "$c_mpeg4_i420" "$c_api_mpeg4_i420"
+
+    rm -f "$c_h263"
+    LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
+        timeout 120 /tmp/mpp-develop/build/test/mpi_dec_test \
+        -i "$h263" -t 3 -w 352 -h 288 -n 12 -o "$c_h263" -v q \
+        < /dev/null > /tmp/rk_mpp_c_api_h263_c.log 2>&1
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -f rawvideo -pixel_format nv12 -video_size 352x288 \
+        -i "$c_h263" -pix_fmt yuv420p -f rawvideo "$c_h263_i420"
+    LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+        /tmp/rk_mpp_c_api_decoder h263 nv12 97 "$c_api_h263" "$h263"
+    cmp "$c_h263" "$c_api_h263"
+    LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+        /tmp/rk_mpp_c_api_decoder h263 i420 173 "$c_api_h263_i420" "$h263"
+    cmp "$c_h263_i420" "$c_api_h263_i420"
+    legacy_ok=1
+elif grep -q "unable to create dec .* unsupported" \
+    /tmp/rk_mpp_c_api_mpeg2_c.log; then
+    printf 'SKIP MPEG-2/MPEG-4/H.263 (this SoC has no VDPU2 decoder)\n'
+else
+    cat /tmp/rk_mpp_c_api_mpeg2_c.log >&2
+    exit 1
+fi
 
 rm -f "$c_vp9_p0"
 LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
@@ -514,6 +586,14 @@ sha256sum "$c_api_h264" "$c_h264" \
 if [ "$vp8_ok" -eq 1 ]; then
     sha256sum "$c_api_vp8" "$c_vp8" \
         "$c_api_vp8_i420" "$c_vp8_i420"
+fi
+if [ "$legacy_ok" -eq 1 ]; then
+    sha256sum "$c_api_mpeg2" "$c_mpeg2" \
+        "$c_api_mpeg2_i420" "$c_mpeg2_i420" \
+        "$c_api_mpeg4" "$c_mpeg4" \
+        "$c_api_mpeg4_i420" "$c_mpeg4_i420" \
+        "$c_api_h263" "$c_h263" \
+        "$c_api_h263_i420" "$c_h263_i420"
 fi
 printf 'PASS rk_mpp C/C++ decoder + encoder API\n'
 REMOTE

@@ -21,7 +21,7 @@ context 也已闭合完整 `av1_lr` key+P 流。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
-**对外 SDK 推进（2026-11-08）**：已新增版本化 `rk_mpp_*` V1.7 C ABI
+**对外 SDK 推进（2026-11-08）**：已新增版本化 `rk_mpp_*` V1.8 C ABI
 (`include/rk_mpp_rs.h`) 和 Rust `sdk` 模块，优先覆盖 H.264、H.265、VP9、AV1
 与 MJPEG 解码。
 构建同时产出 `cdylib`、`staticlib`、`rlib`；packet 可任意分块，frame 由
@@ -42,6 +42,11 @@ BOARD=t6 ./scripts/board_c_api_h264_mjpeg.sh
 VP8 也已接入同一 decoder handle；t6 的 12 帧 alt-ref IVF 与 C 逐字节。
 lf1/RK3576 没有 VP8 decoder，C MPP 与 Rust 都在 create 阶段明确拒绝，脚本
 登记为平台 SKIP。
+
+MPEG-2、MPEG-4、H.263 也接入同一 decoder handle；由于现有硬件前端只提供
+整条 elementary stream 解码，接口支持任意分块输入但在 EOS/flush 时统一
+产出。t6 的 10/12/12 帧输出全部分别与旧 `/tmp/mpp-develop` C oracle
+逐字节；lf1 无 VDPU2，登记平台 SKIP。
 
 编码侧新增 H.264 VEPU580/VEPU510 的同步 submit/receive：输入 NV12/I420
 在 `submit_frame()` 返回前完成复制与 coded-geometry padding，packet 由 encoder
@@ -212,7 +217,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 95 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 100 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。

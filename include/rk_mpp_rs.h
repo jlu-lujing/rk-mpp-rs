@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 7u
+#define RK_MPP_API_VERSION_MINOR 8u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -32,7 +32,10 @@ enum rk_mpp_codec {
     RK_MPP_CODEC_H265 = 3,
     RK_MPP_CODEC_VP9 = 4,
     RK_MPP_CODEC_AV1 = 5,
-    RK_MPP_CODEC_VP8 = 6
+    RK_MPP_CODEC_VP8 = 6,
+    RK_MPP_CODEC_MPEG2 = 7,
+    RK_MPP_CODEC_MPEG4 = 8,
+    RK_MPP_CODEC_H263 = 9
 };
 
 enum rk_mpp_pixel_format {
@@ -45,8 +48,8 @@ enum rk_mpp_pixel_format {
 /*
  * H.264/MJPEG accept NV12 or I420. H.265 accepts NV12/I420 for 8-bit streams
  * and I420P10 for Main10. VP9/AV1 accept NV12/I420 for 8-bit and I420P10 for
- * 10-bit. VP8 accepts NV12/I420. Incompatible format/stream combinations are
- * errors.
+ * 10-bit. VP8, MPEG-2, MPEG-4 and H.263 accept NV12/I420. Incompatible
+ * format/stream combinations are errors.
  */
 
 enum rk_mpp_packet_flags {
@@ -115,9 +118,11 @@ int rk_mpp_decoder_create(const rk_mpp_decoder_config_t *config,
 
 /*
  * The decoder copies packet bytes before returning. Packets may contain
- * arbitrary byte chunks for H.264/H.265. VP9/VP8 require one raw coded packet
+ * arbitrary byte chunks for H.264/H.265 and the buffered legacy codecs.
+ * VP9/VP8 require one raw coded packet
  * (VP9 may be a superframe) per submit; AV1 requires one temporal unit.
  * IVF/WebM demux belongs to the caller.
+ * MPEG-2/MPEG-4/H.263 buffer chunks and emit decoded frames at EOS/flush.
  * EOS flushes a partial Annex-B tail; COMPLETE_ACCESS_UNIT is useful when a
  * caller already has one H.264/H.265 access unit per packet. For exact
  * per-picture timestamps, submit one video access unit or one JPEG per packet.

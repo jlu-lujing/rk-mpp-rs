@@ -6,9 +6,8 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-6.5.1 are complete for the primary decoders, VP8 and all three encoder
-backends. The remaining decoder contract work is MPEG-2, MPEG-4 and H.263 under
-Phase 6.5.2.
+Phases 1-6.5.2 are complete for every implemented decoder and the three encoder
+backends. The public codec API matrix is closed for available hardware.
 
 ## Phases
 
@@ -94,9 +93,9 @@ Phase 6.5.2.
 
 ### Phase 6.5: Legacy Decoder Interfaces
 - [x] Add VP8 packet/frame output to the shared decoder contract.
-- [ ] Add MPEG-2, MPEG-4 and H.263 stream/packet backends.
-- [ ] Cover Annex-B, elementary-stream and codec packet framing across SoCs.
-- **Status:** in_progress
+- [x] Add MPEG-2, MPEG-4 and H.263 stream/packet backends.
+- [x] Cover Annex-B, elementary-stream and codec packet framing across SoCs.
+- **Status:** complete where hardware exists.
 
 ### Phase 6.5.1: VP8 Decode Backend
 - [x] Add the VP8 codec ID and IVF packet rules.
@@ -106,10 +105,11 @@ Phase 6.5.2.
 - **Status:** complete on t6; lf1 is a hardware platform SKIP.
 
 ### Phase 6.5.2: MPEG-2 / MPEG-4 / H.263 Decoder Backends
-- [ ] Add the three codec IDs and elementary-stream framing rules.
-- [ ] Expose NV12/I420 output with reset/release lifecycle.
-- [ ] Verify one representative stream per codec on lf1 and t6.
-- **Status:** pending
+- [x] Add the three codec IDs and elementary-stream framing rules.
+- [x] Expose NV12/I420 output with reset/release lifecycle.
+- [x] Verify one representative stream per codec on t6; lf1 is a VDPU2
+      hardware SKIP.
+- **Status:** complete.
 
 ### Phase 7: Full Verification and Handoff
 - [x] Run host-independent gates on lf1 and t6.
@@ -131,6 +131,8 @@ Phase 6.5.2.
 - [x] Run final JPEG encoder full suite and commit the API 1.6 slice.
 - [x] Run t6 VP8 C API gate and lf1 platform-SKIP audit.
 - [x] Run final VP8 full suite and commit the API 1.7 slice.
+- [x] Run t6 MPEG-2/MPEG-4/H.263 C API gates and lf1 platform audit.
+- [x] Run final legacy-decoder full suite and commit the API 1.8 slice.
 - **Status:** complete
 
 ## Decisions Made

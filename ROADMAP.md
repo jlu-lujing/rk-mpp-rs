@@ -108,7 +108,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M0 | `mpp_service` client: all `MPP_CMD_*`, MULTI_MSG batches, RCB, IOVA, poll, probe | 1.0k | **done** |
 | M0 | JPEG decode (`jpegd`): parser, hw tables, registers, RGB888/NV12, 1/2–1/8 downscale, scaler | 2.9k | **done** |
 | M0 | JPEG decode beats MPP by ~30 % (no buf_slot/meta layer); 0.96 ms @ 640p | — | **done** |
-| M0 | Public H.264/H.265/VP9/AV1/VP8/MJPEG decoder SDK: versioned C ABI, Rust API, shared/static libraries | — | **done where hardware exists** |
+| M0 | Public video decoder SDK: H.264/H.265/VP9/AV1/VP8/MPEG-2/MPEG-4/H.263/MJPEG | — | **done where hardware exists** |
 | M0 | Public H.264/H.265/JPEG encoder SDK: VEPU580/VEPU510 and VEPU2/VPU720 | — | **done on lf1 and t6 for the exposed paths** |
 | M1 | H.264 syntax: Annex-B, RBSP, Exp-Golomb, SPS/PPS/slice header, scaling lists | 3.5k | **done** |
 | M1 | H.264 register map generated from `hal_h264d_rkv_reg.h` (80 words, 122 fields) | 0.25k | **done** |
@@ -329,6 +329,12 @@ in what order the evidence gets produced.
       handle. t6 12-frame alt-ref output matches C:
       NV12 `1f07acf5…4c9c2`, I420 `0a6bbff3…326096`. RK3576 has no VP8
       decoder, and both C MPP and Rust reject creation.
+- [x] Public MPEG-2/MPEG-4/H.263 decoder API V1.8: arbitrary chunk input,
+      EOS/flush buffered delivery, NV12/I420 output and shared lifecycle.
+      On t6, 10 MPEG-2, 12 MPEG-4 and 12 H.263 frames match the legacy C
+      oracle byte-for-byte. Hashes:
+      MPEG-2 NV12 `2dc97045…6371e`, MPEG-4 NV12 `33cde882…64580`,
+      H.263 NV12 `4a2a9312…c2f45e`. RK3576 has no VDPU2 decoder.
 - [x] Public H.264 encoder API V1.4: copied NV12/I420 visible-size input,
       coded-geometry padding, owned packet queue and explicit release,
       flush/reset and sequence metadata. t6 VEPU580 exposes

@@ -9,12 +9,15 @@ use std::fmt;
 use std::io;
 
 use crate::codec::av1;
+use crate::codec::h263;
 use crate::codec::h264::{
     self,
     decoder::{picture_is_output as h264_picture_is_output, split_access_units},
 };
 use crate::codec::hevc;
 use crate::codec::jpeg::{parser as jpeg_parser, tables as jpeg_tables};
+use crate::codec::m2v;
+use crate::codec::mpg4;
 use crate::codec::vp8;
 use crate::codec::vp9;
 use crate::hal::hevc::ChromaFormat;
@@ -24,7 +27,7 @@ use crate::service::soc::{SocProfile, VideoDecodeHal};
 use crate::service::{MppService, VPU_CLIENT_JPEG_DEC};
 
 pub const API_VERSION_MAJOR: u32 = 1;
-pub const API_VERSION_MINOR: u32 = 7;
+pub const API_VERSION_MINOR: u32 = 8;
 pub const API_VERSION: u32 = (API_VERSION_MAJOR << 16) | API_VERSION_MINOR;
 
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
@@ -39,6 +42,9 @@ pub enum Codec {
     Vp9,
     Av1,
     Vp8,
+    Mpeg2,
+    Mpeg4,
+    H263,
 }
 
 impl Codec {
@@ -50,6 +56,9 @@ impl Codec {
             Self::Vp9 => 4,
             Self::Av1 => 5,
             Self::Vp8 => 6,
+            Self::Mpeg2 => 7,
+            Self::Mpeg4 => 8,
+            Self::H263 => 9,
         }
     }
 
@@ -61,6 +70,9 @@ impl Codec {
             4 => Some(Self::Vp9),
             5 => Some(Self::Av1),
             6 => Some(Self::Vp8),
+            7 => Some(Self::Mpeg2),
+            8 => Some(Self::Mpeg4),
+            9 => Some(Self::H263),
             _ => None,
         }
     }
@@ -520,6 +532,49 @@ impl Frame {
         Ok(frame)
     }
 
+    fn from_legacy(
+        codec: &str,
+        width: usize,
+        height: usize,
+        yuv: Vec<u8>,
+        err_info: u32,
+        format: PixelFormat,
+        pts: i64,
+        dts: i64,
+        poc: i32,
+    ) -> Result<Self, Error> {
+        if !matches!(format, PixelFormat::Nv12 | PixelFormat::I420) {
+            return Err(Error::Unsupported(format!(
+                "{codec} supports NV12 or I420 output"
+            )));
+        }
+        let expected = width
+            .checked_mul(height)
+            .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
+            .ok_or_else(|| Error::State("legacy frame size overflow"))?;
+        if yuv.len() < expected {
+            return Err(Error::State("legacy planar frame is truncated"));
+        }
+        let storage = if format == PixelFormat::Nv12 {
+            i420_to_nv12(&yuv[..expected], width, height)
+        } else {
+            yuv[..expected].to_vec()
+        };
+        let mut frame = Self {
+            width,
+            height,
+            format,
+            pts,
+            dts,
+            poc,
+            err_info,
+            storage,
+            planes: [PlaneLayout::default(); 3],
+        };
+        frame.layout_yuv()?;
+        Ok(frame)
+    }
+
     fn from_jpeg_nv12(
         width: usize,
         height: usize,
@@ -704,6 +759,7 @@ pub struct Decoder {
 
 enum Backend {
     Av1(Av1Backend),
+    Legacy(LegacyBackend),
     H264(H264Backend),
     H265(H265Backend),
     Mjpeg(MjpegBackend),
@@ -772,6 +828,29 @@ struct Vp8Backend {
     frame_number: u32,
 }
 
+struct LegacyBackend {
+    decoder: LegacyDecoder,
+    format: PixelFormat,
+    input: Vec<u8>,
+    stream_pts: i64,
+    stream_dts: i64,
+    frame_number: u32,
+    eos: bool,
+}
+
+enum LegacyDecoder {
+    Mpeg2(m2v::decoder::Decoder),
+    Mpeg4(mpg4::decoder::Decoder),
+    H263(h263::decoder::Decoder),
+}
+
+struct LegacyPicture {
+    width: usize,
+    height: usize,
+    yuv: Vec<u8>,
+    err_info: u32,
+}
+
 enum Av1Decoder {
     Vdpu34x(av1::decoder::Decoder),
     Vdpu383(av1::decoder383::Decoder),
@@ -802,6 +881,9 @@ impl Decoder {
             Codec::Vp9 => Backend::Vp9(Vp9Backend::new(config)?),
             Codec::Av1 => Backend::Av1(Av1Backend::new(config)?),
             Codec::Vp8 => Backend::Vp8(Vp8Backend::new(config)?),
+            Codec::Mpeg2 | Codec::Mpeg4 | Codec::H263 => {
+                Backend::Legacy(LegacyBackend::new(config)?)
+            }
         };
         Ok(Self {
             config,
@@ -822,6 +904,7 @@ impl Decoder {
             Backend::Vp9(backend) => backend.submit(packet, &mut self.frames),
             Backend::Av1(backend) => backend.submit(packet, &mut self.frames),
             Backend::Vp8(backend) => backend.submit(packet, &mut self.frames),
+            Backend::Legacy(backend) => backend.submit(packet, &mut self.frames),
         }
     }
 
@@ -844,6 +927,7 @@ impl Decoder {
             Backend::Vp9(backend) => backend.eos,
             Backend::Av1(backend) => backend.eos,
             Backend::Vp8(backend) => backend.eos,
+            Backend::Legacy(backend) => backend.eos && backend.input.is_empty(),
         }
     }
 
@@ -855,6 +939,7 @@ impl Decoder {
             Backend::Vp9(backend) => backend.flush(),
             Backend::Av1(backend) => backend.flush(),
             Backend::Vp8(backend) => backend.flush(),
+            Backend::Legacy(backend) => backend.flush(&mut self.frames),
         }
     }
 
@@ -874,7 +959,8 @@ impl Decoder {
             | Backend::Mjpeg(_)
             | Backend::Vp9(_)
             | Backend::Av1(_)
-            | Backend::Vp8(_) => self.reset(),
+            | Backend::Vp8(_)
+            | Backend::Legacy(_) => self.reset(),
         }
     }
 
@@ -886,6 +972,7 @@ impl Decoder {
             Backend::Vp9(backend) => Some(backend.decoder.status()),
             Backend::Av1(backend) => Some(backend.decoder.status()),
             Backend::Vp8(_) => None,
+            Backend::Legacy(_) => None,
         }
     }
 }
@@ -1336,6 +1423,137 @@ impl Vp8Backend {
     fn flush(&mut self) -> Result<usize, Error> {
         self.eos = true;
         Ok(0)
+    }
+}
+
+impl LegacyBackend {
+    fn new(config: DecoderConfig) -> Result<Self, Error> {
+        if config.output_format == PixelFormat::I420P10 {
+            return Err(Error::Unsupported(
+                "legacy MPEG/H.263 decoders support NV12 or I420 output".to_string(),
+            ));
+        }
+        let decoder = match config.codec {
+            Codec::Mpeg2 => LegacyDecoder::Mpeg2(
+                m2v::decoder::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Codec::Mpeg4 => LegacyDecoder::Mpeg4(
+                mpg4::decoder::Decoder::new()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Codec::H263 => LegacyDecoder::H263(
+                h263::decoder::Decoder::new()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            _ => unreachable!("LegacyBackend is constructed only for legacy codecs"),
+        };
+        Ok(Self {
+            decoder,
+            format: config.output_format,
+            input: Vec::new(),
+            stream_pts: 0,
+            stream_dts: 0,
+            frame_number: 0,
+            eos: false,
+        })
+    }
+
+    fn submit(&mut self, packet: Packet<'_>, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
+        if self.eos {
+            return Err(Error::State("packet submitted after EOS"));
+        }
+        if self.input.len().saturating_add(packet.data.len()) > MAX_ENCODED_BYTES {
+            return Err(Error::TooLarge);
+        }
+        if self.input.is_empty() {
+            self.stream_pts = packet.pts;
+            self.stream_dts = packet.dts;
+        }
+        self.input.extend_from_slice(packet.data);
+        if !packet.flags.contains(PacketFlags::EOS) {
+            return Ok(0);
+        }
+        let decoded = self.decode_buffered(output)?;
+        self.eos = true;
+        Ok(decoded)
+    }
+
+    fn flush(&mut self, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
+        if self.eos && self.input.is_empty() {
+            return Ok(0);
+        }
+        let decoded = self.decode_buffered(output)?;
+        self.eos = true;
+        Ok(decoded)
+    }
+
+    fn decode_buffered(&mut self, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
+        if self.input.is_empty() {
+            return Ok(0);
+        }
+        let data = std::mem::take(&mut self.input);
+        let codec_name = match &self.decoder {
+            LegacyDecoder::Mpeg2(_) => "MPEG-2",
+            LegacyDecoder::Mpeg4(_) => "MPEG-4",
+            LegacyDecoder::H263(_) => "H.263",
+        };
+        let pictures = self.decoder.decode(&data).map_err(classify_video_error)?;
+        let decoded = pictures.len();
+        for picture in pictures {
+            output.push_back(Frame::from_legacy(
+                codec_name,
+                picture.width,
+                picture.height,
+                picture.yuv,
+                picture.err_info,
+                self.format,
+                self.stream_pts,
+                self.stream_dts,
+                self.frame_number as i32,
+            )?);
+            self.frame_number = self.frame_number.saturating_add(1);
+        }
+        Ok(decoded)
+    }
+}
+
+impl LegacyDecoder {
+    fn decode(&mut self, data: &[u8]) -> Result<Vec<LegacyPicture>, String> {
+        match self {
+            Self::Mpeg2(decoder) => decoder.decode(data).map(|pictures| {
+                pictures
+                    .into_iter()
+                    .map(|picture| LegacyPicture {
+                        width: picture.width,
+                        height: picture.height,
+                        yuv: picture.yuv,
+                        err_info: picture.err_info,
+                    })
+                    .collect()
+            }),
+            Self::Mpeg4(decoder) => decoder.decode(data).map(|pictures| {
+                pictures
+                    .into_iter()
+                    .map(|picture| LegacyPicture {
+                        width: picture.width,
+                        height: picture.height,
+                        yuv: picture.yuv,
+                        err_info: picture.err_info,
+                    })
+                    .collect()
+            }),
+            Self::H263(decoder) => decoder.decode(data).map(|pictures| {
+                pictures
+                    .into_iter()
+                    .map(|picture| LegacyPicture {
+                        width: picture.width,
+                        height: picture.height,
+                        yuv: picture.yuv,
+                        err_info: picture.err_info,
+                    })
+                    .collect()
+            }),
+        }
     }
 }
 

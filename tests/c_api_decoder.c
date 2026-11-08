@@ -8,8 +8,8 @@
 
 static void usage(const char *program) {
     fprintf(stderr,
-            "usage: %s <h264|h265|mjpeg> <nv12|i420|i420p10> <chunk> <out> "
-            "<in>...\n",
+            "usage: %s <h264|h265|mpeg2|mpeg4|h263|mjpeg> "
+            "<nv12|i420|i420p10> <chunk> <out> <in>...\n",
             program);
 }
 
@@ -32,6 +32,18 @@ static int parse_codec(const char *name, uint32_t *codec) {
     }
     if (!strcmp(name, "h265")) {
         *codec = RK_MPP_CODEC_H265;
+        return 0;
+    }
+    if (!strcmp(name, "mpeg2")) {
+        *codec = RK_MPP_CODEC_MPEG2;
+        return 0;
+    }
+    if (!strcmp(name, "mpeg4")) {
+        *codec = RK_MPP_CODEC_MPEG4;
+        return 0;
+    }
+    if (!strcmp(name, "h263")) {
+        *codec = RK_MPP_CODEC_H263;
         return 0;
     }
     return -1;

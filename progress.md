@@ -62,6 +62,9 @@
 | VP8 decoder API | t6 packet/alt-ref path | 12-frame NV12/I420 output matches C | PASS |
 | VP8 on lf1 | C MPP platform capability | both C and Rust reject missing decoder | SKIP (hardware absent) |
 | VP8 full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
+| MPEG-2/4/H.263 API | t6 VDPU2 representative streams | 10/12/12-frame NV12/I420 output matches old C oracle | PASS |
+| MPEG-2/4/H.263 on lf1 | RK3576 platform capability | no VDPU2 decoder; platform SKIP | SKIP |
+| Legacy decoder full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
 
 ### Phase 6.2: VP9 Public Decoder
 - **Status:** complete on lf1 and t6
