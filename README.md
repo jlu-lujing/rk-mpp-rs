@@ -81,7 +81,7 @@
 
 整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-100 项完成、6 项未完成（含缩进子项为 138 / 10）；未完成项里有硬件不存在、无 conformance
+101 项完成、6 项未完成（含缩进子项为 139 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
 AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
@@ -179,7 +179,7 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.8 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.9 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
@@ -230,8 +230,8 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 安装布局：
 
 - `include/rk_mpp_rs.h`
-- `lib/librk_mpp_rs.so.1.8.0`
-- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.8.0`
+- `lib/librk_mpp_rs.so.1.9.0`
+- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.9.0`
 - `lib/librk_mpp_rs.so -> librk_mpp_rs.so.1`
 - `lib/librk_mpp_rs.a`
 - `lib/pkgconfig/rk-mpp-rs.pc`
@@ -272,6 +272,19 @@ H.265 编码共享同一套原有 encoder ABI。t6 VEPU580 开放 width/height�
 和 GOP；RK3576 VEPU510 当前只开放板验过的 320×240 Main QP26 GOP6 @30fps
 路径。H.264/H.265 都接受 NV12 或 I420，packet 带 keyframe/frame_num/POC
 元数据。
+
+V1.9 增加独立的 `rk_mpp_encoder_advanced_config_t` 和
+`rk_mpp_encoder_create_advanced()`，因此原有 68-byte
+`rk_mpp_encoder_config_t` 与 `rk_mpp_encoder_create()` 完全不变。Rust 使用
+`RateControlConfig`/`RateControlMode`；C 使用
+`rk_mpp_encoder_rate_control_t`。t6 VEPU580 H.264/H.265 支持 CBR、VBR、
+AVBR、目标/最小/最大码率和初始/最小/最大 QP；C API 六组输出与已验证 CLI
+逐字节相同。RK3576 VEPU510 的逐帧 streaming RC 尚未开放，当前明确返回
+unsupported。
+
+```bash
+./scripts/board_sdk_encoder_rc.sh
+```
 
 JPEG 编码沿用同一 encoder handle，支持 NV12/I420、0–10 内置量化档和可选
 restart MCU 间隔。lf1/t6 单帧 JPEG 与现有 `jpeg-enc` CLI 输出逐字节一致。

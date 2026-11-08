@@ -1,7 +1,9 @@
 //! Stable synchronous encoder APIs.
 //!
-//! The first backend is fixed-QP VEPU580 H.264. Input frames use tightly packed
-//! visible dimensions; this layer pads them to the encoder's coded geometry.
+//! The base configuration selects fixed-QP H.264/H.265 or JPEG. VEPU580 also
+//! accepts CBR/VBR/AVBR through [`RateControlConfig`]. Input frames use tightly
+//! packed visible dimensions; this layer pads them to the encoder's coded
+//! geometry.
 
 use std::collections::VecDeque;
 
@@ -12,6 +14,155 @@ use crate::codec::h264::encoder::{
 use crate::hal::{h264e, h265e_session, jpege, jpege720, vepu510_h264, vepu510_h265};
 use crate::sdk::{Codec, Error, PixelFormat};
 use crate::service::soc::{SocProfile, VideoEncodeHal};
+
+/// Per-picture bitrate policy for H.264 and H.265 encoders.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RateControlMode {
+    FixedQp,
+    Cbr,
+    Vbr,
+    Avbr,
+}
+
+impl RateControlMode {
+    pub const fn c_value(self) -> u32 {
+        match self {
+            Self::FixedQp => 0,
+            Self::Cbr => 1,
+            Self::Vbr => 2,
+            Self::Avbr => 3,
+        }
+    }
+
+    pub const fn from_c_value(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::FixedQp),
+            1 => Some(Self::Cbr),
+            2 => Some(Self::Vbr),
+            3 => Some(Self::Avbr),
+            _ => None,
+        }
+    }
+}
+
+/// Bitrate and QP bounds for [`RateControlMode::Cbr`],
+/// [`RateControlMode::Vbr`] and [`RateControlMode::Avbr`].
+///
+/// Bitrates are bits per second. The hardware session chooses a per-picture QP
+/// inside `(min_qp..=max_qp)` while keeping the encoded rate near
+/// `(bps_min..=bps_max)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateControlConfig {
+    mode: RateControlMode,
+    bps_target: i64,
+    bps_min: i64,
+    bps_max: i64,
+    initial_qp: u8,
+    min_qp: u8,
+    max_qp: u8,
+}
+
+impl RateControlConfig {
+    pub const fn cbr(bps_target: i64, bps_min: i64, bps_max: i64) -> Self {
+        Self::new(RateControlMode::Cbr, bps_target, bps_min, bps_max)
+    }
+
+    pub const fn vbr(bps_target: i64, bps_min: i64, bps_max: i64) -> Self {
+        Self::new(RateControlMode::Vbr, bps_target, bps_min, bps_max)
+    }
+
+    pub const fn avbr(bps_target: i64, bps_min: i64, bps_max: i64) -> Self {
+        Self::new(RateControlMode::Avbr, bps_target, bps_min, bps_max)
+    }
+
+    pub const fn new(mode: RateControlMode, bps_target: i64, bps_min: i64, bps_max: i64) -> Self {
+        Self {
+            mode,
+            bps_target,
+            bps_min,
+            bps_max,
+            initial_qp: 26,
+            min_qp: 8,
+            max_qp: 48,
+        }
+    }
+
+    pub const fn mode(self) -> RateControlMode {
+        self.mode
+    }
+
+    pub const fn bps_target(self) -> i64 {
+        self.bps_target
+    }
+
+    pub const fn bps_min(self) -> i64 {
+        self.bps_min
+    }
+
+    pub const fn bps_max(self) -> i64 {
+        self.bps_max
+    }
+
+    pub const fn initial_qp(self) -> u8 {
+        self.initial_qp
+    }
+
+    pub const fn min_qp(self) -> u8 {
+        self.min_qp
+    }
+
+    pub const fn max_qp(self) -> u8 {
+        self.max_qp
+    }
+
+    pub const fn with_initial_qp(mut self, qp: u8) -> Self {
+        self.initial_qp = qp;
+        self
+    }
+
+    pub const fn with_qp_range(mut self, min_qp: u8, max_qp: u8) -> Self {
+        self.min_qp = min_qp;
+        self.max_qp = max_qp;
+        self
+    }
+
+    pub fn validate(self) -> Result<(), Error> {
+        if self.mode == RateControlMode::FixedQp {
+            return Ok(());
+        }
+        if self.bps_target <= 0
+            || self.bps_min <= 0
+            || self.bps_max <= 0
+            || self.bps_min > self.bps_target
+            || self.bps_target > self.bps_max
+        {
+            return Err(Error::InvalidInput(format!(
+                "bitrate bounds must satisfy 0 < min ({}) <= target ({}) <= max ({})",
+                self.bps_min, self.bps_target, self.bps_max
+            )));
+        }
+        if self.bps_max > i64::from(i32::MAX) {
+            return Err(Error::InvalidInput(format!(
+                "maximum bitrate {} exceeds the hardware signed 32-bit limit",
+                self.bps_max
+            )));
+        }
+        if self.min_qp > self.max_qp || self.max_qp > 51 {
+            return Err(Error::InvalidInput(format!(
+                "rate-control QP range {}..={} is invalid",
+                self.min_qp, self.max_qp
+            )));
+        }
+        if !(self.min_qp..=self.max_qp).contains(&self.initial_qp) {
+            return Err(Error::InvalidInput(format!(
+                "initial rate-control QP {} is outside {}..={}",
+                self.initial_qp, self.min_qp, self.max_qp
+            )));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderConfig {
@@ -27,6 +178,7 @@ pub struct EncoderConfig {
     fps_den: u32,
     jpeg_quality: u32,
     jpeg_restart_mcus: u32,
+    rate_control: Option<RateControlConfig>,
 }
 
 impl EncoderConfig {
@@ -44,6 +196,7 @@ impl EncoderConfig {
             fps_den: 1,
             jpeg_quality: 10,
             jpeg_restart_mcus: 0,
+            rate_control: None,
         }
     }
 
@@ -91,6 +244,10 @@ impl EncoderConfig {
         self.jpeg_restart_mcus
     }
 
+    pub const fn rate_control(self) -> Option<RateControlConfig> {
+        self.rate_control
+    }
+
     pub const fn with_input_format(mut self, format: PixelFormat) -> Self {
         self.input_format = format;
         self
@@ -129,6 +286,11 @@ impl EncoderConfig {
 
     pub const fn with_jpeg_restart_mcus(mut self, mcus: u32) -> Self {
         self.jpeg_restart_mcus = mcus;
+        self
+    }
+
+    pub const fn with_rate_control(mut self, rate_control: RateControlConfig) -> Self {
+        self.rate_control = Some(rate_control);
         self
     }
 }
@@ -224,6 +386,14 @@ pub struct Encoder {
 
 impl Encoder {
     pub fn new(config: EncoderConfig) -> Result<Self, Error> {
+        if let Some(rate_control) = config.rate_control {
+            rate_control.validate()?;
+            if config.codec == Codec::Mjpeg && rate_control.mode != RateControlMode::FixedQp {
+                return Err(Error::Unsupported(
+                    "JPEG encoder does not support bitrate rate control".to_string(),
+                ));
+            }
+        }
         let backend = match config.codec {
             Codec::H264 => open_h264_backend(config)?,
             Codec::H265 => open_h265_backend(config)?,
@@ -426,17 +596,43 @@ fn open_h264_vepu580(config: EncoderConfig) -> Result<h264e::Vepu580H264, Error>
     h264.fps_den = config.fps_den;
     h264.entropy_coding = profile >= PROFILE_MAIN;
     h264.transform_8x8 = profile >= PROFILE_HIGH;
-    h264.bps_target = h264_encoder::default_bps_target(
-        config.width,
-        config.height,
-        config.fps_num / config.fps_den.max(1),
-    );
+    if let Some(rate_control) = config.rate_control {
+        match rate_control.mode {
+            RateControlMode::FixedQp => {}
+            RateControlMode::Cbr => h264.rc_mode = h264_encoder::RcMode::Cbr,
+            RateControlMode::Vbr => h264.rc_mode = h264_encoder::RcMode::Vbr,
+            RateControlMode::Avbr => h264.rc_mode = h264_encoder::RcMode::Avbr,
+        }
+        if rate_control.mode != RateControlMode::FixedQp {
+            h264.bps_target = rate_control.bps_target;
+            h264.bps_min = rate_control.bps_min;
+            h264.bps_max = rate_control.bps_max;
+            h264.qp_init = rate_control.initial_qp;
+            h264.rc_qp_min = u32::from(rate_control.min_qp);
+            h264.rc_qp_max = u32::from(rate_control.max_qp);
+        }
+    }
+    if h264.rc_mode == h264_encoder::RcMode::FixedQp {
+        h264.bps_target = h264_encoder::default_bps_target(
+            config.width,
+            config.height,
+            config.fps_num / config.fps_den.max(1),
+        );
+    }
     h264.validate()
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
     h264e::Vepu580H264::open(h264).map_err(|error| Error::Hardware(error.to_string()))
 }
 
 fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264, Error> {
+    if config
+        .rate_control
+        .is_some_and(|rate_control| rate_control.mode != RateControlMode::FixedQp)
+    {
+        return Err(Error::Unsupported(
+            "RK3576 H.264 streaming rate control is not exposed yet".to_string(),
+        ));
+    }
     if config.width != 320
         || config.height != 240
         || config.qp != 26
@@ -487,9 +683,31 @@ fn validate_h265_input(config: EncoderConfig) -> Result<(), Error> {
 }
 
 fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265, Error> {
-    let mut encoder =
-        h265e_session::Vepu580H265::open_gop(config.width, config.height, u32::from(config.qp))
-            .map_err(|error| Error::Hardware(error.to_string()))?;
+    let mut encoder = match config.rate_control {
+        Some(rate_control) if rate_control.mode != RateControlMode::FixedQp => {
+            let mode = match rate_control.mode {
+                RateControlMode::Cbr => h265e_session::RcMode::Cbr,
+                RateControlMode::Vbr => h265e_session::RcMode::Vbr,
+                RateControlMode::Avbr => h265e_session::RcMode::Avbr,
+                RateControlMode::FixedQp => unreachable!(),
+            };
+            h265e_session::Vepu580H265::open_rate(
+                config.width,
+                config.height,
+                mode,
+                rate_control.bps_target as i32,
+                rate_control.bps_min as i32,
+                rate_control.bps_max as i32,
+                i32::from(rate_control.initial_qp),
+                u32::from(rate_control.min_qp),
+                u32::from(rate_control.max_qp),
+            )
+        }
+        _ => {
+            h265e_session::Vepu580H265::open_gop(config.width, config.height, u32::from(config.qp))
+        }
+    }
+    .map_err(|error| Error::Hardware(error.to_string()))?;
     encoder
         .set_gop(config.gop.max(1))
         .map_err(|error| Error::Hardware(error.to_string()))?;
@@ -497,6 +715,14 @@ fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265
 }
 
 fn open_h265_vepu510(config: EncoderConfig) -> Result<vepu510_h265::Vepu510H265, Error> {
+    if config
+        .rate_control
+        .is_some_and(|rate_control| rate_control.mode != RateControlMode::FixedQp)
+    {
+        return Err(Error::Unsupported(
+            "RK3576 H.265 streaming rate control is not exposed yet".to_string(),
+        ));
+    }
     if config.width != 320
         || config.height != 240
         || config.qp != 26
@@ -606,10 +832,14 @@ fn format_nv12_padded(
 
 #[cfg(test)]
 mod tests {
-    use super::{Codec, EncoderConfig, PixelFormat};
+    use super::{Codec, EncoderConfig, PixelFormat, RateControlConfig, RateControlMode};
+    use crate::sdk::Error;
 
     #[test]
     fn encoder_builder_keeps_public_configuration() {
+        let rate_control = RateControlConfig::vbr(2_000_000, 1_500_000, 2_500_000)
+            .with_initial_qp(26)
+            .with_qp_range(10, 40);
         let config = EncoderConfig::new(Codec::H264, 320, 240)
             .with_input_format(PixelFormat::I420)
             .with_profile(77)
@@ -618,7 +848,8 @@ mod tests {
             .with_qp(30)
             .with_fps(25, 1)
             .with_jpeg_quality(7)
-            .with_jpeg_restart_mcus(16);
+            .with_jpeg_restart_mcus(16)
+            .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
         assert_eq!(config.input_format(), PixelFormat::I420);
         assert_eq!(config.profile(), 77);
@@ -628,5 +859,30 @@ mod tests {
         assert_eq!(config.fps(), (25, 1));
         assert_eq!(config.jpeg_quality(), 7);
         assert_eq!(config.jpeg_restart_mcus(), 16);
+        assert_eq!(config.rate_control(), Some(rate_control));
+    }
+
+    #[test]
+    fn rate_control_modes_match_the_c_contract() {
+        for mode in [
+            RateControlMode::FixedQp,
+            RateControlMode::Cbr,
+            RateControlMode::Vbr,
+            RateControlMode::Avbr,
+        ] {
+            assert_eq!(RateControlMode::from_c_value(mode.c_value()), Some(mode));
+        }
+        assert_eq!(RateControlMode::from_c_value(4), None);
+    }
+
+    #[test]
+    fn rate_control_rejects_invalid_bounds() {
+        let bad_bitrate = RateControlConfig::cbr(1_000_000, 2_000_000, 3_000_000).validate();
+        assert!(matches!(bad_bitrate, Err(Error::InvalidInput(_))));
+
+        let bad_qp = RateControlConfig::cbr(2_000_000, 1_500_000, 2_500_000)
+            .with_initial_qp(52)
+            .validate();
+        assert!(matches!(bad_qp, Err(Error::InvalidInput(_))));
     }
 }

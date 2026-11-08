@@ -344,6 +344,14 @@ in what order the evidence gets produced.
       captured-format matrix is generalized. Six-frame output is byte-identical
       to the existing CLI oracle on both boards: VEPU510/lf1
       `0e65b51a…81f33`, VEPU580/t6 `aa6276ba…173d1`.
+- [x] Public advanced encoder configuration API V1.9: the original 68-byte
+      config and create path remain unchanged. A separately versioned
+      `rk_mpp_encoder_advanced_config_t` exposes CBR/VBR/AVBR, bitrate bounds
+      and QP bounds through Rust and C. On t6, VEPU580 H.264 and H.265 CBR,
+      VBR and AVBR outputs match the validated CLI byte-for-byte in six cases,
+      and a consumer compiled against the V1.8 header links to the V1.9 library.
+      RK3576 VEPU510 streaming RC is an explicit unsupported boundary until its
+      per-picture session is wired.
 - [x] Public H.265 encoder API V1.5: the same owned packet/release and
       synchronous submit path with NV12/I420 input. t6 VEPU580 exposes
       width/height, QP and GOP; RK3576 VEPU510 exposes the captured

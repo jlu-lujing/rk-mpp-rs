@@ -399,7 +399,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `mpp_frame/mpp_packet/mpp_buffer` 最小实现
 - [ ] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
 - [ ] W7-4 头文件与符号导出策略（前缀、版本、`-sys` crate）。
-      **V1 头文件、`rk_mpp_` 前缀、SONAME、pkg-config/CMake、符号快照已完成；`-sys` crate 仍待做**
+      **V1.9 头文件、`rk_mpp_` 前缀、SONAME、pkg-config/CMake、符号快照和
+      独立 advanced encoder config 已完成；`-sys` crate 仍待做**
 - [ ] W7-5 ABI 测试：C 程序调用我们的库跑通 3 个解码 + 2 个编码用例。
       **H.264/H.265/VP9/AV1/VP8/MPEG-2/MPEG-4/H.263/MJPEG 解码及三种编码 C/C++ 用例已完成**
 

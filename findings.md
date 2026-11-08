@@ -28,6 +28,23 @@
 - The current C encoder config is 68 bytes. Future fields must be appended and
   `struct_size` must be treated as a prefix length; rejecting old sizes would
   break binary compatibility within ABI major 1.
+- Rate control should not enlarge `rk_mpp_encoder_config_t`. A separate
+  `rk_mpp_encoder_advanced_config_t` carrying an independently versioned
+  `rk_mpp_encoder_rate_control_t` preserves every V1.8 offset and lets future
+  ROI/GDR/slice fields append without changing existing storage requirements.
+- The VEPU580 H.264 and H.265 sessions already accept CBR/VBR/AVBR targets,
+  bitrate bounds and QP bounds. The stable ABI work is a mapping and validation
+  layer, not a new hardware implementation.
+- The RK3576 VEPU510 streaming wrappers currently expose only their captured
+  fixed-QP paths. Non-fixed-QP configuration must be rejected explicitly until
+  the per-picture VEPU510 RC session is wired and board-validated.
+- The V1.9 advanced ABI passed byte-for-byte against the validated CLI for t6
+  VEPU580 H.264/H.265 in all three CBR/VBR/AVBR modes. Sizes were H.264
+  CBR/VBR/AVBR `10848/12191/10476` bytes and H.265
+  `11049/11335/9249` bytes.
+- A minimal V1.8 header snapshot compiles an encoder consumer directly against
+  the V1.9 shared library. This checks the real old-layout call path instead of
+  relying only on static size assertions.
 
 ## Research Findings
 

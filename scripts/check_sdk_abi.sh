@@ -16,13 +16,19 @@ if [ ! -f "$library" ]; then
     exit 1
 fi
 
+temporary=$(mktemp -d)
+trap 'rm -rf "$temporary"' EXIT
+ln -sfn "$library" "$temporary/librk_mpp_rs.so"
+ln -sfn "$library" "$temporary/librk_mpp_rs.so.1"
+
 gcc -std=c11 -Wall -Wextra -Werror \
     -I"$repo/include" "$repo/tests/c_api_abi.c" \
+    -L"$temporary" -lrk_mpp_rs \
+    -Wl,-rpath,"$temporary" \
     -o /tmp/rk_mpp_c_api_abi
 /tmp/rk_mpp_c_api_abi
 
-actual=$(mktemp)
-trap 'rm -f "$actual"' EXIT
+actual="$temporary/symbols"
 nm -D --defined-only "$library" |
     awk '{print $3}' |
     grep -E '^(rk_mpp_|rk_jpeg_)' |

@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-_Static_assert(RK_MPP_API_VERSION == 0x10008u, "API version changed");
+_Static_assert(RK_MPP_API_VERSION == 0x10009u, "API version changed");
 
 _Static_assert(RK_MPP_CODEC_H264 == 1, "codec id changed");
 _Static_assert(RK_MPP_CODEC_MJPEG == 2, "codec id changed");
@@ -43,6 +43,21 @@ _Static_assert(offsetof(rk_mpp_encoder_config_t, jpeg_quality) == 44,
 _Static_assert(offsetof(rk_mpp_encoder_config_t, flags) == 52,
                "encoder config layout changed");
 
+_Static_assert(RK_MPP_RATE_CONTROL_FIXED_QP == 0, "rate mode changed");
+_Static_assert(RK_MPP_RATE_CONTROL_CBR == 1, "rate mode changed");
+_Static_assert(RK_MPP_RATE_CONTROL_VBR == 2, "rate mode changed");
+_Static_assert(RK_MPP_RATE_CONTROL_AVBR == 3, "rate mode changed");
+_Static_assert(sizeof(rk_mpp_encoder_rate_control_t) == 64,
+               "rate-control config layout changed");
+_Static_assert(offsetof(rk_mpp_encoder_rate_control_t, bps_target) == 8,
+               "rate-control config layout changed");
+_Static_assert(offsetof(rk_mpp_encoder_rate_control_t, initial_qp) == 32,
+               "rate-control config layout changed");
+_Static_assert(sizeof(rk_mpp_encoder_advanced_config_t) == 104,
+               "advanced encoder config layout changed");
+_Static_assert(offsetof(rk_mpp_encoder_advanced_config_t, rate_control) == 8,
+               "advanced encoder config layout changed");
+
 _Static_assert(sizeof(rk_mpp_encoded_packet_t) == 72,
                "encoded packet layout changed");
 _Static_assert(offsetof(rk_mpp_encoded_packet_t, pts) == 16,
@@ -53,5 +68,25 @@ _Static_assert(offsetof(rk_mpp_encoded_packet_t, size) == 48,
                "encoded packet layout changed");
 
 int main(void) {
+    rk_mpp_encoder_rate_control_t rate_control;
+    rk_mpp_encoder_advanced_config_t advanced;
+
+    if (rk_mpp_encoder_rate_control_init(
+            &rate_control, RK_MPP_RATE_CONTROL_CBR) != RK_MPP_OK ||
+        rate_control.mode != RK_MPP_RATE_CONTROL_CBR ||
+        rate_control.initial_qp != 26 ||
+        rate_control.min_qp != 8 ||
+        rate_control.max_qp != 48) {
+        return 1;
+    }
+    if (rk_mpp_encoder_advanced_config_init(
+            &advanced, RK_MPP_RATE_CONTROL_VBR) != RK_MPP_OK ||
+        advanced.rate_control.mode != RK_MPP_RATE_CONTROL_VBR) {
+        return 2;
+    }
+    if (rk_mpp_encoder_rate_control_init(&rate_control, 99) !=
+        RK_MPP_ERR_INVALID) {
+        return 3;
+    }
     return 0;
 }

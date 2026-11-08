@@ -4,6 +4,15 @@ All notable changes to the public SDK are recorded here. The project version and
 the C ABI version are independent: the crate is currently `0.1.x`, while
 `RK_MPP_API_VERSION_MAJOR` defines shared-library ABI compatibility.
 
+## [1.9] - 2026-11-09
+
+- Added `rk_mpp_encoder_advanced_config_t` and
+  `rk_mpp_encoder_rate_control_t` without changing the 68-byte V1.8 encoder
+  configuration.
+- Exposed Fixed-QP, CBR, VBR and AVBR rate control, bitrate bounds and QP bounds
+  through Rust and C for VEPU580 H.264 and H.265 sessions.
+- Preserved `rk_mpp_encoder_create()` and every V1.8 struct offset and symbol.
+
 ## [1.8] - 2026-11-09
 
 ### Added

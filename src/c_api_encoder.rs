@@ -40,6 +40,29 @@ pub struct RkMppEncoderConfig {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderRateControl {
+    pub struct_size: u32,
+    pub mode: u32,
+    pub bps_target: i64,
+    pub bps_min: i64,
+    pub bps_max: i64,
+    pub initial_qp: u32,
+    pub min_qp: u32,
+    pub max_qp: u32,
+    pub reserved: [u32; 5],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderAdvancedConfig {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub rate_control: RkMppEncoderRateControl,
+    pub reserved: [u32; 8],
+}
+
+#[repr(C)]
 pub struct RkMppEncodedPacket {
     pub struct_size: u32,
     pub flags: u32,
@@ -84,6 +107,51 @@ fn clear_packet(packet: &mut RkMppEncodedPacket) {
     packet.reserved = [0; 2];
 }
 
+fn init_rate_control(rate_control: &mut RkMppEncoderRateControl, mode: u32) -> Result<(), c_int> {
+    match mode {
+        0..=3 => {}
+        _ => return Err(RK_MPP_ERR_INVALID),
+    }
+    *rate_control = RkMppEncoderRateControl {
+        struct_size: size_of::<RkMppEncoderRateControl>() as u32,
+        mode,
+        bps_target: 0,
+        bps_min: 0,
+        bps_max: 0,
+        initial_qp: 26,
+        min_qp: 8,
+        max_qp: 48,
+        reserved: [0; 5],
+    };
+    Ok(())
+}
+
+fn parse_rate_control(
+    rate_control: &RkMppEncoderRateControl,
+) -> Result<encoder::RateControlConfig, c_int> {
+    if rate_control.struct_size < size_of::<RkMppEncoderRateControl>() as u32 {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    if rate_control.reserved != [0; 5] {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    let mode =
+        encoder::RateControlMode::from_c_value(rate_control.mode).ok_or(RK_MPP_ERR_INVALID)?;
+    let initial_qp = u8::try_from(rate_control.initial_qp).map_err(|_| RK_MPP_ERR_INVALID)?;
+    let min_qp = u8::try_from(rate_control.min_qp).map_err(|_| RK_MPP_ERR_INVALID)?;
+    let max_qp = u8::try_from(rate_control.max_qp).map_err(|_| RK_MPP_ERR_INVALID)?;
+    let parsed = encoder::RateControlConfig::new(
+        mode,
+        rate_control.bps_target,
+        rate_control.bps_min,
+        rate_control.bps_max,
+    )
+    .with_initial_qp(initial_qp)
+    .with_qp_range(min_qp, max_qp);
+    parsed.validate().map_err(|error| error_code(&error))?;
+    Ok(parsed)
+}
+
 /// # Safety
 /// `config` must point to writable storage for one encoder config.
 #[no_mangle]
@@ -125,6 +193,64 @@ pub unsafe extern "C" fn rk_mpp_encoder_config_init(
     RK_MPP_OK
 }
 
+/// Initialize a rate-control descriptor.
+///
+/// # Safety
+/// `rate_control` must point to writable storage for one descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_rate_control_init(
+    rate_control: *mut RkMppEncoderRateControl,
+    mode: u32,
+) -> c_int {
+    if rate_control.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: the caller guarantees writable descriptor storage.
+    let rate_control = unsafe { &mut *rate_control };
+    match init_rate_control(rate_control, mode) {
+        Ok(()) => RK_MPP_OK,
+        Err(code) => code,
+    }
+}
+
+/// Initialize an advanced encoder configuration.
+///
+/// # Safety
+/// `config` must point to writable storage for one advanced configuration.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_advanced_config_init(
+    config: *mut RkMppEncoderAdvancedConfig,
+    rate_control_mode: u32,
+) -> c_int {
+    if config.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    let mut rate_control = RkMppEncoderRateControl {
+        struct_size: 0,
+        mode: 0,
+        bps_target: 0,
+        bps_min: 0,
+        bps_max: 0,
+        initial_qp: 0,
+        min_qp: 0,
+        max_qp: 0,
+        reserved: [0; 5],
+    };
+    if let Err(code) = init_rate_control(&mut rate_control, rate_control_mode) {
+        return code;
+    }
+    // SAFETY: the caller guarantees writable advanced-config storage.
+    unsafe {
+        config.write(RkMppEncoderAdvancedConfig {
+            struct_size: size_of::<RkMppEncoderAdvancedConfig>() as u32,
+            flags: 0,
+            rate_control,
+            reserved: [0; 8],
+        });
+    }
+    RK_MPP_OK
+}
+
 /// # Safety
 /// `packet` must point to writable storage for one packet descriptor.
 #[no_mangle]
@@ -151,6 +277,63 @@ pub unsafe extern "C" fn rk_mpp_encoded_packet_init(packet: *mut RkMppEncodedPac
     RK_MPP_OK
 }
 
+unsafe fn create_encoder(
+    config: *const RkMppEncoderConfig,
+    advanced_config: Option<&RkMppEncoderAdvancedConfig>,
+    out_encoder: *mut *mut RkMppEncoder,
+) -> c_int {
+    // SAFETY: the caller validated all pointers before entering this helper.
+    unsafe {
+        *out_encoder = std::ptr::null_mut();
+        let config = &*config;
+        if config.struct_size < size_of::<RkMppEncoderConfig>() as u32 {
+            return RK_MPP_ERR_INVALID;
+        }
+        if config.flags != 0 || config.reserved != [0; 3] {
+            return RK_MPP_ERR_INVALID;
+        }
+        let Some(codec) = sdk::Codec::from_c_value(config.codec) else {
+            return RK_MPP_ERR_INVALID;
+        };
+        let Some(input_format) = sdk::PixelFormat::from_c_value(config.input_format) else {
+            return RK_MPP_ERR_INVALID;
+        };
+        let mut encoder_config =
+            encoder::EncoderConfig::new(codec, config.width as usize, config.height as usize)
+                .with_input_format(input_format)
+                .with_profile(u8::try_from(config.profile).unwrap_or(u8::MAX))
+                .with_level(u8::try_from(config.level).unwrap_or(u8::MAX))
+                .with_gop(config.gop)
+                .with_qp(u8::try_from(config.qp).unwrap_or(u8::MAX))
+                .with_fps(config.fps_num, config.fps_den)
+                .with_jpeg_quality(config.jpeg_quality)
+                .with_jpeg_restart_mcus(config.jpeg_restart_mcus);
+        if let Some(advanced) = advanced_config {
+            if advanced.struct_size < size_of::<RkMppEncoderAdvancedConfig>() as u32
+                || advanced.flags != 0
+                || advanced.reserved != [0; 8]
+            {
+                return RK_MPP_ERR_INVALID;
+            }
+            let rate_control = match parse_rate_control(&advanced.rate_control) {
+                Ok(rate_control) => rate_control,
+                Err(code) => return code,
+            };
+            encoder_config = encoder_config.with_rate_control(rate_control);
+        }
+        match encoder::Encoder::new(encoder_config) {
+            Ok(inner) => {
+                *out_encoder = Box::into_raw(Box::new(RkMppEncoder {
+                    inner,
+                    last_packet: None,
+                }));
+                RK_MPP_OK
+            }
+            Err(error) => error_code(&error),
+        }
+    }
+}
+
 /// # Safety
 /// `config` must point to a valid config and `out_encoder` to writable pointer
 /// storage.
@@ -163,42 +346,25 @@ pub unsafe extern "C" fn rk_mpp_encoder_create(
         return RK_MPP_ERR_INVALID;
     }
     // SAFETY: both pointers were validated and the caller owns their storage.
-    unsafe {
-        *out_encoder = std::ptr::null_mut();
-        let config = &*config;
-        if config.struct_size != size_of::<RkMppEncoderConfig>() as u32 {
-            return RK_MPP_ERR_INVALID;
-        }
-        if config.flags != 0 || config.reserved != [0; 3] {
-            return RK_MPP_ERR_INVALID;
-        }
-        let Some(codec) = sdk::Codec::from_c_value(config.codec) else {
-            return RK_MPP_ERR_INVALID;
-        };
-        let Some(input_format) = sdk::PixelFormat::from_c_value(config.input_format) else {
-            return RK_MPP_ERR_INVALID;
-        };
-        let encoder_config =
-            encoder::EncoderConfig::new(codec, config.width as usize, config.height as usize)
-                .with_input_format(input_format)
-                .with_profile(u8::try_from(config.profile).unwrap_or(u8::MAX))
-                .with_level(u8::try_from(config.level).unwrap_or(u8::MAX))
-                .with_gop(config.gop)
-                .with_qp(u8::try_from(config.qp).unwrap_or(u8::MAX))
-                .with_fps(config.fps_num, config.fps_den)
-                .with_jpeg_quality(config.jpeg_quality)
-                .with_jpeg_restart_mcus(config.jpeg_restart_mcus);
-        match encoder::Encoder::new(encoder_config) {
-            Ok(inner) => {
-                *out_encoder = Box::into_raw(Box::new(RkMppEncoder {
-                    inner,
-                    last_packet: None,
-                }));
-                RK_MPP_OK
-            }
-            Err(error) => error_code(&error),
-        }
+    unsafe { create_encoder(config, None, out_encoder) }
+}
+
+/// Create an encoder using a separately versioned advanced configuration.
+///
+/// # Safety
+/// `config` and `advanced_config` must point to valid descriptors and
+/// `out_encoder` to writable pointer storage.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_create_advanced(
+    config: *const RkMppEncoderConfig,
+    advanced_config: *const RkMppEncoderAdvancedConfig,
+    out_encoder: *mut *mut RkMppEncoder,
+) -> c_int {
+    if config.is_null() || advanced_config.is_null() || out_encoder.is_null() {
+        return RK_MPP_ERR_INVALID;
     }
+    // SAFETY: all pointers were validated and the caller owns their storage.
+    unsafe { create_encoder(config, Some(&*advanced_config), out_encoder) }
 }
 
 /// Submit one tightly packed visible-size NV12/I420 frame.
@@ -332,12 +498,16 @@ pub unsafe extern "C" fn rk_mpp_encoder_close(encoder: *mut RkMppEncoder) {
 
 #[cfg(test)]
 mod tests {
-    use super::{RkMppEncodedPacket, RkMppEncoderConfig};
+    use super::{
+        RkMppEncodedPacket, RkMppEncoderAdvancedConfig, RkMppEncoderConfig, RkMppEncoderRateControl,
+    };
     use std::mem::size_of;
 
     #[test]
     fn encoder_structs_match_the_v1_header_layout() {
         assert_eq!(size_of::<RkMppEncoderConfig>(), 68);
+        assert_eq!(size_of::<RkMppEncoderRateControl>(), 64);
+        assert_eq!(size_of::<RkMppEncoderAdvancedConfig>(), 104);
         assert_eq!(size_of::<RkMppEncodedPacket>(), 72);
     }
 }

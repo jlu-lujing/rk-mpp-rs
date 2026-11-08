@@ -168,11 +168,20 @@ callers.
 - **Status:** complete.
 
 ### Phase 9: Backward-Compatible Advanced Encoder ABI
-- [ ] Accept older shorter encoder-config prefixes and append new fields.
-- [ ] Expose rate-control modes and bitrate targets through Rust/C.
+- [x] Accept older shorter encoder-config prefixes and append new fields.
+- [x] Expose rate-control modes and bitrate targets through Rust/C.
 - [ ] Add ROI/GDR/slice controls without changing existing offsets.
-- [ ] Verify old V1.8 and new V1.9 consumers against the same library.
+- [x] Verify old V1.8 and new V1.9 consumers against the same library.
 - **Status:** in_progress
+
+### Phase 9.1: Stable Rate-Control Configuration
+- [x] Add a separately sized advanced encoder config and rate-control config.
+- [x] Keep the 68-byte V1 encoder config and existing create path unchanged.
+- [x] Map Fixed-QP/CBR/VBR/AVBR, bitrate bounds and QP bounds into Rust.
+- [x] Verify VEPU580 H.264/H.265 ABI output against the validated CLI paths.
+- [x] Re-run old V1.8 C consumers against the V1.9 library.
+- **Status:** complete on t6 for VEPU580; RK3576 streaming RC is an explicit
+  unsupported boundary.
 
 ## Decisions Made
 

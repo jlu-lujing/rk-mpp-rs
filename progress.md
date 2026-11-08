@@ -2,6 +2,23 @@
 
 ## Session: 2026-11-09
 
+### Phase 9.1: Stable Rate-Control Configuration
+- **Status:** complete on t6/VEPU580; RK3576 streaming RC explicitly unsupported
+- Kept the V1.8 68-byte encoder config and `rk_mpp_encoder_create()` unchanged.
+- Added separately versioned `rk_mpp_encoder_rate_control_t` and
+  `rk_mpp_encoder_advanced_config_t`, plus `create_advanced()` and C/Rust
+  Fixed-QP/CBR/VBR/AVBR mapping for bitrate and QP bounds.
+- t6 V1.8 consumer compatibility passed against the V1.9 library.
+- t6 H.264 and H.265 CBR/VBR/AVBR C API outputs matched the validated CLI in
+  all six cases, byte-for-byte.
+- lf1's V1.8 consumer passed and advanced streaming RC was an explicit platform
+  SKIP. A transient rustc SIGSEGV in an earlier retry did not recur with
+  `CARGO_BUILD_JOBS=1`.
+- t6 and lf1 package gates passed with API `1.9`, pkg-config, CMake
+  shared/static consumers and ABI checks.
+- Final t6 and lf1 `cargo test --all-targets --offline` gates each passed
+  `1190 / 0 / 37`; `cargo fmt --check` and strict rustdoc passed on both.
+
 ### Phase 8: Product-Ready SDK Packaging
 - **Status:** complete on lf1 and t6
 - Confirmed both boards have pkg-config, CMake and readelf.
