@@ -218,6 +218,15 @@ callers.
 - [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
 - **Status:** complete on t6 and lf1.
 
+### Phase 13: H.265 DMA-BUF Frame Output
+- [x] Share the pooled decoded-surface type between H.264 and H.265.
+- [x] Retain the H.265 video lease through picture reordering.
+- [x] Export 8-bit 4:2:0 H.265 as strided NV12 Y/UV planes.
+- [x] Preserve default CPU/planar and H.265 Main10 behavior.
+- [x] Verify t6 against the C oracle and lf1 VDPU383 DMA against CPU output.
+- [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
+- **Status:** complete on t6 and lf1 for 8-bit 4:2:0 NV12.
+
 ## Decisions Made
 
 | Decision | Rationale |

@@ -21,6 +21,16 @@ pub mod vp8;
 pub mod vp9;
 pub mod yuv;
 
+use crate::service::buffer_pool::BufferLease;
+use crate::service::dma_heap::DmaBuf;
+
+/// A hardware-decoded surface retained by the codec's buffer pool.
+pub struct DmaBufSurface {
+    pub lease: BufferLease<DmaBuf>,
+    pub hor_stride: usize,
+    pub ver_stride: usize,
+}
+
 /// What a decoder produces for one packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {

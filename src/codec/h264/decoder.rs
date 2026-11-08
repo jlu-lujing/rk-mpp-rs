@@ -4,7 +4,7 @@ use std::io;
 
 use crate::hal::h264d::{Frame, H264d};
 use crate::hal::h264d383::H264d383;
-use crate::service::buffer_pool::{BufferLease, BufferPool};
+use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{SocProfile, VideoDecodeHal};
 
@@ -39,11 +39,7 @@ pub struct Picture {
     pub discard: bool,
 }
 
-pub struct DmaBufPicture {
-    pub lease: BufferLease<DmaBuf>,
-    pub hor_stride: usize,
-    pub ver_stride: usize,
-}
+pub type DmaBufPicture = crate::codec::DmaBufSurface;
 
 /// Bounded display-order reorder buffer for streaming output.
 pub struct DisplayReorder {

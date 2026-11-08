@@ -2,6 +2,7 @@
 
 use std::io;
 
+use crate::codec::DmaBufSurface;
 use crate::hal::hevc::{ChromaFormat, Frame, HevcHw};
 use crate::hal::hevc383::Hevc383;
 use crate::service::buffer_pool::BufferPool;
@@ -28,6 +29,8 @@ pub struct Picture {
     /// IDR/BLA pictures start a new display-order epoch.
     pub epoch: u32,
     pub yuv: Vec<u8>,
+    /// Strided hardware NV12 surface when DMA-BUF output is enabled.
+    pub dmabuf: Option<DmaBufSurface>,
     pub chroma_format: ChromaFormat,
     pub bit_depth: u32,
     /// MPP-compatible frame error mask.
@@ -50,6 +53,7 @@ pub struct Decoder {
     ctu_size: usize,
     poc_epoch: u32,
     active_sps_id: usize,
+    output_dmabuf: bool,
 }
 
 enum HevcHardware {
@@ -151,6 +155,7 @@ impl Decoder {
             ctu_size: 16,
             poc_epoch: 0,
             active_sps_id: 0,
+            output_dmabuf: false,
         })
     }
 
@@ -257,6 +262,13 @@ impl Decoder {
         let picture_slices = parse_picture_slices(&slices, &self.sps, &self.pps)?;
         let sps = picture_slices.sps;
         self.active_sps_id = (sps.sps_id as usize) % 16;
+        if self.output_dmabuf && (self.bit_depth != 8 || self.chroma_format != ChromaFormat::Yuv420)
+        {
+            return Err(format!(
+                "H.265 DMA-BUF output supports only 8-bit 4:2:0 NV12, got {}-bit {:?}",
+                self.bit_depth, self.chroma_format
+            ));
+        }
         let pps = picture_slices.pps;
         let sh = picture_slices
             .headers
@@ -396,28 +408,43 @@ impl Decoder {
         }
         self.release_frames_outside_dpb();
 
-        let yuv = if err_info == 0 {
+        let (yuv, dmabuf) = if err_info == 0 {
             let frame = self.frames[slot].as_ref().unwrap();
-            let video = frame
-                .video
-                .data()
-                .map_err(|error| format!("HEVC frame view: {error}"))?;
-            let _ = video.buffer().sync_read_begin();
-            let y_size = frame.hor_stride * frame.ver_stride;
-            let uv_size = y_size * frame.chroma_format.uv_size_factor() / 2;
-            let yuv = copy_planar(
-                &video[..y_size],
-                &video[y_size..y_size + uv_size],
-                self.width,
-                self.height,
-                frame.hor_stride,
-                frame.bit_depth,
-                frame.chroma_format,
-            );
-            let _ = video.buffer().sync_read_end();
-            yuv
+            if self.output_dmabuf {
+                let lease = frame
+                    .video
+                    .try_clone()
+                    .map_err(|error| format!("HEVC DMA-BUF lease: {error}"))?;
+                (
+                    Vec::new(),
+                    Some(DmaBufSurface {
+                        lease,
+                        hor_stride: frame.hor_stride,
+                        ver_stride: frame.ver_stride,
+                    }),
+                )
+            } else {
+                let video = frame
+                    .video
+                    .data()
+                    .map_err(|error| format!("HEVC frame view: {error}"))?;
+                let _ = video.buffer().sync_read_begin();
+                let y_size = frame.hor_stride * frame.ver_stride;
+                let uv_size = y_size * frame.chroma_format.uv_size_factor() / 2;
+                let yuv = copy_planar(
+                    &video[..y_size],
+                    &video[y_size..y_size + uv_size],
+                    self.width,
+                    self.height,
+                    frame.hor_stride,
+                    frame.bit_depth,
+                    frame.chroma_format,
+                );
+                let _ = video.buffer().sync_read_end();
+                (yuv, None)
+            }
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         Ok(Some(Picture {
             width: self.width,
@@ -425,10 +452,15 @@ impl Decoder {
             poc,
             epoch,
             yuv,
+            dmabuf,
             chroma_format: self.chroma_format,
             bit_depth: self.bit_depth,
             err_info,
         }))
+    }
+
+    pub fn set_output_dmabuf(&mut self, enabled: bool) {
+        self.output_dmabuf = enabled;
     }
 }
 
@@ -756,6 +788,7 @@ mod tests {
             poc,
             epoch,
             yuv: vec![marker],
+            dmabuf: None,
             chroma_format: ChromaFormat::Yuv420,
             bit_depth: 8,
             err_info: 0,

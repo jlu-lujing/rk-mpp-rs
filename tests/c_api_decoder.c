@@ -162,9 +162,10 @@ static int validate_dmabuf(rk_mpp_decoder_t *decoder, uint32_t codec,
         }
         return 0;
     }
-    if ((codec != RK_MPP_CODEC_H264 && codec != RK_MPP_CODEC_MJPEG) ||
+    if ((codec != RK_MPP_CODEC_H264 && codec != RK_MPP_CODEC_H265 &&
+         codec != RK_MPP_CODEC_MJPEG) ||
         format != RK_MPP_PIXEL_FORMAT_NV12) {
-        fprintf(stderr, "REQUIRE_DMABUF only supports H.264/MJPEG NV12\n");
+        fprintf(stderr, "REQUIRE_DMABUF only supports H.264/H.265/MJPEG NV12\n");
         return -1;
     }
     for (plane = 0; plane < 2; plane++) {

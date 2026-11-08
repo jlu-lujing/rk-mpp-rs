@@ -55,4 +55,19 @@ LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_decoder_dmabuf h264 nv12 211 \
         /tmp/rk_mpp_sdk_h264_cpu.nv12 "$h264"
 cmp /tmp/rk_mpp_sdk_h264_dmabuf.nv12 /tmp/rk_mpp_sdk_h264_cpu.nv12
-printf 'PASS rk-mpp-rs DMA-BUF import and H.264/MJPEG frame export\n'
+
+h265=/tmp/rk_mpp_sdk_dmabuf.265
+cp tests/data/h265e_c_fixqp_qp26_320x240.265 "$h265"
+for _ in 1 2 3; do
+    cat tests/data/h265e_c_fixqp_qp26_320x240.265 >> "$h265"
+done
+REQUIRE_DMABUF=1 \
+LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_decoder_dmabuf h265 nv12 313 \
+        /tmp/rk_mpp_sdk_h265_dmabuf.nv12 "$h265"
+EXPECT_NO_DMABUF=1 \
+LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_decoder_dmabuf h265 nv12 211 \
+        /tmp/rk_mpp_sdk_h265_cpu.nv12 "$h265"
+cmp /tmp/rk_mpp_sdk_h265_dmabuf.nv12 /tmp/rk_mpp_sdk_h265_cpu.nv12
+printf 'PASS rk-mpp-rs DMA-BUF import and H.264/H.265/MJPEG frame export\n'

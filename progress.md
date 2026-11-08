@@ -2,6 +2,21 @@
 
 ## Session: 2026-11-09
 
+### Phase 13: H.265 DMA-BUF Frame Output
+- **Status:** complete on t6 and lf1 for 8-bit 4:2:0 NV12.
+- H.264 and H.265 now share a pooled `DmaBufSurface`; H.265 reordered pictures
+  retain an independent lease on the hardware video surface.
+- t6 H.265 DMA output matches the official C MPP NV12 oracle byte-for-byte with
+  hash `be78158b…`. lf1 VDPU383 DMA and default CPU outputs match at four
+  frames / 460,800 bytes.
+- H.264, H.265 and MJPEG pass the shared DMA-BUF import/export gate on both
+  boards; CPU frames still reject fd export.
+- H.265 Main10 and 422/444 remain on CPU planar output and explicitly reject
+  the DMA output flag.
+- Final t6/lf1 workspace gates pass with
+  `1199 passed / 0 failed / 38 ignored`; rustfmt, strict rustdoc, SDK install,
+  pkg-config, CMake and dynamic/static ABI package gates pass.
+
 ### Phase 12: H.264 DMA-BUF Frame Output
 - **Status:** complete on t6 and lf1.
 - H.264 display-reordered pictures now clone their DPB buffer lease and retain

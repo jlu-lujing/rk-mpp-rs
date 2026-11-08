@@ -73,6 +73,11 @@
 - H.264's DPB surface is already a `BufferLease<DmaBuf>`. DMA output therefore
   clones that lease into each reordered `Picture`; the extra reference prevents
   the V4L2 surface from returning to the pool before the SDK emits it.
+- H.265 uses the same pooled `video` lease. Its reordered `Picture` now owns a
+  clone, while the decoder may release its slot or reset the DPB without
+  invalidating an already-decoded display frame. The raw vdpu34x/vdpu383
+  layout is NV12 only for 8-bit 4:2:0; Main10 and 422/444 stay on the existing
+  CPU planar conversion path.
 
 ## Research Findings
 

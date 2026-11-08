@@ -6,14 +6,14 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 
 ## [1.11] - 2026-11-09
 
-- H.264 and MJPEG NV12 decoding can retain their hardware dma-buf instead of
-  copying into a CPU `Vec` when `RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` is
-  requested.
+- H.264, 8-bit 4:2:0 H.265 and MJPEG NV12 decoding can retain their hardware
+  dma-buf instead of copying into a CPU `Vec` when
+  `RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` is requested.
 - Added Rust `DmaBufPlane` and owned fd duplication for decoded frames.
 - Added `rk_mpp_decoder_export_frame_dmabuf()` for isolated plane
   offset/size/stride export. CPU-backed codecs return `UNSUPPORTED`.
 - Added dma-buf import/duplication primitives and board tests on t6 and lf1.
-- Default H.264/MJPEG frames remain contiguous CPU storage for V1
+- Default H.264/H.265/MJPEG frames remain contiguous CPU storage for V1
   compatibility.
 
 ## [1.10] - 2026-11-09

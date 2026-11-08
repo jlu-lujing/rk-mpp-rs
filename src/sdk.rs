@@ -21,6 +21,7 @@ use crate::codec::m2v;
 use crate::codec::mpg4;
 use crate::codec::vp8;
 use crate::codec::vp9;
+use crate::codec::DmaBufSurface;
 use crate::hal::hevc::ChromaFormat;
 use crate::hal::jpegd::{self as jpegd, JpegDownscale};
 use crate::service::buffer_pool::BufferLease;
@@ -464,7 +465,9 @@ impl Frame {
                     "H.264 DMA-BUF output requires NV12".to_string(),
                 ));
             }
-            return Self::from_h264_dmabuf(width, height, poc, err_info, dmabuf, pts, dts);
+            return Self::from_pooled_nv12_dmabuf(
+                "H.264", width, height, poc, err_info, dmabuf, pts, dts,
+            );
         }
         let storage = match format {
             PixelFormat::Nv12 => picture
@@ -492,30 +495,33 @@ impl Frame {
         Ok(frame)
     }
 
-    fn from_h264_dmabuf(
+    fn from_pooled_nv12_dmabuf(
+        codec: &str,
         width: usize,
         height: usize,
         poc: i32,
         err_info: u32,
-        source: h264::decoder::DmaBufPicture,
+        source: DmaBufSurface,
         pts: i64,
         dts: i64,
     ) -> Result<Self, Error> {
         let y_size = source
             .hor_stride
             .checked_mul(source.ver_stride)
-            .ok_or_else(|| Error::State("H.264 DMA-BUF size overflow"))?;
+            .ok_or_else(|| Error::Hardware(format!("{codec} DMA-BUF size overflow")))?;
         let uv_size = y_size / 2;
         let duplicate = source
             .lease
             .dup_fd()
-            .map_err(|error| Error::Resource(format!("H.264 fd duplicate: {error}")))?;
+            .map_err(|error| Error::Resource(format!("{codec} fd duplicate: {error}")))?;
         let view = source
             .lease
             .data()
-            .map_err(|error| Error::Hardware(format!("H.264 surface lease: {error}")))?;
+            .map_err(|error| Error::Hardware(format!("{codec} surface lease: {error}")))?;
         if view.len() < y_size + uv_size {
-            return Err(Error::State("H.264 DMA-BUF surface is truncated"));
+            return Err(Error::Hardware(format!(
+                "{codec} DMA-BUF surface is truncated"
+            )));
         }
         let len = view.len();
         drop(view);
@@ -556,6 +562,23 @@ impl Frame {
         pts: i64,
         dts: i64,
     ) -> Result<Self, Error> {
+        if let Some(dmabuf) = picture.dmabuf {
+            if format != PixelFormat::Nv12 {
+                return Err(Error::Unsupported(
+                    "H.265 DMA-BUF output requires NV12".to_string(),
+                ));
+            }
+            return Self::from_pooled_nv12_dmabuf(
+                "H.265",
+                picture.width,
+                picture.height,
+                picture.poc,
+                picture.err_info,
+                dmabuf,
+                pts,
+                dts,
+            );
+        }
         if picture.chroma_format != ChromaFormat::Yuv420 {
             return Err(Error::Unsupported(format!(
                 "H.265 {:?} chroma output is not exposed by the V1 SDK",
@@ -1137,15 +1160,15 @@ impl Av1Decoder {
 impl Decoder {
     pub fn new(config: DecoderConfig) -> Result<Self, Error> {
         if config.dmabuf_output {
-            if !matches!(config.codec, Codec::H264 | Codec::Mjpeg) {
+            if !matches!(config.codec, Codec::H264 | Codec::H265 | Codec::Mjpeg) {
                 return Err(Error::Unsupported(
-                    "DMA-BUF frame output is currently implemented only for H.264 and MJPEG"
+                    "DMA-BUF frame output is currently implemented only for H.264, H.265 and MJPEG"
                         .to_string(),
                 ));
             }
             if config.output_format != PixelFormat::Nv12 {
                 return Err(Error::Unsupported(
-                    "H.264/MJPEG DMA-BUF output requires NV12".to_string(),
+                    "H.264/H.265/MJPEG DMA-BUF output requires NV12".to_string(),
                 ));
             }
         }
@@ -1393,7 +1416,9 @@ impl H264Backend {
 
 impl H265Backend {
     fn new(config: DecoderConfig) -> Result<Self, Error> {
-        let decoder = hevc::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?;
+        let mut decoder =
+            hevc::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?;
+        decoder.set_output_dmabuf(config.dmabuf_output);
         let max_reorder_override = (config.max_reorder_frames as usize).min(16);
         Ok(Self {
             decoder,
@@ -2268,7 +2293,15 @@ mod tests {
     fn dmabuf_output_rejects_unimplemented_codecs() {
         assert!(matches!(
             super::Decoder::new(
-                super::DecoderConfig::new(super::Codec::H265).with_dmabuf_output(true)
+                super::DecoderConfig::new(super::Codec::Vp9).with_dmabuf_output(true)
+            ),
+            Err(super::Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            super::Decoder::new(
+                super::DecoderConfig::new(super::Codec::H265)
+                    .with_output_format(super::PixelFormat::I420P10)
+                    .with_dmabuf_output(true)
             ),
             Err(super::Error::Unsupported(_))
         ));

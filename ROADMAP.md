@@ -363,14 +363,14 @@ in what order the evidence gets produced.
       opaque handles have checked-in Rust declarations. ABI size/offset tests,
       explicit-path dynamic linking, static linking and installed pkg-config
       discovery pass on t6 and lf1.
-- [x] Public DMA-BUF frame export API V1.11: H.264 and MJPEG NV12 frames retain
-      their hardware dma-buf, Rust exposes plane fd/offset/size/stride metadata
-      and owned fd duplication, and C exposes
+- [x] Public DMA-BUF frame export API V1.11: H.264, 8-bit 4:2:0 H.265 and
+      MJPEG NV12 frames retain their hardware dma-buf, Rust exposes plane
+      fd/offset/size/stride metadata and owned fd duplication, and C exposes
       `rk_mpp_decoder_export_frame_dmabuf()`. Imported/duplicated dma-heap bytes
-      and C-exported H.264/MJPEG planes pass board tests on t6 and lf1. H.264
-      display reordering holds an extra DPB lease so a pooled surface cannot be
-      overwritten before delivery. Other CPU-backed codecs remain explicitly
-      unsupported.
+      and C-exported H.264/H.265/MJPEG planes pass board tests on t6 and lf1.
+      H.264 display reordering and H.265 reordered pictures retain pooled
+      DPB leases so a surface cannot be overwritten before delivery. H.265
+      Main10/422/444 and other CPU-backed codecs remain explicitly unsupported.
 - [x] Public H.265 encoder API V1.5: the same owned packet/release and
       synchronous submit path with NV12/I420 input. t6 VEPU580 exposes
       width/height, QP and GOP; RK3576 VEPU510 exposes the captured

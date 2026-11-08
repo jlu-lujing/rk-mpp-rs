@@ -269,10 +269,10 @@ ffmpeg -nostdin -hide_banner -loglevel error -y \
     -f rawvideo -pixel_format nv12 -video_size 320x240 \
     -i "$c_h265" -pix_fmt yuv420p -f rawvideo "$c_h265_i420"
 
-LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+REQUIRE_DMABUF=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_decoder h265 nv12 37 "$c_api_h265" "$h265"
 cmp "$c_h265" "$c_api_h265"
-LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+EXPECT_NO_DMABUF=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_decoder h265 nv12 1048576 \
     "$c_api_h265_one_packet" "$h265"
 cmp "$c_h265" "$c_api_h265_one_packet"
