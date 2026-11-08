@@ -64,6 +64,10 @@ pub struct EncoderConfig {
     pub fps_num: u32,
     pub fps_den: u32,
     pub vui: bool,
+    /// `log2_max_mv_length_horizontal/vertical` in the VUI bitstream
+    /// restriction. RK3588's stock 2024 library writes 16; RK3576's 2025
+    /// library writes 15 from the same source field.
+    pub vui_log2_max_mv_length: u32,
     /// The caller left the initial quality unset - `rc:qp_init <= 0` in MPP's own
     /// terms. Under rate control the first intra picture's QP is then derived from
     /// its bit budget (`cal_first_i_start_qp`); under fixed QP the reference forces
@@ -262,6 +266,7 @@ impl EncoderConfig {
             fps_num: 30,
             fps_den: 1,
             vui: true,
+            vui_log2_max_mv_length: 16,
             quality_auto: false,
             rc_qp_min: 8,
             rc_qp_max: 48,
@@ -347,6 +352,9 @@ impl EncoderConfig {
             return Err(Error(
                 "frame-rate numerator and denominator must be non-zero".into(),
             ));
+        }
+        if self.vui_log2_max_mv_length > 16 {
+            return Err(Error("VUI log2_max_mv_length must not exceed 16".into()));
         }
         if self.profile <= PROFILE_BASELINE && self.entropy_coding {
             return Err(Error("baseline profile cannot use CABAC".into()));
@@ -656,10 +664,8 @@ fn write_vui(w: &mut BitWriter, config: &EncoderConfig) {
     w.put_bits(1, 1); // motion_vectors_over_pic_boundaries_flag
     w.put_ue(0); // max_bytes_per_pic_denom
     w.put_ue(0); // max_bits_per_mb_denom
-                 // The 2016 text allows 16. The installed t6 MPP library emits 16 even
-                 // though this repository's older `refs/mpp` tree still says 15.
-    w.put_ue(16); // log2_max_mv_length_horizontal
-    w.put_ue(16); // log2_max_mv_length_vertical
+    w.put_ue(config.vui_log2_max_mv_length);
+    w.put_ue(config.vui_log2_max_mv_length);
     w.put_ue(0); // num_reorder_frames
     w.put_ue(config.num_ref_frames); // max_dec_frame_buffering
 }

@@ -22,7 +22,7 @@
  *   h264e_probe in.nv12 out.264 w h frames <0|1|2|3> qp [bps[:min:max]]
  *               [dblk disable alpha beta] [roi x y w h fi qpmode qpval]...
  *               [gop n] [hier d0:d1:d2:d3:n0:n1:n2:n3]
- *               [gdr mode num] [split mode arg] [splitout value]
+ *               [gdr mode num] [split mode arg] [splitout value] [seioff]
  *
  *   mode 0 = fixed QP, 1 = CBR, 2 = VBR, 3 = AVBR.
  *   `gop` overrides the hard-coded intra GOP of 60.
@@ -33,6 +33,8 @@
  *   `splitout 1` enables MPP_ENC_SPLIT_OUT_LOWDELAY; packets are then drained
  *   through EOI. The default of zero keeps one access unit per picture.
  *   `hier` enables hierarchical QP with four layer deltas and frame counts.
+ *   `seioff` sends MPP_ENC_SEI_MODE_DISABLE for streams intended to compare
+ *   only the SPS/PPS prefix.
  *   qp: the value written to the initial-quality field; pass -1 under a rate
  *       control to say "the caller left it unset" (written as -1 so the model
  *       takes its derivation branch), ignored beyond that.
@@ -56,7 +58,9 @@
 #include "rk_mpi.h"
 #include "rk_venc_cfg.h"
 
+#ifndef H264E_PROBE_NO_ROI
 #include "mpp_enc_roi_utils.h"
+#endif
 
 #define CHECK(call)                                                             \
     do {                                                                        \
@@ -173,6 +177,7 @@ int main(int argc, char **argv)
     int have_gdr = 0, gdr_mode = 0, gdr_num = 0;
     int have_split = 0, split_mode = 0, split_arg = 0, split_out = 0;
     int have_hier = 0;
+    int sei_off = 0;
     int hier_qp_delta[4] = { 0, 0, 0, 0 };
     int hier_frame_num[4] = { 0, 0, 0, 0 };
     int hor_stride = (width + 15) & ~15;
@@ -185,8 +190,10 @@ int main(int argc, char **argv)
     MppBufferGroup group = NULL;
     MppBuffer frame_buf = NULL;
     MppBuffer packet_buf = NULL;
+#ifndef H264E_PROBE_NO_ROI
     MppEncRoiCtx roi_ctx = NULL;
     int roi_regions = 0;
+#endif
     FILE *input = NULL;
     FILE *output = NULL;
     MPP_RET ret = MPP_NOK;
@@ -220,6 +227,7 @@ int main(int argc, char **argv)
             dblk_disable = atoi(argv[++arg]);
             dblk_alpha = atoi(argv[++arg]);
             dblk_beta = atoi(argv[++arg]);
+#ifndef H264E_PROBE_NO_ROI
         } else if (!strcmp(argv[arg], "roi")) {
             roi_regions++;
             arg += 7;
@@ -228,6 +236,11 @@ int main(int argc, char **argv)
                 return 2;
             }
             arg--;
+#else
+        } else if (!strcmp(argv[arg], "roi")) {
+            fprintf(stderr, "this probe was built without ROI support\n");
+            return 2;
+#endif
         } else if (!strcmp(argv[arg], "gop")) {
             if (arg + 1 >= argc) {
                 fprintf(stderr, "gop wants n\n");
@@ -267,6 +280,8 @@ int main(int argc, char **argv)
                 return 2;
             }
             have_hier = 1;
+        } else if (!strcmp(argv[arg], "seioff")) {
+            sei_off = 1;
         }
     }
 
@@ -359,14 +374,21 @@ int main(int argc, char **argv)
     if (have_dblk)
         CHECK(set_deblock(cfg, dblk_disable, dblk_alpha, dblk_beta));
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));
+    if (sei_off) {
+        MppEncSeiMode sei_mode = MPP_ENC_SEI_MODE_DISABLE;
+
+        CHECK(mpi->control(ctx, MPP_ENC_SET_SEI_CFG, &sei_mode));
+    }
 
     /* The ROI regions are re-read from the tail of the command line here, the
      * same way mpi_enc_test builds them per frame: the same regions every
      * picture, sent as metadata. */
+#ifndef H264E_PROBE_NO_ROI
     if (roi_regions) {
         CHECK(mpp_enc_roi_init(&roi_ctx, width, height, MPP_VIDEO_CodingAVC,
                                roi_regions));
     }
+#endif
 
     for (i = 0; i < frames; i++) {
         MppFrame frame = NULL;
@@ -400,6 +422,7 @@ int main(int argc, char **argv)
         mpp_packet_set_length(packet, 0);
         mpp_meta_set_packet(meta, KEY_OUTPUT_PACKET, packet);
 
+#ifndef H264E_PROBE_NO_ROI
         if (roi_ctx) {
             int at = 8;
             /* walk past the bps token to the first roi group again;
@@ -425,6 +448,7 @@ int main(int argc, char **argv)
             }
             CHECK(mpp_enc_roi_setup_meta(roi_ctx, meta));
         }
+#endif
 
         reader.ctx = ctx;
         reader.mpi = mpi;
@@ -466,8 +490,10 @@ int main(int argc, char **argv)
     ret = MPP_OK;
 
 cleanup:
+#ifndef H264E_PROBE_NO_ROI
     if (roi_ctx)
         mpp_enc_roi_deinit(roi_ctx);
+#endif
     if (output)
         fclose(output);
     if (input)

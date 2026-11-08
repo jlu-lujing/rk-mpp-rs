@@ -506,13 +506,15 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   low-delay `part_start`/`part_wait`，Rust 对它们显式拒绝。
 - VEPU510 H.264 已完成寄存器 ABI 取证：`tools/gen_vepu510_regs.py` 从 C
   struct 生成 645 个字段；六个写窗口及 148-word STATUS 已与 lf1 固定 QP IDR
-  ioctl trace 对齐。`src/hal/vepu510.rs` 只负责 typed register file，尚未提交
-  任何硬件编码任务。下一步是从该 trace 生成首个 IDR template，替换 DMA fd、
-  geometry、QP 和 syntax 字段，再与 C 输出逐字节比较。
+  ioctl trace 对齐。首个 320x240 QP26 Baseline IDR 已在 lf1 与 C 全流逐字节，
+  均为 6479 bytes，SHA-256
+  `560ce2420b345c425477770651dc33b52dfee7aebc74b775e29150a774c157df`。
+  `src/hal/vepu510_h264.rs` 负责输入/输出/FBC/thumb/smear 缓冲、六段提交和
+  `bs_lgth_l32` 回读；`board_rk3576_h264e510_vs_mpp.sh` 是当前入口。
+  下一步扩 P picture 与 RC，而不是继续堆同一 IDR。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：先用 VEPU510 的固定 QP IDR 闭合首个硬件编码格，再扩 P
-  frame/RC；之后推进 AV1/AVS2、VPU720 tile input 与 VDPP2。
+- 下一步：扩 VEPU510 P frame/RC；之后推进 AV1/AVS2、VPU720 tile input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 

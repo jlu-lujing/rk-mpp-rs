@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1178
-      enumerated / 1144 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1000 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1180
+      enumerated / 1146 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1002 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3189,7 +3189,13 @@ pipeline uses.
   CTL/frame/RC/param/SQI/SCL cover 645 named fields over the six write windows,
   and the independent STATUS view covers 148 words at word 4096. The section
   lengths are pinned against a captured lf1 fixed-QP IDR ioctl job.
-- Tests: `cargo test --release --all-targets` enumerates 1178 tests: 1144
+- The first RK3576 VEPU510 H.264 hardware job is byte-identical to C MPP:
+  320x240, Baseline, QP 26, no rate control, no SEI. Both streams are 6479
+  bytes with SHA-256
+  `560ce2420b345c425477770651dc33b52dfee7aebc74b775e29150a774c157df`.
+  Rust writes the 36-byte SPS/PPS prefix, then reads the hardware payload
+  length from `bs_lgth_l32`; the same template drives all six write windows.
+- Tests: `cargo test --release --all-targets` enumerates 1180 tests: 1146
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

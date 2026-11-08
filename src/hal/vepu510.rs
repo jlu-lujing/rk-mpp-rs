@@ -1,5 +1,6 @@
 //! VEPU510 register-file scaffolding for RK3576 H.264 encoding.
 
+use super::vepu510_idr_template;
 use super::vepu510_regs::{self, Field};
 
 pub const CTL_WORDS: usize = 24;
@@ -33,6 +34,53 @@ impl Default for RegisterFile {
 }
 
 impl RegisterFile {
+    pub fn captured_fixqp_idr_320x240(
+        input_fd: u32,
+        output_fd: u32,
+        recon_fd: u32,
+        thumb_fd: u32,
+        smear_fd: u32,
+    ) -> Result<Self, String> {
+        let mut regs = Self {
+            ctl: vepu510_idr_template::CTL,
+            frame: vepu510_idr_template::FRAME,
+            rc: vepu510_idr_template::RC,
+            param: vepu510_idr_template::PARAM,
+            sqi: vepu510_idr_template::SQI,
+            scl: vepu510_idr_template::SCL,
+        };
+
+        for index in 4..=6 {
+            regs.frame[index] = input_fd;
+        }
+        for index in 7..=10 {
+            regs.frame[index] = recon_fd;
+        }
+        regs.frame[13] = thumb_fd;
+        regs.frame[14] = thumb_fd;
+        for index in 16..=19 {
+            regs.frame[index] = output_fd;
+        }
+        regs.frame[28] = smear_fd;
+        regs.frame[29] = smear_fd;
+        regs.frame[15] = 0;
+
+        for (field, value) in [
+            (vepu510_regs::FRAME_ENC_PIC_PIC_QP, 26),
+            (vepu510_regs::FRAME_ENC_RSL_PIC_WD8_M1, 39),
+            (vepu510_regs::FRAME_ENC_RSL_PIC_HD8_M1, 29),
+            (vepu510_regs::FRAME_SRC_STRD0_SRC_STRD0, 320),
+            (vepu510_regs::FRAME_SRC_STRD1_SRC_STRD1, 320),
+            (vepu510_regs::FRAME_RC_QP_RC_QP_RANGE, 0),
+            (vepu510_regs::FRAME_RC_QP_RC_MAX_QP, 26),
+            (vepu510_regs::FRAME_RC_QP_RC_MIN_QP, 26),
+            (vepu510_regs::H264_SYNT_PPS_PIC_INIT_QP, 26),
+        ] {
+            regs.set(field, value)?;
+        }
+        Ok(regs)
+    }
+
     pub fn set(&mut self, field: Field, value: u32) -> Result<(), String> {
         if field.width == 0 || field.width > 32 {
             return Err(format!("{} has invalid width {}", field.name, field.width));
@@ -121,6 +169,7 @@ fn locate(absolute: usize) -> Option<(&'static str, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hal::vepu510_idr_template;
 
     #[test]
     fn sections_match_the_lf1_ioctl_trace() {
@@ -153,5 +202,30 @@ mod tests {
         let mut regs = RegisterFile::default();
         let error = regs.set(vepu510_regs::STATUS_ST_ENC_ST_ENC, 1).unwrap_err();
         assert!(error.contains("outside the write sections"));
+    }
+
+    #[test]
+    fn captured_idr_template_matches_the_window_sizes() {
+        assert_eq!(vepu510_idr_template::CTL.len(), CTL_WORDS);
+        assert_eq!(vepu510_idr_template::FRAME.len(), FRAME_WORDS);
+        assert_eq!(vepu510_idr_template::RC.len(), RC_WORDS);
+        assert_eq!(vepu510_idr_template::PARAM.len(), PARAM_WORDS);
+        assert_eq!(vepu510_idr_template::SQI.len(), SQI_WORDS);
+        assert_eq!(vepu510_idr_template::SCL.len(), SCL_WORDS);
+        assert_eq!(
+            vepu510_idr_template::STATUS.len(),
+            vepu510_regs::STATUS_WORDS
+        );
+    }
+
+    #[test]
+    fn captured_fixqp_builder_reproduces_the_reference_job() {
+        let regs = RegisterFile::captured_fixqp_idr_320x240(9, 10, 13, 14, 15).unwrap();
+        assert_eq!(regs.ctl, vepu510_idr_template::CTL);
+        assert_eq!(regs.frame, vepu510_idr_template::FRAME);
+        assert_eq!(regs.rc, vepu510_idr_template::RC);
+        assert_eq!(regs.param, vepu510_idr_template::PARAM);
+        assert_eq!(regs.sqi, vepu510_idr_template::SQI);
+        assert_eq!(regs.scl, vepu510_idr_template::SCL);
     }
 }
