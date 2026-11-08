@@ -3,6 +3,7 @@
 pub mod assembler;
 pub mod cdf;
 pub mod decoder;
+pub mod decoder383;
 pub mod global_motion;
 pub mod parser;
 pub mod picparams;

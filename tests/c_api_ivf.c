@@ -64,6 +64,21 @@ static int parse_format(const char *name, uint32_t *format) {
     return -1;
 }
 
+static int parse_codec(const char *name, uint32_t *codec,
+                       const char **fourcc) {
+    if (!strcmp(name, "vp9")) {
+        *codec = RK_MPP_CODEC_VP9;
+        *fourcc = "VP90";
+        return 0;
+    }
+    if (!strcmp(name, "av1")) {
+        *codec = RK_MPP_CODEC_AV1;
+        *fourcc = "AV01";
+        return 0;
+    }
+    return -1;
+}
+
 static int write_frame(FILE *out, const rk_mpp_frame_t *frame,
                        uint64_t *bytes) {
     uint32_t plane;
@@ -99,7 +114,7 @@ static int drain(rk_mpp_decoder_t *decoder, rk_mpp_frame_t *frame,
         }
         if (!frame->width || !frame->height || frame->format != format ||
             !frame->plane_data[0] || !frame->plane_sizes[0]) {
-            fprintf(stderr, "invalid VP9 frame metadata\n");
+            fprintf(stderr, "invalid packet-decoder frame metadata\n");
             return -1;
         }
         if (*frames == 0 &&
@@ -117,15 +132,16 @@ static int drain(rk_mpp_decoder_t *decoder, rk_mpp_frame_t *frame,
 }
 
 static int run_ivf(rk_mpp_decoder_t *decoder, const uint8_t *data, size_t size,
-                   uint32_t format, FILE *out, uint64_t *frames,
-                   uint64_t *bytes) {
+                   const char *fourcc, uint32_t format, FILE *out,
+                   uint64_t *frames, uint64_t *bytes) {
     rk_mpp_frame_t frame;
     size_t header_size;
     size_t offset;
     int saw_eos = 0;
 
-    if (size < 32 || memcmp(data, "DKIF", 4) || memcmp(data + 8, "VP90", 4)) {
-        fprintf(stderr, "input is not a VP9 IVF file\n");
+    if (size < 32 || memcmp(data, "DKIF", 4) ||
+        memcmp(data + 8, fourcc, 4)) {
+        fprintf(stderr, "input does not match the requested IVF codec\n");
         return -1;
     }
     header_size = le16(data + 6);
@@ -158,7 +174,7 @@ static int run_ivf(rk_mpp_decoder_t *decoder, const uint8_t *data, size_t size,
             decoder, data + next, packet_size, (int64_t)timestamp, 0,
             next + packet_size == size ? RK_MPP_PACKET_FLAG_EOS : 0);
         if (status != RK_MPP_OK) {
-            fprintf(stderr, "VP9 submit failed: %s\n",
+            fprintf(stderr, "packet submit failed: %s\n",
                     rk_mpp_strerror(status));
             return -1;
         }
@@ -173,7 +189,7 @@ static int run_ivf(rk_mpp_decoder_t *decoder, const uint8_t *data, size_t size,
             return -1;
     }
     if (!saw_eos) {
-        fprintf(stderr, "VP9 stream did not reach EOS\n");
+        fprintf(stderr, "stream did not reach EOS\n");
         return -1;
     }
     if (rk_mpp_decoder_flush(decoder) != RK_MPP_OK ||
@@ -191,6 +207,8 @@ int main(int argc, char **argv) {
     uint8_t *input = NULL;
     size_t input_size = 0;
     uint32_t format;
+    uint32_t codec;
+    const char *fourcc = NULL;
     FILE *out = NULL;
     uint64_t frames = 0;
     uint64_t bytes = 0;
@@ -201,44 +219,47 @@ int main(int argc, char **argv) {
     uint32_t status_c;
     int ret = 1;
 
-    if (argc != 4 || parse_format(argv[1], &format) ||
-        read_file(argv[3], &input, &input_size)) {
-        fprintf(stderr, "usage: %s <nv12|i420|i420p10> <out> <in.ivf>\n",
+    if (argc != 5 || parse_codec(argv[1], &codec, &fourcc) ||
+        parse_format(argv[2], &format) ||
+        read_file(argv[4], &input, &input_size)) {
+        fprintf(stderr,
+                "usage: %s <vp9|av1> <nv12|i420|i420p10> <out> <in.ivf>\n",
                 argv[0]);
         return 2;
     }
-    if (rk_mpp_decoder_config_init(&config, RK_MPP_CODEC_VP9, format) !=
+    if (rk_mpp_decoder_config_init(&config, codec, format) !=
             RK_MPP_OK ||
         rk_mpp_decoder_create(&config, &decoder) != RK_MPP_OK) {
-        fprintf(stderr, "VP9 decoder create failed\n");
+        fprintf(stderr, "packet decoder create failed\n");
         goto done;
     }
     if (rk_mpp_decoder_status(decoder, &status_a, &status_b, &status_c) !=
         RK_MPP_OK) {
-        fprintf(stderr, "VP9 status query failed\n");
+        fprintf(stderr, "packet decoder status query failed\n");
         goto done;
     }
-    out = fopen(argv[2], "wb");
+    out = fopen(argv[3], "wb");
     if (!out) {
-        fprintf(stderr, "%s: %s\n", argv[2], strerror(errno));
+        fprintf(stderr, "%s: %s\n", argv[3], strerror(errno));
         goto done;
     }
-    if (run_ivf(decoder, input, input_size, format, out, &frames, &bytes) ||
+    if (run_ivf(decoder, input, input_size, fourcc, format, out, &frames,
+                &bytes) ||
         !frames || fflush(out))
         goto done;
     if (rk_mpp_decoder_reset(decoder) != RK_MPP_OK ||
-        run_ivf(decoder, input, input_size, format, NULL, &reuse_frames,
-                &reuse_bytes)) {
-        fprintf(stderr, "VP9 reset/reuse failed\n");
+        run_ivf(decoder, input, input_size, fourcc, format, NULL,
+                &reuse_frames, &reuse_bytes)) {
+        fprintf(stderr, "packet decoder reset/reuse failed\n");
         goto done;
     }
     if (frames != reuse_frames || bytes != reuse_bytes) {
-        fprintf(stderr, "VP9 reuse mismatch: %llu/%llu frames, %llu/%llu bytes\n",
+        fprintf(stderr, "reuse mismatch: %llu/%llu frames, %llu/%llu bytes\n",
                 (unsigned long long)frames, (unsigned long long)reuse_frames,
                 (unsigned long long)bytes, (unsigned long long)reuse_bytes);
         goto done;
     }
-    printf("PASS VP9 frames=%llu bytes=%llu api=%u\n",
+    printf("PASS %s frames=%llu bytes=%llu api=%u\n", argv[1],
            (unsigned long long)frames, (unsigned long long)bytes,
            rk_mpp_api_version());
     ret = 0;

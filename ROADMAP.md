@@ -108,7 +108,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M0 | `mpp_service` client: all `MPP_CMD_*`, MULTI_MSG batches, RCB, IOVA, poll, probe | 1.0k | **done** |
 | M0 | JPEG decode (`jpegd`): parser, hw tables, registers, RGB888/NV12, 1/2–1/8 downscale, scaler | 2.9k | **done** |
 | M0 | JPEG decode beats MPP by ~30 % (no buf_slot/meta layer); 0.96 ms @ 640p | — | **done** |
-| M0 | Public H.264/H.265/VP9/MJPEG decoder SDK: versioned C ABI, Rust API, shared/static libraries | — | **done on lf1 and t6** |
+| M0 | Public H.264/H.265/VP9/AV1/MJPEG decoder SDK: versioned C ABI, Rust API, shared/static libraries | — | **done on lf1 and t6** |
 | M1 | H.264 syntax: Annex-B, RBSP, Exp-Golomb, SPS/PPS/slice header, scaling lists | 3.5k | **done** |
 | M1 | H.264 register map generated from `hal_h264d_rkv_reg.h` (80 words, 122 fields) | 0.25k | **done** |
 | M2 | H.264 decode on rkvdec: reg writer, DPB, reference lists, MMCO, MBAFF, field-coded, error propagation | 6.0k | **frame/MBAFF/PAFF/long-term/error-path bit-exact** |
@@ -309,16 +309,19 @@ in what order the evidence gets produced.
 ### Decoders
 - [x] JPEG baseline, 4:2:0/4:2:2/4:4:4/gray, NV12 + RGB888 output
 - [x] JPEG 1/2, 1/4, 1/8 hardware IDCT downscale for RGB888 and NV12.
-- [x] Public decoder SDK V1.2 for H.264, H.265, VP9 and MJPEG: versioned C header,
+- [x] Public decoder SDK V1.3 for H.264, H.265, VP9, AV1 and MJPEG: versioned C header,
       streaming Rust API, `cdylib`/`staticlib`/`rlib`, arbitrary packet
       fragmentation, single-packet multi-frame input, NV12/I420/I420P10 planes,
       timestamps/status metadata, flush/reset/recover/EOS and explicit frame
-      release. H.265 uses SPS-bounded epoch/POC reordering; H.265 Main10 and
-      VP9 10-bit use little-endian planar 16-bit I420P10. VP9 consumes one raw
-      coded packet/superframe per submit and leaves IVF/WebM demux to callers.
+      release. H.265 uses SPS-bounded epoch/POC reordering; H.265 Main10,
+      VP9 10-bit and AV1 10-bit use little-endian planar 16-bit I420P10. VP9
+      consumes one raw coded packet/superframe and AV1 one temporal unit per
+      submit; IVF/WebM demux remains with callers. RK3576 AV1 selects the
+      dedicated VDPU383 backend automatically.
       The lf1 and t6 C/C++ dynamic and
       static-link gates pass with 7/127/313-byte H.264 chunks, 37-byte H.265
       chunks, 53-byte Main10 chunks, profile-0/profile-2 VP9 streams,
+      8-bit AV1 key+P and 10-bit AV1 temporal units,
       97/211-byte MJPEG chunks, whole-stream
       video input and four concatenated JPEGs, all byte-identical to C MPP.
       `bus.jpg` (640x640, SHA-256 `fb4914d1…4014e16`) produces

@@ -50,6 +50,8 @@
 | H.265 C ABI | NV12/I420/I420P10 byte equality | lf1 and t6 shared/static C/C++ gates pass | PASS |
 | VP9 full gates | lf1/t6 all-targets green | 1186 passed / 0 failed / 37 ignored; t6 lib 1042/0/0 | PASS |
 | VP9 C ABI | Profile 0/2 packet decode | 12-frame NV12/I420 and 10-bit I420P10 byte equality on lf1/t6 | PASS |
+| AV1 C ABI | RK3588 and RK3576 AV1 paths | 8-bit key+P and 10-bit temporal-unit outputs pass on lf1/t6 | PASS |
+| AV1 full gates | lf1/t6 all-targets green | 1186 passed / 0 failed / 37 ignored; t6 lib 1042/0/0 | PASS |
 
 ### Phase 6.2: VP9 Public Decoder
 - **Status:** complete on lf1 and t6
@@ -60,6 +62,17 @@
 - Added `RK_MPP_CODEC_VP9` and API version 1.2.
 - Profile 0 12-frame NV12/I420 and profile 2 10-bit I420P10 outputs match C
   MPP byte for byte; reset/reuse and post-EOS checks pass.
+
+### Phase 6.3: AV1 Public Decoder
+- **Status:** complete on lf1 and t6
+- Existing AV1 decoder already returns display-ready pictures from one temporal
+  unit, including show-existing and multiple final frames.
+- The C gate will reuse the IVF packet harness with `AV01` validation.
+- Added `RK_MPP_CODEC_AV1` and API version 1.3.
+- lf1 uses the new VDPU383 decoder front-end; t6 uses the existing AV1D_VPU
+  backend through the same SDK handle.
+- 8-bit key+P output matches C; t6 10-bit output matches the Rust/libaom
+  grain-applied oracle, retaining the documented C film-grain bug.
 
 ### Errors
 

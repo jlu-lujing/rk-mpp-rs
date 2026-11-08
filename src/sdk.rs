@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 
+use crate::codec::av1;
 use crate::codec::h264::{
     self,
     decoder::{picture_is_output as h264_picture_is_output, split_access_units},
@@ -18,10 +19,11 @@ use crate::codec::vp9;
 use crate::hal::hevc::ChromaFormat;
 use crate::hal::jpegd::{self as jpegd, JpegDownscale};
 use crate::service::dma_heap::DmaBuf;
+use crate::service::soc::{SocProfile, VideoDecodeHal};
 use crate::service::{MppService, VPU_CLIENT_JPEG_DEC};
 
 pub const API_VERSION_MAJOR: u32 = 1;
-pub const API_VERSION_MINOR: u32 = 2;
+pub const API_VERSION_MINOR: u32 = 3;
 pub const API_VERSION: u32 = (API_VERSION_MAJOR << 16) | API_VERSION_MINOR;
 
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
@@ -34,6 +36,7 @@ pub enum Codec {
     H265,
     Mjpeg,
     Vp9,
+    Av1,
 }
 
 impl Codec {
@@ -43,6 +46,7 @@ impl Codec {
             Self::H265 => 3,
             Self::Mjpeg => 2,
             Self::Vp9 => 4,
+            Self::Av1 => 5,
         }
     }
 
@@ -52,6 +56,7 @@ impl Codec {
             2 => Some(Self::Mjpeg),
             3 => Some(Self::H265),
             4 => Some(Self::Vp9),
+            5 => Some(Self::Av1),
             _ => None,
         }
     }
@@ -422,6 +427,55 @@ impl Frame {
         Ok(frame)
     }
 
+    fn from_av1(
+        picture: av1::decoder::Picture,
+        format: PixelFormat,
+        pts: i64,
+        dts: i64,
+    ) -> Result<Self, Error> {
+        let sample_bytes = match (picture.bit_depth, format) {
+            (8, PixelFormat::Nv12 | PixelFormat::I420) => 1,
+            (10, PixelFormat::I420P10) => 2,
+            (depth, format) => {
+                return Err(Error::Unsupported(format!(
+                    "{depth}-bit AV1 cannot be exposed as {format:?}"
+                )));
+            }
+        };
+        let (chroma_width, chroma_height) = (picture.width / 2, picture.height / 2);
+        let expected = picture
+            .width
+            .checked_mul(picture.height)
+            .and_then(|luma| {
+                chroma_width
+                    .checked_mul(chroma_height)
+                    .and_then(|chroma| luma.checked_add(chroma * 2))
+            })
+            .and_then(|samples| samples.checked_mul(sample_bytes))
+            .ok_or_else(|| Error::State("AV1 frame size overflow"))?;
+        if picture.yuv.len() < expected {
+            return Err(Error::State("AV1 planar frame is truncated"));
+        }
+        let storage = if format == PixelFormat::Nv12 {
+            i420_to_nv12(&picture.yuv[..expected], picture.width, picture.height)
+        } else {
+            picture.yuv[..expected].to_vec()
+        };
+        let mut frame = Self {
+            width: picture.width,
+            height: picture.height,
+            format,
+            pts,
+            dts,
+            poc: picture.poc as i32,
+            err_info: picture.err_info,
+            storage,
+            planes: [PlaneLayout::default(); 3],
+        };
+        frame.layout_yuv()?;
+        Ok(frame)
+    }
+
     fn from_jpeg_nv12(
         width: usize,
         height: usize,
@@ -605,6 +659,7 @@ pub struct Decoder {
 }
 
 enum Backend {
+    Av1(Av1Backend),
     H264(H264Backend),
     H265(H265Backend),
     Mjpeg(MjpegBackend),
@@ -659,6 +714,33 @@ struct Vp9Backend {
     eos: bool,
 }
 
+struct Av1Backend {
+    decoder: Av1Decoder,
+    format: PixelFormat,
+    eos: bool,
+}
+
+enum Av1Decoder {
+    Vdpu34x(av1::decoder::Decoder),
+    Vdpu383(av1::decoder383::Decoder),
+}
+
+impl Av1Decoder {
+    fn decode_packet(&mut self, packet: &[u8]) -> Result<Vec<av1::decoder::Picture>, String> {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.decode_packet(packet),
+            Self::Vdpu383(decoder) => decoder.decode_packet(packet),
+        }
+    }
+
+    fn status(&self) -> (u32, u32, u32) {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.status(),
+            Self::Vdpu383(decoder) => decoder.status(),
+        }
+    }
+}
+
 impl Decoder {
     pub fn new(config: DecoderConfig) -> Result<Self, Error> {
         let backend = match config.codec {
@@ -666,6 +748,7 @@ impl Decoder {
             Codec::H265 => Backend::H265(H265Backend::new(config)?),
             Codec::Mjpeg => Backend::Mjpeg(MjpegBackend::new(config)?),
             Codec::Vp9 => Backend::Vp9(Vp9Backend::new(config)?),
+            Codec::Av1 => Backend::Av1(Av1Backend::new(config)?),
         };
         Ok(Self {
             config,
@@ -684,6 +767,7 @@ impl Decoder {
             Backend::H265(backend) => backend.submit(packet, &mut self.frames),
             Backend::Mjpeg(backend) => backend.submit(packet, &mut self.frames),
             Backend::Vp9(backend) => backend.submit(packet, &mut self.frames),
+            Backend::Av1(backend) => backend.submit(packet, &mut self.frames),
         }
     }
 
@@ -704,6 +788,7 @@ impl Decoder {
             }
             Backend::Mjpeg(backend) => backend.eos && backend.input.is_empty(),
             Backend::Vp9(backend) => backend.eos,
+            Backend::Av1(backend) => backend.eos,
         }
     }
 
@@ -713,6 +798,7 @@ impl Decoder {
             Backend::H265(backend) => backend.flush(&mut self.frames),
             Backend::Mjpeg(backend) => backend.flush(&mut self.frames),
             Backend::Vp9(backend) => backend.flush(),
+            Backend::Av1(backend) => backend.flush(),
         }
     }
 
@@ -728,7 +814,9 @@ impl Decoder {
                 .decoder
                 .recover_session()
                 .map_err(|error| Error::Hardware(error.to_string())),
-            Backend::H265(_) | Backend::Mjpeg(_) | Backend::Vp9(_) => self.reset(),
+            Backend::H265(_) | Backend::Mjpeg(_) | Backend::Vp9(_) | Backend::Av1(_) => {
+                self.reset()
+            }
         }
     }
 
@@ -738,6 +826,7 @@ impl Decoder {
             Backend::H265(backend) => Some(backend.decoder.status()),
             Backend::Mjpeg(_) => None,
             Backend::Vp9(backend) => Some(backend.decoder.status()),
+            Backend::Av1(backend) => Some(backend.decoder.status()),
         }
     }
 }
@@ -1048,6 +1137,67 @@ impl Vp9Backend {
             for picture in pictures {
                 if picture.err_info == 0 {
                     output.push_back(Frame::from_vp9(
+                        picture,
+                        self.format,
+                        packet.pts,
+                        packet.dts,
+                    )?);
+                }
+            }
+            if packet.flags.contains(PacketFlags::EOS) {
+                self.eos = true;
+            }
+            return Ok(decoded);
+        }
+        if packet.flags.contains(PacketFlags::EOS) {
+            self.eos = true;
+        }
+        Ok(0)
+    }
+
+    fn flush(&mut self) -> Result<usize, Error> {
+        self.eos = true;
+        Ok(0)
+    }
+}
+
+impl Av1Backend {
+    fn new(config: DecoderConfig) -> Result<Self, Error> {
+        let profile = SocProfile::detect().map_err(|error| Error::Hardware(error.to_string()))?;
+        let decoder = match profile.video_decode {
+            VideoDecodeHal::Vdpu34x => Av1Decoder::Vdpu34x(
+                av1::decoder::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            VideoDecodeHal::Vdpu383 => Av1Decoder::Vdpu383(av1::decoder383::Decoder::new()),
+            other => {
+                return Err(Error::Unsupported(format!(
+                    "no AV1 decoder backend for {other:?}"
+                )));
+            }
+        };
+        Ok(Self {
+            decoder,
+            format: config.output_format,
+            eos: false,
+        })
+    }
+
+    fn submit(&mut self, packet: Packet<'_>, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
+        if self.eos {
+            return Err(Error::State("packet submitted after EOS"));
+        }
+        if packet.data.len() > MAX_ENCODED_BYTES {
+            return Err(Error::TooLarge);
+        }
+        if !packet.data.is_empty() {
+            let pictures = self
+                .decoder
+                .decode_packet(packet.data)
+                .map_err(classify_video_error)?;
+            let decoded = pictures.len();
+            for picture in pictures {
+                if picture.err_info == 0 {
+                    output.push_back(Frame::from_av1(
                         picture,
                         self.format,
                         packet.pts,

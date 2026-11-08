@@ -6,8 +6,9 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-6.2 are complete for H.264, H.265, VP9 and MJPEG decode. Phase 6.3
-moves the same stable decoder contract to AV1.
+Phases 1-6.3 are complete for H.264, H.265, VP9, AV1 and MJPEG decode. The next
+priority is a stable encoder contract for the implemented H.264, H.265 and JPEG
+paths.
 
 ## Phases
 
@@ -62,10 +63,16 @@ moves the same stable decoder contract to AV1.
 - **Status:** complete on lf1 and t6.
 
 ### Phase 6.3: AV1 Decode Backend
-- [ ] Add the AV1 codec ID and temporal-unit packet input rules.
-- [ ] Expose planar 8-bit I420 and 10-bit I420P10 output.
-- [ ] Verify key/inter/show-existing packets against C MPP.
-- **Status:** pending
+- [x] Add the AV1 codec ID and temporal-unit packet input rules.
+- [x] Expose planar 8-bit NV12/I420 and 10-bit I420P10 output.
+- [x] Verify RK3588 and RK3576 VDPU383 key/inter/show-existing packets.
+- **Status:** complete on lf1 and t6.
+
+### Phase 6.4: Encoder API Contract
+- [ ] Define frame input ownership, packet output and EOS/flush rules.
+- [ ] Add H.264, H.265 and JPEG encoder handles to Rust and C.
+- [ ] Verify fixed-QP IDR/GOP output against the existing C goldens.
+- **Status:** in_progress
 
 ### Phase 7: Full Verification and Handoff
 - [x] Run host-independent gates on lf1 and t6.
@@ -77,6 +84,8 @@ moves the same stable decoder contract to AV1.
 - [x] Update and commit the H.265/API 1.1 slice.
 - [x] Run lf1/t6 C/C++ gates for VP9 profile 0 and profile 2.
 - [x] Run final VP9 full suite and commit the API 1.2 slice.
+- [x] Run lf1/t6 C/C++ gates for AV1 8-bit and 10-bit.
+- [x] Run final AV1 full suite and commit the API 1.3 slice.
 - **Status:** complete
 
 ## Decisions Made

@@ -48,6 +48,19 @@
 - The VP9 C gate passes on lf1 and t6: profile 0 12-frame NV12/I420 and profile
   2 10-bit 12-frame I420P10 outputs are byte-identical to C MPP. The test feeds
   each IVF frame as one packet and exercises decoder reset/reuse.
+- `codec::av1::Decoder::decode_packet` already accepts one temporal unit and
+  returns zero to many display-ready pictures. It carries sequence state,
+  backward CDFs, eight reference slots and `show_existing_frame` internally.
+- AV1 IVF uses the `AV01` FourCC and MPP decoder type `16777224`. The 320x240
+  10-bit fixture contains 10 IVF packets; the 8-bit inter-box fixture contains
+  two.
+- RK3576 AV1 requires a separate VDPU383 hardware path. `decoder383.rs` shares
+  the AV1 packet parser while maintaining its own Session, texture slots,
+  reference CDF state and planar readback.
+- Verified AV1 8-bit key+P SHA-256 is `7f4a0c9e…4020f`. On lf1 VDPU383
+  10-bit output matches C at `f3b69b61…49b8`; on t6 grain-applied output is
+  `b75e6172…904d`, matching the Rust/libaom result while C retains its known
+  missing-film-grain bug.
 - Verified VP9 SHA-256 values are
   `c5381bbf…3949a` (profile 0 NV12),
   `53bc3dd4…0abea69` (profile 0 I420), and
@@ -82,6 +95,7 @@
 - `src/codec/h264/decoder.rs`
 - `src/codec/hevc/decoder.rs`
 - `src/codec/vp9/decoder.rs`
+- `src/codec/av1/decoder.rs`
 - `src/codec/jpeg/parser.rs`
 - `src/hal/jpegd.rs`
 - `src/bin/h264_stream.rs`

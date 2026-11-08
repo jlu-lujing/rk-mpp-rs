@@ -17,7 +17,7 @@ pub const RK_MPP_ERR_STATE: c_int = -6;
 pub const RK_MPP_ERR_IO: c_int = -7;
 pub const RK_MPP_ERR_TOO_LARGE: c_int = -8;
 
-static VERSION: &[u8] = b"1.2\0";
+static VERSION: &[u8] = b"1.3\0";
 static OK: &[u8] = b"ok\0";
 static INVALID: &[u8] = b"invalid argument\0";
 static UNSUPPORTED: &[u8] = b"unsupported operation\0";
@@ -373,7 +373,7 @@ pub unsafe extern "C" fn rk_mpp_decoder_recover(decoder: *mut RkMppDecoder) -> c
     }
 }
 
-/// Read the last H.264/H.265/VP9 job status words. MJPEG returns unsupported.
+/// Read the last H.264/H.265/VP9/AV1 job status words. MJPEG returns unsupported.
 ///
 /// # Safety
 /// `decoder` must be a live handle; non-null output pointers must be writable.
