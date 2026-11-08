@@ -459,6 +459,15 @@ pub struct Vepu510H265 {
 
 impl Vepu510H265 {
     pub fn open() -> Result<Self, String> {
+        Self::open_bit_depth(8)
+    }
+
+    pub fn open_bit_depth(bit_depth: u8) -> Result<Self, String> {
+        if bit_depth != 8 {
+            return Err(format!(
+                "VEPU510 H.265 {bit_depth}-bit input is unsupported; lf1 C MPP fails format/color-space allocation and returns no packet"
+            ));
+        }
         require_video_encode(VideoEncodeHal::Vepu510)?;
         let input = DmaBuf::alloc("system", INPUT_SIZE, false)
             .map_err(|e| format!("allocate VEPU510 H.265 input: {e}"))?;
@@ -1246,5 +1255,15 @@ mod tests {
     fn lf1_prefix_has_the_c_packet_prefix_length() {
         let prefix = lf1_fixed_qp_prefix(&lf1_h265_config().unwrap(), QP, GOP).unwrap();
         assert_eq!(prefix.len(), 270);
+    }
+
+    #[test]
+    fn ten_bit_input_is_rejected_before_hardware_allocation() {
+        let error = match Vepu510H265::open_bit_depth(10) {
+            Ok(_) => panic!("10-bit unexpectedly opened a hardware session"),
+            Err(error) => error,
+        };
+        assert!(error.contains("10-bit"));
+        assert!(error.contains("unsupported"));
     }
 }

@@ -562,9 +562,13 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   col=4/GOP6 十三帧为 34967 bytes；完整流逐字节一致。
   H.265 ROI 使用与 H.264 相同的四字 VEPU510 region：forced-intra、
   absolute-QP30 的 0,0,160,120 两帧格为 8823 bytes，完整流与 C 相同。
+  H.265 10-bit 在 lf1 的 C MPP 中即不可用：`vepu5xx_set_fmt` 报
+  `unsupport frame format`，HAL 报 `invalid src color space: 16`，最终 packet
+  为 0。Rust 的 `open_bit_depth(10)` 在 DMA/硬件分配前显式拒绝。板级脚本也
+  已去掉对 H.264 13 帧临时输入的隐式依赖。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 H.265 tiles 与 10-bit 能力边界；之后处理 AV1/AVS2、
+- 下一步：确认 VEPU510 H.265 tiles 的 C 参考是否存在；之后处理 AV1/AVS2、
   VPU720 tile input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。

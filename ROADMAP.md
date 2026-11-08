@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1198
-      enumerated / 1164 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1020 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1199
+      enumerated / 1165 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1021 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3271,8 +3271,12 @@ pipeline uses.
   absolute-QP30 region at `(0,0,160,120)` is byte-identical over two pictures
   at 8823 bytes
   (`42e57fcd03567e8799fff22eff815e21a10c3fa6ed39ad6e8fbc782bbaa15675`).
-  Tiles/10-bit and wider STATUS feedback remain.
-- Tests: `cargo test --release --all-targets` enumerates 1198 tests: 1164
+  10-bit is rejected by the lf1 C HAL itself (`unsupport frame format`,
+  `invalid src color space: 16`, zero-byte packet); Rust exposes
+  `open_bit_depth(10)` and rejects before DMA/hardware allocation. The board
+  harness now generates its own 13-frame input rather than depending on the
+  H.264 test. Tiles and wider STATUS feedback remain.
+- Tests: `cargo test --release --all-targets` enumerates 1199 tests: 1165
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

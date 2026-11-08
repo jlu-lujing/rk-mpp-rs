@@ -1233,6 +1233,20 @@ fn main() {
         return;
     }
 
+    if args.len() > 1 && args[1] == "h265e510-10bit" {
+        if args.len() != 4 {
+            eprintln!("usage: rk-mpp-rs h265e510-10bit <unused.nv12> <unused.265>");
+            std::process::exit(2);
+        }
+        match vepu510_h265::Vepu510H265::open_bit_depth(10) {
+            Ok(_) => std::process::exit(1),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.len() > 1 && args[1] == "h265e510-gop2" {
         if args.len() != 4 {
             eprintln!("usage: rk-mpp-rs h265e510-gop2 <in.2x320x240.nv12> <out.265>");
