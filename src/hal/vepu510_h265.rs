@@ -9,7 +9,7 @@ use crate::codec::rc::model as rc_model;
 use crate::hal::h265e_session::RcMode;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
-use crate::service::{Batch, Client, MppService, RegOffsetInfo};
+use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
 
 use super::vepu510_h265_idr_template as template;
 use super::vepu510_h265_p_template as p_template;
@@ -256,6 +256,67 @@ impl RegisterFile {
         Ok(())
     }
 
+    fn apply_slice_split(
+        &mut self,
+        mode: encoder::SplitMode,
+        arg: u32,
+        split_out: u32,
+    ) -> Result<(), String> {
+        if split_out & !encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            return Err(format!(
+                "VEPU510 H.265 slice output bits 0x{split_out:x} are unsupported"
+            ));
+        }
+        if split_out != 0 && mode == encoder::SplitMode::None {
+            return Err("VEPU510 H.265 low-delay output needs a split mode".into());
+        }
+        self.set(regs::FRAME_SLI_SPLT_SLI_SPLT, 0)?;
+        self.set(regs::FRAME_SLI_SPLT_SLI_SPLT_MODE, 0)?;
+        self.set(regs::FRAME_SLI_SPLT_SLI_SPLT_CPST, 0)?;
+        self.set(regs::FRAME_SLI_SPLT_SLI_MAX_NUM_M1, 0)?;
+        self.set(regs::FRAME_SLI_SPLT_SLI_FLSH, 0)?;
+        self.set(regs::FRAME_SLI_CNUM_SLI_SPLT_CNUM_M1, 0)?;
+        self.set(regs::FRAME_SLI_BYTE_SLI_SPLT_BYTE, 0)?;
+        self.set(regs::FRAME_ENC_PIC_SLEN_FIFO, 0)?;
+        self.set(regs::CTL_INT_EN_VSLC_DONE_EN, 0)?;
+
+        match mode {
+            encoder::SplitMode::None => {}
+            encoder::SplitMode::ByByte => {
+                if arg == 0 || arg > 0x000f_ffff {
+                    return Err(format!(
+                        "VEPU510 H.265 slice byte target {arg} is outside 1..=1048575"
+                    ));
+                }
+                self.set(regs::FRAME_SLI_SPLT_SLI_SPLT, 1)?;
+                self.set(regs::FRAME_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
+                self.set(regs::FRAME_SLI_SPLT_SLI_FLSH, 1)?;
+                self.set(regs::FRAME_SLI_BYTE_SLI_SPLT_BYTE, arg)?;
+                if split_out != 0 {
+                    self.set(regs::FRAME_ENC_PIC_SLEN_FIFO, 1)?;
+                    self.set(regs::CTL_INT_EN_VSLC_DONE_EN, 1)?;
+                }
+            }
+            encoder::SplitMode::ByCtu => {
+                if arg == 0 || arg > 0x0010_0000 {
+                    return Err(format!(
+                        "VEPU510 H.265 slice CTU count {arg} is outside 1..=1048576"
+                    ));
+                }
+                self.set(regs::FRAME_SLI_SPLT_SLI_SPLT, 1)?;
+                self.set(regs::FRAME_SLI_SPLT_SLI_SPLT_MODE, 1)?;
+                self.set(regs::FRAME_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
+                self.set(regs::FRAME_SLI_SPLT_SLI_FLSH, 1)?;
+                self.set(regs::FRAME_SLI_CNUM_SLI_SPLT_CNUM_M1, arg - 1)?;
+                if split_out != 0 {
+                    self.set(regs::FRAME_ENC_PIC_SLEN_FIFO, 1)?;
+                    self.set(regs::CTL_INT_EN_VSLC_DONE_EN, 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn set(&mut self, field: Field, value: u32) -> Result<(), String> {
         if field.width == 0 || field.width > 32 {
             return Err(format!("{} has invalid width {}", field.name, field.width));
@@ -441,11 +502,24 @@ impl Vepu510H265 {
     }
 
     pub fn encode_fixed_qp_gop2_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
-        self.encode_fixed_qp_gop_320x240(nv12, 2)
+        self.encode_fixed_qp_gop_with_split(nv12, 2, encoder::SplitMode::None, 0, 0)
+            .map(|(stream, _)| stream)
     }
 
     pub fn encode_fixed_qp_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
-        self.encode_fixed_qp_gop_320x240(nv12, 6)
+        self.encode_fixed_qp_gop_with_split(nv12, 6, encoder::SplitMode::None, 0, 0)
+            .map(|(stream, _)| stream)
+    }
+
+    pub fn encode_fixed_qp_split_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        mode: encoder::SplitMode,
+        arg: u32,
+        split_out: u32,
+    ) -> Result<(Vec<u8>, Vec<usize>), String> {
+        self.encode_fixed_qp_gop_with_split(nv12, frames, mode, arg, split_out)
     }
 
     pub fn encode_cbr_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
@@ -542,8 +616,8 @@ impl Vepu510H265 {
             let start = frame_number * INPUT_SIZE;
             let end = start + INPUT_SIZE;
             let frame_prefix = if is_intra { prefix.as_slice() } else { &[] };
-            let (frame_stream, status) =
-                self.run_job_with_status(&nv12[start..end], &registers, frame_prefix)?;
+            let (frame_stream, status, _) =
+                self.run_job_with_status(&nv12[start..end], &registers, frame_prefix, 0)?;
             let measured = measured_from_status(&status);
             model.end_with(frame_type, bit_target, measured);
             model.accept_frame();
@@ -553,11 +627,14 @@ impl Vepu510H265 {
         Ok(stream)
     }
 
-    fn encode_fixed_qp_gop_320x240(
+    fn encode_fixed_qp_gop_with_split(
         &mut self,
         nv12: &[u8],
         frames: usize,
-    ) -> Result<Vec<u8>, String> {
+        split_mode: encoder::SplitMode,
+        split_arg: u32,
+        split_out: u32,
+    ) -> Result<(Vec<u8>, Vec<usize>), String> {
         if self.idr_done {
             return Err("this VEPU510 H.265 session already encoded its IDR".into());
         }
@@ -576,7 +653,7 @@ impl Vepu510H265 {
         }
         let config = lf1_h265_config()?;
         let prefix = lf1_fixed_qp_prefix(&config, QP, GOP)?;
-        let idr = RegisterFile::captured_fixqp_idr_320x240(
+        let mut idr = RegisterFile::captured_fixqp_idr_320x240(
             self.input.fd() as u32,
             self.output.fd() as u32,
             self.recon[0].fd() as u32,
@@ -585,11 +662,13 @@ impl Vepu510H265 {
             self.smear[0].fd() as u32,
             self.md_info.fd() as u32,
         )?;
-        let mut stream = self.run_job(&nv12[..INPUT_SIZE], &idr, &prefix)?;
+        idr.apply_slice_split(split_mode, split_arg, split_out)?;
+        let (mut stream, _, mut packet_lengths) =
+            self.run_job_with_status(&nv12[..INPUT_SIZE], &idr, &prefix, split_out)?;
         for frame_number in 1..frames {
             let current = frame_number & 1;
             let reference = 1 - current;
-            let p = RegisterFile::captured_fixqp_p_320x240(
+            let mut p = RegisterFile::captured_fixqp_p_320x240(
                 self.input.fd() as u32,
                 self.output.fd() as u32,
                 self.recon[current].fd() as u32,
@@ -603,12 +682,16 @@ impl Vepu510H265 {
                 self.md_info.fd() as u32,
                 frame_number as u32,
             )?;
+            p.apply_slice_split(split_mode, split_arg, split_out)?;
             let start = frame_number * INPUT_SIZE;
             let end = start + INPUT_SIZE;
-            stream.extend(self.run_job(&nv12[start..end], &p, &[])?);
+            let (frame_stream, _, frame_packets) =
+                self.run_job_with_status(&nv12[start..end], &p, &[], split_out)?;
+            stream.extend(frame_stream);
+            packet_lengths.extend(frame_packets);
         }
         self.idr_done = true;
-        Ok(stream)
+        Ok((stream, packet_lengths))
     }
 
     fn run_job(
@@ -617,8 +700,8 @@ impl Vepu510H265 {
         registers: &RegisterFile,
         prefix: &[u8],
     ) -> Result<Vec<u8>, String> {
-        self.run_job_with_status(nv12, registers, prefix)
-            .map(|(stream, _)| stream)
+        self.run_job_with_status(nv12, registers, prefix, 0)
+            .map(|(stream, _, _)| stream)
     }
 
     fn run_job_with_status(
@@ -626,7 +709,8 @@ impl Vepu510H265 {
         nv12: &[u8],
         registers: &RegisterFile,
         prefix: &[u8],
-    ) -> Result<(Vec<u8>, [u32; regs::STATUS_WORDS]), String> {
+        split_out: u32,
+    ) -> Result<(Vec<u8>, [u32; regs::STATUS_WORDS], Vec<usize>), String> {
         self.input
             .sync_write_begin()
             .map_err(|e| format!("VEPU510 H.265 input sync begin: {e}"))?;
@@ -686,9 +770,40 @@ impl Vepu510H265 {
         self.svc
             .submit_batch_recovering(&mut batch)
             .map_err(|e| format!("VEPU510 H.265 submit: {e}"))?;
-        self.svc
-            .poll_hw_finish_recovering()
-            .map_err(|e| format!("VEPU510 H.265 poll: {e}"))?;
+        let mut packet_lengths = Vec::new();
+        if split_out & encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            let mut complete = false;
+            for _ in 0..=4096 {
+                let mut info = [SliceInfo::default()];
+                let count = match self.svc.poll_irq(&mut info) {
+                    Ok(count) => count,
+                    Err(error) => {
+                        let _ = self.svc.restart_after_hardware_error();
+                        return Err(format!("VEPU510 H.265 slice poll: {error}"));
+                    }
+                };
+                for slice in &info[..count] {
+                    let (length, last) = slice.vepu510();
+                    if length == 0 {
+                        let _ = self.svc.restart_after_hardware_error();
+                        return Err("VEPU510 H.265 slice FIFO returned an empty slice".into());
+                    }
+                    packet_lengths.push(length as usize);
+                    complete |= last;
+                }
+                if complete {
+                    break;
+                }
+            }
+            if !complete {
+                let _ = self.svc.restart_after_hardware_error();
+                return Err("VEPU510 H.265 slice FIFO did not report the last slice".into());
+            }
+        } else {
+            self.svc
+                .poll_hw_finish_recovering()
+                .map_err(|e| format!("VEPU510 H.265 poll: {e}"))?;
+        }
 
         if int_state[0] & 1 == 0 {
             let error = status_execution_error(&status);
@@ -710,6 +825,23 @@ impl Vepu510H265 {
                 self.output.len()
             ));
         }
+        if !packet_lengths.is_empty() {
+            if !prefix.is_empty() {
+                packet_lengths[0] = packet_lengths[0]
+                    .checked_add(prefix.len())
+                    .ok_or_else(|| "VEPU510 H.265 first packet length overflow".to_string())?;
+            }
+            let total = packet_lengths.iter().try_fold(0usize, |sum, length| {
+                sum.checked_add(*length)
+                    .ok_or_else(|| "VEPU510 H.265 packet length overflow".to_string())
+            })?;
+            if total != stream_len {
+                let _ = self.svc.restart_after_hardware_error();
+                return Err(format!(
+                    "VEPU510 H.265 slice lengths sum to {total}, STATUS says {stream_len}"
+                ));
+            }
+        }
         self.output
             .sync_read_begin()
             .map_err(|e| format!("VEPU510 H.265 output invalidate: {e}"))?;
@@ -717,7 +849,7 @@ impl Vepu510H265 {
         self.output
             .sync_read_end()
             .map_err(|e| format!("VEPU510 H.265 output sync end: {e}"))?;
-        Ok((stream, status))
+        Ok((stream, status, packet_lengths))
     }
 }
 
@@ -918,6 +1050,29 @@ mod tests {
                 0x7fff_ffff,
             ]
         );
+    }
+
+    #[test]
+    fn split_and_lowdelay_match_the_c_vpu510_words() {
+        let mut regs = RegisterFile::default();
+        regs.apply_slice_split(encoder::SplitMode::ByCtu, 8, 0)
+            .unwrap();
+        assert_eq!(regs.get(regs::FRAME_SLI_SPLT_SLI_SPLT).unwrap(), 1);
+        assert_eq!(regs.get(regs::FRAME_SLI_SPLT_SLI_SPLT_MODE).unwrap(), 1);
+        assert_eq!(regs.get(regs::FRAME_SLI_CNUM_SLI_SPLT_CNUM_M1).unwrap(), 7);
+        assert_eq!(regs.get(regs::FRAME_ENC_PIC_SLEN_FIFO).unwrap(), 0);
+        assert_eq!(regs.get(regs::CTL_INT_EN_VSLC_DONE_EN).unwrap(), 0);
+
+        let mut regs = RegisterFile::default();
+        regs.apply_slice_split(
+            encoder::SplitMode::ByByte,
+            256,
+            encoder::MPP_ENC_SPLIT_OUT_LOWDELAY,
+        )
+        .unwrap();
+        assert_eq!(regs.get(regs::FRAME_SLI_BYTE_SLI_SPLT_BYTE).unwrap(), 256);
+        assert_eq!(regs.get(regs::FRAME_ENC_PIC_SLEN_FIFO).unwrap(), 1);
+        assert_eq!(regs.get(regs::CTL_INT_EN_VSLC_DONE_EN).unwrap(), 1);
     }
 
     #[test]

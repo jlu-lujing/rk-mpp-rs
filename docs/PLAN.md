@@ -498,7 +498,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       通过（4/4，BY_BYTE 低延迟为 40 packets）；row=2 与 col=4 两档 GDR
       也逐字节（2/2）；VEPU510 H.265 首个固定 QP Main IDR 已与 C 全流
       逐字节（4710 bytes），六帧固定 GOP 也逐字节（16994 bytes），CBR6
-      为 11192 bytes，VBR6/AVBR6 为 11795/9676 bytes。
+      为 11192 bytes，VBR6/AVBR6 为 11795/9676 bytes；BY_CTU/BY_BYTE
+      与 LOWDELAY packet 两档也已逐字节。
       AV1/AVS2、LTR/error 边界、完整 H.264 边界矩阵、H.264/H.265/VEPU510
       编码、VPU720 tile input 与 VDPP2 仍需完成。
 - [ ] W12-3 每个 SoC 独立验收矩阵（同一能力在多个块上允许不同 HAL）

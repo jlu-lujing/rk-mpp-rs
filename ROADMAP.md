@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1195
-      enumerated / 1161 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1017 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1196
+      enumerated / 1162 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1018 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3258,8 +3258,10 @@ pipeline uses.
   11795-byte and 9676-byte streams
   (`5e6db2795217d749e6c52c0f7239548cca61a07a783e747d754ce4ba242939cf`,
   `bc7d279690b4bec00c554b1bd69ea8f291bd15e90811c61537dfcf0326fafa5d`).
-  GDR/ROI/split and wider STATUS feedback remain.
-- Tests: `cargo test --release --all-targets` enumerates 1195 tests: 1161
+  Slice splitting uses the 32x32 grid: BY_CTU=8 is 7922 bytes and BYTE=256 is
+  8264 bytes, with low-delay packet counts 20 and 25 and every packet length
+  matching C. GDR/ROI and wider STATUS feedback remain.
+- Tests: `cargo test --release --all-targets` enumerates 1196 tests: 1162
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

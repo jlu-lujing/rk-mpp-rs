@@ -41,7 +41,7 @@
   VEPU510 H.265 的首个 320x240 QP26 Main IDR 也已与 lf1 C MPP 逐字节，
   **4710 bytes**；IDR+P GOP2 与 GOP6 同样逐字节，分别为 **6810 / 16994
   bytes**；CBR6 / VBR6 / AVBR6 也逐字节，分别为 **11192 / 11795 / 9676
-  bytes**。
+  bytes**；BY_CTU/BY_BYTE 与 LOWDELAY packet 两档也逐字节。
   其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
   固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
@@ -178,7 +178,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1195 枚举；1161 常规通过，34 个硬件 ignored
+cargo test --release --all-targets           # t6：1196 枚举；1162 常规通过，34 个硬件 ignored
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -196,7 +196,7 @@ BOARD=luck2 ./scripts/board_rk3576_vp9_vs_mpp.sh  # RK3576 VDPU383 VP9：7/7
 BOARD=luck2 ./scripts/board_rk3576_h264_edges_vs_mpp.sh # H.264 边界：5/5
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
 BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR/VBR/AVBR/ROI/split/GDR：13/13
-BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 IDR/GOP2/GOP6/CBR/VBR/AVBR：6/6
+BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 IDR/GOP/RC/split：10/10
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
@@ -256,6 +256,7 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 | `h265e510-cbr6 <in.6x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 CBR 六帧 |
 | `h265e510-vbr6 <in.6x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 VBR 六帧 |
 | `h265e510-avbr6 <in.6x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 AVBR 六帧 |
+| `h265e510-split2 <in.2x320x240.nv12> <out.265> <ctu:N\|byte:N> [lowdelay]` | RK3576 VEPU510 H.265 slice split 与逐 packet 输出 |
 | `iep-dei <in.yuv> <out.yuv> <w> <h> [TFF\|BFF] [I5O2\|I5O1T\|I5O1B\|I2O2\|I1O1T\|I1O1B]` | IEP2 去隔行；原始输出保留两个 dst slot |
 | `spspps` / `h264dpb` | H.264 参数集与 DPB 打印 |
 | `probe-frame` / `bench-scale` / `bench-decode` / `bench-dma` / `pipeline` | 夹具与基准 |

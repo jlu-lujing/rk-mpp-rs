@@ -40,6 +40,16 @@ rm -f /tmp/h265e510_c.265 /tmp/h265e510_rust.265
 rm -f /tmp/h265e510_c.log /tmp/h265e510_rust.log
 rm -f /tmp/h265e510_gop2_c.265 /tmp/h265e510_gop2_rust.265
 rm -f /tmp/h265e510_gop2_c.log /tmp/h265e510_gop2_rust.log
+rm -f /tmp/h265e510_split_ctu2_c.265 /tmp/h265e510_split_ctu2_rust.265
+rm -f /tmp/h265e510_split_ctu2_c.log /tmp/h265e510_split_ctu2_rust.log
+rm -f /tmp/h265e510_split_byte2_c.265 /tmp/h265e510_split_byte2_rust.265
+rm -f /tmp/h265e510_split_byte2_c.log /tmp/h265e510_split_byte2_rust.log
+rm -f /tmp/h265e510_splitout_ctu2_c.265 /tmp/h265e510_splitout_ctu2_rust.265
+rm -f /tmp/h265e510_splitout_ctu2_c.log /tmp/h265e510_splitout_ctu2_rust.log
+rm -f /tmp/h265e510_splitout_ctu2_c.packets /tmp/h265e510_splitout_ctu2_rust.packets
+rm -f /tmp/h265e510_splitout_byte2_c.265 /tmp/h265e510_splitout_byte2_rust.265
+rm -f /tmp/h265e510_splitout_byte2_c.log /tmp/h265e510_splitout_byte2_rust.log
+rm -f /tmp/h265e510_splitout_byte2_c.packets /tmp/h265e510_splitout_byte2_rust.packets
 rm -f /tmp/h265e510_gop6_c.265 /tmp/h265e510_gop6_rust.265
 rm -f /tmp/h265e510_gop6_c.log /tmp/h265e510_gop6_rust.log
 rm -f /tmp/h265e510_cbr6_c.265 /tmp/h265e510_cbr6_rust.265
@@ -72,6 +82,66 @@ cmp /tmp/h265e510_gop2_c.265 /tmp/h265e510_gop2_rust.265
 sha256sum /tmp/h265e510_gop2_c.265 /tmp/h265e510_gop2_rust.265
 printf 'PASS RK3576 VEPU510 H.265 fixed-QP GOP2: %s bytes\n' \
     "$(stat -c %s /tmp/h265e510_gop2_c.265)"
+
+FRAMES=2 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_split_ctu2_c.265 \
+    320 240 0 26 split 2 8 > /tmp/h265e510_split_ctu2_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h265e510-split2 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_split_ctu2_rust.265 ctu:8 \
+    > /tmp/h265e510_split_ctu2_rust.log 2>&1
+cmp /tmp/h265e510_split_ctu2_c.265 /tmp/h265e510_split_ctu2_rust.265
+sha256sum /tmp/h265e510_split_ctu2_c.265 /tmp/h265e510_split_ctu2_rust.265
+printf 'PASS RK3576 VEPU510 H.265 BY_CTU=8 GOP2: %s bytes\n' \
+    "$(stat -c %s /tmp/h265e510_split_ctu2_c.265)"
+
+FRAMES=2 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_split_byte2_c.265 \
+    320 240 0 26 split 1 256 > /tmp/h265e510_split_byte2_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h265e510-split2 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_split_byte2_rust.265 byte:256 \
+    > /tmp/h265e510_split_byte2_rust.log 2>&1
+cmp /tmp/h265e510_split_byte2_c.265 /tmp/h265e510_split_byte2_rust.265
+sha256sum /tmp/h265e510_split_byte2_c.265 /tmp/h265e510_split_byte2_rust.265
+printf 'PASS RK3576 VEPU510 H.265 BY_BYTE=256 GOP2: %s bytes\n' \
+    "$(stat -c %s /tmp/h265e510_split_byte2_c.265)"
+
+FRAMES=2 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_splitout_ctu2_c.265 \
+    320 240 0 26 split 2 8 splitout 1 \
+    > /tmp/h265e510_splitout_ctu2_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h265e510-split2 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_splitout_ctu2_rust.265 ctu:8 lowdelay \
+    > /tmp/h265e510_splitout_ctu2_rust.log 2>&1
+cmp /tmp/h265e510_splitout_ctu2_c.265 /tmp/h265e510_splitout_ctu2_rust.265
+awk '/^picture [0-9]+ packet [0-9]+: [0-9]+ bytes/ { print $5 }' \
+    /tmp/h265e510_splitout_ctu2_c.log > /tmp/h265e510_splitout_ctu2_c.packets
+awk '/^h265e510-split2 packet lengths:/ { for (i = 4; i <= NF; i++) print $i }' \
+    /tmp/h265e510_splitout_ctu2_rust.log > /tmp/h265e510_splitout_ctu2_rust.packets
+test -s /tmp/h265e510_splitout_ctu2_c.packets
+cmp /tmp/h265e510_splitout_ctu2_c.packets /tmp/h265e510_splitout_ctu2_rust.packets
+sha256sum /tmp/h265e510_splitout_ctu2_c.265 /tmp/h265e510_splitout_ctu2_rust.265
+printf 'PASS RK3576 VEPU510 H.265 LOWDELAY BY_CTU=8 GOP2: %s bytes, %s packets\n' \
+    "$(stat -c %s /tmp/h265e510_splitout_ctu2_c.265)" \
+    "$(wc -l < /tmp/h265e510_splitout_ctu2_c.packets)"
+
+FRAMES=2 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_splitout_byte2_c.265 \
+    320 240 0 26 split 1 256 splitout 1 \
+    > /tmp/h265e510_splitout_byte2_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h265e510-split2 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_splitout_byte2_rust.265 byte:256 lowdelay \
+    > /tmp/h265e510_splitout_byte2_rust.log 2>&1
+cmp /tmp/h265e510_splitout_byte2_c.265 /tmp/h265e510_splitout_byte2_rust.265
+awk '/^picture [0-9]+ packet [0-9]+: [0-9]+ bytes/ { print $5 }' \
+    /tmp/h265e510_splitout_byte2_c.log > /tmp/h265e510_splitout_byte2_c.packets
+awk '/^h265e510-split2 packet lengths:/ { for (i = 4; i <= NF; i++) print $i }' \
+    /tmp/h265e510_splitout_byte2_rust.log > /tmp/h265e510_splitout_byte2_rust.packets
+test -s /tmp/h265e510_splitout_byte2_c.packets
+cmp /tmp/h265e510_splitout_byte2_c.packets /tmp/h265e510_splitout_byte2_rust.packets
+sha256sum /tmp/h265e510_splitout_byte2_c.265 /tmp/h265e510_splitout_byte2_rust.265
+printf 'PASS RK3576 VEPU510 H.265 LOWDELAY BY_BYTE=256 GOP2: %s bytes, %s packets\n' \
+    "$(stat -c %s /tmp/h265e510_splitout_byte2_c.265)" \
+    "$(wc -l < /tmp/h265e510_splitout_byte2_c.packets)"
 
 FRAMES=6 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
     /tmp/h265e510_6x320x240.nv12 /tmp/h265e510_gop6_c.265 \

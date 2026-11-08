@@ -553,10 +553,13 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   VBR6/AVBR6 共用同一 VEPU510 RC 映射，只切换 model allocator 与 SEI mode。
   VBR QP 轨迹为 `26/29/29/30/30/30`，11795 bytes；AVBR 为
   `26/29/33/33/33/33`，9676 bytes。两侧完整码流逐字节一致。
+  H.265 split 使用 VEPU510 的 32x32 slice 网格：BY_CTU=8 为 7922 bytes，
+  BY_BYTE=256 为 8264 bytes。LOWDELAY 分别输出 20 / 25 个 packet，完整
+  码流和逐 packet 长度均与 C 一致。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 H.265 的 GDR、ROI 和 split；之后处理 AV1/AVS2、
-  VPU720 tile input 与 VDPP2。
+- 下一步：扩 VEPU510 H.265 的 GDR 与 ROI；之后处理 AV1/AVS2、VPU720 tile
+  input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 
