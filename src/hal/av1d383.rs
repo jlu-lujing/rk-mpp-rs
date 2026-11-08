@@ -5,8 +5,13 @@
 //! per-job record. The header is a hardware ABI: field order, signed low bits
 //! and the C HAL's deliberate quirks are significant.
 
+use std::io;
+
 use crate::codec::av1::picparams::Av1PicParams;
+use crate::codec::yuv::nv12_to_planar;
 use crate::hal::vdpu383_regs::{self as reg, Field};
+use crate::service::soc::{require_video_decode, VideoDecodeHal};
+use crate::service::{Batch, Client, MppService, RcbInfo, RegOffsetInfo, MPP_CMD_SET_RCB_INFO};
 
 pub const UNCOMPRESSED_HEADER_BITS: usize = 5160;
 pub const UNCOMPRESSED_HEADER_ALIGN: usize = 128;
@@ -21,6 +26,277 @@ const DEFAULT_CDF: &[u8; DEFAULT_CDF_SIZE] =
 
 pub fn default_cdf_image() -> &'static [u8; DEFAULT_CDF_SIZE] {
     DEFAULT_CDF
+}
+
+pub struct Session {
+    svc: MppService,
+    global_header: crate::service::dma_heap::DmaBuf,
+    default_cdf: crate::service::dma_heap::DmaBuf,
+    working_cdf: crate::service::dma_heap::DmaBuf,
+    rcb: crate::service::dma_heap::DmaBuf,
+    colmv: crate::service::dma_heap::DmaBuf,
+    output: crate::service::dma_heap::DmaBuf,
+    stream: Option<crate::service::dma_heap::DmaBuf>,
+    width: usize,
+    height: usize,
+    output_stride: usize,
+    output_height: usize,
+    rcb_info_supported: bool,
+    batch: Batch,
+    pub last_status: (u32, u32, u32),
+    pub last_hardware_error: bool,
+}
+
+impl Session {
+    pub fn open(width: usize, height: usize) -> io::Result<Self> {
+        require_video_decode(VideoDecodeHal::Vdpu383)?;
+        let mut params = Av1PicParams::default();
+        params.width = width as u16;
+        params.height = height as u16;
+        params.bitdepth = 8;
+        params.format.subsampling_x = 1;
+        params.format.subsampling_y = 1;
+        let plan = buffer_plan(&params);
+        let stride = tile_output_stride(width);
+        let ver_stride = align(height, 8);
+        let mut output =
+            crate::service::dma_heap::DmaBuf::alloc("system", stride * ver_stride * 2, false)
+                .map_err(|error| context(error, "allocate output"))?;
+        zero(&mut output).map_err(|error| context(error, "zero output"))?;
+        let mut working_cdf =
+            crate::service::dma_heap::DmaBuf::alloc("system", plan.working_cdf, false)
+                .map_err(|error| context(error, "allocate working CDF"))?;
+        zero(&mut working_cdf).map_err(|error| context(error, "zero working CDF"))?;
+        let mut rcb = crate::service::dma_heap::DmaBuf::alloc("system", plan.rcb.max(64), false)
+            .map_err(|error| context(error, "allocate RCB"))?;
+        zero(&mut rcb).map_err(|error| context(error, "zero RCB"))?;
+        let mut colmv =
+            crate::service::dma_heap::DmaBuf::alloc("system", plan.colmv.max(128), false)
+                .map_err(|error| context(error, "allocate colmv"))?;
+        zero(&mut colmv).map_err(|error| context(error, "zero colmv"))?;
+        let svc = MppService::open(Client::RkvDec as u32)
+            .map_err(|error| context(error, "open AV1 service"))?;
+        let rcb_info_supported = svc.cmd_supported(MPP_CMD_SET_RCB_INFO);
+        let global_header =
+            crate::service::dma_heap::DmaBuf::alloc("system", plan.global_header, false)
+                .map_err(|error| context(error, "allocate global header"))?;
+        let default_cdf =
+            crate::service::dma_heap::DmaBuf::alloc("system", plan.default_cdf, false)
+                .map_err(|error| context(error, "allocate default CDF"))?;
+        Ok(Self {
+            svc,
+            global_header,
+            default_cdf,
+            working_cdf,
+            rcb,
+            colmv,
+            output,
+            stream: None,
+            width,
+            height,
+            output_stride: stride,
+            output_height: ver_stride,
+            rcb_info_supported,
+            batch: Batch::new(),
+            last_status: (0, 0, 0),
+            last_hardware_error: false,
+        })
+    }
+
+    /// Decode one 8-bit intra picture into tightly packed YUV420p.
+    pub fn decode_intra(&mut self, params: &Av1PicParams, stream: &[u8]) -> io::Result<Vec<u8>> {
+        if params.width as usize != self.width || params.height as usize != self.height {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "VDPU383 AV1 session geometry changed",
+            ));
+        }
+        if params.bitdepth > 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "VDPU383 AV1 10-bit output is not wired yet",
+            ));
+        }
+        let header = build_uncompressed_header(params);
+        write(&mut self.global_header, &header)?;
+        write(&mut self.default_cdf, DEFAULT_CDF)?;
+        zero(&mut self.working_cdf)?;
+        zero(&mut self.rcb)?;
+        zero(&mut self.colmv)?;
+        zero(&mut self.output)?;
+
+        let padded = align(stream.len(), 128).max(128);
+        if self
+            .stream
+            .as_ref()
+            .is_none_or(|buffer| buffer.len() < padded)
+        {
+            self.stream = None;
+            self.stream = Some(crate::service::dma_heap::DmaBuf::alloc(
+                "system", padded, false,
+            )?);
+        }
+        let stream_buffer = self.stream.as_mut().unwrap();
+        write_padded(stream_buffer, stream, padded)?;
+
+        let buffers = DmaBuffers {
+            stream: stream_buffer.fd() as u32,
+            stream_len: stream.len() as u32,
+            global_header: self.global_header.fd() as u32,
+            rcb: self.rcb.fd() as u32,
+            cdf_default: self.default_cdf.fd() as u32,
+            cdf_current: self.working_cdf.fd() as u32,
+            output: self.output.fd() as u32,
+            colmv: self.colmv.fd() as u32,
+        };
+        let registers = Registers::build_intra(params, &buffers)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let offsets = registers
+            .offsets()
+            .iter()
+            .map(|offset| RegOffsetInfo {
+                reg_idx: offset.reg_idx,
+                offset: offset.offset,
+            })
+            .collect::<Vec<_>>();
+        let mut rcb_info = rcb_descriptors(params)
+            .into_iter()
+            .map(|region| RcbInfo {
+                reg_idx: region.reg_idx,
+                size: region.size,
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(directory) = std::env::var_os("AV1_383_RUST_TRACE_DIR") {
+            use std::fmt::Write as _;
+
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory)?;
+            std::fs::write(directory.join("global.bin"), header)?;
+            let mut text = String::new();
+            for (index, word) in registers.words().iter().enumerate() {
+                writeln!(text, "{index:03} {word:08x}").unwrap();
+            }
+            std::fs::write(directory.join("regs.txt"), &text)?;
+            text.clear();
+            for (index, offset) in offsets.iter().enumerate() {
+                writeln!(
+                    text,
+                    "{index:02} reg={} offset={}",
+                    offset.reg_idx, offset.offset
+                )
+                .unwrap();
+            }
+            std::fs::write(directory.join("offsets.txt"), text)?;
+        }
+
+        let mut readback = [0u32; REGISTER_WORD_COUNT];
+        self.batch.clear();
+        self.batch
+            .reg_write(&registers.words()[8..31], 8 * 4)
+            .reg_write(&registers.words()[64..107], 64 * 4)
+            .reg_write(&registers.words()[128..233], 128 * 4)
+            .reg_read(&mut readback[15..16], 15 * 4)
+            .reg_read(&mut readback[320..360], 320 * 4);
+        self.batch.reg_offsets(&offsets);
+        if self.rcb_info_supported {
+            rcb_info.retain(|region| region.size != 0);
+            self.batch.rcb_info(&rcb_info);
+        }
+        self.svc
+            .submit_batch_recovering(&mut self.batch)
+            .map_err(|error| io::Error::other(format!("VDPU383 AV1 submit: {error}")))?;
+        self.svc
+            .poll_hw_finish_recovering()
+            .map_err(|error| io::Error::other(format!("VDPU383 AV1 poll: {error}")))?;
+        let status = readback[15];
+        self.last_status = (status, readback[320], readback[356]);
+        self.last_hardware_error = status & 1 == 0 || status & 0x7e != 0;
+        if self.last_hardware_error {
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(io::Error::other(format!(
+                "VDPU383 AV1 hardware error: status 0x{status:08x}, rcb 0x{:08x}/0x{:08x}",
+                readback[320], readback[356]
+            )));
+        }
+
+        let luma_size = self.output_stride * self.output_height;
+        let output_size = luma_size * 3 / 2;
+        self.output.sync_read_begin()?;
+        let yuv = {
+            let bytes = self.output.as_slice();
+            nv12_to_planar(
+                &bytes[..luma_size],
+                &bytes[luma_size..output_size],
+                self.width,
+                self.height,
+                self.output_stride,
+            )
+        };
+        self.output.sync_read_end()?;
+        Ok(yuv)
+    }
+
+    pub fn recover_session(&mut self) -> io::Result<()> {
+        self.svc.restart_after_hardware_error()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RcbRegion {
+    pub reg_idx: u32,
+    pub size: u32,
+}
+
+pub fn rcb_descriptors(params: &Av1PicParams) -> Vec<RcbRegion> {
+    let layout = rcb_layout(params);
+    [6usize, 2, 4, 0, 3, 5, 1, 8, 9, 10, 7]
+        .into_iter()
+        .filter(|index| layout.lengths[*index] != 0)
+        .map(|index| RcbRegion {
+            reg_idx: (140 + index * 2) as u32,
+            size: layout.lengths[index],
+        })
+        .collect()
+}
+
+fn zero(buffer: &mut crate::service::dma_heap::DmaBuf) -> io::Result<()> {
+    buffer.sync_write_begin()?;
+    buffer.as_mut_slice().fill(0);
+    buffer.sync_write_end()
+}
+
+fn context(error: io::Error, step: &str) -> io::Error {
+    io::Error::new(error.kind(), format!("VDPU383 AV1 {step}: {error}"))
+}
+
+fn write(buffer: &mut crate::service::dma_heap::DmaBuf, bytes: &[u8]) -> io::Result<()> {
+    if bytes.len() > buffer.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "VDPU383 AV1 DMA buffer is too small",
+        ));
+    }
+    buffer.sync_write_begin()?;
+    buffer.as_mut_slice()[..bytes.len()].copy_from_slice(bytes);
+    buffer.sync_write_end()
+}
+
+fn write_padded(
+    buffer: &mut crate::service::dma_heap::DmaBuf,
+    bytes: &[u8],
+    padded: usize,
+) -> io::Result<()> {
+    if padded > buffer.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "VDPU383 AV1 stream buffer is too small",
+        ));
+    }
+    buffer.sync_write_begin()?;
+    buffer.as_mut_slice()[..bytes.len()].copy_from_slice(bytes);
+    buffer.as_mut_slice()[bytes.len()..padded].fill(0);
+    buffer.sync_write_end()
 }
 
 struct BitWriter {

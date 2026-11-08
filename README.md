@@ -52,8 +52,9 @@
   global header 与 lf1 C dump 首帧逐字节一致（FNV
   `0x8da389d2e180d680`），首 keyframe 的 212-word C register struct image
   也与 C dump 完全一致；官方 7400×u32 的 29,600-byte default CDF 已生成并
-  固定，首帧 RCB/CDF/segmentation/colmv buffer plan 已对齐。实际 DMA
-  分配、offset 命令和硬件码流仍未接通。
+  固定，首帧 RCB/CDF/segmentation/colmv buffer plan 已对齐。真实 VDPU383
+  首 keyframe 已通过 Rust 提交，320×240 YUV420p 与 C 完全一致
+  (`6f5b544f…b9fe`)。多帧/inter/10-bit 仍未接通。
   其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
   固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
@@ -190,7 +191,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1206 枚举；1172 常规通过，34 个硬件 ignored
+cargo test --release --all-targets           # t6：1207 枚举；1172 常规通过，35 个硬件 ignored
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -209,6 +210,7 @@ BOARD=luck2 ./scripts/board_rk3576_h264_edges_vs_mpp.sh # H.264 边界：5/5
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
 BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR/VBR/AVBR/ROI/split/GDR：13/13
 BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：15/15
+BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_key.sh # VDPU383 AV1 首 keyframe：C == Rust
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh

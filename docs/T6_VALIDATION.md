@@ -64,7 +64,7 @@ t62 back to the RK3588 reference board.
   a two-column request before DMA or hardware allocation. Tiles are therefore
   a platform boundary rather than an unimplemented register path.
 
-## 2026-11-08 RK3576 / lf1 VDPU383 AV1 ABI foundation
+## 2026-11-08 RK3576 / lf1 VDPU383 AV1 bring-up
 
 - The official C HAL was built with `scripts/av1_vdpu383_dump.patch`; it dumped
   thirteen 672-byte global headers for the ten displayed frames of
@@ -83,8 +83,13 @@ t62 back to the RK3588 reference board.
   `43474cb59fa76fa1ed95cbfb2fb46952b061e948a13581c04380e51d099c100b`.
   For 320x240, the planned working CDF is 32,672 bytes, segmentation 3,072,
   colmv 20,480 and RCB 72,448.
-- This is still an ABI foundation only. Real DMA allocation/binding,
-  address-offset commands and hardware decode remain open.
+- `hal::av1d383::Session` submits a real keyframe through the RkvDec client
+  with system DMA, CDF/RCB offsets and the 448-byte C output stride.
+- Stock C MPP and Rust both emit 115,200-byte 320x240 YUV420p with SHA-256
+  `6f5b544f53584c7de6d3acad5f4611ca2ee3d75ae259ab981ffca5e599b1b9fe`.
+  The explicit gate is `scripts/board_rk3576_av1_vdpu383_key.sh`.
+- Multi-frame reference scheduling, inter pictures, 10-bit output and film
+  grain remain open.
 
 - RK3576 H.265 is an initial core-path closure. Random bit-flip injection and
   wider conformance streams still need lf1 evidence.
@@ -138,8 +143,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1206 tests**. The
-regular suite passes **1172 / 0 failed / 34 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1207 tests**. The
+regular suite passes **1172 / 0 failed / 35 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.

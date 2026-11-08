@@ -508,8 +508,12 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   bytes，SHA-256
   `43474cb59fa76fa1ed95cbfb2fb46952b061e948a13581c04380e51d099c100b`。
   320x240 buffer plan 为 working CDF 32,672、segmentation 3,072、colmv
-  20,480、RCB 72,448 bytes。下一步是实际 DMA allocation/binding、
-  address-offset commands 与硬件提交。
+  20,480、RCB 72,448 bytes。`hal::av1d383::Session` 已通过 RkvDec client
+  提交真实 VDPU383 首 keyframe；320x240 YUV420p 与 stock C MPP 逐字节，
+  SHA-256
+  `6f5b544f53584c7de6d3acad5f4611ca2ee3d75ae259ab981ffca5e599b1b9fe`。
+  下一步是 multi-frame/reference CDF state、inter pictures、10-bit 和
+  film-grain。
 - VDPU383 VP9 初始 7/7 已在 lf1 通过：profile 0/2、8/10-bit、lossless、
   errres tiles 和 720p；普通行与 C MPP 逐字节，720p errres 与 321x241
   继续按既有 libvpx 判据处理 C 侧 bug。VDPU383 的 global header、1312-byte
