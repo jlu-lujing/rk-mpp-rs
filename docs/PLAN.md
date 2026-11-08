@@ -484,9 +484,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       RK3576 已确认 VDPU383/VEPU510/VPU720/VDPP2，并生成 VDPU383
       276-word 寄存器表；VDPU383 H.264 640x480 12 帧已与 C MPP 逐字节，
       720p/B、1080p hard、PAFF、LTR 与缺失参考边界 5/5 通过（PAFF 用 FFmpeg 判定
-      C 侧场序差异）；H.265 初始 10/10 矩阵
+      C 侧场序差异）；H.265 11/11 矩阵
       （Main/Main10、B、tiles、真实 WPP、720p、DSLICE、SPS/PPS scaling list）
-      也已逐字节，176-byte global packet 与 C dump 相同；VP9 初始 7/7
+      也已逐字节，删 AU 的缺失参考流同样与 C 输出 5 帧逐字节；176-byte
+      global packet 与 C dump 相同；VP9 初始 7/7
       （profile 0/2、8/10-bit、lossless、tiles，两个 C bug 由 libvpx 判定）；
       VPU720 JPEG 19/19（3 sizes + 60-MCU restart + 420/422/444 planar/
       semi-planar/packed/YUV400 输入与 400/420/422/444 输出）逐字节。
@@ -502,7 +503,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       与 LOWDELAY packet 两档也已逐字节，row/column GDR 与 ROI 同样通过；
       10-bit 与 C 一样在构图前明确拒绝；tiles 与 C 一样不启用，Rust 对
       多于 1 列在 DMA 前显式拒绝，功能/边界矩阵为 15/15。
-      AV1/AVS2、LTR/error 边界、完整 H.264/H.265/VEPU510 编码矩阵、
+      AV1/AVS2、H.265 LTR/随机错误注入、完整 H.264/H.265/VEPU510 编码矩阵、
       VPU720 tile input 与 VDPP2 仍需完成。
 - [ ] W12-3 每个 SoC 独立验收矩阵（同一能力在多个块上允许不同 HAL）
 

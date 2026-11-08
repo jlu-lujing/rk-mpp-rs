@@ -94,6 +94,39 @@ check_input_case() {
         "$name" "$width" "$height" "$frames"
 }
 
+check_missing_reference_case() {
+    local source="/tmp/rk3576_h265_missing_base.265"
+    local input="/tmp/rk3576_h265_missing_au.265"
+    local c_raw="/tmp/rk3576_h265_missing_c.nv12"
+    local c_yuv="/tmp/rk3576_h265_missing_c.yuv"
+    local rust_yuv="/tmp/rk3576_h265_missing_rust.yuv"
+    local c_log="/tmp/rk3576_h265_missing_c.log"
+    local rust_log="/tmp/rk3576_h265_missing_rust.log"
+
+    rm -f "$source" "$input" "$c_raw" "$c_yuv" "$rust_yuv" "$c_log" "$rust_log"
+    ffmpeg -nostdin -y -hide_banner -loglevel error \
+        -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 12 \
+        -pix_fmt yuv420p -c:v libx265 -preset veryfast \
+        -x265-params "aud=1:keyint=30:min-keyint=30:bframes=0:repeat-headers=1:scenecut=0:log-level=warning" \
+        -f hevc "$source"
+    python3 scripts/drop_hevc_au.py "$source" "$input" --drop 6
+
+    LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
+        /usr/local/bin/mpi_dec_test -i "$input" -t 16777220 -n 11 \
+        -o "$c_raw" -w 320 -h 240 -v q < /dev/null > "$c_log" 2>&1
+    grep -q 'Could not find ref' "$c_log"
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -f rawvideo -pixel_format nv12 -video_size 320x240 \
+        -i "$c_raw" -pix_fmt yuv420p -f rawvideo "$c_yuv"
+    timeout 180 ./target/debug/rk-mpp-rs hevcdec "$input" "$rust_yuv" \
+        > "$rust_log" 2>&1
+    test "$(stat -c %s "$c_yuv")" -eq $((320 * 240 * 3 / 2 * 5))
+    test "$(stat -c %s "$rust_yuv")" -eq $((320 * 240 * 3 / 2 * 5))
+    cmp "$c_yuv" "$rust_yuv"
+    sha256sum "$c_yuv" "$rust_yuv"
+    printf 'PASS %-16s 320x240 11 AU -> 5 output frames\n' missing_ref
+}
+
 check_h265_case base320 320 240 1 8 \
     'keyint=30:min-keyint=30:bframes=0:scenecut=0:repeat-headers=1:log-level=warning'
 check_h265_case ippp640 640 480 6 8 \
@@ -142,6 +175,7 @@ python3 scripts/make_hevc_pps_scaling.py \
     > /tmp/rk3576_h265_scaling_pps_dpb.log
 grep -q 'pps scaling_list_data=true' /tmp/rk3576_h265_scaling_pps_dpb.log
 check_input_case scaling_pps /tmp/rk3576_h265_scaling_pps.hevc 256 256 10
+check_missing_reference_case
 
 printf 'PASS RK3576 VDPU383 H.265 matrix\n'
 REMOTE

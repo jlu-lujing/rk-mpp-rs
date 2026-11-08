@@ -23,12 +23,13 @@
 - **RK3576 正在适配，尚不属于完整保证范围。** 已确认
   VDPU383/VEPU510/VPU720/VDPP2，且 RK3576 H.264 640x480 12 帧已与 C MPP
   逐字节，720p/B、1080p、PAFF、LTR 和缺失参考边界矩阵 5/5 通过；VDPU383 H.265 初始
-  10/10 矩阵（Main/Main10、B、tiles、真实 WPP、
-  1280x720、JCT-VC DSLICE、SPS/PPS scaling list）也已逐字节；VDPU383 VP9
+  11/11 矩阵（Main/Main10、B、tiles、真实 WPP、
+  1280x720、JCT-VC DSLICE、SPS/PPS scaling list，以及删 AU 后 11 个输入
+  access unit 产出 5 帧的缺失参考路径）也已逐字节；VDPU383 VP9
   初始 7/7 矩阵（profile 0/2、8/10-bit、lossless、tiles）通过，两个既有 C
   bug 路径由 libvpx 判定；VPU720 JPEG 19/19（NV12 三尺寸+restart，320x240
   NV16/I420/NV21/YUV422P/NV61/YUYV/YVYU/UYVY/VYUY/NV24/YUV444P/YUV400，
-  以及 400/420/422/444 四种输出）也与 C MPP 逐字节。LTR/error rows、AV1、
+  以及 400/420/422/444 四种输出）也与 C MPP 逐字节。H.265 LTR、AV1、
   VPU720 tile input、VEPU510 编码、VDPP2 和 H.264 完整边界矩阵仍在推进。
   VEPU510 H.264 已生成 6 个写窗口、645 个字段的 Rust 寄存器表，并完成首个
   320x240 QP26 Baseline IDR、GOP2、6 帧固定 GOP、CBR6、VBR6 与 AVBR6
@@ -195,7 +196,7 @@ ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h265_lowdelay_vs_mpp.sh      # H.265 逐 slice packet：4/4
 ./scripts/board_h265_roi_vs_mpp.sh           # H.265 ROI/QP map：4/4
 ./scripts/board_h265_tile_vs_mpp.sh          # H.265 水平 tiles：2/2
-BOARD=luck2 ./scripts/board_rk3576_h265_vs_mpp.sh # RK3576 VDPU383：10/10
+BOARD=luck2 ./scripts/board_rk3576_h265_vs_mpp.sh # RK3576 VDPU383：11/11
 BOARD=luck2 ./scripts/board_rk3576_vp9_vs_mpp.sh  # RK3576 VDPU383 VP9：7/7
 BOARD=luck2 ./scripts/board_rk3576_h264_edges_vs_mpp.sh # H.264 边界：5/5
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19

@@ -31,10 +31,11 @@ t62 back to the RK3588 reference board.
 
 ## 2026-11-08 RK3576 / lf1 H.265 bring-up
 
-- The VDPU383 hardware matrix is **10/10** on lf1: 320x240 single IDR, 640x480
+- The VDPU383 hardware matrix is **11/11** on lf1: 320x240 single IDR, 640x480
   IPPP and B-pyramid, Main10, 2x2 tiles, real WPP at 640x360 and WPP at
-  1280x720, JCT-VC DSLICE, and explicit SPS/PPS scaling-list streams. Every
-  planar YUV output matches stock C MPP byte-for-byte.
+  1280x720, JCT-VC DSLICE, explicit SPS/PPS scaling-list streams, and a
+  missing-reference stream. Every planar YUV output matches stock C MPP
+  byte-for-byte.
 - The WPP streams are verified by `trace_headers` with
   `entropy_coding_sync_enabled_flag = 1` and five entry points. The 1280x720
   C/Rust output SHA-256 is
@@ -50,11 +51,15 @@ t62 back to the RK3588 reference board.
 - The scaling-list table is 1360 bytes per slot and uses `sps_id * 1360` or
   `(pps_id + 16) * 1360`; the VDPU383 builder stores the six 32x32 matrices in
   the source-defined block-column-major order.
+- The missing-reference row removes the sixth AUD-delimited access unit from a
+  12-picture x265 stream. C reports `Could not find ref with POC 5`; C and Rust
+  both emit five frames with SHA-256
+  `7d67c91340892c5de09e45db43fc160f3991b8f950e30c7d2b0ff5590626a74d`.
 - The separate VEPU510 H.265 encode matrix is **15/15**. C's `AUTO_TILE=1`
   produces the same 4710-byte IDR as its ordinary path on RK3576; Rust rejects
   a two-column request before DMA or hardware allocation. Tiles are therefore
   a platform boundary rather than an unimplemented register path.
-- RK3576 H.265 is an initial core-path closure. LTR/error injection and wider
+- RK3576 H.265 is an initial core-path closure. LTR and wider
   conformance streams still need lf1 evidence.
 
 ## 2026-11-08 RK3576 / lf1 VP9 bring-up

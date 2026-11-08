@@ -3166,10 +3166,15 @@ pipeline uses.
   frames. The H.264 edge matrix is 5/5: 720p/B, 1080p hard, LTR and
   missing-reference are
   byte-identical to C MPP; PAFF matches FFmpeg and the stock C harness has a
-  known field-order difference. The VDPU383 H.265 initial matrix is 10/10
+  known field-order difference. The VDPU383 H.265 initial matrix is 11/11
   byte-identical: single IDR,
   640x480 IPPP, B-pyramid, Main10, 2x2 tiles, real WPP (five entry points),
-  1280x720 WPP, JCT-VC DSLICE, and explicit SPS/PPS scaling lists. Its 176-byte
+  1280x720 WPP, JCT-VC DSLICE, explicit SPS/PPS scaling lists, and a
+  missing-reference stream made by deleting the sixth AUD-delimited access
+  unit from a 12-picture x265 stream. The trimmed 11-AU stream makes C report
+  `Could not find ref with POC 5`; both decoders emit five frames with SHA-256
+  `7d67c91340892c5de09e45db43fc160f3991b8f950e30c7d2b0ff5590626a74d`.
+  Its 176-byte
   global packet matches the patched C dump and is pinned by FNV
   `0xe97a26406128e428`. The VDPU383 VP9 matrix is 7/7: profile 0/2, 8/10-bit,
   lossless, error-resilient tiles and 720p. Regular rows are byte-identical to
@@ -3181,8 +3186,9 @@ pipeline uses.
   model derives storage size, U/V offsets, chroma stride and UV-swap for both
   packed and planar formats; source formats, reg035 and reg023/024 offsets
   follow the C setup-format switch. C emits the same short 623-byte 422/444
-  streams from the NV12 fixture. LTR/error rows, AV1/AVS2, VEPU510, VPU720 tile
-  input and VDPP2 remain in progress. VPU720 low-delay is an explicit reject:
+  streams from the NV12 fixture. H.265 long-term-reference rows, AV1/AVS2,
+  VEPU510, VPU720 tile input and VDPP2 remain in progress. VPU720 low-delay is
+  an explicit reject:
   its C HAL has null `part_start`/`part_wait`, which makes the reference probe
   spin on zero-length packets.
 - The first VEPU510 H.264 foundation is generated from the C structs:
