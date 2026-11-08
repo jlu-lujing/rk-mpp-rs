@@ -503,8 +503,13 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   dump 逐字节一致，FNV `0x8da389d2e180d680`。C dump 入口见
   `scripts/av1_vdpu383_dump.patch`。同一 keyframe 的 212-word 串行化
   `Vdpu383RegSet` 也与 C dump 完全一致，包括 control/statistic、stride、
-  RCB base/length 和 global/output/CDF/colmv 地址。下一步是实际
-  address-offset commands、CDF/segmentation/RCB buffers 与硬件提交。
+  RCB base/length 和 global/output/CDF/colmv 地址。VDPU383 专用 CDF 由
+  `tools/gen_av1_vdpu383_cdf.py` 从 C 的 7400-entry u32 表生成，29,600
+  bytes，SHA-256
+  `43474cb59fa76fa1ed95cbfb2fb46952b061e948a13581c04380e51d099c100b`。
+  320x240 buffer plan 为 working CDF 32,672、segmentation 3,072、colmv
+  20,480、RCB 72,448 bytes。下一步是实际 DMA allocation/binding、
+  address-offset commands 与硬件提交。
 - VDPU383 VP9 初始 7/7 已在 lf1 通过：profile 0/2、8/10-bit、lossless、
   errres tiles 和 720p；普通行与 C MPP 逐字节，720p errres 与 321x241
   继续按既有 libvpx 判据处理 C 侧 bug。VDPU383 的 global header、1312-byte

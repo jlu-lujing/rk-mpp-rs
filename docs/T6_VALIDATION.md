@@ -64,7 +64,7 @@ t62 back to the RK3588 reference board.
   a two-column request before DMA or hardware allocation. Tiles are therefore
   a platform boundary rather than an unimplemented register path.
 
-## 2026-11-08 RK3576 / lf1 VDPU383 AV1 header foundation
+## 2026-11-08 RK3576 / lf1 VDPU383 AV1 ABI foundation
 
 - The official C HAL was built with `scripts/av1_vdpu383_dump.patch`; it dumped
   thirteen 672-byte global headers for the ten displayed frames of
@@ -78,8 +78,13 @@ t62 back to the RK3588 reference board.
 - The same keyframe's 212-word serialized `Vdpu383RegSet` is also byte-exact:
   control/statistic words, current/error/global/output/CDF/colmv addresses,
   tile strides and all eleven RCB base/length pairs match the C dump.
-- This is still an ABI foundation only. Address-offset commands, real
-  CDF/segmentation/RCB buffers and hardware decode remain open.
+- The VDPU383 default CDF image is generated from the official 7400-entry u32
+  table: 29,600 bytes, SHA-256
+  `43474cb59fa76fa1ed95cbfb2fb46952b061e948a13581c04380e51d099c100b`.
+  For 320x240, the planned working CDF is 32,672 bytes, segmentation 3,072,
+  colmv 20,480 and RCB 72,448.
+- This is still an ABI foundation only. Real DMA allocation/binding,
+  address-offset commands and hardware decode remain open.
 
 - RK3576 H.265 is an initial core-path closure. Random bit-flip injection and
   wider conformance streams still need lf1 evidence.
@@ -133,8 +138,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1204 tests**. The
-regular suite passes **1170 / 0 failed / 34 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1206 tests**. The
+regular suite passes **1172 / 0 failed / 34 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.

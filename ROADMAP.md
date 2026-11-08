@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1204
-      enumerated / 1170 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1026 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1206
+      enumerated / 1172 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1028 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3197,10 +3197,14 @@ pipeline uses.
   the 16-byte trailing reservation. Its first keyframe also matches the C
   `Vdpu383RegSet` dump word for word: all four serialized sections, the
   control/statistic words, tile strides, eleven RCB base/length pairs and the
-  output/global/CDF/colmv addresses. Address-offset commands, real CDF/RCB
-  allocations and hardware submission remain open. H.265 random-error rows,
-  AV1/AVS2, VEPU510, VPU720 tile input and VDPP2 remain in progress. VPU720
-  low-delay is an explicit reject:
+  output/global/CDF/colmv addresses. The VDPU383-only default CDF image
+  (7400 little-endian u32, 29,600 bytes, SHA-256
+  `43474cb59fa76fa1ed95cbfb2fb46952b061e948a13581c04380e51d099c100b`)
+  and the 320x240 buffer plan are also pinned: working CDF 32,672,
+  segmentation 3,072, colmv 20,480 and RCB 72,448 bytes. Address-offset
+  commands, DMA allocation/binding and hardware submission remain open.
+  H.265 random-error rows, AV1/AVS2, VEPU510, VPU720 tile input and VDPP2
+  remain in progress. VPU720 low-delay is an explicit reject:
   its C HAL has null `part_start`/`part_wait`, which makes the reference probe
   spin on zero-length packets.
 - The first VEPU510 H.264 foundation is generated from the C structs:
@@ -3301,7 +3305,7 @@ pipeline uses.
   Rust's `open_tile_columns(2)` rejects before any DMA or hardware allocation.
   With this boundary and the 10-bit rejection, the VEPU510 H.265 board matrix
   is 15/15. Wider STATUS feedback remains open.
-- Tests: `cargo test --release --all-targets` enumerates 1204 tests: 1170
+- Tests: `cargo test --release --all-targets` enumerates 1206 tests: 1172
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

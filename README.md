@@ -51,7 +51,9 @@
   VDPU383 AV1 已落下第一层 C ABI：`src/hal/av1d383.rs` 生成的 672-byte
   global header 与 lf1 C dump 首帧逐字节一致（FNV
   `0x8da389d2e180d680`），首 keyframe 的 212-word C register struct image
-  也与 C dump 完全一致；offset 命令、实际 CDF/RCB 缓冲和硬件码流仍未接通。
+  也与 C dump 完全一致；官方 7400×u32 的 29,600-byte default CDF 已生成并
+  固定，首帧 RCB/CDF/segmentation/colmv buffer plan 已对齐。实际 DMA
+  分配、offset 命令和硬件码流仍未接通。
   其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
   固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
@@ -188,7 +190,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1204 枚举；1170 常规通过，34 个硬件 ignored
+cargo test --release --all-targets           # t6：1206 枚举；1172 常规通过，34 个硬件 ignored
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4

@@ -12,9 +12,16 @@ pub const UNCOMPRESSED_HEADER_BITS: usize = 5160;
 pub const UNCOMPRESSED_HEADER_ALIGN: usize = 128;
 pub const UNCOMPRESSED_HEADER_SIZE: usize = 672;
 pub const REGISTER_WORD_COUNT: usize = 360;
+pub const DEFAULT_CDF_SIZE: usize = 29_600;
 const NON_COEF_CDF_SIZE: u32 = 434 * 16;
 const COEF_CDF_SIZE: u32 = 354 * 16;
 const ALL_CDF_SIZE: u32 = NON_COEF_CDF_SIZE + COEF_CDF_SIZE * 4;
+const DEFAULT_CDF: &[u8; DEFAULT_CDF_SIZE] =
+    include_bytes!("../codec/av1/data/cdf_vdpu383_default.bin");
+
+pub fn default_cdf_image() -> &'static [u8; DEFAULT_CDF_SIZE] {
+    DEFAULT_CDF
+}
 
 struct BitWriter {
     words: [u64; UNCOMPRESSED_HEADER_SIZE / 8],
@@ -400,6 +407,30 @@ pub struct RegOffset {
     pub offset: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferPlan {
+    pub global_header: usize,
+    pub default_cdf: usize,
+    pub working_cdf: usize,
+    pub segmentation: usize,
+    pub colmv: usize,
+    pub rcb: usize,
+}
+
+pub fn buffer_plan(params: &Av1PicParams) -> BufferPlan {
+    let width = usize::from(params.width);
+    let height = usize::from(params.height);
+    let segmentation = width.div_ceil(128) * height.div_ceil(128) * 32 * 16;
+    BufferPlan {
+        global_header: UNCOMPRESSED_HEADER_SIZE,
+        default_cdf: DEFAULT_CDF_SIZE,
+        working_cdf: ALL_CDF_SIZE as usize + segmentation,
+        segmentation,
+        colmv: width.div_ceil(64) * height.div_ceil(64) * 1024,
+        rcb: rcb_layout(params).total as usize,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Registers {
     words: [u32; REGISTER_WORD_COUNT],
@@ -532,6 +563,7 @@ impl Registers {
 struct RcbLayout {
     lengths: [u32; 11],
     offsets: [u32; 11],
+    total: u32,
 }
 
 fn rcb_layout(params: &Av1PicParams) -> RcbLayout {
@@ -602,7 +634,11 @@ fn rcb_layout(params: &Av1PicParams) -> RcbLayout {
         lengths[index] = rcb_bytes(bits[index]);
         total += lengths[index];
     }
-    RcbLayout { lengths, offsets }
+    RcbLayout {
+        lengths,
+        offsets,
+        total,
+    }
 }
 
 fn rcb_bytes(bits: f64) -> u32 {
@@ -732,6 +768,33 @@ mod tests {
         let header = build_uncompressed_header(&params);
         assert_eq!(header.len(), UNCOMPRESSED_HEADER_SIZE);
         assert_eq!(&header[656..], &[0; 16]);
+    }
+
+    #[test]
+    fn default_cdf_image_matches_the_official_vdpu383_table() {
+        assert_eq!(DEFAULT_CDF_SIZE, 7400 * 4);
+        let hash = DEFAULT_CDF
+            .iter()
+            .fold(0xcbf29ce484222325u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+        assert_eq!(hash, 0x7ce90cbbd54eee76);
+    }
+
+    #[test]
+    fn real_keyframe_buffer_plan_matches_the_c_layout() {
+        let (params, _) = first_keyframe();
+        assert_eq!(
+            buffer_plan(&params),
+            BufferPlan {
+                global_header: 672,
+                default_cdf: 29_600,
+                working_cdf: 32_672,
+                segmentation: 3_072,
+                colmv: 20_480,
+                rcb: 72_448,
+            }
+        );
     }
 
     fn first_keyframe() -> (Av1PicParams, u32) {
