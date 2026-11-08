@@ -210,6 +210,14 @@ callers.
 - **Status:** complete on t6 and lf1 for MJPEG NV12; CPU-backed codecs remain an
   explicit unsupported boundary.
 
+### Phase 12: H.264 DMA-BUF Frame Output
+- [x] Retain a cloned DPB buffer lease through display reordering.
+- [x] Export strided H.264 NV12 Y/UV planes without CPU repacking.
+- [x] Preserve default CPU/POC-reordered output exactly.
+- [x] Verify H.264 visible bytes and fd metadata against the C oracle.
+- [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
+- **Status:** complete on t6 and lf1.
+
 ## Decisions Made
 
 | Decision | Rationale |

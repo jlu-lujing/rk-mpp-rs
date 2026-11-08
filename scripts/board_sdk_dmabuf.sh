@@ -38,4 +38,21 @@ LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_decoder_dmabuf mjpeg nv12 211 \
         /tmp/rk_mpp_sdk_cpu_frame.nv12 "$jpeg_dir"/*.jpg
 test -s /tmp/rk_mpp_sdk_cpu_frame.nv12
-printf 'PASS rk-mpp-rs DMA-BUF import and MJPEG frame export\n'
+
+h264=/tmp/rk_mpp_sdk_dmabuf.264
+ffmpeg -nostdin -y -hide_banner -loglevel error \
+    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
+    -pix_fmt yuv420p -c:v libx264 -preset veryfast \
+    -x264-params "keyint=6:min-keyint=6:scenecut=0:repeat-headers=1" \
+    -f h264 "$h264"
+
+REQUIRE_DMABUF=1 \
+LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_decoder_dmabuf h264 nv12 313 \
+        /tmp/rk_mpp_sdk_h264_dmabuf.nv12 "$h264"
+EXPECT_NO_DMABUF=1 \
+LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_decoder_dmabuf h264 nv12 211 \
+        /tmp/rk_mpp_sdk_h264_cpu.nv12 "$h264"
+cmp /tmp/rk_mpp_sdk_h264_dmabuf.nv12 /tmp/rk_mpp_sdk_h264_cpu.nv12
+printf 'PASS rk-mpp-rs DMA-BUF import and H.264/MJPEG frame export\n'

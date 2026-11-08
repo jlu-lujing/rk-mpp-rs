@@ -70,6 +70,9 @@
   output DmaBuf in `Frame`; Y and UV expose the same duplicated fd with distinct
   offsets and the hardware row stride. The exported fd is caller-owned and
   closing it does not shorten the frame's lifetime.
+- H.264's DPB surface is already a `BufferLease<DmaBuf>`. DMA output therefore
+  clones that lease into each reordered `Picture`; the extra reference prevents
+  the V4L2 surface from returning to the pool before the SDK emits it.
 
 ## Research Findings
 

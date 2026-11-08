@@ -88,10 +88,11 @@ C 导出和固定布局。`scripts/board_sys_crate.sh` 验证显式路径 dynami
 static 和安装后 pkg-config 三种链接方式；在 t6/lf1 均通过。release static
 consumer 需设置 `CARGO_PROFILE_RELEASE_LTO=false`。
 
-V1.11 的 MJPEG NV12 可通过 `RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` opt-in 保留
-真实 dma-buf；Rust 和 C 都能取得 plane fd/offset/size/stride，C 返回的 fd
-由调用方负责 close。默认行为仍是连续 CPU frame；H.264/H.265 等当前也仍是 CPU
-frame，导出 DMA-BUF 会明确返回 unsupported。
+V1.11 的 H.264/MJPEG NV12 可通过 `RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` opt-in
+保留真实 dma-buf；Rust 和 C 都能取得 plane fd/offset/size/stride，C 返回的
+fd 由调用方负责 close。H.264 display reorder 会额外持有 DPB lease。默认行为
+仍是连续 CPU frame；其他尚未接入的 H.265/VP9/AV1 等导出 DMA-BUF 会明确返回
+unsupported。
 
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。

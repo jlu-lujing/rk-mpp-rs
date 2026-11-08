@@ -195,7 +195,7 @@ ffmpeg -nostdin -hide_banner -loglevel error -y \
     -f rawvideo -pixel_format nv12 -video_size 640x480 \
     -i "$c_h264" -pix_fmt yuv420p -f rawvideo "$c_h264_i420"
 
-LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+REQUIRE_DMABUF=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_decoder h264 nv12 313 "$c_api_h264" "$h264"
 cmp "$c_h264" "$c_api_h264"
 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \

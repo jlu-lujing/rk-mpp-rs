@@ -4,7 +4,7 @@ use std::io;
 
 use crate::hal::h264d::{Frame, H264d};
 use crate::hal::h264d383::H264d383;
-use crate::service::buffer_pool::BufferPool;
+use crate::service::buffer_pool::{BufferLease, BufferPool};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{SocProfile, VideoDecodeHal};
 
@@ -27,6 +27,8 @@ pub struct Picture {
     /// Tightly packed NV12 when `Decoder::set_output_nv12(true)` is enabled.
     /// `yuv` is empty in that mode.
     pub nv12: Option<Vec<u8>>,
+    /// Strided hardware NV12 surface when DMA-BUF output is enabled.
+    pub dmabuf: Option<DmaBufPicture>,
     /// Raw interleaved chroma as the hardware wrote it (stride = width).
     pub raw_uv: Vec<u8>,
     /// MPP-compatible frame error mask (`0x10` invalid syntax/reference,
@@ -35,6 +37,12 @@ pub struct Picture {
     /// MPP drops this frame from the display path instead of exposing it as a
     /// retained error reference.
     pub discard: bool,
+}
+
+pub struct DmaBufPicture {
+    pub lease: BufferLease<DmaBuf>,
+    pub hor_stride: usize,
+    pub ver_stride: usize,
 }
 
 /// Bounded display-order reorder buffer for streaming output.
@@ -114,6 +122,7 @@ pub struct Decoder {
     capture_raw_uv: bool,
     max_num_reorder_frames: usize,
     output_nv12: bool,
+    output_dmabuf: bool,
 }
 
 enum H264Hardware {
@@ -230,6 +239,7 @@ impl Decoder {
             capture_raw_uv: std::env::var("RFI_DUMP_UV").is_ok(),
             max_num_reorder_frames: 16,
             output_nv12: false,
+            output_dmabuf: false,
         })
     }
 
@@ -365,7 +375,20 @@ impl Decoder {
             // A buffer that still backs a reference must never be the output.
             let live: Vec<usize> = self.dpb.frames().iter().map(|f| f.buf).collect();
             match (0..self.frames.len()).find(|b| !live.contains(b) && self.frames[*b].is_some()) {
-                Some(b) => b,
+                Some(b) => {
+                    if self.output_dmabuf
+                        && self.frames[b]
+                            .as_ref()
+                            .and_then(|frame| frame.nv12.refs())
+                            .is_some_and(|refs| refs > 1)
+                    {
+                        // A reordered Picture still owns this surface. Drop the
+                        // decoder slot's reference and acquire a different
+                        // pooled buffer instead of overwriting display data.
+                        self.frames[b] = None;
+                    }
+                    b
+                }
                 None => match self.frames.iter().position(|f| f.is_none()) {
                     Some(b) => b,
                     None => {
@@ -624,8 +647,18 @@ impl Decoder {
 
         // 7. copy out (the dma-buf is CPU-cached, so sync before reading).
         // MPP never exposes pixel data for an invalid or hardware-errored job.
-        let (yuv, nv12, raw_uv) = if combined_err_info == 0 {
+        let (yuv, nv12, raw_uv, dmabuf) = if combined_err_info == 0 {
             let frame = self.frames[slot].as_ref().unwrap();
+            let dmabuf_lease = if self.output_dmabuf {
+                Some(
+                    frame
+                        .nv12
+                        .try_clone()
+                        .map_err(|error| format!("H.264 DMA-BUF lease: {error}"))?,
+                )
+            } else {
+                None
+            };
             let view = frame
                 .nv12
                 .data()
@@ -634,7 +667,17 @@ impl Decoder {
             let y = &view[..y_size];
             let uv = &view[y_size..y_size + y_size / 2];
             let _ = view.buffer().sync_read_begin();
-            let (yuv, nv12) = if self.output_nv12 {
+            let (yuv, nv12, dmabuf) = if self.output_dmabuf {
+                (
+                    Vec::new(),
+                    None,
+                    Some(DmaBufPicture {
+                        lease: dmabuf_lease.expect("DMA lease was cloned above"),
+                        hor_stride: frame.hor_stride,
+                        ver_stride: frame.ver_stride,
+                    }),
+                )
+            } else if self.output_nv12 {
                 (
                     Vec::new(),
                     Some(crate::codec::yuv::nv12_to_packed(
@@ -644,6 +687,7 @@ impl Decoder {
                         self.height,
                         frame.hor_stride,
                     )),
+                    None,
                 )
             } else {
                 (
@@ -654,6 +698,7 @@ impl Decoder {
                         self.height,
                         frame.hor_stride,
                     ),
+                    None,
                     None,
                 )
             };
@@ -670,9 +715,9 @@ impl Decoder {
                 Vec::new()
             };
             let _ = view.buffer().sync_read_end();
-            (yuv, nv12, raw_uv)
+            (yuv, nv12, raw_uv, dmabuf)
         } else {
-            (Vec::new(), None, Vec::new())
+            (Vec::new(), None, Vec::new(), None)
         };
         let output_reference = current_reference || top_reference;
         Ok(Some(Picture {
@@ -682,6 +727,7 @@ impl Decoder {
             idr: output_idr,
             yuv,
             nv12,
+            dmabuf,
             raw_uv,
             err_info: combined_err_info,
             discard: combined_err_info != 0 && !output_reference,
@@ -697,6 +743,13 @@ impl Decoder {
     /// chroma deinterleave pass for NV12-capable display/conversion consumers.
     pub fn set_output_nv12(&mut self, enabled: bool) {
         self.output_nv12 = enabled;
+    }
+
+    pub fn set_output_dmabuf(&mut self, enabled: bool) {
+        self.output_dmabuf = enabled;
+        if enabled {
+            self.output_nv12 = true;
+        }
     }
 }
 
@@ -891,6 +944,7 @@ mod tests {
             idr,
             yuv: Vec::new(),
             nv12: None,
+            dmabuf: None,
             raw_uv: Vec::new(),
             err_info: 0,
             discard: false,

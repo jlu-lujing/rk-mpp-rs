@@ -2,6 +2,21 @@
 
 ## Session: 2026-11-09
 
+### Phase 12: H.264 DMA-BUF Frame Output
+- **Status:** complete on t6 and lf1.
+- H.264 display-reordered pictures now clone their DPB buffer lease and retain
+  it until SDK frame release.
+- Slot reuse detects an extra nv12 lease reference and acquires a fresh pooled
+  buffer instead of overwriting a pending display picture.
+- t6 H.264 opt-in DMA output matches the C oracle byte-for-byte with hash
+  `338214ea…`; lf1 DMA and default CPU outputs match each other.
+- MJPEG opt-in/default and H.264 opt-in/default paths pass the shared DMA-BUF
+  board gate on both boards.
+- Final t6/lf1 workspace gates pass with
+  `1199 passed / 0 failed / 38 ignored`; rustfmt and strict rustdoc are clean.
+- SDK install, SONAME/symbol, pkg-config, CMake, dynamic-link and static-link
+  package gates pass on both boards.
+
 ### Phase 11: DMA-BUF Frame Export
 - **Status:** complete on t6 and lf1 for MJPEG NV12.
 - Added `DmaBuf::import_fd`, `dup_fd` and `try_clone` with owned close/mmap
