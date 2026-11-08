@@ -10,56 +10,16 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-#[test]
-#[ignore = "requires RK3576 VDPU383 and /dev/mpp_service"]
-fn first_vdpu383_av1_keyframe_matches_c_mpp() {
-    let data = std::fs::read(root().join("tests/data/av1_tiles_320x240_10.ivf")).unwrap();
-    let ivf = parse_ivf(&data).unwrap();
-    let packet = ivf.frames[0].data;
-    let obus = split_obus(packet).unwrap();
-    let mut parser = Av1PacketParser::new();
-    parser.begin_packet();
-    let mut cursor = 0;
-    let mut coded = None;
-    while let Some(event) = parser.parse_next_event(&obus, &mut cursor).unwrap() {
-        if let Av1PacketEvent::Coded(frame) = event {
-            coded = Some(frame);
-            break;
-        }
-    }
-    let frame = coded.unwrap();
-    let sequence = parser.sequence().unwrap();
-    let params = Av1PicParams::build(
-        sequence,
-        &frame.header,
-        &frame.references_at_header,
-        &frame.cdf,
-        &frame.tile_ranges,
-        frame.frame_start,
-        frame.frame_tag_size,
-        0,
-        &[0xff; 8],
-        PicParamsPointers::default(),
-    );
-    let start = frame.frame_start as usize;
-    let stream = &packet[start..start + frame.stream_len as usize];
-    let mut session = Session::open(params.width as usize, params.height as usize).unwrap();
-    let mut output = Frame::new(params.width as usize, params.height as usize, 0).unwrap();
-    let actual = session
-        .decode(&params, stream, &mut output, &[None; 8])
-        .unwrap();
-    let expected =
-        std::fs::read(root().join("tests/data/av1_vdpu383_key_frame_320x240.yuv")).unwrap();
-    assert!(!session.last_hardware_error);
-    assert_eq!(actual, expected);
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
 }
 
-#[test]
-#[ignore = "requires RK3576 VDPU383 and /dev/mpp_service"]
-fn full_vdpu383_av1_sequence_matches_c_mpp() {
+fn decode_vdpu383_sequence(path: &str) -> (usize, u32, Vec<u8>, bool) {
     const MAX_FRAMES: usize = 24;
 
-    let data = std::fs::read(root().join("tests/data/av1_tiles_320x240_10.ivf")).unwrap();
+    let data = std::fs::read(root().join(path)).unwrap();
     let ivf = parse_ivf(&data).unwrap();
     let mut parser = Av1PacketParser::new();
     let mut session: Option<Session> = None;
@@ -67,6 +27,7 @@ fn full_vdpu383_av1_sequence_matches_c_mpp() {
     let mut reference_slots: [Option<usize>; 8] = [None; 8];
     let mut output = Vec::new();
     let mut output_frames = 0;
+    let mut bit_depth = 0;
 
     for packet in &ivf.frames {
         parser.begin_packet();
@@ -88,6 +49,7 @@ fn full_vdpu383_av1_sequence_matches_c_mpp() {
                 }
                 Av1PacketEvent::Coded(coded) => {
                     let sequence = parser.sequence().unwrap();
+                    bit_depth = u32::from(sequence.bit_depth);
                     let width = coded.header.width as usize;
                     let height = coded.header.height as usize;
                     let session = session.get_or_insert(Session::open(width, height).unwrap());
@@ -102,8 +64,9 @@ fn full_vdpu383_av1_sequence_matches_c_mpp() {
                         .as_ref()
                         .is_none_or(|frame| frame.texture_index as usize != current_index)
                     {
-                        frames[current_index] =
-                            Some(Frame::new(width, height, current_index as u8).unwrap());
+                        frames[current_index] = Some(
+                            Frame::new(width, height, current_index as u8, bit_depth).unwrap(),
+                        );
                     }
                     let texture_slots = std::array::from_fn(|slot| {
                         reference_slots[slot]
@@ -146,10 +109,81 @@ fn full_vdpu383_av1_sequence_matches_c_mpp() {
         }
     }
 
-    let session = session.unwrap();
+    let hardware_error = session.unwrap().last_hardware_error;
+    (output_frames, bit_depth, output, hardware_error)
+}
+
+#[test]
+#[ignore = "requires RK3576 VDPU383 and /dev/mpp_service"]
+fn first_vdpu383_av1_keyframe_matches_c_mpp() {
+    let data = std::fs::read(root().join("tests/data/av1_tiles_320x240_10.ivf")).unwrap();
+    let ivf = parse_ivf(&data).unwrap();
+    let packet = ivf.frames[0].data;
+    let obus = split_obus(packet).unwrap();
+    let mut parser = Av1PacketParser::new();
+    parser.begin_packet();
+    let mut cursor = 0;
+    let mut coded = None;
+    while let Some(event) = parser.parse_next_event(&obus, &mut cursor).unwrap() {
+        if let Av1PacketEvent::Coded(frame) = event {
+            coded = Some(frame);
+            break;
+        }
+    }
+    let frame = coded.unwrap();
+    let sequence = parser.sequence().unwrap();
+    let params = Av1PicParams::build(
+        sequence,
+        &frame.header,
+        &frame.references_at_header,
+        &frame.cdf,
+        &frame.tile_ranges,
+        frame.frame_start,
+        frame.frame_tag_size,
+        0,
+        &[0xff; 8],
+        PicParamsPointers::default(),
+    );
+    let start = frame.frame_start as usize;
+    let stream = &packet[start..start + frame.stream_len as usize];
+    let mut session = Session::open(params.width as usize, params.height as usize).unwrap();
+    let mut output = Frame::new(
+        params.width as usize,
+        params.height as usize,
+        0,
+        u32::from(params.bitdepth),
+    )
+    .unwrap();
+    let actual = session
+        .decode(&params, stream, &mut output, &[None; 8])
+        .unwrap();
+    let expected =
+        std::fs::read(root().join("tests/data/av1_vdpu383_key_frame_320x240.yuv")).unwrap();
     assert!(!session.last_hardware_error);
-    assert_eq!(output_frames, 10);
+    assert_eq!(actual, expected);
+}
+
+#[test]
+#[ignore = "requires RK3576 VDPU383 and /dev/mpp_service"]
+fn full_vdpu383_av1_sequence_matches_c_mpp() {
+    let (frames, bit_depth, output, hardware_error) =
+        decode_vdpu383_sequence("tests/data/av1_tiles_320x240_10.ivf");
+    assert!(!hardware_error);
+    assert_eq!(frames, 10);
+    assert_eq!(bit_depth, 8);
     let expected =
         std::fs::read(root().join("tests/data/av1_vdpu383_sequence_320x240.yuv")).unwrap();
     assert_eq!(output, expected);
+}
+
+#[test]
+#[ignore = "requires RK3576 VDPU383 and /dev/mpp_service"]
+fn ten_bit_vdpu383_av1_sequence_matches_c_mpp() {
+    let (frames, bit_depth, output, hardware_error) =
+        decode_vdpu383_sequence("tests/data/film_grain_10bit.ivf");
+    assert!(!hardware_error);
+    assert_eq!(frames, 10);
+    assert_eq!(bit_depth, 10);
+    assert_eq!(output.len(), 10 * 320 * 240 * 3);
+    assert_eq!(fnv1a(&output), 0x460f2d59098e4320);
 }

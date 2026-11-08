@@ -42,7 +42,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get(start..end)
         .ok_or("frame stream exceeds packet")?;
     let mut session = Session::open(params.width as usize, params.height as usize)?;
-    let mut frame = Frame::new(params.width as usize, params.height as usize, 0)?;
+    let mut frame = Frame::new(
+        params.width as usize,
+        params.height as usize,
+        0,
+        u32::from(params.bitdepth),
+    )?;
     let yuv = session.decode(&params, stream, &mut frame, &[None; 8])?;
     std::fs::write(&args[2], yuv)?;
     println!(

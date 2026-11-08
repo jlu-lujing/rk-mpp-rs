@@ -63,8 +63,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .as_ref()
                         .is_none_or(|frame| frame.texture_index as usize != current_index)
                     {
-                        frames[current_index] =
-                            Some(Frame::new(width, height, current_index as u8)?);
+                        frames[current_index] = Some(Frame::new(
+                            width,
+                            height,
+                            current_index as u8,
+                            u32::from(sequence.bit_depth),
+                        )?);
                     }
 
                     let texture_slots = std::array::from_fn(|slot| {

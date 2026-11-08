@@ -108,10 +108,19 @@ impl Session {
                 "VDPU383 AV1 current frame geometry changed",
             ));
         }
-        if params.bitdepth > 8 {
+        if !matches!(params.bitdepth, 8 | 10) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "VDPU383 AV1 10-bit output is not wired yet",
+                format!(
+                    "VDPU383 AV1 does not support {}-bit output",
+                    params.bitdepth
+                ),
+            ));
+        }
+        if current.bit_depth != u32::from(params.bitdepth) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "VDPU383 AV1 current frame bit depth changed",
             ));
         }
         let header = build_uncompressed_header(params);
@@ -274,19 +283,26 @@ pub struct Frame {
     height: usize,
     stride: usize,
     ver_stride: usize,
+    bit_depth: u32,
     pub texture_index: u8,
 }
 
 impl Frame {
-    pub fn new(width: usize, height: usize, texture_index: u8) -> io::Result<Self> {
+    pub fn new(width: usize, height: usize, texture_index: u8, bit_depth: u32) -> io::Result<Self> {
+        if !matches!(bit_depth, 8 | 10) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("VDPU383 AV1 does not support {bit_depth}-bit output"),
+            ));
+        }
         let mut params = Av1PicParams::default();
         params.width = width as u16;
         params.height = height as u16;
-        params.bitdepth = 8;
+        params.bitdepth = bit_depth as u16;
         params.format.subsampling_x = 1;
         params.format.subsampling_y = 1;
         let plan = buffer_plan(&params);
-        let stride = tile_output_stride(width);
+        let stride = tile_output_stride(width, bit_depth);
         let ver_stride = align(height, 8);
         let mut output = DmaBuf::alloc("system", stride * ver_stride * 2, false)
             .map_err(|error| context(error, "allocate output"))?;
@@ -305,6 +321,7 @@ impl Frame {
             height,
             stride,
             ver_stride,
+            bit_depth,
             texture_index,
         })
     }
@@ -333,13 +350,23 @@ impl Frame {
         self.output.sync_read_begin()?;
         let yuv = {
             let bytes = self.output.as_slice();
-            nv12_to_planar(
-                &bytes[..luma_size],
-                &bytes[luma_size..output_size],
-                self.width,
-                self.height,
-                self.stride,
-            )
+            if self.bit_depth == 8 {
+                nv12_to_planar(
+                    &bytes[..luma_size],
+                    &bytes[luma_size..output_size],
+                    self.width,
+                    self.height,
+                    self.stride,
+                )
+            } else {
+                crate::codec::yuv::packed10_nv12_to_planar(
+                    &bytes[..luma_size],
+                    &bytes[luma_size..output_size],
+                    self.width,
+                    self.height,
+                    self.stride,
+                )
+            }
         };
         self.output.sync_read_end()?;
         Ok(yuv)
@@ -861,7 +888,7 @@ impl Registers {
         regs.set(reg::w29::AW_CNT_ID_TYPE, 1);
         regs.set(reg::w29::AR_COUNT_ID, 17);
 
-        let stride = tile_output_stride(usize::from(params.width));
+        let stride = tile_output_stride(usize::from(params.width), u32::from(params.bitdepth));
         let height = align(usize::from(params.height), 8);
         regs.words[66] = align(buffers.stream_len as usize, 128).max(128) as u32;
         regs.words[67] = (UNCOMPRESSED_HEADER_SIZE / 16) as u32;
@@ -871,7 +898,6 @@ impl Registers {
         regs.words[80] = regs.words[68];
         regs.words[81] = regs.words[69];
         regs.words[82] = regs.words[70];
-
         let rcb = rcb_layout(params);
         for index in 0..rcb.lengths.len() {
             let base_register = 140 + index * 2;
@@ -931,7 +957,8 @@ impl Registers {
                 let width = params.frame_ref_state[mapped].frame_width as usize;
                 let height = params.frame_ref_state[mapped].frame_height as usize;
                 if width != 0 && height != 0 {
-                    let stride = tile_output_stride(width);
+                    let stride =
+                        tile_output_stride(width, params.frame_ref_state[mapped].bit_depth as u32);
                     regs.words[83 + mapped * 3] = (stride / 16) as u32;
                     regs.words[84 + mapped * 3] = (stride / 16) as u32;
                     regs.words[85 + mapped * 3] = (stride * align(height, 8) / 16) as u32;
@@ -1085,8 +1112,13 @@ fn rcb_bytes(bits: f64) -> u32 {
     align(((bits.ceil() as u32).saturating_add(7) / 8) as usize, 64) as u32
 }
 
-fn tile_output_stride(width: usize) -> usize {
-    let aligned = align(width, 64);
+fn tile_output_stride(width: usize, bit_depth: u32) -> usize {
+    let stored_width = if bit_depth == 10 {
+        width * 11 / 5
+    } else {
+        width
+    };
+    let aligned = align(stored_width, 64);
     if (aligned - 64) % 256 == 128 {
         aligned
     } else {
@@ -1246,6 +1278,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn output_stride_matches_vdpu383_8_and_10_bit_layouts() {
+        assert_eq!(tile_output_stride(320, 8), 448);
+        assert_eq!(tile_output_stride(320, 10), 704);
+    }
+
     fn first_keyframe() -> (Av1PicParams, u32) {
         let data = include_bytes!("../../tests/data/av1_tiles_320x240_10.ivf");
         let ivf = parse_ivf(data).unwrap();
@@ -1330,7 +1368,8 @@ mod tests {
 
     #[test]
     fn real_keyframe_registers_match_the_c_vdpu383_dump() {
-        let (params, stream_len) = first_keyframe();
+        let (mut params, stream_len) = first_keyframe();
+        params.film_grain.apply_grain = 0;
         let buffers = DmaBuffers {
             stream: 13,
             stream_len,
@@ -1357,7 +1396,7 @@ mod tests {
     #[test]
     fn first_inter_registers_match_the_c_vdpu383_dump() {
         let (sequence, _, frame) = first_two_coded_frames();
-        let params = Av1PicParams::build(
+        let mut params = Av1PicParams::build(
             &sequence,
             &frame.header,
             &frame.references_at_header,
@@ -1369,6 +1408,7 @@ mod tests {
             &[0; 8],
             PicParamsPointers::default(),
         );
+        params.film_grain.apply_grain = 0;
         let buffers = DmaBuffers {
             stream: 20,
             stream_len: frame.stream_len,

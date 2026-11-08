@@ -518,8 +518,15 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   320x240 的 10 个显示帧与 stock C MPP 三平面逐字节相同，共 1,152,000 bytes，
   SHA-256
   `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`。
-  完整入口为 `scripts/board_rk3576_av1_vdpu383_sequence.sh`；仍待实现的是
-  VDPU383 10-bit output 和 film grain。
+  完整入口为 `scripts/board_rk3576_av1_vdpu383_sequence.sh`。
+  VDPU383 10-bit 也已接通：320x240 的 packed surface 使用 704-byte stride，
+  Rust 转成 planar little-endian u16；10 帧共 2,304,000 bytes，SHA-256
+  `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`，
+  与 C 的 skip-grain 输出逐字节。入口为
+  `scripts/board_rk3576_av1_vdpu383_10bit.sh`。
+  FGS 仍是硬件边界：C 不启用该块；Rust 编程 `av1_fgs_en`/FGS base 后，
+  raster 与 tile 两种模式都返回 STATUS `0x00000000` 并触发 reset。没有新的
+  register/trace oracle 前保留已验证的 skip-grain 行为。
 - VDPU383 VP9 初始 7/7 已在 lf1 通过：profile 0/2、8/10-bit、lossless、
   errres tiles 和 720p；普通行与 C MPP 逐字节，720p errres 与 321x241
   继续按既有 libvpx 判据处理 C 侧 bug。VDPU383 的 global header、1312-byte

@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1210
-      enumerated / 1174 regular pass / 0 failed / 36 board-only ignored, and
-      the release library suite is 1030 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1212
+      enumerated / 1175 regular pass / 0 failed / 37 board-only ignored, and
+      the release library suite is 1031 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3215,10 +3215,17 @@ pipeline uses.
   from the current `base_q_idx` first diverged on coded job four. The complete
   1,152,000-byte C/Rust planar output has SHA-256
   `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`;
-  `scripts/board_rk3576_av1_vdpu383_sequence.sh` is the gate. VDPU383 10-bit
-  and film grain remain open. H.265 random-error rows, AV1/AVS2, VEPU510,
-  VPU720 tile input and VDPP2 remain in progress. VPU720 low-delay is an
-  explicit reject:
+  `scripts/board_rk3576_av1_vdpu383_sequence.sh` is the gate. The 10-bit path
+  is also exact for the current C-compatible surface: 320x240 uses a 704-byte
+  packed stride and the ten displayed frames total 2,304,000 planar-u16 bytes
+  with SHA-256
+  `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`;
+  `scripts/board_rk3576_av1_vdpu383_10bit.sh` is the gate. VDPU383 FGS is a
+  hardware boundary: C leaves the FGS block disabled, and Rust's
+  `av1_fgs_en`/FGS-base experiments hang with STATUS `0x00000000` in both
+  raster and tile modes, followed by decoder reset. H.265 random-error rows,
+  AV1/AVS2, VEPU510, VPU720 tile input and VDPP2 remain in progress. VPU720
+  low-delay is an explicit reject:
   its C HAL has null `part_start`/`part_wait`, which makes the reference probe
   spin on zero-length packets.
 - The first VEPU510 H.264 foundation is generated from the C structs:
@@ -3319,8 +3326,8 @@ pipeline uses.
   Rust's `open_tile_columns(2)` rejects before any DMA or hardware allocation.
   With this boundary and the 10-bit rejection, the VEPU510 H.265 board matrix
   is 15/15. Wider STATUS feedback remains open.
-- Tests: `cargo test --release --all-targets` enumerates 1210 tests: 1174
-  regular pass and 36 ignored hardware tests on t6. The four JPEG hardware
+- Tests: `cargo test --release --all-targets` enumerates 1212 tests: 1175
+  regular pass and 37 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.
   Coverage includes OBU/frame-header/CDF/PicParams snapshots, AV1 software

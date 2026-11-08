@@ -99,7 +99,18 @@ t62 back to the RK3588 reference board.
   `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`.
   The explicit full-sequence gate is
   `scripts/board_rk3576_av1_vdpu383_sequence.sh`.
-- VDPU383 10-bit output and film grain remain open.
+- VDPU383 10-bit output is now closed for the current C-compatible path.
+  The 320x240 surface uses MPP's 704-byte packed stride and a 337,920-byte
+  allocation; Rust converts it to planar little-endian u16 Y/U/V. All ten
+  displayed frames total 2,304,000 bytes with SHA-256
+  `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`,
+  byte-identical to C's skip-grain output. The explicit gate is
+  `scripts/board_rk3576_av1_vdpu383_10bit.sh`.
+- VDPU383 FGS is a separate unresolved hardware boundary. C's VDPU383 HAL
+  leaves `av1_fgs_en` and `reg134_fgs_base` clear. Enabling either raster or
+  tile FGS in Rust makes the job complete without STATUS (`0x00000000`) and
+  forces a decoder reset; keep the verified skip-grain path enabled until a
+  register/trace oracle exists for this block.
 
 - RK3576 H.265 is an initial core-path closure. Random bit-flip injection and
   wider conformance streams still need lf1 evidence.
@@ -153,8 +164,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1210 tests**. The
-regular suite passes **1174 / 0 failed / 36 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1212 tests**. The
+regular suite passes **1175 / 0 failed / 37 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.
