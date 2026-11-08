@@ -287,6 +287,9 @@ int main(int argc, char **argv)
     if (getenv("DBLK_DISABLE"))
         CHECK(mpp_enc_cfg_set_u32(cfg, "h265:dblk_disable",
                                   atoi(getenv("DBLK_DISABLE"))));
+    if (getenv("AUTO_TILE"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h265:auto_tile",
+                                  atoi(getenv("AUTO_TILE"))));
     if (getenv("DBLK_BETA"))
         CHECK(mpp_enc_cfg_set_s32(cfg, "h265:dblk_alpha",
                                   atoi(getenv("DBLK_BETA"))));

@@ -522,6 +522,15 @@ impl Vepu510H265 {
         })
     }
 
+    pub fn open_tile_columns(columns: u32) -> Result<Self, String> {
+        if columns > 1 {
+            return Err(format!(
+                "VEPU510 H.265 tiles are unavailable on RK3576: C only enables PPS tiles on RK3566/RK3568/RK3588, requested {columns} columns"
+            ));
+        }
+        Self::open()
+    }
+
     pub fn encode_fixed_qp_idr_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
         if self.idr_done {
             return Err("this VEPU510 H.265 session already encoded its IDR".into());
@@ -1265,5 +1274,15 @@ mod tests {
         };
         assert!(error.contains("10-bit"));
         assert!(error.contains("unsupported"));
+    }
+
+    #[test]
+    fn tile_requests_are_rejected_on_rk3576() {
+        let error = match Vepu510H265::open_tile_columns(2) {
+            Ok(_) => panic!("tiles unexpectedly opened a hardware session"),
+            Err(error) => error,
+        };
+        assert!(error.contains("tiles are unavailable"));
+        assert!(error.contains("RK3576"));
     }
 }

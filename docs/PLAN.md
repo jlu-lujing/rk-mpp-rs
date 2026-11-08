@@ -500,9 +500,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       逐字节（4710 bytes），六帧固定 GOP 也逐字节（16994 bytes），CBR6
       为 11192 bytes，VBR6/AVBR6 为 11795/9676 bytes；BY_CTU/BY_BYTE
       与 LOWDELAY packet 两档也已逐字节，row/column GDR 与 ROI 同样通过；
-      10-bit 与 C 一样在构图前明确拒绝。
-      AV1/AVS2、LTR/error 边界、完整 H.264 边界矩阵、H.264/H.265/VEPU510
-      编码、VPU720 tile input 与 VDPP2 仍需完成。
+      10-bit 与 C 一样在构图前明确拒绝；tiles 与 C 一样不启用，Rust 对
+      多于 1 列在 DMA 前显式拒绝，功能/边界矩阵为 15/15。
+      AV1/AVS2、LTR/error 边界、完整 H.264/H.265/VEPU510 编码矩阵、
+      VPU720 tile input 与 VDPP2 仍需完成。
 - [ ] W12-3 每个 SoC 独立验收矩阵（同一能力在多个块上允许不同 HAL）
 
 ---

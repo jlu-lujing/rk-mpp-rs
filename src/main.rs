@@ -1247,6 +1247,27 @@ fn main() {
         }
     }
 
+    if args.len() > 1 && args[1] == "h265e510-tiles" {
+        if args.len() != 5 {
+            eprintln!("usage: rk-mpp-rs h265e510-tiles <unused.nv12> <unused.265> <columns>");
+            std::process::exit(2);
+        }
+        let columns = match args[4].parse::<u32>() {
+            Ok(columns) => columns,
+            Err(error) => {
+                eprintln!("invalid tile count {}: {error}", args[4]);
+                std::process::exit(2);
+            }
+        };
+        match vepu510_h265::Vepu510H265::open_tile_columns(columns) {
+            Ok(_) => std::process::exit(1),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.len() > 1 && args[1] == "h265e510-gop2" {
         if args.len() != 4 {
             eprintln!("usage: rk-mpp-rs h265e510-gop2 <in.2x320x240.nv12> <out.265>");

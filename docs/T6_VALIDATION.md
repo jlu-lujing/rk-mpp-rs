@@ -50,6 +50,10 @@ t62 back to the RK3588 reference board.
 - The scaling-list table is 1360 bytes per slot and uses `sps_id * 1360` or
   `(pps_id + 16) * 1360`; the VDPU383 builder stores the six 32x32 matrices in
   the source-defined block-column-major order.
+- The separate VEPU510 H.265 encode matrix is **15/15**. C's `AUTO_TILE=1`
+  produces the same 4710-byte IDR as its ordinary path on RK3576; Rust rejects
+  a two-column request before DMA or hardware allocation. Tiles are therefore
+  a platform boundary rather than an unimplemented register path.
 - RK3576 H.265 is an initial core-path closure. LTR/error injection and wider
   conformance streams still need lf1 evidence.
 
@@ -102,8 +106,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1199 tests**. The
-regular suite passes **1165 / 0 failed / 34 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1200 tests**. The
+regular suite passes **1166 / 0 failed / 34 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.

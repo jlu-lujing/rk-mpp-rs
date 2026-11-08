@@ -42,7 +42,10 @@
   **4710 bytes**；IDR+P GOP2 与 GOP6 同样逐字节，分别为 **6810 / 16994
   bytes**；CBR6 / VBR6 / AVBR6 也逐字节，分别为 **11192 / 11795 / 9676
   bytes**；BY_CTU/BY_BYTE、LOWDELAY packet、row/column GDR 与 ROI 也都
-  逐字节；10-bit 输入与 lf1 C MPP 一致，在构图前显式拒绝。
+  逐字节；10-bit 输入与 lf1 C MPP 一致，在构图前显式拒绝。RK3576 的 C
+  `AUTO_TILE=1` 与普通 IDR 产生同一个 4710-byte 码流，确认 tiles 是该
+  VEPU510 HAL 的平台边界；Rust 对多于 1 列的 tile 请求在 DMA/硬件分配前
+  显式拒绝。VEPU510 H.265 功能/边界矩阵为 **15/15**。
   其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
   固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
@@ -67,7 +70,7 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；IEP2 的 **PD/DECT 逆 telecine** 两遍路径（反向下拉 + 场序状态机）已接入：3:2 telecine 与逐行素材 **2/2 与 C probe 逐字节一致**，逐帧 `pd_flag/pd_types/dil_order/frm_mode/ratio` 也逐行相同，322x242/722x482/1366x768 等非 16 对齐尺寸同样逐字节；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件、排队/执行/端到端耗时与成功/失败/取消累计统计）、引用计数 dma-heap 缓冲池；pooled JPEG 保证先关闭 MPP service 再归还共享 dma-buf，t6 连续 3000 jobs 压测通过；VP8 与 H.264/HEVC/AV1/VP9 的 DPB surface 已持有 RAII lease，四类解码边界回归在 t6 通过；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成 84%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
+整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 94 项完成、6 项未完成（含缩进子项为 132 / 11）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
@@ -162,8 +165,8 @@ partition/mode/skip/tx_depth、
 `ReferenceStream`、块级 transform 选择、
 统一帧内预测入口、帧头参考状态、tile-group 拆包、
 §5.9 完整帧头、§8.1 位流描述符、§5.2 OBU/IVF 解复用与 §5.5 序列头），
-逐项证据见 `docs/CAPABILITY.md` 的 M11 表与 `ROADMAP.md` 尾部；上文的 84% 是按里程碑
-工作量的加权估算，未按这批 slice 重算。
+逐项证据见 `docs/CAPABILITY.md` 的 M11 表与 `ROADMAP.md` 尾部；上文的 89% 是按里程碑
+工作量重算的加权估算。
 
 ## 怎么验证的
 
@@ -179,7 +182,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1199 枚举；1165 常规通过，34 个硬件 ignored
+cargo test --release --all-targets           # t6：1200 枚举；1166 常规通过，34 个硬件 ignored
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -197,7 +200,7 @@ BOARD=luck2 ./scripts/board_rk3576_vp9_vs_mpp.sh  # RK3576 VDPU383 VP9：7/7
 BOARD=luck2 ./scripts/board_rk3576_h264_edges_vs_mpp.sh # H.264 边界：5/5
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
 BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR/VBR/AVBR/ROI/split/GDR：13/13
-BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：14/14
+BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：15/15
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
@@ -260,6 +263,7 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 | `h265e510-split2 <in.2x320x240.nv12> <out.265> <ctu:N\|byte:N> [lowdelay]` | RK3576 VEPU510 H.265 slice split 与逐 packet 输出 |
 | `h265e510-gdr <in.Nx320x240.nv12> <out.265> <row\|col:num:gop:frames>` | RK3576 VEPU510 H.265 GDR |
 | `h265e510-roi2 <in.2x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 ROI / QP 区 |
+| `h265e510-tiles <unused.nv12> <unused.265> <columns>` | RK3576 VEPU510 H.265 tile 请求边界；多于 1 列必须显式拒绝 |
 | `iep-dei <in.yuv> <out.yuv> <w> <h> [TFF\|BFF] [I5O2\|I5O1T\|I5O1B\|I2O2\|I1O1T\|I1O1B]` | IEP2 去隔行；原始输出保留两个 dst slot |
 | `spspps` / `h264dpb` | H.264 参数集与 DPB 打印 |
 | `probe-frame` / `bench-scale` / `bench-decode` / `bench-dma` / `pipeline` | 夹具与基准 |

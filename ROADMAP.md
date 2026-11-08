@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1199
-      enumerated / 1165 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1021 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1200
+      enumerated / 1166 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1022 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3275,8 +3275,15 @@ pipeline uses.
   `invalid src color space: 16`, zero-byte packet); Rust exposes
   `open_bit_depth(10)` and rejects before DMA/hardware allocation. The board
   harness now generates its own 13-frame input rather than depending on the
-  H.264 test. Tiles and wider STATUS feedback remain.
-- Tests: `cargo test --release --all-targets` enumerates 1199 tests: 1165
+  H.264 test.
+- VEPU510 H.265 tiles are a platform boundary, not a missing register path.
+  The 2025 C PPS auto-tile branch covers RK3566/RK3568/RK3588 only; on RK3576,
+  `AUTO_TILE=1` emits the same 4710-byte stream as the ordinary IDR
+  (`e97ddde34fa10eff02889b1b4d49d394df457eb1cbafb04015e047539b37b6d7`).
+  Rust's `open_tile_columns(2)` rejects before any DMA or hardware allocation.
+  With this boundary and the 10-bit rejection, the VEPU510 H.265 board matrix
+  is 15/15. Wider STATUS feedback remains open.
+- Tests: `cargo test --release --all-targets` enumerates 1200 tests: 1166
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.
