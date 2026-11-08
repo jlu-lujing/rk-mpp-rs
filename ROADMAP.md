@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1194
-      enumerated / 1160 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1016 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1195
+      enumerated / 1161 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1017 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3249,8 +3249,12 @@ pipeline uses.
   `smear_load_en` set from the second P onward; GOP6 is byte-identical at
   16994 bytes
   (`8088e821a066e1565e9ab58a64194eccdd34a42000593a731bca2c9f957fe397`).
-  RC, GDR/ROI/split and STATUS feedback remain.
-- Tests: `cargo test --release --all-targets` enumerates 1194 tests: 1160
+  CBR feeds `rc_model_v2` back from the 148-word STATUS view with 300/250/350
+  kbps and RK3576's I/P minima of 15/10. The six-picture QP trajectory is
+  `26/29/29/30/30/32`; CBR6 is byte-identical at 11192 bytes
+  (`5768ab6c768dd5b613179c494ec41081ac104240e1a4d0df0c9ab58ff14fc9fb`).
+  VBR/AVBR, GDR/ROI/split and wider STATUS feedback remain.
+- Tests: `cargo test --release --all-targets` enumerates 1195 tests: 1161
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

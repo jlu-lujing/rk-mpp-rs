@@ -5,6 +5,7 @@
 
 use crate::codec::h265::encoder::{self, EncoderConfig};
 use crate::codec::h265::sei;
+use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
@@ -24,6 +25,9 @@ const WIDTH: usize = 320;
 const HEIGHT: usize = 240;
 const QP: u32 = 26;
 const GOP: u32 = 60;
+const CBR_TARGET: i32 = 300_000;
+const CBR_MIN: i32 = 250_000;
+const CBR_MAX: i32 = 350_000;
 const INPUT_SIZE: usize = WIDTH * HEIGHT * 3 / 2;
 const OUTPUT_SIZE: usize = 128 * 1024;
 const FBC_HEADER_SIZE: usize = 8 * 1024;
@@ -44,6 +48,14 @@ const STATUS_OFFSET: u32 = 16 * 1024;
 
 const LF1_VERSION_TEXT: &[u8] =
     b"4ed4f778 author: Herman Chen   2025-09-10 docs: Update 1.0.11 CHANGELOG.md";
+
+struct RateControlPlan {
+    bit_target: i32,
+    qp_target: u32,
+    qp_min: u32,
+    qp_max: u32,
+    qp_delta: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisterFile {
@@ -164,6 +176,85 @@ impl RegisterFile {
         Ok(regs)
     }
 
+    fn apply_rate_control(&mut self, rc: &RateControlPlan, is_intra: bool) -> Result<(), String> {
+        let mb_w = (WIDTH + 31) / 32;
+        let mb_h = (HEIGHT + 31) / 32;
+        let mut target_16 = rc.bit_target.wrapping_shl(4) / (mb_w * mb_h) as i32;
+        if target_16 >= 0x0010_0000 {
+            target_16 = 0x0005_0000;
+        }
+        let ctu_bits = (target_16 * mb_w as i32) >> 4;
+        let negative = 0 - 5 * ctu_bits / 16;
+        let positive = 5 * ctu_bits / 16;
+
+        self.set(regs::FRAME_ENC_PIC_PIC_QP, rc.qp_target)?;
+        self.set(regs::H265_SYNT_SLI1_SLI_QP, rc.qp_target)?;
+        self.set(regs::FRAME_RC_CFG_RC_EN, 1)?;
+        self.set(regs::FRAME_RC_CFG_AQ_EN, 1)?;
+        self.set(regs::FRAME_RC_CFG_RC_CTU_NUM, mb_w as u32)?;
+        self.set(regs::FRAME_RC_QP_RC_MAX_QP, rc.qp_max)?;
+        self.set(regs::FRAME_RC_QP_RC_MIN_QP, rc.qp_min)?;
+        self.set(regs::FRAME_RC_QP_RC_QP_RANGE, rc.qp_delta)?;
+        self.set(regs::FRAME_RC_TGT_CTU_EBIT, target_16 as u32)?;
+        self.set(regs::H265_SYNT_PPS_CU_QP_DLT_EN, 1)?;
+
+        let thresholds = [
+            2 * negative,
+            negative,
+            positive,
+            2 * positive,
+            i32::MAX,
+            i32::MAX,
+            i32::MAX,
+            i32::MAX,
+            i32::MAX,
+        ];
+        let start = regs::RC_RC_DTHD_0_8.word;
+        for (index, value) in thresholds.iter().enumerate() {
+            *self.rc_word_mut(start + index)? = *value as u32;
+        }
+
+        for (field, value) in [
+            (regs::RC_RC_ADJ0_QP_ADJ0, -2),
+            (regs::RC_RC_ADJ0_QP_ADJ1, -1),
+            (regs::RC_RC_ADJ0_QP_ADJ2, 0),
+            (regs::RC_RC_ADJ0_QP_ADJ3, 1),
+            (regs::RC_RC_ADJ0_QP_ADJ4, 2),
+            (regs::RC_RC_ADJ1_QP_ADJ5, 0),
+            (regs::RC_RC_ADJ1_QP_ADJ6, 0),
+            (regs::RC_RC_ADJ1_QP_ADJ7, 0),
+            (regs::RC_RC_ADJ1_QP_ADJ8, 0),
+        ] {
+            self.set_signed(field, value)?;
+        }
+
+        for (field, value) in [
+            (regs::RC_ROI_QTHD0_QPMIN_AREA0, rc.qp_min),
+            (regs::RC_ROI_QTHD0_QPMAX_AREA0, rc.qp_max),
+            (regs::RC_ROI_QTHD0_QPMIN_AREA1, rc.qp_min),
+            (regs::RC_ROI_QTHD0_QPMAX_AREA1, rc.qp_max),
+            (regs::RC_ROI_QTHD0_QPMIN_AREA2, rc.qp_min),
+            (regs::RC_ROI_QTHD1_QPMAX_AREA2, rc.qp_max),
+            (regs::RC_ROI_QTHD1_QPMIN_AREA3, rc.qp_min),
+            (regs::RC_ROI_QTHD1_QPMAX_AREA3, rc.qp_max),
+            (regs::RC_ROI_QTHD1_QPMIN_AREA4, rc.qp_min),
+            (regs::RC_ROI_QTHD1_QPMAX_AREA4, rc.qp_max),
+            (regs::RC_ROI_QTHD2_QPMIN_AREA5, rc.qp_min),
+            (regs::RC_ROI_QTHD2_QPMAX_AREA5, rc.qp_max),
+            (regs::RC_ROI_QTHD2_QPMIN_AREA6, rc.qp_min),
+            (regs::RC_ROI_QTHD2_QPMAX_AREA6, rc.qp_max),
+            (regs::RC_ROI_QTHD2_QPMIN_AREA7, rc.qp_min),
+            (regs::RC_ROI_QTHD3_QPMAX_AREA7, rc.qp_max),
+        ] {
+            self.set(field, value)?;
+        }
+        self.set(regs::RC_ROI_QTHD3_QPMAP_MODE, 1)?;
+        if is_intra {
+            self.set(regs::H265_SYNT_PPS_PIC_INIT_QP, 26)?;
+        }
+        Ok(())
+    }
+
     pub fn set(&mut self, field: Field, value: u32) -> Result<(), String> {
         if field.width == 0 || field.width > 32 {
             return Err(format!("{} has invalid width {}", field.name, field.width));
@@ -206,6 +297,18 @@ impl RegisterFile {
     fn word_mut(&mut self, absolute: usize) -> Option<&mut u32> {
         let (section, index) = locate(absolute)?;
         self.section_mut(section).map(|words| &mut words[index])
+    }
+
+    fn rc_word_mut(&mut self, absolute: usize) -> Result<&mut u32, String> {
+        if !(1024..1092).contains(&absolute) {
+            return Err(format!("word {absolute} is outside the H.265 RC window"));
+        }
+        Ok(&mut self.rc[absolute - 1024])
+    }
+
+    fn set_signed(&mut self, field: Field, value: i32) -> Result<(), String> {
+        let mask = (1u32 << field.width) - 1;
+        self.set(field, value as u32 & mask)
     }
 
     fn section(&self, name: &str) -> Option<&[u32]> {
@@ -344,6 +447,88 @@ impl Vepu510H265 {
         self.encode_fixed_qp_gop_320x240(nv12, 6)
     }
 
+    pub fn encode_cbr_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        if self.idr_done {
+            return Err("this VEPU510 H.265 session already encoded its IDR".into());
+        }
+        let expected = INPUT_SIZE * 6;
+        if nv12.len() < expected {
+            return Err(format!(
+                "VEPU510 H.265 CBR input is {} bytes, expected {expected}",
+                nv12.len()
+            ));
+        }
+        let mut config = lf1_h265_config()?;
+        config.rc_mode = encoder::RateControl::Cbr;
+        let prefix = lf1_cbr_prefix(&config, GOP)?;
+        let mut model_config = rc_model::Config::cbr(CBR_TARGET, CBR_MIN, CBR_MAX, GOP as i32);
+        model_config.quality_init = QP as i32;
+        model_config.quality_min = 10;
+        model_config.quality_max = 51;
+        model_config.i_quality_delta = 4;
+        model_config.total_mb = ((WIDTH + 63) / 64) as i32 * ((HEIGHT + 63) / 64) as i32 * 64;
+        model_config.mode = rc_model::Mode::Cbr;
+        let mut model = rc_model::Model::new(model_config);
+
+        let mut stream = Vec::new();
+        for frame_number in 0..6 {
+            let is_intra = frame_number == 0;
+            let frame_type = if is_intra {
+                rc_model::FrameType::Intra
+            } else {
+                rc_model::FrameType::InterP
+            };
+            let (bit_target, qp_target) = model.start(frame_type);
+            let plan = RateControlPlan {
+                bit_target,
+                qp_target: qp_target as u32,
+                qp_min: if is_intra { 15 } else { 10 },
+                qp_max: 51,
+                qp_delta: 2,
+            };
+            let mut registers = if is_intra {
+                RegisterFile::captured_fixqp_idr_320x240(
+                    self.input.fd() as u32,
+                    self.output.fd() as u32,
+                    self.recon[0].fd() as u32,
+                    self.colmv[0].fd() as u32,
+                    self.thumb[0].fd() as u32,
+                    self.smear[0].fd() as u32,
+                    self.md_info.fd() as u32,
+                )?
+            } else {
+                let current = frame_number & 1;
+                let reference = 1 - current;
+                RegisterFile::captured_fixqp_p_320x240(
+                    self.input.fd() as u32,
+                    self.output.fd() as u32,
+                    self.recon[current].fd() as u32,
+                    self.recon[reference].fd() as u32,
+                    self.colmv[current].fd() as u32,
+                    self.colmv[reference].fd() as u32,
+                    self.thumb[current].fd() as u32,
+                    self.thumb[reference].fd() as u32,
+                    self.smear[current].fd() as u32,
+                    self.smear[reference].fd() as u32,
+                    self.md_info.fd() as u32,
+                    frame_number as u32,
+                )?
+            };
+            registers.apply_rate_control(&plan, is_intra)?;
+            let start = frame_number * INPUT_SIZE;
+            let end = start + INPUT_SIZE;
+            let frame_prefix = if is_intra { prefix.as_slice() } else { &[] };
+            let (frame_stream, status) =
+                self.run_job_with_status(&nv12[start..end], &registers, frame_prefix)?;
+            let measured = measured_from_status(&status);
+            model.end_with(frame_type, bit_target, measured);
+            model.accept_frame();
+            stream.extend(frame_stream);
+        }
+        self.idr_done = true;
+        Ok(stream)
+    }
+
     fn encode_fixed_qp_gop_320x240(
         &mut self,
         nv12: &[u8],
@@ -408,6 +593,16 @@ impl Vepu510H265 {
         registers: &RegisterFile,
         prefix: &[u8],
     ) -> Result<Vec<u8>, String> {
+        self.run_job_with_status(nv12, registers, prefix)
+            .map(|(stream, _)| stream)
+    }
+
+    fn run_job_with_status(
+        &mut self,
+        nv12: &[u8],
+        registers: &RegisterFile,
+        prefix: &[u8],
+    ) -> Result<(Vec<u8>, [u32; regs::STATUS_WORDS]), String> {
         self.input
             .sync_write_begin()
             .map_err(|e| format!("VEPU510 H.265 input sync begin: {e}"))?;
@@ -498,16 +693,11 @@ impl Vepu510H265 {
         self.output
             .sync_read_end()
             .map_err(|e| format!("VEPU510 H.265 output sync end: {e}"))?;
-        Ok(stream)
+        Ok((stream, status))
     }
 }
 
 fn lf1_fixed_qp_prefix(config: &EncoderConfig, qp: u32, gop: u32) -> Result<Vec<u8>, String> {
-    let mut out = encoder::build_headers(config).map_err(|e| e.to_string())?;
-    out.extend(sei::user_data_unregistered(
-        &sei::VERSION_UUID,
-        LF1_VERSION_TEXT,
-    ));
     let line = sei::RcCfgLine {
         model_name: "default",
         mode_name: "fixqp",
@@ -522,9 +712,36 @@ fn lf1_fixed_qp_prefix(config: &EncoderConfig, qp: u32, gop: u32) -> Result<Vec<
         max_i_quality: qp as i32,
         i_quality_delta: 0,
     };
+    lf1_prefix(config, &line)
+}
+
+fn lf1_cbr_prefix(config: &EncoderConfig, gop: u32) -> Result<Vec<u8>, String> {
+    let line = sei::RcCfgLine {
+        model_name: "default",
+        mode_name: "cbr",
+        bps_target: CBR_TARGET as i64,
+        bps_min: CBR_MIN as i64,
+        bps_max: CBR_MAX as i64,
+        igop: gop as i64,
+        init_quality: QP as i32,
+        min_quality: 10,
+        max_quality: 51,
+        min_i_quality: 15,
+        max_i_quality: 51,
+        i_quality_delta: 4,
+    };
+    lf1_prefix(config, &line)
+}
+
+fn lf1_prefix(config: &EncoderConfig, line: &sei::RcCfgLine) -> Result<Vec<u8>, String> {
+    let mut out = encoder::build_headers(config).map_err(|e| e.to_string())?;
+    out.extend(sei::user_data_unregistered(
+        &sei::VERSION_UUID,
+        LF1_VERSION_TEXT,
+    ));
     out.extend(sei::user_data_unregistered(
         &sei::RC_UUID,
-        sei::rc_cfg_line(&line).as_bytes(),
+        sei::rc_cfg_line(line).as_bytes(),
     ));
     Ok(out)
 }
@@ -552,6 +769,35 @@ fn status_execution_error(status: &[u32]) -> u32 {
     let field = regs::STATUS_ST_ENC_ST_ENC;
     let word = status[field.word - regs::STATUS_OFFSET];
     (word >> field.shift) & ((1u32 << field.width) - 1)
+}
+
+fn measured_from_status(status: &[u32]) -> rc_model::Measured {
+    let at = |word: usize| status.get(word - regs::STATUS_OFFSET).copied().unwrap_or(0);
+    let mb64 = ((WIDTH + 63) / 64) * ((HEIGHT + 63) / 64);
+    let quality = (at(4099) / ((mb64 << 6) as u32)) as i32;
+    let madi = {
+        let count = at(4171) & 0x007f_ffff;
+        if count > 0 {
+            (at(4170) / count) as i32
+        } else {
+            0
+        }
+    };
+    let madp = {
+        let count = at(4169) & 0x001f_ffff;
+        if count > 0 {
+            (at(4168) / count) as i32
+        } else {
+            0
+        }
+    };
+    rc_model::Measured {
+        bits: at(4096) as i32 * 8,
+        quality,
+        madi,
+        madp,
+        iblk4_prop: 0,
+    }
 }
 
 #[cfg(test)]
@@ -609,6 +855,41 @@ mod tests {
                 .unwrap();
         assert_eq!(regs.get(regs::H265_SYNT_SLI2_SLI_POC_LSB).unwrap(), 2);
         assert_eq!(regs.get(regs::SQI_SMEAR_OPT_CFG0_SMEAR_LOAD_EN).unwrap(), 1);
+    }
+
+    #[test]
+    fn cbr_plan_matches_the_lf1_idr_rc_words() {
+        let mut regs = RegisterFile::captured_fixqp_idr_320x240(9, 10, 14, 16, 15, 17, 11).unwrap();
+        regs.apply_rate_control(
+            &RateControlPlan {
+                bit_target: 86_955,
+                qp_target: 26,
+                qp_min: 15,
+                qp_max: 51,
+                qp_delta: 2,
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(regs.get(regs::FRAME_ENC_PIC_PIC_QP).unwrap(), 26);
+        assert_eq!(regs.get(regs::H265_SYNT_SLI1_SLI_QP).unwrap(), 26);
+        assert_eq!(regs.get(regs::FRAME_RC_QP_RC_QP_RANGE).unwrap(), 2);
+        assert_eq!(regs.get(regs::FRAME_RC_QP_RC_MIN_QP).unwrap(), 15);
+        assert_eq!(regs.get(regs::FRAME_RC_QP_RC_MAX_QP).unwrap(), 51);
+        assert_eq!(regs.get(regs::FRAME_RC_TGT_CTU_EBIT).unwrap(), 17_391);
+        assert_eq!(
+            &regs.rc[..8],
+            &[
+                0x0020_83fe,
+                0,
+                0xffff_e578,
+                0xffff_f2bc,
+                0x0000_0d44,
+                0x0000_1a88,
+                0x7fff_ffff,
+                0x7fff_ffff,
+            ]
+        );
     }
 
     #[test]

@@ -42,6 +42,8 @@ rm -f /tmp/h265e510_gop2_c.265 /tmp/h265e510_gop2_rust.265
 rm -f /tmp/h265e510_gop2_c.log /tmp/h265e510_gop2_rust.log
 rm -f /tmp/h265e510_gop6_c.265 /tmp/h265e510_gop6_rust.265
 rm -f /tmp/h265e510_gop6_c.log /tmp/h265e510_gop6_rust.log
+rm -f /tmp/h265e510_cbr6_c.265 /tmp/h265e510_cbr6_rust.265
+rm -f /tmp/h265e510_cbr6_c.log /tmp/h265e510_cbr6_rust.log
 
 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
     /tmp/h265e510_320x240.nv12 /tmp/h265e510_c.265 \
@@ -78,4 +80,16 @@ cmp /tmp/h265e510_gop6_c.265 /tmp/h265e510_gop6_rust.265
 sha256sum /tmp/h265e510_gop6_c.265 /tmp/h265e510_gop6_rust.265
 printf 'PASS RK3576 VEPU510 H.265 fixed-QP GOP6: %s bytes\n' \
     "$(stat -c %s /tmp/h265e510_gop6_c.265)"
+
+FRAMES=6 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
+    /tmp/h265e510_6x320x240.nv12 /tmp/h265e510_cbr6_c.265 \
+    320 240 1 26 > /tmp/h265e510_cbr6_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h265e510-cbr6 \
+    /tmp/h265e510_6x320x240.nv12 /tmp/h265e510_cbr6_rust.265 \
+    > /tmp/h265e510_cbr6_rust.log 2>&1
+
+cmp /tmp/h265e510_cbr6_c.265 /tmp/h265e510_cbr6_rust.265
+sha256sum /tmp/h265e510_cbr6_c.265 /tmp/h265e510_cbr6_rust.265
+printf 'PASS RK3576 VEPU510 H.265 CBR6: %s bytes\n' \
+    "$(stat -c %s /tmp/h265e510_cbr6_c.265)"
 REMOTE

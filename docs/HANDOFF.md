@@ -546,10 +546,14 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   两套参考槽按帧号奇偶轮换；六帧 trace 中只有 POC LSB 随帧号推进，且第二
   个 P 帧起置 `smear_load_en=1`。六帧 GOP 为 16994 bytes，SHA-256
   `8088e821a066e1565e9ab58a64194eccdd34a42000593a731bca2c9f957fe397`。
+  CBR6 复用 `rc_model_v2`，目标/上下限为 300/250/350 kbps；RK3576 的
+  IDR/P 最小 QP 分别为 15/10，最大 51，CBR 前六帧 QP 轨迹为
+  `26/29/29/30/30/32`。C/Rust 均为 11192 bytes，SHA-256
+  `5768ab6c768dd5b613179c494ec41081ac104240e1a4d0df0c9ab58ff14fc9fb`。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 H.265 的 RC、GDR、ROI 和 split；之后处理 AV1/AVS2、
-  VPU720 tile input 与 VDPP2。
+- 下一步：扩 VEPU510 H.265 的 VBR/AVBR、GDR、ROI 和 split；之后处理
+  AV1/AVS2、VPU720 tile input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 
