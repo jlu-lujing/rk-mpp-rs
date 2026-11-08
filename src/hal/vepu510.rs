@@ -3,7 +3,7 @@
 use super::vepu510_idr_template;
 use super::vepu510_p_template;
 use super::vepu510_regs::{self, Field};
-use crate::codec::h264::encoder::{RoiRegion, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY};
+use crate::codec::h264::encoder::{GdrMode, RoiRegion, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY};
 
 pub const CTL_WORDS: usize = 24;
 pub const FRAME_WORDS: usize = 98;
@@ -94,9 +94,9 @@ impl RegisterFile {
         smear_read_fd: u32,
         frame_number: u32,
     ) -> Result<Self, String> {
-        if frame_number == 0 || frame_number > 5 {
+        if frame_number == 0 || frame_number > 32_767 {
             return Err(format!(
-                "captured VEPU510 P frame number {frame_number} is outside 1..=5"
+                "captured VEPU510 P frame number {frame_number} is outside 1..=32767"
             ));
         }
         let mut regs = Self {
@@ -310,6 +310,25 @@ impl RegisterFile {
                     self.set(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO, 1)?;
                     self.set(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN, 1)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// The reachable part of `setup_vepu510_intra_refresh`.
+    ///
+    /// The C HAL allocates and fills a `Vepu510RoiH264BsCfg` table, but that
+    /// table is addressed only by the QPMAP tune path. With QPMAP disabled,
+    /// `common.adr_roir` stays zero and the table has no effect on the job.
+    /// The observable refresh register change is the one-line CIME search
+    /// clamp.
+    pub fn apply_gdr_refresh(&mut self, mode: GdrMode) -> Result<(), String> {
+        match mode {
+            GdrMode::Row => {
+                self.set(vepu510_regs::FRAME_ME_RNGE_CIME_SRCH_UPH, 1)?;
+            }
+            GdrMode::Col => {
+                self.set(vepu510_regs::FRAME_ME_RNGE_CIME_SRCH_DWNH, 1)?;
             }
         }
         Ok(())
@@ -598,5 +617,32 @@ mod tests {
             .unwrap();
         assert_eq!(regs.get(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO).unwrap(), 1);
         assert_eq!(regs.get(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN).unwrap(), 1);
+    }
+
+    #[test]
+    fn gdr_refresh_matches_the_c_vpu510_register_effect() {
+        let mut row =
+            RegisterFile::captured_fixqp_p_320x240(9, 10, 16, 13, 17, 14, 18, 15, 4).unwrap();
+        row.apply_gdr_refresh(GdrMode::Row).unwrap();
+        assert_eq!(
+            row.get(vepu510_regs::FRAME_ME_RNGE_CIME_SRCH_UPH).unwrap(),
+            1
+        );
+        assert_eq!(
+            row.get(vepu510_regs::FRAME_ME_RNGE_CIME_SRCH_DWNH).unwrap(),
+            15
+        );
+
+        let mut col =
+            RegisterFile::captured_fixqp_p_320x240(9, 10, 16, 13, 17, 14, 18, 15, 4).unwrap();
+        col.apply_gdr_refresh(GdrMode::Col).unwrap();
+        assert_eq!(
+            col.get(vepu510_regs::FRAME_ME_RNGE_CIME_SRCH_DWNH).unwrap(),
+            1
+        );
+        assert_eq!(
+            col.get(vepu510_regs::FRAME_ME_RNGE_CIME_SRCH_UPH).unwrap(),
+            15
+        );
     }
 }

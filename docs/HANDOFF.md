@@ -527,10 +527,15 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   slice FIFO 为 8 项，`POLL_HW_IRQ` 使用 VEPU510 的 31-bit length + bit-31
   last 格式。BY_CTU=96 两帧为 9478 bytes / 8 packets，BY_BYTE=256 为
   11664 bytes / 40 packets；完整码流和每片长度均与 C 相同。
+  GDR 的 C table 构造在普通无 QPMAP 路径中是死代码：`adr_roir` 仍为 0。
+  可达语义由刷新帧的 CIME 单行搜索、IGOP 边界不插 IDR、recovery 帧重发
+  36-byte SPS/PPS，以及 P-frame smear state 组成。row=2/GOP4 十帧为
+  27619 bytes，col=4/GOP6 十三帧为 34339 bytes，逐图长度和完整码流均与 C
+  相同。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 GDR；之后推进 VEPU510 H.265、AV1/AVS2、VPU720 tile
-  input 与 VDPP2。
+- 下一步：推进 VEPU510 H.265；之后处理 AV1/AVS2、VPU720 tile input 与
+  VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 

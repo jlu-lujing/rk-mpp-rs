@@ -5,7 +5,7 @@
 //! patched at runtime.
 
 use crate::codec::h264::encoder::{
-    self, EncoderConfig, RcMode, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY,
+    self, EncoderConfig, GdrMode, RcMode, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY,
 };
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
@@ -165,6 +165,77 @@ impl Vepu510H264 {
         Ok((encoded.stream, encoded.packet_lengths))
     }
 
+    pub fn encode_fixed_qp_gdr_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        gdr_mode: GdrMode,
+        gdr_num: u32,
+        gop: u32,
+    ) -> Result<(Vec<u8>, Vec<usize>), String> {
+        if frames == 0 || frames > 32_767 {
+            return Err(format!("VEPU510 GDR length {frames} is outside 1..=32767"));
+        }
+        let expected = INPUT_SIZE
+            .checked_mul(frames)
+            .ok_or_else(|| "VEPU510 GDR input size overflow".to_string())?;
+        if nv12.len() < expected {
+            return Err(format!(
+                "VEPU510 GDR input is {} bytes, expected {expected}",
+                nv12.len()
+            ));
+        }
+        if self.idr_done {
+            return Err("this captured VEPU510 session already encoded its IDR".into());
+        }
+
+        let mut config = EncoderConfig::new(WIDTH, HEIGHT);
+        config.vui_log2_max_mv_length = 15;
+        config.gop = gop;
+        config.gdr = true;
+        config.gdr_mode = gdr_mode;
+        config.gdr_num = gdr_num;
+        config.validate().map_err(|error| error.to_string())?;
+        let refresh_length = config.gdr_refresh_length();
+        let header = encoder::build_headers(&config).map_err(|e| e.to_string())?;
+        if header.len() != 36 {
+            return Err(format!(
+                "unexpected no-SEI VEPU510 header length {}",
+                header.len()
+            ));
+        }
+
+        let idr = self.encode_idr(&nv12[..INPUT_SIZE], &[], SplitMode::None, 0, 0)?;
+        let mut stream = idr.stream;
+        let mut packet_lengths = vec![stream.len()];
+        self.idr_done = true;
+        let mut state = h264e::FrameState::default();
+        for frame_number in 1..frames {
+            state = state.next(gop, refresh_length);
+            let start = frame_number * INPUT_SIZE;
+            let end = start + INPUT_SIZE;
+            let refresh = state.is_i_refresh.then_some(gdr_mode);
+            let prefix = if state.is_i_recovery {
+                header.as_slice()
+            } else {
+                &[]
+            };
+            let encoded = self.encode_p(
+                &nv12[start..end],
+                frame_number as u32,
+                &[],
+                SplitMode::None,
+                0,
+                0,
+                prefix,
+                refresh,
+            )?;
+            packet_lengths.push(encoded.stream.len());
+            stream.extend(encoded.stream);
+        }
+        Ok((stream, packet_lengths))
+    }
+
     fn encode_fixed_qp_gop_with_options(
         &mut self,
         nv12: &[u8],
@@ -208,6 +279,8 @@ impl Vepu510H264 {
                 split_mode,
                 split_arg,
                 split_out,
+                &[],
+                None,
             )?;
             encoded.stream.extend(p.stream);
             encoded.packet_lengths.extend(p.packet_lengths);
@@ -363,6 +436,8 @@ impl Vepu510H264 {
         split_mode: SplitMode,
         split_arg: u32,
         split_out: u32,
+        prefix: &[u8],
+        refresh: Option<GdrMode>,
     ) -> Result<EncodedFrame, String> {
         let current = (frame_number & 1) as usize;
         let reference = 1 - current;
@@ -379,7 +454,14 @@ impl Vepu510H264 {
         )?;
         registers.apply_roi_regions(rois)?;
         registers.apply_slice_split(split_mode, split_arg, split_out)?;
-        let output = self.run_job_with_status(nv12, &registers, &[], split_out)?;
+        registers.set(
+            vepu510_regs::SQI_SMEAR_OPT_CFG_STATED_MODE,
+            if frame_number == 1 { 1 } else { 2 },
+        )?;
+        if let Some(mode) = refresh {
+            registers.apply_gdr_refresh(mode)?;
+        }
+        let output = self.run_job_with_status(nv12, &registers, prefix, split_out)?;
         Ok(EncodedFrame {
             stream: output.stream,
             packet_lengths: output.packet_lengths,

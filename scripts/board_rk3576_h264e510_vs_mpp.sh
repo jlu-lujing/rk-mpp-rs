@@ -36,6 +36,9 @@ ffmpeg -nostdin -hide_banner -loglevel error -y \
 ffmpeg -nostdin -hide_banner -loglevel error -y \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
     -pix_fmt nv12 -f rawvideo /tmp/h264e510_6x320x240.nv12
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 13 \
+    -pix_fmt nv12 -f rawvideo /tmp/h264e510_13x320x240.nv12
 
 rm -f /tmp/h264e510_c.264 /tmp/h264e510_rust.264
 rm -f /tmp/h264e510_c.log /tmp/h264e510_rust.log
@@ -53,6 +56,12 @@ rm -f /tmp/h264e510_splitout_ctu2_c.packets /tmp/h264e510_splitout_ctu2_rust.pac
 rm -f /tmp/h264e510_splitout_byte2_c.264 /tmp/h264e510_splitout_byte2_rust.264
 rm -f /tmp/h264e510_splitout_byte2_c.log /tmp/h264e510_splitout_byte2_rust.log
 rm -f /tmp/h264e510_splitout_byte2_c.packets /tmp/h264e510_splitout_byte2_rust.packets
+rm -f /tmp/h264e510_gdr_row_c.264 /tmp/h264e510_gdr_row_rust.264
+rm -f /tmp/h264e510_gdr_row_c.log /tmp/h264e510_gdr_row_rust.log
+rm -f /tmp/h264e510_gdr_row_c.packets /tmp/h264e510_gdr_row_rust.packets
+rm -f /tmp/h264e510_gdr_col_c.264 /tmp/h264e510_gdr_col_rust.264
+rm -f /tmp/h264e510_gdr_col_c.log /tmp/h264e510_gdr_col_rust.log
+rm -f /tmp/h264e510_gdr_col_c.packets /tmp/h264e510_gdr_col_rust.packets
 rm -f /tmp/h264e510_gop6_c.264 /tmp/h264e510_gop6_rust.264
 rm -f /tmp/h264e510_gop6_c.log /tmp/h264e510_gop6_rust.log
 rm -f /tmp/h264e510_cbr6_c.264 /tmp/h264e510_cbr6_rust.264
@@ -159,6 +168,44 @@ sha256sum /tmp/h264e510_splitout_byte2_c.264 /tmp/h264e510_splitout_byte2_rust.2
 printf 'PASS RK3576 VEPU510 H.264 LOWDELAY BY_BYTE=256 GOP2: %s bytes, %s packets\n' \
     "$(stat -c %s /tmp/h264e510_splitout_byte2_c.264)" \
     "$(wc -l < /tmp/h264e510_splitout_byte2_c.packets)"
+
+LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h264e_probe510_self \
+    /tmp/h264e510_13x320x240.nv12 /tmp/h264e510_gdr_row_c.264 \
+    320 240 10 0 26 gop 4 gdr 0 2 seioff \
+    > /tmp/h264e510_gdr_row_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h264e510-gdr \
+    /tmp/h264e510_13x320x240.nv12 /tmp/h264e510_gdr_row_rust.264 row:2:4:10 \
+    > /tmp/h264e510_gdr_row_rust.log 2>&1
+cmp /tmp/h264e510_gdr_row_c.264 /tmp/h264e510_gdr_row_rust.264
+awk '/^picture [0-9]+ packet [0-9]+: [0-9]+ bytes/ { print $5 }' \
+    /tmp/h264e510_gdr_row_c.log > /tmp/h264e510_gdr_row_c.packets
+awk '/^h264e510-gdr packet lengths:/ { for (i = 4; i <= NF; i++) print $i }' \
+    /tmp/h264e510_gdr_row_rust.log > /tmp/h264e510_gdr_row_rust.packets
+test -s /tmp/h264e510_gdr_row_c.packets
+cmp /tmp/h264e510_gdr_row_c.packets /tmp/h264e510_gdr_row_rust.packets
+sha256sum /tmp/h264e510_gdr_row_c.264 /tmp/h264e510_gdr_row_rust.264
+printf 'PASS RK3576 VEPU510 H.264 GDR row=2 GOP4: %s bytes, %s pictures\n' \
+    "$(stat -c %s /tmp/h264e510_gdr_row_c.264)" \
+    "$(wc -l < /tmp/h264e510_gdr_row_c.packets)"
+
+LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h264e_probe510_self \
+    /tmp/h264e510_13x320x240.nv12 /tmp/h264e510_gdr_col_c.264 \
+    320 240 13 0 26 gop 6 gdr 1 4 seioff \
+    > /tmp/h264e510_gdr_col_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h264e510-gdr \
+    /tmp/h264e510_13x320x240.nv12 /tmp/h264e510_gdr_col_rust.264 col:4:6:13 \
+    > /tmp/h264e510_gdr_col_rust.log 2>&1
+cmp /tmp/h264e510_gdr_col_c.264 /tmp/h264e510_gdr_col_rust.264
+awk '/^picture [0-9]+ packet [0-9]+: [0-9]+ bytes/ { print $5 }' \
+    /tmp/h264e510_gdr_col_c.log > /tmp/h264e510_gdr_col_c.packets
+awk '/^h264e510-gdr packet lengths:/ { for (i = 4; i <= NF; i++) print $i }' \
+    /tmp/h264e510_gdr_col_rust.log > /tmp/h264e510_gdr_col_rust.packets
+test -s /tmp/h264e510_gdr_col_c.packets
+cmp /tmp/h264e510_gdr_col_c.packets /tmp/h264e510_gdr_col_rust.packets
+sha256sum /tmp/h264e510_gdr_col_c.264 /tmp/h264e510_gdr_col_rust.264
+printf 'PASS RK3576 VEPU510 H.264 GDR col=4 GOP6: %s bytes, %s pictures\n' \
+    "$(stat -c %s /tmp/h264e510_gdr_col_c.264)" \
+    "$(wc -l < /tmp/h264e510_gdr_col_c.packets)"
 
 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h264e_probe510_self \
     /tmp/h264e510_6x320x240.nv12 /tmp/h264e510_gop6_c.264 \

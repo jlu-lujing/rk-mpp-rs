@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1187
-      enumerated / 1153 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1009 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1188
+      enumerated / 1154 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1010 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3225,7 +3225,16 @@ pipeline uses.
   with 8 packets; BY_BYTE=256 is 11664 bytes
   (`1b45ac17a98c0c169ab7d9d940786bb0fd7a99aae46b3fb6f6df51737fe8568f`)
   with 40 packets. Complete packet lengths match C in both modes.
-- Tests: `cargo test --release --all-targets` enumerates 1187 tests: 1153
+- VEPU510 GDR is byte-identical in both axes. The C HAL's
+  `Vepu510RoiH264BsCfg` table is unreachable on the ordinary path because
+  `common.adr_roir` remains zero without QPMAP; the effective behavior is the
+  suppressed IGOP IDR, a one-line CIME search clamp, SPS/PPS on recovery and
+  P-frame smear state. row=2/GOP4 over ten pictures is 27619 bytes
+  (`bef5a847a8bb401ef0a25da3bbe642aa331a5500b149e4759be523387d9709b7`);
+  column=4/GOP6 over thirteen pictures is 34339 bytes
+  (`05014dff59bf4088d3261480e281ff7fc25e8a83619342a40f65317b17c386ea`).
+  Per-picture lengths and complete streams match C.
+- Tests: `cargo test --release --all-targets` enumerates 1188 tests: 1154
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.
