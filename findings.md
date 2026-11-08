@@ -84,6 +84,13 @@
   the returned packet ranges.
 - Verified JPEG hashes are `4f571054…7db1e` on t6 VEPU2 and
   `64153672…7ac69` on lf1 VPU720; NV12 and I420 match on each platform.
+- VP8's decoder already returns display-ready `Picture` values per IVF packet,
+  including hidden-alt-ref handling. Unlike VP9/AV1 it has no register status
+  accessor, so the shared decoder status call must return unsupported.
+- VP8 API hashes on t6 are `1f07acf5…4c9c2` (NV12) and
+  `0a6bbff3…326096` (I420). RK3576 C MPP reports "unable to create dec vp8
+  ... unsupported"; the Rust handle also rejects create, so lf1 is a hardware
+  SKIP rather than a masked failure.
 - JPEG restart interval 20 matches the CLI output at lf1
   `0ccf41ea…82997` and t6 `25254033…df748a`.
 - Verified VP9 SHA-256 values are
@@ -121,6 +128,7 @@
 - `src/codec/hevc/decoder.rs`
 - `src/codec/vp9/decoder.rs`
 - `src/codec/av1/decoder.rs`
+- `src/codec/vp8/decoder.rs`
 - `src/hal/h264e.rs`
 - `src/codec/jpeg/parser.rs`
 - `src/hal/jpegd.rs`

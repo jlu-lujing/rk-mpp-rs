@@ -401,7 +401,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W7-4 头文件与符号导出策略（前缀、版本、`-sys` crate）。
       **V1 头文件、`rk_mpp_` 前缀、版本函数和 `cdylib`/`staticlib` 已导出**
 - [ ] W7-5 ABI 测试：C 程序调用我们的库跑通 3 个解码 + 2 个编码用例。
-      **H.264/H.265/VP9/AV1/MJPEG 五个解码 C/C++ 用例已完成；H.264/H.265/JPEG 编码完成**
+      **H.264/H.265/VP9/AV1/VP8/MJPEG 解码及 H.264/H.265/JPEG 编码 C/C++ 用例已完成**
 
 验收：官方 `mpi_*_test` 在不改源码的情况下能链接并跑通（允许功能子集）。
 

@@ -76,6 +76,11 @@ static int parse_codec(const char *name, uint32_t *codec,
         *fourcc = "AV01";
         return 0;
     }
+    if (!strcmp(name, "vp8")) {
+        *codec = RK_MPP_CODEC_VP8;
+        *fourcc = "VP80";
+        return 0;
+    }
     return -1;
 }
 
@@ -223,7 +228,8 @@ int main(int argc, char **argv) {
         parse_format(argv[2], &format) ||
         read_file(argv[4], &input, &input_size)) {
         fprintf(stderr,
-                "usage: %s <vp9|av1> <nv12|i420|i420p10> <out> <in.ivf>\n",
+                "usage: %s <vp8|vp9|av1> <nv12|i420|i420p10> <out> "
+                "<in.ivf>\n",
                 argv[0]);
         return 2;
     }
@@ -234,7 +240,7 @@ int main(int argc, char **argv) {
         goto done;
     }
     if (rk_mpp_decoder_status(decoder, &status_a, &status_b, &status_c) !=
-        RK_MPP_OK) {
+        (codec == RK_MPP_CODEC_VP8 ? RK_MPP_ERR_UNSUPPORTED : RK_MPP_OK)) {
         fprintf(stderr, "packet decoder status query failed\n");
         goto done;
     }

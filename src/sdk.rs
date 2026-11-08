@@ -15,6 +15,7 @@ use crate::codec::h264::{
 };
 use crate::codec::hevc;
 use crate::codec::jpeg::{parser as jpeg_parser, tables as jpeg_tables};
+use crate::codec::vp8;
 use crate::codec::vp9;
 use crate::hal::hevc::ChromaFormat;
 use crate::hal::jpegd::{self as jpegd, JpegDownscale};
@@ -23,7 +24,7 @@ use crate::service::soc::{SocProfile, VideoDecodeHal};
 use crate::service::{MppService, VPU_CLIENT_JPEG_DEC};
 
 pub const API_VERSION_MAJOR: u32 = 1;
-pub const API_VERSION_MINOR: u32 = 6;
+pub const API_VERSION_MINOR: u32 = 7;
 pub const API_VERSION: u32 = (API_VERSION_MAJOR << 16) | API_VERSION_MINOR;
 
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
@@ -37,6 +38,7 @@ pub enum Codec {
     Mjpeg,
     Vp9,
     Av1,
+    Vp8,
 }
 
 impl Codec {
@@ -47,6 +49,7 @@ impl Codec {
             Self::Mjpeg => 2,
             Self::Vp9 => 4,
             Self::Av1 => 5,
+            Self::Vp8 => 6,
         }
     }
 
@@ -57,6 +60,7 @@ impl Codec {
             3 => Some(Self::H265),
             4 => Some(Self::Vp9),
             5 => Some(Self::Av1),
+            6 => Some(Self::Vp8),
             _ => None,
         }
     }
@@ -476,6 +480,46 @@ impl Frame {
         Ok(frame)
     }
 
+    fn from_vp8(
+        picture: vp8::decoder::Picture,
+        format: PixelFormat,
+        pts: i64,
+        dts: i64,
+        poc: i32,
+    ) -> Result<Self, Error> {
+        if !matches!(format, PixelFormat::Nv12 | PixelFormat::I420) {
+            return Err(Error::Unsupported(
+                "VP8 supports NV12 or I420 output".to_string(),
+            ));
+        }
+        let expected = picture
+            .width
+            .checked_mul(picture.height)
+            .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
+            .ok_or_else(|| Error::State("VP8 frame size overflow"))?;
+        if picture.yuv.len() < expected {
+            return Err(Error::State("VP8 planar frame is truncated"));
+        }
+        let storage = if format == PixelFormat::Nv12 {
+            i420_to_nv12(&picture.yuv[..expected], picture.width, picture.height)
+        } else {
+            picture.yuv[..expected].to_vec()
+        };
+        let mut frame = Self {
+            width: picture.width,
+            height: picture.height,
+            format,
+            pts,
+            dts,
+            poc,
+            err_info: picture.err_info,
+            storage,
+            planes: [PlaneLayout::default(); 3],
+        };
+        frame.layout_yuv()?;
+        Ok(frame)
+    }
+
     fn from_jpeg_nv12(
         width: usize,
         height: usize,
@@ -664,6 +708,7 @@ enum Backend {
     H265(H265Backend),
     Mjpeg(MjpegBackend),
     Vp9(Vp9Backend),
+    Vp8(Vp8Backend),
 }
 
 struct H264Backend {
@@ -720,6 +765,13 @@ struct Av1Backend {
     eos: bool,
 }
 
+struct Vp8Backend {
+    decoder: vp8::decoder::Decoder,
+    format: PixelFormat,
+    eos: bool,
+    frame_number: u32,
+}
+
 enum Av1Decoder {
     Vdpu34x(av1::decoder::Decoder),
     Vdpu383(av1::decoder383::Decoder),
@@ -749,6 +801,7 @@ impl Decoder {
             Codec::Mjpeg => Backend::Mjpeg(MjpegBackend::new(config)?),
             Codec::Vp9 => Backend::Vp9(Vp9Backend::new(config)?),
             Codec::Av1 => Backend::Av1(Av1Backend::new(config)?),
+            Codec::Vp8 => Backend::Vp8(Vp8Backend::new(config)?),
         };
         Ok(Self {
             config,
@@ -768,6 +821,7 @@ impl Decoder {
             Backend::Mjpeg(backend) => backend.submit(packet, &mut self.frames),
             Backend::Vp9(backend) => backend.submit(packet, &mut self.frames),
             Backend::Av1(backend) => backend.submit(packet, &mut self.frames),
+            Backend::Vp8(backend) => backend.submit(packet, &mut self.frames),
         }
     }
 
@@ -789,6 +843,7 @@ impl Decoder {
             Backend::Mjpeg(backend) => backend.eos && backend.input.is_empty(),
             Backend::Vp9(backend) => backend.eos,
             Backend::Av1(backend) => backend.eos,
+            Backend::Vp8(backend) => backend.eos,
         }
     }
 
@@ -799,6 +854,7 @@ impl Decoder {
             Backend::Mjpeg(backend) => backend.flush(&mut self.frames),
             Backend::Vp9(backend) => backend.flush(),
             Backend::Av1(backend) => backend.flush(),
+            Backend::Vp8(backend) => backend.flush(),
         }
     }
 
@@ -814,9 +870,11 @@ impl Decoder {
                 .decoder
                 .recover_session()
                 .map_err(|error| Error::Hardware(error.to_string())),
-            Backend::H265(_) | Backend::Mjpeg(_) | Backend::Vp9(_) | Backend::Av1(_) => {
-                self.reset()
-            }
+            Backend::H265(_)
+            | Backend::Mjpeg(_)
+            | Backend::Vp9(_)
+            | Backend::Av1(_)
+            | Backend::Vp8(_) => self.reset(),
         }
     }
 
@@ -827,6 +885,7 @@ impl Decoder {
             Backend::Mjpeg(_) => None,
             Backend::Vp9(backend) => Some(backend.decoder.status()),
             Backend::Av1(backend) => Some(backend.decoder.status()),
+            Backend::Vp8(_) => None,
         }
     }
 }
@@ -1203,6 +1262,64 @@ impl Av1Backend {
                         packet.pts,
                         packet.dts,
                     )?);
+                }
+            }
+            if packet.flags.contains(PacketFlags::EOS) {
+                self.eos = true;
+            }
+            return Ok(decoded);
+        }
+        if packet.flags.contains(PacketFlags::EOS) {
+            self.eos = true;
+        }
+        Ok(0)
+    }
+
+    fn flush(&mut self) -> Result<usize, Error> {
+        self.eos = true;
+        Ok(0)
+    }
+}
+
+impl Vp8Backend {
+    fn new(config: DecoderConfig) -> Result<Self, Error> {
+        if config.output_format == PixelFormat::I420P10 {
+            return Err(Error::Unsupported(
+                "VP8 supports NV12 or I420 output".to_string(),
+            ));
+        }
+        Ok(Self {
+            decoder: vp8::decoder::Decoder::new()
+                .map_err(|error| Error::Hardware(error.to_string()))?,
+            format: config.output_format,
+            eos: false,
+            frame_number: 0,
+        })
+    }
+
+    fn submit(&mut self, packet: Packet<'_>, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
+        if self.eos {
+            return Err(Error::State("packet submitted after EOS"));
+        }
+        if packet.data.len() > MAX_ENCODED_BYTES {
+            return Err(Error::TooLarge);
+        }
+        if !packet.data.is_empty() {
+            let pictures = self
+                .decoder
+                .decode_packet(packet.data)
+                .map_err(classify_video_error)?;
+            let decoded = pictures.len();
+            for picture in pictures {
+                if picture.err_info == 0 {
+                    output.push_back(Frame::from_vp8(
+                        picture,
+                        self.format,
+                        packet.pts,
+                        packet.dts,
+                        self.frame_number as i32,
+                    )?);
+                    self.frame_number = self.frame_number.saturating_add(1);
                 }
             }
             if packet.flags.contains(PacketFlags::EOS) {

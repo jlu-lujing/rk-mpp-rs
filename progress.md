@@ -59,6 +59,9 @@
 | JPEG encoder API | VEPU2 and VPU720 | NV12/I420 single-frame output matches CLI on lf1/t6 | PASS |
 | JPEG restart API | VEPU2 and VPU720 | restart MCU 20 output matches CLI on lf1/t6 | PASS |
 | JPEG encoder full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
+| VP8 decoder API | t6 packet/alt-ref path | 12-frame NV12/I420 output matches C | PASS |
+| VP8 on lf1 | C MPP platform capability | both C and Rust reject missing decoder | SKIP (hardware absent) |
+| VP8 full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
 
 ### Phase 6.2: VP9 Public Decoder
 - **Status:** complete on lf1 and t6
@@ -109,6 +112,12 @@
   JPEG bytes. Hashes are `4f571054…7db1e` on t6 and `64153672…7ac69` on lf1.
 - Restart interval 20 also matches on both boards: lf1
   `0ccf41ea…82997`, t6 `25254033…df748a`.
+
+### Phase 6.5.1: VP8 Public Decoder
+- **Status:** in_progress
+- Audited the existing packet decoder and its hidden-alt-ref display policy.
+- The shared handle can expose one packet per submit with NV12/I420 output;
+  status remains unsupported because the VP8 HAL exposes only `last_irq`.
 
 ### Errors
 

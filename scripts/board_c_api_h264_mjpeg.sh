@@ -129,6 +129,12 @@ c_av1_p2_packed=/tmp/rk_mpp_c_api_av1_p2_c.packed
 c_av1_p2_planar=/tmp/rk_mpp_c_api_av1_p2_c.i420p10
 rust_av1_p2=/tmp/rk_mpp_c_api_av1_p2_rust_oracle.i420p10
 c_api_av1_p2=/tmp/rk_mpp_c_api_av1_p2.i420p10
+vp8=tests/data/vp8_320x240_12_altref.ivf
+vp8_ok=0
+c_vp8=/tmp/rk_mpp_c_api_vp8_c.nv12
+c_api_vp8=/tmp/rk_mpp_c_api_vp8.nv12
+c_vp8_i420=/tmp/rk_mpp_c_api_vp8_c.i420
+c_api_vp8_i420=/tmp/rk_mpp_c_api_vp8.i420
 c_api_mjpeg=/tmp/rk_mpp_c_api_mjpeg.nv12
 c_api_mjpeg_one_packet=/tmp/rk_mpp_c_api_mjpeg_one_packet.nv12
 c_mjpeg=/tmp/rk_mpp_c_api_mjpeg_c.nv12
@@ -436,6 +442,29 @@ else
     cmp "$c_av1_p2_planar" "$c_api_av1_p2"
 fi
 
+rm -f "$c_vp8"
+if LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
+    timeout 120 /usr/local/bin/mpi_dec_test \
+    -i "$vp8" -t 9 -w 320 -h 240 -n 12 -o "$c_vp8" -v q \
+    < /dev/null > /tmp/rk_mpp_c_api_vp8_c.log 2>&1; then
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -f rawvideo -pixel_format nv12 -video_size 320x240 \
+        -i "$c_vp8" -pix_fmt yuv420p -f rawvideo "$c_vp8_i420"
+    LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+        /tmp/rk_mpp_c_api_ivf vp8 nv12 "$c_api_vp8" "$vp8"
+    cmp "$c_vp8" "$c_api_vp8"
+    LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+        /tmp/rk_mpp_c_api_ivf vp8 i420 "$c_api_vp8_i420" "$vp8"
+    cmp "$c_vp8_i420" "$c_api_vp8_i420"
+    vp8_ok=1
+elif grep -q "unable to create dec vp8 .* unsupported" \
+    /tmp/rk_mpp_c_api_vp8_c.log; then
+    printf 'SKIP VP8 (this SoC has no VP8 decoder)\n'
+else
+    cat /tmp/rk_mpp_c_api_vp8_c.log >&2
+    exit 1
+fi
+
 rm -f "$c_mjpeg"
 for jpg in "$mjpeg_dir"/*.jpg; do
     raw="/tmp/rk_mpp_c_api_one_jpeg.raw"
@@ -482,5 +511,9 @@ sha256sum "$c_api_h264" "$c_h264" \
     "$h265_api" "$h265_api_i420" "$h265_cli" \
     "$jpeg_api" "$jpeg_api_i420" "$jpeg_cli" \
     "$jpeg_restart_api" "$jpeg_restart_cli"
-printf 'PASS rk_mpp C/C++ decoder + H.264/H.265/JPEG encoder API\n'
+if [ "$vp8_ok" -eq 1 ]; then
+    sha256sum "$c_api_vp8" "$c_vp8" \
+        "$c_api_vp8_i420" "$c_vp8_i420"
+fi
+printf 'PASS rk_mpp C/C++ decoder + encoder API\n'
 REMOTE

@@ -6,8 +6,9 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-6.4.3 are complete for the primary decoders and all three encoder
-backends. The remaining decoder contract work is VP8, MPEG-2, MPEG-4 and H.263.
+Phases 1-6.5.1 are complete for the primary decoders, VP8 and all three encoder
+backends. The remaining decoder contract work is MPEG-2, MPEG-4 and H.263 under
+Phase 6.5.2.
 
 ## Phases
 
@@ -92,9 +93,22 @@ backends. The remaining decoder contract work is VP8, MPEG-2, MPEG-4 and H.263.
 - **Status:** complete.
 
 ### Phase 6.5: Legacy Decoder Interfaces
-- [ ] Add VP8 packet/frame output to the shared decoder contract.
+- [x] Add VP8 packet/frame output to the shared decoder contract.
 - [ ] Add MPEG-2, MPEG-4 and H.263 stream/packet backends.
 - [ ] Cover Annex-B, elementary-stream and codec packet framing across SoCs.
+- **Status:** in_progress
+
+### Phase 6.5.1: VP8 Decode Backend
+- [x] Add the VP8 codec ID and IVF packet rules.
+- [x] Expose NV12/I420 output with the shared decoder lifecycle.
+- [x] Verify key/inter/alt-ref packets against C MPP on t6; lf1 is a hardware
+      platform SKIP.
+- **Status:** complete on t6; lf1 is a hardware platform SKIP.
+
+### Phase 6.5.2: MPEG-2 / MPEG-4 / H.263 Decoder Backends
+- [ ] Add the three codec IDs and elementary-stream framing rules.
+- [ ] Expose NV12/I420 output with reset/release lifecycle.
+- [ ] Verify one representative stream per codec on lf1 and t6.
 - **Status:** pending
 
 ### Phase 7: Full Verification and Handoff
@@ -115,6 +129,8 @@ backends. The remaining decoder contract work is VP8, MPEG-2, MPEG-4 and H.263.
 - [x] Run final H.265 encoder full suite and commit the API 1.5 slice.
 - [x] Run lf1/t6 JPEG encoder API gates including restart MCU.
 - [x] Run final JPEG encoder full suite and commit the API 1.6 slice.
+- [x] Run t6 VP8 C API gate and lf1 platform-SKIP audit.
+- [x] Run final VP8 full suite and commit the API 1.7 slice.
 - **Status:** complete
 
 ## Decisions Made

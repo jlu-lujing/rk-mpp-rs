@@ -49,6 +49,7 @@
 | legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行 |
 | 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264/HEVC/AV1/VP9 DPB surface 均持有 lease；t6 async demo、H.264/HEVC/AV1/VP9 池化边界测试全过 |
 | 对外解码 SDK | H.264/H.265/VP9/AV1/MJPEG V1.3 完成 | `include/rk_mpp_rs.h` 与 `rk_mpp_rs::sdk`；共享/静态库、C/C++ 链接、分块或 packet 输入、flush/reset/recover/status/EOS、显式 frame release。lf1 与 t6 上 H.264/MJPEG NV12/I420、H.265/VP9 8-bit NV12/I420 及 10-bit I420P10、AV1 8-bit 与 VDPU383 10-bit 均与对应 oracle 逐字节；t6 AV1 10-bit 按已登记 film-grain C bug 与 Rust/libaom 对齐。新 V1 暂不含 RGB888，旧 `rk_jpeg_*` 保留 |
+| VP8 解码公共接口 | V1.7 完成 | 同一 decoder handle、一 packet 一 coded picture、NV12/I420、EOS/reset/release；t6 12 帧 alt-ref 输出与 C 逐字节。RK3576 无 VP8 decoder，lf1 明确 SKIP |
 | 对外编码 SDK | H.264 V1.4 完成 | 同步 submit/receive、NV12/I420 输入复制与 coded geometry padding、owned packet/release、flush/reset。t6 VEPU580 支持 baseline/main/high 与通用 level/GOP/QP/fps；RK3576 VEPU510 当前限定 320×240 Baseline QP26 GOP6 @30fps。lf1/t6 六帧输出与现有 CLI oracle 逐字节 |
 | H.265 编码公共接口 | V1.5 完成 | 同一 encoder handle 支持 NV12/I420、owned packet/release、flush/reset；t6 VEPU580 开放 width/height、QP、GOP，RK3576 VEPU510 限定板验 320×240 Main QP26 GOP6 @30fps。lf1/t6 六帧输出与对应 CLI oracle 逐字节 |
 | JPEG 编码公共接口 | V1.6 完成 | 同一 encoder handle 支持 NV12/I420、0–10 量化档、可选 restart MCU；VEPU2/VPU720 自动选择。lf1/t6 单帧 JPEG 与 `jpeg-enc` 逐字节 |

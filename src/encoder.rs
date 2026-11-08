@@ -231,7 +231,7 @@ impl Encoder {
                 encoder: open_jpeg()?,
                 frame_number: 0,
             },
-            Codec::Vp9 | Codec::Av1 => {
+            Codec::Vp8 | Codec::Vp9 | Codec::Av1 => {
                 return Err(Error::Unsupported(format!(
                     "encoder backend for {:?} is not implemented",
                     config.codec

@@ -179,12 +179,12 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.6 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.7 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
 - 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
-- 优先编解码器：H.264、H.265/HEVC、VP9、AV1 和 MJPEG/JPEG decode；
+- 优先编解码器：H.264、H.265/HEVC、VP9、AV1、VP8 和 MJPEG/JPEG decode；
   H.264/H.265 VEPU580/VEPU510 及 JPEG VEPU2/VPU720 encode
 
 接口接受内存中的任意分块码流，不绑定文件路径。一个 decoder handle 可持续
@@ -193,8 +193,10 @@ partition/mode/skip/tx_depth、
 display epoch + POC 有界重排；MJPEG 支持单个 JPEG 被拆成多包，也支持一个
 packet 里包含多个 JPEG。H.264/MJPEG 输出 NV12 或 I420；H.265 8-bit 输出
 NV12/I420，Main10 输出小端 16-bit 的 I420P10；VP9/AV1 8-bit 输出 NV12/I420，
-10-bit 输出 I420P10。VP9 要求每个 submit 是一个原始 coded packet（可为
-superframe），AV1 要求一个 temporal unit；IVF/WebM 解复用属于调用方。新的
+10-bit 输出 I420P10；VP8 输出 NV12/I420。VP9/VP8 要求每个 submit 是一个
+原始 coded packet（VP9 可为 superframe），AV1 要求一个 temporal unit；
+IVF/WebM 解复用属于调用方。VP8 只在 t6 的 vdpu2 提供，lf1/RK3576 的
+C MPP 和 Rust 都不存在该 decoder。新的
 V1 接口暂不宣称 RGB888，历史
 `rk_jpeg_open/frame/close` RGB 接口继续保留给 `rknn-fastinfer`。
 
