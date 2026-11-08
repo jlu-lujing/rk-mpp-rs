@@ -309,7 +309,7 @@ config、初始化和 create 函数保持原样。Rust 对应 `RoiConfig`、`Gdr
 ./scripts/board_sdk_encoder_controls.sh
 ```
 
-V1.11 可选择让 H.264、8-bit 4:2:0 H.265 与 MJPEG NV12 解码帧保留硬件
+V1.11 可选择让 H.264、8-bit 4:2:0 H.265/VP9 与 MJPEG NV12 解码帧保留硬件
 dma-buf。默认行为仍是连续 CPU frame，以保持 V1 兼容；设置
 `RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` 后不再复制到 CPU `Vec`。调用方可在
 `receive_frame()` 后按 plane 导出私有 fd、offset、size 和 stride，用于
@@ -328,8 +328,8 @@ close(fd);
 ```
 
 Rust 对应 `DecoderConfig::with_dmabuf_output(true)`、
-`Frame::dmabuf_plane()` 和 `Frame::duplicate_dmabuf()`。H.264/H.265/MJPEG
-已支持该 flag；H.265 Main10/422/444 以及其他仍未接入 DMA frame 的 codec
+`Frame::dmabuf_plane()` 和 `Frame::duplicate_dmabuf()`。H.264/H.265/VP9/MJPEG
+已支持该 flag；H.265 Main10/422/444、VP9 10-bit 以及其他仍未接入 DMA frame 的 codec
 调用导出会返回 `RK_MPP_ERR_UNSUPPORTED`。
 
 ```bash

@@ -634,6 +634,23 @@ impl Frame {
         pts: i64,
         dts: i64,
     ) -> Result<Self, Error> {
+        if let Some(dmabuf) = picture.dmabuf {
+            if format != PixelFormat::Nv12 {
+                return Err(Error::Unsupported(
+                    "VP9 DMA-BUF output requires NV12".to_string(),
+                ));
+            }
+            return Self::from_pooled_nv12_dmabuf(
+                "VP9",
+                picture.width,
+                picture.height,
+                picture.poc as i32,
+                picture.err_info,
+                dmabuf,
+                pts,
+                dts,
+            );
+        }
         let sample_bytes = match (picture.bit_depth, format) {
             (8, PixelFormat::Nv12 | PixelFormat::I420) => 1,
             (10, PixelFormat::I420P10) => 2,
@@ -1160,15 +1177,18 @@ impl Av1Decoder {
 impl Decoder {
     pub fn new(config: DecoderConfig) -> Result<Self, Error> {
         if config.dmabuf_output {
-            if !matches!(config.codec, Codec::H264 | Codec::H265 | Codec::Mjpeg) {
+            if !matches!(
+                config.codec,
+                Codec::H264 | Codec::H265 | Codec::Mjpeg | Codec::Vp9
+            ) {
                 return Err(Error::Unsupported(
-                    "DMA-BUF frame output is currently implemented only for H.264, H.265 and MJPEG"
+                    "DMA-BUF frame output is currently implemented for H.264, H.265, VP9 and MJPEG"
                         .to_string(),
                 ));
             }
             if config.output_format != PixelFormat::Nv12 {
                 return Err(Error::Unsupported(
-                    "H.264/H.265/MJPEG DMA-BUF output requires NV12".to_string(),
+                    "H.264/H.265/VP9/MJPEG DMA-BUF output requires NV12".to_string(),
                 ));
             }
         }
@@ -1560,9 +1580,11 @@ impl H265Backend {
 
 impl Vp9Backend {
     fn new(config: DecoderConfig) -> Result<Self, Error> {
+        let mut decoder =
+            vp9::decoder::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?;
+        decoder.set_output_dmabuf(config.dmabuf_output);
         Ok(Self {
-            decoder: vp9::decoder::Decoder::new()
-                .map_err(|error| Error::Hardware(error.to_string()))?,
+            decoder,
             format: config.output_format,
             eos: false,
         })
@@ -2293,13 +2315,21 @@ mod tests {
     fn dmabuf_output_rejects_unimplemented_codecs() {
         assert!(matches!(
             super::Decoder::new(
-                super::DecoderConfig::new(super::Codec::Vp9).with_dmabuf_output(true)
+                super::DecoderConfig::new(super::Codec::Av1).with_dmabuf_output(true)
             ),
             Err(super::Error::Unsupported(_))
         ));
         assert!(matches!(
             super::Decoder::new(
                 super::DecoderConfig::new(super::Codec::H265)
+                    .with_output_format(super::PixelFormat::I420P10)
+                    .with_dmabuf_output(true)
+            ),
+            Err(super::Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            super::Decoder::new(
+                super::DecoderConfig::new(super::Codec::Vp9)
                     .with_output_format(super::PixelFormat::I420P10)
                     .with_dmabuf_output(true)
             ),

@@ -31,6 +31,17 @@ pub struct DmaBufSurface {
     pub ver_stride: usize,
 }
 
+impl std::fmt::Debug for DmaBufSurface {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DmaBufSurface")
+            .field("hor_stride", &self.hor_stride)
+            .field("ver_stride", &self.ver_stride)
+            .field("leases", &self.lease.refs())
+            .finish()
+    }
+}
+
 /// What a decoder produces for one packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {

@@ -227,6 +227,15 @@ callers.
 - [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
 - **Status:** complete on t6 and lf1 for 8-bit 4:2:0 NV12.
 
+### Phase 14: VP9 DMA-BUF Frame Output
+- [x] Retain the VP9 video lease for ordinary and show-existing pictures.
+- [x] Export 8-bit 4:2:0 VP9 as strided NV12 Y/UV planes.
+- [x] Preserve default CPU/planar and VP9 10-bit behavior.
+- [x] Write only visible rows in the IVF consumer instead of strided padding.
+- [x] Verify t6 against the C oracle and lf1 DMA against CPU output.
+- [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
+- **Status:** complete on t6 and lf1 for 8-bit NV12.
+
 ## Decisions Made
 
 | Decision | Rationale |

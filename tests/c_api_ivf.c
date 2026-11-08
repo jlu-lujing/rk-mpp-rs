@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static uint16_t le16(const uint8_t *p) {
     return (uint16_t)p[0] | (uint16_t)p[1] << 8;
@@ -85,18 +87,86 @@ static int parse_codec(const char *name, uint32_t *codec,
 }
 
 static int write_frame(FILE *out, const rk_mpp_frame_t *frame,
-                       uint64_t *bytes) {
+                       uint32_t format, uint64_t *bytes) {
     uint32_t plane;
 
     for (plane = 0; plane < 3; plane++) {
+        uint32_t rows = 0;
+        size_t row_bytes = 0;
+        uint32_t row;
+
         if (!frame->plane_data[plane] || !frame->plane_sizes[plane])
             continue;
-        if (out &&
-            fwrite(frame->plane_data[plane], 1,
-                   (size_t)frame->plane_sizes[plane], out) !=
-                (size_t)frame->plane_sizes[plane])
+        if (plane == 0) {
+            rows = (uint32_t)frame->height;
+            row_bytes = frame->width;
+        } else {
+            rows = (uint32_t)(frame->height / 2);
+            row_bytes = (frame->width / 2) *
+                        (format == RK_MPP_PIXEL_FORMAT_NV12 ? 2u : 1u);
+        }
+        if (format == RK_MPP_PIXEL_FORMAT_I420P10)
+            row_bytes *= 2;
+        for (row = 0; row < rows; row++) {
+            uint64_t offset = (uint64_t)row * frame->plane_strides[plane];
+            const uint8_t *data = frame->plane_data[plane] + offset;
+
+            if (offset + row_bytes > frame->plane_sizes[plane] ||
+                (out && fwrite(data, 1, row_bytes, out) != row_bytes))
+                return -1;
+            *bytes += row_bytes;
+        }
+    }
+    return 0;
+}
+
+static int validate_dmabuf(rk_mpp_decoder_t *decoder) {
+    uint32_t plane;
+
+    if (!getenv("REQUIRE_DMABUF")) {
+        if (getenv("EXPECT_NO_DMABUF")) {
+            int fd = -1;
+
+            if (rk_mpp_decoder_export_frame_dmabuf(
+                    decoder, 0, &fd, NULL, NULL, NULL) !=
+                    RK_MPP_ERR_UNSUPPORTED ||
+                fd != -1) {
+                fprintf(stderr, "CPU frame unexpectedly exported DMA-BUF\n");
+                return -1;
+            }
+        }
+        return 0;
+    }
+    for (plane = 0; plane < 2; plane++) {
+        int fd = -1;
+        uint64_t offset = 0;
+        uint64_t size = 0;
+        uint32_t stride = 0;
+        struct stat status;
+        int result = rk_mpp_decoder_export_frame_dmabuf(
+            decoder, plane, &fd, &offset, &size, &stride);
+
+        if (result != RK_MPP_OK || fd < 0 || !size || !stride ||
+            size > UINT64_MAX - offset || fstat(fd, &status) ||
+            status.st_size < 0 ||
+            (uint64_t)status.st_size < offset + size) {
+            fprintf(stderr, "DMA-BUF plane %u export failed: %s\n", plane,
+                    rk_mpp_strerror(result));
+            if (fd >= 0)
+                close(fd);
             return -1;
-        *bytes += frame->plane_sizes[plane];
+        }
+        close(fd);
+    }
+    {
+        int fd = -1;
+
+        if (rk_mpp_decoder_export_frame_dmabuf(decoder, 2, &fd, NULL, NULL,
+                                               NULL) !=
+            RK_MPP_ERR_UNSUPPORTED) {
+            fprintf(stderr, "empty DMA-BUF plane was not rejected\n");
+            return -1;
+        }
     }
     return 0;
 }
@@ -127,7 +197,11 @@ static int drain(rk_mpp_decoder_t *decoder, rk_mpp_frame_t *frame,
             fprintf(stderr, "double receive was not rejected\n");
             return -1;
         }
-        if (write_frame(out, frame, bytes)) {
+        if (validate_dmabuf(decoder)) {
+            fprintf(stderr, "DMA-BUF validation failed\n");
+            return -1;
+        }
+        if (write_frame(out, frame, format, bytes)) {
             fprintf(stderr, "write failed\n");
             return -1;
         }
@@ -234,8 +308,13 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (rk_mpp_decoder_config_init(&config, codec, format) !=
-            RK_MPP_OK ||
-        rk_mpp_decoder_create(&config, &decoder) != RK_MPP_OK) {
+        RK_MPP_OK) {
+        fprintf(stderr, "packet decoder config failed\n");
+        goto done;
+    }
+    if (getenv("REQUIRE_DMABUF"))
+        config.flags |= RK_MPP_DECODER_FLAG_DMABUF_OUTPUT;
+    if (rk_mpp_decoder_create(&config, &decoder) != RK_MPP_OK) {
         fprintf(stderr, "packet decoder create failed\n");
         goto done;
     }

@@ -393,10 +393,10 @@ ffmpeg -nostdin -hide_banner -loglevel error -y \
     -f rawvideo -pixel_format nv12 -video_size 320x240 \
     -i "$c_vp9_p0" -pix_fmt yuv420p -f rawvideo "$c_vp9_p0_i420"
 
-LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+REQUIRE_DMABUF=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_ivf vp9 nv12 "$c_api_vp9_p0" "$vp9_p0"
 cmp "$c_vp9_p0" "$c_api_vp9_p0"
-LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+EXPECT_NO_DMABUF=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_ivf vp9 i420 "$c_api_vp9_p0_i420" "$vp9_p0"
 cmp "$c_vp9_p0_i420" "$c_api_vp9_p0_i420"
 

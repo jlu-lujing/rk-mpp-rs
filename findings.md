@@ -78,6 +78,10 @@
   invalidating an already-decoded display frame. The raw vdpu34x/vdpu383
   layout is NV12 only for 8-bit 4:2:0; Main10 and 422/444 stay on the existing
   CPU planar conversion path.
+- VP9 also exposes a pooled video lease. Both ordinary displayed frames and
+  `show_existing_frame` clone it, so reference-map updates can release the
+  decoder's frame slot without invalidating an SDK frame that has not yet been
+  consumed. VP9 10-bit remains on CPU planar output.
 
 ## Research Findings
 

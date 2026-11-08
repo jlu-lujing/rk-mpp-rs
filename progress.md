@@ -2,6 +2,20 @@
 
 ## Session: 2026-11-09
 
+### Phase 14: VP9 DMA-BUF Frame Output
+- **Status:** complete on t6 and lf1 for 8-bit NV12.
+- Ordinary VP9 display pictures and `show_existing_frame` now retain independent
+  leases on the pooled hardware video surface.
+- t6 VP9 DMA output matches the official C MPP NV12 oracle byte-for-byte with
+  hash `c5381bbf…`. t6 and lf1 both write 12 frames / 1,382,400 visible bytes,
+  identical to the default CPU path.
+- The IVF C consumer now writes visible rows using plane stride instead of
+  treating the padded DMA allocation as a tightly packed plane.
+- VP9 10-bit remains on CPU I420P10 output and rejects DMA opt-in.
+- Final t6/lf1 workspace gates pass with
+  `1199 passed / 0 failed / 38 ignored`; rustfmt, strict rustdoc and SDK
+  install/pkg-config/CMake/dynamic/static package gates pass.
+
 ### Phase 13: H.265 DMA-BUF Frame Output
 - **Status:** complete on t6 and lf1 for 8-bit 4:2:0 NV12.
 - H.264 and H.265 now share a pooled `DmaBufSurface`; H.265 reordered pictures

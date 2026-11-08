@@ -2,6 +2,7 @@
 
 use std::io;
 
+use crate::codec::DmaBufSurface;
 use crate::hal::vp9d::{Frame, Vp9d};
 use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
@@ -68,6 +69,8 @@ pub struct Picture {
     /// Tightly packed planar YUV. High-bit-depth samples are little-endian
     /// 16-bit words containing their unscaled 10-bit value.
     pub yuv: Vec<u8>,
+    /// Strided hardware NV12 surface when DMA-BUF output is enabled.
+    pub dmabuf: Option<DmaBufSurface>,
     pub err_info: u32,
 }
 
@@ -86,6 +89,7 @@ pub struct Decoder {
     /// "no found key frame" path drops them, rather than failed the way the
     /// pre-policy Rust code did.
     pub dropped_before_key_frame: usize,
+    output_dmabuf: bool,
 }
 
 impl Decoder {
@@ -100,6 +104,7 @@ impl Decoder {
             stream: None,
             next_poc: 1,
             dropped_before_key_frame: 0,
+            output_dmabuf: false,
         })
     }
 
@@ -176,6 +181,12 @@ impl Decoder {
             }
             Err(error) => return Err(PacketError::Syntax(error)),
         };
+        if self.output_dmabuf && parsed.header.bit_depth != 8 {
+            return Err(PacketError::Capability(format!(
+                "VP9 DMA-BUF output supports only 8-bit NV12, got {}-bit",
+                parsed.header.bit_depth
+            )));
+        }
         if matches!(parsed.header.frame_kind, FrameKind::ShowExisting) {
             if std::env::var_os("RFI_VP9_TRACE").is_some() {
                 eprintln!(
@@ -282,16 +293,32 @@ impl Decoder {
         let frame = self.frames[frame_index]
             .as_ref()
             .ok_or_else(|| PacketError::Internal("VP9 output frame disappeared".into()))?;
+        let (yuv, dmabuf) = if err_info == 0 {
+            if self.output_dmabuf {
+                let lease = frame.video.try_clone().map_err(|error| {
+                    PacketError::Internal(format!("VP9 DMA-BUF lease: {error}"))
+                })?;
+                (
+                    Vec::new(),
+                    Some(DmaBufSurface {
+                        lease,
+                        hor_stride: frame.hor_stride,
+                        ver_stride: frame.ver_stride,
+                    }),
+                )
+            } else {
+                (copy_planar(frame).map_err(PacketError::Internal)?, None)
+            }
+        } else {
+            (Vec::new(), None)
+        };
         Ok(Some(Picture {
             width: frame.width,
             height: frame.height,
             poc,
             bit_depth: frame.bit_depth,
-            yuv: if err_info == 0 {
-                copy_planar(frame).map_err(PacketError::Internal)?
-            } else {
-                Vec::new()
-            },
+            yuv,
+            dmabuf,
             err_info,
         }))
     }
@@ -312,18 +339,38 @@ impl Decoder {
                     "show-existing reference slot {map_index} points to a released frame"
                 ))
             })?;
+        let (yuv, dmabuf) = if reference.err_info == 0 {
+            if self.output_dmabuf {
+                let lease = frame.video.try_clone().map_err(|error| {
+                    PacketError::Internal(format!("VP9 DMA-BUF lease: {error}"))
+                })?;
+                (
+                    Vec::new(),
+                    Some(DmaBufSurface {
+                        lease,
+                        hor_stride: frame.hor_stride,
+                        ver_stride: frame.ver_stride,
+                    }),
+                )
+            } else {
+                (copy_planar(frame).map_err(PacketError::Internal)?, None)
+            }
+        } else {
+            (Vec::new(), None)
+        };
         Ok(Picture {
             width: frame.width,
             height: frame.height,
             poc: reference.poc,
             bit_depth: frame.bit_depth,
-            yuv: if reference.err_info == 0 {
-                copy_planar(frame).map_err(PacketError::Internal)?
-            } else {
-                Vec::new()
-            },
+            yuv,
+            dmabuf,
             err_info: reference.err_info,
         })
+    }
+
+    pub fn set_output_dmabuf(&mut self, enabled: bool) {
+        self.output_dmabuf = enabled;
     }
 
     /// Copy one packet into the staging buffer, reusing and growing it

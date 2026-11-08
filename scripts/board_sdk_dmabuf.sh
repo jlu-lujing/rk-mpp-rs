@@ -21,6 +21,11 @@ gcc -std=c11 -Wall -Wextra -Werror \
     -L"$libdir" -lrk_mpp_rs \
     -Wl,-rpath,"$libdir" \
     -o /tmp/rk_mpp_decoder_dmabuf
+gcc -std=c11 -Wall -Wextra -Werror \
+    -I"$repo/include" "$repo/tests/c_api_ivf.c" \
+    -L"$libdir" -lrk_mpp_rs \
+    -Wl,-rpath,"$libdir" \
+    -o /tmp/rk_mpp_ivf_dmabuf
 
 ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 4 \
@@ -70,4 +75,16 @@ LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_decoder_dmabuf h265 nv12 211 \
         /tmp/rk_mpp_sdk_h265_cpu.nv12 "$h265"
 cmp /tmp/rk_mpp_sdk_h265_dmabuf.nv12 /tmp/rk_mpp_sdk_h265_cpu.nv12
-printf 'PASS rk-mpp-rs DMA-BUF import and H.264/H.265/MJPEG frame export\n'
+
+REQUIRE_DMABUF=1 \
+LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_ivf_dmabuf vp9 nv12 \
+        /tmp/rk_mpp_sdk_vp9_dmabuf.nv12 \
+        tests/data/vp9_p0_lossless_320x240_12.ivf
+EXPECT_NO_DMABUF=1 \
+LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_ivf_dmabuf vp9 nv12 \
+        /tmp/rk_mpp_sdk_vp9_cpu.nv12 \
+        tests/data/vp9_p0_lossless_320x240_12.ivf
+cmp /tmp/rk_mpp_sdk_vp9_dmabuf.nv12 /tmp/rk_mpp_sdk_vp9_cpu.nv12
+printf 'PASS rk-mpp-rs DMA-BUF import and H.264/H.265/VP9/MJPEG frame export\n'
