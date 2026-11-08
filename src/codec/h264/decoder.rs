@@ -667,11 +667,11 @@ impl Decoder {
                 (
                     Vec::new(),
                     None,
-                    Some(DmaBufPicture {
-                        lease: dmabuf_lease.expect("DMA lease was cloned above"),
-                        hor_stride: frame.hor_stride,
-                        ver_stride: frame.ver_stride,
-                    }),
+                    Some(DmaBufPicture::pooled(
+                        dmabuf_lease.expect("DMA lease was cloned above"),
+                        frame.hor_stride,
+                        frame.ver_stride,
+                    )),
                 )
             } else if self.output_nv12 {
                 (

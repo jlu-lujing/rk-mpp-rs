@@ -236,6 +236,17 @@ callers.
 - [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
 - **Status:** complete on t6 and lf1 for 8-bit NV12.
 
+### Phase 15: AV1 DMA-BUF Frame Output
+- [x] Export the VDPU34x post-processed display lease as AV1 NV12.
+- [x] Move VDPU383 AV1 output to a reference-counted buffer pool.
+- [x] Prevent VDPU383 slot reuse while an SDK frame still owns the surface.
+- [x] Skip CPU planar readback when VDPU383 DMA output is requested.
+- [x] Preserve default CPU output and AV1 10-bit behavior.
+- [x] Verify t6 against the C oracle and lf1 VDPU383 DMA against CPU output.
+- [x] Re-run the lf1 full 8-bit and 10-bit VDPU383 reference sequences.
+- [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
+- **Status:** complete on t6 and lf1 for 8-bit NV12.
+
 ## Decisions Made
 
 | Decision | Rationale |

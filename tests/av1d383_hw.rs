@@ -5,6 +5,7 @@ use rk_mpp_rs::codec::av1::assembler::{Av1PacketEvent, Av1PacketParser};
 use rk_mpp_rs::codec::av1::parser::{parse_ivf, split_obus};
 use rk_mpp_rs::codec::av1::picparams::{Av1PicParams, PicParamsPointers};
 use rk_mpp_rs::hal::av1d383::{Frame, Session};
+use rk_mpp_rs::service::buffer_pool::BufferPool;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -23,6 +24,7 @@ fn decode_vdpu383_sequence(path: &str) -> (usize, u32, Vec<u8>, bool) {
     let ivf = parse_ivf(&data).unwrap();
     let mut parser = Av1PacketParser::new();
     let mut session: Option<Session> = None;
+    let output_pool = BufferPool::new(MAX_FRAMES);
     let mut frames: Vec<Option<Frame>> = (0..MAX_FRAMES).map(|_| None).collect();
     let mut reference_slots: [Option<usize>; 8] = [None; 8];
     let mut output = Vec::new();
@@ -65,7 +67,14 @@ fn decode_vdpu383_sequence(path: &str) -> (usize, u32, Vec<u8>, bool) {
                         .is_none_or(|frame| frame.texture_index as usize != current_index)
                     {
                         frames[current_index] = Some(
-                            Frame::new(width, height, current_index as u8, bit_depth).unwrap(),
+                            Frame::new_pooled(
+                                width,
+                                height,
+                                current_index as u8,
+                                bit_depth,
+                                &output_pool,
+                            )
+                            .unwrap(),
                         );
                     }
                     let texture_slots = std::array::from_fn(|slot| {
@@ -147,11 +156,13 @@ fn first_vdpu383_av1_keyframe_matches_c_mpp() {
     let start = frame.frame_start as usize;
     let stream = &packet[start..start + frame.stream_len as usize];
     let mut session = Session::open(params.width as usize, params.height as usize).unwrap();
-    let mut output = Frame::new(
+    let output_pool = BufferPool::new(1);
+    let mut output = Frame::new_pooled(
         params.width as usize,
         params.height as usize,
         0,
         u32::from(params.bitdepth),
+        &output_pool,
     )
     .unwrap();
     let actual = session

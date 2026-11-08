@@ -2,6 +2,22 @@
 
 ## Session: 2026-11-09
 
+### Phase 15: AV1 DMA-BUF Frame Output
+- **Status:** complete on t6 and lf1 for 8-bit NV12.
+- VDPU34x AV1 export clones the existing pooled post-processed display lease.
+- VDPU383 AV1 output now comes from a reference-counted buffer pool; a slot is
+  not reused while an SDK picture still owns it. DMA opt-in also skips the
+  normal full-frame planar CPU readback.
+- t6 AV1 DMA output matches the official C MPP NV12 oracle byte-for-byte with
+  hash `7f4a0c9e…`. t6 and lf1 both write two frames / 230,400 visible bytes,
+  identical to their CPU paths.
+- lf1 VDPU383 retained its ten-frame 8-bit reference sequence and ten-frame
+  10-bit FNV gate after the output-pool migration: both ignored hardware tests
+  pass.
+- Final t6/lf1 workspace gates pass with
+  `1199 passed / 0 failed / 38 ignored`; rustfmt, strict rustdoc, C/C++ oracle,
+  SDK install/pkg-config/CMake and dynamic/static package gates pass.
+
 ### Phase 14: VP9 DMA-BUF Frame Output
 - **Status:** complete on t6 and lf1 for 8-bit NV12.
 - Ordinary VP9 display pictures and `show_existing_frame` now retain independent

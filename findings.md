@@ -82,6 +82,11 @@
   `show_existing_frame` clone it, so reference-map updates can release the
   decoder's frame slot without invalidating an SDK frame that has not yet been
   consumed. VP9 10-bit remains on CPU planar output.
+- AV1 has two different output lifetimes. VDPU34x already produces the final
+  post-processed `display` as a pooled lease, while VDPU383 originally owned a
+  raw `DmaBuf` per frame. VDPU383 output now comes from the same buffer-pool
+  abstraction; `output_refs() > 1` excludes a delayed SDK frame from slot
+  reuse, and DMA mode skips the normal planar CPU readback.
 
 ## Research Findings
 

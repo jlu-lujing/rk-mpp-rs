@@ -417,11 +417,11 @@ impl Decoder {
                     .map_err(|error| format!("HEVC DMA-BUF lease: {error}"))?;
                 (
                     Vec::new(),
-                    Some(DmaBufSurface {
+                    Some(DmaBufSurface::pooled(
                         lease,
-                        hor_stride: frame.hor_stride,
-                        ver_stride: frame.ver_stride,
-                    }),
+                        frame.hor_stride,
+                        frame.ver_stride,
+                    )),
                 )
             } else {
                 let video = frame

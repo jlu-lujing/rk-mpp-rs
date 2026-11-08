@@ -87,4 +87,16 @@ LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
         /tmp/rk_mpp_sdk_vp9_cpu.nv12 \
         tests/data/vp9_p0_lossless_320x240_12.ivf
 cmp /tmp/rk_mpp_sdk_vp9_dmabuf.nv12 /tmp/rk_mpp_sdk_vp9_cpu.nv12
-printf 'PASS rk-mpp-rs DMA-BUF import and H.264/H.265/VP9/MJPEG frame export\n'
+
+REQUIRE_DMABUF=1 \
+LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_ivf_dmabuf av1 nv12 \
+        /tmp/rk_mpp_sdk_av1_dmabuf.nv12 \
+        tests/data/av1_inter_box_320x240.ivf
+EXPECT_NO_DMABUF=1 \
+LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_ivf_dmabuf av1 nv12 \
+        /tmp/rk_mpp_sdk_av1_cpu.nv12 \
+        tests/data/av1_inter_box_320x240.ivf
+cmp /tmp/rk_mpp_sdk_av1_dmabuf.nv12 /tmp/rk_mpp_sdk_av1_cpu.nv12
+printf 'PASS rk-mpp-rs DMA-BUF import and H.264/H.265/VP9/AV1/MJPEG frame export\n'

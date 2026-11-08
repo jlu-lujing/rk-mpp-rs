@@ -300,11 +300,11 @@ impl Decoder {
                 })?;
                 (
                     Vec::new(),
-                    Some(DmaBufSurface {
+                    Some(DmaBufSurface::pooled(
                         lease,
-                        hor_stride: frame.hor_stride,
-                        ver_stride: frame.ver_stride,
-                    }),
+                        frame.hor_stride,
+                        frame.ver_stride,
+                    )),
                 )
             } else {
                 (copy_planar(frame).map_err(PacketError::Internal)?, None)
@@ -346,11 +346,11 @@ impl Decoder {
                 })?;
                 (
                     Vec::new(),
-                    Some(DmaBufSurface {
+                    Some(DmaBufSurface::pooled(
                         lease,
-                        hor_stride: frame.hor_stride,
-                        ver_stride: frame.ver_stride,
-                    }),
+                        frame.hor_stride,
+                        frame.ver_stride,
+                    )),
                 )
             } else {
                 (copy_planar(frame).map_err(PacketError::Internal)?, None)

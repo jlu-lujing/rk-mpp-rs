@@ -10,6 +10,7 @@ use std::io;
 use crate::codec::av1::picparams::{Av1PicParams, PicReference};
 use crate::codec::yuv::nv12_to_planar;
 use crate::hal::vdpu383_regs::{self as reg, Field};
+use crate::service::buffer_pool::{BufferLease, BufferPool};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_decode, VideoDecodeHal};
 use crate::service::{Batch, Client, MppService, RcbInfo, RegOffsetInfo, MPP_CMD_SET_RCB_INFO};
@@ -95,6 +96,29 @@ impl Session {
         stream: &[u8],
         current: &mut Frame,
         references: &[Option<&Frame>; 8],
+    ) -> io::Result<Vec<u8>> {
+        self.decode_inner(params, stream, current, references, true)
+    }
+
+    /// Decode into the persistent surface without reading it back to the CPU.
+    pub fn decode_surface(
+        &mut self,
+        params: &Av1PicParams,
+        stream: &[u8],
+        current: &mut Frame,
+        references: &[Option<&Frame>; 8],
+    ) -> io::Result<()> {
+        self.decode_inner(params, stream, current, references, false)
+            .map(|_| ())
+    }
+
+    fn decode_inner(
+        &mut self,
+        params: &Av1PicParams,
+        stream: &[u8],
+        current: &mut Frame,
+        references: &[Option<&Frame>; 8],
+        cpu_readback: bool,
     ) -> io::Result<Vec<u8>> {
         if params.width as usize != self.width || params.height as usize != self.height {
             return Err(io::Error::new(
@@ -211,7 +235,11 @@ impl Session {
         }
 
         self.update_reference_cdf_state(params, coefficient_index);
-        current.read_planar()
+        if cpu_readback {
+            current.read_planar()
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     pub fn recover_session(&mut self) -> io::Result<()> {
@@ -276,7 +304,7 @@ impl Session {
 }
 
 pub struct Frame {
-    output: DmaBuf,
+    output: BufferLease<DmaBuf>,
     colmv: DmaBuf,
     cdf: DmaBuf,
     width: usize,
@@ -289,6 +317,17 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(width: usize, height: usize, texture_index: u8, bit_depth: u32) -> io::Result<Self> {
+        let output_pool = BufferPool::new(1);
+        Self::new_pooled(width, height, texture_index, bit_depth, &output_pool)
+    }
+
+    pub fn new_pooled(
+        width: usize,
+        height: usize,
+        texture_index: u8,
+        bit_depth: u32,
+        output_pool: &BufferPool<DmaBuf>,
+    ) -> io::Result<Self> {
         if !matches!(bit_depth, 8 | 10) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -304,9 +343,10 @@ impl Frame {
         let plan = buffer_plan(&params);
         let stride = tile_output_stride(width, bit_depth);
         let ver_stride = align(height, 8);
-        let mut output = DmaBuf::alloc("system", stride * ver_stride * 2, false)
-            .map_err(|error| context(error, "allocate output"))?;
-        zero(&mut output).map_err(|error| context(error, "zero output"))?;
+        let output = output_pool
+            .acquire_lease_reclaiming_idle(stride * ver_stride * 2)
+            .map_err(|error| io::Error::other(format!("allocate output: {error}")))?;
+        zero_output(&output).map_err(|error| context(error, "zero output"))?;
         let mut colmv = DmaBuf::alloc("system", plan.colmv.max(128), false)
             .map_err(|error| context(error, "allocate colmv"))?;
         zero(&mut colmv).map_err(|error| context(error, "zero colmv"))?;
@@ -327,7 +367,23 @@ impl Frame {
     }
 
     pub fn output_fd(&self) -> u32 {
-        self.output.fd() as u32
+        self.output
+            .fd()
+            .expect("pooled VDPU383 AV1 output has a dma-buf fd") as u32
+    }
+
+    pub fn clone_output(&self) -> io::Result<BufferLease<DmaBuf>> {
+        self.output
+            .try_clone()
+            .map_err(|error| io::Error::other(error.to_string()))
+    }
+
+    pub fn output_refs(&self) -> u32 {
+        self.output.refs().unwrap_or(0)
+    }
+
+    pub fn output_strides(&self) -> (usize, usize) {
+        (self.stride, self.ver_stride)
     }
 
     pub fn colmv_fd(&self) -> u32 {
@@ -339,7 +395,7 @@ impl Frame {
     }
 
     fn prepare_job(&mut self) -> io::Result<()> {
-        zero(&mut self.output)?;
+        zero_output(&self.output)?;
         zero(&mut self.colmv)?;
         zero(&mut self.cdf)
     }
@@ -347,9 +403,13 @@ impl Frame {
     pub fn read_planar(&mut self) -> io::Result<Vec<u8>> {
         let luma_size = self.stride * self.ver_stride;
         let output_size = luma_size * 3 / 2;
-        self.output.sync_read_begin()?;
+        let view = self
+            .output
+            .data()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        view.buffer().sync_read_begin()?;
         let yuv = {
-            let bytes = self.output.as_slice();
+            let bytes = &view;
             if self.bit_depth == 8 {
                 nv12_to_planar(
                     &bytes[..luma_size],
@@ -368,7 +428,7 @@ impl Frame {
                 )
             }
         };
-        self.output.sync_read_end()?;
+        view.buffer().sync_read_end()?;
         Ok(yuv)
     }
 }
@@ -395,6 +455,15 @@ fn zero(buffer: &mut crate::service::dma_heap::DmaBuf) -> io::Result<()> {
     buffer.sync_write_begin()?;
     buffer.as_mut_slice().fill(0);
     buffer.sync_write_end()
+}
+
+fn zero_output(output: &BufferLease<DmaBuf>) -> io::Result<()> {
+    let mut view = output
+        .data_mut()
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    view.buffer().sync_write_begin()?;
+    view.fill(0);
+    view.buffer().sync_write_end()
 }
 
 fn context(error: io::Error, step: &str) -> io::Error {

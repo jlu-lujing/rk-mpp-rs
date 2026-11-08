@@ -693,6 +693,16 @@ pub struct PoolRefMut<'a, B> {
     idx: usize,
 }
 
+impl<B: PoolBuffer> PoolRefMut<'_, B> {
+    /// The underlying block, used to issue `DMA_BUF_SYNC` around a write.
+    pub fn buffer(&self) -> &B {
+        match &self.core.slots[self.idx] {
+            Occupancy::Live { buf, .. } => buf,
+            _ => unreachable!("slot live while guard alive"),
+        }
+    }
+}
+
 impl<B: PoolBuffer> Deref for PoolRefMut<'_, B> {
     type Target = [u8];
     fn deref(&self) -> &[u8] {

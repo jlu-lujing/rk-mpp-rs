@@ -456,10 +456,10 @@ ffmpeg -nostdin -hide_banner -loglevel error -y \
     -f rawvideo -pixel_format nv12 -video_size 320x240 \
     -i "$c_av1_p0" -pix_fmt yuv420p -f rawvideo "$c_av1_p0_i420"
 
-LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+REQUIRE_DMABUF=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_ivf av1 nv12 "$c_api_av1_p0" "$av1_p0"
 cmp "$c_av1_p0" "$c_api_av1_p0"
-LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+EXPECT_NO_DMABUF=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_ivf av1 i420 "$c_api_av1_p0_i420" "$av1_p0"
 cmp "$c_av1_p0_i420" "$c_api_av1_p0_i420"
 

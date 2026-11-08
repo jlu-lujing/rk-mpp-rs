@@ -10,6 +10,7 @@ use std::time::Instant;
 use crate::codec::av1::assembler::{Av1CodedFrame, Av1PacketEvent, Av1PacketParser};
 use crate::codec::av1::parser::{split_obus, SequenceHeader};
 use crate::codec::av1::picparams::{Av1PicParams, PicParamsPointers};
+use crate::codec::DmaBufSurface;
 use crate::hal::av1d::{Av1RegisterState, Av1d, Frame, AV1_MAX_PIC_BUFFERS};
 use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
@@ -32,6 +33,8 @@ pub struct Picture {
     pub bit_depth: u32,
     pub poc: u32,
     pub yuv: Vec<u8>,
+    /// Strided hardware NV12 display surface when DMA-BUF output is enabled.
+    pub dmabuf: Option<DmaBufSurface>,
     pub err_info: u32,
 }
 
@@ -44,6 +47,7 @@ pub struct Decoder {
     reference_slots: [Option<Reference>; 8],
     register_state: Av1RegisterState,
     next_poc: u32,
+    output_dmabuf: bool,
 }
 
 impl Decoder {
@@ -57,6 +61,7 @@ impl Decoder {
             reference_slots: [None; 8],
             register_state: Av1RegisterState::default(),
             next_poc: 1,
+            output_dmabuf: false,
         })
     }
 
@@ -124,6 +129,12 @@ impl Decoder {
             .sequence()
             .cloned()
             .ok_or("missing AV1 sequence header")?;
+        if self.output_dmabuf && sequence.bit_depth != 8 {
+            return Err(format!(
+                "AV1 DMA-BUF output supports only 8-bit NV12, got {}-bit",
+                sequence.bit_depth
+            ));
+        }
         let poc = self.next_poc;
         self.next_poc = if self.next_poc == u32::MAX {
             1
@@ -277,16 +288,33 @@ impl Decoder {
         let frame = self.frames[frame_index]
             .as_ref()
             .ok_or("AV1 output frame disappeared")?;
+        let (yuv, dmabuf) = if err_info == 0 {
+            if self.output_dmabuf {
+                let lease = frame
+                    .display
+                    .try_clone()
+                    .map_err(|error| format!("AV1 DMA-BUF lease: {error}"))?;
+                (
+                    Vec::new(),
+                    Some(DmaBufSurface::pooled(
+                        lease,
+                        frame.display_hor_stride,
+                        frame.display_ver_stride,
+                    )),
+                )
+            } else {
+                (copy_planar(frame)?, None)
+            }
+        } else {
+            (Vec::new(), None)
+        };
         Ok(Some(Picture {
             width: frame.width,
             height: frame.height,
             bit_depth: frame.bit_depth,
             poc,
-            yuv: if err_info == 0 {
-                copy_planar(frame)?
-            } else {
-                Vec::new()
-            },
+            yuv,
+            dmabuf,
             err_info,
         }))
     }
@@ -420,6 +448,14 @@ impl Decoder {
     }
 
     fn show_existing(&self, slot: usize) -> Result<Picture, String> {
+        if self.output_dmabuf
+            && self
+                .parser
+                .sequence()
+                .is_some_and(|sequence| sequence.bit_depth != 8)
+        {
+            return Err("AV1 DMA-BUF output supports only 8-bit NV12".to_string());
+        }
         let reference = self
             .reference_slots
             .get(slot)
@@ -430,18 +466,39 @@ impl Decoder {
             .get(reference.frame)
             .and_then(Option::as_ref)
             .ok_or_else(|| format!("AV1 show-existing slot {slot} points to a released frame"))?;
+        let (yuv, dmabuf) = if reference.err_info == 0 {
+            if self.output_dmabuf {
+                let lease = frame
+                    .display
+                    .try_clone()
+                    .map_err(|error| format!("AV1 DMA-BUF lease: {error}"))?;
+                (
+                    Vec::new(),
+                    Some(DmaBufSurface::pooled(
+                        lease,
+                        frame.display_hor_stride,
+                        frame.display_ver_stride,
+                    )),
+                )
+            } else {
+                (copy_planar(frame)?, None)
+            }
+        } else {
+            (Vec::new(), None)
+        };
         Ok(Picture {
             width: frame.width,
             height: frame.height,
             bit_depth: frame.bit_depth,
             poc: reference.poc,
-            yuv: if reference.err_info == 0 {
-                copy_planar(frame)?
-            } else {
-                Vec::new()
-            },
+            yuv,
+            dmabuf,
             err_info: reference.err_info,
         })
+    }
+
+    pub fn set_output_dmabuf(&mut self, enabled: bool) {
+        self.output_dmabuf = enabled;
     }
 }
 

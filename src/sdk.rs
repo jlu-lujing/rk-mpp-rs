@@ -24,7 +24,6 @@ use crate::codec::vp9;
 use crate::codec::DmaBufSurface;
 use crate::hal::hevc::ChromaFormat;
 use crate::hal::jpegd::{self as jpegd, JpegDownscale};
-use crate::service::buffer_pool::BufferLease;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{SocProfile, VideoDecodeHal};
 use crate::service::{MppService, VPU_CLIENT_JPEG_DEC};
@@ -295,9 +294,9 @@ struct PlaneLayout {
 enum FrameStorage {
     Cpu(Vec<u8>),
     DmaBuf(DmaBuf),
-    PooledDmaBuf {
+    DecodedDmaBuf {
         mapping: DmaBuf,
-        lease: BufferLease<DmaBuf>,
+        surface: DmaBufSurface,
     },
 }
 
@@ -306,7 +305,7 @@ impl FrameStorage {
         match self {
             Self::Cpu(bytes) => bytes.len(),
             Self::DmaBuf(buffer) => buffer.len(),
-            Self::PooledDmaBuf { mapping, .. } => mapping.len(),
+            Self::DecodedDmaBuf { mapping, .. } => mapping.len(),
         }
     }
 
@@ -314,7 +313,7 @@ impl FrameStorage {
         match self {
             Self::Cpu(bytes) => bytes,
             Self::DmaBuf(buffer) => buffer.as_slice(),
-            Self::PooledDmaBuf { mapping, .. } => mapping.as_slice(),
+            Self::DecodedDmaBuf { mapping, .. } => mapping.as_slice(),
         }
     }
 
@@ -335,11 +334,11 @@ impl std::fmt::Debug for FrameStorage {
                 .field("fd", &buffer.fd())
                 .field("len", &buffer.len())
                 .finish(),
-            Self::PooledDmaBuf { mapping, lease } => formatter
-                .debug_struct("PooledDmaBuf")
+            Self::DecodedDmaBuf { mapping, surface } => formatter
+                .debug_struct("DecodedDmaBuf")
                 .field("fd", &mapping.fd())
                 .field("len", &mapping.len())
-                .field("lease_refs", &lease.refs())
+                .field("surface", surface)
                 .finish(),
         }
     }
@@ -414,7 +413,7 @@ impl Frame {
     pub const fn uses_dmabuf(&self) -> bool {
         matches!(
             &self.storage,
-            FrameStorage::DmaBuf(_) | FrameStorage::PooledDmaBuf { .. }
+            FrameStorage::DmaBuf(_) | FrameStorage::DecodedDmaBuf { .. }
         )
     }
 
@@ -429,7 +428,7 @@ impl Frame {
     pub fn dmabuf_plane(&self, index: usize) -> Option<DmaBufPlane> {
         let fd = match &self.storage {
             FrameStorage::DmaBuf(buffer) => buffer.fd(),
-            FrameStorage::PooledDmaBuf { mapping, .. } => mapping.fd(),
+            FrameStorage::DecodedDmaBuf { mapping, .. } => mapping.fd(),
             FrameStorage::Cpu(_) => return None,
         };
         let plane = *self.planes.get(index)?;
@@ -444,7 +443,7 @@ impl Frame {
     pub fn duplicate_dmabuf(&self) -> io::Result<Option<OwnedFd>> {
         match &self.storage {
             FrameStorage::DmaBuf(buffer) => buffer.dup_fd().map(Some),
-            FrameStorage::PooledDmaBuf { mapping, .. } => mapping.dup_fd().map(Some),
+            FrameStorage::DecodedDmaBuf { mapping, .. } => mapping.dup_fd().map(Some),
             FrameStorage::Cpu(_) => Ok(None),
         }
     }
@@ -465,9 +464,7 @@ impl Frame {
                     "H.264 DMA-BUF output requires NV12".to_string(),
                 ));
             }
-            return Self::from_pooled_nv12_dmabuf(
-                "H.264", width, height, poc, err_info, dmabuf, pts, dts,
-            );
+            return Self::from_nv12_dmabuf("H.264", width, height, poc, err_info, dmabuf, pts, dts);
         }
         let storage = match format {
             PixelFormat::Nv12 => picture
@@ -495,7 +492,7 @@ impl Frame {
         Ok(frame)
     }
 
-    fn from_pooled_nv12_dmabuf(
+    fn from_nv12_dmabuf(
         codec: &str,
         width: usize,
         height: usize,
@@ -505,26 +502,23 @@ impl Frame {
         pts: i64,
         dts: i64,
     ) -> Result<Self, Error> {
-        let y_size = source
-            .hor_stride
-            .checked_mul(source.ver_stride)
+        let hor_stride = source.hor_stride;
+        let ver_stride = source.ver_stride;
+        let y_size = hor_stride
+            .checked_mul(ver_stride)
             .ok_or_else(|| Error::Hardware(format!("{codec} DMA-BUF size overflow")))?;
         let uv_size = y_size / 2;
         let duplicate = source
-            .lease
             .dup_fd()
             .map_err(|error| Error::Resource(format!("{codec} fd duplicate: {error}")))?;
-        let view = source
-            .lease
-            .data()
-            .map_err(|error| Error::Hardware(format!("{codec} surface lease: {error}")))?;
-        if view.len() < y_size + uv_size {
+        let len = source
+            .data_len()
+            .map_err(|error| Error::Hardware(format!("{codec} surface mapping: {error}")))?;
+        if len < y_size + uv_size {
             return Err(Error::Hardware(format!(
                 "{codec} DMA-BUF surface is truncated"
             )));
         }
-        let len = view.len();
-        drop(view);
         let mapping = DmaBuf::import_fd(duplicate.as_raw_fd(), len, false).map_err(Error::from)?;
         mapping.sync_read_begin().map_err(Error::from)?;
         mapping.sync_read_end().map_err(Error::from)?;
@@ -536,20 +530,20 @@ impl Frame {
             dts,
             poc,
             err_info,
-            storage: FrameStorage::PooledDmaBuf {
+            storage: FrameStorage::DecodedDmaBuf {
                 mapping,
-                lease: source.lease,
+                surface: source,
             },
             planes: [
                 PlaneLayout {
                     offset: 0,
                     len: y_size,
-                    stride: source.hor_stride,
+                    stride: hor_stride,
                 },
                 PlaneLayout {
                     offset: y_size,
                     len: uv_size,
-                    stride: source.hor_stride,
+                    stride: hor_stride,
                 },
                 PlaneLayout::default(),
             ],
@@ -568,7 +562,7 @@ impl Frame {
                     "H.265 DMA-BUF output requires NV12".to_string(),
                 ));
             }
-            return Self::from_pooled_nv12_dmabuf(
+            return Self::from_nv12_dmabuf(
                 "H.265",
                 picture.width,
                 picture.height,
@@ -640,7 +634,7 @@ impl Frame {
                     "VP9 DMA-BUF output requires NV12".to_string(),
                 ));
             }
-            return Self::from_pooled_nv12_dmabuf(
+            return Self::from_nv12_dmabuf(
                 "VP9",
                 picture.width,
                 picture.height,
@@ -700,6 +694,23 @@ impl Frame {
         pts: i64,
         dts: i64,
     ) -> Result<Self, Error> {
+        if let Some(dmabuf) = picture.dmabuf {
+            if format != PixelFormat::Nv12 {
+                return Err(Error::Unsupported(
+                    "AV1 DMA-BUF output requires NV12".to_string(),
+                ));
+            }
+            return Self::from_nv12_dmabuf(
+                "AV1",
+                picture.width,
+                picture.height,
+                picture.poc as i32,
+                picture.err_info,
+                dmabuf,
+                pts,
+                dts,
+            );
+        }
         let sample_bytes = match (picture.bit_depth, format) {
             (8, PixelFormat::Nv12 | PixelFormat::I420) => 1,
             (10, PixelFormat::I420P10) => 2,
@@ -1172,6 +1183,13 @@ impl Av1Decoder {
             Self::Vdpu383(decoder) => decoder.status(),
         }
     }
+
+    fn set_output_dmabuf(&mut self, enabled: bool) {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.set_output_dmabuf(enabled),
+            Self::Vdpu383(decoder) => decoder.set_output_dmabuf(enabled),
+        }
+    }
 }
 
 impl Decoder {
@@ -1179,16 +1197,16 @@ impl Decoder {
         if config.dmabuf_output {
             if !matches!(
                 config.codec,
-                Codec::H264 | Codec::H265 | Codec::Mjpeg | Codec::Vp9
+                Codec::H264 | Codec::H265 | Codec::Mjpeg | Codec::Vp9 | Codec::Av1
             ) {
                 return Err(Error::Unsupported(
-                    "DMA-BUF frame output is currently implemented for H.264, H.265, VP9 and MJPEG"
+                    "DMA-BUF frame output is currently implemented for H.264, H.265, VP9, AV1 and MJPEG"
                         .to_string(),
                 ));
             }
             if config.output_format != PixelFormat::Nv12 {
                 return Err(Error::Unsupported(
-                    "H.264/H.265/VP9/MJPEG DMA-BUF output requires NV12".to_string(),
+                    "H.264/H.265/VP9/AV1/MJPEG DMA-BUF output requires NV12".to_string(),
                 ));
             }
         }
@@ -1633,7 +1651,7 @@ impl Vp9Backend {
 impl Av1Backend {
     fn new(config: DecoderConfig) -> Result<Self, Error> {
         let profile = SocProfile::detect().map_err(|error| Error::Hardware(error.to_string()))?;
-        let decoder = match profile.video_decode {
+        let mut decoder = match profile.video_decode {
             VideoDecodeHal::Vdpu34x => Av1Decoder::Vdpu34x(
                 av1::decoder::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?,
             ),
@@ -1644,6 +1662,7 @@ impl Av1Backend {
                 )));
             }
         };
+        decoder.set_output_dmabuf(config.dmabuf_output);
         Ok(Self {
             decoder,
             format: config.output_format,
@@ -2315,7 +2334,7 @@ mod tests {
     fn dmabuf_output_rejects_unimplemented_codecs() {
         assert!(matches!(
             super::Decoder::new(
-                super::DecoderConfig::new(super::Codec::Av1).with_dmabuf_output(true)
+                super::DecoderConfig::new(super::Codec::Vp8).with_dmabuf_output(true)
             ),
             Err(super::Error::Unsupported(_))
         ));
@@ -2330,6 +2349,14 @@ mod tests {
         assert!(matches!(
             super::Decoder::new(
                 super::DecoderConfig::new(super::Codec::Vp9)
+                    .with_output_format(super::PixelFormat::I420P10)
+                    .with_dmabuf_output(true)
+            ),
+            Err(super::Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            super::Decoder::new(
+                super::DecoderConfig::new(super::Codec::Av1)
                     .with_output_format(super::PixelFormat::I420P10)
                     .with_dmabuf_output(true)
             ),

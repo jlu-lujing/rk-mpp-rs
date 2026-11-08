@@ -24,11 +24,34 @@ pub mod yuv;
 use crate::service::buffer_pool::BufferLease;
 use crate::service::dma_heap::DmaBuf;
 
-/// A hardware-decoded surface retained by the codec's buffer pool.
+/// A hardware-decoded surface retained by the codec or its buffer pool.
 pub struct DmaBufSurface {
-    pub lease: BufferLease<DmaBuf>,
+    lease: BufferLease<DmaBuf>,
     pub hor_stride: usize,
     pub ver_stride: usize,
+}
+
+impl DmaBufSurface {
+    pub fn pooled(lease: BufferLease<DmaBuf>, hor_stride: usize, ver_stride: usize) -> Self {
+        Self {
+            lease,
+            hor_stride,
+            ver_stride,
+        }
+    }
+
+    pub(crate) fn data_len(&self) -> std::io::Result<usize> {
+        self.lease
+            .data()
+            .map(|view| view.len())
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    }
+
+    pub(crate) fn dup_fd(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        self.lease
+            .dup_fd()
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    }
 }
 
 impl std::fmt::Debug for DmaBufSurface {

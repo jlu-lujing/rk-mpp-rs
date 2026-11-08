@@ -10,7 +10,10 @@ use crate::codec::av1::assembler::{Av1CodedFrame, Av1PacketEvent, Av1PacketParse
 use crate::codec::av1::decoder::Picture;
 use crate::codec::av1::parser::{split_obus, FrameHeader};
 use crate::codec::av1::picparams::{Av1PicParams, PicParamsPointers};
+use crate::codec::DmaBufSurface;
 use crate::hal::av1d383::{Frame, Session};
+use crate::service::buffer_pool::BufferPool;
+use crate::service::dma_heap::DmaBuf;
 
 const MAX_FRAMES: usize = 24;
 
@@ -29,6 +32,8 @@ pub struct Decoder {
     height: usize,
     bit_depth: u32,
     next_poc: u32,
+    output_dmabuf: bool,
+    output_pool: BufferPool<DmaBuf>,
 }
 
 impl Decoder {
@@ -42,6 +47,8 @@ impl Decoder {
             height: 0,
             bit_depth: 0,
             next_poc: 1,
+            output_dmabuf: false,
+            output_pool: BufferPool::new(MAX_FRAMES),
         }
     }
 
@@ -97,6 +104,11 @@ impl Decoder {
         let width = coded.header.width as usize;
         let height = coded.header.height as usize;
         let bit_depth = u32::from(sequence.bit_depth);
+        if self.output_dmabuf && bit_depth != 8 {
+            return Err(format!(
+                "VDPU383 AV1 DMA-BUF output supports only 8-bit NV12, got {bit_depth}-bit"
+            ));
+        }
         self.ensure_geometry(width, height, bit_depth)?;
 
         let poc = self.next_poc;
@@ -118,7 +130,9 @@ impl Decoder {
             .find_map(|(index, frame)| (!live.contains(&index) && frame.is_none()).then_some(index))
             .or_else(|| {
                 self.frames.iter().enumerate().find_map(|(index, frame)| {
-                    (!live.contains(&index) && frame.is_some()).then_some(index)
+                    (!live.contains(&index)
+                        && frame.as_ref().is_some_and(|frame| frame.output_refs() <= 1))
+                    .then_some(index)
                 })
             })
             .ok_or("VDPU383 AV1 DPB exhausted all frame slots")?;
@@ -127,8 +141,14 @@ impl Decoder {
             .is_none_or(|frame| frame.texture_index as usize != frame_index)
         {
             self.frames[frame_index] = Some(
-                Frame::new(width, height, frame_index as u8, bit_depth)
-                    .map_err(|error| format!("VDPU383 AV1 frame: {error}"))?,
+                Frame::new_pooled(
+                    width,
+                    height,
+                    frame_index as u8,
+                    bit_depth,
+                    &self.output_pool,
+                )
+                .map_err(|error| format!("VDPU383 AV1 frame: {error}"))?,
             );
         }
 
@@ -158,12 +178,15 @@ impl Decoder {
         let references: [Option<&Frame>; 8] = std::array::from_fn(|slot| {
             self.references[slot].and_then(|reference| self.frames[reference.frame].as_ref())
         });
-        let yuv = self
-            .session
-            .as_mut()
-            .unwrap()
-            .decode(&params, &packet[start..end], &mut current, &references)
-            .map_err(|error| error.to_string());
+        let session = self.session.as_mut().unwrap();
+        let yuv = if self.output_dmabuf {
+            session
+                .decode_surface(&params, &packet[start..end], &mut current, &references)
+                .map(|()| Vec::new())
+        } else {
+            session.decode(&params, &packet[start..end], &mut current, &references)
+        }
+        .map_err(|error| error.to_string());
         self.frames[frame_index] = Some(current);
         let yuv = yuv?;
         for slot in 0..8 {
@@ -177,24 +200,65 @@ impl Decoder {
         if !coded.header.show_frame {
             return Ok(None);
         }
+        let frame = self.frames[frame_index]
+            .as_ref()
+            .ok_or("VDPU383 AV1 output frame disappeared")?;
+        let dmabuf = if self.output_dmabuf {
+            let (hor_stride, ver_stride) = frame.output_strides();
+            Some(DmaBufSurface::pooled(
+                frame.clone_output().map_err(|error| error.to_string())?,
+                hor_stride,
+                ver_stride,
+            ))
+        } else {
+            None
+        };
         Ok(Some(Picture {
             width,
             height,
             bit_depth,
             poc,
             yuv,
+            dmabuf,
             err_info: 0,
         }))
     }
 
     fn show_existing(&mut self, header: &FrameHeader) -> Result<Picture, String> {
+        if self.output_dmabuf && self.bit_depth != 8 {
+            return Err(format!(
+                "VDPU383 AV1 DMA-BUF output supports only 8-bit NV12, got {}-bit",
+                self.bit_depth
+            ));
+        }
         let slot = header.frame_to_show_map_idx as usize;
         let reference = self.references[slot]
             .ok_or_else(|| format!("show-existing AV1 reference slot {slot} is empty"))?;
-        let frame = self.frames[reference.frame]
-            .as_mut()
+        let yuv = if self.output_dmabuf {
+            Vec::new()
+        } else {
+            self.frames
+                .get_mut(reference.frame)
+                .and_then(Option::as_mut)
+                .ok_or("show-existing AV1 frame was released")?
+                .read_planar()
+                .map_err(|error| error.to_string())?
+        };
+        let frame = self
+            .frames
+            .get(reference.frame)
+            .and_then(Option::as_ref)
             .ok_or("show-existing AV1 frame was released")?;
-        let yuv = frame.read_planar().map_err(|error| error.to_string())?;
+        let dmabuf = if self.output_dmabuf {
+            let (hor_stride, ver_stride) = frame.output_strides();
+            Some(DmaBufSurface::pooled(
+                frame.clone_output().map_err(|error| error.to_string())?,
+                hor_stride,
+                ver_stride,
+            ))
+        } else {
+            None
+        };
         for slot in 0..8 {
             if header.refresh_frame_flags & (1 << slot) != 0 {
                 self.references[slot] = Some(reference);
@@ -206,8 +270,13 @@ impl Decoder {
             bit_depth: self.bit_depth,
             poc: reference.poc,
             yuv,
+            dmabuf,
             err_info: 0,
         })
+    }
+
+    pub fn set_output_dmabuf(&mut self, enabled: bool) {
+        self.output_dmabuf = enabled;
     }
 
     fn ensure_geometry(
