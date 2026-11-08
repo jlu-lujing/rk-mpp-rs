@@ -540,10 +540,13 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   `e97ddde34fa10eff02889b1b4d49d394df457eb1cbafb04015e047539b37b6d7`。
   RK3576 的 H.265 参数集与 RK3588 不同：`max_cu_size=32`、transform
   depth 额外加 1，且 2025 库在 fixed-QP 下仍写 `cu_qp_delta_enabled=1`。
+  P 帧使用第二组 recon/colmv/thumb/smear 槽，读第一组参考；IDR+P GOP2
+  合计 6810 bytes，SHA-256
+  `7a44882d3da7d72059b28735a38fdf9bb1bf32ee144e78f2d1a61642816f4569`。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 H.265 的 P GOP、RC、GDR、ROI 和 split；之后处理
-  AV1/AVS2、VPU720 tile input 与 VDPP2。
+- 下一步：扩 VEPU510 H.265 的更长固定 GOP、RC、GDR、ROI 和 split；之后
+  处理 AV1/AVS2、VPU720 tile input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 

@@ -10,6 +10,7 @@ use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
 use super::vepu510_h265_idr_template as template;
+use super::vepu510_h265_p_template as p_template;
 use super::vepu510_h265_regs::{self as regs, Field};
 
 pub const CTL_WORDS: usize = 24;
@@ -112,6 +113,47 @@ impl RegisterFile {
         Ok(regs)
     }
 
+    pub fn captured_fixqp_p_320x240(
+        input_fd: u32,
+        output_fd: u32,
+        recon_write_fd: u32,
+        recon_read_fd: u32,
+        colmv_write_fd: u32,
+        colmv_read_fd: u32,
+        thumb_write_fd: u32,
+        thumb_read_fd: u32,
+        smear_write_fd: u32,
+        smear_read_fd: u32,
+        md_info_fd: u32,
+    ) -> Result<Self, String> {
+        let mut regs = Self {
+            ctl: p_template::CTL,
+            frame: p_template::FRAME,
+            rc: p_template::RC,
+            param: p_template::PARAM,
+            sqi: p_template::SQI,
+            scl: p_template::SCL,
+        };
+        for index in 4..=6 {
+            regs.frame[index] = input_fd;
+        }
+        regs.frame[7] = recon_write_fd;
+        regs.frame[8] = recon_write_fd;
+        regs.frame[9] = recon_read_fd;
+        regs.frame[10] = recon_read_fd;
+        regs.frame[11] = colmv_write_fd;
+        regs.frame[12] = colmv_read_fd;
+        regs.frame[13] = thumb_write_fd;
+        regs.frame[14] = thumb_read_fd;
+        regs.frame[15] = md_info_fd;
+        for index in 16..=19 {
+            regs.frame[index] = output_fd;
+        }
+        regs.frame[28] = smear_read_fd;
+        regs.frame[29] = smear_write_fd;
+        Ok(regs)
+    }
+
     pub fn set(&mut self, field: Field, value: u32) -> Result<(), String> {
         if field.width == 0 || field.width > 32 {
             return Err(format!("{} has invalid width {}", field.name, field.width));
@@ -194,10 +236,10 @@ pub struct Vepu510H265 {
     svc: MppService,
     input: DmaBuf,
     output: DmaBuf,
-    recon: DmaBuf,
-    colmv: DmaBuf,
-    thumb: DmaBuf,
-    smear: DmaBuf,
+    recon: [DmaBuf; 2],
+    colmv: [DmaBuf; 2],
+    thumb: [DmaBuf; 2],
+    smear: [DmaBuf; 2],
     md_info: DmaBuf,
     idr_done: bool,
 }
@@ -209,17 +251,39 @@ impl Vepu510H265 {
             .map_err(|e| format!("allocate VEPU510 H.265 input: {e}"))?;
         let output = DmaBuf::alloc("system", OUTPUT_SIZE, false)
             .map_err(|e| format!("allocate VEPU510 H.265 output: {e}"))?;
-        let mut recon = DmaBuf::alloc("system", RECON_SIZE, false)
-            .map_err(|e| format!("allocate VEPU510 H.265 reconstruction: {e}"))?;
-        let mut colmv = DmaBuf::alloc("system", COLMV_SIZE, false)
-            .map_err(|e| format!("allocate VEPU510 H.265 colmv: {e}"))?;
-        let mut thumb = DmaBuf::alloc("system", THUMB_SIZE, false)
-            .map_err(|e| format!("allocate VEPU510 H.265 thumbnail: {e}"))?;
-        let mut smear = DmaBuf::alloc("system", SMEAR_SIZE, false)
-            .map_err(|e| format!("allocate VEPU510 H.265 smear: {e}"))?;
+        let mut recon = [
+            DmaBuf::alloc("system", RECON_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 H.265 reconstruction 0: {e}"))?,
+            DmaBuf::alloc("system", RECON_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 H.265 reconstruction 1: {e}"))?,
+        ];
+        let mut colmv = [
+            DmaBuf::alloc("system", COLMV_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 H.265 colmv 0: {e}"))?,
+            DmaBuf::alloc("system", COLMV_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 H.265 colmv 1: {e}"))?,
+        ];
+        let mut thumb = [
+            DmaBuf::alloc("system", THUMB_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 H.265 thumbnail 0: {e}"))?,
+            DmaBuf::alloc("system", THUMB_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 H.265 thumbnail 1: {e}"))?,
+        ];
+        let mut smear = [
+            DmaBuf::alloc("system", SMEAR_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 H.265 smear 0: {e}"))?,
+            DmaBuf::alloc("system", SMEAR_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 H.265 smear 1: {e}"))?,
+        ];
         let mut md_info = DmaBuf::alloc("system", MD_INFO_SIZE, false)
             .map_err(|e| format!("allocate VEPU510 H.265 motion info: {e}"))?;
-        for buffer in [&mut recon, &mut colmv, &mut thumb, &mut smear, &mut md_info] {
+        for buffer in recon
+            .iter_mut()
+            .chain(colmv.iter_mut())
+            .chain(thumb.iter_mut())
+            .chain(smear.iter_mut())
+            .chain(std::iter::once(&mut md_info))
+        {
             zero_buffer(buffer)?;
         }
         Ok(Self {
@@ -251,13 +315,54 @@ impl Vepu510H265 {
         let registers = RegisterFile::captured_fixqp_idr_320x240(
             self.input.fd() as u32,
             self.output.fd() as u32,
-            self.recon.fd() as u32,
-            self.colmv.fd() as u32,
-            self.thumb.fd() as u32,
-            self.smear.fd() as u32,
+            self.recon[0].fd() as u32,
+            self.colmv[0].fd() as u32,
+            self.thumb[0].fd() as u32,
+            self.smear[0].fd() as u32,
             self.md_info.fd() as u32,
         )?;
         let stream = self.run_job(&nv12[..INPUT_SIZE], &registers, &prefix)?;
+        self.idr_done = true;
+        Ok(stream)
+    }
+
+    pub fn encode_fixed_qp_gop2_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        if self.idr_done {
+            return Err("this VEPU510 H.265 session already encoded its IDR".into());
+        }
+        if nv12.len() < INPUT_SIZE * 2 {
+            return Err(format!(
+                "VEPU510 H.265 GOP input is {} bytes, expected {}",
+                nv12.len(),
+                INPUT_SIZE * 2
+            ));
+        }
+        let config = lf1_h265_config()?;
+        let prefix = lf1_fixed_qp_prefix(&config, QP, GOP)?;
+        let idr = RegisterFile::captured_fixqp_idr_320x240(
+            self.input.fd() as u32,
+            self.output.fd() as u32,
+            self.recon[0].fd() as u32,
+            self.colmv[0].fd() as u32,
+            self.thumb[0].fd() as u32,
+            self.smear[0].fd() as u32,
+            self.md_info.fd() as u32,
+        )?;
+        let mut stream = self.run_job(&nv12[..INPUT_SIZE], &idr, &prefix)?;
+        let p = RegisterFile::captured_fixqp_p_320x240(
+            self.input.fd() as u32,
+            self.output.fd() as u32,
+            self.recon[1].fd() as u32,
+            self.recon[0].fd() as u32,
+            self.colmv[1].fd() as u32,
+            self.colmv[0].fd() as u32,
+            self.thumb[1].fd() as u32,
+            self.thumb[0].fd() as u32,
+            self.smear[1].fd() as u32,
+            self.smear[0].fd() as u32,
+            self.md_info.fd() as u32,
+        )?;
+        stream.extend(self.run_job(&nv12[INPUT_SIZE..INPUT_SIZE * 2], &p, &[])?);
         self.idr_done = true;
         Ok(stream)
     }
@@ -427,6 +532,8 @@ mod tests {
         assert_eq!(template::SQI.len(), SQI_WORDS);
         assert_eq!(template::SCL.len(), SCL_WORDS);
         assert_eq!(template::STATUS.len(), regs::STATUS_WORDS);
+        assert_eq!(p_template::FRAME.len(), FRAME_WORDS);
+        assert_eq!(p_template::SQI.len(), SQI_WORDS);
     }
 
     #[test]
@@ -445,6 +552,19 @@ mod tests {
         assert_eq!(regs.frame[15], 11);
         assert_eq!(&regs.frame[16..=19], &[10, 10, 10, 10]);
         assert_eq!(&regs.frame[28..=29], &[17, 17]);
+    }
+
+    #[test]
+    fn p_builder_reproduces_the_lf1_job() {
+        let regs =
+            RegisterFile::captured_fixqp_p_320x240(9, 10, 18, 14, 20, 16, 19, 15, 21, 17, 11)
+                .unwrap();
+        assert_eq!(regs.ctl, p_template::CTL);
+        assert_eq!(regs.frame, p_template::FRAME);
+        assert_eq!(regs.rc, p_template::RC);
+        assert_eq!(regs.param, p_template::PARAM);
+        assert_eq!(regs.sqi, p_template::SQI);
+        assert_eq!(regs.scl, p_template::SCL);
     }
 
     #[test]

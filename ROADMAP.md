@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1192
-      enumerated / 1158 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1014 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1193
+      enumerated / 1159 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1015 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3240,9 +3240,12 @@ pipeline uses.
   byte-identical to C at 4710 bytes
   (`e97ddde34fa10eff02889b1b4d49d394df457eb1cbafb04015e047539b37b6d7`).
   RK3576's H.265 syntax uses `max_cu_size=32`, one extra transform-tree level,
-  and fixed-QP `cu_qp_delta_enabled=1`, all pinned by tests. P/RC/GOP,
-  GDR/ROI/split and STATUS feedback remain.
-- Tests: `cargo test --release --all-targets` enumerates 1192 tests: 1158
+  and fixed-QP `cu_qp_delta_enabled=1`, all pinned by tests. The P register view
+  switches to the second recon/colmv/thumb/smear slots and reads slot zero as
+  reference. IDR+P GOP2 is byte-identical at 6810 bytes
+  (`7a44882d3da7d72059b28735a38fdf9bb1bf32ee144e78f2d1a61642816f4569`).
+  Longer GOP, RC, GDR/ROI/split and STATUS feedback remain.
+- Tests: `cargo test --release --all-targets` enumerates 1193 tests: 1159
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.
