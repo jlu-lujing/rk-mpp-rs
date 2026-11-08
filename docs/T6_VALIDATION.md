@@ -71,15 +71,19 @@ t62 back to the RK3588 reference board.
 
 ## 2026-11-08 RK3576 / lf1 VPU720 JPEG bring-up
 
-- The VPU720 NV12/YUV420 qfactor-50 matrix is **4/4**: 320x240, 640x480,
-  1280x720 and a 320x240 60-MCU restart cell all match the installed C MPP
-  byte-for-byte.
-- Output sizes are 5,029, 12,028 and 28,124 bytes respectively. The Rust path
-  uses client 20, the VPU720 43-word register window, a 384-byte transformed
-  Q-table and the hardware status length as a byte count.
-- `scripts/board_rk3576_jpege_vs_mpp.sh` is the reproducible lf1 gate. RGB,
-  rotation, low-delay and non-420 modes remain to be ported; the low-delay
-  C probe itself currently enters a zero-length packet loop.
+- The VPU720 qfactor-50 matrix is **6/6**: 320x240, 640x480, 1280x720,
+  320x240 with a 60-MCU restart, and 320x240 packed YUYV/UYVY input all match
+  the installed C MPP byte-for-byte.
+- NV12 output sizes are 5,029, 12,028, 28,124 and 5,041 bytes; both packed
+  320x240 cells are 5,009 bytes. The Rust path uses client 20, the VPU720
+  43-word register window, a 384-byte transformed Q-table and the hardware
+  status length as a byte count.
+- `scripts/board_rk3576_jpege_vs_mpp.sh` is the reproducible lf1 gate. Packed
+  inputs program source formats 8/9, keep reg035 zero and omit the planar U
+  offset. Additional planar/semi-planar YUV input and low-delay output remain;
+  the low-delay C probe itself currently enters a zero-length packet loop. The
+  C VPU720 HAL exposes neither an RGB input case nor a rotation register, so
+  Rust rejects both explicitly.
 
 ## Environment
 
@@ -94,12 +98,11 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1171 tests**. The
-regular suite passes **1137 / 0 failed / 34 ignored** on t6. All **34
-board-only ignored tests** also pass under the current 80% OPP cap: the prior
-31-test matrix plus the new HEVC, AV1 and VP9 DPB lease gates. The two JPEG
-restart/rotate cases share a temporary input name and therefore need
-`--test-threads=1`.
+`cargo test --release --all-targets` currently enumerates **1172 tests**. The
+regular suite passes **1138 / 0 failed / 34 ignored** on t6. The four ignored
+JPEG encoder hardware tests relevant to this slice were rerun separately and
+pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
+share a temporary input name and therefore need `--test-threads=1`.
 
 Fixes required by the validation:
 

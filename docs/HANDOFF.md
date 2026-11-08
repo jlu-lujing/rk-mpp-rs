@@ -495,11 +495,15 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   keyframe probe、11 个 RCB region 和 `width * height / 2` colmv 已接入。
   `scripts/board_rk3576_vp9_vs_mpp.sh` 是当前入口；lf1 release LTO 当前会
   在 LLVM SIGSEGV，因此功能门使用 debug。
-- VPU720 JPEG 已在 lf1 通过 4/4：NV12/YUV420、qfactor 50、320x240/640x480/
-  1280x720 baseline 以及 320x240 的 60-MCU restart 与 C MPP 逐字节；实现使用
-  client 20、43-word base register window 和 384-byte 变换 Q-table。
-  `scripts/board_rk3576_jpege_vs_mpp.sh` 是当前入口；RGB、旋转和 low-delay
-  仍待做，VPU720 low-delay probe 当前会被 C 侧零长度 packet 循环卡住。
+- VPU720 JPEG 已在 lf1 通过 6/6：NV12/YUV420、qfactor 50、320x240/640x480/
+  1280x720 baseline、320x240 的 60-MCU restart、320x240 YUYV/UYVY 均与
+  C MPP 逐字节；实现使用 client 20、43-word base register window 和
+  384-byte 变换 Q-table。packed 输入写 source format 8/9，reg035 与 planar
+  U offset 均为零。
+  `scripts/board_rk3576_jpege_vs_mpp.sh` 是当前入口；其余 planar/semi-planar
+  YUV 输入和 low-delay 仍待做，VPU720 low-delay probe 当前会被 C 侧零长度
+  packet 循环卡住。C 的 VPU720 HAL 没有 RGB 输入分支，也没有 rotation
+  寄存器字段，Rust 对两者显式拒绝。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
 - 下一步：把同一 VDPU383 方法推进到 AV1/AVS2，再做 VEPU510、

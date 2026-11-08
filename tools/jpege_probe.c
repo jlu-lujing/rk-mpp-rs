@@ -3,12 +3,15 @@
  * settings that mpi_enc_test of the pinned 2024-04 vintage does not expose.
  *
  * Usage:
- *   jpege_probe in.nv12 out.jpg width height qfactor split_arg low_delay
+ *   jpege_probe in.raw out.jpg width height qfactor split_arg low_delay
+ *               [mpp_input_format]
  *
  * `split_arg` is MPP_ENC_SPLIT_BY_CTU's MCU count. Zero disables the split.
  * `low_delay` sets base:low_delay and split:out=1. Packets are drained to EOI
  * on a worker thread so MPP's fixed output-task pool cannot deadlock a
  * synchronous put-then-get caller.
+ * `mpp_input_format` defaults to MPP_FMT_YUV420SP. RK3576 VPU720 packed input
+ * uses MPP_FMT_YUV422_YUYV (8) or MPP_FMT_YUV422_UYVY (10).
  */
 
 #include <errno.h>
@@ -97,9 +100,16 @@ int main(int argc, char **argv)
     int qfactor = argc > 5 ? atoi(argv[5]) : 50;
     int split_arg = argc > 6 ? atoi(argv[6]) : 0;
     int low_delay = argc > 7 ? atoi(argv[7]) : 0;
-    int hor_stride = (width + 15) & ~15;
+    MppFrameFormat input_format =
+        argc > 8 ? (MppFrameFormat)atoi(argv[8]) : MPP_FMT_YUV420SP;
+    int packed_yuv422 = input_format == MPP_FMT_YUV422_YUYV ||
+                        input_format == MPP_FMT_YUV422_UYVY;
+    int bytes_per_pixel = packed_yuv422 ? 2 : 1;
+    int hor_stride = (width * bytes_per_pixel + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
-    size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
+    size_t frame_size = packed_yuv422
+                            ? (size_t)hor_stride * ver_stride
+                            : (size_t)hor_stride * ver_stride * 3 / 2;
     size_t packet_size = (size_t)width * height * 3 + 64 * 1024;
 
     MppCtx ctx = NULL;
@@ -122,8 +132,8 @@ int main(int argc, char **argv)
     if (!input_path[0] || !output_path[0] ||
         width < 16 || height < 16 || (width & 1) || (height & 1)) {
         fprintf(stderr,
-                "usage: jpege_probe in.nv12 out.jpg width height "
-                "qfactor split_arg low_delay\n");
+                "usage: jpege_probe in.raw out.jpg width height "
+                "qfactor split_arg low_delay [mpp_input_format]\n");
         return 2;
     }
 
@@ -147,7 +157,7 @@ int main(int argc, char **argv)
 
     mpp_buffer_sync_begin(frame_buf);
     if (fread(mpp_buffer_get_ptr(frame_buf), 1, frame_size, input) != frame_size) {
-        fprintf(stderr, "short NV12 input, expected %zu bytes\n", frame_size);
+        fprintf(stderr, "short input, expected %zu bytes\n", frame_size);
         goto cleanup;
     }
     mpp_buffer_sync_end(frame_buf);
@@ -162,7 +172,7 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:height", height));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", input_format));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:mode", MPP_ENC_RC_MODE_FIXQP));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 60));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));
@@ -189,7 +199,7 @@ int main(int argc, char **argv)
     mpp_frame_set_height(frame, height);
     mpp_frame_set_hor_stride(frame, hor_stride);
     mpp_frame_set_ver_stride(frame, ver_stride);
-    mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+    mpp_frame_set_fmt(frame, input_format);
     mpp_frame_set_buffer(frame, frame_buf);
 
     meta = mpp_frame_get_meta(frame);

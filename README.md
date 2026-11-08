@@ -26,9 +26,9 @@
   10/10 矩阵（Main/Main10、B、tiles、真实 WPP、
   1280x720、JCT-VC DSLICE、SPS/PPS scaling list）也已逐字节；VDPU383 VP9
   初始 7/7 矩阵（profile 0/2、8/10-bit、lossless、tiles）通过，两个既有 C
-  bug 路径由 libvpx 判定；VPU720 JPEG baseline + restart 4/4（320x240、
-  640x480、1280x720、320x240 restart）也与 C MPP 逐字节。LTR/error rows、AV1、VPU720 扩展模式、
-  VEPU510 编码、VDPP2 和 H.264 完整边界矩阵仍在推进。
+  bug 路径由 libvpx 判定；VPU720 JPEG 6/6（320x240/640x480/1280x720 NV12、
+  320x240 restart、320x240 YUYV/UYVY）也与 C MPP 逐字节。LTR/error rows、AV1、
+  VPU720 其余 YUV 输入/low-delay、VEPU510 编码、VDPP2 和 H.264 完整边界矩阵仍在推进。
   其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
   固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
@@ -165,7 +165,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1171 枚举；1137 常规通过，34 个硬件 ignored 另跑通过
+cargo test --release --all-targets           # t6：1172 枚举；1138 常规通过，34 个硬件 ignored
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -181,7 +181,7 @@ ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 BOARD=luck2 ./scripts/board_rk3576_h265_vs_mpp.sh # RK3576 VDPU383：10/10
 BOARD=luck2 ./scripts/board_rk3576_vp9_vs_mpp.sh  # RK3576 VDPU383 VP9：7/7
 BOARD=luck2 ./scripts/board_rk3576_h264_edges_vs_mpp.sh # H.264 边界：5/5
-BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：4/4
+BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：6/6
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
