@@ -550,10 +550,13 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   IDR/P 最小 QP 分别为 15/10，最大 51，CBR 前六帧 QP 轨迹为
   `26/29/29/30/30/32`。C/Rust 均为 11192 bytes，SHA-256
   `5768ab6c768dd5b613179c494ec41081ac104240e1a4d0df0c9ab58ff14fc9fb`。
+  VBR6/AVBR6 共用同一 VEPU510 RC 映射，只切换 model allocator 与 SEI mode。
+  VBR QP 轨迹为 `26/29/29/30/30/30`，11795 bytes；AVBR 为
+  `26/29/33/33/33/33`，9676 bytes。两侧完整码流逐字节一致。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 H.265 的 VBR/AVBR、GDR、ROI 和 split；之后处理
-  AV1/AVS2、VPU720 tile input 与 VDPP2。
+- 下一步：扩 VEPU510 H.265 的 GDR、ROI 和 split；之后处理 AV1/AVS2、
+  VPU720 tile input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 

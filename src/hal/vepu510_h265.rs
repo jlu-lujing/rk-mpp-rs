@@ -6,6 +6,7 @@
 use crate::codec::h265::encoder::{self, EncoderConfig};
 use crate::codec::h265::sei;
 use crate::codec::rc::model as rc_model;
+use crate::hal::h265e_session::RcMode;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
@@ -448,26 +449,49 @@ impl Vepu510H265 {
     }
 
     pub fn encode_cbr_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        self.encode_rate_gop6_320x240(nv12, RcMode::Cbr)
+    }
+
+    pub fn encode_vbr_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        self.encode_rate_gop6_320x240(nv12, RcMode::Vbr)
+    }
+
+    pub fn encode_avbr_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        self.encode_rate_gop6_320x240(nv12, RcMode::Avbr)
+    }
+
+    fn encode_rate_gop6_320x240(
+        &mut self,
+        nv12: &[u8],
+        rc_mode: RcMode,
+    ) -> Result<Vec<u8>, String> {
         if self.idr_done {
             return Err("this VEPU510 H.265 session already encoded its IDR".into());
         }
         let expected = INPUT_SIZE * 6;
         if nv12.len() < expected {
             return Err(format!(
-                "VEPU510 H.265 CBR input is {} bytes, expected {expected}",
+                "VEPU510 H.265 rate-control input is {} bytes, expected {expected}",
                 nv12.len()
             ));
         }
         let mut config = lf1_h265_config()?;
-        config.rc_mode = encoder::RateControl::Cbr;
-        let prefix = lf1_cbr_prefix(&config, GOP)?;
+        config.rc_mode = match rc_mode {
+            RcMode::Cbr => encoder::RateControl::Cbr,
+            RcMode::Vbr | RcMode::Avbr => encoder::RateControl::Vbr,
+        };
+        let prefix = lf1_rate_prefix(&config, GOP, rc_mode)?;
         let mut model_config = rc_model::Config::cbr(CBR_TARGET, CBR_MIN, CBR_MAX, GOP as i32);
         model_config.quality_init = QP as i32;
         model_config.quality_min = 10;
         model_config.quality_max = 51;
         model_config.i_quality_delta = 4;
         model_config.total_mb = ((WIDTH + 63) / 64) as i32 * ((HEIGHT + 63) / 64) as i32 * 64;
-        model_config.mode = rc_model::Mode::Cbr;
+        model_config.mode = match rc_mode {
+            RcMode::Cbr => rc_model::Mode::Cbr,
+            RcMode::Vbr => rc_model::Mode::Vbr,
+            RcMode::Avbr => rc_model::Mode::Avbr,
+        };
         let mut model = rc_model::Model::new(model_config);
 
         let mut stream = Vec::new();
@@ -715,10 +739,14 @@ fn lf1_fixed_qp_prefix(config: &EncoderConfig, qp: u32, gop: u32) -> Result<Vec<
     lf1_prefix(config, &line)
 }
 
-fn lf1_cbr_prefix(config: &EncoderConfig, gop: u32) -> Result<Vec<u8>, String> {
+fn lf1_rate_prefix(config: &EncoderConfig, gop: u32, mode: RcMode) -> Result<Vec<u8>, String> {
     let line = sei::RcCfgLine {
         model_name: "default",
-        mode_name: "cbr",
+        mode_name: match mode {
+            RcMode::Cbr => "cbr",
+            RcMode::Vbr => "vbr",
+            RcMode::Avbr => "avbr",
+        },
         bps_target: CBR_TARGET as i64,
         bps_min: CBR_MIN as i64,
         bps_max: CBR_MAX as i64,

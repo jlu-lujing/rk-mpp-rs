@@ -11,9 +11,10 @@
  *      $MPP/build/mpp/librockchip_mpp.so.1 -o /tmp/h265e_probe
  *
  * Usage:
- *   h265e_probe in.nv12 out.265 w h <0|1> qp [bps[:min:max]]
+ *   h265e_probe in.nv12 out.265 w h <0|1|2|3> qp [bps[:min:max]]
  *               [split mode arg] [splitout value] [roi x y w h intra qpmode qp]...
- *     mode 0 = fixed QP, 1 = CBR. qp is written to rc:qp_init.
+ *     mode 0 = fixed QP, 1 = CBR, 2 = VBR, 3 = AVBR. qp is written to
+ *     rc:qp_init for the rate-controlled modes.
  *   `split 1|2 arg` is MPP_ENC_SPLIT_BY_BYTE with a byte cap or
  *   MPP_ENC_SPLIT_BY_CTU with 64x64 CTUs per slice. `splitout 1` enables
  *   MPP_ENC_SPLIT_OUT_LOWDELAY; packets are then drained through EOI.
@@ -111,7 +112,7 @@ int main(int argc, char **argv)
     const char *output_path = argc > 2 ? argv[2] : "/tmp/h265e_probe.265";
     int width = argc > 3 ? atoi(argv[3]) : 320;
     int height = argc > 4 ? atoi(argv[4]) : 240;
-    int mode = argc > 5 ? atoi(argv[5]) : 0; /* 0 fixqp 1 cbr */
+    int mode = argc > 5 ? atoi(argv[5]) : 0; /* 0 fixqp 1 cbr 2 vbr 3 avbr */
     int qp = argc > 6 ? atoi(argv[6]) : 26;
     int bps_target = 300000, bps_min = 250000, bps_max = 350000;
     int have_split = 0, split_mode = 0, split_arg = 0, split_out = 0;
@@ -212,9 +213,12 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", input_format));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "rc:mode",
-                              mode == 0 ? MPP_ENC_RC_MODE_FIXQP
-                                        : MPP_ENC_RC_MODE_CBR));
+    CHECK(mpp_enc_cfg_set_s32(
+        cfg, "rc:mode",
+        mode == 0 ? MPP_ENC_RC_MODE_FIXQP
+                  : (mode == 1 ? MPP_ENC_RC_MODE_CBR
+                               : (mode == 2 ? MPP_ENC_RC_MODE_VBR
+                                            : MPP_ENC_RC_MODE_AVBR))));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_target", bps_target));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_min", bps_min));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:bps_max", bps_max));

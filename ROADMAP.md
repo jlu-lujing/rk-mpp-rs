@@ -3253,7 +3253,12 @@ pipeline uses.
   kbps and RK3576's I/P minima of 15/10. The six-picture QP trajectory is
   `26/29/29/30/30/32`; CBR6 is byte-identical at 11192 bytes
   (`5768ab6c768dd5b613179c494ec41081ac104240e1a4d0df0c9ab58ff14fc9fb`).
-  VBR/AVBR, GDR/ROI/split and wider STATUS feedback remain.
+  VBR and AVBR switch only the model allocator and SEI mode: their QP tracks
+  are `26/29/29/30/30/30` and `26/29/33/33/33/33`, producing byte-identical
+  11795-byte and 9676-byte streams
+  (`5e6db2795217d749e6c52c0f7239548cca61a07a783e747d754ce4ba242939cf`,
+  `bc7d279690b4bec00c554b1bd69ea8f291bd15e90811c61537dfcf0326fafa5d`).
+  GDR/ROI/split and wider STATUS feedback remain.
 - Tests: `cargo test --release --all-targets` enumerates 1195 tests: 1161
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
