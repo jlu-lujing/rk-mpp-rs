@@ -42,6 +42,8 @@
 
 #ifdef H265E_ROI
 #include "mpp_enc_roi_utils.h"
+#else
+typedef MppEncROIRegion StandaloneRoiRegion;
 #endif
 
 #define CHECK(call)                                                             \
@@ -135,6 +137,10 @@ int main(int argc, char **argv)
 #ifdef H265E_ROI
     MppEncRoiCtx roi_ctx = NULL;
     int roi_regions = 0;
+#else
+    StandaloneRoiRegion roi_regions_legacy[8];
+    MppEncROICfg roi_cfg_legacy;
+    int roi_regions = 0;
 #endif
     FILE *input = NULL;
     FILE *output = NULL;
@@ -175,6 +181,25 @@ int main(int argc, char **argv)
                 fprintf(stderr, "roi wants x y w h fi qpmode qpval\n");
                 return 2;
             }
+            arg += 7;
+#else
+        } else if (!strcmp(argv[arg], "roi")) {
+            StandaloneRoiRegion *region;
+
+            if (roi_regions >= 8 || arg + 7 >= argc) {
+                fprintf(stderr, "roi wants x y w h fi qpmode qpval\n");
+                return 2;
+            }
+            region = &roi_regions_legacy[roi_regions++];
+            memset(region, 0, sizeof(*region));
+            region->x = (RK_U16)atoi(argv[arg + 1]);
+            region->y = (RK_U16)atoi(argv[arg + 2]);
+            region->w = (RK_U16)atoi(argv[arg + 3]);
+            region->h = (RK_U16)atoi(argv[arg + 4]);
+            region->intra = atoi(argv[arg + 5]);
+            region->abs_qp_en = atoi(argv[arg + 6]);
+            region->quality = atoi(argv[arg + 7]);
+            region->area_map_en = 1;
             arg += 7;
 #endif
         } else {
@@ -368,6 +393,12 @@ int main(int argc, char **argv)
                 at += 7;
             }
             CHECK(mpp_enc_roi_setup_meta(roi_ctx, meta));
+        }
+#else
+        if (roi_regions) {
+            roi_cfg_legacy.number = roi_regions;
+            roi_cfg_legacy.regions = roi_regions_legacy;
+            CHECK(mpp_meta_set_ptr(meta, KEY_ROI_DATA, &roi_cfg_legacy));
         }
 #endif
 

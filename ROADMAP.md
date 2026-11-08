@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1197
-      enumerated / 1163 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1019 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1198
+      enumerated / 1164 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1020 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3267,8 +3267,12 @@ pipeline uses.
   (`3236abd7ab25fc32ee55e79bac4f6925775c9a58c6d27adf711bea181cf0cff2`),
   column=4/GOP6 over thirteen is 34967 bytes
   (`4e2f48d852c75efac33d1e5268c2068e0686fbc42ee8eb0c4ffac8c823412fb3`).
-  ROI and wider STATUS feedback remain.
-- Tests: `cargo test --release --all-targets` enumerates 1197 tests: 1163
+  ROI uses the common VEPU510 four-word region mapping. A forced-intra
+  absolute-QP30 region at `(0,0,160,120)` is byte-identical over two pictures
+  at 8823 bytes
+  (`42e57fcd03567e8799fff22eff815e21a10c3fa6ed39ad6e8fbc782bbaa15675`).
+  Tiles/10-bit and wider STATUS feedback remain.
+- Tests: `cargo test --release --all-targets` enumerates 1198 tests: 1164
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

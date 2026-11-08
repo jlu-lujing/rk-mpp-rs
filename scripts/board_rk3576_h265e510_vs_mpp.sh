@@ -40,6 +40,8 @@ rm -f /tmp/h265e510_c.265 /tmp/h265e510_rust.265
 rm -f /tmp/h265e510_c.log /tmp/h265e510_rust.log
 rm -f /tmp/h265e510_gop2_c.265 /tmp/h265e510_gop2_rust.265
 rm -f /tmp/h265e510_gop2_c.log /tmp/h265e510_gop2_rust.log
+rm -f /tmp/h265e510_roi2_c.265 /tmp/h265e510_roi2_rust.265
+rm -f /tmp/h265e510_roi2_c.log /tmp/h265e510_roi2_rust.log
 rm -f /tmp/h265e510_split_ctu2_c.265 /tmp/h265e510_split_ctu2_rust.265
 rm -f /tmp/h265e510_split_ctu2_c.log /tmp/h265e510_split_ctu2_rust.log
 rm -f /tmp/h265e510_split_byte2_c.265 /tmp/h265e510_split_byte2_rust.265
@@ -86,6 +88,18 @@ cmp /tmp/h265e510_gop2_c.265 /tmp/h265e510_gop2_rust.265
 sha256sum /tmp/h265e510_gop2_c.265 /tmp/h265e510_gop2_rust.265
 printf 'PASS RK3576 VEPU510 H.265 fixed-QP GOP2: %s bytes\n' \
     "$(stat -c %s /tmp/h265e510_gop2_c.265)"
+
+FRAMES=2 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_roi2_c.265 \
+    320 240 0 26 roi 0 0 160 120 1 1 30 \
+    > /tmp/h265e510_roi2_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h265e510-roi2 \
+    /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_roi2_rust.265 \
+    > /tmp/h265e510_roi2_rust.log 2>&1
+cmp /tmp/h265e510_roi2_c.265 /tmp/h265e510_roi2_rust.265
+sha256sum /tmp/h265e510_roi2_c.265 /tmp/h265e510_roi2_rust.265
+printf 'PASS RK3576 VEPU510 H.265 ROI GOP2: %s bytes\n' \
+    "$(stat -c %s /tmp/h265e510_roi2_c.265)"
 
 FRAMES=2 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
     /tmp/h265e510_2x320x240.nv12 /tmp/h265e510_split_ctu2_c.265 \

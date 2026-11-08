@@ -1267,6 +1267,52 @@ fn main() {
         return;
     }
 
+    if args.len() > 1 && args[1] == "h265e510-roi2" {
+        if args.len() != 4 {
+            eprintln!("usage: rk-mpp-rs h265e510-roi2 <in.2x320x240.nv12> <out.265>");
+            std::process::exit(2);
+        }
+        let source = match std::fs::read(&args[2]) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("read {}: {error}", args[2]);
+                std::process::exit(1);
+            }
+        };
+        let mut encoder = match vepu510_h265::Vepu510H265::open() {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        let stream = match encoder.encode_fixed_qp_roi_320x240(
+            &source,
+            2,
+            &[h264_syntax::RoiRegion {
+                x: 0,
+                y: 0,
+                w: 160,
+                h: 120,
+                force_intra: true,
+                qp_absolute: true,
+                qp_val: 30,
+            }],
+        ) {
+            Ok(stream) => stream,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(error) = std::fs::write(&args[3], &stream) {
+            eprintln!("write {}: {error}", args[3]);
+            std::process::exit(1);
+        }
+        println!("h265e510-roi2: {} bytes", stream.len());
+        return;
+    }
+
     if args.len() > 1 && args[1] == "h265e510-gop6" {
         if args.len() != 4 {
             eprintln!("usage: rk-mpp-rs h265e510-gop6 <in.6x320x240.nv12> <out.265>");

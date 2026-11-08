@@ -3,6 +3,7 @@
 //! The captured job is a fixed-QP 320x240 Main-profile IDR. Software supplies
 //! VPS/SPS/PPS and the two prefix SEIs; the hardware writes the slice payload.
 
+use crate::codec::h264::encoder::RoiRegion;
 use crate::codec::h265::encoder::{self, EncoderConfig};
 use crate::codec::h265::sei;
 use crate::codec::rc::model as rc_model;
@@ -325,6 +326,35 @@ impl RegisterFile {
         self.set(regs::SQI_SMEAR_OPT_CFG0_SMEAR_STOR_EN, store)
     }
 
+    fn apply_roi_regions(&mut self, regions: &[RoiRegion]) -> Result<(), String> {
+        if regions.len() > 8 {
+            return Err(format!(
+                "VEPU510 H.265 accepts at most 8 ROI regions, got {}",
+                regions.len()
+            ));
+        }
+        self.rc[36..68].fill(0);
+        for (index, region) in regions.iter().enumerate() {
+            let left = (region.x.clamp(0, WIDTH as i32) as usize).div_ceil(16);
+            let top = (region.y.clamp(0, HEIGHT as i32) as usize).div_ceil(16);
+            let right =
+                (region.x.saturating_add(region.w).clamp(0, WIDTH as i32) as usize).div_ceil(16);
+            let bottom =
+                (region.y.saturating_add(region.h).clamp(0, HEIGHT as i32) as usize).div_ceil(16);
+            let base = 36 + index * 4;
+            self.rc[base] = left as u32 | (top as u32) << 16;
+            self.rc[base + 1] = right as u32 | (bottom as u32) << 16;
+            self.rc[base + 2] = (region.qp_val as u32 & 0x7f)
+                | (u32::from(region.qp_absolute) << 7)
+                | (0x1f << 8)
+                | (1 << 13);
+            if region.force_intra {
+                self.rc[base + 3] = (1 << 8) | (1 << 20);
+            }
+        }
+        Ok(())
+    }
+
     pub fn set(&mut self, field: Field, value: u32) -> Result<(), String> {
         if field.width == 0 || field.width > 32 {
             return Err(format!("{} has invalid width {}", field.name, field.width));
@@ -510,12 +540,12 @@ impl Vepu510H265 {
     }
 
     pub fn encode_fixed_qp_gop2_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
-        self.encode_fixed_qp_gop_with_split(nv12, 2, encoder::SplitMode::None, 0, 0)
+        self.encode_fixed_qp_gop_with_split(nv12, 2, &[], encoder::SplitMode::None, 0, 0)
             .map(|(stream, _)| stream)
     }
 
     pub fn encode_fixed_qp_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
-        self.encode_fixed_qp_gop_with_split(nv12, 6, encoder::SplitMode::None, 0, 0)
+        self.encode_fixed_qp_gop_with_split(nv12, 6, &[], encoder::SplitMode::None, 0, 0)
             .map(|(stream, _)| stream)
     }
 
@@ -527,7 +557,17 @@ impl Vepu510H265 {
         arg: u32,
         split_out: u32,
     ) -> Result<(Vec<u8>, Vec<usize>), String> {
-        self.encode_fixed_qp_gop_with_split(nv12, frames, mode, arg, split_out)
+        self.encode_fixed_qp_gop_with_split(nv12, frames, &[], mode, arg, split_out)
+    }
+
+    pub fn encode_fixed_qp_roi_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        rois: &[RoiRegion],
+    ) -> Result<Vec<u8>, String> {
+        self.encode_fixed_qp_gop_with_split(nv12, frames, rois, encoder::SplitMode::None, 0, 0)
+            .map(|(stream, _)| stream)
     }
 
     pub fn encode_fixed_qp_gdr_320x240(
@@ -717,6 +757,7 @@ impl Vepu510H265 {
         &mut self,
         nv12: &[u8],
         frames: usize,
+        rois: &[RoiRegion],
         split_mode: encoder::SplitMode,
         split_arg: u32,
         split_out: u32,
@@ -748,6 +789,7 @@ impl Vepu510H265 {
             self.smear[0].fd() as u32,
             self.md_info.fd() as u32,
         )?;
+        idr.apply_roi_regions(rois)?;
         idr.apply_slice_split(split_mode, split_arg, split_out)?;
         let (mut stream, _, mut packet_lengths) =
             self.run_job_with_status(&nv12[..INPUT_SIZE], &idr, &prefix, split_out)?;
@@ -768,6 +810,7 @@ impl Vepu510H265 {
                 self.md_info.fd() as u32,
                 frame_number as u32,
             )?;
+            p.apply_roi_regions(rois)?;
             p.apply_slice_split(split_mode, split_arg, split_out)?;
             let start = frame_number * INPUT_SIZE;
             let end = start + INPUT_SIZE;
@@ -1179,6 +1222,24 @@ mod tests {
         let mut prefix = encoder::build_headers(&lf1_h265_config().unwrap()).unwrap();
         prefix.extend(sei::recovery_point(1));
         assert_eq!(prefix.len(), 89);
+    }
+
+    #[test]
+    fn roi_region_matches_the_c_vpu510_words() {
+        let mut regs = RegisterFile::default();
+        regs.apply_roi_regions(&[RoiRegion {
+            x: 0,
+            y: 0,
+            w: 160,
+            h: 120,
+            force_intra: true,
+            qp_absolute: true,
+            qp_val: 30,
+        }])
+        .unwrap();
+        assert_eq!(regs.rc[37], 0x0008_000a);
+        assert_eq!(regs.rc[38], 0x0000_3f9e);
+        assert_eq!(regs.rc[39], 0x0010_0100);
     }
 
     #[test]
