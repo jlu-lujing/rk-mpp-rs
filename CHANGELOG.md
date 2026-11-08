@@ -4,6 +4,15 @@ All notable changes to the public SDK are recorded here. The project version and
 the C ABI version are independent: the crate is currently `0.1.x`, while
 `RK_MPP_API_VERSION_MAJOR` defines shared-library ABI compatibility.
 
+## [1.10] - 2026-11-09
+
+- Added `rk_mpp_encoder_advanced_config_v2_t`, keeping the V1.9 104-byte
+  initializer and create function unchanged.
+- Exposed up to eight ROI regions, GDR/intra-refresh and slice splitting with
+  low-delay packet output through typed Rust and C configuration.
+- Verified H.264 and H.265 VEPU580 ROI, GDR and slice controls against their
+  validated CLI paths on t6.
+
 ## [1.9] - 2026-11-09
 
 - Added `rk_mpp_encoder_advanced_config_t` and

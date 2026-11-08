@@ -352,6 +352,13 @@ in what order the evidence gets produced.
       and a consumer compiled against the V1.8 header links to the V1.9 library.
       RK3576 VEPU510 streaming RC is an explicit unsupported boundary until its
       per-picture session is wired.
+- [x] Public ROI/GDR/slice encoder API V1.10: a separately sized advanced V2
+      config preserves the V1.9 initializer and layout. Up to eight ROI regions,
+      row/column GDR, BY_CTU/BY_BYTE splitting and low-delay packet output are
+      exposed through Rust and C. On t6, H.264 and H.265 ROI, GDR and
+      slice-lowdelay outputs match the validated CLI in six cases, and a V1.9
+      advanced consumer links to the V1.10 library. RK3576 streaming controls
+      remain an explicit platform boundary.
 - [x] Public H.265 encoder API V1.5: the same owned packet/release and
       synchronous submit path with NV12/I420 input. t6 VEPU580 exposes
       width/height, QP and GOP; RK3576 VEPU510 exposes the captured

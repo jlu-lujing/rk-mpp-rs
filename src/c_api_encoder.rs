@@ -63,6 +63,54 @@ pub struct RkMppEncoderAdvancedConfig {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderRoiRegion {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub qp: i32,
+    pub reserved: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderGdr {
+    pub struct_size: u32,
+    pub mode: u32,
+    pub refresh_blocks: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderSliceSplit {
+    pub struct_size: u32,
+    pub mode: u32,
+    pub argument: u32,
+    pub output_mode: u32,
+    pub reserved: [u32; 2],
+}
+
+const MAX_ROI_REGIONS: usize = 8;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderAdvancedConfigV2 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub rate_control: RkMppEncoderRateControl,
+    pub gdr: RkMppEncoderGdr,
+    pub slice_split: RkMppEncoderSliceSplit,
+    pub roi_count: u32,
+    pub reserved0: u32,
+    pub rois: [RkMppEncoderRoiRegion; MAX_ROI_REGIONS],
+    pub reserved: [u32; 8],
+}
+
+#[repr(C)]
 pub struct RkMppEncodedPacket {
     pub struct_size: u32,
     pub flags: u32,
@@ -80,6 +128,14 @@ pub struct RkMppEncodedPacket {
 pub struct RkMppEncoder {
     inner: encoder::Encoder,
     last_packet: Option<encoder::Packet>,
+}
+
+#[derive(Default)]
+struct AdvancedOptions {
+    rate_control: Option<encoder::RateControlConfig>,
+    roi: Option<encoder::RoiConfig>,
+    gdr: Option<encoder::GdrConfig>,
+    slice_split: Option<encoder::SliceSplitConfig>,
 }
 
 fn error_code(error: &sdk::Error) -> c_int {
@@ -150,6 +206,99 @@ fn parse_rate_control(
     .with_qp_range(min_qp, max_qp);
     parsed.validate().map_err(|error| error_code(&error))?;
     Ok(parsed)
+}
+
+fn parse_roi_config(
+    roi_count: u32,
+    rois: &[RkMppEncoderRoiRegion; MAX_ROI_REGIONS],
+) -> Result<Option<encoder::RoiConfig>, c_int> {
+    let count = usize::try_from(roi_count).map_err(|_| RK_MPP_ERR_INVALID)?;
+    if count > MAX_ROI_REGIONS {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    if count == 0 {
+        return Ok(None);
+    }
+    let mut parsed = Vec::with_capacity(count);
+    for region in &rois[..count] {
+        if region.struct_size < size_of::<RkMppEncoderRoiRegion>() as u32
+            || region.flags & !0x3 != 0
+            || region.reserved != [0; 3]
+        {
+            return Err(RK_MPP_ERR_INVALID);
+        }
+        parsed.push(
+            encoder::RoiRegion::new(region.x, region.y, region.width, region.height, region.qp)
+                .with_force_intra(region.flags & 0x1 != 0)
+                .with_absolute_qp(region.flags & 0x2 != 0),
+        );
+    }
+    encoder::RoiConfig::new(&parsed)
+        .map(Some)
+        .map_err(|error| error_code(&error))
+}
+
+fn parse_gdr_config(gdr: &RkMppEncoderGdr) -> Result<Option<encoder::GdrConfig>, c_int> {
+    if gdr.struct_size < size_of::<RkMppEncoderGdr>() as u32 || gdr.reserved != 0 {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    match gdr.mode {
+        0 if gdr.refresh_blocks == 0 => Ok(None),
+        0 => Err(RK_MPP_ERR_INVALID),
+        1 | 2 if gdr.refresh_blocks != 0 => Ok(Some(encoder::GdrConfig::new(
+            if gdr.mode == 1 {
+                encoder::GdrMode::Row
+            } else {
+                encoder::GdrMode::Col
+            },
+            gdr.refresh_blocks,
+        ))),
+        _ => Err(RK_MPP_ERR_INVALID),
+    }
+}
+
+fn parse_slice_config(
+    split: &RkMppEncoderSliceSplit,
+) -> Result<Option<encoder::SliceSplitConfig>, c_int> {
+    if split.struct_size < size_of::<RkMppEncoderSliceSplit>() as u32 || split.reserved != [0; 2] {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    if split.mode == 0 {
+        return if split.argument == 0 && split.output_mode == 0 {
+            Ok(None)
+        } else {
+            Err(RK_MPP_ERR_INVALID)
+        };
+    }
+    let mode = match split.mode {
+        1 => encoder::SliceSplitMode::ByCtu,
+        2 => encoder::SliceSplitMode::ByByte,
+        _ => return Err(RK_MPP_ERR_INVALID),
+    };
+    let output = match split.output_mode {
+        0 => encoder::SliceOutputMode::CompleteAccessUnit,
+        1 => encoder::SliceOutputMode::LowDelayPackets,
+        _ => return Err(RK_MPP_ERR_INVALID),
+    };
+    Ok(Some(
+        encoder::SliceSplitConfig::new(mode, split.argument).with_output(output),
+    ))
+}
+
+fn parse_advanced_v2(advanced: &RkMppEncoderAdvancedConfigV2) -> Result<AdvancedOptions, c_int> {
+    if advanced.struct_size < size_of::<RkMppEncoderAdvancedConfigV2>() as u32
+        || advanced.flags != 0
+        || advanced.reserved0 != 0
+        || advanced.reserved != [0; 8]
+    {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    Ok(AdvancedOptions {
+        rate_control: Some(parse_rate_control(&advanced.rate_control)?),
+        roi: parse_roi_config(advanced.roi_count, &advanced.rois)?,
+        gdr: parse_gdr_config(&advanced.gdr)?,
+        slice_split: parse_slice_config(&advanced.slice_split)?,
+    })
 }
 
 /// # Safety
@@ -251,6 +400,158 @@ pub unsafe extern "C" fn rk_mpp_encoder_advanced_config_init(
     RK_MPP_OK
 }
 
+/// Initialize one ROI descriptor.
+///
+/// # Safety
+/// `region` must point to writable storage for one ROI descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_roi_region_init(
+    region: *mut RkMppEncoderRoiRegion,
+) -> c_int {
+    if region.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: the caller guarantees writable ROI storage.
+    unsafe {
+        region.write(RkMppEncoderRoiRegion {
+            struct_size: size_of::<RkMppEncoderRoiRegion>() as u32,
+            flags: 0,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            qp: 0,
+            reserved: [0; 3],
+        });
+    }
+    RK_MPP_OK
+}
+
+/// Initialize a GDR descriptor.
+///
+/// # Safety
+/// `gdr` must point to writable storage for one descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_gdr_init(
+    gdr: *mut RkMppEncoderGdr,
+    mode: u32,
+    refresh_blocks: u32,
+) -> c_int {
+    if gdr.is_null()
+        || mode > 2
+        || (mode == 0 && refresh_blocks != 0)
+        || (mode != 0 && refresh_blocks == 0)
+    {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: the caller guarantees writable GDR storage.
+    unsafe {
+        gdr.write(RkMppEncoderGdr {
+            struct_size: size_of::<RkMppEncoderGdr>() as u32,
+            mode,
+            refresh_blocks,
+            reserved: 0,
+        });
+    }
+    RK_MPP_OK
+}
+
+/// Initialize a slice-split descriptor.
+///
+/// # Safety
+/// `split` must point to writable storage for one descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_slice_split_init(
+    split: *mut RkMppEncoderSliceSplit,
+    mode: u32,
+    argument: u32,
+    output_mode: u32,
+) -> c_int {
+    if split.is_null()
+        || mode > 2
+        || output_mode > 1
+        || (mode == 0 && (argument != 0 || output_mode != 0))
+        || (mode != 0 && argument == 0)
+    {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: the caller guarantees writable slice-split storage.
+    unsafe {
+        split.write(RkMppEncoderSliceSplit {
+            struct_size: size_of::<RkMppEncoderSliceSplit>() as u32,
+            mode,
+            argument,
+            output_mode,
+            reserved: [0; 2],
+        });
+    }
+    RK_MPP_OK
+}
+
+/// Initialize the V1.10 advanced encoder configuration.
+///
+/// # Safety
+/// `config` must point to writable storage for one V2 configuration.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_advanced_config_v2_init(
+    config: *mut RkMppEncoderAdvancedConfigV2,
+    rate_control_mode: u32,
+) -> c_int {
+    if config.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    let mut rate_control = RkMppEncoderRateControl {
+        struct_size: 0,
+        mode: 0,
+        bps_target: 0,
+        bps_min: 0,
+        bps_max: 0,
+        initial_qp: 0,
+        min_qp: 0,
+        max_qp: 0,
+        reserved: [0; 5],
+    };
+    if let Err(code) = init_rate_control(&mut rate_control, rate_control_mode) {
+        return code;
+    }
+    let roi = RkMppEncoderRoiRegion {
+        struct_size: size_of::<RkMppEncoderRoiRegion>() as u32,
+        flags: 0,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        qp: 0,
+        reserved: [0; 3],
+    };
+    // SAFETY: the caller guarantees writable V2 configuration storage.
+    unsafe {
+        config.write(RkMppEncoderAdvancedConfigV2 {
+            struct_size: size_of::<RkMppEncoderAdvancedConfigV2>() as u32,
+            flags: 0,
+            rate_control,
+            gdr: RkMppEncoderGdr {
+                struct_size: size_of::<RkMppEncoderGdr>() as u32,
+                mode: 0,
+                refresh_blocks: 0,
+                reserved: 0,
+            },
+            slice_split: RkMppEncoderSliceSplit {
+                struct_size: size_of::<RkMppEncoderSliceSplit>() as u32,
+                mode: 0,
+                argument: 0,
+                output_mode: 0,
+                reserved: [0; 2],
+            },
+            roi_count: 0,
+            reserved0: 0,
+            rois: [roi; MAX_ROI_REGIONS],
+            reserved: [0; 8],
+        });
+    }
+    RK_MPP_OK
+}
+
 /// # Safety
 /// `packet` must point to writable storage for one packet descriptor.
 #[no_mangle]
@@ -279,7 +580,7 @@ pub unsafe extern "C" fn rk_mpp_encoded_packet_init(packet: *mut RkMppEncodedPac
 
 unsafe fn create_encoder(
     config: *const RkMppEncoderConfig,
-    advanced_config: Option<&RkMppEncoderAdvancedConfig>,
+    advanced: &AdvancedOptions,
     out_encoder: *mut *mut RkMppEncoder,
 ) -> c_int {
     // SAFETY: the caller validated all pointers before entering this helper.
@@ -308,18 +609,17 @@ unsafe fn create_encoder(
                 .with_fps(config.fps_num, config.fps_den)
                 .with_jpeg_quality(config.jpeg_quality)
                 .with_jpeg_restart_mcus(config.jpeg_restart_mcus);
-        if let Some(advanced) = advanced_config {
-            if advanced.struct_size < size_of::<RkMppEncoderAdvancedConfig>() as u32
-                || advanced.flags != 0
-                || advanced.reserved != [0; 8]
-            {
-                return RK_MPP_ERR_INVALID;
-            }
-            let rate_control = match parse_rate_control(&advanced.rate_control) {
-                Ok(rate_control) => rate_control,
-                Err(code) => return code,
-            };
+        if let Some(rate_control) = advanced.rate_control {
             encoder_config = encoder_config.with_rate_control(rate_control);
+        }
+        if let Some(roi) = advanced.roi {
+            encoder_config = encoder_config.with_roi(roi);
+        }
+        if let Some(gdr) = advanced.gdr {
+            encoder_config = encoder_config.with_gdr(gdr);
+        }
+        if let Some(slice_split) = advanced.slice_split {
+            encoder_config = encoder_config.with_slice_split(slice_split);
         }
         match encoder::Encoder::new(encoder_config) {
             Ok(inner) => {
@@ -346,7 +646,7 @@ pub unsafe extern "C" fn rk_mpp_encoder_create(
         return RK_MPP_ERR_INVALID;
     }
     // SAFETY: both pointers were validated and the caller owns their storage.
-    unsafe { create_encoder(config, None, out_encoder) }
+    unsafe { create_encoder(config, &AdvancedOptions::default(), out_encoder) }
 }
 
 /// Create an encoder using a separately versioned advanced configuration.
@@ -364,7 +664,51 @@ pub unsafe extern "C" fn rk_mpp_encoder_create_advanced(
         return RK_MPP_ERR_INVALID;
     }
     // SAFETY: all pointers were validated and the caller owns their storage.
-    unsafe { create_encoder(config, Some(&*advanced_config), out_encoder) }
+    unsafe {
+        let advanced = &*advanced_config;
+        if advanced.struct_size < size_of::<RkMppEncoderAdvancedConfig>() as u32
+            || advanced.flags != 0
+            || advanced.reserved != [0; 8]
+        {
+            return RK_MPP_ERR_INVALID;
+        }
+        let rate_control = match parse_rate_control(&advanced.rate_control) {
+            Ok(rate_control) => rate_control,
+            Err(code) => return code,
+        };
+        create_encoder(
+            config,
+            &AdvancedOptions {
+                rate_control: Some(rate_control),
+                ..AdvancedOptions::default()
+            },
+            out_encoder,
+        )
+    }
+}
+
+/// Create an encoder using the V1.10 advanced configuration.
+///
+/// # Safety
+/// `config` and `advanced_config` must point to valid descriptors and
+/// `out_encoder` to writable pointer storage.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_create_advanced_v2(
+    config: *const RkMppEncoderConfig,
+    advanced_config: *const RkMppEncoderAdvancedConfigV2,
+    out_encoder: *mut *mut RkMppEncoder,
+) -> c_int {
+    if config.is_null() || advanced_config.is_null() || out_encoder.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: all pointers were validated and the caller owns their storage.
+    unsafe {
+        let advanced = match parse_advanced_v2(&*advanced_config) {
+            Ok(advanced) => advanced,
+            Err(code) => return code,
+        };
+        create_encoder(config, &advanced, out_encoder)
+    }
 }
 
 /// Submit one tightly packed visible-size NV12/I420 frame.
@@ -499,7 +843,9 @@ pub unsafe extern "C" fn rk_mpp_encoder_close(encoder: *mut RkMppEncoder) {
 #[cfg(test)]
 mod tests {
     use super::{
-        RkMppEncodedPacket, RkMppEncoderAdvancedConfig, RkMppEncoderConfig, RkMppEncoderRateControl,
+        RkMppEncodedPacket, RkMppEncoderAdvancedConfig, RkMppEncoderAdvancedConfigV2,
+        RkMppEncoderConfig, RkMppEncoderGdr, RkMppEncoderRateControl, RkMppEncoderRoiRegion,
+        RkMppEncoderSliceSplit,
     };
     use std::mem::size_of;
 
@@ -508,6 +854,10 @@ mod tests {
         assert_eq!(size_of::<RkMppEncoderConfig>(), 68);
         assert_eq!(size_of::<RkMppEncoderRateControl>(), 64);
         assert_eq!(size_of::<RkMppEncoderAdvancedConfig>(), 104);
+        assert_eq!(size_of::<RkMppEncoderRoiRegion>(), 40);
+        assert_eq!(size_of::<RkMppEncoderGdr>(), 16);
+        assert_eq!(size_of::<RkMppEncoderSliceSplit>(), 24);
+        assert_eq!(size_of::<RkMppEncoderAdvancedConfigV2>(), 472);
         assert_eq!(size_of::<RkMppEncodedPacket>(), 72);
     }
 }

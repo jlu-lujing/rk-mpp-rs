@@ -45,6 +45,15 @@
 - A minimal V1.8 header snapshot compiles an encoder consumer directly against
   the V1.9 shared library. This checks the real old-layout call path instead of
   relying only on static size assertions.
+- ROI/GDR/slice need a new advanced-config v2 rather than enlarging the V1.9
+  advanced struct: the existing `rk_mpp_encoder_advanced_config_init()` writes
+  104 bytes, so an old caller would overflow if that initializer started writing
+  appended fields.
+- V1.10 C layouts are 40 bytes per ROI, 16 bytes for GDR, 24 bytes for slice
+  split and 472 bytes for the total V2 advanced config. ROI storage is embedded
+  for up to eight regions, so no caller pointer has to outlive create.
+- t6 control byte sizes matched the CLI exactly: H.264
+  slice/ROI/GDR `21148/26266/23445`; H.265 `16391/16022/17104`.
 
 ## Research Findings
 

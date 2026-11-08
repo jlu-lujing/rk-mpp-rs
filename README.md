@@ -81,7 +81,7 @@
 
 整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-101 项完成、6 项未完成（含缩进子项为 139 / 10）；未完成项里有硬件不存在、无 conformance
+102 项完成、6 项未完成（含缩进子项为 140 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
 AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
@@ -179,7 +179,7 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.9 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.10 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
@@ -230,8 +230,8 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 安装布局：
 
 - `include/rk_mpp_rs.h`
-- `lib/librk_mpp_rs.so.1.9.0`
-- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.9.0`
+- `lib/librk_mpp_rs.so.1.10.0`
+- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.10.0`
 - `lib/librk_mpp_rs.so -> librk_mpp_rs.so.1`
 - `lib/librk_mpp_rs.a`
 - `lib/pkgconfig/rk-mpp-rs.pc`
@@ -284,6 +284,16 @@ unsupported。
 
 ```bash
 ./scripts/board_sdk_encoder_rc.sh
+```
+
+V1.10 通过独立的 `rk_mpp_encoder_advanced_config_v2_t` 增加最多 8 个 ROI、
+GDR/intra-refresh、slice split 和 low-delay packet 输出；V1.9 的 104-byte
+config、初始化和 create 函数保持原样。Rust 对应 `RoiConfig`、`GdrConfig`、
+`SliceSplitConfig`。t6 上 H.264/H.265 的 ROI、GDR、slice-lowdelay 六组 C API
+输出均与既有 CLI 逐字节相同。
+
+```bash
+./scripts/board_sdk_encoder_controls.sh
 ```
 
 JPEG 编码沿用同一 encoder handle，支持 NV12/I420、0–10 内置量化档和可选

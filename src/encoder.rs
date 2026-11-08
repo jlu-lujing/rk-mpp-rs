@@ -11,9 +11,17 @@ use crate::codec::h264::encoder::{
     self as h264_encoder, EncoderConfig as H264EncoderConfig, PROFILE_BASELINE, PROFILE_HIGH,
     PROFILE_MAIN,
 };
+use crate::codec::h264::encoder::{GdrMode as H264GdrMode, RoiRegion as H264RoiRegion};
+use crate::codec::h265::encoder::{
+    SliceSplit as H265SliceSplit, SplitMode as H265SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY,
+};
+use crate::codec::h265::roi::RoiRegion as H265RoiRegion;
+use crate::hal::h265e::RefreshMode as H265RefreshMode;
 use crate::hal::{h264e, h265e_session, jpege, jpege720, vepu510_h264, vepu510_h265};
 use crate::sdk::{Codec, Error, PixelFormat};
 use crate::service::soc::{SocProfile, VideoEncodeHal};
+
+pub const MAX_ROI_REGIONS: usize = 8;
 
 /// Per-picture bitrate policy for H.264 and H.265 encoders.
 #[non_exhaustive]
@@ -164,6 +172,215 @@ impl RateControlConfig {
     }
 }
 
+/// One region-specific QP/intra request for H.264 or H.265 encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoiRegion {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    qp: i32,
+    force_intra: bool,
+    qp_absolute: bool,
+}
+
+impl Default for RoiRegion {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            qp: 0,
+            force_intra: false,
+            qp_absolute: false,
+        }
+    }
+}
+
+impl RoiRegion {
+    /// A relative-QP ROI with no forced intra refresh.
+    pub const fn new(x: i32, y: i32, width: i32, height: i32, qp: i32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            qp,
+            force_intra: false,
+            qp_absolute: false,
+        }
+    }
+
+    pub const fn with_force_intra(mut self, force_intra: bool) -> Self {
+        self.force_intra = force_intra;
+        self
+    }
+
+    pub const fn with_absolute_qp(mut self, absolute: bool) -> Self {
+        self.qp_absolute = absolute;
+        self
+    }
+
+    pub const fn x(self) -> i32 {
+        self.x
+    }
+
+    pub const fn y(self) -> i32 {
+        self.y
+    }
+
+    pub const fn width(self) -> i32 {
+        self.width
+    }
+
+    pub const fn height(self) -> i32 {
+        self.height
+    }
+
+    pub const fn qp(self) -> i32 {
+        self.qp
+    }
+
+    pub const fn forces_intra(self) -> bool {
+        self.force_intra
+    }
+
+    pub const fn uses_absolute_qp(self) -> bool {
+        self.qp_absolute
+    }
+}
+
+/// Up to eight static ROI regions copied into the encoder session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoiConfig {
+    regions: [RoiRegion; MAX_ROI_REGIONS],
+    len: u8,
+}
+
+impl RoiConfig {
+    pub fn new(regions: &[RoiRegion]) -> Result<Self, Error> {
+        if regions.len() > MAX_ROI_REGIONS {
+            return Err(Error::InvalidInput(format!(
+                "{} ROI regions exceed the maximum of {MAX_ROI_REGIONS}",
+                regions.len()
+            )));
+        }
+        let mut copied = [RoiRegion::default(); MAX_ROI_REGIONS];
+        copied[..regions.len()].copy_from_slice(regions);
+        Ok(Self {
+            regions: copied,
+            len: regions.len() as u8,
+        })
+    }
+
+    pub fn regions(&self) -> &[RoiRegion] {
+        &self.regions[..usize::from(self.len)]
+    }
+}
+
+/// GDR / progressive intra-refresh axis.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GdrMode {
+    Row,
+    Col,
+}
+
+/// Sliding intra-refresh configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GdrConfig {
+    mode: GdrMode,
+    refresh_blocks: u32,
+}
+
+impl GdrConfig {
+    pub const fn new(mode: GdrMode, refresh_blocks: u32) -> Self {
+        Self {
+            mode,
+            refresh_blocks,
+        }
+    }
+
+    pub const fn mode(self) -> GdrMode {
+        self.mode
+    }
+
+    pub const fn refresh_blocks(self) -> u32 {
+        self.refresh_blocks
+    }
+}
+
+/// What cuts one coded picture into multiple slices.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SliceSplitMode {
+    /// H.264 macroblocks or H.265 CTUs per slice.
+    ByCtu,
+    ByByte,
+}
+
+/// Whether slices are returned concatenated or as individual packets.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SliceOutputMode {
+    CompleteAccessUnit,
+    LowDelayPackets,
+}
+
+/// Slice splitting and packet-output configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SliceSplitConfig {
+    mode: SliceSplitMode,
+    argument: u32,
+    output: SliceOutputMode,
+}
+
+impl SliceSplitConfig {
+    pub const fn new(mode: SliceSplitMode, argument: u32) -> Self {
+        Self {
+            mode,
+            argument,
+            output: SliceOutputMode::CompleteAccessUnit,
+        }
+    }
+
+    pub const fn with_output(mut self, output: SliceOutputMode) -> Self {
+        self.output = output;
+        self
+    }
+
+    pub const fn mode(self) -> SliceSplitMode {
+        self.mode
+    }
+
+    pub const fn argument(self) -> u32 {
+        self.argument
+    }
+
+    pub const fn output(self) -> SliceOutputMode {
+        self.output
+    }
+
+    fn validate(self) -> Result<(), Error> {
+        match self.mode {
+            SliceSplitMode::ByCtu if self.argument == 0 || self.argument > 0x0010_0000 => {
+                Err(Error::InvalidInput(format!(
+                    "slice block count {} is outside 1..=1048576",
+                    self.argument
+                )))
+            }
+            SliceSplitMode::ByByte if self.argument == 0 || self.argument > 0x000f_ffff => {
+                Err(Error::InvalidInput(format!(
+                    "slice byte target {} is outside 1..=1048575",
+                    self.argument
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderConfig {
     codec: Codec,
@@ -179,6 +396,9 @@ pub struct EncoderConfig {
     jpeg_quality: u32,
     jpeg_restart_mcus: u32,
     rate_control: Option<RateControlConfig>,
+    roi: Option<RoiConfig>,
+    gdr: Option<GdrConfig>,
+    slice_split: Option<SliceSplitConfig>,
 }
 
 impl EncoderConfig {
@@ -197,6 +417,9 @@ impl EncoderConfig {
             jpeg_quality: 10,
             jpeg_restart_mcus: 0,
             rate_control: None,
+            roi: None,
+            gdr: None,
+            slice_split: None,
         }
     }
 
@@ -248,6 +471,18 @@ impl EncoderConfig {
         self.rate_control
     }
 
+    pub const fn roi(self) -> Option<RoiConfig> {
+        self.roi
+    }
+
+    pub const fn gdr(self) -> Option<GdrConfig> {
+        self.gdr
+    }
+
+    pub const fn slice_split(self) -> Option<SliceSplitConfig> {
+        self.slice_split
+    }
+
     pub const fn with_input_format(mut self, format: PixelFormat) -> Self {
         self.input_format = format;
         self
@@ -292,6 +527,77 @@ impl EncoderConfig {
     pub const fn with_rate_control(mut self, rate_control: RateControlConfig) -> Self {
         self.rate_control = Some(rate_control);
         self
+    }
+
+    pub const fn with_roi(mut self, roi: RoiConfig) -> Self {
+        self.roi = Some(roi);
+        self
+    }
+
+    pub const fn with_gdr(mut self, gdr: GdrConfig) -> Self {
+        self.gdr = Some(gdr);
+        self
+    }
+
+    pub const fn with_slice_split(mut self, slice_split: SliceSplitConfig) -> Self {
+        self.slice_split = Some(slice_split);
+        self
+    }
+
+    fn validate_advanced_controls(self) -> Result<(), Error> {
+        if self.roi.is_some() && self.gdr.is_some() {
+            return Err(Error::Unsupported(
+                "ROI and GDR are not verified together".to_string(),
+            ));
+        }
+        if let Some(roi) = self.roi {
+            for region in roi.regions() {
+                if region.x < 0
+                    || region.y < 0
+                    || region.width <= 0
+                    || region.height <= 0
+                    || region.x.saturating_add(region.width) > self.width as i32
+                    || region.y.saturating_add(region.height) > self.height as i32
+                {
+                    return Err(Error::InvalidInput(format!(
+                        "ROI [{}/{} {}x{}] is outside the {}x{} picture",
+                        region.x, region.y, region.width, region.height, self.width, self.height
+                    )));
+                }
+                if region.x > i32::from(u16::MAX)
+                    || region.y > i32::from(u16::MAX)
+                    || region.width > i32::from(u16::MAX)
+                    || region.height > i32::from(u16::MAX)
+                {
+                    return Err(Error::InvalidInput(
+                        "ROI geometry exceeds the hardware 16-bit fields".to_string(),
+                    ));
+                }
+                if region.qp_absolute && !(0..=51).contains(&region.qp) {
+                    return Err(Error::InvalidInput(format!(
+                        "absolute ROI QP {} is outside 0..=51",
+                        region.qp
+                    )));
+                }
+                if !region.qp_absolute && region.qp.unsigned_abs() > 51 {
+                    return Err(Error::InvalidInput(format!(
+                        "relative ROI QP {} exceeds +-51",
+                        region.qp
+                    )));
+                }
+            }
+        }
+        if let Some(gdr) = self.gdr {
+            if gdr.refresh_blocks == 0 {
+                return Err(Error::InvalidInput(
+                    "GDR refresh block count must be non-zero".to_string(),
+                ));
+            }
+        }
+        if let Some(slice_split) = self.slice_split {
+            slice_split.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -386,6 +692,7 @@ pub struct Encoder {
 
 impl Encoder {
     pub fn new(config: EncoderConfig) -> Result<Self, Error> {
+        config.validate_advanced_controls()?;
         if let Some(rate_control) = config.rate_control {
             rate_control.validate()?;
             if config.codec == Codec::Mjpeg && rate_control.mode != RateControlMode::FixedQp {
@@ -393,6 +700,23 @@ impl Encoder {
                     "JPEG encoder does not support bitrate rate control".to_string(),
                 ));
             }
+        }
+        if config.codec == Codec::Mjpeg
+            && (config.roi.is_some() || config.gdr.is_some() || config.slice_split.is_some())
+        {
+            return Err(Error::Unsupported(
+                "JPEG encoder does not support ROI, GDR or slice splitting".to_string(),
+            ));
+        }
+        if config.codec == Codec::H264
+            && config.gdr.is_some()
+            && config
+                .rate_control
+                .is_some_and(|rate_control| rate_control.mode != RateControlMode::FixedQp)
+        {
+            return Err(Error::Unsupported(
+                "H.264 GDR is currently verified only with fixed QP".to_string(),
+            ));
         }
         let backend = match config.codec {
             Codec::H264 => open_h264_backend(config)?,
@@ -619,12 +943,51 @@ fn open_h264_vepu580(config: EncoderConfig) -> Result<h264e::Vepu580H264, Error>
             config.fps_num / config.fps_den.max(1),
         );
     }
+    if let Some(roi) = config.roi {
+        h264.rois = roi
+            .regions()
+            .iter()
+            .map(|region| H264RoiRegion {
+                x: region.x,
+                y: region.y,
+                w: region.width,
+                h: region.height,
+                force_intra: region.force_intra,
+                qp_absolute: region.qp_absolute,
+                qp_val: region.qp,
+            })
+            .collect();
+    }
+    if let Some(gdr) = config.gdr {
+        h264.gdr = true;
+        h264.gdr_mode = match gdr.mode {
+            GdrMode::Row => H264GdrMode::Row,
+            GdrMode::Col => H264GdrMode::Col,
+        };
+        h264.gdr_num = gdr.refresh_blocks;
+    }
+    if let Some(slice_split) = config.slice_split {
+        h264.split_mode = match slice_split.mode {
+            SliceSplitMode::ByCtu => h264_encoder::SplitMode::ByCtu,
+            SliceSplitMode::ByByte => h264_encoder::SplitMode::ByByte,
+        };
+        h264.split_arg = slice_split.argument;
+        h264.split_out = match slice_split.output {
+            SliceOutputMode::CompleteAccessUnit => 0,
+            SliceOutputMode::LowDelayPackets => h264_encoder::MPP_ENC_SPLIT_OUT_LOWDELAY,
+        };
+    }
     h264.validate()
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
     h264e::Vepu580H264::open(h264).map_err(|error| Error::Hardware(error.to_string()))
 }
 
 fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264, Error> {
+    if config.roi.is_some() || config.gdr.is_some() || config.slice_split.is_some() {
+        return Err(Error::Unsupported(
+            "RK3576 H.264 streaming ROI/GDR/slice controls are not exposed yet".to_string(),
+        ));
+    }
     if config
         .rate_control
         .is_some_and(|rate_control| rate_control.mode != RateControlMode::FixedQp)
@@ -703,6 +1066,11 @@ fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265
                 u32::from(rate_control.max_qp),
             )
         }
+        _ if config.gdr.is_some() => h265e_session::Vepu580H265::open_gop_short_term(
+            config.width,
+            config.height,
+            u32::from(config.qp),
+        ),
         _ => {
             h265e_session::Vepu580H265::open_gop(config.width, config.height, u32::from(config.qp))
         }
@@ -711,10 +1079,59 @@ fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265
     encoder
         .set_gop(config.gop.max(1))
         .map_err(|error| Error::Hardware(error.to_string()))?;
+    if let Some(slice_split) = config.slice_split {
+        encoder
+            .set_slice_split(H265SliceSplit {
+                mode: match slice_split.mode {
+                    SliceSplitMode::ByCtu => H265SplitMode::ByCtu,
+                    SliceSplitMode::ByByte => H265SplitMode::ByByte,
+                },
+                arg: slice_split.argument,
+                out: match slice_split.output {
+                    SliceOutputMode::CompleteAccessUnit => 0,
+                    SliceOutputMode::LowDelayPackets => MPP_ENC_SPLIT_OUT_LOWDELAY,
+                },
+            })
+            .map_err(|error| Error::Hardware(error.to_string()))?;
+    }
+    if let Some(roi) = config.roi {
+        let regions: Vec<_> = roi
+            .regions()
+            .iter()
+            .map(|region| H265RoiRegion {
+                x: region.x as u16,
+                y: region.y as u16,
+                w: region.width as u16,
+                h: region.height as u16,
+                force_intra: region.force_intra,
+                qp_absolute: region.qp_absolute,
+                qp_val: region.qp as i16,
+            })
+            .collect();
+        encoder
+            .set_roi_regions(&regions)
+            .map_err(|error| Error::Hardware(error.to_string()))?;
+    }
+    if let Some(gdr) = config.gdr {
+        encoder
+            .enable_refresh(
+                match gdr.mode {
+                    GdrMode::Row => H265RefreshMode::Row,
+                    GdrMode::Col => H265RefreshMode::Col,
+                },
+                gdr.refresh_blocks,
+            )
+            .map_err(|error| Error::Hardware(error.to_string()))?;
+    }
     Ok(encoder)
 }
 
 fn open_h265_vepu510(config: EncoderConfig) -> Result<vepu510_h265::Vepu510H265, Error> {
+    if config.roi.is_some() || config.gdr.is_some() || config.slice_split.is_some() {
+        return Err(Error::Unsupported(
+            "RK3576 H.265 streaming ROI/GDR/slice controls are not exposed yet".to_string(),
+        ));
+    }
     if config
         .rate_control
         .is_some_and(|rate_control| rate_control.mode != RateControlMode::FixedQp)
@@ -832,7 +1249,10 @@ fn format_nv12_padded(
 
 #[cfg(test)]
 mod tests {
-    use super::{Codec, EncoderConfig, PixelFormat, RateControlConfig, RateControlMode};
+    use super::{
+        Codec, EncoderConfig, GdrConfig, GdrMode, PixelFormat, RateControlConfig, RateControlMode,
+        RoiConfig, RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
+    };
     use crate::sdk::Error;
 
     #[test]
@@ -884,5 +1304,41 @@ mod tests {
             .with_initial_qp(52)
             .validate();
         assert!(matches!(bad_qp, Err(Error::InvalidInput(_))));
+    }
+
+    #[test]
+    fn advanced_controls_are_typed_and_stored_in_the_builder() {
+        let roi =
+            RoiConfig::new(&[RoiRegion::new(16, 32, 128, 96, -4).with_force_intra(true)]).unwrap();
+        let slice = SliceSplitConfig::new(SliceSplitMode::ByCtu, 96)
+            .with_output(SliceOutputMode::LowDelayPackets);
+        let config = EncoderConfig::new(Codec::H264, 320, 240)
+            .with_roi(roi)
+            .with_slice_split(slice);
+        assert_eq!(config.roi(), Some(roi));
+        assert_eq!(config.slice_split(), Some(slice));
+        assert_eq!(config.roi().unwrap().regions()[0].qp(), -4);
+        assert!(config.roi().unwrap().regions()[0].forces_intra());
+    }
+
+    #[test]
+    fn roi_and_gdr_require_an_explicit_supported_combination() {
+        let roi = RoiConfig::new(&[RoiRegion::new(0, 0, 64, 64, -2)]).unwrap();
+        let config = EncoderConfig::new(Codec::H264, 320, 240)
+            .with_roi(roi)
+            .with_gdr(GdrConfig::new(GdrMode::Row, 2));
+        assert!(matches!(
+            config.validate_advanced_controls(),
+            Err(Error::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn roi_count_is_bounded_by_the_reference_limit() {
+        let regions = [RoiRegion::new(0, 0, 16, 16, 0); 9];
+        assert!(matches!(
+            RoiConfig::new(&regions),
+            Err(Error::InvalidInput(_))
+        ));
     }
 }

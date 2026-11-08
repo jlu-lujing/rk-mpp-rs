@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-_Static_assert(RK_MPP_API_VERSION == 0x10009u, "API version changed");
+_Static_assert(RK_MPP_API_VERSION == 0x1000au, "API version changed");
 
 _Static_assert(RK_MPP_CODEC_H264 == 1, "codec id changed");
 _Static_assert(RK_MPP_CODEC_MJPEG == 2, "codec id changed");
@@ -57,6 +57,19 @@ _Static_assert(sizeof(rk_mpp_encoder_advanced_config_t) == 104,
                "advanced encoder config layout changed");
 _Static_assert(offsetof(rk_mpp_encoder_advanced_config_t, rate_control) == 8,
                "advanced encoder config layout changed");
+_Static_assert(sizeof(rk_mpp_encoder_roi_region_t) == 40,
+               "ROI layout changed");
+_Static_assert(offsetof(rk_mpp_encoder_roi_region_t, width) == 16,
+               "ROI layout changed");
+_Static_assert(sizeof(rk_mpp_encoder_gdr_t) == 16, "GDR layout changed");
+_Static_assert(sizeof(rk_mpp_encoder_slice_split_t) == 24,
+               "slice split layout changed");
+_Static_assert(sizeof(rk_mpp_encoder_advanced_config_v2_t) == 472,
+               "V2 advanced encoder config layout changed");
+_Static_assert(offsetof(rk_mpp_encoder_advanced_config_v2_t, gdr) == 72,
+               "V2 advanced encoder config layout changed");
+_Static_assert(offsetof(rk_mpp_encoder_advanced_config_v2_t, rois) == 120,
+               "V2 advanced encoder config layout changed");
 
 _Static_assert(sizeof(rk_mpp_encoded_packet_t) == 72,
                "encoded packet layout changed");
@@ -70,6 +83,10 @@ _Static_assert(offsetof(rk_mpp_encoded_packet_t, size) == 48,
 int main(void) {
     rk_mpp_encoder_rate_control_t rate_control;
     rk_mpp_encoder_advanced_config_t advanced;
+    rk_mpp_encoder_advanced_config_v2_t advanced_v2;
+    rk_mpp_encoder_roi_region_t roi;
+    rk_mpp_encoder_gdr_t gdr;
+    rk_mpp_encoder_slice_split_t split;
 
     if (rk_mpp_encoder_rate_control_init(
             &rate_control, RK_MPP_RATE_CONTROL_CBR) != RK_MPP_OK ||
@@ -87,6 +104,19 @@ int main(void) {
     if (rk_mpp_encoder_rate_control_init(&rate_control, 99) !=
         RK_MPP_ERR_INVALID) {
         return 3;
+    }
+    if (rk_mpp_encoder_advanced_config_v2_init(
+            &advanced_v2, RK_MPP_RATE_CONTROL_FIXED_QP) != RK_MPP_OK ||
+        rk_mpp_encoder_roi_region_init(&roi) != RK_MPP_OK ||
+        rk_mpp_encoder_gdr_init(&gdr, RK_MPP_GDR_ROW, 4) != RK_MPP_OK ||
+        rk_mpp_encoder_slice_split_init(
+            &split, RK_MPP_SLICE_SPLIT_BY_CTU, 96,
+            RK_MPP_SLICE_OUTPUT_LOW_DELAY_PACKETS) != RK_MPP_OK) {
+        return 4;
+    }
+    if (rk_mpp_encoder_gdr_init(&gdr, RK_MPP_GDR_DISABLED, 1) !=
+        RK_MPP_ERR_INVALID) {
+        return 5;
     }
     return 0;
 }

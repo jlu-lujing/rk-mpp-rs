@@ -83,6 +83,39 @@ static int parse_rate_mode(const char *name, uint32_t *mode) {
     return -1;
 }
 
+static int configure_rate_control(rk_mpp_encoder_rate_control_t *rate_control,
+                                  const char *mode_name) {
+    const char *target = getenv("RATE_TARGET_BPS");
+    const char *minimum = getenv("RATE_MIN_BPS");
+    const char *maximum = getenv("RATE_MAX_BPS");
+    const char *initial_qp = getenv("RATE_INITIAL_QP");
+    const char *min_qp = getenv("RATE_MIN_QP");
+    const char *max_qp = getenv("RATE_MAX_QP");
+    uint32_t mode;
+
+    if (!mode_name)
+        mode_name = "fixqp";
+    if (parse_rate_mode(mode_name, &mode) ||
+        rk_mpp_encoder_rate_control_init(rate_control, mode) != RK_MPP_OK ||
+        (mode != RK_MPP_RATE_CONTROL_FIXED_QP &&
+         (!target || !minimum || !maximum))) {
+        return -1;
+    }
+    if (target)
+        rate_control->bps_target = strtoll(target, NULL, 0);
+    if (minimum)
+        rate_control->bps_min = strtoll(minimum, NULL, 0);
+    if (maximum)
+        rate_control->bps_max = strtoll(maximum, NULL, 0);
+    if (initial_qp)
+        rate_control->initial_qp = (uint32_t)strtoul(initial_qp, NULL, 0);
+    if (min_qp)
+        rate_control->min_qp = (uint32_t)strtoul(min_qp, NULL, 0);
+    if (max_qp)
+        rate_control->max_qp = (uint32_t)strtoul(max_qp, NULL, 0);
+    return 0;
+}
+
 static int drain_packets(rk_mpp_encoder_t *encoder,
                          rk_mpp_encoded_packet_t *packet, FILE *out,
                          uint64_t *packets, uint64_t *keyframes,
@@ -126,6 +159,7 @@ static int drain_packets(rk_mpp_encoder_t *encoder,
 int main(int argc, char **argv) {
     rk_mpp_encoder_config_t config;
     rk_mpp_encoder_advanced_config_t advanced;
+    rk_mpp_encoder_advanced_config_v2_t advanced_v2;
     rk_mpp_encoder_t *encoder = NULL;
     rk_mpp_encoded_packet_t packet;
     uint8_t *input = NULL;
@@ -146,6 +180,7 @@ int main(int argc, char **argv) {
     int ret = 1;
     uint32_t index;
     const char *rate_mode_name = getenv("RATE_CONTROL_MODE");
+    const char *control_mode = getenv("CONTROL_MODE");
 
     if (argc != 10 || parse_codec(argv[1], &codec) ||
         parse_format(argv[2], &format)) {
@@ -184,38 +219,93 @@ int main(int argc, char **argv) {
         if (restart)
             config.jpeg_restart_mcus = (uint32_t)strtoul(restart, NULL, 0);
     }
-    if (rate_mode_name) {
-        const char *target = getenv("RATE_TARGET_BPS");
-        const char *minimum = getenv("RATE_MIN_BPS");
-        const char *maximum = getenv("RATE_MAX_BPS");
-        const char *initial_qp = getenv("RATE_INITIAL_QP");
-        const char *min_qp = getenv("RATE_MIN_QP");
-        const char *max_qp = getenv("RATE_MAX_QP");
+    if (control_mode) {
+        int advanced_status;
+
+        if (rk_mpp_encoder_advanced_config_v2_init(
+                &advanced_v2, RK_MPP_RATE_CONTROL_FIXED_QP) != RK_MPP_OK ||
+            configure_rate_control(&advanced_v2.rate_control,
+                                   rate_mode_name)) {
+            fprintf(stderr, "invalid V2 advanced config\n");
+            goto done;
+        }
+        if (!strcmp(control_mode, "slice")) {
+            const char *mode = getenv("SLICE_MODE");
+            const char *argument = getenv("SLICE_ARG");
+            const char *low_delay = getenv("SLICE_LOW_DELAY");
+            uint32_t slice_mode = mode && !strcmp(mode, "byte")
+                                      ? RK_MPP_SLICE_SPLIT_BY_BYTE
+                                      : RK_MPP_SLICE_SPLIT_BY_CTU;
+            uint32_t output_mode =
+                low_delay && strtoul(low_delay, NULL, 0)
+                    ? RK_MPP_SLICE_OUTPUT_LOW_DELAY_PACKETS
+                    : RK_MPP_SLICE_OUTPUT_COMPLETE_ACCESS_UNIT;
+
+            if (!argument ||
+                rk_mpp_encoder_slice_split_init(
+                    &advanced_v2.slice_split, slice_mode,
+                    (uint32_t)strtoul(argument, NULL, 0),
+                    output_mode) != RK_MPP_OK) {
+                goto done;
+            }
+        } else if (!strcmp(control_mode, "roi")) {
+            const char *x = getenv("ROI_X");
+            const char *y = getenv("ROI_Y");
+            const char *roi_width = getenv("ROI_WIDTH");
+            const char *roi_height = getenv("ROI_HEIGHT");
+            const char *roi_qp = getenv("ROI_QP");
+            const char *force_intra = getenv("ROI_FORCE_INTRA");
+            const char *absolute = getenv("ROI_ABSOLUTE_QP");
+            rk_mpp_encoder_roi_region_t *roi = &advanced_v2.rois[0];
+
+            if (!x || !y || !roi_width || !roi_height || !roi_qp ||
+                rk_mpp_encoder_roi_region_init(roi) != RK_MPP_OK) {
+                goto done;
+            }
+            roi->x = (int32_t)strtol(x, NULL, 0);
+            roi->y = (int32_t)strtol(y, NULL, 0);
+            roi->width = (int32_t)strtol(roi_width, NULL, 0);
+            roi->height = (int32_t)strtol(roi_height, NULL, 0);
+            roi->qp = (int32_t)strtol(roi_qp, NULL, 0);
+            if (force_intra && strtoul(force_intra, NULL, 0))
+                roi->flags |= RK_MPP_ROI_FLAG_FORCE_INTRA;
+            if (absolute && strtoul(absolute, NULL, 0))
+                roi->flags |= RK_MPP_ROI_FLAG_ABSOLUTE_QP;
+            advanced_v2.roi_count = 1;
+        } else if (!strcmp(control_mode, "gdr")) {
+            const char *mode = getenv("GDR_MODE");
+            const char *refresh = getenv("GDR_REFRESH");
+            uint32_t gdr_mode = mode && !strcmp(mode, "col")
+                                    ? RK_MPP_GDR_COL
+                                    : RK_MPP_GDR_ROW;
+
+            if (!refresh ||
+                rk_mpp_encoder_gdr_init(
+                    &advanced_v2.gdr, gdr_mode,
+                    (uint32_t)strtoul(refresh, NULL, 0)) != RK_MPP_OK) {
+                goto done;
+            }
+        } else {
+            fprintf(stderr, "unknown CONTROL_MODE=%s\n", control_mode);
+            goto done;
+        }
+        advanced_status =
+            rk_mpp_encoder_create_advanced_v2(&config, &advanced_v2, &encoder);
+        if (advanced_status != RK_MPP_OK || !encoder) {
+            fprintf(stderr, "V2 encoder create failed: %s\n",
+                    rk_mpp_strerror(advanced_status));
+            goto done;
+        }
+    } else if (rate_mode_name) {
         int advanced_status;
 
         if (parse_rate_mode(rate_mode_name, &rate_mode) ||
             rk_mpp_encoder_advanced_config_init(&advanced, rate_mode) !=
                 RK_MPP_OK ||
-            (rate_mode != RK_MPP_RATE_CONTROL_FIXED_QP &&
-             (!target || !minimum || !maximum))) {
+            configure_rate_control(&advanced.rate_control, rate_mode_name)) {
             fprintf(stderr, "invalid rate-control environment\n");
             goto done;
         }
-        if (target)
-            advanced.rate_control.bps_target = strtoll(target, NULL, 0);
-        if (minimum)
-            advanced.rate_control.bps_min = strtoll(minimum, NULL, 0);
-        if (maximum)
-            advanced.rate_control.bps_max = strtoll(maximum, NULL, 0);
-        if (initial_qp)
-            advanced.rate_control.initial_qp =
-                (uint32_t)strtoul(initial_qp, NULL, 0);
-        if (min_qp)
-            advanced.rate_control.min_qp =
-                (uint32_t)strtoul(min_qp, NULL, 0);
-        if (max_qp)
-            advanced.rate_control.max_qp =
-                (uint32_t)strtoul(max_qp, NULL, 0);
         advanced_status =
             rk_mpp_encoder_create_advanced(&config, &advanced, &encoder);
         if (advanced_status != RK_MPP_OK || !encoder) {

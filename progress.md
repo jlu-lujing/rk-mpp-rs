@@ -2,6 +2,21 @@
 
 ## Session: 2026-11-09
 
+### Phase 9.2: ROI, GDR and Slice Controls
+- **Status:** complete on t6/VEPU580; RK3576 streaming controls are an explicit
+  platform SKIP.
+- Added `rk_mpp_encoder_advanced_config_v2_t` without changing the V1.9
+  104-byte advanced config or its initializer.
+- Added typed Rust `RoiConfig`, `GdrConfig` and `SliceSplitConfig`, plus C ROI,
+  GDR and slice descriptors with fixed-size copied ROI storage.
+- t6 H.264/H.265 slice-lowdelay, ROI and GDR C API outputs matched their
+  validated CLI paths byte-for-byte in six cases.
+- t6 V1.8 base and V1.9 advanced consumers ran against the V1.10 library.
+  lf1 compiled the V1.9 consumer and reported the VEPU510 runtime control
+  boundary as SKIP.
+- t6 and lf1 package gates and final `--all-targets` gates passed with
+  `1193 passed / 0 failed / 37 ignored`; rustfmt and strict rustdoc passed.
+
 ### Phase 9.1: Stable Rate-Control Configuration
 - **Status:** complete on t6/VEPU580; RK3576 streaming RC explicitly unsupported
 - Kept the V1.8 68-byte encoder config and `rk_mpp_encoder_create()` unchanged.

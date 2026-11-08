@@ -17,7 +17,7 @@ pub const RK_MPP_ERR_STATE: c_int = -6;
 pub const RK_MPP_ERR_IO: c_int = -7;
 pub const RK_MPP_ERR_TOO_LARGE: c_int = -8;
 
-static VERSION: &[u8] = b"1.9\0";
+static VERSION: &[u8] = b"1.10\0";
 static OK: &[u8] = b"ok\0";
 static INVALID: &[u8] = b"invalid argument\0";
 static UNSUPPORTED: &[u8] = b"unsupported operation\0";
