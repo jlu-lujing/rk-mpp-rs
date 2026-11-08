@@ -7,7 +7,7 @@
 //! buffer to the cache instead of freeing it. A group limit configured with
 //! `mpp_buffer_group_limit_config` makes `mpp_buffer_get` fail (return NULL)
 //! rather than block once `count_used` is reached. This module ports that
-//! behaviour onto [`dma_heap::DmaBuf`].
+//! behaviour onto [`crate::service::dma_heap::DmaBuf`].
 //!
 //! # Mapping of the C semantics
 //!
@@ -18,7 +18,7 @@
 //! | `mpp_buffer_ref` | [`BufferPool::try_clone`] | `Err` once the buffer was fully released |
 //! | `mpp_buffer_unref` | [`BufferPool::release`] | last release moves the slot to `Cached` (kept for reuse, like the C group cache); a second release of the same handle reports [`PoolError::Released`] instead of the C assert/UB |
 //! | `mpp_buffer_group_limit_config(group, size, count)` | `limit` in the constructor | counted per slot rather than per size bucket — see deviations |
-//! | `mpp_buffer_group_import` / fd sharing | [`BufferPool::import`] / [`BufferPool::dup_fd`] | import takes an existing [`dma_heap::DmaBuf`] (an imported dma-buf wrapped at the caller) and caches it |
+//! | `mpp_buffer_group_import` / fd sharing | [`BufferPool::import`] / [`BufferPool::dup_fd`] | import takes an existing [`crate::service::dma_heap::DmaBuf`] (an imported dma-buf wrapped at the caller) and caches it |
 //!
 //! Deliberate deviations, and why:
 //!
@@ -33,7 +33,7 @@
 //!   behaviour).
 //! * A buffer handed out while another handle still references it is
 //!   *never* exposed: a partial release keeps the slot `Live`, so a racing
-//!   [`acquire`](Self::acquire) allocates or fails instead of sharing a
+//!   [`BufferPool::acquire`] allocates or fails instead of sharing a
 //!   reference with the previous owner. C relies on the caller; we enforce.
 //!
 //! # Reference lifetime and the DPB question

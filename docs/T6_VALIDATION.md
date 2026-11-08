@@ -170,11 +170,17 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1212 tests**. The
-regular suite passes **1175 / 0 failed / 37 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1220 tests**. The
+regular suite passes **1183 / 0 failed / 37 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.
+
+The H.264/MJPEG public SDK gate also passes on t6: C and C++ consumers link
+against both the shared and static libraries, every exported API symbol is
+present, lifecycle/error checks pass, and H.264 (7/127/313-byte chunks and
+whole-stream input) plus MJPEG (97/211-byte chunks and four JPEGs in one packet)
+match the board C MPP byte for byte in NV12 and I420.
 
 Fixes required by the validation:
 

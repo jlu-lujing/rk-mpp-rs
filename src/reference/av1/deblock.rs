@@ -5,7 +5,7 @@
 //! arrays (`MiSizes`, `LoopfilterTxSizes`, `Skips`, `RefFrames`, `YModes`,
 //! `SegmentIds`, `DeltaLFs`) are *injected* through [`DeblockGrid`]: decoding
 //! them needs the frame header and tile syntax that this slice does not own.
-//! [`build_cell`] turns their pixel geometry into the `isBlockEdge`/`isTxEdge`
+//! [`DeblockCell::from_geometry`] turns their pixel geometry into the `isBlockEdge`/`isTxEdge`
 //! decision and the filter size, so a tile driver only has to supply sizes.
 //!
 //! Sample reads outside a plane clamp to its border. The specification assumes

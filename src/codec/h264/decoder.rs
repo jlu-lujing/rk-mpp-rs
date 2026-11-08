@@ -835,6 +835,7 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
     let mut has_vcl = false;
+    let mut trailing_non_vcl: Option<usize> = None;
     for n in &nals {
         let boundary = match n.unit_type {
             parser::NAL_AUD => true,
@@ -842,9 +843,11 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
             _ => false,
         };
         if boundary && has_vcl {
-            out.push(&data[start.unwrap()..n.offset]);
-            start = Some(n.offset);
+            let next_start = trailing_non_vcl.unwrap_or(n.offset);
+            out.push(&data[start.unwrap()..next_start]);
+            start = Some(next_start);
             has_vcl = n.is_vcl();
+            trailing_non_vcl = None;
             continue;
         }
         if start.is_none() {
@@ -852,6 +855,9 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
         }
         if n.is_vcl() {
             has_vcl = true;
+            trailing_non_vcl = None;
+        } else if has_vcl && trailing_non_vcl.is_none() {
+            trailing_non_vcl = Some(n.offset);
         }
     }
     if let Some(s) = start {
@@ -906,6 +912,18 @@ mod tests {
         data.extend_from_slice(&[0, 0, 0, 1, 0x41, 0x88]);
         let aus = split_access_units(&data);
         assert_eq!(aus.len(), 2);
+    }
+
+    #[test]
+    fn parameter_sets_between_pictures_join_the_next_access_unit() {
+        let mut data = vec![0u8, 0, 0, 1, 0x67, 0x42];
+        data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0x80]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0x00]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x41, 0x80]);
+
+        let aus = split_access_units(&data);
+        assert_eq!(aus.len(), 2);
+        assert_eq!(&aus[1][4..5], &[0x68]);
     }
 
     #[test]

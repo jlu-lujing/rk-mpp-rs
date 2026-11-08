@@ -1,13 +1,16 @@
-//! rk-mpp-rs: pure-Rust hardware JPEG decode for Rockchip SoCs.
+//! rk-mpp-rs: pure-Rust Rockchip MPP codec and 2D processing.
 //!
-//! The C API at the bottom is what `rknn-fastinfer` links against; the modules
-//! are usable directly from Rust.
+//! [`sdk`] is the versioned streaming API for library consumers. The C-facing
+//! functions at the bottom are the legacy JPEG path used by `rknn-fastinfer`.
 
 pub mod codec;
 pub mod hal;
 pub mod reference;
 pub mod scale;
+pub mod sdk;
 pub mod service;
+
+mod c_api;
 
 use std::ffi::{c_char, CStr};
 

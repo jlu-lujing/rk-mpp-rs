@@ -161,7 +161,7 @@ impl<'a> SymbolDecoder<'a> {
         Ok(symbol)
     }
 
-    /// `read_literal(n)`: `n` pseudo-raw bits through [`read_bool`].
+    /// `read_literal(n)`: `n` pseudo-raw bits through [`Self::read_bool`].
     pub fn read_literal(&mut self, n: u32) -> Result<u32, SymbolError> {
         let mut x = 0u32;
         for _ in 0..n {

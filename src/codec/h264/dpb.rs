@@ -554,7 +554,7 @@ impl Dpb {
     }
 
     /// MPP also materialises both B reference lists for P and I pictures.
-    /// Its hardware RPS always reads RefPicList[1] and RefPicList[2] from
+    /// Its hardware RPS always reads `RefPicList[1]` and `RefPicList[2]` from
     /// those auxiliary B lists, even though only list 0 is used for prediction.
     pub fn build_auxiliary_b_ref_lists(
         &self,

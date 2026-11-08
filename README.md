@@ -81,7 +81,7 @@
 
 整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-94 项完成、6 项未完成（含缩进子项为 132 / 11）；未完成项里有硬件不存在、无 conformance
+95 项完成、6 项未完成（含缩进子项为 133 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
 AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
@@ -177,6 +177,33 @@ partition/mode/skip/tx_depth、
 逐项证据见 `docs/CAPABILITY.md` 的 M11 表与 `ROADMAP.md` 尾部；上文的 89% 是按里程碑
 工作量重算的加权估算。
 
+## 对外 API
+
+当前已有可链接的 **RK MPP Rust V1 解码 SDK**：
+
+- C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
+- Rust 接口：`rk_mpp_rs::sdk`
+- 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
+- 优先编解码器：H.264 decode、MJPEG/JPEG decode
+
+接口接受内存中的任意分块码流，不绑定文件路径。一个 decoder handle 可持续
+提交 packet、接收 frame、显式释放 frame，并支持 `flush`、`reset`、
+`recover`、H.264 `status` 和粘性 EOS。H.264 输出按 POC 有界重排；MJPEG
+支持单个 JPEG 被拆成多包，也支持一个 packet 里包含多个 JPEG。两者当前稳定
+输出 NV12 或 I420；新的 V1 接口暂不宣称 RGB888，历史
+`rk_jpeg_open/frame/close` RGB 接口继续保留给 `rknn-fastinfer`。
+
+板级 C/C++ 门：
+
+```bash
+BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh
+BOARD=t6 ./scripts/board_c_api_h264_mjpeg.sh
+```
+
+lf1 和 t6 已验证共享库和静态库链接、全部公开符号、生命周期错误路径，以及 H.264
+7/127/313-byte 分块和整条单包输入；MJPEG 97/211-byte 分块和四帧单包输入。
+输出与板上 C MPP 逐字节一致。
+
 ## 怎么验证的
 
 所有"完成"都对应板上（NanoPC-T6，RK3588）源码编译的 C MPP：
@@ -191,7 +218,7 @@ partition/mode/skip/tx_depth、
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1212 枚举；1175 常规通过，37 个硬件 ignored
+cargo test --release --all-targets           # t6：1220 枚举；1183 常规通过，37 个硬件 ignored
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
@@ -216,6 +243,7 @@ BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_sequence.sh # VDPU383 AV1 10 帧�
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_10bit.sh # VDPU383 AV1 10-bit skip-grain：C == Rust
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
+BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh # V1 C/C++ H.264 + MJPEG SDK
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 ```
 

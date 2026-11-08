@@ -21,6 +21,21 @@ context 也已闭合完整 `av1_lr` key+P 流。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
+**对外 SDK 推进（2026-11-08）**：已新增版本化 `rk_mpp_*` V1 C ABI
+(`include/rk_mpp_rs.h`) 和 Rust `sdk` 模块，优先覆盖 H.264 与 MJPEG 解码。
+构建同时产出 `cdylib`、`staticlib`、`rlib`；packet 可任意分块，frame 由
+decoder 持有到显式 release。lf1 与 t6 的 C/C++ 动态/静态链接门、生命周期错误路径、
+7/127/313-byte H.264 分块、单包整条 H.264、97/211-byte MJPEG 分块及四帧
+单包 MJPEG 全部通过，NV12/I420 与板上 C MPP 逐字节一致。复跑：
+
+```bash
+BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh
+BOARD=t6 ./scripts/board_c_api_h264_mjpeg.sh
+```
+
+新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
+旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。
+
 **当前板（用户 2026-11-02 再次决定）：t6。** t62 只保留为历史证据；后续同步、
 构建和板级验证全部在 t6（NanoPC-T6-LTS，内核 6.1.57）执行。t6 重启后
 `/tmp/mpp-old`、`/tmp/mpp-develop`、`/tmp/mpp_trace.so` 会被清理，权威副本仍在
@@ -174,7 +189,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 78 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 95 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
@@ -193,6 +208,7 @@ H.264/H.265 普通 slice split 与低延迟逐 slice packet 都已在 t6 上通�
 | `src/hal/h264e.rs` | VEPU580 H.264 编码器：缓冲、寄存器、提交、STATUS 读取 |
 | `src/codec/rc/` | 码率控制移植（`data.rs` = MppDataV2，`model.rs` = rc_model_v2 的 CBR/VBR） |
 | `src/scale.rs` | 自研 RGB 缩放/letterbox（替代 RGA，比 RGA 快 2.9–3.8×） |
+| `src/sdk.rs`, `src/c_api.rs`, `include/rk_mpp_rs.h` | 稳定 Rust/C 解码 SDK、V1 ABI、frame/packet 生命周期 |
 | `src/reference/` | 自研软件参考解码器（M11：CABAC、HEVC 反变换、H.264 CAVLC/4×4+8×8 扫描/反量化/残差/DC；AV1 key/intra 滤波链、SavedCdf、单参考 integer/fractional inter、average/distance-weighted/difference-weighted/wedge compound、inter-intra、OBMC、local warp、单参考/compound global warp 与 temporal MV fields、inter residual 与 frame 内混合 intra/inter、多 tile tile-group：逐 tile 从帧初始 CDF 重启、帧末 CDF 取 context_update_tile_id，帧级 mi/segment 状态跨 tile 携带而邻块上下文、MV 单点候选、OBMC/projection 与 CDEF 单元按 tile 裁剪。2×2 tile 的 10 个 inter coded frame 已全部与 `aomdec` Y/U/V 逐字节一致；temporal motion field 会按 half-res cell 清除 intra 覆盖、在 base-invalid 时继续 extension probes、应用 order-hint sign bias，difference-weighted chroma mask 使用 luma 域重算） |
 | `scripts/board_*.sh` | 板上验证脚本（回归、吞吐、寄存器捕获） |
 | `tools/` | 取证工具：ioctl tracer、C 探针、寄存器 diff、字段生成器 |

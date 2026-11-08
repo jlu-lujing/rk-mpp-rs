@@ -2,11 +2,11 @@
 name = "rk-mpp-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Pure-Rust Rockchip MPP/RGA replacement for JPEG decode and 2D scaling"
+description = "Pure-Rust Rockchip MPP codec SDK and RGA replacement"
 license = "MIT OR Apache-2.0"
 
 [lib]
-crate-type = ["staticlib", "rlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 name = "rk_mpp_rs"
 
 [[bin]]
