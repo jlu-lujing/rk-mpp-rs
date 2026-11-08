@@ -75,8 +75,11 @@ t62 back to the RK3588 reference board.
 - The first keyframe is byte-identical to C: SHA-256
   `5dc26be2b7f1d2a76d135b64435c737cd62d8b6c2ab720a0fb83c83efddfbf56`
   and FNV `0x8da389d2e180d680`.
-- This is a header/ABI foundation only. The 276-word AV1 register plan,
-  CDF/segmentation buffers, RCB sizing and hardware decode are still open.
+- The same keyframe's 212-word serialized `Vdpu383RegSet` is also byte-exact:
+  control/statistic words, current/error/global/output/CDF/colmv addresses,
+  tile strides and all eleven RCB base/length pairs match the C dump.
+- This is still an ABI foundation only. Address-offset commands, real
+  CDF/segmentation/RCB buffers and hardware decode remain open.
 
 - RK3576 H.265 is an initial core-path closure. Random bit-flip injection and
   wider conformance streams still need lf1 evidence.
@@ -130,8 +133,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1203 tests**. The
-regular suite passes **1169 / 0 failed / 34 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1204 tests**. The
+regular suite passes **1170 / 0 failed / 34 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.

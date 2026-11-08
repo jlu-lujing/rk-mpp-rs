@@ -492,7 +492,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       VPU720 JPEG 19/19（3 sizes + 60-MCU restart + 420/422/444 planar/
       semi-planar/packed/YUV400 输入与 400/420/422/444 输出）逐字节。
       VDPU383 AV1 已生成与 C 首帧逐字节的 672-byte global header
-      （FNV `0x8da389d2e180d680`），寄存器/CDF/RCB 仍待实现。
+      （FNV `0x8da389d2e180d680`）和 212-word register struct image；
+      offset/CDF/RCB buffer 与硬件提交仍待实现。
       VEPU510 H.264 已从 C struct 生成 645-field/6-window 寄存器表，并与 lf1
       IDR trace 的 section/STATUS 尺寸对齐；首个 320x240 QP26 Baseline IDR、
       GOP2、GOP6、CBR6、VBR6 和 AVBR6 已与 C 全流逐字节

@@ -501,8 +501,10 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   global header；bit packing 复用 C `mpp_put_bits` 的 64-bit 小端布局，
   末尾保留 16 字节。`av1_tiles_320x240_10.ivf` 首 keyframe 与 lf1 patched C
   dump 逐字节一致，FNV `0x8da389d2e180d680`。C dump 入口见
-  `scripts/av1_vdpu383_dump.patch`。下一步是 276-word register plan、
-  CDF/segmentation buffers 与 RCB。
+  `scripts/av1_vdpu383_dump.patch`。同一 keyframe 的 212-word 串行化
+  `Vdpu383RegSet` 也与 C dump 完全一致，包括 control/statistic、stride、
+  RCB base/length 和 global/output/CDF/colmv 地址。下一步是实际
+  address-offset commands、CDF/segmentation/RCB buffers 与硬件提交。
 - VDPU383 VP9 初始 7/7 已在 lf1 通过：profile 0/2、8/10-bit、lossless、
   errres tiles 和 720p；普通行与 C MPP 逐字节，720p errres 与 321x241
   继续按既有 libvpx 判据处理 C 侧 bug。VDPU383 的 global header、1312-byte

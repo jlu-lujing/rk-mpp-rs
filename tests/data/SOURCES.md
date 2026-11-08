@@ -18,6 +18,8 @@ cargo test --test fixture_manifest
   global-header record emitted by the official C HAL after applying
   `scripts/av1_vdpu383_dump.patch` and decoding the first keyframe of
   `av1_tiles_320x240_10.ivf` on lf1.
+- `av1_vdpu383_regs_key_320x240.bin` is the matching 848-byte serialized
+  `Vdpu383RegSet` from the same C job.
 - `av1_lr_320x240.ivf` is two frames of FFmpeg `testsrc2` encoded by libaom
   `aomenc` with 64x64 superblocks, CDEF and loop restoration enabled, and
   palette/intra-BC disabled:
