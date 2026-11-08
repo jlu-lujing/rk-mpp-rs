@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 3u
+#define RK_MPP_API_VERSION_MINOR 4u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -148,6 +148,73 @@ int rk_mpp_decoder_status(rk_mpp_decoder_t *decoder,
                           uint32_t *status_c);
 /* Null-safe; invalidates every outstanding frame from this decoder. */
 void rk_mpp_decoder_close(rk_mpp_decoder_t *decoder);
+
+/*
+ * Encoder V1 currently implements fixed-QP VEPU580 H.264. Input frames are
+ * tightly packed visible-size NV12 or I420; the SDK pads to coded geometry and
+ * copies all input before submit returns.
+ */
+typedef struct rk_mpp_encoder_config {
+    uint32_t struct_size;
+    uint32_t codec;
+    uint32_t input_format;
+    uint32_t width;
+    uint32_t height;
+    uint32_t profile; /* 0/66 baseline, 77 main, 100 high */
+    uint32_t level;
+    uint32_t gop;
+    uint32_t qp;
+    uint32_t fps_num;
+    uint32_t fps_den;
+    uint32_t flags;
+    uint32_t reserved[3];
+} rk_mpp_encoder_config_t;
+
+enum rk_mpp_encoded_packet_flags {
+    RK_MPP_ENCODED_PACKET_FLAG_KEYFRAME = 1u << 0
+};
+
+typedef struct rk_mpp_encoded_packet {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint32_t reserved0;
+    uint32_t reserved1;
+    int64_t pts;
+    int64_t dts;
+    int32_t frame_num;
+    int32_t poc;
+    const uint8_t *data;
+    uint64_t size;
+    uint64_t reserved[2];
+} rk_mpp_encoded_packet_t;
+
+typedef struct rk_mpp_encoder rk_mpp_encoder_t;
+
+int rk_mpp_encoder_config_init(rk_mpp_encoder_config_t *config,
+                               uint32_t codec,
+                               uint32_t width,
+                               uint32_t height,
+                               uint32_t input_format);
+int rk_mpp_encoded_packet_init(rk_mpp_encoded_packet_t *packet);
+int rk_mpp_encoder_create(const rk_mpp_encoder_config_t *config,
+                          rk_mpp_encoder_t **out_encoder);
+int rk_mpp_encoder_submit_frame(rk_mpp_encoder_t *encoder,
+                                const uint8_t *data,
+                                uint64_t size,
+                                int64_t pts,
+                                int64_t dts);
+/*
+ * Returns OK with one packet, AGAIN when no packet is currently ready, or EOS
+ * after flush and all queued packets have drained. Release each packet before
+ * receiving again.
+ */
+int rk_mpp_encoder_receive_packet(rk_mpp_encoder_t *encoder,
+                                  rk_mpp_encoded_packet_t *packet);
+void rk_mpp_encoded_packet_release(rk_mpp_encoder_t *encoder,
+                                   rk_mpp_encoded_packet_t *packet);
+int rk_mpp_encoder_flush(rk_mpp_encoder_t *encoder);
+int rk_mpp_encoder_reset(rk_mpp_encoder_t *encoder);
+void rk_mpp_encoder_close(rk_mpp_encoder_t *encoder);
 
 /*
  * Legacy single-JPEG inference helper kept for rknn-fastinfer compatibility.

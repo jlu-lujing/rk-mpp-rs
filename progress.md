@@ -52,6 +52,8 @@
 | VP9 C ABI | Profile 0/2 packet decode | 12-frame NV12/I420 and 10-bit I420P10 byte equality on lf1/t6 | PASS |
 | AV1 C ABI | RK3588 and RK3576 AV1 paths | 8-bit key+P and 10-bit temporal-unit outputs pass on lf1/t6 | PASS |
 | AV1 full gates | lf1/t6 all-targets green | 1186 passed / 0 failed / 37 ignored; t6 lib 1042/0/0 | PASS |
+| H.264 encoder API | VEPU580 and VEPU510 | 6-frame NV12/I420 output matches CLI oracle on lf1/t6 | PASS |
+| H.264 encoder full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
 
 ### Phase 6.2: VP9 Public Decoder
 - **Status:** complete on lf1 and t6
@@ -73,6 +75,18 @@
   backend through the same SDK handle.
 - 8-bit key+P output matches C; t6 10-bit output matches the Rust/libaom
   grain-applied oracle, retaining the documented C film-grain bug.
+
+### Phase 6.4.1: H.264 Public Encoder
+- **Status:** complete on lf1 and t6 for exposed paths
+- The existing VEPU580 H.264 path is synchronous and already returns complete
+  packet boundaries, so the public handle can expose direct submit/receive
+  semantics with copied input.
+- Initial configuration covers NV12/I420, baseline/main/high, level, GOP, QP,
+  frame rate and automatic SPS/PPS on IDR.
+- Added API version 1.4, owned packet queue/release, flush/reset and C ABI.
+- t6 VEPU580 and lf1 VEPU510 six-frame outputs match their respective CLI
+  oracles, SHA-256 `aa6276ba…173d1` and `0e65b51a…81f33`; NV12 and I420
+  inputs match each other on each board.
 
 ### Errors
 

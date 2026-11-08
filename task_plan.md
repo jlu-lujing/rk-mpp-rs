@@ -6,9 +6,8 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-6.3 are complete for H.264, H.265, VP9, AV1 and MJPEG decode. The next
-priority is a stable encoder contract for the implemented H.264, H.265 and JPEG
-paths.
+Phases 1-6.4.1 are complete for the decoder matrix and H.264 encoding. The next
+priority is the H.265 encoder backend, followed by JPEG.
 
 ## Phases
 
@@ -69,10 +68,28 @@ paths.
 - **Status:** complete on lf1 and t6.
 
 ### Phase 6.4: Encoder API Contract
-- [ ] Define frame input ownership, packet output and EOS/flush rules.
+- [x] Define frame input ownership, packet output and EOS/flush rules.
 - [ ] Add H.264, H.265 and JPEG encoder handles to Rust and C.
 - [ ] Verify fixed-QP IDR/GOP output against the existing C goldens.
 - **Status:** in_progress
+
+### Phase 6.4.1: H.264 Encoder API
+- [x] Expose synchronous submit/receive with copied NV12/I420 input.
+- [x] Add fixed-QP profile, level, GOP, QP and frame-rate configuration.
+- [x] Verify multi-frame GOP byte equality on lf1 and t6.
+- **Status:** complete for VEPU580 and the currently captured VEPU510 path.
+
+### Phase 6.4.2: H.265 Encoder API
+- [ ] Select VEPU580 or VEPU510 from the configured SoC.
+- [ ] Expose copied NV12 input and owned Annex-B packet output.
+- [ ] Verify fixed-QP IDR/GOP production starts on lf1 and t6.
+- **Status:** pending
+
+### Phase 6.4.3: JPEG Encoder API
+- [ ] Add deterministic NV12 input and JPEG packet output.
+- [ ] Expose quality, chroma and restart configuration.
+- [ ] Verify byte equality on lf1 and t6.
+- **Status:** pending
 
 ### Phase 7: Full Verification and Handoff
 - [x] Run host-independent gates on lf1 and t6.
@@ -86,6 +103,8 @@ paths.
 - [x] Run final VP9 full suite and commit the API 1.2 slice.
 - [x] Run lf1/t6 C/C++ gates for AV1 8-bit and 10-bit.
 - [x] Run final AV1 full suite and commit the API 1.3 slice.
+- [x] Run lf1/t6 H.264 encoder API gates and full suites.
+- [x] Commit the H.264 encoder/API 1.4 slice.
 - **Status:** complete
 
 ## Decisions Made

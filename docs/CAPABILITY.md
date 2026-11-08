@@ -49,6 +49,7 @@
 | legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行 |
 | 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264/HEVC/AV1/VP9 DPB surface 均持有 lease；t6 async demo、H.264/HEVC/AV1/VP9 池化边界测试全过 |
 | 对外解码 SDK | H.264/H.265/VP9/AV1/MJPEG V1.3 完成 | `include/rk_mpp_rs.h` 与 `rk_mpp_rs::sdk`；共享/静态库、C/C++ 链接、分块或 packet 输入、flush/reset/recover/status/EOS、显式 frame release。lf1 与 t6 上 H.264/MJPEG NV12/I420、H.265/VP9 8-bit NV12/I420 及 10-bit I420P10、AV1 8-bit 与 VDPU383 10-bit 均与对应 oracle 逐字节；t6 AV1 10-bit 按已登记 film-grain C bug 与 Rust/libaom 对齐。新 V1 暂不含 RGB888，旧 `rk_jpeg_*` 保留 |
+| 对外编码 SDK | H.264 V1.4 完成 | 同步 submit/receive、NV12/I420 输入复制与 coded geometry padding、owned packet/release、flush/reset。t6 VEPU580 支持 baseline/main/high 与通用 level/GOP/QP/fps；RK3576 VEPU510 当前限定 320×240 Baseline QP26 GOP6 @30fps。lf1/t6 六帧输出与现有 CLI oracle 逐字节 |
 | fence / 多核 CCU / secure | 受内核限制 | 该内核/驱动不暴露对应接口，未伪造 |
 | RK3576 平台适配 | 进行中 | VDPU383 H.264 IPPP + 5/5 边界；H.265 12/12（含 500 帧 LTR SPS 与删 AU 缺失参考）并新增 16 格损坏矩阵：14 格 C/Rust 输出一致，损坏 SPS/首个 IDR slice 起点两格 Rust 及时结束而 C 超时；VP9 初始 7/7、VPU720 JPEG 19/19、VEPU510 H.264/H.265 功能、RC、ROI、slice、GDR 矩阵均板上通过。VDPU383 AV1 已完成 8-bit 10 帧引用序列和 10-bit skip-grain 序列：key/inter、`show_existing_frame`、八槽 output/CDF/colmv、primary-reference coefficient-CDF、704-byte 10-bit stride 与 packed-NV12 → planar u16 均接通；输出 SHA-256 分别为 `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138` 和 `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`。VDPU383 FGS enable/base 会以 STATUS 0 超时并复位，C HAL 也未启用 film grain。AVS2、VPU720 tile input 和 VDPP2 待完成 |
 
@@ -167,6 +168,6 @@ stack 合并，128 个 inter block 的三平面与 libaom 逐字节一致。segm
 key/inter `ALT_Q`、temporal segment-map prediction 与 1050 个非零 segment block，三帧
 Y/U/V 也与 libaom 逐字节一致。完整 `av1_lr` key+P 流还覆盖非 skip inter 邻居的 selected
 tx-size context，458 个 footprint block 与两帧 Y/U/V 均逐字节一致。
-t6 `cargo test --release --all-targets` 为 **1223 个测试枚举 / 1186 常规通过 / 0 失败 / 37 个板级 ignored**；
-t6 `cargo test --release --lib` 为 **1042 passed / 0 failed**。37 个板级 ignored 测试已有逐项通过记录，
+t6 `cargo test --release --all-targets` 为 **1225 个测试枚举 / 1188 常规通过 / 0 失败 / 37 个板级 ignored**；
+t6 `cargo test --release --lib` 为 **1044 passed / 0 failed**。37 个板级 ignored 测试已有逐项通过记录，
 完整 t6 回归与性能闸门见 `docs/T6_VALIDATION.md`。

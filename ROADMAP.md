@@ -109,6 +109,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M0 | JPEG decode (`jpegd`): parser, hw tables, registers, RGB888/NV12, 1/2–1/8 downscale, scaler | 2.9k | **done** |
 | M0 | JPEG decode beats MPP by ~30 % (no buf_slot/meta layer); 0.96 ms @ 640p | — | **done** |
 | M0 | Public H.264/H.265/VP9/AV1/MJPEG decoder SDK: versioned C ABI, Rust API, shared/static libraries | — | **done on lf1 and t6** |
+| M0 | Public H.264 encoder SDK: VEPU580/VEPU510 synchronous frame and packet handles | — | **done on lf1 and t6 for the exposed paths** |
 | M1 | H.264 syntax: Annex-B, RBSP, Exp-Golomb, SPS/PPS/slice header, scaling lists | 3.5k | **done** |
 | M1 | H.264 register map generated from `hal_h264d_rkv_reg.h` (80 words, 122 fields) | 0.25k | **done** |
 | M2 | H.264 decode on rkvdec: reg writer, DPB, reference lists, MMCO, MBAFF, field-coded, error propagation | 6.0k | **frame/MBAFF/PAFF/long-term/error-path bit-exact** |
@@ -324,6 +325,14 @@ in what order the evidence gets produced.
       8-bit AV1 key+P and 10-bit AV1 temporal units,
       97/211-byte MJPEG chunks, whole-stream
       video input and four concatenated JPEGs, all byte-identical to C MPP.
+- [x] Public H.264 encoder API V1.4: copied NV12/I420 visible-size input,
+      coded-geometry padding, owned packet queue and explicit release,
+      flush/reset and sequence metadata. t6 VEPU580 exposes
+      baseline/main/high, level, GOP, QP and fps. RK3576 VEPU510 exposes the
+      board-validated 320x240 Baseline QP26 GOP6 path until the remaining
+      captured-format matrix is generalized. Six-frame output is byte-identical
+      to the existing CLI oracle on both boards: VEPU510/lf1
+      `0e65b51a…81f33`, VEPU580/t6 `aa6276ba…173d1`.
       `bus.jpg` (640x640, SHA-256 `fb4914d1…4014e16`) produces
       320x320, 160x160 and 80x80 frames. Full-size output is 44.13 dB
       RGB PSNR versus libjpeg-turbo; 1/2, 1/4 and 1/8 are 38.64, 36.16 and
@@ -1693,9 +1702,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1223
-      enumerated / 1186 regular pass / 0 failed / 37 board-only ignored, and
-      the release library suite is 1042 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1225
+      enumerated / 1188 regular pass / 0 failed / 37 board-only ignored, and
+      the release library suite is 1044 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3348,7 +3357,7 @@ pipeline uses.
   Rust's `open_tile_columns(2)` rejects before any DMA or hardware allocation.
   With this boundary and the 10-bit rejection, the VEPU510 H.265 board matrix
   is 15/15. Wider STATUS feedback remains open.
-- Tests: `cargo test --release --all-targets` enumerates 1223 tests: 1186
+- Tests: `cargo test --release --all-targets` enumerates 1225 tests: 1188
   regular pass and 37 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

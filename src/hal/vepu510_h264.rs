@@ -58,6 +58,7 @@ pub struct Vepu510H264 {
     thumb: [DmaBuf; 2],
     smear: [DmaBuf; 2],
     idr_done: bool,
+    frame_number: u32,
 }
 
 impl Vepu510H264 {
@@ -101,7 +102,45 @@ impl Vepu510H264 {
             thumb,
             smear,
             idr_done: false,
+            frame_number: 0,
         })
+    }
+
+    /// Streaming variant of the captured fixed-QP path: one IDR followed by P
+    /// pictures for a 320x240 QP26 Baseline sequence.
+    pub fn encode_fixed_qp_next_320x240(
+        &mut self,
+        nv12: &[u8],
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        if nv12.len() < INPUT_SIZE {
+            return Err(format!(
+                "VEPU510 input is {} bytes, expected at least {INPUT_SIZE}",
+                nv12.len()
+            ));
+        }
+        if !self.idr_done {
+            let encoded = self.encode_idr(&nv12[..INPUT_SIZE], &[], SplitMode::None, 0, 0)?;
+            self.idr_done = true;
+            self.frame_number = 0;
+            return Ok((encoded.stream, true, 0, 0));
+        }
+        self.frame_number = self.frame_number.saturating_add(1);
+        let encoded = self.encode_p(
+            &nv12[..INPUT_SIZE],
+            self.frame_number,
+            &[],
+            SplitMode::None,
+            0,
+            0,
+            &[],
+            None,
+        )?;
+        Ok((
+            encoded.stream,
+            false,
+            self.frame_number,
+            self.frame_number as i32 * 2,
+        ))
     }
 
     pub fn encode_fixed_qp_idr_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {

@@ -38,6 +38,15 @@ for symbol in \
     rk_mpp_decoder_recover \
     rk_mpp_decoder_status \
     rk_mpp_decoder_close \
+    rk_mpp_encoder_config_init \
+    rk_mpp_encoded_packet_init \
+    rk_mpp_encoder_create \
+    rk_mpp_encoder_submit_frame \
+    rk_mpp_encoder_receive_packet \
+    rk_mpp_encoded_packet_release \
+    rk_mpp_encoder_flush \
+    rk_mpp_encoder_reset \
+    rk_mpp_encoder_close \
     rk_jpeg_open \
     rk_jpeg_frame \
     rk_jpeg_close
@@ -54,6 +63,10 @@ gcc -std=c11 -Wall -Wextra -Werror \
     -Iinclude tests/c_api_ivf.c \
     -Ltarget/debug -lrk_mpp_rs -Wl,-rpath,"$PWD/target/debug" \
     -o /tmp/rk_mpp_c_api_ivf
+gcc -std=c11 -Wall -Wextra -Werror \
+    -Iinclude tests/c_api_encoder.c \
+    -Ltarget/debug -lrk_mpp_rs -Wl,-rpath,"$PWD/target/debug" \
+    -o /tmp/rk_mpp_c_api_encoder
 g++ -std=c++17 -Wall -Wextra -Werror \
     -Iinclude tests/c_api_decoder_smoke.cpp \
     -Ltarget/debug -lrk_mpp_rs -Wl,-rpath,"$PWD/target/debug" \
@@ -67,6 +80,11 @@ LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
 /tmp/rk_mpp_c_api_smoke_static
 
 h264=/tmp/rk_mpp_c_api_h264.264
+h264_raw=/tmp/rk_mpp_c_api_encoder.nv12
+h264_raw_i420=/tmp/rk_mpp_c_api_encoder.i420
+h264_api=/tmp/rk_mpp_c_api_encoder.264
+h264_api_i420=/tmp/rk_mpp_c_api_encoder_i420.264
+h264_cli=/tmp/rk_mpp_c_api_encoder_cli.264
 h265=/tmp/rk_mpp_c_api_h265.265
 h265_10=/tmp/rk_mpp_c_api_h265_10.265
 mjpeg_dir=/tmp/rk_mpp_c_api_mjpeg
@@ -117,6 +135,12 @@ ffmpeg -nostdin -y -hide_banner -loglevel error \
     -x264-params "keyint=30:min-keyint=30:bframes=3:scenecut=0:repeat-headers=1" \
     -f h264 "$h264"
 ffmpeg -nostdin -y -hide_banner -loglevel error \
+    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
+    -pix_fmt nv12 -f rawvideo "$h264_raw"
+ffmpeg -nostdin -y -hide_banner -loglevel error \
+    -f rawvideo -pixel_format nv12 -video_size 320x240 \
+    -i "$h264_raw" -pix_fmt yuv420p -f rawvideo "$h264_raw_i420"
+ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=10" -frames:v 4 \
     -pix_fmt yuvj420p -strict unofficial -c:v mjpeg -q:v 3 \
     "$mjpeg_dir/frame_%02d.jpg"
@@ -152,6 +176,21 @@ cmp "$c_h264" "$c_api_h264_one_packet"
 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_decoder h264 i420 127 "$c_api_h264_i420" "$h264"
 cmp "$c_h264_i420" "$c_api_h264_i420"
+
+if ./target/debug/rk-mpp-rs h264-enc "$h264_raw" "$h264_cli" \
+    320 240 26 baseline 6 6 > /tmp/rk_mpp_c_api_encoder_cli.log 2>&1; then
+    :
+else
+    ./target/debug/rk-mpp-rs h264e510-gop6 "$h264_raw" "$h264_cli" \
+        > /tmp/rk_mpp_c_api_encoder_cli.log 2>&1
+fi
+LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_encoder nv12 "$h264_api" 320 240 26 6 6 "$h264_raw"
+cmp "$h264_cli" "$h264_api"
+LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_encoder i420 "$h264_api_i420" 320 240 26 6 6 \
+    "$h264_raw_i420"
+cmp "$h264_cli" "$h264_api_i420"
 
 rm -f "$c_h265"
 LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
@@ -394,6 +433,7 @@ sha256sum "$c_api_h264" "$c_h264" \
     "$c_api_vp9_p2" "$c_vp9_p2_planar" \
     "$c_api_av1_p0" "$c_av1_p0" \
     "$c_api_av1_p0_i420" "$c_av1_p0_i420" \
-    "$c_api_av1_p2" "$c_av1_p2_planar"
-printf 'PASS rk_mpp C/C++ API H.264 + H.265 + VP9 + AV1 + MJPEG\n'
+    "$c_api_av1_p2" "$c_av1_p2_planar" \
+    "$h264_api" "$h264_api_i420" "$h264_cli"
+printf 'PASS rk_mpp C/C++ decoder + H.264 encoder API\n'
 REMOTE

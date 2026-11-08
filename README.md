@@ -179,12 +179,13 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.3 解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.4 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
 - 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
-- 优先编解码器：H.264、H.265/HEVC、VP9、AV1 和 MJPEG/JPEG decode
+- 优先编解码器：H.264、H.265/HEVC、VP9、AV1 和 MJPEG/JPEG decode；
+  H.264 VEPU580/VEPU510 encode
 
 接口接受内存中的任意分块码流，不绑定文件路径。一个 decoder handle 可持续
 提交 packet、接收 frame、显式释放 frame，并支持 `flush`、`reset`、
@@ -210,6 +211,12 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 2 个 packet、10-bit 10 个 temporal unit；MJPEG 97/211-byte 分块和四帧单包
 输入。除已登记的 AV1 film-grain C bug 外，输出均与板上 oracle 逐字节一致。
 
+H.264 编码接口接受紧凑的 visible-size NV12/I420，内部复制并补齐 coded
+geometry，再以同步 packet queue 返回 Annex-B。t6 VEPU580 支持
+baseline/main/high、level、GOP、QP 和帧率；RK3576 VEPU510 当前只开放已板验的
+320×240 Baseline QP26 GOP6 @30fps 路径。两端都把 6 帧 GOP 与现有 CLI 输出
+逐字节比较，并验证 reset 复用和 packet release。
+
 ## 怎么验证的
 
 所有"完成"都对应板上（NanoPC-T6，RK3588）源码编译的 C MPP：
@@ -224,7 +231,7 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1223 枚举；1186 常规通过，37 个硬件 ignored
+cargo test --release --all-targets           # t6：1225 枚举；1188 常规通过，37 个硬件 ignored
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4

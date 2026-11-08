@@ -23,7 +23,7 @@ use crate::service::soc::{SocProfile, VideoDecodeHal};
 use crate::service::{MppService, VPU_CLIENT_JPEG_DEC};
 
 pub const API_VERSION_MAJOR: u32 = 1;
-pub const API_VERSION_MINOR: u32 = 3;
+pub const API_VERSION_MINOR: u32 = 4;
 pub const API_VERSION: u32 = (API_VERSION_MAJOR << 16) | API_VERSION_MINOR;
 
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;

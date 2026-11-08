@@ -1,9 +1,11 @@
 //! rk-mpp-rs: pure-Rust Rockchip MPP codec and 2D processing.
 //!
-//! [`sdk`] is the versioned streaming API for library consumers. The C-facing
-//! functions at the bottom are the legacy JPEG path used by `rknn-fastinfer`.
+//! [`sdk`] is the versioned streaming decoder API and [`encoder`] is the
+//! synchronous encoder API for library consumers. The C-facing functions at
+//! the bottom are the legacy JPEG path used by `rknn-fastinfer`.
 
 pub mod codec;
+pub mod encoder;
 pub mod hal;
 pub mod reference;
 pub mod scale;
@@ -11,6 +13,7 @@ pub mod sdk;
 pub mod service;
 
 mod c_api;
+mod c_api_encoder;
 
 use std::ffi::{c_char, CStr};
 

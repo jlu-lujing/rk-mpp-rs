@@ -61,6 +61,17 @@
   10-bit output matches C at `f3b69b61…49b8`; on t6 grain-applied output is
   `b75e6172…904d`, matching the Rust/libaom result while C retains its known
   missing-film-grain bug.
+- `hal::h264e::Vepu580H264::encode_frame` is already synchronous: it copies the
+  NV12 input, submits/polls the hardware and returns complete `EncodedFrame`
+  values with packet boundaries and sequence metadata. A public encoder can
+  therefore queue fully-owned output without inventing asynchronous ownership.
+- RK3576's captured VEPU510 H.264 path is fixed at 320x240, Baseline QP26,
+  one IDR plus P pictures and 30 fps. The public API exposes only that validated
+  path instead of pretending the VEPU580 configuration surface transfers.
+- The public H.264 encoder's 6-frame output matches the VEPU580 CLI on t6
+  (SHA-256 `aa6276ba…173d1`) and `h264e510-gop6` on lf1
+  (`0e65b51a…81f33`). NV12 and converted I420 inputs match each other on each
+  board; the two SoCs use different hardware bitstreams by design.
 - Verified VP9 SHA-256 values are
   `c5381bbf…3949a` (profile 0 NV12),
   `53bc3dd4…0abea69` (profile 0 I420), and
@@ -96,6 +107,7 @@
 - `src/codec/hevc/decoder.rs`
 - `src/codec/vp9/decoder.rs`
 - `src/codec/av1/decoder.rs`
+- `src/hal/h264e.rs`
 - `src/codec/jpeg/parser.rs`
 - `src/hal/jpegd.rs`
 - `src/bin/h264_stream.rs`
