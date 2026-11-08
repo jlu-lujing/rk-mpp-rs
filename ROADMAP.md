@@ -3200,6 +3200,10 @@ pipeline uses.
   `f7cc121537e3fa7e3f075ec052409c7f9bd9be04a4153a94adf05f68cebaad7b`.
   The P job alternates FBC reconstruction, thumbnail and smear slots, reads
   the IDR slot as reference, and uses the captured P syntax/AQ/SQI words.
+- A six-frame fixed-QP GOP is byte-identical too: 18225 bytes with SHA-256
+  `0e65b51a9c31a8719e0a6c5a16757c9d5783508f17d68c0ca12dda2272811f33`.
+  Slots alternate 0/1; `frame_num`, POC LSB and the two observed SQI/AQ rows
+  are derived from the picture index.
 - Tests: `cargo test --release --all-targets` enumerates 1181 tests: 1147
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the

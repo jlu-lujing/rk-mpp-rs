@@ -31,8 +31,8 @@
   以及 400/420/422/444 四种输出）也与 C MPP 逐字节。LTR/error rows、AV1、
   VPU720 tile input、VEPU510 编码、VDPP2 和 H.264 完整边界矩阵仍在推进。
   VEPU510 H.264 已生成 6 个写窗口、645 个字段的 Rust 寄存器表，并完成首个
-  320x240 QP26 Baseline IDR+P（GOP2）硬件编码，分别与 C MPP **6479 / 8671
-  bytes 逐字节一致**。
+  320x240 QP26 Baseline IDR、GOP2 与 6 帧 GOP 硬件编码，分别与 C MPP
+  **6479 / 8671 / 18225 bytes 逐字节一致**。
   其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
   固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
@@ -186,7 +186,7 @@ BOARD=luck2 ./scripts/board_rk3576_h265_vs_mpp.sh # RK3576 VDPU383：10/10
 BOARD=luck2 ./scripts/board_rk3576_vp9_vs_mpp.sh  # RK3576 VDPU383 VP9：7/7
 BOARD=luck2 ./scripts/board_rk3576_h264_edges_vs_mpp.sh # H.264 边界：5/5
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
-BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 IDR+GOP2：2/2
+BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 IDR/GOP2/GOP6：3/3
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh

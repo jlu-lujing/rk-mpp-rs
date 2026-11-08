@@ -94,11 +94,27 @@ impl Vepu510H264 {
     }
 
     pub fn encode_fixed_qp_gop2_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
-        if nv12.len() < INPUT_SIZE * 2 {
+        self.encode_fixed_qp_gop_320x240(nv12, 2)
+    }
+
+    pub fn encode_fixed_qp_gop_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+    ) -> Result<Vec<u8>, String> {
+        if !(1..=6).contains(&frames) {
+            return Err(format!(
+                "captured VEPU510 GOP length {frames} is outside 1..=6"
+            ));
+        }
+        let expected = INPUT_SIZE
+            .checked_mul(frames)
+            .ok_or_else(|| "VEPU510 GOP input size overflow".to_string())?;
+        if nv12.len() < expected {
             return Err(format!(
                 "VEPU510 GOP input is {} bytes, expected {}",
                 nv12.len(),
-                INPUT_SIZE * 2
+                expected
             ));
         }
         if self.idr_done {
@@ -106,7 +122,11 @@ impl Vepu510H264 {
         }
         let mut stream = self.encode_idr(&nv12[..INPUT_SIZE])?;
         self.idr_done = true;
-        stream.extend(self.encode_p(&nv12[INPUT_SIZE..INPUT_SIZE * 2])?);
+        for frame_number in 1..frames {
+            let start = frame_number * INPUT_SIZE;
+            let end = start + INPUT_SIZE;
+            stream.extend(self.encode_p(&nv12[start..end], frame_number as u32)?);
+        }
         Ok(stream)
     }
 
@@ -130,16 +150,19 @@ impl Vepu510H264 {
         self.run_job(nv12, &registers, &header)
     }
 
-    fn encode_p(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+    fn encode_p(&mut self, nv12: &[u8], frame_number: u32) -> Result<Vec<u8>, String> {
+        let current = (frame_number & 1) as usize;
+        let reference = 1 - current;
         let registers = RegisterFile::captured_fixqp_p_320x240(
             self.input.fd() as u32,
             self.output.fd() as u32,
-            self.recon[1].fd() as u32,
-            self.recon[0].fd() as u32,
-            self.thumb[1].fd() as u32,
-            self.thumb[0].fd() as u32,
-            self.smear[1].fd() as u32,
-            self.smear[0].fd() as u32,
+            self.recon[current].fd() as u32,
+            self.recon[reference].fd() as u32,
+            self.thumb[current].fd() as u32,
+            self.thumb[reference].fd() as u32,
+            self.smear[current].fd() as u32,
+            self.smear[reference].fd() as u32,
+            frame_number,
         )?;
         self.run_job(nv12, &registers, &[])
     }

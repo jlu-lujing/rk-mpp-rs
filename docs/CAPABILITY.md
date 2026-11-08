@@ -49,7 +49,7 @@
 | legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行 |
 | 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264/HEVC/AV1/VP9 DPB surface 均持有 lease；t6 async demo、H.264/HEVC/AV1/VP9 池化边界测试全过 |
 | fence / 多核 CCU / secure | 受内核限制 | 该内核/驱动不暴露对应接口，未伪造 |
-| RK3576 平台适配 | 进行中 | VDPU383 H.264 IPPP + 5/5 边界、H.265 初始 10/10、VP9 初始 7/7、VPU720 JPEG 19/19（420/422/444/400 输入/输出组合 + restart）、VEPU510 H.264 320x240 QP26 Baseline IDR 与 IDR+P 逐字节；VEPU510 RC/长 GOP/ROI/split、VEPU510 H.265、AV1/AVS2、VPU720 tile input 和 VDPP2 待完成 |
+| RK3576 平台适配 | 进行中 | VDPU383 H.264 IPPP + 5/5 边界、H.265 初始 10/10、VP9 初始 7/7、VPU720 JPEG 19/19（420/422/444/400 输入/输出组合 + restart）、VEPU510 H.264 320x240 QP26 Baseline IDR/GOP2/GOP6 逐字节；VEPU510 RC/ROI/split、VEPU510 H.265、AV1/AVS2、VPU720 tile input 和 VDPP2 待完成 |
 
 ## 软件参考解码器（M11，自研 ground truth）
 

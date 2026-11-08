@@ -91,7 +91,13 @@ impl RegisterFile {
         thumb_read_fd: u32,
         smear_write_fd: u32,
         smear_read_fd: u32,
+        frame_number: u32,
     ) -> Result<Self, String> {
+        if frame_number == 0 || frame_number > 5 {
+            return Err(format!(
+                "captured VEPU510 P frame number {frame_number} is outside 1..=5"
+            ));
+        }
         let mut regs = Self {
             ctl: vepu510_p_template::CTL,
             frame: vepu510_p_template::FRAME,
@@ -115,6 +121,17 @@ impl RegisterFile {
         regs.frame[28] = smear_read_fd;
         regs.frame[29] = smear_write_fd;
         regs.frame[15] = 0;
+        regs.set(vepu510_regs::H264_SYNT_SLI0_FRM_NUM, frame_number)?;
+        regs.set(vepu510_regs::H264_SYNT_SLI1_IDR_PID, 0xffff)?;
+        regs.set(
+            vepu510_regs::H264_SYNT_SLI1_POC_LSB,
+            frame_number.saturating_mul(2),
+        )?;
+        regs.sqi[5] = if frame_number & 1 != 0 {
+            0x0000_2810
+        } else {
+            0x0000_4810
+        };
         Ok(regs)
     }
 
@@ -269,7 +286,8 @@ mod tests {
 
     #[test]
     fn captured_fixqp_p_builder_reproduces_the_reference_job() {
-        let regs = RegisterFile::captured_fixqp_p_320x240(9, 10, 16, 13, 17, 14, 18, 15).unwrap();
+        let regs =
+            RegisterFile::captured_fixqp_p_320x240(9, 10, 16, 13, 17, 14, 18, 15, 1).unwrap();
         assert_eq!(regs.ctl, vepu510_p_template::CTL);
         assert_eq!(regs.frame, vepu510_p_template::FRAME);
         assert_eq!(regs.rc, vepu510_p_template::RC);
