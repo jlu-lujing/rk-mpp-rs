@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1175
-      enumerated / 1141 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 997 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1178
+      enumerated / 1144 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1000 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3185,7 +3185,11 @@ pipeline uses.
   input and VDPP2 remain in progress. VPU720 low-delay is an explicit reject:
   its C HAL has null `part_start`/`part_wait`, which makes the reference probe
   spin on zero-length packets.
-- Tests: `cargo test --release --all-targets` enumerates 1175 tests: 1141
+- The first VEPU510 H.264 foundation is generated from the C structs:
+  CTL/frame/RC/param/SQI/SCL cover 645 named fields over the six write windows,
+  and the independent STATUS view covers 148 words at word 4096. The section
+  lengths are pinned against a captured lf1 fixed-QP IDR ioctl job.
+- Tests: `cargo test --release --all-targets` enumerates 1178 tests: 1144
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.
