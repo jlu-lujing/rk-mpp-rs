@@ -517,10 +517,12 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   6 帧 GOP 同为逐字节，18225 bytes，SHA-256
   `0e65b51a9c31a8719e0a6c5a16757c9d5783508f17d68c0ca12dda2272811f33`；
   两槽按帧号奇偶交替，frame_num/POC/SQI 已由模板字段生成。
-  下一步扩 RC、ROI 和 split。
+  CBR6 也已逐字节，14187 bytes，SHA-256
+  `d9de49270ab4140b1005a8cadf161a6e81c65e73ea65a356b0901656b24ac87c`。
+  下一步扩 VBR/AVBR、ROI 和 split。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 RC、ROI 与 split；之后推进 AV1/AVS2、VPU720 tile input 与 VDPP2。
+- 下一步：扩 VEPU510 VBR/AVBR、ROI 与 split；之后推进 AV1/AVS2、VPU720 tile input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 

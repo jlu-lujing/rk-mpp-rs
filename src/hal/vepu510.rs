@@ -135,6 +135,96 @@ impl RegisterFile {
         Ok(regs)
     }
 
+    pub fn apply_cbr_rate_control(
+        &mut self,
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+        is_idr: bool,
+    ) -> Result<(), String> {
+        if bit_target <= 0 {
+            return Err(format!("invalid VEPU510 CBR bit target {bit_target}"));
+        }
+        let mb_w = 20i32;
+        let mb_h = 15i32;
+        let mut target_16 = bit_target.wrapping_shl(4) / (mb_w * mb_h);
+        if target_16 >= 0x0010_0000 {
+            target_16 = 0x0005_0000;
+        }
+        let mb_target = (target_16 * mb_w) >> 4;
+        let negative = 0 - 5 * mb_target / 16;
+        let positive = 5 * mb_target / 16;
+
+        self.set(vepu510_regs::FRAME_ENC_PIC_PIC_QP, qp_target)?;
+        self.set(vepu510_regs::FRAME_RC_CFG_RC_EN, 1)?;
+        self.set(vepu510_regs::FRAME_RC_CFG_AQ_EN, 1)?;
+        self.set(vepu510_regs::FRAME_RC_CFG_RC_CTU_NUM, mb_w as u32)?;
+        self.set(
+            vepu510_regs::FRAME_RC_QP_RC_QP_RANGE,
+            if is_idr { 1 } else { 2 },
+        )?;
+        self.set(vepu510_regs::FRAME_RC_QP_RC_MAX_QP, qp_max)?;
+        self.set(vepu510_regs::FRAME_RC_QP_RC_MIN_QP, qp_min)?;
+        self.set(vepu510_regs::FRAME_RC_TGT_CTU_EBIT, target_16 as u32)?;
+
+        for (field, value) in [
+            (vepu510_regs::RC_RC_ADJ0_QP_ADJ0, -2),
+            (vepu510_regs::RC_RC_ADJ0_QP_ADJ1, -1),
+            (vepu510_regs::RC_RC_ADJ0_QP_ADJ2, 0),
+            (vepu510_regs::RC_RC_ADJ0_QP_ADJ3, 1),
+            (vepu510_regs::RC_RC_ADJ0_QP_ADJ4, 2),
+            (vepu510_regs::RC_RC_ADJ1_QP_ADJ5, 0),
+            (vepu510_regs::RC_RC_ADJ1_QP_ADJ6, 0),
+            (vepu510_regs::RC_RC_ADJ1_QP_ADJ7, 0),
+            (vepu510_regs::RC_RC_ADJ1_QP_ADJ8, 0),
+        ] {
+            self.set_signed(field, value)?;
+        }
+
+        let thresholds = [
+            4 * negative,
+            negative,
+            positive,
+            4 * positive,
+            0x7fff_ffff,
+            0x7fff_ffff,
+            0x7fff_ffff,
+            0x7fff_ffff,
+            0x7fff_ffff,
+        ];
+        for (index, value) in thresholds.iter().enumerate() {
+            self.rc[2 + index] = *value as u32;
+        }
+
+        for (field, value) in [
+            (vepu510_regs::RC_ROI_QTHD0_QPMIN_AREA0, qp_min),
+            (vepu510_regs::RC_ROI_QTHD0_QPMAX_AREA0, qp_max),
+            (vepu510_regs::RC_ROI_QTHD0_QPMIN_AREA1, qp_min),
+            (vepu510_regs::RC_ROI_QTHD0_QPMAX_AREA1, qp_max),
+            (vepu510_regs::RC_ROI_QTHD0_QPMIN_AREA2, qp_min),
+            (vepu510_regs::RC_ROI_QTHD1_QPMAX_AREA2, qp_max),
+            (vepu510_regs::RC_ROI_QTHD1_QPMIN_AREA3, qp_min),
+            (vepu510_regs::RC_ROI_QTHD1_QPMAX_AREA3, qp_max),
+            (vepu510_regs::RC_ROI_QTHD1_QPMIN_AREA4, qp_min),
+            (vepu510_regs::RC_ROI_QTHD1_QPMAX_AREA4, qp_max),
+            (vepu510_regs::RC_ROI_QTHD2_QPMIN_AREA5, qp_min),
+            (vepu510_regs::RC_ROI_QTHD2_QPMAX_AREA5, qp_max),
+            (vepu510_regs::RC_ROI_QTHD2_QPMIN_AREA6, qp_min),
+            (vepu510_regs::RC_ROI_QTHD2_QPMAX_AREA6, qp_max),
+            (vepu510_regs::RC_ROI_QTHD2_QPMIN_AREA7, qp_min),
+            (vepu510_regs::RC_ROI_QTHD3_QPMAX_AREA7, qp_max),
+        ] {
+            self.set(field, value)?;
+        }
+        self.set(vepu510_regs::RC_ROI_QTHD3_QPMAP_MODE, 1)
+    }
+
+    fn set_signed(&mut self, field: Field, value: i32) -> Result<(), String> {
+        let mask = (1u32 << field.width) - 1;
+        self.set(field, value as u32 & mask)
+    }
+
     pub fn set(&mut self, field: Field, value: u32) -> Result<(), String> {
         if field.width == 0 || field.width > 32 {
             return Err(format!("{} has invalid width {}", field.name, field.width));

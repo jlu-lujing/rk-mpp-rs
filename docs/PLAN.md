@@ -492,7 +492,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       semi-planar/packed/YUV400 输入与 400/420/422/444 输出）逐字节。
       VEPU510 H.264 已从 C struct 生成 645-field/6-window 寄存器表，并与 lf1
       IDR trace 的 section/STATUS 尺寸对齐；首个 320x240 QP26 Baseline IDR、
-      GOP2 和 GOP6 已与 C 全流逐字节（6479 / 8671 / 18225 bytes）。
+      GOP2、GOP6 和 CBR6 已与 C 全流逐字节
+      （6479 / 8671 / 18225 / 14187 bytes）。
       AV1/AVS2、LTR/error 边界、完整 H.264 边界矩阵、H.264/H.265/VEPU510
       编码、VPU720 tile input 与 VDPP2 仍需完成。
 - [ ] W12-3 每个 SoC 独立验收矩阵（同一能力在多个块上允许不同 HAL）

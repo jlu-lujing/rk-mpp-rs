@@ -4,11 +4,13 @@
 //! P picture. Both register images are captured from C MPP; only DMA fds are
 //! patched at runtime.
 
-use crate::codec::h264::encoder::{self, EncoderConfig};
+use crate::codec::h264::encoder::{self, EncoderConfig, RcMode};
+use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
+use super::h264e;
 use super::vepu510::RegisterFile;
 use super::vepu510_regs;
 
@@ -130,6 +132,101 @@ impl Vepu510H264 {
         Ok(stream)
     }
 
+    pub fn encode_cbr_gop_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+    ) -> Result<Vec<u8>, String> {
+        if !(1..=6).contains(&frames) {
+            return Err(format!(
+                "captured VEPU510 CBR GOP length {frames} is outside 1..=6"
+            ));
+        }
+        let expected = INPUT_SIZE
+            .checked_mul(frames)
+            .ok_or_else(|| "VEPU510 CBR input size overflow".to_string())?;
+        if nv12.len() < expected {
+            return Err(format!(
+                "VEPU510 CBR input is {} bytes, expected {expected}",
+                nv12.len()
+            ));
+        }
+        if self.idr_done {
+            return Err("this captured VEPU510 session already encoded its IDR".into());
+        }
+
+        let mut config = EncoderConfig::new(WIDTH, HEIGHT);
+        config.vui_log2_max_mv_length = 15;
+        config.rc_mode = RcMode::Cbr;
+        config.gop = 60;
+        config.quality_auto = true;
+        config.bps_target = 300_000;
+        config.bps_min = 250_000;
+        config.bps_max = 350_000;
+        config.rc_qp_min = 8;
+        config.rc_qp_max = 48;
+        let mut model = rc_model::Model::new(h264e::rc_model_config(&config)?);
+        let header = encoder::build_headers(&config).map_err(|e| e.to_string())?;
+        if header.len() != 36 {
+            return Err(format!(
+                "unexpected no-SEI VEPU510 header length {}",
+                header.len()
+            ));
+        }
+
+        let mut stream = Vec::new();
+        for frame_number in 0..frames {
+            let is_idr = frame_number == 0;
+            let frame_type = if is_idr {
+                rc_model::FrameType::Intra
+            } else {
+                rc_model::FrameType::InterP
+            };
+            let (bit_target, quality_target) = model.start(frame_type);
+            let mut registers = if is_idr {
+                RegisterFile::captured_fixqp_idr_320x240(
+                    self.input.fd() as u32,
+                    self.output.fd() as u32,
+                    self.recon[0].fd() as u32,
+                    self.thumb[0].fd() as u32,
+                    self.smear[0].fd() as u32,
+                )?
+            } else {
+                let current = (frame_number & 1) as usize;
+                let reference = 1 - current;
+                RegisterFile::captured_fixqp_p_320x240(
+                    self.input.fd() as u32,
+                    self.output.fd() as u32,
+                    self.recon[current].fd() as u32,
+                    self.recon[reference].fd() as u32,
+                    self.thumb[current].fd() as u32,
+                    self.thumb[reference].fd() as u32,
+                    self.smear[current].fd() as u32,
+                    self.smear[reference].fd() as u32,
+                    frame_number as u32,
+                )?
+            };
+            registers.apply_cbr_rate_control(
+                bit_target,
+                quality_target as u32,
+                config.rc_qp_min,
+                config.rc_qp_max,
+                is_idr,
+            )?;
+            let start = frame_number * INPUT_SIZE;
+            let end = start + INPUT_SIZE;
+            let prefix = if is_idr { header.as_slice() } else { &[] };
+            let (job_stream, status) =
+                self.run_job_with_status(&nv12[start..end], &registers, prefix)?;
+            let measured = measured_from_status(&status);
+            model.end_with(frame_type, bit_target, measured);
+            model.accept_frame();
+            stream.extend(job_stream);
+        }
+        self.idr_done = true;
+        Ok(stream)
+    }
+
     fn encode_idr(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
         let mut config = EncoderConfig::new(WIDTH, HEIGHT);
         config.vui_log2_max_mv_length = 15;
@@ -173,6 +270,16 @@ impl Vepu510H264 {
         registers: &RegisterFile,
         prefix: &[u8],
     ) -> Result<Vec<u8>, String> {
+        self.run_job_with_status(nv12, registers, prefix)
+            .map(|(stream, _)| stream)
+    }
+
+    fn run_job_with_status(
+        &mut self,
+        nv12: &[u8],
+        registers: &RegisterFile,
+        prefix: &[u8],
+    ) -> Result<(Vec<u8>, [u32; STATUS_WORDS]), String> {
         if nv12.len() < INPUT_SIZE {
             return Err(format!(
                 "VEPU510 input is {} bytes, expected {INPUT_SIZE}",
@@ -272,7 +379,7 @@ impl Vepu510H264 {
         self.output
             .sync_read_end()
             .map_err(|e| format!("VEPU510 output sync end: {e}"))?;
-        Ok(stream)
+        Ok((stream, status))
     }
 }
 
@@ -290,4 +397,18 @@ fn status_execution_error(status: &[u32]) -> u32 {
     let field = vepu510_regs::STATUS_ST_ENC_ST_ENC;
     let word = status[field.word - 4096];
     (word >> field.shift) & ((1u32 << field.width) - 1)
+}
+
+fn measured_from_status(status: &[u32]) -> rc_model::Measured {
+    let mbs = (WIDTH * HEIGHT / 256) as i32;
+    let p4 = (status[39] & 0x007f_ffff) as i32;
+    let p8 = (status[38] & 0x007f_ffff) as i32;
+    let p16 = (status[37] & 0x001f_ffff) as i32;
+    rc_model::Measured {
+        bits: status[0] as i32 * 8,
+        quality: status[3] as i32 / mbs,
+        madi: 0,
+        madp: 0,
+        iblk4_prop: (p4 + p8 + p16) * 256 / mbs,
+    }
 }

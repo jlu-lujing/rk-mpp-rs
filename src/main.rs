@@ -1198,12 +1198,17 @@ fn main() {
         return;
     }
 
-    if args.len() > 1 && matches!(args[1].as_str(), "h264e510-gop2" | "h264e510-gop6") {
+    if args.len() > 1
+        && matches!(
+            args[1].as_str(),
+            "h264e510-gop2" | "h264e510-gop6" | "h264e510-cbr6"
+        )
+    {
         if args.len() != 4 {
             eprintln!("usage: rk-mpp-rs {} <in.Nx320x240.nv12> <out.264>", args[1]);
             std::process::exit(2);
         }
-        let frames = if args[1] == "h264e510-gop6" { 6 } else { 2 };
+        let frames = if args[1] == "h264e510-gop2" { 2 } else { 6 };
         let source = match std::fs::read(&args[2]) {
             Ok(source) => source,
             Err(error) => {
@@ -1218,7 +1223,12 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let stream = match encoder.encode_fixed_qp_gop_320x240(&source, frames) {
+        let result = if args[1] == "h264e510-cbr6" {
+            encoder.encode_cbr_gop_320x240(&source, frames)
+        } else {
+            encoder.encode_fixed_qp_gop_320x240(&source, frames)
+        };
+        let stream = match result {
             Ok(stream) => stream,
             Err(error) => {
                 eprintln!("{error}");

@@ -3204,6 +3204,10 @@ pipeline uses.
   `0e65b51a9c31a8719e0a6c5a16757c9d5783508f17d68c0ca12dda2272811f33`.
   Slots alternate 0/1; `frame_num`, POC LSB and the two observed SQI/AQ rows
   are derived from the picture index.
+- The same six pictures under CBR at 300 kbps are byte-identical: 14187 bytes
+  with SHA-256 `d9de49270ab4140b1005a8cadf161a6e81c65e73ea65a356b0901656b24ac87c`.
+  Rust feeds `rc_model_v2` back from `bs_lgth_l32`, `qp_sum` and the intra-block
+  counts, then maps its target/QP through the VEPU510 RC/ROI/threshold windows.
 - Tests: `cargo test --release --all-targets` enumerates 1181 tests: 1147
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the

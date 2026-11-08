@@ -2717,7 +2717,7 @@ fn verified_on_board(config: &EncoderConfig) -> Result<(), String> {
 }
 
 /// `rc_model_v2.c`'s configuration, from ours plus `h264e_api_v2.c`'s defaults.
-fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
+pub(crate) fn rc_model_config(config: &EncoderConfig) -> Result<rc_model::Config, String> {
     if config.gop < 2 {
         return Err("CBR needs a GOP longer than one picture".into());
     }
