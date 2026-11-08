@@ -66,6 +66,10 @@ pub mod vdpu34x_regs;
 pub mod vdpu383_regs;
 pub mod vepu510;
 pub mod vepu510_h264;
+pub mod vepu510_h265;
+#[allow(dead_code)]
+mod vepu510_h265_idr_template;
+pub mod vepu510_h265_regs;
 pub mod vepu510_idr_template;
 pub mod vepu510_p_template;
 pub mod vepu510_regs;

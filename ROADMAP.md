@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1188
-      enumerated / 1154 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1010 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1192
+      enumerated / 1158 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1014 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3234,7 +3234,15 @@ pipeline uses.
   column=4/GOP6 over thirteen pictures is 34339 bytes
   (`05014dff59bf4088d3261480e281ff7fc25e8a83619342a40f65317b17c386ea`).
   Per-picture lengths and complete streams match C.
-- Tests: `cargo test --release --all-targets` enumerates 1188 tests: 1154
+- VEPU510 H.265 now closes its first hardware cell. The 2025 header field map
+  has 730 named fields, preserving the 76-word H.265 SQI view. A 320x240 QP26
+  Main IDR is software-prefix 270 bytes plus hardware slice 4440 bytes, and is
+  byte-identical to C at 4710 bytes
+  (`e97ddde34fa10eff02889b1b4d49d394df457eb1cbafb04015e047539b37b6d7`).
+  RK3576's H.265 syntax uses `max_cu_size=32`, one extra transform-tree level,
+  and fixed-QP `cu_qp_delta_enabled=1`, all pinned by tests. P/RC/GOP,
+  GDR/ROI/split and STATUS feedback remain.
+- Tests: `cargo test --release --all-targets` enumerates 1192 tests: 1158
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

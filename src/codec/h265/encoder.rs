@@ -118,6 +118,8 @@ pub struct EncoderConfig {
     pub num_ref: u32,
     /// `codec->max_cu_size` (64 on RK3588, 32 on the parts that list it).
     pub max_cu_size: usize,
+    /// RK3576/RV1126B/RK3572 add one to `tuQTMaxLog2Size`.
+    pub tu_log2_max_extra: u32,
     /// Sample bit depth. VEPU580 accepts the 10-bit prep/frame format but its
     /// H.265 hardware job returns `int_sta=0x100` without a bitstream on t6, so
     /// this port only advertises the supported 8-bit path.
@@ -138,6 +140,9 @@ pub struct EncoderConfig {
     pub rc_mode: RateControl,
     /// `pps->m_maxCuDQPDepth` = `trans_cfg.diff_cu_qp_delta_depth`.
     pub diff_cu_qp_delta_depth: u32,
+    /// The 2025 VEPU510 encoder sets `m_useDQP=1` even in fixed-QP mode. The
+    /// VEPU580 vintage derives the flag from `rc_mode` instead.
+    pub force_cu_qp_delta: bool,
     /// `codec->intra_qp`; the PPS writes `init_qp_minus26 = intra_qp - 26`.
     pub intra_qp: u8,
     pub cb_qp_offset: i32,
@@ -190,6 +195,7 @@ impl EncoderConfig {
             tier: false,
             num_ref: 1,
             max_cu_size: 64,
+            tu_log2_max_extra: 0,
             bit_depth: 8,
             sao_enable: true,
             amp_enable: false,
@@ -203,6 +209,7 @@ impl EncoderConfig {
             // H.265 yet, but the PPS branch for them is.
             rc_mode: RateControl::FixQp,
             diff_cu_qp_delta_depth: 0,
+            force_cu_qp_delta: false,
             intra_qp: 26,
             cb_qp_offset: 0,
             cabac_init_present: true,
@@ -290,7 +297,7 @@ impl EncoderConfig {
             log2_min_cb: 3,
             log2_diff_max_min_cb: max_cu_depth - add_cu_depth,
             log2_min_tb: 2,
-            log2_diff_max_min_tb: (max_cud + 2 - 1) - 2, // quadtreeTULog2Max - Min
+            log2_diff_max_min_tb: (max_cud + 2 - 1) - 2 + self.tu_log2_max_extra,
         }
     }
 
@@ -352,7 +359,7 @@ impl EncoderConfig {
 
     /// `pps->m_useDQP`: on for every rate-control mode except fixed QP.
     pub fn cu_qp_delta_enabled(&self) -> bool {
-        self.rc_mode != RateControl::FixQp
+        self.force_cu_qp_delta || self.rc_mode != RateControl::FixQp
     }
 }
 
@@ -1048,6 +1055,22 @@ mod tests {
             assert!(parsed.cu_qp_delta_enabled, "{mode:?}");
             assert_eq!(parsed.diff_cu_qp_delta_depth, 0, "{mode:?}");
         }
+    }
+
+    #[test]
+    fn vepu510_can_force_cu_qp_delta_in_fixed_qp_mode() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.max_cu_size = 32;
+        config.tu_log2_max_extra = 1;
+        config.force_cu_qp_delta = true;
+        let pps = build_pps(&config).unwrap();
+        let parsed = parser::parse_pps(&parser::ebsp_to_rbsp(&pps[6..])).unwrap();
+        assert!(parsed.cu_qp_delta_enabled);
+        assert_eq!(parsed.diff_cu_qp_delta_depth, 0);
+        let sps = build_sps(&config).unwrap();
+        let parsed_sps = parser::parse_sps(&parser::ebsp_to_rbsp(&sps[6..])).unwrap();
+        assert_eq!(parsed_sps.log2_diff_max_min_cb, 2);
+        assert_eq!(parsed_sps.log2_diff_max_min_tb, 3);
     }
 
     #[test]

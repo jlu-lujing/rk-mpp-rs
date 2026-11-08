@@ -11,6 +11,7 @@ use rk_mpp_rs::hal::jpegd as decode;
 use rk_mpp_rs::hal::jpege;
 use rk_mpp_rs::hal::jpege720;
 use rk_mpp_rs::hal::vepu510_h264;
+use rk_mpp_rs::hal::vepu510_h265;
 use rk_mpp_rs::scale;
 use rk_mpp_rs::service::buffer_pool::BufferPool;
 use rk_mpp_rs::service::dma_heap;
@@ -1195,6 +1196,40 @@ fn main() {
             std::process::exit(1);
         }
         println!("h264e510: {} bytes", stream.len());
+        return;
+    }
+
+    if args.len() > 1 && args[1] == "h265e510" {
+        if args.len() != 4 {
+            eprintln!("usage: rk-mpp-rs h265e510 <in.320x240.nv12> <out.265>");
+            std::process::exit(2);
+        }
+        let source = match std::fs::read(&args[2]) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("read {}: {error}", args[2]);
+                std::process::exit(1);
+            }
+        };
+        let mut encoder = match vepu510_h265::Vepu510H265::open() {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        let stream = match encoder.encode_fixed_qp_idr_320x240(&source) {
+            Ok(stream) => stream,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(error) = std::fs::write(&args[3], &stream) {
+            eprintln!("write {}: {error}", args[3]);
+            std::process::exit(1);
+        }
+        println!("h265e510: {} bytes", stream.len());
         return;
     }
 

@@ -532,10 +532,18 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   36-byte SPS/PPS，以及 P-frame smear state 组成。row=2/GOP4 十帧为
   27619 bytes，col=4/GOP6 十三帧为 34339 bytes，逐图长度和完整码流均与 C
   相同。
+- VEPU510 H.265 已有首个 320x240 QP26 Main IDR：`src/hal/vepu510_h265_regs.rs`
+  是从 2025 lf1 C header 生成的 730-field/6-window 映射，
+  `vepu510_h265_idr_template.rs` 是六段寄存器图和 148-word STATUS 的 lf1
+  trace。硬件 slice 为 4440 bytes，软件前缀 270 bytes，总计 4710 bytes，
+  SHA-256
+  `e97ddde34fa10eff02889b1b4d49d394df457eb1cbafb04015e047539b37b6d7`。
+  RK3576 的 H.265 参数集与 RK3588 不同：`max_cu_size=32`、transform
+  depth 额外加 1，且 2025 库在 fixed-QP 下仍写 `cu_qp_delta_enabled=1`。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：推进 VEPU510 H.265；之后处理 AV1/AVS2、VPU720 tile input 与
-  VDPP2。
+- 下一步：扩 VEPU510 H.265 的 P GOP、RC、GDR、ROI 和 split；之后处理
+  AV1/AVS2、VPU720 tile input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 
