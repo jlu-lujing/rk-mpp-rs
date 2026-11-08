@@ -1109,7 +1109,7 @@ fn find_marker(stream: &[u8], marker: u16) -> Option<usize> {
         .position(|window| window == marker.as_slice())
 }
 
-fn prepare_header(config: EncoderConfig) -> Result<PreparedHeader, String> {
+pub(crate) fn prepare_header(config: EncoderConfig) -> Result<PreparedHeader, String> {
     config.validate()?;
     let quant = QuantTables::for_quality(config.quality)?;
     let mut bytes = Vec::with_capacity(1024);

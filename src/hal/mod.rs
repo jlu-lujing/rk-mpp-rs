@@ -57,6 +57,7 @@ pub mod iep;
 pub mod iep_pd;
 pub mod jpegd;
 pub mod jpege;
+pub mod jpege720;
 pub mod jpege_tables;
 pub mod m2vd;
 pub mod mpg4d;

@@ -9,6 +9,7 @@ use rk_mpp_rs::hal::h265e;
 use rk_mpp_rs::hal::h265e_session;
 use rk_mpp_rs::hal::jpegd as decode;
 use rk_mpp_rs::hal::jpege;
+use rk_mpp_rs::hal::jpege720;
 use rk_mpp_rs::scale;
 use rk_mpp_rs::service::buffer_pool::BufferPool;
 use rk_mpp_rs::service::dma_heap;
@@ -407,7 +408,8 @@ fn encode_jpeg(
     };
     config.validate()?;
     let (expected_width, expected_height) = config.output_size();
-    let mut encoder = jpege::Vepu2Jpeg::open().map_err(|e| format!("open JPEG encoder: {e}"))?;
+    let mut encoder =
+        jpege720::JpegEncoder::open().map_err(|e| format!("open JPEG encoder: {e}"))?;
     let started = Instant::now();
     let encoded = encoder.encode_packets(&input, config)?;
     let elapsed = started.elapsed();
@@ -449,7 +451,8 @@ fn bench_encode_nv12(
         chroma: jpege::ChromaFormat::Yuv420,
         ..jpege::EncoderConfig::new(width, height)
     };
-    let mut encoder = jpege::Vepu2Jpeg::open().map_err(|e| format!("open JPEG encoder: {e}"))?;
+    let mut encoder =
+        jpege720::JpegEncoder::open().map_err(|e| format!("open JPEG encoder: {e}"))?;
     for _ in 0..5 {
         encoder.encode_nv12(&input, config)?;
     }

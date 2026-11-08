@@ -69,6 +69,16 @@ t62 back to the RK3588 reference board.
   build; the functional matrix uses the debug binary, so no throughput claim
   is made from this run.
 
+## 2026-11-08 RK3576 / lf1 VPU720 JPEG bring-up
+
+- The VPU720 baseline NV12/YUV420 qfactor-50 matrix is **3/3**: 320x240,
+  640x480 and 1280x720 all match the installed C MPP byte-for-byte.
+- Output sizes are 5,029, 12,028 and 28,124 bytes respectively. The Rust path
+  uses client 20, the VPU720 43-word register window, a 384-byte transformed
+  Q-table and the hardware status length as a byte count.
+- `scripts/board_rk3576_jpege_vs_mpp.sh` is the reproducible lf1 gate.
+  RGB, rotation, restart/low-delay and non-420 modes remain to be ported.
+
 ## Environment
 
 - NanoPC-T6-LTS, RK3588, Debian 11.11, kernel 6.1.57
@@ -82,8 +92,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1170 tests**. The
-regular suite passes **1136 / 0 failed / 34 ignored** on t6. All **34
+`cargo test --release --all-targets` currently enumerates **1171 tests**. The
+regular suite passes **1137 / 0 failed / 34 ignored** on t6. All **34
 board-only ignored tests** also pass under the current 80% OPP cap: the prior
 31-test matrix plus the new HEVC, AV1 and VP9 DPB lease gates. The two JPEG
 restart/rotate cases share a temporary input name and therefore need

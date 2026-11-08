@@ -495,10 +495,14 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   keyframe probe、11 个 RCB region 和 `width * height / 2` colmv 已接入。
   `scripts/board_rk3576_vp9_vs_mpp.sh` 是当前入口；lf1 release LTO 当前会
   在 LLVM SIGSEGV，因此功能门使用 debug。
+- VPU720 baseline JPEG 已在 lf1 通过 3/3：NV12/YUV420、qfactor 50、320x240/
+  640x480/1280x720 与 C MPP 逐字节；实现使用 client 20、43-word base register
+  window 和 384-byte 变换 Q-table。`scripts/board_rk3576_jpege_vs_mpp.sh`
+  是当前入口；RGB、旋转、restart/low-delay 等扩展模式仍待做。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
 - 下一步：把同一 VDPU383 方法推进到 AV1/AVS2，再做 VEPU510、
-  VPU720 与 VDPP2。RK3576 未被硬件暴露的 VP8/MPEG-2/MPEG-4/H.263 要由
+  VPU720 扩展模式与 VDPP2。RK3576 未被硬件暴露的 VP8/MPEG-2/MPEG-4/H.263 要由
   能力矩阵明确拒绝。
 
 ### 5.7 解码器边缘
