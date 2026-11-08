@@ -201,6 +201,15 @@ callers.
 - [x] Document shared/static linking for downstream Rust projects.
 - **Status:** complete on t6 and lf1.
 
+### Phase 11: DMA-BUF Frame Export
+- [x] Add imported dma-buf ownership and safe fd duplication.
+- [x] Preserve MJPEG hardware output as frame-owned DMA-BUF.
+- [x] Expose Rust and C plane fd/offset/size/stride metadata.
+- [x] Keep CPU frames and frame lifetime semantics backward compatible.
+- [x] Verify fd export and byte-identical visible planes on t6/lf1.
+- **Status:** complete on t6 and lf1 for MJPEG NV12; CPU-backed codecs remain an
+  explicit unsupported boundary.
+
 ## Decisions Made
 
 | Decision | Rationale |

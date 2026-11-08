@@ -57,10 +57,19 @@
 - The sys crate will use checked-in hand-written declarations rather than
   bindgen: the public header is already fixed-width C, CI is offline, and exact
   enum/function coverage can be asserted without a libclang dependency.
-- `rk-mpp-rs-sys` declarations exactly match the 34-symbol ABI snapshot. The
-  final workspace gate is 1197 tests: 1193 from the root SDK and four sys-crate
-  layout/native tests. Static release linking requires `LTO=false` with the
-  current Rust staticlib archive.
+- `rk-mpp-rs-sys` declarations exactly match the current ABI snapshot (35
+  symbols in V1.11). The final workspace gate is 1199 tests: 1195 from the root
+  SDK and four sys-crate layout/native tests. Static release linking requires
+  `LTO=false` with the current Rust staticlib archive.
+- The stable decoder `Frame` copies every hardware surface into a `Vec<u8>` by
+  default, including MJPEG. DMA-BUF output is therefore opt-in: MJPEG NV12 can
+  retain its existing DmaBuf, while every default/CPU-backed path keeps its
+  previous behavior. Cloning a DMA-backed frame deliberately falls back to a
+  CPU byte copy rather than silently sharing a mutable surface.
+- With `RK_MPP_DECODER_FLAG_DMABUF_OUTPUT`, V1.11 MJPEG NV12 keeps the JPEG
+  output DmaBuf in `Frame`; Y and UV expose the same duplicated fd with distinct
+  offsets and the hardware row stride. The exported fd is caller-owned and
+  closing it does not shorten the frame's lifetime.
 
 ## Research Findings
 

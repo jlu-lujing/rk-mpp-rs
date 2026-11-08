@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
+use std::os::fd::OwnedFd;
 
 use crate::codec::av1;
 use crate::codec::h263;
@@ -27,7 +28,7 @@ use crate::service::soc::{SocProfile, VideoDecodeHal};
 use crate::service::{MppService, VPU_CLIENT_JPEG_DEC};
 
 pub const API_VERSION_MAJOR: u32 = 1;
-pub const API_VERSION_MINOR: u32 = 10;
+pub const API_VERSION_MINOR: u32 = 11;
 pub const API_VERSION: u32 = (API_VERSION_MAJOR << 16) | API_VERSION_MINOR;
 
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
@@ -113,6 +114,7 @@ pub struct DecoderConfig {
     codec: Codec,
     output_format: PixelFormat,
     max_reorder_frames: u32,
+    dmabuf_output: bool,
 }
 
 impl DecoderConfig {
@@ -121,6 +123,7 @@ impl DecoderConfig {
             codec,
             output_format: PixelFormat::Nv12,
             max_reorder_frames: 0,
+            dmabuf_output: false,
         }
     }
 
@@ -141,8 +144,17 @@ impl DecoderConfig {
         self.max_reorder_frames
     }
 
+    pub const fn dmabuf_output(self) -> bool {
+        self.dmabuf_output
+    }
+
     pub const fn with_max_reorder_frames(mut self, frames: u32) -> Self {
         self.max_reorder_frames = frames;
+        self
+    }
+
+    pub const fn with_dmabuf_output(mut self, enabled: bool) -> Self {
+        self.dmabuf_output = enabled;
         self
     }
 }
@@ -243,6 +255,34 @@ pub struct Plane<'a> {
     pub stride: usize,
 }
 
+/// Borrowed DMA-BUF metadata for one frame plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaBufPlane {
+    fd: i32,
+    offset: u64,
+    size: u64,
+    stride: u32,
+}
+
+impl DmaBufPlane {
+    /// Borrowed fd. Use [`Frame::duplicate_dmabuf`] to transfer ownership.
+    pub const fn fd(self) -> i32 {
+        self.fd
+    }
+
+    pub const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    pub const fn size(self) -> u64 {
+        self.size
+    }
+
+    pub const fn stride(self) -> u32 {
+        self.stride
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct PlaneLayout {
     offset: usize,
@@ -250,8 +290,52 @@ struct PlaneLayout {
     stride: usize,
 }
 
+enum FrameStorage {
+    Cpu(Vec<u8>),
+    DmaBuf(DmaBuf),
+}
+
+impl FrameStorage {
+    fn len(&self) -> usize {
+        match self {
+            Self::Cpu(bytes) => bytes.len(),
+            Self::DmaBuf(buffer) => buffer.len(),
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Cpu(bytes) => bytes,
+            Self::DmaBuf(buffer) => buffer.as_slice(),
+        }
+    }
+
+    fn cpu_copy(&self) -> Vec<u8> {
+        self.as_slice().to_vec()
+    }
+}
+
+impl std::fmt::Debug for FrameStorage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cpu(bytes) => formatter
+                .debug_struct("Cpu")
+                .field("len", &bytes.len())
+                .finish(),
+            Self::DmaBuf(buffer) => formatter
+                .debug_struct("DmaBuf")
+                .field("fd", &buffer.fd())
+                .field("len", &buffer.len())
+                .finish(),
+        }
+    }
+}
+
 /// One decoded frame, including media timestamps and codec metadata.
-#[derive(Debug, Clone)]
+///
+/// DMA-BUF-backed frames keep their hardware buffer; cloning such a frame
+/// makes an independent CPU byte copy rather than sharing the mutable surface.
+#[derive(Debug)]
 pub struct Frame {
     width: usize,
     height: usize,
@@ -260,8 +344,24 @@ pub struct Frame {
     dts: i64,
     poc: i32,
     err_info: u32,
-    storage: Vec<u8>,
+    storage: FrameStorage,
     planes: [PlaneLayout; 3],
+}
+
+impl Clone for Frame {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            pts: self.pts,
+            dts: self.dts,
+            poc: self.poc,
+            err_info: self.err_info,
+            storage: FrameStorage::Cpu(self.storage.cpu_copy()),
+            planes: self.planes,
+        }
+    }
 }
 
 impl Frame {
@@ -294,15 +394,39 @@ impl Frame {
     }
 
     pub fn data(&self) -> &[u8] {
-        &self.storage
+        self.storage.as_slice()
+    }
+
+    pub const fn uses_dmabuf(&self) -> bool {
+        matches!(&self.storage, FrameStorage::DmaBuf(_))
     }
 
     pub fn plane(&self, index: usize) -> Option<Plane<'_>> {
         let plane = *self.planes.get(index)?;
         (plane.len != 0).then(|| Plane {
-            data: &self.storage[plane.offset..plane.offset + plane.len],
+            data: &self.storage.as_slice()[plane.offset..plane.offset + plane.len],
             stride: plane.stride,
         })
+    }
+
+    pub fn dmabuf_plane(&self, index: usize) -> Option<DmaBufPlane> {
+        let FrameStorage::DmaBuf(buffer) = &self.storage else {
+            return None;
+        };
+        let plane = *self.planes.get(index)?;
+        (plane.len != 0).then(|| DmaBufPlane {
+            fd: buffer.fd(),
+            offset: plane.offset as u64,
+            size: plane.len as u64,
+            stride: plane.stride as u32,
+        })
+    }
+
+    pub fn duplicate_dmabuf(&self) -> io::Result<Option<OwnedFd>> {
+        let FrameStorage::DmaBuf(buffer) = &self.storage else {
+            return Ok(None);
+        };
+        buffer.dup_fd().map(Some)
     }
 
     fn from_h264(
@@ -332,7 +456,7 @@ impl Frame {
             dts,
             poc: picture.poc,
             err_info: picture.err_info,
-            storage,
+            storage: FrameStorage::Cpu(storage),
             planes: [PlaneLayout::default(); 3],
         };
         frame.layout_yuv()?;
@@ -387,7 +511,7 @@ impl Frame {
             dts,
             poc: picture.poc,
             err_info: picture.err_info,
-            storage,
+            storage: FrameStorage::Cpu(storage),
             planes: [PlaneLayout::default(); 3],
         };
         frame.layout_yuv()?;
@@ -436,7 +560,7 @@ impl Frame {
             dts,
             poc: picture.poc as i32,
             err_info: picture.err_info,
-            storage,
+            storage: FrameStorage::Cpu(storage),
             planes: [PlaneLayout::default(); 3],
         };
         frame.layout_yuv()?;
@@ -485,7 +609,7 @@ impl Frame {
             dts,
             poc: picture.poc as i32,
             err_info: picture.err_info,
-            storage,
+            storage: FrameStorage::Cpu(storage),
             planes: [PlaneLayout::default(); 3],
         };
         frame.layout_yuv()?;
@@ -525,7 +649,7 @@ impl Frame {
             dts,
             poc,
             err_info: picture.err_info,
-            storage,
+            storage: FrameStorage::Cpu(storage),
             planes: [PlaneLayout::default(); 3],
         };
         frame.layout_yuv()?;
@@ -568,7 +692,7 @@ impl Frame {
             dts,
             poc,
             err_info,
-            storage,
+            storage: FrameStorage::Cpu(storage),
             planes: [PlaneLayout::default(); 3],
         };
         frame.layout_yuv()?;
@@ -645,11 +769,61 @@ impl Frame {
             dts,
             poc: 0,
             err_info: 0,
-            storage: output,
+            storage: FrameStorage::Cpu(output),
             planes: [PlaneLayout::default(); 3],
         };
         frame.layout_yuv()?;
         Ok(frame)
+    }
+
+    fn from_jpeg_dmabuf(
+        width: usize,
+        height: usize,
+        buffer: DmaBuf,
+        source_stride: usize,
+        source_height: usize,
+        pts: i64,
+        dts: i64,
+    ) -> Result<Self, Error> {
+        if width == 0 || height == 0 || source_stride < width.div_ceil(2) * 2 {
+            return Err(Error::Parse("invalid JPEG output geometry".to_string()));
+        }
+        let y_plane_size = source_stride
+            .checked_mul(source_height)
+            .ok_or_else(|| Error::Parse("JPEG Y plane overflow".to_string()))?;
+        let chroma_height = height.div_ceil(2);
+        let chroma_size = source_stride
+            .checked_mul(chroma_height)
+            .ok_or_else(|| Error::Parse("JPEG chroma plane overflow".to_string()))?;
+        if y_plane_size
+            .checked_add(chroma_size)
+            .is_none_or(|size| size > buffer.len())
+        {
+            return Err(Error::Parse("truncated JPEG hardware output".to_string()));
+        }
+        Ok(Self {
+            width,
+            height,
+            format: PixelFormat::Nv12,
+            pts,
+            dts,
+            poc: 0,
+            err_info: 0,
+            storage: FrameStorage::DmaBuf(buffer),
+            planes: [
+                PlaneLayout {
+                    offset: 0,
+                    len: y_plane_size,
+                    stride: source_stride,
+                },
+                PlaneLayout {
+                    offset: y_plane_size,
+                    len: chroma_size,
+                    stride: source_stride,
+                },
+                PlaneLayout::default(),
+            ],
+        })
     }
 
     fn layout_yuv(&mut self) -> Result<(), Error> {
@@ -804,7 +978,7 @@ struct PendingH265 {
 
 struct MjpegBackend {
     service: Option<MppService>,
-    format: PixelFormat,
+    dmabuf_output: bool,
     input: Vec<u8>,
     eos: bool,
 }
@@ -874,6 +1048,18 @@ impl Av1Decoder {
 
 impl Decoder {
     pub fn new(config: DecoderConfig) -> Result<Self, Error> {
+        if config.dmabuf_output {
+            if config.codec != Codec::Mjpeg {
+                return Err(Error::Unsupported(
+                    "DMA-BUF frame output is currently implemented only for MJPEG".to_string(),
+                ));
+            }
+            if config.output_format != PixelFormat::Nv12 {
+                return Err(Error::Unsupported(
+                    "MJPEG DMA-BUF output requires NV12".to_string(),
+                ));
+            }
+        }
         let backend = match config.codec {
             Codec::H264 => Backend::H264(H264Backend::new(config)?),
             Codec::H265 => Backend::H265(H265Backend::new(config)?),
@@ -1566,7 +1752,7 @@ impl MjpegBackend {
         }
         Ok(Self {
             service: None,
-            format: config.output_format,
+            dmabuf_output: config.dmabuf_output,
             input: Vec::new(),
             eos: false,
         })
@@ -1643,18 +1829,31 @@ impl MjpegBackend {
             .poll_hw_finish_recovering()
             .map_err(|error| Error::Hardware(format!("JPEG poll: {error}")))?;
         output.sync_read_begin().map_err(Error::from)?;
-        let result = Frame::from_jpeg_nv12(
-            info.width,
-            info.height,
-            output.as_slice(),
-            output_geometry.stride_bytes,
-            output_geometry.out_height,
-            pts,
-            dts,
-            self.format == PixelFormat::I420,
-        );
-        output.sync_read_end().map_err(Error::from)?;
-        result
+        if self.dmabuf_output {
+            output.sync_read_end().map_err(Error::from)?;
+            Frame::from_jpeg_dmabuf(
+                info.width,
+                info.height,
+                output,
+                output_geometry.stride_bytes,
+                output_geometry.out_height,
+                pts,
+                dts,
+            )
+        } else {
+            let result = Frame::from_jpeg_nv12(
+                info.width,
+                info.height,
+                output.as_slice(),
+                output_geometry.stride_bytes,
+                output_geometry.out_height,
+                pts,
+                dts,
+                true,
+            );
+            output.sync_read_end().map_err(Error::from)?;
+            result
+        }
     }
 }
 
@@ -1967,6 +2166,20 @@ mod tests {
         assert_eq!(config.codec(), Codec::H265);
         assert_eq!(config.output_format(), PixelFormat::I420P10);
         assert_eq!(config.max_reorder_frames(), 3);
+        assert!(!config.dmabuf_output());
+        assert!(DecoderConfig::new(Codec::Mjpeg)
+            .with_dmabuf_output(true)
+            .dmabuf_output());
         assert!(PacketFlags::empty().with_eos().contains(PacketFlags::EOS));
+    }
+
+    #[test]
+    fn dmabuf_output_is_limited_to_mjpeg() {
+        assert!(matches!(
+            super::Decoder::new(
+                super::DecoderConfig::new(super::Codec::H264).with_dmabuf_output(true)
+            ),
+            Err(super::Error::Unsupported(_))
+        ));
     }
 }

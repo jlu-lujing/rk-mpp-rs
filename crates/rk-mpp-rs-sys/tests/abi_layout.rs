@@ -13,9 +13,10 @@ macro_rules! assert_layout {
 }
 
 #[test]
-fn types_match_the_v1_10_c_header() {
-    assert_eq!(RK_MPP_API_VERSION, 0x1000a);
+fn types_match_the_v1_11_c_header() {
+    assert_eq!(RK_MPP_API_VERSION, 0x1000b);
     assert_eq!(RK_MPP_MAX_ROI_REGIONS, 8);
+    assert_eq!(RK_MPP_DECODER_FLAG_DMABUF_OUTPUT, 1);
 
     assert_layout!(rk_mpp_decoder_config_t, 32);
     assert_layout!(rk_mpp_frame_t, 112);

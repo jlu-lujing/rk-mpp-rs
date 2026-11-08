@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static void usage(const char *program) {
     fprintf(stderr,
@@ -111,13 +113,89 @@ static int write_frame(FILE *out, const rk_mpp_frame_t *frame,
     uint32_t plane;
 
     for (plane = 0; plane < 3; plane++) {
-        if (!frame->plane_data[plane] || !frame->plane_sizes[plane])
+        uint32_t row_bytes;
+        uint32_t rows;
+        uint32_t row;
+
+        if (!frame->plane_data[plane] || !frame->plane_sizes[plane] ||
+            !frame->plane_strides[plane])
             continue;
-        if (fwrite(frame->plane_data[plane], 1,
-                   (size_t)frame->plane_sizes[plane], out) !=
-            (size_t)frame->plane_sizes[plane])
+        if (plane == 0) {
+            row_bytes = frame->width;
+            rows = frame->height;
+        } else {
+            row_bytes = frame->width / 2;
+            rows = frame->height / 2;
+        }
+        if (frame->format == RK_MPP_PIXEL_FORMAT_NV12 && plane == 1)
+            row_bytes = (frame->width / 2) * 2;
+        if (frame->format == RK_MPP_PIXEL_FORMAT_I420P10)
+            row_bytes *= 2;
+        for (row = 0; row < rows; row++) {
+            uint64_t offset = (uint64_t)row * frame->plane_strides[plane];
+            const uint8_t *data = frame->plane_data[plane] + offset;
+
+            if (offset + row_bytes > frame->plane_sizes[plane] ||
+                fwrite(data, 1, row_bytes, out) != row_bytes)
+                return -1;
+            *bytes_written += row_bytes;
+        }
+    }
+    return 0;
+}
+
+static int validate_dmabuf(rk_mpp_decoder_t *decoder, uint32_t codec,
+                           uint32_t format) {
+    uint32_t plane;
+
+    if (!getenv("REQUIRE_DMABUF")) {
+        if (getenv("EXPECT_NO_DMABUF")) {
+            int fd = -1;
+
+            if (rk_mpp_decoder_export_frame_dmabuf(
+                    decoder, 0, &fd, NULL, NULL, NULL) !=
+                    RK_MPP_ERR_UNSUPPORTED ||
+                fd != -1) {
+                fprintf(stderr, "CPU frame unexpectedly exported DMA-BUF\n");
+                return -1;
+            }
+        }
+        return 0;
+    }
+    if (codec != RK_MPP_CODEC_MJPEG || format != RK_MPP_PIXEL_FORMAT_NV12) {
+        fprintf(stderr, "REQUIRE_DMABUF only supports MJPEG NV12\n");
+        return -1;
+    }
+    for (plane = 0; plane < 2; plane++) {
+        int fd = -1;
+        uint64_t offset = 0;
+        uint64_t size = 0;
+        uint32_t stride = 0;
+        struct stat status;
+        int result = rk_mpp_decoder_export_frame_dmabuf(
+            decoder, plane, &fd, &offset, &size, &stride);
+
+        if (result != RK_MPP_OK || fd < 0 || !size || !stride ||
+            size > UINT64_MAX - offset ||
+            fstat(fd, &status) || status.st_size < 0 ||
+            (uint64_t)status.st_size < offset + size) {
+            fprintf(stderr, "DMA-BUF plane %u export failed: %s\n", plane,
+                    rk_mpp_strerror(result));
+            if (fd >= 0)
+                close(fd);
             return -1;
-        *bytes_written += frame->plane_sizes[plane];
+        }
+        close(fd);
+    }
+    {
+        int fd = -1;
+
+        if (rk_mpp_decoder_export_frame_dmabuf(decoder, 2, &fd, NULL, NULL,
+                                               NULL) !=
+            RK_MPP_ERR_UNSUPPORTED) {
+            fprintf(stderr, "empty DMA-BUF plane was not rejected\n");
+            return -1;
+        }
     }
     return 0;
 }
@@ -174,6 +252,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "config init failed\n");
         goto done;
     }
+    if (getenv("REQUIRE_DMABUF"))
+        config.flags |= RK_MPP_DECODER_FLAG_DMABUF_OUTPUT;
     if (config.struct_size != sizeof(config)) {
         fprintf(stderr, "config struct size mismatch\n");
         goto done;
@@ -293,6 +373,10 @@ int main(int argc, char **argv) {
                                   rk_mpp_decoder_receive_frame(decoder, &frame),
                                   RK_MPP_ERR_STATE))
                     goto done;
+            }
+            if (validate_dmabuf(decoder, codec, format)) {
+                fprintf(stderr, "DMA-BUF validation failed\n");
+                goto done;
             }
             if (write_frame(out, &frame, &bytes_written)) {
                 fprintf(stderr, "write failed\n");

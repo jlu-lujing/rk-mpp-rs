@@ -22,6 +22,7 @@ set -euo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
 cd "$HOME/rk-mpp-rs"
 cargo build --offline --lib --bins
+ln -sfn librk_mpp_rs.so target/debug/librk_mpp_rs.so.1
 
 for symbol in \
     rk_mpp_api_version \
@@ -32,6 +33,7 @@ for symbol in \
     rk_mpp_decoder_create \
     rk_mpp_decoder_submit_packet \
     rk_mpp_decoder_receive_frame \
+    rk_mpp_decoder_export_frame_dmabuf \
     rk_mpp_frame_release \
     rk_mpp_decoder_flush \
     rk_mpp_decoder_reset \
@@ -551,7 +553,7 @@ ffmpeg -nostdin -hide_banner -loglevel error -y \
     -f rawvideo -pixel_format nv12 -video_size 320x240 \
     -i "$c_mjpeg" -pix_fmt yuv420p -f rawvideo "$c_mjpeg_i420"
 
-LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+REQUIRE_DMABUF=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_decoder mjpeg nv12 97 "$c_api_mjpeg" \
     "$mjpeg_dir"/*.jpg
 cmp "$c_mjpeg" "$c_api_mjpeg"

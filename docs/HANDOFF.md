@@ -63,7 +63,7 @@ MCU 间隔；VEPU2/VPU720 自动选择。lf1/t6 单帧 JPEG 与 `jpeg-enc` 逐�
 
 SDK 安装入口为 `scripts/install_sdk.sh --prefix ... [--destdir ...]`。
 Linux cdylib 的 SONAME 为 `librk_mpp_rs.so.1`，实际文件按 API 版本命名为
-`.so.1.10.0`。`scripts/check_sdk_abi.sh` 固定导出符号、C11 enum/struct
+`.so.1.11.0`。`scripts/check_sdk_abi.sh` 固定导出符号、C11 enum/struct
 size/offset 与 SONAME；`scripts/board_sdk_package.sh` 会用临时 prefix 编译并
 运行 pkg-config、CMake shared、CMake static consumer。
 
@@ -75,7 +75,7 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的逐帧
 streaming RC 尚未接入，接口明确返回 unsupported。
 t6/lf1 的 workspace 最终全量门均为
-`1197 passed / 0 failed / 37 ignored`（root SDK 1193 + sys crate 4），
+`1199 passed / 0 failed / 38 ignored`（root SDK 1195 + sys crate 4），
 rustfmt 与严格 workspace rustdoc 同时通过。
 
 V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice，
@@ -83,10 +83,15 @@ V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice
 slice-lowdelay 和 GDR 共六组 C API 输出与各自 CLI 逐字节一致；V1.9 advanced
 consumer 直接链接 V1.10。
 
-`crates/rk-mpp-rs-sys` 是独立的 workspace crate，手写覆盖 V1.10 的全部 34 个
+`crates/rk-mpp-rs-sys` 是独立的 workspace crate，手写覆盖 V1.11 的全部 35 个
 C 导出和固定布局。`scripts/board_sys_crate.sh` 验证显式路径 dynamic、
 static 和安装后 pkg-config 三种链接方式；在 t6/lf1 均通过。release static
 consumer 需设置 `CARGO_PROFILE_RELEASE_LTO=false`。
+
+V1.11 的 MJPEG NV12 可通过 `RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` opt-in 保留
+真实 dma-buf；Rust 和 C 都能取得 plane fd/offset/size/stride，C 返回的 fd
+由调用方负责 close。默认行为仍是连续 CPU frame；H.264/H.265 等当前也仍是 CPU
+frame，导出 DMA-BUF 会明确返回 unsupported。
 
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。
@@ -244,7 +249,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 103 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 104 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。

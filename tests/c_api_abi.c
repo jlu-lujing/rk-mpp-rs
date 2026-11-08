@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-_Static_assert(RK_MPP_API_VERSION == 0x1000au, "API version changed");
+_Static_assert(RK_MPP_API_VERSION == 0x1000bu, "API version changed");
 
 _Static_assert(RK_MPP_CODEC_H264 == 1, "codec id changed");
 _Static_assert(RK_MPP_CODEC_MJPEG == 2, "codec id changed");
@@ -13,6 +13,8 @@ _Static_assert(RK_MPP_CODEC_VP8 == 6, "codec id changed");
 _Static_assert(RK_MPP_CODEC_MPEG2 == 7, "codec id changed");
 _Static_assert(RK_MPP_CODEC_MPEG4 == 8, "codec id changed");
 _Static_assert(RK_MPP_CODEC_H263 == 9, "codec id changed");
+_Static_assert(RK_MPP_DECODER_FLAG_DMABUF_OUTPUT == 1u,
+               "decoder flags changed");
 
 _Static_assert(sizeof(rk_mpp_decoder_config_t) == 32,
                "decoder config layout changed");
@@ -117,6 +119,10 @@ int main(void) {
     if (rk_mpp_encoder_gdr_init(&gdr, RK_MPP_GDR_DISABLED, 1) !=
         RK_MPP_ERR_INVALID) {
         return 5;
+    }
+    if (rk_mpp_decoder_export_frame_dmabuf(NULL, 0, NULL, NULL, NULL, NULL) !=
+        RK_MPP_ERR_INVALID) {
+        return 6;
     }
     return 0;
 }

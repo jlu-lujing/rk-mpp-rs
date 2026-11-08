@@ -6,6 +6,7 @@ rk_mpp_api_version_string
 rk_mpp_decoder_close
 rk_mpp_decoder_config_init
 rk_mpp_decoder_create
+rk_mpp_decoder_export_frame_dmabuf
 rk_mpp_decoder_flush
 rk_mpp_decoder_receive_frame
 rk_mpp_decoder_recover

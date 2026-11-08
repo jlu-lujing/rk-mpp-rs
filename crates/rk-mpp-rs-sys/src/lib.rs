@@ -1,4 +1,4 @@
-//! Raw FFI declarations for the `rk-mpp-rs` V1.10 C ABI.
+//! Raw FFI declarations for the `rk-mpp-rs` V1.11 C ABI.
 //!
 //! Every function in this crate is unsafe: callers must follow the ownership,
 //! struct-size, threading and lifetime rules documented in
@@ -10,7 +10,7 @@
 use core::ffi::{c_char, c_int};
 
 pub const RK_MPP_API_VERSION_MAJOR: u32 = 1;
-pub const RK_MPP_API_VERSION_MINOR: u32 = 10;
+pub const RK_MPP_API_VERSION_MINOR: u32 = 11;
 pub const RK_MPP_API_VERSION: u32 = (RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR;
 
 pub const RK_MPP_OK: c_int = 0;
@@ -38,6 +38,8 @@ pub const RK_MPP_CODEC_H263: u32 = 9;
 pub const RK_MPP_PIXEL_FORMAT_NV12: u32 = 1;
 pub const RK_MPP_PIXEL_FORMAT_I420: u32 = 2;
 pub const RK_MPP_PIXEL_FORMAT_I420P10: u32 = 3;
+
+pub const RK_MPP_DECODER_FLAG_DMABUF_OUTPUT: u32 = 1 << 0;
 
 pub const RK_MPP_PACKET_FLAG_EOS: u32 = 1 << 0;
 pub const RK_MPP_PACKET_FLAG_COMPLETE_ACCESS_UNIT: u32 = 1 << 1;
@@ -405,6 +407,14 @@ unsafe extern "C" {
     pub fn rk_mpp_decoder_receive_frame(
         decoder: *mut rk_mpp_decoder_t,
         frame: *mut rk_mpp_frame_t,
+    ) -> c_int;
+    pub fn rk_mpp_decoder_export_frame_dmabuf(
+        decoder: *mut rk_mpp_decoder_t,
+        plane: u32,
+        out_fd: *mut c_int,
+        offset: *mut u64,
+        size: *mut u64,
+        stride: *mut u32,
     ) -> c_int;
     pub fn rk_mpp_frame_release(decoder: *mut rk_mpp_decoder_t, frame: *mut rk_mpp_frame_t);
     pub fn rk_mpp_decoder_flush(decoder: *mut rk_mpp_decoder_t) -> c_int;

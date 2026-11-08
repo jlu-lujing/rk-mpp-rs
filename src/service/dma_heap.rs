@@ -1,7 +1,9 @@
 //! dma-heap allocation, the buffer type MPP and RGA need.
 
 use std::ffi::CString;
+use std::fmt;
 use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::raw::{c_int, c_ulong, c_void};
 
 const DMA_HEAP_IOC_MAGIC: u8 = b'H';
@@ -124,6 +126,66 @@ impl DmaBuf {
         Ok(buf)
     }
 
+    /// Duplicate and map an existing dma-buf fd.
+    ///
+    /// The duplicate is owned by this value; the caller may close its original
+    /// fd after this function returns.
+    pub fn import_fd(fd: c_int, len: usize, cached: bool) -> io::Result<Self> {
+        if fd < 0 || len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "imported dma-buf needs a non-negative fd and non-zero length",
+            ));
+        }
+        // SAFETY: this queries a caller-owned descriptor and returns a new fd
+        // on success. `F_DUPFD_CLOEXEC` gives us independent close ownership.
+        let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if dup < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `dup` is a fresh descriptor returned above. The mapping is
+        // shared/read-write and exactly `len` bytes as promised by the caller.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                dup,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            // SAFETY: `dup` has not escaped and mmap does not retain it on
+            // failure.
+            unsafe { libc::close(dup) };
+            return Err(io::Error::last_os_error());
+        }
+        let _ = cached;
+        Ok(Self {
+            fd: dup,
+            len,
+            ptr: ptr as *mut u8,
+        })
+    }
+
+    /// Duplicate this buffer's fd for another driver or process.
+    pub fn dup_fd(&self) -> io::Result<OwnedFd> {
+        // SAFETY: this queries a live owned descriptor and returns a fresh fd
+        // owned by the caller on success.
+        let fd = unsafe { libc::fcntl(self.fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `fd` is a fresh descriptor returned by fcntl and ownership
+        // transfers exactly once to OwnedFd.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Self::import_fd(self.fd, self.len, false)
+    }
+
     pub fn fd(&self) -> c_int {
         self.fd
     }
@@ -194,6 +256,22 @@ impl Drop for DmaBuf {
     }
 }
 
+impl AsRawFd for DmaBuf {
+    fn as_raw_fd(&self) -> c_int {
+        self.fd
+    }
+}
+
+impl fmt::Debug for DmaBuf {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DmaBuf")
+            .field("fd", &self.fd)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{heap_allocation_len, DMA_BUF_IOCTL_SYNC};
@@ -217,5 +295,19 @@ mod tests {
     fn sync_ioctl_encodes_dma_buf_sync_size() {
         // _IOW('b', 0, struct dma_buf_sync) on a 64-bit target.
         assert_eq!(DMA_BUF_IOCTL_SYNC, 0x40086200);
+    }
+
+    #[test]
+    fn import_rejects_invalid_arguments_before_dup() {
+        assert_eq!(
+            super::DmaBuf::import_fd(-1, 4096, false)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            super::DmaBuf::import_fd(0, 0, false).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
     }
 }

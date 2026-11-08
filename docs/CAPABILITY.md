@@ -54,10 +54,11 @@
 | 对外编码 SDK | H.264 V1.4 完成 | 同步 submit/receive、NV12/I420 输入复制与 coded geometry padding、owned packet/release、flush/reset。t6 VEPU580 支持 baseline/main/high 与通用 level/GOP/QP/fps；RK3576 VEPU510 当前限定 320×240 Baseline QP26 GOP6 @30fps。lf1/t6 六帧输出与现有 CLI oracle 逐字节 |
 | H.265 编码公共接口 | V1.5 完成 | 同一 encoder handle 支持 NV12/I420、owned packet/release、flush/reset；t6 VEPU580 开放 width/height、QP、GOP，RK3576 VEPU510 限定板验 320×240 Main QP26 GOP6 @30fps。lf1/t6 六帧输出与对应 CLI oracle 逐字节 |
 | JPEG 编码公共接口 | V1.6 完成 | 同一 encoder handle 支持 NV12/I420、0–10 量化档、可选 restart MCU；VEPU2/VPU720 自动选择。lf1/t6 单帧 JPEG 与 `jpeg-enc` 逐字节 |
-| SDK 安装与 ABI | 完成 | Linux SONAME `librk_mpp_rs.so.1`、版本化 `.so.1.10.0`、static/rlib、pkg-config、relocatable CMake shared/static target、ABI 符号和 C11 layout 快照；lf1/t6 临时 prefix 安装及外部 consumer 编译运行 |
+| SDK 安装与 ABI | 完成 | Linux SONAME `librk_mpp_rs.so.1`、版本化 `.so.1.11.0`、static/rlib、pkg-config、relocatable CMake shared/static target、ABI 符号和 C11 layout 快照；lf1/t6 临时 prefix 安装及外部 consumer 编译运行 |
 | 高级编码配置 ABI | V1.9 完成（VEPU580） | 原 68-byte encoder config 和旧 create 路径不变；独立 advanced config 暴露 Fixed-QP/CBR/VBR/AVBR、目标/最小/最大码率与 QP 范围。t6 H.264/H.265 三种 RC 共 6 组 C API 输出与已验证 CLI 逐字节；V1.8 consumer 直接链接 V1.9 库通过。RK3576 VEPU510 的 streaming RC 明确返回 unsupported，待逐帧会话接入 |
 | ROI / GDR / slice ABI | V1.10 完成（VEPU580） | 独立 V2 advanced config 保留 V1.9 布局，最多 8 个 ROI，支持 GDR row/column、BY_CTU/BY_BYTE slice、完整 AU 或 low-delay packet 输出。t6 H.264/H.265 的 ROI/GDR/slice 六组 C API 输出与既有 CLI 逐字节；V1.9 advanced consumer 可链接 V1.10。RK3576 VEPU510 streaming 控制暂明确 SKIP |
-| Rust raw FFI | 完成 | workspace crate `rk-mpp-rs-sys` 手写覆盖 V1.10 全部 34 个导出、enum、struct 和不透明句柄；ABI size/offset 测试、dynamic/static/pkg-config smoke 在 t6/lf1 通过 |
+| Rust raw FFI | 完成 | workspace crate `rk-mpp-rs-sys` 手写覆盖 V1.11 全部 35 个导出、enum、struct 和不透明句柄；ABI size/offset 测试、dynamic/static/pkg-config smoke 在 t6/lf1 通过 |
+| MJPEG DMA-BUF frame | V1.11 完成 | 默认 MJPEG frame 仍为连续 CPU 存储；设置 `RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` 后 NV12 frame 保留硬件 dma-buf。Rust 暴露 borrowed plane metadata 与 owned fd duplicate，C 暴露 `rk_mpp_decoder_export_frame_dmabuf()`。Y/UV 的 fd/offset/size/stride 由 C consumer 和 `fstat` 校验；CPU-frame codec 明确返回 unsupported |
 | fence / 多核 CCU / secure | 受内核限制 | 该内核/驱动不暴露对应接口，未伪造 |
 | RK3576 平台适配 | 进行中 | VDPU383 H.264 IPPP + 5/5 边界；H.265 12/12（含 500 帧 LTR SPS 与删 AU 缺失参考）并新增 16 格损坏矩阵：14 格 C/Rust 输出一致，损坏 SPS/首个 IDR slice 起点两格 Rust 及时结束而 C 超时；VP9 初始 7/7、VPU720 JPEG 19/19、VEPU510 H.264/H.265 功能、RC、ROI、slice、GDR 矩阵均板上通过。VDPU383 AV1 已完成 8-bit 10 帧引用序列和 10-bit skip-grain 序列：key/inter、`show_existing_frame`、八槽 output/CDF/colmv、primary-reference coefficient-CDF、704-byte 10-bit stride 与 packed-NV12 → planar u16 均接通；输出 SHA-256 分别为 `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138` 和 `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`。VDPU383 FGS enable/base 会以 STATUS 0 超时并复位，C HAL 也未启用 film grain。AVS2、VPU720 tile input 和 VDPP2 待完成 |
 
@@ -146,7 +147,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
-当前 ROADMAP：**103 完成 / 6 未完成**（含缩进子项为 141 / 10）。未完成项里 5 项属于上表的
+当前 ROADMAP：**104 完成 / 6 未完成**（含缩进子项为 142 / 10）。未完成项里 5 项属于上表的
 平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 103 个 slice（含真实 2×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、

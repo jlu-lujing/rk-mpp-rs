@@ -2,6 +2,22 @@
 
 ## Session: 2026-11-09
 
+### Phase 11: DMA-BUF Frame Export
+- **Status:** complete on t6 and lf1 for MJPEG NV12.
+- Added `DmaBuf::import_fd`, `dup_fd` and `try_clone` with owned close/mmap
+  semantics.
+- MJPEG NV12 frames can opt into retaining the hardware dma-buf instead of
+  copying to a CPU `Vec`; default frames remain contiguous CPU storage and
+  cloning a DMA frame deliberately produces an independent CPU copy.
+- Rust exposes `DmaBufPlane` and `Frame::duplicate_dmabuf`; C exposes
+  `rk_mpp_decoder_export_frame_dmabuf()` with caller-owned fd.
+- t6/lf1 passed dma-heap duplicate/import byte equality and C API Y/UV
+  fd/offset/size/stride validation.
+- t6 full C/C++ decoder+encoder gate retained the MJPEG NV12 hash
+  `05e4894e…`.
+- Workspace gates pass on both boards with
+  `1199 passed / 0 failed / 38 ignored`; workspace rustfmt/rustdoc pass.
+
 ### Phase 10: rk-mpp-rs-sys Raw Bindings
 - **Status:** complete on t6 and lf1.
 - Added the `rk-mpp-rs-sys` workspace crate with hand-written V1.10 enums,

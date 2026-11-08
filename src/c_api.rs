@@ -2,6 +2,7 @@
 
 use std::ffi::{c_char, c_int};
 use std::mem::size_of;
+use std::os::fd::IntoRawFd;
 
 use crate::sdk;
 
@@ -16,8 +17,9 @@ pub const RK_MPP_ERR_RESOURCE: c_int = -5;
 pub const RK_MPP_ERR_STATE: c_int = -6;
 pub const RK_MPP_ERR_IO: c_int = -7;
 pub const RK_MPP_ERR_TOO_LARGE: c_int = -8;
+pub const RK_MPP_DECODER_FLAG_DMABUF_OUTPUT: u32 = 1 << 0;
 
-static VERSION: &[u8] = b"1.10\0";
+static VERSION: &[u8] = b"1.11\0";
 static OK: &[u8] = b"ok\0";
 static INVALID: &[u8] = b"invalid argument\0";
 static UNSUPPORTED: &[u8] = b"unsupported operation\0";
@@ -184,7 +186,7 @@ pub unsafe extern "C" fn rk_mpp_decoder_create(
         if config.struct_size != size_of::<RkMppDecoderConfig>() as u32 {
             return RK_MPP_ERR_INVALID;
         }
-        if config.flags != 0 {
+        if config.flags & !RK_MPP_DECODER_FLAG_DMABUF_OUTPUT != 0 {
             return RK_MPP_ERR_UNSUPPORTED;
         }
         let Some(codec) = sdk::Codec::from_c_value(config.codec) else {
@@ -195,7 +197,8 @@ pub unsafe extern "C" fn rk_mpp_decoder_create(
         };
         let decoder_config = sdk::DecoderConfig::new(codec)
             .with_output_format(output_format)
-            .with_max_reorder_frames(config.max_reorder_frames);
+            .with_max_reorder_frames(config.max_reorder_frames)
+            .with_dmabuf_output(config.flags & RK_MPP_DECODER_FLAG_DMABUF_OUTPUT != 0);
         match sdk::Decoder::new(decoder_config) {
             Ok(inner) => {
                 *out_decoder = Box::into_raw(Box::new(RkMppDecoder {
@@ -301,6 +304,59 @@ pub unsafe extern "C" fn rk_mpp_decoder_receive_frame(
         }
     }
     decoder.last_frame = Some(decoded);
+    RK_MPP_OK
+}
+
+/// Duplicate one DMA-BUF-backed frame plane for another driver or process.
+///
+/// # Safety
+/// `decoder` must be live, `plane` must select a valid plane, and all non-null
+/// output pointers must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_decoder_export_frame_dmabuf(
+    decoder: *mut RkMppDecoder,
+    plane: u32,
+    out_fd: *mut c_int,
+    offset: *mut u64,
+    size: *mut u64,
+    stride: *mut u32,
+) -> c_int {
+    if decoder.is_null() || out_fd.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: decoder is live under the C contract.
+    let decoder = unsafe { &mut *decoder };
+    // SAFETY: out_fd is non-null and writable per the contract.
+    unsafe { *out_fd = -1 };
+    let Some(frame) = decoder.last_frame.as_ref() else {
+        return RK_MPP_ERR_STATE;
+    };
+    let plane = match usize::try_from(plane) {
+        Ok(plane) => plane,
+        Err(_) => return RK_MPP_ERR_INVALID,
+    };
+    let Some(info) = frame.dmabuf_plane(plane) else {
+        return RK_MPP_ERR_UNSUPPORTED;
+    };
+    let Some(duplicate) = (match frame.duplicate_dmabuf() {
+        Ok(duplicate) => duplicate,
+        Err(_) => return RK_MPP_ERR_IO,
+    }) else {
+        return RK_MPP_ERR_UNSUPPORTED;
+    };
+    // SAFETY: out_fd is writable, and all optional outputs are checked below.
+    unsafe {
+        *out_fd = duplicate.into_raw_fd();
+        if !offset.is_null() {
+            *offset = info.offset();
+        }
+        if !size.is_null() {
+            *size = info.size();
+        }
+        if !stride.is_null() {
+            *stride = info.stride();
+        }
+    }
     RK_MPP_OK
 }
 

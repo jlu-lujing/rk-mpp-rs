@@ -81,7 +81,7 @@
 
 整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-103 项完成、6 项未完成（含缩进子项为 141 / 10）；未完成项里有硬件不存在、无 conformance
+104 项完成、6 项未完成（含缩进子项为 142 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
 AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
@@ -179,7 +179,7 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.10 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.11 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
@@ -231,8 +231,8 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 安装布局：
 
 - `include/rk_mpp_rs.h`
-- `lib/librk_mpp_rs.so.1.10.0`
-- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.10.0`
+- `lib/librk_mpp_rs.so.1.11.0`
+- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.11.0`
 - `lib/librk_mpp_rs.so -> librk_mpp_rs.so.1`
 - `lib/librk_mpp_rs.a`
 - `lib/pkgconfig/rk-mpp-rs.pc`
@@ -255,7 +255,7 @@ cargo run --example sdk_decode -- h264 input.264 output.yuv
 cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 26 6
 ```
 
-`rk-mpp-rs-sys` 暴露 V1.10 的全部 34 个 C 导出、enum、struct 和不透明句柄。
+`rk-mpp-rs-sys` 暴露 V1.11 的全部 35 个 C 导出、enum、struct 和不透明句柄。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
 `target/<profile>`：
 
@@ -307,6 +307,32 @@ config、初始化和 create 函数保持原样。Rust 对应 `RoiConfig`、`Gdr
 
 ```bash
 ./scripts/board_sdk_encoder_controls.sh
+```
+
+V1.11 可选择让 MJPEG NV12 解码帧保留硬件 dma-buf。默认行为仍是连续 CPU
+frame，以保持 V1 兼容；设置
+`RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` 后不再复制到 CPU `Vec`。调用方可在
+`receive_frame()` 后按 plane 导出私有 fd、offset、size 和 stride，用于
+RKNN/RGA 等 fd consumer：
+
+```c
+config.flags |= RK_MPP_DECODER_FLAG_DMABUF_OUTPUT;
+/* rk_mpp_decoder_create(...) */
+int fd = -1;
+uint64_t offset, size;
+uint32_t stride;
+rk_mpp_decoder_export_frame_dmabuf(
+    decoder, 0, &fd, &offset, &size, &stride);
+/* use fd */
+close(fd);
+```
+
+Rust 对应 `DecoderConfig::with_dmabuf_output(true)`、
+`Frame::dmabuf_plane()` 和 `Frame::duplicate_dmabuf()`。H.264/H.265 等仍由
+CPU frame 暴露，当前会返回 `RK_MPP_ERR_UNSUPPORTED`。
+
+```bash
+./scripts/board_sdk_dmabuf.sh
 ```
 
 JPEG 编码沿用同一 encoder handle，支持 NV12/I420、0–10 内置量化档和可选

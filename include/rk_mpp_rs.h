@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 10u
+#define RK_MPP_API_VERSION_MINOR 11u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -43,6 +43,10 @@ enum rk_mpp_pixel_format {
     RK_MPP_PIXEL_FORMAT_I420 = 2,
     /* Planar 4:2:0, little-endian 16-bit samples in all three planes. */
     RK_MPP_PIXEL_FORMAT_I420P10 = 3
+};
+
+enum rk_mpp_decoder_flags {
+    RK_MPP_DECODER_FLAG_DMABUF_OUTPUT = 1u << 0
 };
 
 /*
@@ -142,6 +146,17 @@ int rk_mpp_decoder_submit_packet(rk_mpp_decoder_t *decoder,
  */
 int rk_mpp_decoder_receive_frame(rk_mpp_decoder_t *decoder,
                                  rk_mpp_frame_t *frame);
+/*
+ * Duplicate the most recently received frame's dma-buf fd. The caller owns
+ * *out_fd and must close it. offset/size are in bytes within that fd and
+ * stride is bytes per row. CPU-backed frames return unsupported.
+ */
+int rk_mpp_decoder_export_frame_dmabuf(rk_mpp_decoder_t *decoder,
+                                       uint32_t plane,
+                                       int *out_fd,
+                                       uint64_t *offset,
+                                       uint64_t *size,
+                                       uint32_t *stride);
 void rk_mpp_frame_release(rk_mpp_decoder_t *decoder,
                           rk_mpp_frame_t *frame);
 
