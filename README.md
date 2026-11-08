@@ -179,18 +179,19 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1 解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.1 解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
 - 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
-- 优先编解码器：H.264 decode、MJPEG/JPEG decode
+- 优先编解码器：H.264 decode、H.265/HEVC decode、MJPEG/JPEG decode
 
 接口接受内存中的任意分块码流，不绑定文件路径。一个 decoder handle 可持续
 提交 packet、接收 frame、显式释放 frame，并支持 `flush`、`reset`、
-`recover`、H.264 `status` 和粘性 EOS。H.264 输出按 POC 有界重排；MJPEG
-支持单个 JPEG 被拆成多包，也支持一个 packet 里包含多个 JPEG。两者当前稳定
-输出 NV12 或 I420；新的 V1 接口暂不宣称 RGB888，历史
+`recover`、H.264/H.265 `status` 和粘性 EOS。H.264 按 POC、H.265 按
+display epoch + POC 有界重排；MJPEG 支持单个 JPEG 被拆成多包，也支持一个
+packet 里包含多个 JPEG。H.264/MJPEG 输出 NV12 或 I420；H.265 8-bit 输出
+NV12/I420，Main10 输出小端 16-bit 的 I420P10。新的 V1 接口暂不宣称 RGB888，历史
 `rk_jpeg_open/frame/close` RGB 接口继续保留给 `rknn-fastinfer`。
 
 板级 C/C++ 门：
@@ -201,8 +202,9 @@ BOARD=t6 ./scripts/board_c_api_h264_mjpeg.sh
 ```
 
 lf1 和 t6 已验证共享库和静态库链接、全部公开符号、生命周期错误路径，以及 H.264
-7/127/313-byte 分块和整条单包输入；MJPEG 97/211-byte 分块和四帧单包输入。
-输出与板上 C MPP 逐字节一致。
+7/127/313-byte 分块和整条单包输入；H.265 8-bit 37-byte 分块、整条单包和
+Main10 53-byte 分块输入；MJPEG 97/211-byte 分块和四帧单包输入。输出与板上
+C MPP 逐字节一致。
 
 ## 怎么验证的
 
@@ -218,7 +220,7 @@ lf1 和 t6 已验证共享库和静态库链接、全部公开符号、生命周
 复跑：
 
 ```bash
-cargo test --release --all-targets           # t6：1220 枚举；1183 常规通过，37 个硬件 ignored
+cargo test --release --all-targets           # t6：1223 枚举；1186 常规通过，37 个硬件 ignored
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
 ./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4

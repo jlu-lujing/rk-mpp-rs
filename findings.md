@@ -28,6 +28,19 @@
   `librk_mpp_rs.a`; all `rk_mpp_*` and legacy `rk_jpeg_*` symbols are exported.
 - A whole H.264 stream or several concatenated JPEGs may be submitted in one
   packet, while byte-at-a-time fragmentation also remains supported.
+- `codec::hevc::Decoder` accepts one complete access unit at a time and already
+  returns POC, display epoch, chroma format and frame errors. Its CLI currently
+  buffers the whole file and sorts afterward, so the SDK needs a bounded
+  streaming reorder queue.
+- HEVC `split_access_units` has the same parameter-set carryover issue as the
+  old H.264 splitter: VPS/SPS/PPS after one picture must start the next AU.
+- HEVC SPS currently discards `sps_max_num_reorder_pics`; the SDK needs that
+  value to bound live playback latency instead of waiting until EOS.
+- H.265 10-bit output is already planar little-endian 16-bit. Add an explicit
+  `I420P10` pixel format rather than silently treating it as 8-bit I420.
+- The H.265/HEVC C consumer passes on lf1 and t6 for 8-bit NV12/I420 and
+  Main10 I420P10. The Main10 fixture has six frames with B-pyramid reordering,
+  so SPS-bounded display ordering is exercised rather than only IDR output.
 
 ## Technical Decisions
 
@@ -42,6 +55,8 @@
 | Sticky EOS plus idempotent flush | Gives callers one unambiguous end condition and allows reset/reuse |
 | Packet metadata inherited by all pictures in that packet | Avoids inventing timestamps when one packet contains multiple AUs/frames |
 | New V1 YUV-only output | Deterministic and cheap; legacy JPEG remains the RGB compatibility path |
+| Extend ABI 1.1 with H.265 and `I420P10` | Adds codecs/output without changing existing struct layouts or symbols |
+| Reorder H.265 only until the SPS is available | Parameter sets usually share the first AU; using the SPS value avoids a fixed conservative delay |
 
 ## Issues Encountered
 

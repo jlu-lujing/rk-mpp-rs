@@ -10,15 +10,17 @@ use std::io;
 
 use crate::codec::h264::{
     self,
-    decoder::{picture_is_output, split_access_units},
+    decoder::{picture_is_output as h264_picture_is_output, split_access_units},
 };
+use crate::codec::hevc;
 use crate::codec::jpeg::{parser as jpeg_parser, tables as jpeg_tables};
+use crate::hal::hevc::ChromaFormat;
 use crate::hal::jpegd::{self as jpegd, JpegDownscale};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::{MppService, VPU_CLIENT_JPEG_DEC};
 
 pub const API_VERSION_MAJOR: u32 = 1;
-pub const API_VERSION_MINOR: u32 = 0;
+pub const API_VERSION_MINOR: u32 = 1;
 pub const API_VERSION: u32 = (API_VERSION_MAJOR << 16) | API_VERSION_MINOR;
 
 const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
@@ -28,6 +30,7 @@ const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Codec {
     H264,
+    H265,
     Mjpeg,
 }
 
@@ -35,6 +38,7 @@ impl Codec {
     pub const fn c_value(self) -> u32 {
         match self {
             Self::H264 => 1,
+            Self::H265 => 3,
             Self::Mjpeg => 2,
         }
     }
@@ -43,6 +47,7 @@ impl Codec {
         match value {
             1 => Some(Self::H264),
             2 => Some(Self::Mjpeg),
+            3 => Some(Self::H265),
             _ => None,
         }
     }
@@ -54,6 +59,8 @@ impl Codec {
 pub enum PixelFormat {
     Nv12,
     I420,
+    /// Planar 4:2:0 with little-endian 16-bit samples.
+    I420P10,
 }
 
 impl PixelFormat {
@@ -61,6 +68,7 @@ impl PixelFormat {
         match self {
             Self::Nv12 => 1,
             Self::I420 => 2,
+            Self::I420P10 => 3,
         }
     }
 
@@ -68,6 +76,7 @@ impl PixelFormat {
         match value {
             1 => Some(Self::Nv12),
             2 => Some(Self::I420),
+            3 => Some(Self::I420P10),
             _ => None,
         }
     }
@@ -284,10 +293,70 @@ impl Frame {
                 .nv12
                 .ok_or_else(|| Error::State("H.264 decoder returned planar data in NV12 mode"))?,
             PixelFormat::I420 => picture.yuv,
+            PixelFormat::I420P10 => {
+                return Err(Error::Unsupported(
+                    "H.264 I420P10 output is not implemented".to_string(),
+                ));
+            }
         };
         let mut frame = Self {
             width,
             height,
+            format,
+            pts,
+            dts,
+            poc: picture.poc,
+            err_info: picture.err_info,
+            storage,
+            planes: [PlaneLayout::default(); 3],
+        };
+        frame.layout_yuv()?;
+        Ok(frame)
+    }
+
+    fn from_h265(
+        picture: hevc::Picture,
+        format: PixelFormat,
+        pts: i64,
+        dts: i64,
+    ) -> Result<Self, Error> {
+        if picture.chroma_format != ChromaFormat::Yuv420 {
+            return Err(Error::Unsupported(format!(
+                "H.265 {:?} chroma output is not exposed by the V1 SDK",
+                picture.chroma_format
+            )));
+        }
+        let sample_bytes = match (picture.bit_depth, format) {
+            (8, PixelFormat::Nv12 | PixelFormat::I420) => 1,
+            (10, PixelFormat::I420P10) => 2,
+            (depth, format) => {
+                return Err(Error::Unsupported(format!(
+                    "{depth}-bit H.265 cannot be exposed as {format:?}"
+                )));
+            }
+        };
+        let (chroma_width, chroma_height) = (picture.width / 2, picture.height / 2);
+        let expected = picture
+            .width
+            .checked_mul(picture.height)
+            .and_then(|luma| {
+                chroma_width
+                    .checked_mul(chroma_height)
+                    .and_then(|chroma| luma.checked_add(chroma * 2))
+            })
+            .and_then(|samples| samples.checked_mul(sample_bytes))
+            .ok_or_else(|| Error::State("H.265 frame size overflow"))?;
+        if picture.yuv.len() < expected {
+            return Err(Error::State("H.265 planar frame is truncated"));
+        }
+        let storage = if format == PixelFormat::Nv12 {
+            i420_to_nv12(&picture.yuv[..expected], picture.width, picture.height)
+        } else {
+            picture.yuv[..expected].to_vec()
+        };
+        let mut frame = Self {
+            width: picture.width,
+            height: picture.height,
             format,
             pts,
             dts,
@@ -380,12 +449,18 @@ impl Frame {
     fn layout_yuv(&mut self) -> Result<(), Error> {
         let chroma_width = self.width.div_ceil(2);
         let chroma_height = self.height.div_ceil(2);
+        let sample_bytes = match self.format {
+            PixelFormat::I420P10 => 2,
+            PixelFormat::Nv12 | PixelFormat::I420 => 1,
+        };
         let y_size = self
             .width
             .checked_mul(self.height)
+            .and_then(|samples| samples.checked_mul(sample_bytes))
             .ok_or_else(|| Error::Parse("frame Y plane overflow".to_string()))?;
         let chroma_size = chroma_width
             .checked_mul(chroma_height)
+            .and_then(|samples| samples.checked_mul(sample_bytes))
             .ok_or_else(|| Error::Parse("frame chroma plane overflow".to_string()))?;
         match self.format {
             PixelFormat::Nv12 => {
@@ -407,25 +482,25 @@ impl Frame {
                     PlaneLayout::default(),
                 ];
             }
-            PixelFormat::I420 => {
+            PixelFormat::I420 | PixelFormat::I420P10 => {
                 if self.storage.len() < y_size + chroma_size * 2 {
-                    return Err(Error::State("I420 frame storage is too small"));
+                    return Err(Error::State("planar frame storage is too small"));
                 }
                 self.planes = [
                     PlaneLayout {
                         offset: 0,
                         len: y_size,
-                        stride: self.width,
+                        stride: self.width * sample_bytes,
                     },
                     PlaneLayout {
                         offset: y_size,
                         len: chroma_size,
-                        stride: chroma_width,
+                        stride: chroma_width * sample_bytes,
                     },
                     PlaneLayout {
                         offset: y_size + chroma_size,
                         len: chroma_size,
-                        stride: chroma_width,
+                        stride: chroma_width * sample_bytes,
                     },
                 ];
             }
@@ -478,6 +553,7 @@ pub struct Decoder {
 
 enum Backend {
     H264(H264Backend),
+    H265(H265Backend),
     Mjpeg(MjpegBackend),
 }
 
@@ -498,6 +574,24 @@ struct PendingH264 {
     dts: i64,
 }
 
+struct H265Backend {
+    decoder: hevc::Decoder,
+    pending: VecDeque<PendingH265>,
+    input: Vec<u8>,
+    output_format: PixelFormat,
+    max_reorder_override: usize,
+    max_reorder: usize,
+    pending_pts: i64,
+    pending_dts: i64,
+    eos: bool,
+}
+
+struct PendingH265 {
+    picture: hevc::Picture,
+    pts: i64,
+    dts: i64,
+}
+
 struct MjpegBackend {
     service: Option<MppService>,
     format: PixelFormat,
@@ -509,6 +603,7 @@ impl Decoder {
     pub fn new(config: DecoderConfig) -> Result<Self, Error> {
         let backend = match config.codec {
             Codec::H264 => Backend::H264(H264Backend::new(config)?),
+            Codec::H265 => Backend::H265(H265Backend::new(config)?),
             Codec::Mjpeg => Backend::Mjpeg(MjpegBackend::new(config)?),
         };
         Ok(Self {
@@ -525,6 +620,7 @@ impl Decoder {
     pub fn submit_packet(&mut self, packet: Packet<'_>) -> Result<usize, Error> {
         match &mut self.backend {
             Backend::H264(backend) => backend.submit(packet, &mut self.frames),
+            Backend::H265(backend) => backend.submit(packet, &mut self.frames),
             Backend::Mjpeg(backend) => backend.submit(packet, &mut self.frames),
         }
     }
@@ -541,6 +637,9 @@ impl Decoder {
             Backend::H264(backend) => {
                 backend.eos && backend.input.is_empty() && backend.pending.is_empty()
             }
+            Backend::H265(backend) => {
+                backend.eos && backend.input.is_empty() && backend.pending.is_empty()
+            }
             Backend::Mjpeg(backend) => backend.eos && backend.input.is_empty(),
         }
     }
@@ -548,6 +647,7 @@ impl Decoder {
     pub fn flush(&mut self) -> Result<usize, Error> {
         match &mut self.backend {
             Backend::H264(backend) => backend.flush(&mut self.frames),
+            Backend::H265(backend) => backend.flush(&mut self.frames),
             Backend::Mjpeg(backend) => backend.flush(&mut self.frames),
         }
     }
@@ -564,13 +664,14 @@ impl Decoder {
                 .decoder
                 .recover_session()
                 .map_err(|error| Error::Hardware(error.to_string())),
-            Backend::Mjpeg(_) => self.reset(),
+            Backend::H265(_) | Backend::Mjpeg(_) => self.reset(),
         }
     }
 
     pub fn status(&self) -> Option<(u32, u32, u32)> {
         match &self.backend {
             Backend::H264(backend) => Some(backend.decoder.status()),
+            Backend::H265(backend) => Some(backend.decoder.status()),
             Backend::Mjpeg(_) => None,
         }
     }
@@ -578,6 +679,11 @@ impl Decoder {
 
 impl H264Backend {
     fn new(config: DecoderConfig) -> Result<Self, Error> {
+        if config.output_format == PixelFormat::I420P10 {
+            return Err(Error::Unsupported(
+                "H.264 I420P10 output is not implemented".to_string(),
+            ));
+        }
         let mut decoder =
             h264::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?;
         decoder.set_output_nv12(config.output_format == PixelFormat::Nv12);
@@ -618,7 +724,7 @@ impl H264Backend {
             let picture = self
                 .decoder
                 .decode_access_unit(&unit)
-                .map_err(classify_h264_error)?;
+                .map_err(classify_video_error)?;
             if let Some(picture) = picture {
                 decoded += 1;
                 self.push_pending(
@@ -646,7 +752,7 @@ impl H264Backend {
         if pending.picture.idr && !self.pending.is_empty() {
             self.flush_reorder(output)?;
         }
-        if !picture_is_output(&pending.picture) {
+        if !h264_picture_is_output(&pending.picture) {
             return Ok(());
         }
         self.pending.push_back(pending);
@@ -690,7 +796,7 @@ impl H264Backend {
             if let Some(picture) = self
                 .decoder
                 .decode_access_unit(&unit)
-                .map_err(classify_h264_error)?
+                .map_err(classify_video_error)?
             {
                 decoded += 1;
                 self.push_pending(
@@ -709,8 +815,155 @@ impl H264Backend {
     }
 }
 
+impl H265Backend {
+    fn new(config: DecoderConfig) -> Result<Self, Error> {
+        let decoder = hevc::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?;
+        let max_reorder_override = (config.max_reorder_frames as usize).min(16);
+        Ok(Self {
+            decoder,
+            pending: VecDeque::new(),
+            input: Vec::new(),
+            output_format: config.output_format,
+            max_reorder_override,
+            max_reorder: max_reorder_override,
+            pending_pts: 0,
+            pending_dts: 0,
+            eos: false,
+        })
+    }
+
+    fn submit(&mut self, packet: Packet<'_>, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
+        if self.eos {
+            return Err(Error::State("packet submitted after EOS"));
+        }
+        if self.input.len().saturating_add(packet.data.len()) > MAX_ENCODED_BYTES {
+            return Err(Error::TooLarge);
+        }
+        if self.input.is_empty() {
+            self.pending_pts = packet.pts;
+            self.pending_dts = packet.dts;
+        }
+        self.input.extend_from_slice(packet.data);
+        let flush_tail = packet.flags.contains(PacketFlags::COMPLETE_ACCESS_UNIT)
+            || packet.flags.contains(PacketFlags::EOS);
+        let units = take_hevc_access_units(&mut self.input, flush_tail);
+        let mut decoded = 0;
+        for unit in units {
+            let picture = self
+                .decoder
+                .decode_access_unit(&unit)
+                .map_err(classify_video_error)?;
+            if let Some(picture) = picture {
+                decoded += 1;
+                self.refresh_reorder();
+                self.push_pending(
+                    PendingH265 {
+                        picture,
+                        pts: packet.pts,
+                        dts: packet.dts,
+                    },
+                    output,
+                )?;
+            }
+        }
+        if packet.flags.contains(PacketFlags::EOS) {
+            self.eos = true;
+            self.flush_reorder(output)?;
+        }
+        Ok(decoded)
+    }
+
+    fn refresh_reorder(&mut self) {
+        if self.max_reorder_override == 0 {
+            self.max_reorder = self.decoder.max_num_reorder_pics();
+        }
+    }
+
+    fn push_pending(
+        &mut self,
+        pending: PendingH265,
+        output: &mut VecDeque<Frame>,
+    ) -> Result<(), Error> {
+        if self
+            .pending
+            .back()
+            .is_some_and(|queued| queued.picture.epoch != pending.picture.epoch)
+        {
+            self.flush_reorder(output)?;
+        }
+        if !hevc::picture_is_output(&pending.picture) {
+            return Ok(());
+        }
+        self.pending.push_back(pending);
+        self.sort_pending();
+        while self.pending.len() > self.max_reorder {
+            let item = self.pending.pop_front().unwrap();
+            output.push_back(Frame::from_h265(
+                item.picture,
+                self.output_format,
+                item.pts,
+                item.dts,
+            )?);
+        }
+        Ok(())
+    }
+
+    fn sort_pending(&mut self) {
+        self.pending
+            .make_contiguous()
+            .sort_by_key(|item| (item.picture.epoch, item.picture.poc));
+    }
+
+    fn flush_reorder(&mut self, output: &mut VecDeque<Frame>) -> Result<(), Error> {
+        self.sort_pending();
+        while let Some(item) = self.pending.pop_front() {
+            output.push_back(Frame::from_h265(
+                item.picture,
+                self.output_format,
+                item.pts,
+                item.dts,
+            )?);
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
+        if self.eos && self.pending.is_empty() && self.input.is_empty() {
+            return Ok(0);
+        }
+        let units = take_hevc_access_units(&mut self.input, true);
+        let mut decoded = 0;
+        for unit in units {
+            if let Some(picture) = self
+                .decoder
+                .decode_access_unit(&unit)
+                .map_err(classify_video_error)?
+            {
+                decoded += 1;
+                self.refresh_reorder();
+                self.push_pending(
+                    PendingH265 {
+                        picture,
+                        pts: self.pending_pts,
+                        dts: self.pending_dts,
+                    },
+                    output,
+                )?;
+            }
+        }
+        self.flush_reorder(output)?;
+        self.eos = true;
+        Ok(decoded)
+    }
+}
+
 impl MjpegBackend {
     fn new(config: DecoderConfig) -> Result<Self, Error> {
+        if config.output_format == PixelFormat::I420P10 {
+            return Err(Error::Unsupported(
+                "MJPEG I420P10 output is not implemented".to_string(),
+            ));
+        }
         Ok(Self {
             service: None,
             format: config.output_format,
@@ -814,7 +1067,23 @@ fn write_dma(buffer: &mut DmaBuf, bytes: &[u8]) -> Result<(), Error> {
     buffer.sync_write_end().map_err(Error::from)
 }
 
-fn classify_h264_error(message: String) -> Error {
+fn i420_to_nv12(planar: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let chroma_width = width / 2;
+    let chroma_height = height / 2;
+    let luma_size = width * height;
+    let chroma_size = chroma_width * chroma_height;
+    let mut packed = Vec::with_capacity(luma_size + chroma_size * 2);
+    packed.extend_from_slice(&planar[..luma_size]);
+    let u = &planar[luma_size..luma_size + chroma_size];
+    let v = &planar[luma_size + chroma_size..luma_size + chroma_size * 2];
+    for (u, v) in u.iter().zip(v) {
+        packed.push(*u);
+        packed.push(*v);
+    }
+    packed
+}
+
+fn classify_video_error(message: String) -> Error {
     if message.contains("hardware") || message.contains("submit") || message.contains("poll") {
         Error::Hardware(message)
     } else {
@@ -838,6 +1107,60 @@ fn take_h264_access_units(buffer: &mut Vec<u8>, flush: bool) -> Vec<Vec<u8>> {
         let boundary = match nal.unit_type {
             h264::parser::NAL_AUD => true,
             1..=5 => nal.rbsp.first().is_some_and(|byte| byte & 0x80 != 0),
+            _ => false,
+        };
+        if boundary && has_vcl {
+            let next_start = trailing_non_vcl.unwrap_or(nal.offset);
+            ranges.push((start.unwrap(), next_start));
+            start = Some(next_start);
+            has_vcl = nal.is_vcl();
+            trailing_non_vcl = None;
+            continue;
+        }
+        if start.is_none() {
+            start = Some(nal.offset);
+        }
+        if nal.is_vcl() {
+            has_vcl = true;
+            trailing_non_vcl = None;
+        } else if has_vcl && trailing_non_vcl.is_none() {
+            trailing_non_vcl = Some(nal.offset);
+        }
+    }
+    let keep = start.unwrap_or(buffer.len());
+    if flush && has_vcl && start.is_some() {
+        ranges.push((start.unwrap(), buffer.len()));
+    }
+    let output = ranges
+        .into_iter()
+        .map(|(begin, end)| buffer[begin..end].to_vec())
+        .collect();
+    if flush {
+        buffer.clear();
+    } else if keep >= buffer.len() {
+        buffer.clear();
+    } else {
+        buffer.drain(..keep);
+    }
+    output
+}
+
+fn take_hevc_access_units(buffer: &mut Vec<u8>, flush: bool) -> Vec<Vec<u8>> {
+    let nals = hevc::parser::split_annex_b(buffer);
+    if nals.is_empty() {
+        if flush {
+            buffer.clear();
+        }
+        return Vec::new();
+    }
+    let mut start = None;
+    let mut has_vcl = false;
+    let mut trailing_non_vcl = None;
+    let mut ranges = Vec::new();
+    for nal in &nals {
+        let boundary = match nal.unit_type {
+            hevc::parser::NAL_AUD => true,
+            0..=31 => nal.rbsp.first().is_some_and(|byte| byte & 0x80 != 0),
             _ => false,
         };
         if boundary && has_vcl {
@@ -922,10 +1245,22 @@ pub fn h264_access_units(data: &[u8]) -> Vec<&[u8]> {
     split_access_units(data)
 }
 
+/// Split Annex-B H.265 input for consumers that need SDK-equivalent framing.
+pub fn split_hevc_packets(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut input = data.to_vec();
+    take_hevc_access_units(&mut input, true)
+}
+
+/// The offline H.265 access-unit splitter over a complete byte stream.
+pub fn hevc_access_units(data: &[u8]) -> Vec<&[u8]> {
+    hevc::decoder::split_access_units(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_jpegs, take_h264_access_units, Codec, DecoderConfig, PacketFlags, PixelFormat,
+        extract_jpegs, take_h264_access_units, take_hevc_access_units, Codec, DecoderConfig,
+        PacketFlags, PixelFormat,
     };
 
     #[test]
@@ -975,6 +1310,34 @@ mod tests {
     }
 
     #[test]
+    fn hevc_framer_keeps_the_tail_and_carries_parameter_sets() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0, 0, 0, 1, 0x26, 0x01, 0x80]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x44, 0x01, 0x00]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x26, 0x01, 0x80]);
+
+        let first = take_hevc_access_units(&mut data, false);
+        assert_eq!(first.len(), 1);
+        assert!(!data.is_empty());
+
+        let mut data = first[0].clone();
+        data.extend_from_slice(&[0, 0, 0, 1, 0x44, 0x01, 0x00]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x26, 0x01, 0x80]);
+        let frames = take_hevc_access_units(&mut data, true);
+        assert_eq!(frames.len(), 2);
+        assert!(frames[1].starts_with(&[0, 0, 0, 1, 0x44, 0x01]));
+    }
+
+    #[test]
+    fn i420_to_nv12_interleaves_the_planes() {
+        let planar = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        assert_eq!(
+            super::i420_to_nv12(&planar, 4, 2),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 10, 12]
+        );
+    }
+
+    #[test]
     fn mjpeg_eos_finishes_an_empty_public_session() {
         let mut decoder = super::Decoder::new(DecoderConfig::new(Codec::Mjpeg)).unwrap();
         let packet = super::Packet::new(&[]).with_flags(PacketFlags::EOS);
@@ -998,11 +1361,11 @@ mod tests {
 
     #[test]
     fn configuration_api_is_explicit() {
-        let config = DecoderConfig::new(Codec::H264)
-            .with_output_format(PixelFormat::I420)
+        let config = DecoderConfig::new(Codec::H265)
+            .with_output_format(PixelFormat::I420P10)
             .with_max_reorder_frames(3);
-        assert_eq!(config.codec(), Codec::H264);
-        assert_eq!(config.output_format(), PixelFormat::I420);
+        assert_eq!(config.codec(), Codec::H265);
+        assert_eq!(config.output_format(), PixelFormat::I420P10);
         assert_eq!(config.max_reorder_frames(), 3);
         assert!(PacketFlags::empty().with_eos().contains(PacketFlags::EOS));
     }

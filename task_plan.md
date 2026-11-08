@@ -6,8 +6,8 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-5 for H.264/MJPEG are complete; Phase 6 moves on to the remaining
-decoders and encoders.
+Phases 1-6.1 are complete for H.264, H.265 and MJPEG decode. Phase 6.2 moves
+the same stable decoder contract to VP9.
 
 ## Phases
 
@@ -40,12 +40,25 @@ decoders and encoders.
 - [x] Compile and run a C harness against the shared library/header.
 - [x] Compile and run linked C++ smoke tests for shared and static libraries.
 - [x] Verify H.264 and MJPEG outputs against existing board goldens.
-- **Status:** complete on lf1; final t6 gate remains in Phase 7.
+- **Status:** complete on lf1 and t6.
 
 ### Phase 6: Other Codec Interfaces
 - [ ] Extend the decoder contract to HEVC, VP9, AV1, VP8, MPEG-2, MPEG-4, H.263.
 - [ ] Add the same contract to JPEG single-image decode and legacy `rk_jpeg_*`.
 - [ ] Add encoder interfaces for the implemented H.264, H.265 and JPEG paths.
+- **Status:** in_progress
+
+### Phase 6.1: H.265/HEVC Decode Backend
+- [x] Add H.265 codec IDs and 10-bit planar output to the V1 header.
+- [x] Implement arbitrary-chunk Annex-B framing with parameter-set carryover.
+- [x] Track SPS reorder depth and emit display order across epochs.
+- [x] Verify 8-bit NV12/I420 and Main10 I420P10 output against C MPP.
+- **Status:** complete on lf1 and t6.
+
+### Phase 6.2: VP9 Decode Backend
+- [ ] Add the VP9 codec ID and packet-oriented input rules.
+- [ ] Expose 8-bit I420 and 10-bit I420P10 output.
+- [ ] Verify key/inter/show-existing and hidden-alt-ref packets against C MPP.
 - **Status:** pending
 
 ### Phase 7: Full Verification and Handoff
@@ -54,6 +67,8 @@ decoders and encoders.
 - [x] Run the complete suite on lf1 and the 80% OPP-capped t6 gate.
 - [x] Re-run the H.264/MJPEG C/C++ consumer test on t6.
 - [x] Update and commit the H.264/MJPEG SDK slice.
+- [x] Run lf1/t6 full gates and both C/C++ boards for H.265.
+- [x] Update and commit the H.265/API 1.1 slice.
 - **Status:** complete
 
 ## Decisions Made
@@ -64,7 +79,7 @@ decoders and encoders.
 | Add `rk_mpp_*` V1 decoder API beside legacy symbols | Avoid ABI breakage while replacing path-bound JPEG calls |
 | Use packet/chunk input rather than file paths | Required for cameras, containers and live streams |
 | Return decoder-owned frame storage until explicit release | Avoid per-frame allocation APIs and hidden pointer invalidation |
-| Keep new V1 output to NV12/I420 | Hardware JPEG RGB writeback is not deterministic; the legacy `rk_jpeg_*` RGB path remains intact |
+| Keep new V1 output to NV12/I420/I420P10 | Hardware JPEG RGB writeback is not deterministic; the legacy `rk_jpeg_*` RGB path remains intact |
 | Recreate JPEG DMA/service resources per image | Reuse produced an eight-byte stale writeback even after service reopen |
 | Copy input before returning from submit | Camera and socket buffers may be reused immediately by the caller |
 

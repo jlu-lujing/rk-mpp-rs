@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 0u
+#define RK_MPP_API_VERSION_MINOR 1u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -28,13 +28,21 @@ enum rk_mpp_status {
 
 enum rk_mpp_codec {
     RK_MPP_CODEC_H264 = 1,
-    RK_MPP_CODEC_MJPEG = 2
+    RK_MPP_CODEC_MJPEG = 2,
+    RK_MPP_CODEC_H265 = 3
 };
 
 enum rk_mpp_pixel_format {
     RK_MPP_PIXEL_FORMAT_NV12 = 1,
-    RK_MPP_PIXEL_FORMAT_I420 = 2
+    RK_MPP_PIXEL_FORMAT_I420 = 2,
+    /* Planar 4:2:0, little-endian 16-bit samples in all three planes. */
+    RK_MPP_PIXEL_FORMAT_I420P10 = 3
 };
+
+/*
+ * H.264/MJPEG accept NV12 or I420. H.265 accepts NV12/I420 for 8-bit streams
+ * and I420P10 for Main10; incompatible format/stream combinations are errors.
+ */
 
 enum rk_mpp_packet_flags {
     RK_MPP_PACKET_FLAG_EOS = 1u << 0,
@@ -54,8 +62,10 @@ typedef struct rk_mpp_decoder_config {
  * Plane layout:
  *   NV12:  plane 0 = Y, plane 1 = interleaved UV, plane 2 = unused.
  *   I420:  plane 0 = Y, plane 1 = U, plane 2 = V.
+ *   I420P10: same as I420, but every sample is two bytes little-endian.
  *
- * Pointers remain valid until rk_mpp_frame_release() or decoder close.
+ * Plane sizes and strides are bytes. Pointers remain valid until
+ * rk_mpp_frame_release(), reset, or decoder close.
  */
 typedef struct rk_mpp_frame {
     uint32_t struct_size;
@@ -101,9 +111,9 @@ int rk_mpp_decoder_create(const rk_mpp_decoder_config_t *config,
 /*
  * The decoder copies packet bytes before returning. Packets may contain
  * arbitrary byte chunks. EOS flushes a partial tail; COMPLETE_ACCESS_UNIT is
- * useful when a caller already has one H.264 access unit per packet. For exact
- * per-picture timestamps, submit one H.264 access unit or one JPEG per packet.
- * Multiple pictures in one packet inherit that packet's pts/dts.
+ * useful when a caller already has one H.264/H.265 access unit per packet. For
+ * exact per-picture timestamps, submit one video access unit or one JPEG per
+ * packet. Multiple pictures in one packet inherit that packet's pts/dts.
  */
 int rk_mpp_decoder_submit_packet(rk_mpp_decoder_t *decoder,
                                  const uint8_t *data,

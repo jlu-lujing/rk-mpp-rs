@@ -245,6 +245,7 @@ pub struct Sps {
     pub pcm_log2_diff_max_min_cb: u32,
     pub pcm_loop_filter_disabled: bool,
     pub max_dec_pic_buffering: u32,
+    pub max_num_reorder_pics: u32,
     pub num_long_term_ref_pics: u32,
     pub long_term_refs_sps: Vec<LongTermSpsRef>,
 }
@@ -348,16 +349,17 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<Sps, HevcError> {
         1
     }) {
         let dpb = r.read_ue()? + 1;
-        if i + 1
+        let reorder = r.read_ue()?;
+        let is_highest_sublayer = i + 1
             == (if sub_layer_ordering_present {
                 max_sub_layers
             } else {
                 1
-            })
-        {
+            });
+        if is_highest_sublayer {
             sps.max_dec_pic_buffering = dpb;
+            sps.max_num_reorder_pics = reorder;
         }
-        let _ = r.read_ue()?; // sps_max_num_reorder_pics
         let _ = r.read_ue()?; // sps_max_latency_increase_plus1
     }
     sps.log2_min_cb = r.read_ue()? + 3;
@@ -1071,7 +1073,7 @@ mod tests {
             .ue(4) // log2_max_pic_order_cnt_lsb_minus4 -> 8
             .put(0, 1) // sub_layer_ordering_info_present
             .ue(3) // max_dec_pic_buffering_minus1
-            .ue(0) // max_num_reorder_pics
+            .ue(2) // max_num_reorder_pics
             .ue(0) // max_latency_increase_plus1
             .ue(0) // log2_min_luma_coding_block_size_minus3
             .ue(3) // log2_diff_max_min
@@ -1093,6 +1095,7 @@ mod tests {
         assert_eq!(sps.chroma_format_idc, 1);
         assert_eq!(sps.bit_depth_luma, 8);
         assert_eq!(sps.log2_max_pic_order_cnt_lsb, 8);
+        assert_eq!(sps.max_num_reorder_pics, 2);
         assert!(sps.sao_enabled);
         assert!(sps.temporal_mvp_enabled);
         assert!(sps.scaling_list_enabled);

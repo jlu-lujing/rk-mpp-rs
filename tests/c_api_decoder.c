@@ -8,7 +8,8 @@
 
 static void usage(const char *program) {
     fprintf(stderr,
-            "usage: %s <h264|mjpeg> <nv12|i420> <chunk> <out> <in>...\n",
+            "usage: %s <h264|h265|mjpeg> <nv12|i420|i420p10> <chunk> <out> "
+            "<in>...\n",
             program);
 }
 
@@ -29,6 +30,10 @@ static int parse_codec(const char *name, uint32_t *codec) {
         *codec = RK_MPP_CODEC_MJPEG;
         return 0;
     }
+    if (!strcmp(name, "h265")) {
+        *codec = RK_MPP_CODEC_H265;
+        return 0;
+    }
     return -1;
 }
 
@@ -39,6 +44,10 @@ static int parse_format(const char *name, uint32_t *format) {
     }
     if (!strcmp(name, "i420")) {
         *format = RK_MPP_PIXEL_FORMAT_I420;
+        return 0;
+    }
+    if (!strcmp(name, "i420p10")) {
+        *format = RK_MPP_PIXEL_FORMAT_I420P10;
         return 0;
     }
     return -1;
@@ -175,6 +184,17 @@ int main(int argc, char **argv) {
             fprintf(stderr, "invalid create left a decoder pointer\n");
             goto done;
         }
+        if (codec != RK_MPP_CODEC_H265) {
+            invalid = config;
+            invalid.output_format = RK_MPP_PIXEL_FORMAT_I420P10;
+            if (expect_status("incompatible output format",
+                              rk_mpp_decoder_create(&invalid, &decoder),
+                              RK_MPP_ERR_UNSUPPORTED) ||
+                decoder != NULL) {
+                fprintf(stderr, "unsupported create left a decoder pointer\n");
+                goto done;
+            }
+        }
     }
     if (expect_status("null config create",
                       rk_mpp_decoder_create(NULL, &decoder),
@@ -210,8 +230,9 @@ int main(int argc, char **argv) {
         uint32_t status_c = 0;
         int status = rk_mpp_decoder_status(decoder, &status_a, &status_b,
                                            &status_c);
-        int expected = codec == RK_MPP_CODEC_H264 ? RK_MPP_OK
-                                                  : RK_MPP_ERR_UNSUPPORTED;
+        int expected = codec == RK_MPP_CODEC_H264 || codec == RK_MPP_CODEC_H265
+                           ? RK_MPP_OK
+                           : RK_MPP_ERR_UNSUPPORTED;
 
         if (expect_status("initial status", status, expected) ||
             expect_status("null status decoder",

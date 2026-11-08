@@ -29,6 +29,7 @@ pub struct Picture {
     pub epoch: u32,
     pub yuv: Vec<u8>,
     pub chroma_format: ChromaFormat,
+    pub bit_depth: u32,
     /// MPP-compatible frame error mask.
     pub err_info: u32,
 }
@@ -48,6 +49,7 @@ pub struct Decoder {
     chroma_format: ChromaFormat,
     ctu_size: usize,
     poc_epoch: u32,
+    active_sps_id: usize,
 }
 
 enum HevcHardware {
@@ -148,12 +150,23 @@ impl Decoder {
             chroma_format: ChromaFormat::Yuv420,
             ctu_size: 16,
             poc_epoch: 0,
+            active_sps_id: 0,
         })
     }
 
     /// Register read-back after the last job: (reg224, reg225, reg230).
     pub fn status(&self) -> (u32, u32, u32) {
         self.hw.status()
+    }
+
+    /// Bounded display delay announced by the active SPS.
+    pub fn max_num_reorder_pics(&self) -> usize {
+        self.sps
+            .get(self.active_sps_id)
+            .and_then(Option::as_ref)
+            .map(|sps| sps.max_num_reorder_pics as usize)
+            .unwrap_or(0)
+            .min(16)
     }
 
     fn ensure_frame(&mut self, slot: usize) -> io::Result<()> {
@@ -243,6 +256,7 @@ impl Decoder {
         let first = slices[0];
         let picture_slices = parse_picture_slices(&slices, &self.sps, &self.pps)?;
         let sps = picture_slices.sps;
+        self.active_sps_id = (sps.sps_id as usize) % 16;
         let pps = picture_slices.pps;
         let sh = picture_slices
             .headers
@@ -412,6 +426,7 @@ impl Decoder {
             epoch,
             yuv,
             chroma_format: self.chroma_format,
+            bit_depth: self.bit_depth,
             err_info,
         }))
     }
@@ -639,6 +654,7 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
     let mut has_vcl = false;
+    let mut trailing_non_vcl: Option<usize> = None;
     for n in &nals {
         let boundary = match n.unit_type {
             parser::NAL_AUD => true,
@@ -646,9 +662,11 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
             _ => false,
         };
         if boundary && has_vcl {
-            out.push(&data[start.unwrap()..n.offset]);
-            start = Some(n.offset);
+            let next_start = trailing_non_vcl.unwrap_or(n.offset);
+            out.push(&data[start.unwrap()..next_start]);
+            start = Some(next_start);
             has_vcl = n.is_vcl();
+            trailing_non_vcl = None;
             continue;
         }
         if start.is_none() {
@@ -656,6 +674,9 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
         }
         if n.is_vcl() {
             has_vcl = true;
+            trailing_non_vcl = None;
+        } else if has_vcl && trailing_non_vcl.is_none() {
+            trailing_non_vcl = Some(n.offset);
         }
     }
 
@@ -675,7 +696,8 @@ fn first_slice(rbsp: &[u8]) -> bool {
 mod tests {
     use super::{
         copy_planar, parse_picture_slices, read_packed_sample, resets_picture_order_count,
-        sort_pictures_for_display, starts_new_display_epoch, ChromaFormat, Picture,
+        sort_pictures_for_display, split_access_units, starts_new_display_epoch, ChromaFormat,
+        Picture,
     };
     use crate::codec::hevc::parser::{NalUnit, Pps, Sps};
     use std::borrow::Cow;
@@ -735,8 +757,21 @@ mod tests {
             epoch,
             yuv: vec![marker],
             chroma_format: ChromaFormat::Yuv420,
+            bit_depth: 8,
             err_info: 0,
         }
+    }
+
+    #[test]
+    fn parameter_sets_between_pictures_join_the_next_access_unit() {
+        let mut data = vec![0u8, 0, 0, 1, 0x40, 0x01, 0x00];
+        data.extend_from_slice(&[0, 0, 0, 1, 0x26, 0x01, 0x80]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x44, 0x01, 0x00]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x26, 0x01, 0x80]);
+
+        let aus = split_access_units(&data);
+        assert_eq!(aus.len(), 2);
+        assert!(aus[1].starts_with(&[0, 0, 0, 1, 0x44, 0x01]));
     }
 
     #[test]

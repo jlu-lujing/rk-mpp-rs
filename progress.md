@@ -2,6 +2,17 @@
 
 ## Session: 2026-11-08
 
+### Phase 6.1: H.265 Public Decoder
+- **Status:** complete on lf1 and t6
+- Chose H.265 next because the hardware decoder is already byte-validated and
+  it reuses the persistent packet/frame ABI.
+- Audited the HEVC decoder, parser, display-order and board test paths.
+- Identified AU prefix carryover, bounded reorder and 10-bit format extension
+  as the required API work.
+- Added `RK_MPP_CODEC_H265`, `RK_MPP_PIXEL_FORMAT_I420P10` and ABI 1.1.
+- Added SPS `max_num_reorder_pics` tracking and an epoch/POC streaming queue.
+- H.265 8-bit NV12/I420 and Main10 I420P10 C/C++ gates pass byte-for-byte.
+
 ### Phase 1: API Contract and Discovery
 - **Status:** complete
 - Started with the existing committed baseline and audited public exports.
@@ -35,6 +46,8 @@
 | Lifecycle failures | Errors do not corrupt session | null, bad struct, double receive, post-EOS and reset checks pass | PASS |
 | Malformed MJPEG recovery | Parse error then reusable session | parse + recover + full four-frame reuse pass | PASS |
 | Strict rustdoc | No broken public links | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` pass | PASS |
+| H.265 full gates | lf1/t6 all-targets green | 1186 passed / 0 failed / 37 ignored; t6 lib 1042/0/0 | PASS |
+| H.265 C ABI | NV12/I420/I420P10 byte equality | lf1 and t6 shared/static C/C++ gates pass | PASS |
 
 ### Errors
 
