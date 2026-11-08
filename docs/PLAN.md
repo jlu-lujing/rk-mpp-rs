@@ -485,9 +485,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       276-word 寄存器表；VDPU383 H.264 640x480 12 帧已与 C MPP 逐字节，
       前两帧 global-config/RPS 也逐 word 相同；H.265 初始 10/10 矩阵
       （Main/Main10、B、tiles、真实 WPP、720p、DSLICE、SPS/PPS scaling list）
-      也已逐字节，176-byte global packet 与 C dump 相同。VP9/AV1/AVS2、
-      LTR/error 边界、完整 H.264 边界矩阵、H.264/H.265 编码、JPEG 与 VDPP2
-      仍需完成。
+      也已逐字节，176-byte global packet 与 C dump 相同；VP9 初始 7/7
+      （profile 0/2、8/10-bit、lossless、tiles，两个 C bug 由 libvpx 判定）。
+      AV1/AVS2、LTR/error 边界、完整 H.264 边界矩阵、H.264/H.265 编码、JPEG
+      与 VDPP2 仍需完成。
 - [ ] W12-3 每个 SoC 独立验收矩阵（同一能力在多个块上允许不同 HAL）
 
 ---

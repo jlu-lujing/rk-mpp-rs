@@ -484,9 +484,15 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   FNV `0xe97a26406128e428`。
 - H.265 的 LTR/错误注入和更宽 conformance 矩阵仍需 lf1 实跑；
   `scripts/board_rk3576_h265_vs_mpp.sh` 是当前入口。
+- VDPU383 VP9 初始 7/7 已在 lf1 通过：profile 0/2、8/10-bit、lossless、
+  errres tiles 和 720p；普通行与 C MPP 逐字节，720p errres 与 321x241
+  继续按既有 libvpx 判据处理 C 侧 bug。VDPU383 的 global header、1312-byte
+  keyframe probe、11 个 RCB region 和 `width * height / 2` colmv 已接入。
+  `scripts/board_rk3576_vp9_vs_mpp.sh` 是当前入口；lf1 release LTO 当前会
+  在 LLVM SIGSEGV，因此功能门使用 debug。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：把同一 VDPU383 方法推进到 VP9/AV1/AVS2，再做 VEPU510、
+- 下一步：把同一 VDPU383 方法推进到 AV1/AVS2，再做 VEPU510、
   VPU720 与 VDPP2。RK3576 未被硬件暴露的 VP8/MPEG-2/MPEG-4/H.263 要由
   能力矩阵明确拒绝。
 

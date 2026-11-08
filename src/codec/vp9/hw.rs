@@ -23,6 +23,8 @@ pub const COUNT_OFFSET: usize = 8192;
 pub const PROBE_BUFFER_SIZE: usize = COUNT_OFFSET + align_up(COUNT_SIZE, 4096);
 pub const PROBE_WORDS: usize = 304;
 pub const PROBE_SIZE: usize = PROBE_WORDS * 8;
+/// VDPU383 carries the key-frame probe image in a separate 1312-byte buffer.
+pub const PROBE_KF_SIZE_383: usize = 82 * 16;
 pub const MAX_SEGMAP_SIZE: usize = 73728 * 4;
 pub const MAX_SEGMAP_SIZE_ALIGNED: usize = align_up(MAX_SEGMAP_SIZE, 4096);
 pub const VP9_CTU_SIZE: u32 = 64;
@@ -177,6 +179,30 @@ pub fn build_probe(header: &Header, compressed: &CompressedHeader) -> ProbeBuffe
     );
     let mut output = [0u8; PROBE_SIZE];
     output[..bytes.len()].copy_from_slice(&bytes);
+    output
+}
+
+/// Key-frame probability image for the VDPU383 `reg183` buffer.
+///
+/// This is the `hal_vp9d_prob_kf()` layout: 48 partition bytes followed by
+/// the ten key-frame mode rows, each padded to 128 bits.
+pub fn build_kf_probe_383() -> [u8; PROBE_KF_SIZE_383] {
+    let mut writer = BitWriter::new();
+    for row in KEYFRAME_PARTITION_PROBS {
+        for probability in row {
+            writer.put(probability as u32, 8);
+        }
+    }
+    put_keyframe_mode_probabilities(&mut writer);
+    writer.align(128);
+    let bytes = writer.bytes();
+    // The C bit writer is capped at PROB_KF_SIZE and silently drops the
+    // final zero-padded words once that FIFO is full. Preserve that bounded
+    // write rather than turning the intentional 16-byte tail truncation into
+    // a Rust panic.
+    let mut output = [0u8; PROBE_KF_SIZE_383];
+    let copy_len = bytes.len().min(PROBE_KF_SIZE_383);
+    output[..copy_len].copy_from_slice(&bytes[..copy_len]);
     output
 }
 
@@ -514,4 +540,16 @@ fn fixed_array<const N: usize>(mut writer: BitWriter) -> [u8; N] {
 
 const fn align_up(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & !(alignment - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vdpu383_keyframe_probe_is_capped_at_the_c_fifo_size() {
+        let probe = build_kf_probe_383();
+        assert_eq!(probe.len(), PROBE_KF_SIZE_383);
+        assert_eq!(&probe[..3], &KEYFRAME_PARTITION_PROBS[0]);
+    }
 }

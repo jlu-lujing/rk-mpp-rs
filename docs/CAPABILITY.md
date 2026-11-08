@@ -49,7 +49,7 @@
 | legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行 |
 | 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264/HEVC/AV1/VP9 DPB surface 均持有 lease；t6 async demo、H.264/HEVC/AV1/VP9 池化边界测试全过 |
 | fence / 多核 CCU / secure | 受内核限制 | 该内核/驱动不暴露对应接口，未伪造 |
-| RK3576 平台适配 | 进行中 | VDPU383 H.264 640x480 12 帧、H.265 初始 10/10（Main/Main10、B、tiles、真实 WPP、720p、DSLICE、SPS/PPS scaling list）与 C MPP 逐字节；H.265 176-byte global packet 与 C dump 相同；其余 VDEC/VENC/JPEG/VDPP2 待完成 |
+| RK3576 平台适配 | 进行中 | VDPU383 H.264 640x480 12 帧、H.265 初始 10/10、VP9 初始 7/7（profile 0/2、8/10-bit、lossless、tiles；两个 C bug 由 libvpx 判定）；H.265 176-byte global packet 与 C dump 相同；AV1/AVS2、编码、JPEG 与 VDPP2 待完成 |
 
 ## 软件参考解码器（M11，自研 ground truth）
 
@@ -166,6 +166,6 @@ stack 合并，128 个 inter block 的三平面与 libaom 逐字节一致。segm
 key/inter `ALT_Q`、temporal segment-map prediction 与 1050 个非零 segment block，三帧
 Y/U/V 也与 libaom 逐字节一致。完整 `av1_lr` key+P 流还覆盖非 skip inter 邻居的 selected
 tx-size context，458 个 footprint block 与两帧 Y/U/V 均逐字节一致。
-t6 `cargo test --release --all-targets` 为 **1167 个测试枚举 / 1133 常规通过 / 0 失败 / 34 个板级 ignored**；
+t6 `cargo test --release --all-targets` 为 **1170 个测试枚举 / 1136 常规通过 / 0 失败 / 34 个板级 ignored**；
 t6 `cargo test --release --lib` 为 **978 passed / 0 failed**。34 个板级 ignored 测试已有逐项通过记录，
 完整 t6 回归与性能闸门见 `docs/T6_VALIDATION.md`。

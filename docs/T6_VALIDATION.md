@@ -48,6 +48,22 @@ t62 back to the RK3588 reference board.
 - RK3576 H.265 is an initial core-path closure. LTR/error injection and wider
   conformance streams still need lf1 evidence.
 
+## 2026-11-08 RK3576 / lf1 VP9 bring-up
+
+- The VDPU383 VP9 matrix is **7/7**: profile 0/2 64x64, 10-bit 64x64,
+  lossless 320x240, 10-bit lossless 320x240, error-resilient tiles at
+  640x360, and the two adjudicated C-defect rows at 720p and 321x241.
+- Regular rows match stock C MPP byte-for-byte. The 720p segmentation and
+  321x241 rows match libvpx: C differs on the former and emits one fewer
+  frame on the latter.
+- VDPU383 uses a separate 168-byte global header, 1312-byte key-frame probe
+  FIFO, eleven refined RCB regions and uncompressed `width * height / 2`
+  colmv. Tile-width fields are CTU counts. The new
+  `scripts/board_rk3576_vp9_vs_mpp.sh` gate passed on lf1.
+- The lf1 release LTO compiler currently SIGSEGVs in LLVM during the VP9
+  build; the functional matrix uses the debug binary, so no throughput claim
+  is made from this run.
+
 ## Environment
 
 - NanoPC-T6-LTS, RK3588, Debian 11.11, kernel 6.1.57
@@ -61,8 +77,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1167 tests**. The
-regular suite passes **1133 / 0 failed / 34 ignored** on t6. All **34
+`cargo test --release --all-targets` currently enumerates **1170 tests**. The
+regular suite passes **1136 / 0 failed / 34 ignored** on t6. All **34
 board-only ignored tests** also pass under the current 80% OPP cap: the prior
 31-test matrix plus the new HEVC, AV1 and VP9 DPB lease gates. The two JPEG
 restart/rotate cases share a temporary input name and therefore need

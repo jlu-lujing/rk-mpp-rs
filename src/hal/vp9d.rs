@@ -7,16 +7,18 @@
 
 use std::io;
 
+use crate::codec::h264::hw::BitWriter;
 use crate::codec::vp9::compressed::{CompoundPredictionMode, CompressedHeader, TxMode};
 use crate::codec::vp9::hw::{
-    build_prob_default, build_prob_flag_delta, COUNT_OFFSET, MAX_SEGMAP_SIZE_ALIGNED,
-    PROBE_BUFFER_SIZE, PROB_SIZE,
+    build_kf_probe_383, build_prob_default, build_prob_flag_delta, COUNT_OFFSET,
+    MAX_SEGMAP_SIZE_ALIGNED, PROBE_BUFFER_SIZE, PROBE_KF_SIZE_383, PROB_SIZE,
 };
 use crate::codec::vp9::parser::{FrameKind, Header};
 use crate::hal::vdpu34x_regs as reg;
+use crate::hal::vdpu383_regs as reg383;
 use crate::service::buffer_pool::{BufferLease, BufferPool};
 use crate::service::dma_heap::DmaBuf;
-use crate::service::soc::{require_video_decode, VideoDecodeHal};
+use crate::service::soc::{require_video_decode, SocProfile, VideoDecodeHal};
 use crate::service::{
     Batch, Client, MppService, RcbInfo as RcbConfig, RegOffsetInfo, MPP_CMD_SET_RCB_INFO,
 };
@@ -27,6 +29,7 @@ const RCB_REGION_COUNT: usize = 10;
 const RCB_ALIGNMENT: usize = 64;
 const SEGMENT_MAP_BYTES_PER_CTU: usize = 8 * 8 / 2;
 const REG_READBACK_WORDS: usize = 278;
+const GLOBAL_HEADER_SIZE_383: usize = 168;
 
 /// One decoded VP9 picture and its compressed colmv surface.
 ///
@@ -65,6 +68,31 @@ impl Frame {
             .map_err(|error| io::Error::other(format!("VP9 video pool: {error}")))?;
         let colmv = colmv_pool
             .acquire_lease_reclaiming_idle(colmv_size(width, height))
+            .map_err(|error| io::Error::other(format!("VP9 colmv pool: {error}")))?;
+        Ok(Frame {
+            video,
+            colmv,
+            width,
+            height,
+            hor_stride,
+            ver_stride,
+            bit_depth,
+        })
+    }
+
+    pub fn acquire_383(
+        video_pool: &BufferPool<DmaBuf>,
+        colmv_pool: &BufferPool<DmaBuf>,
+        width: usize,
+        height: usize,
+        bit_depth: u32,
+    ) -> io::Result<Frame> {
+        let (hor_stride, ver_stride, frame_size) = frame_layout(width, height, bit_depth);
+        let video = video_pool
+            .acquire_lease_reclaiming_idle(frame_size)
+            .map_err(|error| io::Error::other(format!("VP9 video pool: {error}")))?;
+        let colmv = colmv_pool
+            .acquire_lease_reclaiming_idle(width * height / 2)
             .map_err(|error| io::Error::other(format!("VP9 colmv pool: {error}")))?;
         Ok(Frame {
             video,
@@ -255,6 +283,112 @@ impl RcbInfo {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct RcbInfo383 {
+    sizes: [usize; 11],
+    offsets: [usize; 11],
+    allocation_size: usize,
+}
+
+impl RcbInfo383 {
+    fn compute(header: &Header) -> Self {
+        const COEFFICIENTS: [usize; 11] = [3, 3, 6, 6, 5, 5, 60, 60, 60, 90, 0];
+
+        let width = align(header.width as usize, 64);
+        let height = align(header.height as usize, 64);
+        let mut offsets = [0usize; 11];
+        let mut allocation_size = 0usize;
+        for (index, &coefficient) in COEFFICIENTS.iter().enumerate() {
+            offsets[index] = allocation_size;
+            let axis = if index >= 9 { height } else { width };
+            allocation_size += 2 * align(axis * coefficient, RCB_ALIGNMENT);
+        }
+
+        let bit_depth = header.bit_depth as usize;
+        let tile_rows = 1usize << header.log2_tile_rows;
+        let tile_cols = 1usize << header.log2_tile_cols;
+        let ext_row = (tile_rows.saturating_sub(1)) * 64 * 8;
+        let ext_col = (tile_cols.saturating_sub(1)) * 64 * 8;
+        let filtered_append = if width > 4096 { 27648 } else { 8192 };
+        let strmd = ((width + 63) / 64) * 250;
+        let inter = ((width + 63) / 64) * 2368;
+        let intra = align(width, 512) * (bit_depth + 2) * 3;
+        let filtered = align(width, 64) * (41 * bit_depth + 13);
+
+        let mut sizes = [0usize; 11];
+        sizes[0] = if width > 4096 { rcb_bytes(strmd) } else { 0 };
+        sizes[2] = rcb_bytes(inter);
+        sizes[3] = if tile_rows > 1 {
+            rcb_bytes(inter + ext_row)
+        } else {
+            0
+        };
+        sizes[4] = rcb_bytes(intra);
+        sizes[5] = if tile_rows > 1 {
+            rcb_bytes(intra + ext_row)
+        } else {
+            0
+        };
+        sizes[6] = filtered_append + rcb_bytes(filtered / 2);
+        sizes[7] = sizes[6];
+        sizes[8] = if tile_rows > 1 {
+            rcb_bytes(filtered + ext_row)
+        } else {
+            0
+        };
+        sizes[9] = if tile_cols > 1 {
+            let col = align(height, 64) * (42 * bit_depth + 13);
+            rcb_bytes(col + ext_col)
+        } else {
+            0
+        };
+
+        Self {
+            sizes,
+            offsets,
+            allocation_size: align(allocation_size.max(1), 4096),
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.allocation_size
+    }
+
+    fn write_regs(&self, r: &mut reg383::Regs, fd: u32) {
+        for (index, &size) in self.sizes.iter().enumerate() {
+            let base = 140 + index * 2;
+            r.w[base] = fd;
+            r.w[base + 1] = size as u32;
+        }
+    }
+
+    fn offsets(&self) -> Vec<RegOffsetInfo> {
+        self.offsets
+            .iter()
+            .zip(self.sizes)
+            .enumerate()
+            .filter(|(_, (offset, size))| **offset != 0 && *size != 0)
+            .map(|(index, (offset, _))| RegOffsetInfo {
+                reg_idx: (140 + index * 2) as u32,
+                offset: *offset as u32,
+            })
+            .collect()
+    }
+
+    fn hardware_sizes(&self) -> Vec<RcbConfig> {
+        const PRIORITY: [usize; 11] = [6, 2, 4, 0, 3, 5, 1, 8, 9, 10, 7];
+        PRIORITY
+            .iter()
+            .filter_map(|&index| {
+                (self.sizes[index] > 0).then_some(RcbConfig {
+                    reg_idx: (140 + index * 2) as u32,
+                    size: self.sizes[index] as u32,
+                })
+            })
+            .collect()
+    }
+}
+
 /// The address offsets one VP9 job arms: the ten RCB regions plus the
 /// colmv-count and the two segmentation-map slots, zero offsets dropped.
 /// The scratch buffer is cleared first, so the entry list is rebuilt in
@@ -296,6 +430,8 @@ struct LastFrameInfo {
     feature_mask: [u8; 8],
     show_frame: bool,
     intra_only: bool,
+    frame_type: bool,
+    color_space: u8,
     width: u32,
     height: u32,
 }
@@ -311,6 +447,8 @@ impl Default for LastFrameInfo {
             feature_mask: [0; 8],
             show_frame: false,
             intra_only: false,
+            frame_type: false,
+            color_space: 0,
             width: 0,
             height: 0,
         }
@@ -320,6 +458,8 @@ impl Default for LastFrameInfo {
 pub struct Vp9d {
     svc: MppService,
     probe: DmaBuf,
+    global_383: Option<DmaBuf>,
+    probe_kf_383: Option<DmaBuf>,
     segment: DmaBuf,
     default_prob: DmaBuf,
     context_prob: [DmaBuf; PROBABILITY_CONTEXTS],
@@ -337,6 +477,9 @@ pub struct Vp9d {
     pending_segment_offsets: (usize, usize),
     last: LastFrameInfo,
     pub regs: reg::Regs,
+    regs_383: reg383::Regs,
+    hal: VideoDecodeHal,
+    rcb_383: RcbInfo383,
     pub last_status: (u32, u32, u32),
     pub last_hardware_error: bool,
     /// Reused across frames: the ioctl needs owned scratch but not fresh
@@ -348,10 +491,28 @@ pub struct Vp9d {
 
 impl Vp9d {
     pub fn open() -> io::Result<Vp9d> {
-        require_video_decode(VideoDecodeHal::Vdpu34x)?;
+        let profile = SocProfile::detect()?;
+        let hal = profile.video_decode;
+        if !matches!(hal, VideoDecodeHal::Vdpu34x | VideoDecodeHal::Vdpu383) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("no VP9 decode HAL for {hal:?}"),
+            ));
+        }
+        require_video_decode(hal)?;
         let svc = MppService::open(Client::RkvDec as u32)?;
         let rcb_info_supported = svc.cmd_supported(MPP_CMD_SET_RCB_INFO);
         let probe = DmaBuf::alloc("system", PROBE_BUFFER_SIZE, false)?;
+        let global_383 = if hal == VideoDecodeHal::Vdpu383 {
+            Some(DmaBuf::alloc("system", 352, false)?)
+        } else {
+            None
+        };
+        let probe_kf_383 = if hal == VideoDecodeHal::Vdpu383 {
+            Some(DmaBuf::alloc("system", PROBE_KF_SIZE_383, false)?)
+        } else {
+            None
+        };
         let segment = DmaBuf::alloc("system", MAX_SEGMAP_SIZE_ALIGNED * 2, false)?;
         let default_prob = DmaBuf::alloc("system", PROB_SIZE, false)?;
         let context_prob = std::array::from_fn(|_| {
@@ -363,6 +524,8 @@ impl Vp9d {
         Ok(Vp9d {
             svc,
             probe,
+            global_383,
+            probe_kf_383,
             segment,
             default_prob,
             context_prob,
@@ -380,6 +543,9 @@ impl Vp9d {
             pending_segment_offsets: (MAX_SEGMAP_SIZE_ALIGNED, 0),
             last: LastFrameInfo::default(),
             regs: reg::Regs::new(),
+            regs_383: reg383::Regs::new(),
+            hal,
+            rcb_383: RcbInfo383::default(),
             last_status: (0, 0, 0),
             last_hardware_error: false,
             offsets_scratch: Vec::with_capacity(RCB_REGION_COUNT + 3),
@@ -392,12 +558,35 @@ impl Vp9d {
         [self.previous_colmv_fd, self.last_colmv_fd]
     }
 
+    pub fn uses_vdpu383(&self) -> bool {
+        self.hal == VideoDecodeHal::Vdpu383
+    }
+
     fn write_probability(
         &mut self,
         header: &Header,
         compressed: &CompressedHeader,
         poc: u32,
     ) -> io::Result<()> {
+        if self.hal == VideoDecodeHal::Vdpu383 {
+            let probe = self
+                .probe_kf_383
+                .as_mut()
+                .expect("VDPU383 probe buffer exists");
+            let probe_data = build_kf_probe_383();
+            probe.sync_write_begin()?;
+            probe.as_mut_slice().fill(0);
+            probe.as_mut_slice()[..PROBE_KF_SIZE_383].copy_from_slice(&probe_data);
+            probe.sync_write_end()?;
+            if is_intra(header) {
+                let default = build_prob_default(header, compressed);
+                self.default_prob.sync_write_begin()?;
+                self.default_prob.as_mut_slice()[..PROB_SIZE].copy_from_slice(&default);
+                self.default_prob.sync_write_end()?;
+            }
+            return Ok(());
+        }
+
         let update = build_prob_flag_delta(header, compressed);
         self.probe.sync_write_begin()?;
         self.probe.as_mut_slice()[..PROB_SIZE].copy_from_slice(&update);
@@ -454,6 +643,76 @@ impl Vp9d {
         // temporal segment prediction on the following frame.
         if is_intra(header) || header.error_resilient_mode {
             self.reset_segment_maps(header.width, header.height)?;
+        }
+
+        if self.hal == VideoDecodeHal::Vdpu383 {
+            let rcb = RcbInfo383::compute(header);
+            let total = rcb.total().max(4096);
+            for buffer in &mut self.rcbs {
+                if total > buffer.len() {
+                    *buffer = DmaBuf::alloc("system", align(total, 4096), false)?;
+                }
+            }
+            self.rcb_index = (self.rcb_index + 1) % RCB_BUFFER_COUNT;
+            self.rcb_383 = rcb;
+            self.fill_regs_383(
+                header, compressed, poc, current, references, stream, stream_len,
+            );
+
+            if std::env::var_os("RFI_VP9_REG_DUMP").is_some() {
+                use std::io::Write;
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/rk_mpp_rs_vp9_regs_383.txt")
+                {
+                    let _ = writeln!(file, "FRAME {poc}");
+                    for index in 8..self.regs_383.w.len() {
+                        let _ = writeln!(file, "{index:03}: {:08x}", self.regs_383.w[index]);
+                    }
+                }
+            }
+
+            self.offsets_scratch.clear();
+            self.offsets_scratch.extend(self.rcb_383.offsets());
+            let (segment_previous, segment_current) = self.pending_segment_offsets;
+            self.offsets_scratch.push(RegOffsetInfo {
+                reg_idx: 181,
+                offset: segment_previous as u32,
+            });
+            self.offsets_scratch.push(RegOffsetInfo {
+                reg_idx: 182,
+                offset: segment_current as u32,
+            });
+            self.offsets_scratch.push(RegOffsetInfo {
+                reg_idx: 128,
+                offset: (header.header_size & !15) as u32,
+            });
+            self.offsets_scratch.retain(|info| info.offset != 0);
+
+            self.rcb_scratch.clear();
+            self.rcb_scratch.extend(self.rcb_383.hardware_sizes());
+            let mut readback = [0u32; REG_READBACK_WORDS];
+            self.batch.clear();
+            self.batch
+                .reg_write(&self.regs_383.w[8..31], 32)
+                .reg_write(&self.regs_383.w[64..107], 256)
+                .reg_write(&self.regs_383.w[128..162], 512)
+                .reg_write(&self.regs_383.w[168..233], 672)
+                .reg_read(&mut readback[..reg383::N_WORDS], 0)
+                .reg_offsets(&self.offsets_scratch);
+            if self.rcb_info_supported && !self.rcb_scratch.is_empty() {
+                self.batch.rcb_info(&self.rcb_scratch);
+            }
+            self.svc.submit_batch_recovering(&mut self.batch)?;
+            self.svc.poll_hw_finish_recovering()?;
+            let status = readback[15];
+            self.last_status = (status, readback[224], readback[225]);
+            self.last_hardware_error = status & 1 == 0 || status & 0x7e != 0;
+            if self.last_hardware_error {
+                let _ = self.svc.restart_after_hardware_error();
+            }
+            return Ok(());
         }
 
         let rcb = RcbInfo::compute(header);
@@ -716,6 +975,115 @@ impl Vp9d {
         self.update_last_frame_info(header);
     }
 
+    fn fill_regs_383(
+        &mut self,
+        header: &Header,
+        compressed: &CompressedHeader,
+        poc: u32,
+        current: &Frame,
+        references: &[Option<(&Frame, u32)>; 3],
+        stream: &DmaBuf,
+        stream_len: usize,
+    ) {
+        self.regs_383 = reg383::Regs::new();
+        let intra = is_intra(header);
+        let frame_context = header.frame_context_idx as usize;
+        let had_probability_context =
+            self.configure_probability_contexts(header, poc, frame_context);
+
+        let mut last_for_registers = self.last;
+        if intra {
+            last_for_registers.segmentation_enable = false;
+            last_for_registers.intra_only = true;
+        }
+        let segment_update = (header.segmentation.enabled && header.segmentation.update_map)
+            || self.last.width != header.width
+            || self.last.height != header.height
+            || intra
+            || header.error_resilient_mode;
+        self.pending_segment_offsets = if self.last_segment_swap {
+            (MAX_SEGMAP_SIZE_ALIGNED, 0)
+        } else {
+            (0, MAX_SEGMAP_SIZE_ALIGNED)
+        };
+        if segment_update {
+            self.segment_reference_poc = poc;
+            self.last_segment_swap = !self.last_segment_swap;
+        }
+        let previous_colmv_fd = select_previous_colmv(
+            current.colmv_fd(),
+            intra,
+            header.error_resilient_mode,
+            self.last.show_frame,
+            &mut self.previous_colmv_fd,
+            &mut self.last_colmv_fd,
+        );
+
+        let global = self
+            .global_383
+            .as_mut()
+            .expect("VDPU383 global buffer exists");
+        let global_header =
+            build_global_header_383(header, compressed, references, &last_for_registers);
+        global
+            .sync_write_begin()
+            .expect("sync VDPU383 global header");
+        global.as_mut_slice().fill(0);
+        global.as_mut_slice()[..global_header.len()].copy_from_slice(&global_header);
+        global.sync_write_end().expect("sync VDPU383 global header");
+
+        let r = &mut self.regs_383;
+        configure_common_383(r);
+        r.w[65] = ((header.header_size & 0xf) as u32) * 8;
+        r.w[66] = (((stream_len + 15) & !15) + 0x80) as u32;
+        r.w[67] = 22;
+        r.w[68] = (current.hor_stride / 16) as u32;
+        r.w[69] = (current.hor_stride / 16) as u32;
+        r.w[70] = ((current.hor_stride / 16) * current.ver_stride) as u32;
+        r.w[80] = r.w[68];
+        r.w[81] = r.w[69];
+        r.w[82] = r.w[70];
+        r.w[128] = stream.fd() as u32;
+        r.w[131] = global.fd() as u32;
+        r.w[168] = current.video_fd();
+        r.w[169] = current.video_fd();
+        r.w[183] = self
+            .probe_kf_383
+            .as_ref()
+            .expect("VDPU383 probe buffer exists")
+            .fd() as u32;
+        r.w[184] = if had_probability_context {
+            self.context_prob[frame_context].fd() as u32
+        } else {
+            self.default_prob.fd() as u32
+        };
+        r.w[185] = self.context_prob[frame_context].fd() as u32;
+        r.w[181] = self.segment.fd() as u32;
+        r.w[182] = self.segment.fd() as u32;
+        r.w[192] = current.video_fd();
+        r.w[194] = current.video_fd();
+
+        for (index, reference) in references.iter().enumerate() {
+            if let Some((frame, _)) = reference {
+                r.w[83 + index * 3] = (frame.hor_stride / 16) as u32;
+                r.w[84 + index * 3] = (frame.hor_stride / 16) as u32;
+                r.w[85 + index * 3] = ((frame.hor_stride / 16) * frame.ver_stride) as u32;
+                r.w[170 + index] = frame.video_fd();
+                r.w[195 + index] = frame.video_fd();
+            } else {
+                r.w[170 + index] = current.video_fd();
+                r.w[195 + index] = current.video_fd();
+            }
+        }
+        r.w[216] = current.colmv_fd();
+        r.w[217] = previous_colmv_fd;
+        self.rcb_383.write_regs(
+            r,
+            self.rcbs[(self.rcb_index + RCB_BUFFER_COUNT - 1) % RCB_BUFFER_COUNT].fd() as u32,
+        );
+        self.update_last_frame_info(header);
+    }
+
     fn configure_probability_contexts(
         &mut self,
         header: &Header,
@@ -756,6 +1124,8 @@ impl Vp9d {
         }
         self.last.show_frame = header.show_frame;
         self.last.intra_only = is_intra(header);
+        self.last.frame_type = !matches!(header.frame_kind, FrameKind::Key);
+        self.last.color_space = 0;
         self.last.width = header.width;
         self.last.height = header.height;
         if is_intra(header) {
@@ -832,6 +1202,172 @@ fn configure_common(r: &mut reg::Regs) {
         .set(reg::w270::AXI_WR_QOS, 1)
         .set(reg::w270::AXI_RD_QOS, 3)
         .set(reg::w271::REG271_WR_WAIT_CYCLE_QOS, 0);
+}
+
+fn configure_common_383(r: &mut reg383::Regs) {
+    r.w[8] = 2;
+    r.w[9] = 0;
+    r.w[10] = 0x3ff;
+    r.w[13] = 0x3ffff;
+    r.w[16] = 1;
+    r.w[20] = 0xffff_ffdf;
+    r.w[21] = 0x3fff_ffff;
+    r.w[28] = 1 | (1 << 3) | (11 << 4);
+    r.w[29] = 1 | (1 << 3) | (17 << 4);
+    r.w[30] = 0;
+}
+
+fn build_global_header_383(
+    header: &Header,
+    _compressed: &CompressedHeader,
+    references: &[Option<(&Frame, u32)>; 3],
+    last: &LastFrameInfo,
+) -> [u8; GLOBAL_HEADER_SIZE_383] {
+    const LITERAL_TO_FILTER: [u32; 4] = [1, 0, 2, 3];
+    let frame_type = !matches!(header.frame_kind, FrameKind::Key) as u32;
+    let mut w = BitWriter::new();
+    w.put(frame_type, 1);
+    w.put(header.error_resilient_mode as u32, 1);
+    w.put((header.bit_depth - 8) as u32, 3);
+    w.put(1, 2); // yuv420
+    w.put(header.width, 16);
+    w.put(header.height, 16);
+    w.put(
+        (header.intra_only || matches!(header.frame_kind, FrameKind::Key)) as u32,
+        1,
+    );
+    for bias in &header.ref_frame_sign_bias {
+        w.put(*bias as u32, 1);
+    }
+    w.put(header.allow_high_precision_mv as u32, 1);
+    if header.intra_only || matches!(header.frame_kind, FrameKind::Key) {
+        w.put(0, 3);
+    } else if header.interp_filter == 4 {
+        w.put(4, 3);
+    } else {
+        w.put(LITERAL_TO_FILTER[header.interp_filter as usize & 3], 3);
+    }
+    w.put(header.frame_parallel_mode as u32, 1);
+    w.put(header.refresh_frame_context as u32, 1);
+    w.put(header.loop_filter.level as u32, 6);
+    w.put(header.loop_filter.sharpness as u32, 3);
+    w.put(header.loop_filter.mode_ref_delta_enabled as u32, 1);
+    w.put(header.loop_filter.mode_ref_delta_update as u32, 1);
+    for delta in header.loop_filter.ref_deltas {
+        w.put(delta as u32 & 0x7f, 7);
+    }
+    for delta in header.loop_filter.mode_deltas {
+        w.put(delta as u32 & 0x7f, 7);
+    }
+    w.put(header.quantization.base_q_idx as u32, 8);
+    w.put(header.quantization.y_dc_delta_q as u32 & 0x1f, 5);
+    w.put(header.quantization.uv_dc_delta_q as u32 & 0x1f, 5);
+    w.put(header.quantization.uv_ac_delta_q as u32 & 0x1f, 5);
+    w.put(header.quantization.lossless as u32, 1);
+    for probability in header.segmentation.pred_probs {
+        w.put(probability as u32, 8);
+    }
+    for probability in header.segmentation.tree_probs {
+        w.put(probability as u32, 8);
+    }
+    w.put(header.segmentation.enabled as u32, 1);
+    w.put(header.segmentation.update_map as u32, 1);
+    w.put(header.segmentation.temporal_update as u32, 1);
+    w.put(header.segmentation.abs_delta as u32, 1);
+    let use_prev_frame_mvs = !header.error_resilient_mode
+        && header.width == last.width
+        && header.height == last.height
+        && !last.intra_only
+        && last.show_frame;
+    w.put(use_prev_frame_mvs as u32, 1);
+    for segment in 0..8 {
+        for feature in 0..4 {
+            w.put(
+                ((header.segmentation.feature_mask[segment] >> feature) & 1) as u32,
+                1,
+            );
+        }
+    }
+    for segment in 0..8 {
+        w.put(
+            header.segmentation.feature_data[segment][0] as u32 & 0x1ff,
+            9,
+        );
+        w.put(
+            header.segmentation.feature_data[segment][1] as u32 & 0x7f,
+            7,
+        );
+        w.put(header.segmentation.feature_data[segment][2] as u32 & 0x3, 2);
+    }
+    w.put(header.first_partition_size as u32, 16);
+    for reference in references {
+        let (width, height) = reference
+            .map(|(frame, _)| (frame.width as u32, frame.height as u32))
+            .unwrap_or((0, 0));
+        w.put(width, 16);
+        w.put(height, 16);
+    }
+    for delta in last.last_mode_deltas {
+        w.put(delta as u32 & 0x7f, 7);
+    }
+    for delta in last.last_ref_deltas {
+        w.put(delta as u32 & 0x7f, 7);
+    }
+    w.put(last.segmentation_enable as u32, 1);
+    w.put(last.show_frame as u32, 1);
+    w.put(header.intra_only as u32, 1);
+    w.put(
+        (header.width == last.width && header.height == last.height) as u32,
+        1,
+    );
+    w.put(last.color_space as u32 & 0x7, 3);
+    w.put((!last.frame_type) as u32, 1);
+    w.put(0, 1);
+    w.put(1, 1);
+    w.put(1, 1);
+    w.put(1, 1);
+    for scale in header.mvscale {
+        w.put(scale[0] as u32, 16);
+        w.put(scale[1] as u32, 16);
+    }
+    let tile_cols = 1u32 << header.log2_tile_cols;
+    let tile_rows = 1u32 << header.log2_tile_rows;
+    w.put(tile_cols, 7);
+    w.put(tile_rows, 3);
+    let ctu_cols = align(header.width as usize, 64) / 64;
+    let ctu_rows = align(header.height as usize, 64) / 64;
+    for index in 0..64u32 {
+        let width = if index < tile_cols {
+            tile_ctus(index, ctu_cols as u32, header.log2_tile_cols as u32)
+        } else {
+            0
+        };
+        w.put(width, 10);
+    }
+    for index in 0..4u32 {
+        let height = if index < tile_rows {
+            tile_ctus(index, ctu_rows as u32, header.log2_tile_rows as u32)
+        } else {
+            0
+        };
+        w.put(height, 10);
+    }
+    w.align(64);
+    let bytes = w.bytes();
+    assert!(
+        bytes.len() <= GLOBAL_HEADER_SIZE_383,
+        "VP9 VDPU383 global header overflow: {}",
+        bytes.len()
+    );
+    let mut output = [0u8; GLOBAL_HEADER_SIZE_383];
+    output[..bytes.len()].copy_from_slice(&bytes);
+    output
+}
+
+fn tile_ctus(index: u32, total: u32, log2: u32) -> u32 {
+    let start = (index * total) >> log2;
+    let end = ((index + 1) * total) >> log2;
+    end.min(total).saturating_sub(start.min(total))
 }
 
 fn configure_segments(r: &mut reg::Regs, last: &LastFrameInfo) {
@@ -1083,6 +1619,28 @@ mod tests {
                 assert_eq!((got.reg_idx, got.size), (want.reg_idx, want.size));
             }
         }
+    }
+
+    #[test]
+    fn vdpu383_rcb_refines_the_320x240_layout() {
+        let info = RcbInfo383::compute(&header(320, 240, 8));
+        assert_eq!(info.total(), 180224);
+        assert_eq!(info.offsets[0], 0);
+        assert_eq!(info.sizes[2], 1536);
+        assert_eq!(info.sizes[4], 1920);
+        assert_eq!(info.sizes[6], 15040);
+        assert_eq!(info.sizes[7], 15040);
+        assert_eq!(info.sizes[1], 0);
+        assert_eq!(info.sizes[3], 0);
+        assert_eq!(info.sizes[9], 0);
+    }
+
+    #[test]
+    fn vdpu383_tile_widths_are_ctu_counts() {
+        assert_eq!(tile_ctus(0, 5, 0), 5);
+        assert_eq!(tile_ctus(0, 10, 1), 5);
+        assert_eq!(tile_ctus(1, 10, 1), 5);
+        assert_eq!(tile_ctus(3, 10, 2), 3);
     }
 
     #[test]

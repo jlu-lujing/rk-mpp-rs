@@ -1677,8 +1677,8 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1167
-      enumerated / 1133 regular pass / 0 failed / 34 board-only ignored, and
+      The current t6 `cargo test --release --all-targets` run is 1170
+      enumerated / 1136 regular pass / 0 failed / 34 board-only ignored, and
       the release library suite is 978 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
@@ -3167,9 +3167,12 @@ pipeline uses.
   640x480 IPPP, B-pyramid, Main10, 2x2 tiles, real WPP (five entry points),
   1280x720 WPP, JCT-VC DSLICE, and explicit SPS/PPS scaling lists. Its 176-byte
   global packet matches the patched C dump and is pinned by FNV
-  `0xe97a26406128e428`. LTR/error rows, VP9/AV1/AVS2, VEPU510, VPU720 and
-  VDPP2 remain in progress.
-- Tests: `cargo test --release --all-targets` enumerates 1167 tests: 1133
+  `0xe97a26406128e428`. The VDPU383 VP9 matrix is 7/7: profile 0/2, 8/10-bit,
+  lossless, error-resilient tiles and 720p. Regular rows are byte-identical to
+  C MPP; the 720p segmentation and 321x241 frame-count rows retain the existing
+  libvpx adjudication of C defects. LTR/error rows, AV1/AVS2, VEPU510, VPU720
+  and VDPP2 remain in progress.
+- Tests: `cargo test --release --all-targets` enumerates 1170 tests: 1136
   regular pass and 34 ignored hardware tests on t6. All 34 board-only tests
   pass under the current 80% OPP cap.
   Coverage includes OBU/frame-header/CDF/PicParams snapshots, AV1 software
