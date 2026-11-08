@@ -41,6 +41,17 @@
 - The H.265/HEVC C consumer passes on lf1 and t6 for 8-bit NV12/I420 and
   Main10 I420P10. The Main10 fixture has six frames with B-pyramid reordering,
   so SPS-bounded display ordering is exercised rather than only IDR output.
+- VP9 already emits displayed pictures directly from `decode_packet`, including
+  `show_existing_frame` and hidden-alt-ref superframes, so the SDK does not add
+  another reorder queue. VP9 byte-stream packet boundaries are normative; IVF
+  demux remains a caller/container responsibility.
+- The VP9 C gate passes on lf1 and t6: profile 0 12-frame NV12/I420 and profile
+  2 10-bit 12-frame I420P10 outputs are byte-identical to C MPP. The test feeds
+  each IVF frame as one packet and exercises decoder reset/reuse.
+- Verified VP9 SHA-256 values are
+  `c5381bbf…3949a` (profile 0 NV12),
+  `53bc3dd4…0abea69` (profile 0 I420), and
+  `1c4c63f9…9a09` (profile 2 I420P10).
 
 ## Technical Decisions
 
@@ -57,6 +68,7 @@
 | New V1 YUV-only output | Deterministic and cheap; legacy JPEG remains the RGB compatibility path |
 | Extend ABI 1.1 with H.265 and `I420P10` | Adds codecs/output without changing existing struct layouts or symbols |
 | Reorder H.265 only until the SPS is available | Parameter sets usually share the first AU; using the SPS value avoids a fixed conservative delay |
+| Keep VP9 packet input container-neutral | Payloads are already frame-delimited; superframes are handled by the decoder |
 
 ## Issues Encountered
 
@@ -68,6 +80,8 @@
 
 - `src/lib.rs`
 - `src/codec/h264/decoder.rs`
+- `src/codec/hevc/decoder.rs`
+- `src/codec/vp9/decoder.rs`
 - `src/codec/jpeg/parser.rs`
 - `src/hal/jpegd.rs`
 - `src/bin/h264_stream.rs`

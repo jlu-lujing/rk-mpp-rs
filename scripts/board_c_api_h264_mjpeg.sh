@@ -50,6 +50,10 @@ gcc -std=c11 -Wall -Wextra -Werror \
     -Iinclude tests/c_api_decoder.c \
     -Ltarget/debug -lrk_mpp_rs -Wl,-rpath,"$PWD/target/debug" \
     -o /tmp/rk_mpp_c_api_decoder
+gcc -std=c11 -Wall -Wextra -Werror \
+    -Iinclude tests/c_api_vp9.c \
+    -Ltarget/debug -lrk_mpp_rs -Wl,-rpath,"$PWD/target/debug" \
+    -o /tmp/rk_mpp_c_api_vp9
 g++ -std=c++17 -Wall -Wextra -Werror \
     -Iinclude tests/c_api_decoder_smoke.cpp \
     -Ltarget/debug -lrk_mpp_rs -Wl,-rpath,"$PWD/target/debug" \
@@ -80,6 +84,15 @@ c_h265_i420=/tmp/rk_mpp_c_api_h265_c.i420
 c_h265_10_packed=/tmp/rk_mpp_c_api_h265_10_c.packed
 c_h265_10_planar=/tmp/rk_mpp_c_api_h265_10_c.i420p10
 c_api_h265_10=/tmp/rk_mpp_c_api_h265_10.i420p10
+vp9_p0=tests/data/vp9_p0_lossless_320x240_12.ivf
+vp9_p2=tests/data/vp9_p2_10bit_lossless_320x240_12.ivf
+c_vp9_p0=/tmp/rk_mpp_c_api_vp9_p0_c.nv12
+c_api_vp9_p0=/tmp/rk_mpp_c_api_vp9_p0.nv12
+c_vp9_p0_i420=/tmp/rk_mpp_c_api_vp9_p0_c.i420
+c_api_vp9_p0_i420=/tmp/rk_mpp_c_api_vp9_p0.i420
+c_vp9_p2_packed=/tmp/rk_mpp_c_api_vp9_p2_c.packed
+c_vp9_p2_planar=/tmp/rk_mpp_c_api_vp9_p2_c.i420p10
+c_api_vp9_p2=/tmp/rk_mpp_c_api_vp9_p2.i420p10
 c_api_mjpeg=/tmp/rk_mpp_c_api_mjpeg.nv12
 c_api_mjpeg_one_packet=/tmp/rk_mpp_c_api_mjpeg_one_packet.nv12
 c_mjpeg=/tmp/rk_mpp_c_api_mjpeg_c.nv12
@@ -198,6 +211,69 @@ LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     "$c_api_h265_10" "$h265_10"
 cmp "$c_h265_10_planar" "$c_api_h265_10"
 
+rm -f "$c_vp9_p0"
+LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
+    timeout 120 /usr/local/bin/mpi_dec_test \
+    -i "$vp9_p0" -t 10 -w 320 -h 240 -n 12 -o "$c_vp9_p0" -v q \
+    < /dev/null > /tmp/rk_mpp_c_api_vp9_p0_c.log 2>&1
+ffmpeg -nostdin -hide_banner -loglevel error -y \
+    -f rawvideo -pixel_format nv12 -video_size 320x240 \
+    -i "$c_vp9_p0" -pix_fmt yuv420p -f rawvideo "$c_vp9_p0_i420"
+
+LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_vp9 nv12 "$c_api_vp9_p0" "$vp9_p0"
+cmp "$c_vp9_p0" "$c_api_vp9_p0"
+LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_vp9 i420 "$c_api_vp9_p0_i420" "$vp9_p0"
+cmp "$c_vp9_p0_i420" "$c_api_vp9_p0_i420"
+
+rm -f "$c_vp9_p2_packed" "$c_vp9_p2_planar"
+LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
+    timeout 120 /usr/local/bin/mpi_dec_test \
+    -i "$vp9_p2" -t 10 -w 320 -h 240 -n 12 \
+    -o "$c_vp9_p2_packed" -v q \
+    < /dev/null > /tmp/rk_mpp_c_api_vp9_p2_c.log 2>&1
+python3 - "$c_vp9_p2_packed" "$c_vp9_p2_planar" <<'PY'
+from pathlib import Path
+import sys
+
+width, height, frames = 320, 240, 12
+stride = width * 2
+frame_size = width * height * 2 * 3 // 2
+src = Path(sys.argv[1]).read_bytes()
+if len(src) != frame_size * frames:
+    raise SystemExit(f"unexpected MPP byte count: {len(src)}")
+
+out = bytearray(len(src))
+half_width = width // 2
+chroma_row_bytes = half_width * 2
+for frame in range(frames):
+    src_frame = frame * frame_size
+    dst_frame = frame * frame_size
+    y_bytes = width * height * 2
+    out[dst_frame:dst_frame + y_bytes] = src[src_frame:src_frame + y_bytes]
+    src_uv = src_frame + y_bytes
+    dst_u = dst_frame + y_bytes
+    dst_v = dst_u + width * height // 2
+    for row in range(height // 2):
+        line = src[src_uv + row * stride:src_uv + (row + 1) * stride]
+        urow = bytearray(chroma_row_bytes)
+        vrow = bytearray(chroma_row_bytes)
+        urow[0::2] = line[0::4]
+        urow[1::2] = line[1::4]
+        vrow[0::2] = line[2::4]
+        vrow[1::2] = line[3::4]
+        u = dst_u + row * chroma_row_bytes
+        v = dst_v + row * chroma_row_bytes
+        out[u:u + chroma_row_bytes] = urow
+        out[v:v + chroma_row_bytes] = vrow
+
+Path(sys.argv[2]).write_bytes(out)
+PY
+LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_vp9 i420p10 "$c_api_vp9_p2" "$vp9_p2"
+cmp "$c_vp9_p2_planar" "$c_api_vp9_p2"
+
 rm -f "$c_mjpeg"
 for jpg in "$mjpeg_dir"/*.jpg; do
     raw="/tmp/rk_mpp_c_api_one_jpeg.raw"
@@ -233,6 +309,9 @@ sha256sum "$c_api_h264" "$c_h264" \
     "$c_api_h265" "$c_h265" \
     "$c_api_h265_one_packet" \
     "$c_api_h265_i420" "$c_h265_i420" \
-    "$c_api_h265_10" "$c_h265_10_planar"
-printf 'PASS rk_mpp C/C++ API H.264 + H.265 + MJPEG\n'
+    "$c_api_h265_10" "$c_h265_10_planar" \
+    "$c_api_vp9_p0" "$c_vp9_p0" \
+    "$c_api_vp9_p0_i420" "$c_vp9_p0_i420" \
+    "$c_api_vp9_p2" "$c_vp9_p2_planar"
+printf 'PASS rk_mpp C/C++ API H.264 + H.265 + VP9 + MJPEG\n'
 REMOTE

@@ -9,7 +9,8 @@ int main() {
 
     if (sizeof(config) != 32 || sizeof(frame) != 112)
         return 1;
-    if (RK_MPP_CODEC_H265 != 3 || RK_MPP_PIXEL_FORMAT_I420P10 != 3)
+    if (RK_MPP_CODEC_H265 != 3 || RK_MPP_CODEC_VP9 != 4 ||
+        RK_MPP_PIXEL_FORMAT_I420P10 != 3)
         return 1;
     if (!rk_mpp_api_version_string() || !rk_mpp_strerror(RK_MPP_EOS))
         return 1;

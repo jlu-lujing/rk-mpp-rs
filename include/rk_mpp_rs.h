@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 1u
+#define RK_MPP_API_VERSION_MINOR 2u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -29,7 +29,8 @@ enum rk_mpp_status {
 enum rk_mpp_codec {
     RK_MPP_CODEC_H264 = 1,
     RK_MPP_CODEC_MJPEG = 2,
-    RK_MPP_CODEC_H265 = 3
+    RK_MPP_CODEC_H265 = 3,
+    RK_MPP_CODEC_VP9 = 4
 };
 
 enum rk_mpp_pixel_format {
@@ -41,7 +42,8 @@ enum rk_mpp_pixel_format {
 
 /*
  * H.264/MJPEG accept NV12 or I420. H.265 accepts NV12/I420 for 8-bit streams
- * and I420P10 for Main10; incompatible format/stream combinations are errors.
+ * and I420P10 for Main10. VP9 accepts NV12/I420 for 8-bit and I420P10 for
+ * 10-bit. Incompatible format/stream combinations are errors.
  */
 
 enum rk_mpp_packet_flags {
@@ -110,10 +112,12 @@ int rk_mpp_decoder_create(const rk_mpp_decoder_config_t *config,
 
 /*
  * The decoder copies packet bytes before returning. Packets may contain
- * arbitrary byte chunks. EOS flushes a partial tail; COMPLETE_ACCESS_UNIT is
- * useful when a caller already has one H.264/H.265 access unit per packet. For
- * exact per-picture timestamps, submit one video access unit or one JPEG per
- * packet. Multiple pictures in one packet inherit that packet's pts/dts.
+ * arbitrary byte chunks for H.264/H.265. VP9 requires one raw coded packet
+ * (optionally a superframe) per submit; IVF/WebM demux belongs to the caller.
+ * EOS flushes a partial Annex-B tail; COMPLETE_ACCESS_UNIT is useful when a
+ * caller already has one H.264/H.265 access unit per packet. For exact
+ * per-picture timestamps, submit one video access unit or one JPEG per packet.
+ * Multiple pictures in one packet inherit that packet's pts/dts.
  */
 int rk_mpp_decoder_submit_packet(rk_mpp_decoder_t *decoder,
                                  const uint8_t *data,

@@ -21,13 +21,15 @@ context 也已闭合完整 `av1_lr` key+P 流。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
-**对外 SDK 推进（2026-11-08）**：已新增版本化 `rk_mpp_*` V1.1 C ABI
-(`include/rk_mpp_rs.h`) 和 Rust `sdk` 模块，优先覆盖 H.264、H.265 与 MJPEG 解码。
+**对外 SDK 推进（2026-11-08）**：已新增版本化 `rk_mpp_*` V1.2 C ABI
+(`include/rk_mpp_rs.h`) 和 Rust `sdk` 模块，优先覆盖 H.264、H.265、VP9 与 MJPEG 解码。
 构建同时产出 `cdylib`、`staticlib`、`rlib`；packet 可任意分块，frame 由
 decoder 持有到显式 release。lf1 与 t6 的 C/C++ 动态/静态链接门、生命周期错误路径、
 7/127/313-byte H.264 分块、单包整条 H.264、97/211-byte MJPEG 分块及四帧
 单包 MJPEG 全部通过；H.265 8-bit NV12/I420 和 Main10 I420P10 也分别用
-37/53-byte 分块、单包输入和 6 帧 B 结构流验证，全部与板上 C MPP 逐字节一致。复跑：
+37/53-byte 分块、单包输入和 6 帧 B 结构流验证；VP9 profile 0 的 12 帧
+NV12/I420 和 profile 2 10-bit 的 12 帧 I420P10 也通过，全部与板上 C MPP
+逐字节一致。VP9 的 submit 单位是 coded packet/superframe，不是任意字节块。复跑：
 
 ```bash
 BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh

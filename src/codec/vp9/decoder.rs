@@ -64,6 +64,7 @@ pub struct Picture {
     pub width: usize,
     pub height: usize,
     pub poc: u32,
+    pub bit_depth: u32,
     /// Tightly packed planar YUV. High-bit-depth samples are little-endian
     /// 16-bit words containing their unscaled 10-bit value.
     pub yuv: Vec<u8>,
@@ -285,6 +286,7 @@ impl Decoder {
             width: frame.width,
             height: frame.height,
             poc,
+            bit_depth: frame.bit_depth,
             yuv: if err_info == 0 {
                 copy_planar(frame).map_err(PacketError::Internal)?
             } else {
@@ -314,6 +316,7 @@ impl Decoder {
             width: frame.width,
             height: frame.height,
             poc: reference.poc,
+            bit_depth: frame.bit_depth,
             yuv: if reference.err_info == 0 {
                 copy_planar(frame).map_err(PacketError::Internal)?
             } else {

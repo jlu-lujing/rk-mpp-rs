@@ -184,7 +184,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "invalid create left a decoder pointer\n");
             goto done;
         }
-        if (codec != RK_MPP_CODEC_H265) {
+        if (codec == RK_MPP_CODEC_H264 || codec == RK_MPP_CODEC_MJPEG) {
             invalid = config;
             invalid.output_format = RK_MPP_PIXEL_FORMAT_I420P10;
             if (expect_status("incompatible output format",

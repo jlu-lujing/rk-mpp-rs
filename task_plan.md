@@ -6,8 +6,8 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-6.1 are complete for H.264, H.265 and MJPEG decode. Phase 6.2 moves
-the same stable decoder contract to VP9.
+Phases 1-6.2 are complete for H.264, H.265, VP9 and MJPEG decode. Phase 6.3
+moves the same stable decoder contract to AV1.
 
 ## Phases
 
@@ -56,9 +56,15 @@ the same stable decoder contract to VP9.
 - **Status:** complete on lf1 and t6.
 
 ### Phase 6.2: VP9 Decode Backend
-- [ ] Add the VP9 codec ID and packet-oriented input rules.
-- [ ] Expose 8-bit I420 and 10-bit I420P10 output.
-- [ ] Verify key/inter/show-existing and hidden-alt-ref packets against C MPP.
+- [x] Add the VP9 codec ID and packet-oriented input rules.
+- [x] Expose 8-bit NV12/I420 and 10-bit I420P10 output.
+- [x] Verify profile 0/2, inter and hidden-alt-ref packets against C MPP.
+- **Status:** complete on lf1 and t6.
+
+### Phase 6.3: AV1 Decode Backend
+- [ ] Add the AV1 codec ID and temporal-unit packet input rules.
+- [ ] Expose planar 8-bit I420 and 10-bit I420P10 output.
+- [ ] Verify key/inter/show-existing packets against C MPP.
 - **Status:** pending
 
 ### Phase 7: Full Verification and Handoff
@@ -69,6 +75,8 @@ the same stable decoder contract to VP9.
 - [x] Update and commit the H.264/MJPEG SDK slice.
 - [x] Run lf1/t6 full gates and both C/C++ boards for H.265.
 - [x] Update and commit the H.265/API 1.1 slice.
+- [x] Run lf1/t6 C/C++ gates for VP9 profile 0 and profile 2.
+- [x] Run final VP9 full suite and commit the API 1.2 slice.
 - **Status:** complete
 
 ## Decisions Made

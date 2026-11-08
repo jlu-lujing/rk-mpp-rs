@@ -48,6 +48,18 @@
 | Strict rustdoc | No broken public links | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` pass | PASS |
 | H.265 full gates | lf1/t6 all-targets green | 1186 passed / 0 failed / 37 ignored; t6 lib 1042/0/0 | PASS |
 | H.265 C ABI | NV12/I420/I420P10 byte equality | lf1 and t6 shared/static C/C++ gates pass | PASS |
+| VP9 full gates | lf1/t6 all-targets green | 1186 passed / 0 failed / 37 ignored; t6 lib 1042/0/0 | PASS |
+| VP9 C ABI | Profile 0/2 packet decode | 12-frame NV12/I420 and 10-bit I420P10 byte equality on lf1/t6 | PASS |
+
+### Phase 6.2: VP9 Public Decoder
+- **Status:** complete on lf1 and t6
+- VP9 decoder already returns display-ready pictures per coded packet.
+- The SDK will accept one VP9 packet (possibly a superframe) per submit and
+  leave IVF/WebM demux to the caller.
+- Need board gates for profile 0 8-bit and profile 2 10-bit.
+- Added `RK_MPP_CODEC_VP9` and API version 1.2.
+- Profile 0 12-frame NV12/I420 and profile 2 10-bit I420P10 outputs match C
+  MPP byte for byte; reset/reuse and post-EOS checks pass.
 
 ### Errors
 

@@ -394,14 +394,14 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 ## 11. W7 公共 API 与 C ABI（决策 D1；若需要，L 约 10–20 天）
 
 - [ ] W7-1 Rust 公开 API 稳定化：`Decoder`/`Encoder` 句柄、配置、帧/包类型。
-      **H.264/H.265/MJPEG decoder V1 已完成**；其余 decoder 与 encoder 尚未接入
+      **H.264/H.265/VP9/MJPEG decoder V1 已完成**；其余 decoder 与 encoder 尚未接入
 - [ ] W7-2 C ABI：`mpp_create/mpp_init/mpp_destroy`、`MppApi` 函数表子集、
       `mpp_frame/mpp_packet/mpp_buffer` 最小实现
 - [ ] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
 - [ ] W7-4 头文件与符号导出策略（前缀、版本、`-sys` crate）。
       **V1 头文件、`rk_mpp_` 前缀、版本函数和 `cdylib`/`staticlib` 已导出**
 - [ ] W7-5 ABI 测试：C 程序调用我们的库跑通 3 个解码 + 2 个编码用例。
-      **H.264/H.265/MJPEG 三个解码 C/C++ 用例已完成**
+      **H.264/H.265/VP9/MJPEG 四个解码 C/C++ 用例已完成**
 
 验收：官方 `mpi_*_test` 在不改源码的情况下能链接并跑通（允许功能子集）。
 
