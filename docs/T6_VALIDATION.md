@@ -112,8 +112,14 @@ t62 back to the RK3588 reference board.
   forces a decoder reset; keep the verified skip-grain path enabled until a
   register/trace oracle exists for this block.
 
-- RK3576 H.265 is an initial core-path closure. Random bit-flip injection and
-  wider conformance streams still need lf1 evidence.
+- RK3576 H.265 now includes a 16-cell deterministic corruption matrix:
+  SPS/PPS/SEI flips, start/middle/end flips in the IDR and selected P slices,
+  and three final-AU truncation lengths. Fourteen cells have identical C/Rust
+  output counts and byte-identical planar YUV when frames remain visible.
+  A damaged SPS and a flip at the first IDR slice payload make C's
+  `mpi_dec_test` wait until timeout; Rust returns promptly with zero output.
+  The reproducible gate is
+  `scripts/board_rk3576_h265_corrupt_vs_mpp.sh`.
 
 ## 2026-11-08 RK3576 / lf1 VP9 bring-up
 

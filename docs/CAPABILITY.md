@@ -19,7 +19,7 @@
 |---|---|---|
 | JPEG（jpegd，RGB888/NV12，1/2–1/8 缩放） | 完成 | 与 `mpi_dec_test` 逐字节；比 C 快约 30% |
 | H.264（rkvdec） | 完成 | frame/MBAFF/PAFF/长参考/错误路径逐字节 |
-| H.265（rkvdec） | 完成 | Main/Main10/tiles/WPP/DSLICE/LTR/scaling list 逐字节；4:2:2/4:4:4 被硬件拒收（平台边界） |
+| H.265（rkvdec） | 完成 | Main/Main10/tiles/WPP/DSLICE/LTR/scaling list 逐字节；RK3576 的 16 格损坏矩阵中 14 格输出计数和 YUV 逐字节一致，损坏 SPS 与首个 IDR slice 起点两格由 Rust 及时拒绝而 C harness 超时；4:2:2/4:4:4 被硬件拒收（平台边界） |
 | VP9（rkvdec） | 完成 | profile 0/2、10-bit、lossless、tiles、errres、resize、show-existing、hidden alt-ref；边界两格由 libvpx 判定为 C bug |
 | AV1（av1d） | 完成 | Main 8/10-bit、film grain、2x2 tile、96×96–1920×1080、长 GOP、多 sequence、320↔640 切换；C/Rust/libaom 三方逐字节；64×64 为 C bug |
 | MPEG-2 / MPEG-4 / H.263 / VP8 | 完成 | 逐字节；隔行 MPEG-2 用 FFmpeg 作 oracle（C 会错误回绕输入）；VP8 profile 1/3 为派生流验证 |
@@ -49,7 +49,7 @@
 | legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行 |
 | 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264/HEVC/AV1/VP9 DPB surface 均持有 lease；t6 async demo、H.264/HEVC/AV1/VP9 池化边界测试全过 |
 | fence / 多核 CCU / secure | 受内核限制 | 该内核/驱动不暴露对应接口，未伪造 |
-| RK3576 平台适配 | 进行中 | VDPU383 H.264 IPPP + 5/5 边界、H.265 12/12（含 500 帧 LTR SPS 与删 AU 产生的缺失参考路径）、VP9 初始 7/7、VPU720 JPEG 19/19（420/422/444/400 输入/输出组合 + restart）、VEPU510 H.264 320x240 固定 QP IDR/GOP2/GOP6、CBR/VBR/AVBR6、ROI、BY_CTU/BY_BYTE、LOWDELAY packet 与 GDR 逐字节、VEPU510 H.265 320x240 固定 QP Main 六帧 GOP、CBR/VBR/AVBR6、BY_CTU/BY_BYTE、LOWDELAY packet、row/column GDR 与 ROI 逐字节；VEPU510 H.265 10-bit 与 C 一样明确拒绝，tiles 与 C 一样不启用并在 Rust 侧于分配前拒绝，功能/边界矩阵 15/15。VDPU383 AV1 已完成 8-bit 10 帧引用序列和 10-bit skip-grain 序列：key/inter、`show_existing_frame`、八槽 output/CDF/colmv、primary-reference coefficient-CDF、704-byte 10-bit stride 与 packed-NV12 → planar u16 均接通。8-bit 输出 SHA-256 `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`；10-bit 输出 2,304,000 bytes，SHA-256 `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`，均与 C 逐字节。VDPU383 FGS enable/base 实验会以 STATUS 0 超时并复位，且 C HAL 未启用 film grain；该路径待硬件/驱动证据。AVS2、H.265 随机错误注入、VPU720 tile input 和 VDPP2 待完成 |
+| RK3576 平台适配 | 进行中 | VDPU383 H.264 IPPP + 5/5 边界；H.265 12/12（含 500 帧 LTR SPS 与删 AU 缺失参考）并新增 16 格损坏矩阵：14 格 C/Rust 输出一致，损坏 SPS/首个 IDR slice 起点两格 Rust 及时结束而 C 超时；VP9 初始 7/7、VPU720 JPEG 19/19、VEPU510 H.264/H.265 功能、RC、ROI、slice、GDR 矩阵均板上通过。VDPU383 AV1 已完成 8-bit 10 帧引用序列和 10-bit skip-grain 序列：key/inter、`show_existing_frame`、八槽 output/CDF/colmv、primary-reference coefficient-CDF、704-byte 10-bit stride 与 packed-NV12 → planar u16 均接通；输出 SHA-256 分别为 `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138` 和 `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`。VDPU383 FGS enable/base 会以 STATUS 0 超时并复位，C HAL 也未启用 film grain。AVS2、VPU720 tile input 和 VDPP2 待完成 |
 
 ## 软件参考解码器（M11，自研 ground truth）
 

@@ -3178,6 +3178,12 @@ pipeline uses.
   `7d67c91340892c5de09e45db43fc160f3991b8f950e30c7d2b0ff5590626a74d`.
   The LTR stream is 500/500 frames with SHA-256
   `e0d7db1516ed31d3046c63c33240ec0866150774eb74b5e88f67bc186ba51bee`.
+  A separate 16-cell corruption matrix covers SPS/PPS/SEI flips,
+  start/middle/end flips in the IDR and selected P slices, and three final-AU
+  truncation lengths. Fourteen cells match C's output count and planar YUV
+  byte for byte. A damaged SPS and a flip at the first IDR slice payload leave
+  C's harness waiting until timeout, while Rust terminates promptly with zero
+  output; `scripts/board_rk3576_h265_corrupt_vs_mpp.sh` is the gate.
   Its 176-byte
   global packet matches the patched C dump and is pinned by FNV
   `0xe97a26406128e428`. The VDPU383 VP9 matrix is 7/7: profile 0/2, 8/10-bit,
@@ -3223,7 +3229,7 @@ pipeline uses.
   `scripts/board_rk3576_av1_vdpu383_10bit.sh` is the gate. VDPU383 FGS is a
   hardware boundary: C leaves the FGS block disabled, and Rust's
   `av1_fgs_en`/FGS-base experiments hang with STATUS `0x00000000` in both
-  raster and tile modes, followed by decoder reset. H.265 random-error rows,
+  raster and tile modes, followed by decoder reset. H.265 wider conformance,
   AV1/AVS2, VEPU510, VPU720 tile input and VDPP2 remain in progress. VPU720
   low-delay is an explicit reject:
   its C HAL has null `part_start`/`part_wait`, which makes the reference probe

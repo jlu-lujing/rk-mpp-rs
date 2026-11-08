@@ -494,8 +494,12 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   AUD access unit：C 报 `Could not find ref with POC 5`，两侧均输出 5 帧，
   YUV SHA-256 同为
   `7d67c91340892c5de09e45db43fc160f3991b8f950e30c7d2b0ff5590626a74d`。
-- H.265 的随机 bit-flip 错误注入和更宽 conformance 矩阵仍需 lf1 实跑；
-  `scripts/board_rk3576_h265_vs_mpp.sh` 是当前入口。
+- H.265 已新增 16 格确定性损坏矩阵：SPS/PPS/SEI、IDR/多个 P slice 的
+  start/middle/end bit flip，以及三种末尾 AU 截断。14 格 C/Rust 输出计数与
+  planar YUV 逐字节一致；损坏 SPS 和首个 IDR slice 起点会让 C harness 超时，
+  Rust 会及时结束并输出 0 帧。入口为
+  `scripts/board_rk3576_h265_corrupt_vs_mpp.sh`。更宽 conformance 矩阵仍需
+  lf1 实跑；功能入口仍是 `scripts/board_rk3576_h265_vs_mpp.sh`。
 - VDPU383 AV1 已建立第一层软件 ABI。`src/hal/av1d383.rs` 按
   `vdpu38x_av1d_uncomp_hdr()` 生成 5160-bit、128-bit 对齐的 672-byte
   global header；bit packing 复用 C `mpp_put_bits` 的 64-bit 小端布局，
