@@ -477,8 +477,9 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
 - 前两帧 VDPU383 `global_cfg` 和 `rps` 也与 C 调试 dump 逐 word 相同。
   关键板级差异是 704 stride、未压缩 colmv，以及 DPB flags/MVC layer ids
   共用一个 32-bit word。
-- H.264 边界 4/4 已在 lf1 通过：720p/B 30 帧、1080p hard 90 帧、PAFF
-  15 帧和 LTR 62 帧。前两条及 LTR 与 C MPP 逐字节；PAFF 与 FFmpeg
+- H.264 边界 5/5 已在 lf1 通过：720p/B 30 帧、1080p hard 90 帧、PAFF
+  15 帧、LTR 62 帧和缺失参考 61 AU/22 输出帧。前两条、LTR 与缺失参考
+  与 C MPP 逐字节；PAFF 与 FFmpeg
   逐字节，C harness 的场序输出是既知差异。入口为
   `scripts/board_rk3576_h264_edges_vs_mpp.sh`。
 - H.265 初始 10/10 矩阵已在 lf1 通过：320×240 单 IDR、640×480 IPPP 与

@@ -23,10 +23,11 @@ t62 back to the RK3588 reference board.
   dumps word-for-word.
 - t6 RK3588 fallback from the same branch: all seven H.264 decoder fixtures
   passed, proving the VDPU34x path remains intact.
-- The RK3576 H.264 edge matrix is **4/4** on lf1: 720p/B 30 frames, 1080p
-  hard 90 frames, PAFF 15 frames and LTR 62 frames. The first, second and LTR
-  rows are byte-identical to C MPP; PAFF matches FFmpeg, with the C harness
-  retaining its known field-order difference.
+- The RK3576 H.264 edge matrix is **5/5** on lf1: 720p/B 30 frames, 1080p
+  hard 90 frames, PAFF 15 frames, LTR 62 frames and a 61-AU missing-reference
+  stream producing 22 output frames. The first, second, LTR and missing-
+  reference rows are byte-identical to C MPP; PAFF matches FFmpeg, with the C
+  harness retaining its known field-order difference.
 
 ## 2026-11-08 RK3576 / lf1 H.265 bring-up
 
