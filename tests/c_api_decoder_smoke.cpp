@@ -10,7 +10,7 @@ int main() {
     rk_mpp_encoded_packet_t encoded_packet{};
 
     if (sizeof(config) != 32 || sizeof(frame) != 112 ||
-        sizeof(encoder_config) != 60 || sizeof(encoded_packet) != 72)
+        sizeof(encoder_config) != 68 || sizeof(encoded_packet) != 72)
         return 1;
     if (RK_MPP_CODEC_H265 != 3 || RK_MPP_CODEC_VP9 != 4 ||
         RK_MPP_CODEC_AV1 != 5 ||

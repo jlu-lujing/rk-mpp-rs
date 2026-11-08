@@ -33,6 +33,8 @@ pub struct RkMppEncoderConfig {
     pub qp: u32,
     pub fps_num: u32,
     pub fps_den: u32,
+    pub jpeg_quality: u32,
+    pub jpeg_restart_mcus: u32,
     pub flags: u32,
     pub reserved: [u32; 3],
 }
@@ -114,6 +116,8 @@ pub unsafe extern "C" fn rk_mpp_encoder_config_init(
             qp: 26,
             fps_num: 30,
             fps_den: 1,
+            jpeg_quality: 10,
+            jpeg_restart_mcus: 0,
             flags: 0,
             reserved: [0; 3],
         });
@@ -181,7 +185,9 @@ pub unsafe extern "C" fn rk_mpp_encoder_create(
                 .with_level(u8::try_from(config.level).unwrap_or(u8::MAX))
                 .with_gop(config.gop)
                 .with_qp(u8::try_from(config.qp).unwrap_or(u8::MAX))
-                .with_fps(config.fps_num, config.fps_den);
+                .with_fps(config.fps_num, config.fps_den)
+                .with_jpeg_quality(config.jpeg_quality)
+                .with_jpeg_restart_mcus(config.jpeg_restart_mcus);
         match encoder::Encoder::new(encoder_config) {
             Ok(inner) => {
                 *out_encoder = Box::into_raw(Box::new(RkMppEncoder {
@@ -331,7 +337,7 @@ mod tests {
 
     #[test]
     fn encoder_structs_match_the_v1_header_layout() {
-        assert_eq!(size_of::<RkMppEncoderConfig>(), 60);
+        assert_eq!(size_of::<RkMppEncoderConfig>(), 68);
         assert_eq!(size_of::<RkMppEncodedPacket>(), 72);
     }
 }

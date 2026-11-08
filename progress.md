@@ -56,6 +56,9 @@
 | H.264 encoder full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
 | H.265 encoder API | VEPU580 and VEPU510 | 6-frame NV12/I420 output matches CLI oracle on lf1/t6 | PASS |
 | H.265 encoder full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
+| JPEG encoder API | VEPU2 and VPU720 | NV12/I420 single-frame output matches CLI on lf1/t6 | PASS |
+| JPEG restart API | VEPU2 and VPU720 | restart MCU 20 output matches CLI on lf1/t6 | PASS |
+| JPEG encoder full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
 
 ### Phase 6.2: VP9 Public Decoder
 - **Status:** complete on lf1 and t6
@@ -97,6 +100,15 @@
   captured 320x240 QP26 GOP6 path.
 - Six-frame NV12/I420 output matches platform CLI oracles, SHA-256
   `6c285115…979e9` on t6 and `8088e821…7fe397` on lf1.
+
+### Phase 6.4.3: JPEG Public Encoder
+- **Status:** complete on lf1 and t6
+- Added JPEG to the shared encoder handle, quality 0–10 and restart MCU
+  configuration, with API version 1.6.
+- VEPU2/VPU720 is selected automatically; NV12 and I420 produce identical
+  JPEG bytes. Hashes are `4f571054…7db1e` on t6 and `64153672…7ac69` on lf1.
+- Restart interval 20 also matches on both boards: lf1
+  `0ccf41ea…82997`, t6 `25254033…df748a`.
 
 ### Errors
 

@@ -6,8 +6,8 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-6.4.2 are complete for the decoder matrix, H.264 and H.265 encoding.
-The next priority is the JPEG encoder backend.
+Phases 1-6.4.3 are complete for the primary decoders and all three encoder
+backends. The remaining decoder contract work is VP8, MPEG-2, MPEG-4 and H.263.
 
 ## Phases
 
@@ -69,9 +69,9 @@ The next priority is the JPEG encoder backend.
 
 ### Phase 6.4: Encoder API Contract
 - [x] Define frame input ownership, packet output and EOS/flush rules.
-- [ ] Add H.264, H.265 and JPEG encoder handles to Rust and C.
-- [ ] Verify fixed-QP IDR/GOP output against the existing C goldens.
-- **Status:** in_progress
+- [x] Add H.264, H.265 and JPEG encoder handles to Rust and C.
+- [x] Verify output against the existing C-validated CLI goldens.
+- **Status:** complete.
 
 ### Phase 6.4.1: H.264 Encoder API
 - [x] Expose synchronous submit/receive with copied NV12/I420 input.
@@ -86,10 +86,16 @@ The next priority is the JPEG encoder backend.
 - **Status:** complete for VEPU580 and the captured VEPU510 path.
 
 ### Phase 6.4.3: JPEG Encoder API
-- [ ] Add deterministic NV12 input and JPEG packet output.
-- [ ] Expose quality, chroma and restart configuration.
-- [ ] Verify byte equality on lf1 and t6.
-- **Status:** in_progress
+- [x] Add deterministic NV12/I420 input and JPEG packet output.
+- [x] Expose quality and restart configuration for 4:2:0.
+- [x] Verify byte equality on lf1 and t6.
+- **Status:** complete.
+
+### Phase 6.5: Legacy Decoder Interfaces
+- [ ] Add VP8 packet/frame output to the shared decoder contract.
+- [ ] Add MPEG-2, MPEG-4 and H.263 stream/packet backends.
+- [ ] Cover Annex-B, elementary-stream and codec packet framing across SoCs.
+- **Status:** pending
 
 ### Phase 7: Full Verification and Handoff
 - [x] Run host-independent gates on lf1 and t6.
@@ -107,6 +113,8 @@ The next priority is the JPEG encoder backend.
 - [x] Commit the H.264 encoder/API 1.4 slice.
 - [x] Run lf1/t6 H.265 encoder API gates.
 - [x] Run final H.265 encoder full suite and commit the API 1.5 slice.
+- [x] Run lf1/t6 JPEG encoder API gates including restart MCU.
+- [x] Run final JPEG encoder full suite and commit the API 1.6 slice.
 - **Status:** complete
 
 ## Decisions Made

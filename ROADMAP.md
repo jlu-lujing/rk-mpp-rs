@@ -109,7 +109,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M0 | JPEG decode (`jpegd`): parser, hw tables, registers, RGB888/NV12, 1/2–1/8 downscale, scaler | 2.9k | **done** |
 | M0 | JPEG decode beats MPP by ~30 % (no buf_slot/meta layer); 0.96 ms @ 640p | — | **done** |
 | M0 | Public H.264/H.265/VP9/AV1/MJPEG decoder SDK: versioned C ABI, Rust API, shared/static libraries | — | **done on lf1 and t6** |
-| M0 | Public H.264/H.265 encoder SDK: VEPU580/VEPU510 synchronous frame and packet handles | — | **done on lf1 and t6 for the exposed paths** |
+| M0 | Public H.264/H.265/JPEG encoder SDK: VEPU580/VEPU510 and VEPU2/VPU720 | — | **done on lf1 and t6 for the exposed paths** |
 | M1 | H.264 syntax: Annex-B, RBSP, Exp-Golomb, SPS/PPS/slice header, scaling lists | 3.5k | **done** |
 | M1 | H.264 register map generated from `hal_h264d_rkv_reg.h` (80 words, 122 fields) | 0.25k | **done** |
 | M2 | H.264 decode on rkvdec: reg writer, DPB, reference lists, MMCO, MBAFF, field-coded, error propagation | 6.0k | **frame/MBAFF/PAFF/long-term/error-path bit-exact** |
@@ -338,6 +338,11 @@ in what order the evidence gets produced.
       width/height, QP and GOP; RK3576 VEPU510 exposes the captured
       320x240 QP26 GOP6 path. Six-frame output matches the CLI oracle:
       VEPU510/lf1 `8088e821…7fe397`, VEPU580/t6 `6c285115…979e9`.
+- [x] Public JPEG encoder API V1.6: NV12/I420 input copied into the selected
+      VEPU2/VPU720 backend, quality bands 0..10, optional restart MCU interval,
+      owned packet/release and reset. One-frame output matches `jpeg-enc`:
+      VPU720/lf1 `64153672…7ac69`, VEPU2/t6 `4f571054…7db1e`. Restart
+      interval 20 matches at `0ccf41ea…82997` / `25254033…df748a`.
       `bus.jpg` (640x640, SHA-256 `fb4914d1…4014e16`) produces
       320x320, 160x160 and 80x80 frames. Full-size output is 44.13 dB
       RGB PSNR versus libjpeg-turbo; 1/2, 1/4 and 1/8 are 38.64, 36.16 and

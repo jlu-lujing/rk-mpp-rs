@@ -56,6 +56,10 @@ static int parse_codec(const char *name, uint32_t *codec) {
         *codec = RK_MPP_CODEC_H265;
         return 0;
     }
+    if (!strcmp(name, "jpeg")) {
+        *codec = RK_MPP_CODEC_MJPEG;
+        return 0;
+    }
     return -1;
 }
 
@@ -123,7 +127,7 @@ int main(int argc, char **argv) {
     if (argc != 10 || parse_codec(argv[1], &codec) ||
         parse_format(argv[2], &format)) {
         fprintf(stderr,
-                "usage: %s <h264|h265> <nv12|i420> <out> <width> <height> "
+                "usage: %s <h264|h265|jpeg> <nv12|i420> <out> <width> <height> "
                 "<qp> <frames> <gop> <in>\n",
                 argv[0]);
         return 2;
@@ -149,6 +153,14 @@ int main(int argc, char **argv) {
         goto done;
     config.qp = qp;
     config.gop = gop;
+    if (codec == RK_MPP_CODEC_MJPEG)
+        config.jpeg_quality = qp;
+    if (codec == RK_MPP_CODEC_MJPEG) {
+        const char *restart = getenv("JPEG_RESTART_MCUS");
+
+        if (restart)
+            config.jpeg_restart_mcus = (uint32_t)strtoul(restart, NULL, 0);
+    }
     if (rk_mpp_encoder_create(&config, &encoder) != RK_MPP_OK ||
         !encoder) {
         fprintf(stderr, "encoder create failed\n");

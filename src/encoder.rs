@@ -9,7 +9,7 @@ use crate::codec::h264::encoder::{
     self as h264_encoder, EncoderConfig as H264EncoderConfig, PROFILE_BASELINE, PROFILE_HIGH,
     PROFILE_MAIN,
 };
-use crate::hal::{h264e, h265e_session, vepu510_h264, vepu510_h265};
+use crate::hal::{h264e, h265e_session, jpege, jpege720, vepu510_h264, vepu510_h265};
 use crate::sdk::{Codec, Error, PixelFormat};
 use crate::service::soc::{SocProfile, VideoEncodeHal};
 
@@ -25,6 +25,8 @@ pub struct EncoderConfig {
     qp: u8,
     fps_num: u32,
     fps_den: u32,
+    jpeg_quality: u32,
+    jpeg_restart_mcus: u32,
 }
 
 impl EncoderConfig {
@@ -40,6 +42,8 @@ impl EncoderConfig {
             qp: 26,
             fps_num: 30,
             fps_den: 1,
+            jpeg_quality: 10,
+            jpeg_restart_mcus: 0,
         }
     }
 
@@ -79,6 +83,14 @@ impl EncoderConfig {
         (self.fps_num, self.fps_den)
     }
 
+    pub const fn jpeg_quality(self) -> u32 {
+        self.jpeg_quality
+    }
+
+    pub const fn jpeg_restart_mcus(self) -> u32 {
+        self.jpeg_restart_mcus
+    }
+
     pub const fn with_input_format(mut self, format: PixelFormat) -> Self {
         self.input_format = format;
         self
@@ -107,6 +119,16 @@ impl EncoderConfig {
     pub const fn with_fps(mut self, fps_num: u32, fps_den: u32) -> Self {
         self.fps_num = fps_num;
         self.fps_den = fps_den;
+        self
+    }
+
+    pub const fn with_jpeg_quality(mut self, quality: u32) -> Self {
+        self.jpeg_quality = quality;
+        self
+    }
+
+    pub const fn with_jpeg_restart_mcus(mut self, mcus: u32) -> Self {
+        self.jpeg_restart_mcus = mcus;
         self
     }
 }
@@ -185,6 +207,10 @@ enum Backend {
     H264Vepu510(vepu510_h264::Vepu510H264),
     H265Vepu580(h265e_session::Vepu580H265),
     H265Vepu510(vepu510_h265::Vepu510H265),
+    Jpeg {
+        encoder: jpege720::JpegEncoder,
+        frame_number: u32,
+    },
 }
 
 /// Persistent encoder session. Frames are encoded synchronously into an owned
@@ -201,7 +227,11 @@ impl Encoder {
         let backend = match config.codec {
             Codec::H264 => open_h264_backend(config)?,
             Codec::H265 => open_h265_backend(config)?,
-            Codec::Mjpeg | Codec::Vp9 | Codec::Av1 => {
+            Codec::Mjpeg => Backend::Jpeg {
+                encoder: open_jpeg()?,
+                frame_number: 0,
+            },
+            Codec::Vp9 | Codec::Av1 => {
                 return Err(Error::Unsupported(format!(
                     "encoder backend for {:?} is not implemented",
                     config.codec
@@ -291,6 +321,29 @@ impl Encoder {
                 });
                 Ok(1)
             }
+            Backend::Jpeg {
+                encoder,
+                frame_number,
+            } => {
+                let input = format_nv12_padded(self.config, frame.data, 8, 2)?;
+                let jpeg = jpeg_config(self.config)?;
+                let encoded = encoder
+                    .encode_packets(&input, jpeg)
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                let count = encoded.packets.len();
+                for range in encoded.packets {
+                    self.packets.push_back(Packet {
+                        data: encoded.bytes[range].to_vec(),
+                        pts: frame.pts,
+                        dts: frame.dts,
+                        keyframe: true,
+                        frame_num: *frame_number,
+                        poc: *frame_number as i32,
+                    });
+                }
+                *frame_number = frame_number.saturating_add(1);
+                Ok(count)
+            }
         }
     }
 
@@ -313,6 +366,10 @@ impl Encoder {
         self.backend = match self.config.codec {
             Codec::H264 => open_h264_backend(self.config)?,
             Codec::H265 => open_h265_backend(self.config)?,
+            Codec::Mjpeg => Backend::Jpeg {
+                encoder: open_jpeg()?,
+                frame_number: 0,
+            },
             _ => {
                 return Err(Error::Unsupported(
                     "encoder backend reset is unsupported".to_string(),
@@ -457,7 +514,40 @@ fn open_h265_vepu510(config: EncoderConfig) -> Result<vepu510_h265::Vepu510H265,
     vepu510_h265::Vepu510H265::open().map_err(|error| Error::Hardware(error.to_string()))
 }
 
+fn open_jpeg() -> Result<jpege720::JpegEncoder, Error> {
+    jpege720::JpegEncoder::open().map_err(|error| Error::Hardware(error.to_string()))
+}
+
+fn jpeg_config(config: EncoderConfig) -> Result<jpege::EncoderConfig, Error> {
+    if config.jpeg_quality > 10 {
+        return Err(Error::InvalidInput(
+            "JPEG quality must be in 0..=10".to_string(),
+        ));
+    }
+    if config.jpeg_restart_mcus > u16::MAX as u32 {
+        return Err(Error::InvalidInput(
+            "JPEG restart MCU count must fit in 16 bits".to_string(),
+        ));
+    }
+    let mut jpeg = jpege::EncoderConfig::new(config.width, config.height);
+    jpeg.quality = jpege::Quality::Quant(config.jpeg_quality as u8);
+    jpeg.input = jpege::InputFormat::Nv12;
+    jpeg.chroma = jpege::ChromaFormat::Yuv420;
+    jpeg.split_mcus = (config.jpeg_restart_mcus != 0).then_some(config.jpeg_restart_mcus as u16);
+    jpeg.validate().map_err(Error::InvalidInput)?;
+    Ok(jpeg)
+}
+
 fn format_nv12_input(config: EncoderConfig, data: &[u8]) -> Result<Vec<u8>, Error> {
+    format_nv12_padded(config, data, 16, 16)
+}
+
+fn format_nv12_padded(
+    config: EncoderConfig,
+    data: &[u8],
+    width_alignment: usize,
+    height_alignment: usize,
+) -> Result<Vec<u8>, Error> {
     let visible_luma = config
         .width
         .checked_mul(config.height)
@@ -472,8 +562,8 @@ fn format_nv12_input(config: EncoderConfig, data: &[u8]) -> Result<Vec<u8>, Erro
             data.len()
         )));
     }
-    let coded_width = config.width.div_ceil(16) * 16;
-    let coded_height = config.height.div_ceil(16) * 16;
+    let coded_width = config.width.div_ceil(width_alignment) * width_alignment;
+    let coded_height = config.height.div_ceil(height_alignment) * height_alignment;
     let coded_size = coded_width
         .checked_mul(coded_height)
         .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
@@ -526,7 +616,9 @@ mod tests {
             .with_level(31)
             .with_gop(30)
             .with_qp(30)
-            .with_fps(25, 1);
+            .with_fps(25, 1)
+            .with_jpeg_quality(7)
+            .with_jpeg_restart_mcus(16);
         assert_eq!(config.codec(), Codec::H264);
         assert_eq!(config.input_format(), PixelFormat::I420);
         assert_eq!(config.profile(), 77);
@@ -534,5 +626,7 @@ mod tests {
         assert_eq!(config.gop(), 30);
         assert_eq!(config.qp(), 30);
         assert_eq!(config.fps(), (25, 1));
+        assert_eq!(config.jpeg_quality(), 7);
+        assert_eq!(config.jpeg_restart_mcus(), 16);
     }
 }

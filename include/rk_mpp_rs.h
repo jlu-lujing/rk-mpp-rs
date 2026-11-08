@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 5u
+#define RK_MPP_API_VERSION_MINOR 6u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -150,7 +150,7 @@ int rk_mpp_decoder_status(rk_mpp_decoder_t *decoder,
 void rk_mpp_decoder_close(rk_mpp_decoder_t *decoder);
 
 /*
- * Encoder V1 currently implements fixed-QP H.264/H.265. Input frames are
+ * Encoder V1 currently implements fixed-QP H.264/H.265 and JPEG. Input frames are
  * tightly packed visible-size NV12 or I420; the SDK pads to coded geometry and
  * copies all input before submit returns. RK3576 VEPU510 currently exposes
  * only its board-validated 320x240 QP26 GOP6 paths.
@@ -167,6 +167,8 @@ typedef struct rk_mpp_encoder_config {
     uint32_t qp;
     uint32_t fps_num;
     uint32_t fps_den;
+    uint32_t jpeg_quality;      /* 0..=10 built-in JPEG quantisation tables */
+    uint32_t jpeg_restart_mcus; /* 0 disables DRI, otherwise MCUs per restart */
     uint32_t flags;
     uint32_t reserved[3];
 } rk_mpp_encoder_config_t;

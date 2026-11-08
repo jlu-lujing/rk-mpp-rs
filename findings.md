@@ -78,6 +78,14 @@
   submit through a small streaming wrapper.
 - Verified H.265 hashes are `6c285115…979e9` on t6 VEPU580 and
   `8088e821…7fe397` on lf1 VEPU510; NV12 and I420 match on each platform.
+- The existing `jpege720::JpegEncoder` already selects VEPU2 or VPU720 and
+  returns a packet-range view, so JPEG needed no new hardware wrapper. The
+  public layer pads visible NV12/I420 input to the JPEG stride rules and queues
+  the returned packet ranges.
+- Verified JPEG hashes are `4f571054…7db1e` on t6 VEPU2 and
+  `64153672…7ac69` on lf1 VPU720; NV12 and I420 match on each platform.
+- JPEG restart interval 20 matches the CLI output at lf1
+  `0ccf41ea…82997` and t6 `25254033…df748a`.
 - Verified VP9 SHA-256 values are
   `c5381bbf…3949a` (profile 0 NV12),
   `53bc3dd4…0abea69` (profile 0 I420), and
