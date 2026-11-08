@@ -118,16 +118,7 @@ impl Vpu720Jpeg {
                 input.len()
             ));
         }
-        let allocation_size = align(config.hor_stride, 64)
-            .checked_mul(align(config.ver_stride, 64))
-            .and_then(|rows| {
-                if config.input == InputFormat::Nv12 {
-                    rows.checked_mul(3).map(|value| value / 2)
-                } else {
-                    Some(rows)
-                }
-            })
-            .ok_or_else(|| "JPEG input allocation overflow".to_string())?;
+        let allocation_size = config.input_allocation_size()?;
         if self.input.as_ref().map(DmaBuf::len).unwrap_or(0) < allocation_size {
             self.input =
                 Some(DmaBuf::alloc("system", allocation_size, false).map_err(|e| e.to_string())?);
@@ -287,49 +278,54 @@ fn build_registers(
     words[29] = ((encode_width / 8 - 1) as u32) | (((encode_height / 8 - 1) as u32) << 16);
     words[30] = ((encode_width - config.width) as u32 & 0x3f)
         | (((encode_height - config.height) as u32 & 0x3f) << 16);
-    let input_format = match config.input {
-        InputFormat::Nv12 => 6, // YUV420SP
-        InputFormat::Yuyv => 8, // YUYV422
-        InputFormat::Uyvy => 9, // UYVY422
+    let (input_format, uv_swap) = match config.input {
+        InputFormat::Nv12 => (6, false),     // YUV420SP
+        InputFormat::Nv16 => (4, false),     // YUV422SP
+        InputFormat::Yuv420p => (7, false),  // YUV420P
+        InputFormat::Nv21 => (6, true),      // YUV420SP with VU swap
+        InputFormat::Yuv422p => (5, false),  // YUV422P
+        InputFormat::Nv61 => (4, true),      // YUV422SP with VU swap
+        InputFormat::Yuyv => (8, false),     // YUYV422
+        InputFormat::Yvyu => (8, true),      // YUYV422 with U/V swap
+        InputFormat::Uyvy => (9, false),     // UYVY422
+        InputFormat::Vyuy => (9, true),      // UYVY422 with U/V swap
+        InputFormat::Nv24 => (12, false),    // YUV444SP
+        InputFormat::Yuv444p => (13, false), // YUV444P
         _ => return Err("unsupported VPU720 input format".into()),
     };
-    words[32] = (input_format << 2) | (1 << 6); // YUV420 output
+    let layout = config.input_layout()?;
+    words[32] = (input_format << 2) | ((uv_swap as u32) << 1) | (1 << 6); // YUV420 output
     words[34] = config.hor_stride as u32;
-    // C's jpege_vpu720_setup_format() leaves uv_stride zero for packed
-    // YUYV/UYVY and only programs it for semi-planar NV12.
-    words[35] = if config.input == InputFormat::Nv12 {
-        config.hor_stride as u32
-    } else {
-        0
-    };
+    words[35] = layout.uv_stride as u32;
     let restart = config
         .split_plan()
         .map(|plan| plan.restart_interval)
         .unwrap_or(0);
     words[36] = restart as u32 | (1 << 29);
     words[42] = 0xf0f;
-    let u_offset = if config.input == InputFormat::Nv12 {
-        config.hor_stride.saturating_mul(config.ver_stride)
-    } else {
-        0
-    };
-    Ok(RegisterFile {
-        words,
-        offsets: vec![
-            RegOffsetInfo {
-                reg_idx: 17,
-                offset: output_size as u32,
-            },
-            RegOffsetInfo {
-                reg_idx: 20,
-                offset: header_len as u32,
-            },
-            RegOffsetInfo {
-                reg_idx: 23,
-                offset: u_offset as u32,
-            },
-        ],
-    })
+    let mut offsets = vec![
+        RegOffsetInfo {
+            reg_idx: 17,
+            offset: output_size as u32,
+        },
+        RegOffsetInfo {
+            reg_idx: 20,
+            offset: header_len as u32,
+        },
+    ];
+    if layout.u_offset != 0 {
+        offsets.push(RegOffsetInfo {
+            reg_idx: 23,
+            offset: layout.u_offset as u32,
+        });
+    }
+    if layout.v_offset != 0 {
+        offsets.push(RegOffsetInfo {
+            reg_idx: 24,
+            offset: layout.v_offset as u32,
+        });
+    }
+    Ok(RegisterFile { words, offsets })
 }
 
 fn align(value: usize, alignment: usize) -> usize {
@@ -339,13 +335,10 @@ fn align(value: usize, alignment: usize) -> usize {
 fn validate_config(config: EncoderConfig) -> Result<(), String> {
     config.validate()?;
     if config.rotation != Rotation::None {
-        return Err("VPU720 initial path does not support rotation".into());
+        return Err("VPU720 does not support rotation".into());
     }
-    if !matches!(
-        config.input,
-        InputFormat::Nv12 | InputFormat::Yuyv | InputFormat::Uyvy
-    ) {
-        return Err("VPU720 initial path supports NV12, YUYV or UYVY input".into());
+    if !config.input.supported_by_vpu720() {
+        return Err(format!("VPU720 does not support {:?} input", config.input));
     }
     Ok(())
 }
@@ -386,18 +379,61 @@ mod tests {
 
     #[test]
     fn vpu720_registers_describe_packed_yuv422_inputs() {
-        for (input, source_format) in [(InputFormat::Yuyv, 8), (InputFormat::Uyvy, 9)] {
+        for (input, source_format, swap) in [
+            (InputFormat::Yuyv, 8, 0),
+            (InputFormat::Yvyu, 8, 1),
+            (InputFormat::Uyvy, 9, 0),
+            (InputFormat::Vyuy, 9, 1),
+        ] {
             let config = EncoderConfig::new_for_input(320, 240, input);
             let regs = build_registers(1, 2, 3, 4096, 623, config).unwrap();
-            let input_offset = regs
-                .offsets
-                .iter()
-                .find(|offset| offset.reg_idx == 23)
-                .unwrap();
-            assert_eq!(regs.words[32], (source_format << 2) | (1 << 6));
+            assert_eq!(
+                regs.words[32],
+                (source_format << 2) | (swap << 1) | (1 << 6)
+            );
             assert_eq!(regs.words[34], 640);
             assert_eq!(regs.words[35], 0);
-            assert_eq!(input_offset.offset, 0);
+            assert!(regs
+                .offsets
+                .iter()
+                .all(|offset| !matches!(offset.reg_idx, 23 | 24)));
+        }
+    }
+
+    #[test]
+    fn vpu720_registers_describe_planar_and_semiplanar_yuv_inputs() {
+        for (input, source_format, uv_swap, uv_stride, u_offset, v_offset, input_size) in [
+            (InputFormat::Nv16, 4, 0, 320, 76_800, 0, 153_600),
+            (InputFormat::Yuv420p, 7, 0, 160, 76_800, 96_000, 115_200),
+            (InputFormat::Nv21, 6, 1, 320, 76_800, 0, 115_200),
+            (InputFormat::Yuv422p, 5, 0, 160, 76_800, 115_200, 153_600),
+            (InputFormat::Nv61, 4, 1, 320, 76_800, 0, 153_600),
+            (InputFormat::Nv24, 12, 0, 640, 76_800, 0, 230_400),
+            (InputFormat::Yuv444p, 13, 0, 320, 76_800, 153_600, 230_400),
+        ] {
+            let config = EncoderConfig::new_for_input(320, 240, input);
+            let regs = build_registers(1, 2, 3, 4096, 623, config).unwrap();
+            assert_eq!(
+                regs.words[32],
+                (source_format << 2) | (uv_swap << 1) | (1 << 6)
+            );
+            assert_eq!(regs.words[34], 320);
+            assert_eq!(regs.words[35], uv_stride);
+            assert_eq!(config.input_size().unwrap(), input_size);
+            assert_eq!(
+                regs.offsets
+                    .iter()
+                    .find(|offset| offset.reg_idx == 23)
+                    .map(|offset| offset.offset),
+                (u_offset != 0).then_some(u_offset)
+            );
+            assert_eq!(
+                regs.offsets
+                    .iter()
+                    .find(|offset| offset.reg_idx == 24)
+                    .map(|offset| offset.offset),
+                (v_offset != 0).then_some(v_offset)
+            );
         }
     }
 }

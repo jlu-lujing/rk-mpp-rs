@@ -10,8 +10,9 @@
  * `low_delay` sets base:low_delay and split:out=1. Packets are drained to EOI
  * on a worker thread so MPP's fixed output-task pool cannot deadlock a
  * synchronous put-then-get caller.
- * `mpp_input_format` defaults to MPP_FMT_YUV420SP. RK3576 VPU720 packed input
- * uses MPP_FMT_YUV422_YUYV (8) or MPP_FMT_YUV422_UYVY (10).
+ * `mpp_input_format` defaults to MPP_FMT_YUV420SP. It accepts the 8-bit
+ * NV12/NV21/I420, NV16/NV61/422P, four packed 4:2:2 orders, and NV24/444P
+ * families used by the RK3576 VPU720 gate.
  */
 
 #include <errno.h>
@@ -48,6 +49,43 @@ typedef struct PacketReaderCtx_t {
     MPP_RET ret;
     unsigned packets;
 } PacketReaderCtx;
+
+static int input_frame_factor(MppFrameFormat format, unsigned *numerator,
+                              unsigned *denominator)
+{
+    switch (format) {
+    case MPP_FMT_YUV420SP:
+    case MPP_FMT_YUV420SP_VU:
+    case MPP_FMT_YUV420P:
+        *numerator = 3;
+        *denominator = 2;
+        return 0;
+    case MPP_FMT_YUV422SP:
+    case MPP_FMT_YUV422SP_VU:
+    case MPP_FMT_YUV422P:
+        *numerator = 2;
+        *denominator = 1;
+        return 0;
+    case MPP_FMT_YUV444SP:
+    case MPP_FMT_YUV444P:
+        *numerator = 3;
+        *denominator = 1;
+        return 0;
+    case MPP_FMT_YUV400:
+        *numerator = 1;
+        *denominator = 1;
+        return 0;
+    case MPP_FMT_YUV422_YUYV:
+    case MPP_FMT_YUV422_YVYU:
+    case MPP_FMT_YUV422_UYVY:
+    case MPP_FMT_YUV422_VYUY:
+        *numerator = 1;
+        *denominator = 1;
+        return 0;
+    default:
+        return -1;
+    }
+}
 
 static void *read_packets(void *opaque)
 {
@@ -103,13 +141,15 @@ int main(int argc, char **argv)
     MppFrameFormat input_format =
         argc > 8 ? (MppFrameFormat)atoi(argv[8]) : MPP_FMT_YUV420SP;
     int packed_yuv422 = input_format == MPP_FMT_YUV422_YUYV ||
-                        input_format == MPP_FMT_YUV422_UYVY;
+                        input_format == MPP_FMT_YUV422_YVYU ||
+                        input_format == MPP_FMT_YUV422_UYVY ||
+                        input_format == MPP_FMT_YUV422_VYUY;
     int bytes_per_pixel = packed_yuv422 ? 2 : 1;
     int hor_stride = (width * bytes_per_pixel + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
-    size_t frame_size = packed_yuv422
-                            ? (size_t)hor_stride * ver_stride
-                            : (size_t)hor_stride * ver_stride * 3 / 2;
+    unsigned frame_numerator;
+    unsigned frame_denominator;
+    size_t frame_size;
     size_t packet_size = (size_t)width * height * 3 + 64 * 1024;
 
     MppCtx ctx = NULL;
@@ -128,6 +168,14 @@ int main(int argc, char **argv)
     FILE *output = NULL;
     MPP_RET ret = MPP_NOK;
     MPP_RET put_ret;
+
+    if (input_frame_factor(input_format, &frame_numerator,
+                           &frame_denominator)) {
+        fprintf(stderr, "unsupported input format %d\n", input_format);
+        return 2;
+    }
+    frame_size = (size_t)hor_stride * ver_stride * frame_numerator /
+                 frame_denominator;
 
     if (!input_path[0] || !output_path[0] ||
         width < 16 || height < 16 || (width & 1) || (height & 1)) {

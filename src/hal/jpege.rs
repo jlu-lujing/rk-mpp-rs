@@ -124,10 +124,28 @@ impl ChromaFormat {
 pub enum InputFormat {
     #[default]
     Nv12,
+    /// Semi-planar 4:2:2: Y followed by interleaved UV.
+    Nv16,
+    /// Planar I420: Y, then U, then V.
+    Yuv420p,
+    /// NV21: Y followed by interleaved VU.
+    Nv21,
+    /// Planar 4:2:2: Y, then U, then V.
+    Yuv422p,
+    /// NV61: Y followed by interleaved VU, one chroma row per luma row.
+    Nv61,
     /// Packed Y0 U0 Y1 V0 input, two bytes per pixel.
     Yuyv,
+    /// Packed Y0 V0 Y1 U0 input, two bytes per pixel.
+    Yvyu,
     /// Packed U0 Y0 V0 Y1 input, two bytes per pixel.
     Uyvy,
+    /// Packed V0 Y0 U0 Y1 input, two bytes per pixel.
+    Vyuy,
+    /// Semi-planar 4:4:4: Y followed by interleaved UV.
+    Nv24,
+    /// Planar 4:4:4: Y, then U, then V.
+    Yuv444p,
     Rgb565,
     Bgr565,
     Rgb555,
@@ -147,9 +165,18 @@ pub enum InputFormat {
 impl InputFormat {
     pub fn bytes_per_pixel(self) -> usize {
         match self {
-            Self::Nv12 => 1,
+            Self::Nv12
+            | Self::Nv16
+            | Self::Yuv420p
+            | Self::Nv21
+            | Self::Yuv422p
+            | Self::Nv61
+            | Self::Nv24
+            | Self::Yuv444p => 1,
             Self::Yuyv
+            | Self::Yvyu
             | Self::Uyvy
+            | Self::Vyuy
             | Self::Rgb565
             | Self::Bgr565
             | Self::Rgb555
@@ -166,19 +193,44 @@ impl InputFormat {
     }
 
     pub fn is_rgb(self) -> bool {
-        !matches!(self, Self::Nv12 | Self::Yuyv | Self::Uyvy)
+        !matches!(
+            self,
+            Self::Nv12
+                | Self::Nv16
+                | Self::Yuv420p
+                | Self::Nv21
+                | Self::Yuv422p
+                | Self::Nv61
+                | Self::Yuyv
+                | Self::Yvyu
+                | Self::Uyvy
+                | Self::Vyuy
+                | Self::Nv24
+                | Self::Yuv444p
+        )
     }
 
-    fn vepu_format(self) -> u32 {
+    fn vepu_format(self) -> Option<u32> {
         match self {
-            Self::Nv12 => VEPU_FMT_YUV420SP,
-            Self::Yuyv => VEPU_FMT_YUYV422,
-            Self::Uyvy => VEPU_FMT_UYVY422,
-            Self::Rgb565 | Self::Bgr565 => VEPU_FMT_RGB565,
-            Self::Rgb555 | Self::Bgr555 => VEPU_FMT_RGB555,
-            Self::Rgb444 | Self::Bgr444 => VEPU_FMT_RGB444,
-            Self::Argb8888 | Self::Abgr8888 | Self::Bgra8888 | Self::Rgba8888 => VEPU_FMT_RGB888_32,
-            Self::Rgb101010 | Self::Bgr101010 => VEPU_FMT_RGB101010,
+            Self::Nv12 => Some(VEPU_FMT_YUV420SP),
+            Self::Yuyv => Some(VEPU_FMT_YUYV422),
+            Self::Uyvy => Some(VEPU_FMT_UYVY422),
+            Self::Rgb565 | Self::Bgr565 => Some(VEPU_FMT_RGB565),
+            Self::Rgb555 | Self::Bgr555 => Some(VEPU_FMT_RGB555),
+            Self::Rgb444 | Self::Bgr444 => Some(VEPU_FMT_RGB444),
+            Self::Argb8888 | Self::Abgr8888 | Self::Bgra8888 | Self::Rgba8888 => {
+                Some(VEPU_FMT_RGB888_32)
+            }
+            Self::Rgb101010 | Self::Bgr101010 => Some(VEPU_FMT_RGB101010),
+            Self::Nv16
+            | Self::Yuv420p
+            | Self::Nv21
+            | Self::Yuv422p
+            | Self::Nv61
+            | Self::Yvyu
+            | Self::Vyuy
+            | Self::Nv24
+            | Self::Yuv444p => None,
         }
     }
 
@@ -189,8 +241,42 @@ impl InputFormat {
             Self::Argb8888 | Self::Abgr8888 | Self::Bgra8888 | Self::Rgba8888 => {
                 RGB_32BIT_SWAP_BITS
             }
-            _ => RGB_FULL_SWAP_BITS,
+            Self::Rgb565
+            | Self::Bgr565
+            | Self::Rgb555
+            | Self::Bgr555
+            | Self::Rgb444
+            | Self::Bgr444
+            | Self::Rgb101010
+            | Self::Bgr101010 => RGB_FULL_SWAP_BITS,
+            Self::Nv16
+            | Self::Yuv420p
+            | Self::Nv21
+            | Self::Yuv422p
+            | Self::Nv61
+            | Self::Yvyu
+            | Self::Vyuy
+            | Self::Nv24
+            | Self::Yuv444p => 0,
         }
+    }
+
+    pub(crate) fn supported_by_vpu720(self) -> bool {
+        matches!(
+            self,
+            Self::Nv12
+                | Self::Nv16
+                | Self::Yuv420p
+                | Self::Nv21
+                | Self::Yuv422p
+                | Self::Nv61
+                | Self::Yuyv
+                | Self::Yvyu
+                | Self::Uyvy
+                | Self::Vyuy
+                | Self::Nv24
+                | Self::Yuv444p
+        )
     }
 
     /// The (r, g, b) component MSB positions for register 98, from the
@@ -211,7 +297,18 @@ impl InputFormat {
             Self::Rgba8888 => Some((7, 15, 23)),
             Self::Rgb101010 => Some((29, 19, 9)),
             Self::Bgr101010 => Some((9, 19, 29)),
-            Self::Nv12 | Self::Yuyv | Self::Uyvy => None,
+            Self::Nv12
+            | Self::Nv16
+            | Self::Yuv420p
+            | Self::Nv21
+            | Self::Yuv422p
+            | Self::Nv61
+            | Self::Yuyv
+            | Self::Yvyu
+            | Self::Uyvy
+            | Self::Vyuy
+            | Self::Nv24
+            | Self::Yuv444p => None,
         }
     }
 }
@@ -291,6 +388,15 @@ pub struct EncoderConfig {
     pub low_delay: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InputLayout {
+    pub storage_size: usize,
+    pub u_offset: usize,
+    pub v_offset: usize,
+    pub uv_stride: usize,
+    pub uv_swap: bool,
+}
+
 impl EncoderConfig {
     pub fn new(width: usize, height: usize) -> Self {
         let output_capacity = width
@@ -333,7 +439,7 @@ impl EncoderConfig {
         }
         if self.chroma != ChromaFormat::Yuv420 {
             return Err(format!(
-                "VEPU2 JPEG output is always 4:2:0; {:?} output is unsupported on this hardware",
+                "{:?} output is unsupported on this hardware; JPEG encoding is limited to 4:2:0",
                 self.chroma
             ));
         }
@@ -383,37 +489,119 @@ impl EncoderConfig {
 
     pub fn input_size(self) -> Result<usize, String> {
         self.validate()?;
-        let rows = self
+        self.input_layout().map(|layout| layout.storage_size)
+    }
+
+    pub(crate) fn input_layout(self) -> Result<InputLayout, String> {
+        let y_size = self
             .hor_stride
             .checked_mul(self.ver_stride)
             .ok_or_else(|| "JPEG input size overflow".to_string())?;
         match self.input {
-            InputFormat::Nv12 => rows
-                .checked_mul(3)
-                .map(|bytes| bytes / 2)
-                .ok_or_else(|| "NV12 input size overflow".into()),
-            _ => Ok(rows),
+            InputFormat::Nv12 | InputFormat::Nv21 => Ok(InputLayout {
+                storage_size: y_size
+                    .checked_mul(3)
+                    .map(|bytes| bytes / 2)
+                    .ok_or_else(|| "JPEG 4:2:0 input size overflow".to_string())?,
+                u_offset: y_size,
+                v_offset: 0,
+                uv_stride: self.hor_stride,
+                uv_swap: self.input == InputFormat::Nv21,
+            }),
+            InputFormat::Yuv420p => {
+                let uv_stride = self.hor_stride / 2;
+                let chroma_size = uv_stride
+                    .checked_mul(self.ver_stride / 2)
+                    .ok_or_else(|| "JPEG I420 chroma size overflow".to_string())?;
+                Ok(InputLayout {
+                    storage_size: y_size
+                        .checked_add(
+                            chroma_size
+                                .checked_mul(2)
+                                .ok_or_else(|| "JPEG I420 input size overflow".to_string())?,
+                        )
+                        .ok_or_else(|| "JPEG I420 input size overflow".to_string())?,
+                    u_offset: y_size,
+                    v_offset: y_size
+                        .checked_add(chroma_size)
+                        .ok_or_else(|| "JPEG I420 V offset overflow".to_string())?,
+                    uv_stride,
+                    uv_swap: false,
+                })
+            }
+            InputFormat::Nv16 | InputFormat::Nv61 => Ok(InputLayout {
+                storage_size: y_size
+                    .checked_mul(2)
+                    .ok_or_else(|| "JPEG 4:2:2 input size overflow".to_string())?,
+                u_offset: y_size,
+                v_offset: 0,
+                uv_stride: self.hor_stride,
+                uv_swap: self.input == InputFormat::Nv61,
+            }),
+            InputFormat::Yuv422p => {
+                let uv_stride = self.hor_stride / 2;
+                let chroma_size = uv_stride
+                    .checked_mul(self.ver_stride)
+                    .ok_or_else(|| "JPEG 4:2:2 chroma size overflow".to_string())?;
+                Ok(InputLayout {
+                    storage_size: y_size
+                        .checked_add(
+                            chroma_size
+                                .checked_mul(2)
+                                .ok_or_else(|| "JPEG 4:2:2 input size overflow".to_string())?,
+                        )
+                        .ok_or_else(|| "JPEG 4:2:2 input size overflow".to_string())?,
+                    u_offset: y_size,
+                    v_offset: y_size
+                        .checked_add(chroma_size)
+                        .ok_or_else(|| "JPEG 4:2:2 V offset overflow".to_string())?,
+                    uv_stride,
+                    uv_swap: false,
+                })
+            }
+            InputFormat::Nv24 => Ok(InputLayout {
+                storage_size: y_size
+                    .checked_mul(3)
+                    .ok_or_else(|| "JPEG 4:4:4 input size overflow".to_string())?,
+                u_offset: y_size,
+                v_offset: 0,
+                uv_stride: self
+                    .hor_stride
+                    .checked_mul(2)
+                    .ok_or_else(|| "JPEG NV24 chroma stride overflow".to_string())?,
+                uv_swap: false,
+            }),
+            InputFormat::Yuv444p => Ok(InputLayout {
+                storage_size: y_size
+                    .checked_mul(3)
+                    .ok_or_else(|| "JPEG 4:4:4 input size overflow".to_string())?,
+                u_offset: y_size,
+                v_offset: y_size
+                    .checked_mul(2)
+                    .ok_or_else(|| "JPEG 4:4:4 V offset overflow".to_string())?,
+                uv_stride: self.hor_stride,
+                uv_swap: false,
+            }),
+            _ => Ok(InputLayout {
+                storage_size: y_size,
+                u_offset: 0,
+                v_offset: 0,
+                uv_stride: 0,
+                uv_swap: false,
+            }),
         }
     }
 
-    fn input_allocation_size(self) -> Result<usize, String> {
+    pub(crate) fn input_allocation_size(self) -> Result<usize, String> {
         let mut allocation_rows = align(self.ver_stride, 64);
         if let Some(plan) = self.multi_core_plan() {
             let band_rows = plan.bands.iter().sum::<usize>() * 16;
             allocation_rows = allocation_rows.max(align(band_rows, 64));
         }
-        let rows = align(self.hor_stride, 64)
-            .checked_mul(allocation_rows)
-            .ok_or_else(|| "JPEG input allocation size overflow".to_string())?;
-        match self.input {
-            InputFormat::Nv12 => rows
-                .checked_mul(3)
-                .map(|bytes| bytes / 2)
-                .ok_or_else(|| "JPEG NV12 allocation size overflow".into()),
-            _ => rows
-                .checked_mul(self.input.bytes_per_pixel())
-                .ok_or_else(|| "JPEG input allocation size overflow".into()),
-        }
+        let mut allocation = self;
+        allocation.hor_stride = align(self.hor_stride, 64);
+        allocation.ver_stride = allocation_rows;
+        allocation.input_layout().map(|layout| layout.storage_size)
     }
 
     /// MPP programs the VEPU2 coded height independently of the allocation
@@ -664,6 +852,12 @@ impl Vepu2Jpeg {
         input: &[u8],
         config: EncoderConfig,
     ) -> Result<EncodedJpeg, String> {
+        if config.input.vepu_format().is_none() {
+            return Err(format!(
+                "VEPU2 JPEG does not support {:?} input",
+                config.input
+            ));
+        }
         let input_size = config.input_size()?;
         let input_allocation_size = config.input_allocation_size()?;
         if input.len() < input_size {
@@ -1255,7 +1449,11 @@ fn build_registers(
     words[STREAM_START] =
         (((header_len & 7) * 8) as u32) << 16 | (x_fill as u32) << 4 | y_fill as u32;
     words[INPUT_STRIDE] = (config.hor_stride / config.input.bytes_per_pixel()) as u32;
-    words[INPUT_FORMAT] = (config.input.vepu_format() << 4) | (config.rotation.vepu_bits() << 2);
+    let input_format = config
+        .input
+        .vepu_format()
+        .ok_or_else(|| format!("VEPU2 JPEG does not support {:?} input", config.input))?;
+    words[INPUT_FORMAT] = (input_format << 4) | (config.rotation.vepu_bits() << 2);
     words[OUTPUT_ADDR] = output_fd as u32;
     // Color conversion coefficients (BT.601, `color_conversion_type` 0). The
     // hardware ignores them for YUV input and applies them for RGB input.
