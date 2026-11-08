@@ -1470,6 +1470,66 @@ fn main() {
         return;
     }
 
+    if args.len() > 1 && args[1] == "h265e510-gdr" {
+        if args.len() != 5 {
+            eprintln!(
+                "usage: rk-mpp-rs h265e510-gdr <in.Nx320x240.nv12> <out.265> <row:num:gop:frames|col:num:gop:frames>"
+            );
+            std::process::exit(2);
+        }
+        let parts: Vec<&str> = args[4].split(':').collect();
+        let [axis, num, gop, frames] = parts.as_slice() else {
+            eprintln!("expected gdr row:num:gop:frames or col:num:gop:frames");
+            std::process::exit(2);
+        };
+        let mode = match *axis {
+            "row" => h265e::RefreshMode::Row,
+            "col" => h265e::RefreshMode::Col,
+            _ => {
+                eprintln!("GDR axis must be row or col");
+                std::process::exit(2);
+            }
+        };
+        let parse = |name: &str, value: &str| match value.parse::<u32>() {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("invalid GDR {name} {value}: {error}");
+                std::process::exit(2);
+            }
+        };
+        let refresh_num = parse("refresh count", num);
+        let gop = parse("GOP", gop);
+        let frames = parse("frame count", frames) as usize;
+        let source = match std::fs::read(&args[2]) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("read {}: {error}", args[2]);
+                std::process::exit(1);
+            }
+        };
+        let mut encoder = match vepu510_h265::Vepu510H265::open() {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        let stream =
+            match encoder.encode_fixed_qp_gdr_320x240(&source, frames, gop, mode, refresh_num) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            };
+        if let Err(error) = std::fs::write(&args[3], &stream) {
+            eprintln!("write {}: {error}", args[3]);
+            std::process::exit(1);
+        }
+        println!("h265e510-gdr: {} bytes", stream.len());
+        return;
+    }
+
     if args.len() > 1 && args[1] == "h264e510-split2" {
         let lowdelay = args.len() == 6 && args[5] == "lowdelay";
         if args.len() != 5 && !lowdelay {

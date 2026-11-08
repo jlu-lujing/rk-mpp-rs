@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1196
-      enumerated / 1162 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1018 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1197
+      enumerated / 1163 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1019 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3260,8 +3260,15 @@ pipeline uses.
   `bc7d279690b4bec00c554b1bd69ea8f291bd15e90811c61537dfcf0326fafa5d`).
   Slice splitting uses the 32x32 grid: BY_CTU=8 is 7922 bytes and BYTE=256 is
   8264 bytes, with low-delay packet counts 20 and 25 and every packet length
-  matching C. GDR/ROI and wider STATUS feedback remain.
-- Tests: `cargo test --release --all-targets` enumerates 1196 tests: 1162
+  matching C. GDR suppresses IGOP IDRs, keeps POC advancing, sends an 81-byte
+  parameter-set plus 8-byte recovery-SEI prefix at recovery pictures, and
+  rotates smear load/store by GOP position; the ROI base table is unused.
+  row=2/GOP4 over ten pictures is 27842 bytes
+  (`3236abd7ab25fc32ee55e79bac4f6925775c9a58c6d27adf711bea181cf0cff2`),
+  column=4/GOP6 over thirteen is 34967 bytes
+  (`4e2f48d852c75efac33d1e5268c2068e0686fbc42ee8eb0c4ffac8c823412fb3`).
+  ROI and wider STATUS feedback remain.
+- Tests: `cargo test --release --all-targets` enumerates 1197 tests: 1163
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

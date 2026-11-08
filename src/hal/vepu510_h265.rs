@@ -317,6 +317,14 @@ impl RegisterFile {
         Ok(())
     }
 
+    fn apply_gop_smear(&mut self, position: u32, gop: u32) -> Result<(), String> {
+        let gop = gop.max(1);
+        let load = u32::from(position % gop > 1);
+        let store = u32::from(position % gop != 0 && position % gop != gop - 1);
+        self.set(regs::SQI_SMEAR_OPT_CFG0_SMEAR_LOAD_EN, load)?;
+        self.set(regs::SQI_SMEAR_OPT_CFG0_SMEAR_STOR_EN, store)
+    }
+
     pub fn set(&mut self, field: Field, value: u32) -> Result<(), String> {
         if field.width == 0 || field.width > 32 {
             return Err(format!("{} has invalid width {}", field.name, field.width));
@@ -520,6 +528,84 @@ impl Vepu510H265 {
         split_out: u32,
     ) -> Result<(Vec<u8>, Vec<usize>), String> {
         self.encode_fixed_qp_gop_with_split(nv12, frames, mode, arg, split_out)
+    }
+
+    pub fn encode_fixed_qp_gdr_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        gop: u32,
+        refresh_mode: crate::hal::h265e::RefreshMode,
+        refresh_num: u32,
+    ) -> Result<Vec<u8>, String> {
+        if self.idr_done {
+            return Err("this VEPU510 H.265 session already encoded its IDR".into());
+        }
+        if !(1..=32_767).contains(&frames) {
+            return Err(format!(
+                "VEPU510 H.265 GDR length {frames} is outside 1..=32767"
+            ));
+        }
+        if gop == 0 || refresh_num == 0 {
+            return Err("VEPU510 H.265 GDR needs non-zero GOP and refresh count".into());
+        }
+        let expected = INPUT_SIZE * frames;
+        if nv12.len() < expected {
+            return Err(format!(
+                "VEPU510 H.265 GDR input is {} bytes, expected {expected}",
+                nv12.len()
+            ));
+        }
+        let axis_lines = match refresh_mode {
+            crate::hal::h265e::RefreshMode::Row => HEIGHT.div_ceil(64),
+            crate::hal::h265e::RefreshMode::Col => WIDTH.div_ceil(64),
+        } as u32;
+        let refresh_length = axis_lines.div_ceil(refresh_num).min(gop);
+        let config = lf1_h265_config()?;
+        let prefix = lf1_fixed_qp_prefix(&config, QP, gop)?;
+        let mut recovery_prefix = encoder::build_headers(&config).map_err(|e| e.to_string())?;
+        recovery_prefix.extend(sei::recovery_point(refresh_length as i32 - 1));
+
+        let mut idr = RegisterFile::captured_fixqp_idr_320x240(
+            self.input.fd() as u32,
+            self.output.fd() as u32,
+            self.recon[0].fd() as u32,
+            self.colmv[0].fd() as u32,
+            self.thumb[0].fd() as u32,
+            self.smear[0].fd() as u32,
+            self.md_info.fd() as u32,
+        )?;
+        idr.apply_gop_smear(0, gop)?;
+        let mut stream = self.run_job(&nv12[..INPUT_SIZE], &idr, &prefix)?;
+        for frame_number in 1..frames {
+            let current = frame_number & 1;
+            let reference = 1 - current;
+            let mut p = RegisterFile::captured_fixqp_p_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.colmv[current].fd() as u32,
+                self.colmv[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                self.md_info.fd() as u32,
+                frame_number as u32,
+            )?;
+            p.apply_gop_smear(frame_number as u32, gop)?;
+            let start = frame_number * INPUT_SIZE;
+            let end = start + INPUT_SIZE;
+            let frame_prefix = if frame_number as u32 % gop == 0 {
+                recovery_prefix.as_slice()
+            } else {
+                &[]
+            };
+            stream.extend(self.run_job(&nv12[start..end], &p, frame_prefix)?);
+        }
+        self.idr_done = true;
+        Ok(stream)
     }
 
     pub fn encode_cbr_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
@@ -1073,6 +1159,26 @@ mod tests {
         assert_eq!(regs.get(regs::FRAME_SLI_BYTE_SLI_SPLT_BYTE).unwrap(), 256);
         assert_eq!(regs.get(regs::FRAME_ENC_PIC_SLEN_FIFO).unwrap(), 1);
         assert_eq!(regs.get(regs::CTL_INT_EN_VSLC_DONE_EN).unwrap(), 1);
+    }
+
+    #[test]
+    fn gdr_smear_flags_follow_the_c_gop_positions() {
+        let expected = [(0, 0), (0, 1), (1, 1), (1, 0)];
+        for (position, (load, store)) in expected.into_iter().enumerate() {
+            let mut regs = RegisterFile::default();
+            regs.apply_gop_smear(position as u32, 4).unwrap();
+            assert_eq!(
+                regs.get(regs::SQI_SMEAR_OPT_CFG0_SMEAR_LOAD_EN).unwrap(),
+                load
+            );
+            assert_eq!(
+                regs.get(regs::SQI_SMEAR_OPT_CFG0_SMEAR_STOR_EN).unwrap(),
+                store
+            );
+        }
+        let mut prefix = encoder::build_headers(&lf1_h265_config().unwrap()).unwrap();
+        prefix.extend(sei::recovery_point(1));
+        assert_eq!(prefix.len(), 89);
     }
 
     #[test]

@@ -50,6 +50,10 @@ rm -f /tmp/h265e510_splitout_ctu2_c.packets /tmp/h265e510_splitout_ctu2_rust.pac
 rm -f /tmp/h265e510_splitout_byte2_c.265 /tmp/h265e510_splitout_byte2_rust.265
 rm -f /tmp/h265e510_splitout_byte2_c.log /tmp/h265e510_splitout_byte2_rust.log
 rm -f /tmp/h265e510_splitout_byte2_c.packets /tmp/h265e510_splitout_byte2_rust.packets
+rm -f /tmp/h265e510_gdr_row_c.265 /tmp/h265e510_gdr_row_rust.265
+rm -f /tmp/h265e510_gdr_row_c.log /tmp/h265e510_gdr_row_rust.log
+rm -f /tmp/h265e510_gdr_col_c.265 /tmp/h265e510_gdr_col_rust.265
+rm -f /tmp/h265e510_gdr_col_c.log /tmp/h265e510_gdr_col_rust.log
 rm -f /tmp/h265e510_gop6_c.265 /tmp/h265e510_gop6_rust.265
 rm -f /tmp/h265e510_gop6_c.log /tmp/h265e510_gop6_rust.log
 rm -f /tmp/h265e510_cbr6_c.265 /tmp/h265e510_cbr6_rust.265
@@ -142,6 +146,30 @@ sha256sum /tmp/h265e510_splitout_byte2_c.265 /tmp/h265e510_splitout_byte2_rust.2
 printf 'PASS RK3576 VEPU510 H.265 LOWDELAY BY_BYTE=256 GOP2: %s bytes, %s packets\n' \
     "$(stat -c %s /tmp/h265e510_splitout_byte2_c.265)" \
     "$(wc -l < /tmp/h265e510_splitout_byte2_c.packets)"
+
+REF_CFG=1 REFRESH_EN=1 REFRESH_MODE=0 REFRESH_NUM=2 FRAMES=10 GOP=4 \
+    LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
+    /tmp/h264e510_13x320x240.nv12 /tmp/h265e510_gdr_row_c.265 \
+    320 240 0 26 > /tmp/h265e510_gdr_row_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h265e510-gdr \
+    /tmp/h264e510_13x320x240.nv12 /tmp/h265e510_gdr_row_rust.265 row:2:4:10 \
+    > /tmp/h265e510_gdr_row_rust.log 2>&1
+cmp /tmp/h265e510_gdr_row_c.265 /tmp/h265e510_gdr_row_rust.265
+sha256sum /tmp/h265e510_gdr_row_c.265 /tmp/h265e510_gdr_row_rust.265
+printf 'PASS RK3576 VEPU510 H.265 GDR row=2 GOP4: %s bytes\n' \
+    "$(stat -c %s /tmp/h265e510_gdr_row_c.265)"
+
+REF_CFG=1 REFRESH_EN=1 REFRESH_MODE=1 REFRESH_NUM=4 FRAMES=13 GOP=6 \
+    LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
+    /tmp/h264e510_13x320x240.nv12 /tmp/h265e510_gdr_col_c.265 \
+    320 240 0 26 > /tmp/h265e510_gdr_col_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h265e510-gdr \
+    /tmp/h264e510_13x320x240.nv12 /tmp/h265e510_gdr_col_rust.265 col:4:6:13 \
+    > /tmp/h265e510_gdr_col_rust.log 2>&1
+cmp /tmp/h265e510_gdr_col_c.265 /tmp/h265e510_gdr_col_rust.265
+sha256sum /tmp/h265e510_gdr_col_c.265 /tmp/h265e510_gdr_col_rust.265
+printf 'PASS RK3576 VEPU510 H.265 GDR col=4 GOP6: %s bytes\n' \
+    "$(stat -c %s /tmp/h265e510_gdr_col_c.265)"
 
 FRAMES=6 GOP=60 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h265e_probe510 \
     /tmp/h265e510_6x320x240.nv12 /tmp/h265e510_gop6_c.265 \

@@ -556,10 +556,14 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   H.265 split 使用 VEPU510 的 32x32 slice 网格：BY_CTU=8 为 7922 bytes，
   BY_BYTE=256 为 8264 bytes。LOWDELAY 分别输出 20 / 25 个 packet，完整
   码流和逐 packet 长度均与 C 一致。
+  H.265 GDR 不写 ROI base table：有效差异是抑制 IGOP IDR、POC 持续递增、
+  recovery 帧重发 81-byte 参数集 + 8-byte recovery SEI，以及 smear
+  load/store 按 GOP 位置轮转。row=2/GOP4 十帧为 27842 bytes，
+  col=4/GOP6 十三帧为 34967 bytes；完整流逐字节一致。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 H.265 的 GDR 与 ROI；之后处理 AV1/AVS2、VPU720 tile
-  input 与 VDPP2。
+- 下一步：扩 VEPU510 H.265 的 ROI；之后处理 AV1/AVS2、VPU720 tile input
+  与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 
