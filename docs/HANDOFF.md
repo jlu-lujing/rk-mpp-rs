@@ -61,6 +61,12 @@ lf1/t6 的 6 帧 H.265 输出也分别与 `h265e510-gop6` / `h265-gop` 逐字节
 JPEG 编码复用同一 handle：NV12/I420 输入、0–10 内置量化档、可选 restart
 MCU 间隔；VEPU2/VPU720 自动选择。lf1/t6 单帧 JPEG 与 `jpeg-enc` 逐字节。
 
+SDK 安装入口为 `scripts/install_sdk.sh --prefix ... [--destdir ...]`。
+Linux cdylib 的 SONAME 为 `librk_mpp_rs.so.1`，实际文件按 API 版本命名为
+`.so.1.8.0`。`scripts/check_sdk_abi.sh` 固定导出符号、C11 enum/struct
+size/offset 与 SONAME；`scripts/board_sdk_package.sh` 会用临时 prefix 编译并
+运行 pkg-config、CMake shared、CMake static consumer。
+
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。
 

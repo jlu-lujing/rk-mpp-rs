@@ -1,0 +1,14 @@
+rk-mpp-rs
+Copyright 2026 rk-mpp-rs contributors
+
+This project is an independent Rust implementation for Rockchip media hardware.
+Its register layouts, bitstream behavior and validation methodology are informed
+by Rockchip MPP and related Rockchip/Linux open-source interfaces.
+
+Rockchip MPP is distributed under the Apache License 2.0. This repository does
+not include Rockchip binaries, proprietary firmware or an official MPP source
+checkout in the public package. Benchmarks and conformance work use separately
+installed vendor/reference tooling on the test boards.
+
+Generated tables and constants retain the attribution and compatibility notes in
+their source modules. See `docs/DIVERGENCES.md` for known reference differences.

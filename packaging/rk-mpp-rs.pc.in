@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: rk-mpp-rs
+Description: Pure-Rust Rockchip MPP codec SDK
+Version: @VERSION@
+Libs: -L${libdir} -lrk_mpp_rs
+Libs.private: -ldl -lpthread -lm
+Cflags: -I${includedir}

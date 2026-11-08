@@ -1,0 +1,31 @@
+# Changelog
+
+All notable changes to the public SDK are recorded here. The project version and
+the C ABI version are independent: the crate is currently `0.1.x`, while
+`RK_MPP_API_VERSION_MAJOR` defines shared-library ABI compatibility.
+
+## [1.8] - 2026-11-09
+
+### Added
+
+- Stable Rust decoder and encoder handles for every implemented codec.
+- Versioned C ABI in `include/rk_mpp_rs.h`.
+- Streaming H.264/H.265 input, packet-oriented VP8/VP9/AV1 input, fragmented
+  MJPEG input, and buffered MPEG-2/MPEG-4/H.263 input.
+- NV12, I420 and I420P10 frame output.
+- H.264, H.265 and JPEG packet output with explicit release.
+- `cdylib`, `staticlib` and `rlib` build products.
+- Linux SONAME, configurable install layout, pkg-config and CMake packages.
+- ABI symbol/layout snapshots and standalone Rust/C/C++ consumers.
+
+### Compatibility
+
+- API major `1` is the shared-library ABI boundary.
+- Existing `rk_jpeg_open`, `rk_jpeg_frame` and `rk_jpeg_close` symbols remain
+  available for `rknn-fastinfer`.
+
+## Future
+
+- Advanced encoder control through the stable ABI.
+- DMA-BUF frame import/export, fences and asynchronous completion.
+- Official Rockchip MPP ABI compatibility.

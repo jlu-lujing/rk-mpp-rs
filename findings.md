@@ -9,6 +9,25 @@
 - Add a versioned C header and verify actual C and C++ consumers on RK boards.
 - Extend the public contract to all implemented codecs/encoders after the
   priority H.264/MJPEG path is stable.
+- Turn V1.8 into a product-ready SDK: Linux SONAME, install layout,
+  pkg-config, CMake, ABI snapshot and standalone examples.
+
+## Packaging Findings
+
+- Both validation boards provide `pkg-config`, CMake and `readelf`.
+- lf1 has pkg-config 1.8.1 / CMake 3.25.1 / binutils 2.40.
+- t6 has pkg-config 0.29.2 / CMake 3.18.4 / binutils 2.35.2.
+- The repository currently has no LICENSE, NOTICE, CHANGELOG or build script.
+- Cargo already exports `cdylib`, `staticlib` and `rlib`, but the shared object
+  has no embedded SONAME and there is no install/package metadata.
+- `cargo:rustc-cdylib-link-arg` successfully applies a Linux-only SONAME
+  without affecting rlib/staticlib builds.
+- pkg-config must use `${pcfiledir}/../..` rather than a substituted absolute
+  prefix to remain relocatable. CMake imports can derive the prefix from
+  `CMAKE_CURRENT_LIST_DIR`.
+- The current C encoder config is 68 bytes. Future fields must be appended and
+  `struct_size` must be treated as a prefix length; rejecting old sizes would
+  break binary compatibility within ABI major 1.
 
 ## Research Findings
 

@@ -218,6 +218,50 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 2 个 packet、10-bit 10 个 temporal unit；MJPEG 97/211-byte 分块和四帧单包
 输入。除已登记的 AV1 film-grain C bug 外，输出均与板上 oracle 逐字节一致。
 
+### 安装 SDK
+
+```bash
+./scripts/install_sdk.sh --prefix /usr/local
+
+# 打包/打包机安装时
+./scripts/install_sdk.sh --prefix /usr/local --destdir /tmp/rk-mpp-stage
+```
+
+安装布局：
+
+- `include/rk_mpp_rs.h`
+- `lib/librk_mpp_rs.so.1.8.0`
+- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.8.0`
+- `lib/librk_mpp_rs.so -> librk_mpp_rs.so.1`
+- `lib/librk_mpp_rs.a`
+- `lib/pkgconfig/rk-mpp-rs.pc`
+- `lib/cmake/rk-mpp-rs/`
+
+`SONAME` 固定为 ABI major：`librk_mpp_rs.so.1`。
+
+```bash
+gcc app.c $(pkg-config --cflags --libs rk-mpp-rs)
+
+add_executable(app app.cpp)
+target_link_libraries(app PRIVATE rk_mpp_rs::rk_mpp_rs)
+# 或 rk_mpp_rs::rk_mpp_rs_static
+```
+
+Rust 最小示例：
+
+```bash
+cargo run --example sdk_decode -- h264 input.264 output.yuv
+cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 26 6
+```
+
+ABI 和完整安装 consumer 门：
+
+```bash
+PROFILE=release ./scripts/check_sdk_abi.sh
+BOARD=t6 ./scripts/board_sdk_package.sh
+BOARD=luck2 ./scripts/board_sdk_package.sh
+```
+
 H.264 编码接口接受紧凑的 visible-size NV12/I420，内部复制并补齐 coded
 geometry，再以同步 packet queue 返回 Annex-B。t6 VEPU580 支持
 baseline/main/high、level、GOP、QP 和帧率；RK3576 VEPU510 当前只开放已板验的

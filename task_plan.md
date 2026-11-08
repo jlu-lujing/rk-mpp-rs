@@ -6,8 +6,9 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-6.5.2 are complete for every implemented decoder and the three encoder
-backends. The public codec API matrix is closed for available hardware.
+Phases 1-8 are complete. The SDK is now installable and ABI-checked. Phase 9
+extends the stable encoder configuration surface without breaking old V1
+callers.
 
 ## Phases
 
@@ -134,6 +135,44 @@ backends. The public codec API matrix is closed for available hardware.
 - [x] Run t6 MPEG-2/MPEG-4/H.263 C API gates and lf1 platform audit.
 - [x] Run final legacy-decoder full suite and commit the API 1.8 slice.
 - **Status:** complete
+
+### Phase 8: Product-Ready SDK Packaging
+- [x] Add Linux SONAME and a versioned shared-library install layout.
+- [x] Add relocatable pkg-config and CMake package files.
+- [x] Add ABI symbol/layout snapshots and a clean consumer check.
+- [x] Add minimal Rust and C/C++ consumer examples, CHANGELOG and license files.
+- **Status:** complete on lf1 and t6.
+
+### Phase 8.1: Build and Install
+- [x] Embed `librk_mpp_rs.so.1` as the Linux SONAME.
+- [x] Install header, static/shared libraries and symlinks under a configurable prefix.
+- [x] Support `DESTDIR` and verify from t6 and lf1.
+- **Status:** complete.
+
+### Phase 8.2: Package Metadata
+- [x] Install `rk-mpp-rs.pc`.
+- [x] Install a relocatable `rk-mpp-rsConfig.cmake`.
+- [x] Compile pkg-config and CMake consumers against a temporary prefix.
+- **Status:** complete.
+
+### Phase 8.3: ABI Freeze
+- [x] Snapshot exported `rk_mpp_*` and legacy `rk_jpeg_*` symbols.
+- [x] Add C11 static assertions for enum values, struct sizes and field offsets.
+- [x] Verify SONAME, symbols and layout on lf1 and t6.
+- **Status:** complete.
+
+### Phase 8.4: Distribution
+- [x] Add Rust decode/encode examples and C/C++ consumer examples.
+- [x] Add CHANGELOG, NOTICE and dual-license texts.
+- [x] Verify packaged consumers after installation.
+- **Status:** complete.
+
+### Phase 9: Backward-Compatible Advanced Encoder ABI
+- [ ] Accept older shorter encoder-config prefixes and append new fields.
+- [ ] Expose rate-control modes and bitrate targets through Rust/C.
+- [ ] Add ROI/GDR/slice controls without changing existing offsets.
+- [ ] Verify old V1.8 and new V1.9 consumers against the same library.
+- **Status:** in_progress
 
 ## Decisions Made
 

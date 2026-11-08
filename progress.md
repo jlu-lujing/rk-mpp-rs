@@ -1,5 +1,27 @@
 # Progress Log
 
+## Session: 2026-11-09
+
+### Phase 8: Product-Ready SDK Packaging
+- **Status:** complete on lf1 and t6
+- Confirmed both boards have pkg-config, CMake and readelf.
+- Confirmed the current build produces working libraries but no SONAME,
+  install layout, package metadata or checked ABI snapshot.
+- Chose Linux ABI major 1 for SONAME and independently versioned shared-library
+  filename, with relocatable pkg-config/CMake consumers.
+- Added `librk_mpp_rs.so.1` SONAME and `.so.1.8.0` install naming.
+- Added pkg-config, relocatable CMake shared/static targets, ABI symbol and
+  C11 layout checks, install script, Rust examples, CHANGELOG, NOTICE and
+  dual-license texts.
+- lf1/t6 package gates pass, including external pkg-config/CMake consumers and
+  real H.264 decode/encode examples.
+
+| Test | Expected | Actual | Status |
+|---|---|---|---|
+| SDK package gate lf1 | SONAME/install/ABI/consumers | all pass; Rust examples decode/encode 2 frames | PASS |
+| SDK package gate t6 | SONAME/install/ABI/consumers | all pass; Rust examples decode/encode 2 frames | PASS |
+| Full suite after packaging | no regression | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
+
 ## Session: 2026-11-08
 
 ### Phase 6.1: H.265 Public Decoder
