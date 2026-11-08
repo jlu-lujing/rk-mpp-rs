@@ -523,9 +523,14 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   ROI legacy metadata 已映射到四字硬件 region，强制 intra +绝对 QP 两帧为
   10845 bytes，SHA-256
   `a34ef76313cb570f152e8b5d7e0fd43d7ff433a29b5f9086ea59d43e5f3c187a`。
+  `setup_vepu510_split` 的 BY_CTU/BY_BYTE 与普通整 AU、LOWDELAY 两路均已接通：
+  slice FIFO 为 8 项，`POLL_HW_IRQ` 使用 VEPU510 的 31-bit length + bit-31
+  last 格式。BY_CTU=96 两帧为 9478 bytes / 8 packets，BY_BYTE=256 为
+  11664 bytes / 40 packets；完整码流和每片长度均与 C 相同。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 GDR 与 split；之后推进 AV1/AVS2、VPU720 tile input 与 VDPP2。
+- 下一步：扩 VEPU510 GDR；之后推进 VEPU510 H.265、AV1/AVS2、VPU720 tile
+  input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 

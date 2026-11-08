@@ -4,11 +4,13 @@
 //! P picture. Both register images are captured from C MPP; only DMA fds are
 //! patched at runtime.
 
-use crate::codec::h264::encoder::{self, EncoderConfig, RcMode};
+use crate::codec::h264::encoder::{
+    self, EncoderConfig, RcMode, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY,
+};
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
-use crate::service::{Batch, Client, MppService, RegOffsetInfo};
+use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
 
 use super::h264e;
 use super::vepu510::RegisterFile;
@@ -31,6 +33,22 @@ const SCL_OFFSET: u32 = 8704;
 const HW_STATUS_OFFSET: u32 = 0x2c;
 const STATUS_OFFSET: u32 = 16 * 1024;
 const STATUS_WORDS: usize = 148;
+
+struct EncodedFrame {
+    stream: Vec<u8>,
+    packet_lengths: Vec<usize>,
+}
+
+struct EncodedGop {
+    stream: Vec<u8>,
+    packet_lengths: Vec<usize>,
+}
+
+struct JobOutput {
+    stream: Vec<u8>,
+    status: [u32; STATUS_WORDS],
+    packet_lengths: Vec<usize>,
+}
 
 pub struct Vepu510H264 {
     svc: MppService,
@@ -90,7 +108,7 @@ impl Vepu510H264 {
         if self.idr_done {
             return Err("this captured VEPU510 session already encoded its IDR".into());
         }
-        let stream = self.encode_idr(nv12, &[])?;
+        let stream = self.encode_idr(nv12, &[], SplitMode::None, 0, 0)?.stream;
         self.idr_done = true;
         Ok(stream)
     }
@@ -104,7 +122,8 @@ impl Vepu510H264 {
         nv12: &[u8],
         frames: usize,
     ) -> Result<Vec<u8>, String> {
-        self.encode_fixed_qp_gop_with_rois(nv12, frames, &[])
+        self.encode_fixed_qp_gop_with_options(nv12, frames, &[], SplitMode::None, 0, 0)
+            .map(|encoded| encoded.stream)
     }
 
     pub fn encode_fixed_qp_gop_roi_320x240(
@@ -113,15 +132,48 @@ impl Vepu510H264 {
         frames: usize,
         rois: &[encoder::RoiRegion],
     ) -> Result<Vec<u8>, String> {
-        self.encode_fixed_qp_gop_with_rois(nv12, frames, rois)
+        self.encode_fixed_qp_gop_with_options(nv12, frames, rois, SplitMode::None, 0, 0)
+            .map(|encoded| encoded.stream)
     }
 
-    fn encode_fixed_qp_gop_with_rois(
+    pub fn encode_fixed_qp_gop_split_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        split_mode: SplitMode,
+        split_arg: u32,
+    ) -> Result<Vec<u8>, String> {
+        self.encode_fixed_qp_gop_with_options(nv12, frames, &[], split_mode, split_arg, 0)
+            .map(|encoded| encoded.stream)
+    }
+
+    pub fn encode_fixed_qp_gop_split_lowdelay_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        split_mode: SplitMode,
+        split_arg: u32,
+    ) -> Result<(Vec<u8>, Vec<usize>), String> {
+        let encoded = self.encode_fixed_qp_gop_with_options(
+            nv12,
+            frames,
+            &[],
+            split_mode,
+            split_arg,
+            MPP_ENC_SPLIT_OUT_LOWDELAY,
+        )?;
+        Ok((encoded.stream, encoded.packet_lengths))
+    }
+
+    fn encode_fixed_qp_gop_with_options(
         &mut self,
         nv12: &[u8],
         frames: usize,
         rois: &[encoder::RoiRegion],
-    ) -> Result<Vec<u8>, String> {
+        split_mode: SplitMode,
+        split_arg: u32,
+        split_out: u32,
+    ) -> Result<EncodedGop, String> {
         if !(1..=6).contains(&frames) {
             return Err(format!(
                 "captured VEPU510 GOP length {frames} is outside 1..=6"
@@ -140,14 +192,27 @@ impl Vepu510H264 {
         if self.idr_done {
             return Err("this captured VEPU510 session already encoded its IDR".into());
         }
-        let mut stream = self.encode_idr(&nv12[..INPUT_SIZE], rois)?;
+        let idr = self.encode_idr(&nv12[..INPUT_SIZE], rois, split_mode, split_arg, split_out)?;
+        let mut encoded = EncodedGop {
+            stream: idr.stream,
+            packet_lengths: idr.packet_lengths,
+        };
         self.idr_done = true;
         for frame_number in 1..frames {
             let start = frame_number * INPUT_SIZE;
             let end = start + INPUT_SIZE;
-            stream.extend(self.encode_p(&nv12[start..end], frame_number as u32, rois)?);
+            let p = self.encode_p(
+                &nv12[start..end],
+                frame_number as u32,
+                rois,
+                split_mode,
+                split_arg,
+                split_out,
+            )?;
+            encoded.stream.extend(p.stream);
+            encoded.packet_lengths.extend(p.packet_lengths);
         }
-        Ok(stream)
+        Ok(encoded)
     }
 
     pub fn encode_cbr_gop_320x240(
@@ -247,18 +312,24 @@ impl Vepu510H264 {
             let end = start + INPUT_SIZE;
             let prefix = if is_idr { header.as_slice() } else { &[] };
             registers.apply_roi_regions(&[])?;
-            let (job_stream, status) =
-                self.run_job_with_status(&nv12[start..end], &registers, prefix)?;
-            let measured = measured_from_status(&status);
+            let output = self.run_job_with_status(&nv12[start..end], &registers, prefix, 0)?;
+            let measured = measured_from_status(&output.status);
             model.end_with(frame_type, bit_target, measured);
             model.accept_frame();
-            stream.extend(job_stream);
+            stream.extend(output.stream);
         }
         self.idr_done = true;
         Ok(stream)
     }
 
-    fn encode_idr(&mut self, nv12: &[u8], rois: &[encoder::RoiRegion]) -> Result<Vec<u8>, String> {
+    fn encode_idr(
+        &mut self,
+        nv12: &[u8],
+        rois: &[encoder::RoiRegion],
+        split_mode: SplitMode,
+        split_arg: u32,
+        split_out: u32,
+    ) -> Result<EncodedFrame, String> {
         let mut config = EncoderConfig::new(WIDTH, HEIGHT);
         config.vui_log2_max_mv_length = 15;
         let header = encoder::build_headers(&config).map_err(|e| e.to_string())?;
@@ -276,7 +347,12 @@ impl Vepu510H264 {
             self.smear[0].fd() as u32,
         )?;
         registers.apply_roi_regions(rois)?;
-        self.run_job(nv12, &registers, &header)
+        registers.apply_slice_split(split_mode, split_arg, split_out)?;
+        let output = self.run_job_with_status(nv12, &registers, &header, split_out)?;
+        Ok(EncodedFrame {
+            stream: output.stream,
+            packet_lengths: output.packet_lengths,
+        })
     }
 
     fn encode_p(
@@ -284,7 +360,10 @@ impl Vepu510H264 {
         nv12: &[u8],
         frame_number: u32,
         rois: &[encoder::RoiRegion],
-    ) -> Result<Vec<u8>, String> {
+        split_mode: SplitMode,
+        split_arg: u32,
+        split_out: u32,
+    ) -> Result<EncodedFrame, String> {
         let current = (frame_number & 1) as usize;
         let reference = 1 - current;
         let mut registers = RegisterFile::captured_fixqp_p_320x240(
@@ -299,17 +378,12 @@ impl Vepu510H264 {
             frame_number,
         )?;
         registers.apply_roi_regions(rois)?;
-        self.run_job(nv12, &registers, &[])
-    }
-
-    fn run_job(
-        &mut self,
-        nv12: &[u8],
-        registers: &RegisterFile,
-        prefix: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        self.run_job_with_status(nv12, registers, prefix)
-            .map(|(stream, _)| stream)
+        registers.apply_slice_split(split_mode, split_arg, split_out)?;
+        let output = self.run_job_with_status(nv12, &registers, &[], split_out)?;
+        Ok(EncodedFrame {
+            stream: output.stream,
+            packet_lengths: output.packet_lengths,
+        })
     }
 
     fn run_job_with_status(
@@ -317,7 +391,8 @@ impl Vepu510H264 {
         nv12: &[u8],
         registers: &RegisterFile,
         prefix: &[u8],
-    ) -> Result<(Vec<u8>, [u32; STATUS_WORDS]), String> {
+        split_out: u32,
+    ) -> Result<JobOutput, String> {
         if nv12.len() < INPUT_SIZE {
             return Err(format!(
                 "VEPU510 input is {} bytes, expected {INPUT_SIZE}",
@@ -385,9 +460,40 @@ impl Vepu510H264 {
         self.svc
             .submit_batch_recovering(&mut batch)
             .map_err(|e| format!("VEPU510 submit: {e}"))?;
-        self.svc
-            .poll_hw_finish_recovering()
-            .map_err(|e| format!("VEPU510 poll: {e}"))?;
+        let mut packet_lengths = Vec::new();
+        if split_out & MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            let mut complete = false;
+            for _ in 0..=4096 {
+                let mut info = [SliceInfo::default()];
+                let count = match self.svc.poll_irq(&mut info) {
+                    Ok(count) => count,
+                    Err(error) => {
+                        let _ = self.svc.restart_after_hardware_error();
+                        return Err(format!("VEPU510 slice poll: {error}"));
+                    }
+                };
+                for slice in &info[..count] {
+                    let (length, last) = slice.vepu510();
+                    if length == 0 {
+                        let _ = self.svc.restart_after_hardware_error();
+                        return Err("VEPU510 slice FIFO returned a zero-length slice".into());
+                    }
+                    packet_lengths.push(length as usize);
+                    complete |= last;
+                }
+                if complete {
+                    break;
+                }
+            }
+            if !complete {
+                let _ = self.svc.restart_after_hardware_error();
+                return Err("VEPU510 slice FIFO did not report the last slice".into());
+            }
+        } else {
+            self.svc
+                .poll_hw_finish_recovering()
+                .map_err(|e| format!("VEPU510 poll: {e}"))?;
+        }
 
         if int_state[0] & 1 == 0 {
             let error = status_execution_error(&status);
@@ -409,6 +515,24 @@ impl Vepu510H264 {
                 self.output.len()
             ));
         }
+        if !packet_lengths.is_empty() {
+            if !prefix.is_empty() {
+                packet_lengths[0] = packet_lengths[0]
+                    .checked_add(prefix.len())
+                    .ok_or_else(|| "VEPU510 first packet length overflow".to_string())?;
+            }
+            let slice_len = packet_lengths.iter().try_fold(0usize, |total, length| {
+                total
+                    .checked_add(*length)
+                    .ok_or_else(|| "VEPU510 packet length overflow".to_string())
+            })?;
+            if slice_len != stream_len {
+                let _ = self.svc.restart_after_hardware_error();
+                return Err(format!(
+                    "VEPU510 slice lengths total {slice_len}, STATUS stream length is {stream_len}"
+                ));
+            }
+        }
 
         self.output
             .sync_read_begin()
@@ -417,7 +541,11 @@ impl Vepu510H264 {
         self.output
             .sync_read_end()
             .map_err(|e| format!("VEPU510 output sync end: {e}"))?;
-        Ok((stream, status))
+        Ok(JobOutput {
+            stream,
+            status,
+            packet_lengths,
+        })
     }
 }
 

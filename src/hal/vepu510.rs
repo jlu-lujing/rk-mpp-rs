@@ -3,7 +3,7 @@
 use super::vepu510_idr_template;
 use super::vepu510_p_template;
 use super::vepu510_regs::{self, Field};
-use crate::codec::h264::encoder::RoiRegion;
+use crate::codec::h264::encoder::{RoiRegion, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY};
 
 pub const CTL_WORDS: usize = 24;
 pub const FRAME_WORDS: usize = 98;
@@ -248,6 +248,73 @@ impl RegisterFile {
         Ok(())
     }
 
+    /// `setup_vepu510_split`.
+    ///
+    /// With `split_out = 0` every slice is laid contiguously in the output
+    /// buffer and one STATUS length covers the whole access unit. The
+    /// low-delay bit turns on `slen_fifo` and `vslc_done_en`; the submission
+    /// path then drains one slice length at a time through `POLL_HW_IRQ`.
+    pub fn apply_slice_split(
+        &mut self,
+        mode: SplitMode,
+        arg: u32,
+        split_out: u32,
+    ) -> Result<(), String> {
+        if split_out & !MPP_ENC_SPLIT_OUT_LOWDELAY != 0 {
+            return Err(format!(
+                "VEPU510 slice output bits 0x{split_out:x} are unsupported"
+            ));
+        }
+        if split_out != 0 && mode == SplitMode::None {
+            return Err("VEPU510 low-delay slice output needs a split mode".into());
+        }
+        self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT, 0)?;
+        self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT_MODE, 0)?;
+        self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT_CPST, 0)?;
+        self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_MAX_NUM_M1, 0)?;
+        self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_FLSH, 0)?;
+        self.set(vepu510_regs::FRAME_SLI_CNUM_SLI_SPLT_CNUM_M1, 0)?;
+        self.set(vepu510_regs::FRAME_SLI_BYTE_SLI_SPLT_BYTE, 0)?;
+        self.set(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO, 0)?;
+        self.set(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN, 0)?;
+
+        match mode {
+            SplitMode::None => {}
+            SplitMode::ByByte => {
+                if arg == 0 || arg > 0x000f_ffff {
+                    return Err(format!(
+                        "VEPU510 slice byte target {arg} is outside 1..=1048575"
+                    ));
+                }
+                self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT, 1)?;
+                self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
+                self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_FLSH, 1)?;
+                self.set(vepu510_regs::FRAME_SLI_BYTE_SLI_SPLT_BYTE, arg)?;
+                if split_out != 0 {
+                    self.set(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO, 1)?;
+                    self.set(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN, 1)?;
+                }
+            }
+            SplitMode::ByCtu => {
+                if arg == 0 || arg > 0x0010_0000 {
+                    return Err(format!(
+                        "VEPU510 slice macroblock count {arg} is outside 1..=1048576"
+                    ));
+                }
+                self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT, 1)?;
+                self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT_MODE, 1)?;
+                self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_MAX_NUM_M1, 500)?;
+                self.set(vepu510_regs::FRAME_SLI_SPLT_SLI_FLSH, 1)?;
+                self.set(vepu510_regs::FRAME_SLI_CNUM_SLI_SPLT_CNUM_M1, arg - 1)?;
+                if split_out != 0 {
+                    self.set(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO, 1)?;
+                    self.set(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN, 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn set_signed(&mut self, field: Field, value: i32) -> Result<(), String> {
         let mask = (1u32 << field.width) - 1;
         self.set(field, value as u32 & mask)
@@ -430,5 +497,106 @@ mod tests {
         assert_eq!(regs.rc[37], 0x0008_000a);
         assert_eq!(regs.rc[38], 0x0000_3f9e);
         assert_eq!(regs.rc[39], 0x0010_0100);
+    }
+
+    #[test]
+    fn by_ctu_split_matches_the_c_vpu510_words() {
+        let mut regs = RegisterFile::default();
+        regs.apply_slice_split(SplitMode::ByCtu, 96, 0).unwrap();
+        assert_eq!(regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT).unwrap(), 1);
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT_MODE)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT_CPST)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_MAX_NUM_M1)
+                .unwrap(),
+            500
+        );
+        assert_eq!(regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_FLSH).unwrap(), 1);
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_CNUM_SLI_SPLT_CNUM_M1)
+                .unwrap(),
+            95
+        );
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_BYTE_SLI_SPLT_BYTE)
+                .unwrap(),
+            0
+        );
+        assert_eq!(regs.get(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO).unwrap(), 0);
+        assert_eq!(regs.get(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN).unwrap(), 0);
+    }
+
+    #[test]
+    fn by_byte_split_matches_the_c_vpu510_words() {
+        let mut regs = RegisterFile::default();
+        regs.apply_slice_split(SplitMode::ByByte, 256, 0).unwrap();
+        assert_eq!(regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT).unwrap(), 1);
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_SPLT_MODE)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_MAX_NUM_M1)
+                .unwrap(),
+            500
+        );
+        assert_eq!(regs.get(vepu510_regs::FRAME_SLI_SPLT_SLI_FLSH).unwrap(), 1);
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_CNUM_SLI_SPLT_CNUM_M1)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            regs.get(vepu510_regs::FRAME_SLI_BYTE_SLI_SPLT_BYTE)
+                .unwrap(),
+            256
+        );
+        assert_eq!(regs.get(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO).unwrap(), 0);
+        assert_eq!(regs.get(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN).unwrap(), 0);
+    }
+
+    #[test]
+    fn split_arguments_fit_their_vpu510_fields() {
+        let mut regs = RegisterFile::default();
+        assert!(regs
+            .apply_slice_split(SplitMode::ByByte, 0, 0)
+            .unwrap_err()
+            .contains("outside 1..=1048575"));
+        assert!(regs
+            .apply_slice_split(SplitMode::ByByte, 0x0010_0000, 0)
+            .unwrap_err()
+            .contains("outside 1..=1048575"));
+        assert!(regs
+            .apply_slice_split(SplitMode::ByCtu, 0, 0)
+            .unwrap_err()
+            .contains("outside 1..=1048576"));
+        assert!(regs
+            .apply_slice_split(SplitMode::ByCtu, 0x0010_0001, 0)
+            .unwrap_err()
+            .contains("outside 1..=1048576"));
+    }
+
+    #[test]
+    fn lowdelay_split_arms_the_slice_fifo_and_interrupt() {
+        let mut regs = RegisterFile::default();
+        regs.apply_slice_split(SplitMode::ByCtu, 96, MPP_ENC_SPLIT_OUT_LOWDELAY)
+            .unwrap();
+        assert_eq!(regs.get(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO).unwrap(), 1);
+        assert_eq!(regs.get(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN).unwrap(), 1);
+
+        let mut regs = RegisterFile::default();
+        regs.apply_slice_split(SplitMode::ByByte, 256, MPP_ENC_SPLIT_OUT_LOWDELAY)
+            .unwrap();
+        assert_eq!(regs.get(vepu510_regs::FRAME_ENC_PIC_SLEN_FIFO).unwrap(), 1);
+        assert_eq!(regs.get(vepu510_regs::CTL_INT_EN_VSLC_DONE_EN).unwrap(), 1);
     }
 }

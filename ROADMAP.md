@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1182
-      enumerated / 1148 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1004 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1187
+      enumerated / 1153 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1009 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3217,7 +3217,15 @@ pipeline uses.
   A two-frame fixed-QP cell with one forced-intra absolute-QP region is
   byte-identical to C at 10845 bytes
   (`a34ef76313cb570f152e8b5d7e0fd43d7ff433a29b5f9086ea59d43e5f3c187a`).
-- Tests: `cargo test --release --all-targets` enumerates 1182 tests: 1148
+- VEPU510 slice split now matches `setup_vepu510_split` for BY_CTU and BY_BYTE.
+  The ordinary path keeps `slen_fifo=0` and returns one whole AU; the low-delay
+  path arms `slen_fifo`/`vslc_done_en` and drains the 8-entry slice FIFO through
+  `POLL_HW_IRQ`. A two-picture BY_CTU=96 cell is byte-identical at 9478 bytes
+  (`705d44a631d6c7b75103c0b9d07440de7dc4138e1641ea939a0ec84b102575d0`)
+  with 8 packets; BY_BYTE=256 is 11664 bytes
+  (`1b45ac17a98c0c169ab7d9d940786bb0fd7a99aae46b3fb6f6df51737fe8568f`)
+  with 40 packets. Complete packet lengths match C in both modes.
+- Tests: `cargo test --release --all-targets` enumerates 1187 tests: 1153
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

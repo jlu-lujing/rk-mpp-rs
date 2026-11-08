@@ -1198,6 +1198,78 @@ fn main() {
         return;
     }
 
+    if args.len() > 1 && args[1] == "h264e510-split2" {
+        let lowdelay = args.len() == 6 && args[5] == "lowdelay";
+        if args.len() != 5 && !lowdelay {
+            eprintln!(
+                "usage: rk-mpp-rs h264e510-split2 <in.2x320x240.nv12> <out.264> <mb:N|byte:N> [lowdelay]"
+            );
+            std::process::exit(2);
+        }
+        let (split_mode, split_arg) = if let Some(value) = args[4].strip_prefix("mb:") {
+            (h264_syntax::SplitMode::ByCtu, value.parse::<u32>())
+        } else if let Some(value) = args[4].strip_prefix("byte:") {
+            (h264_syntax::SplitMode::ByByte, value.parse::<u32>())
+        } else {
+            eprintln!("expected split argument mb:N or byte:N");
+            std::process::exit(2);
+        };
+        let split_arg = match split_arg {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("invalid split argument {}: {error}", args[4]);
+                std::process::exit(2);
+            }
+        };
+        let source = match std::fs::read(&args[2]) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("read {}: {error}", args[2]);
+                std::process::exit(1);
+            }
+        };
+        let mut encoder = match vepu510_h264::Vepu510H264::open() {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        let (stream, packet_lengths) = if lowdelay {
+            match encoder
+                .encode_fixed_qp_gop_split_lowdelay_320x240(&source, 2, split_mode, split_arg)
+            {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            match encoder.encode_fixed_qp_gop_split_320x240(&source, 2, split_mode, split_arg) {
+                Ok(stream) => (stream, Vec::new()),
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        };
+        if let Err(error) = std::fs::write(&args[3], &stream) {
+            eprintln!("write {}: {error}", args[3]);
+            std::process::exit(1);
+        }
+        println!("h264e510-split2: {} bytes", stream.len());
+        if lowdelay {
+            let lengths = packet_lengths
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!("h264e510-split2 packet lengths: {lengths}");
+        }
+        return;
+    }
+
     if args.len() > 1
         && matches!(
             args[1].as_str(),

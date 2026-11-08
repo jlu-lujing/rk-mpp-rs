@@ -370,6 +370,12 @@ impl SliceInfo {
     pub fn vepu580(self) -> (u32, bool) {
         (self.val & 0x01ff_ffff, self.val & (1 << 31) != 0)
     }
+
+    /// VEPU510's `st_slen` carries a 31-bit length and the `sli_lst` flag in
+    /// bit 31, matching the layout consumed by `POLL_HW_IRQ`.
+    pub fn vepu510(self) -> (u32, bool) {
+        (self.val & 0x7fff_ffff, self.val & (1 << 31) != 0)
+    }
 }
 
 /// A chain of requests delivered in one ioctl (`MPP_FLAGS_MULTI_MSG`).
@@ -900,5 +906,13 @@ mod tests {
         assert_eq!(middle.vepu580(), (0x0123_4567, false));
         let last = SliceInfo { val: 0x8001_2345 };
         assert_eq!(last.vepu580(), (0x0001_2345, true));
+    }
+
+    #[test]
+    fn vepu510_slice_info_decodes_its_full_length_and_last_bit() {
+        let middle = SliceInfo { val: 0x7abc_def0 };
+        assert_eq!(middle.vepu510(), (0x7abc_def0, false));
+        let last = SliceInfo { val: 0x8123_4567 };
+        assert_eq!(last.vepu510(), (0x0123_4567, true));
     }
 }
