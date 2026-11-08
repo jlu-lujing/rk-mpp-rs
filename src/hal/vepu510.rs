@@ -1,6 +1,7 @@
 //! VEPU510 register-file scaffolding for RK3576 H.264 encoding.
 
 use super::vepu510_idr_template;
+use super::vepu510_p_template;
 use super::vepu510_regs::{self, Field};
 
 pub const CTL_WORDS: usize = 24;
@@ -78,6 +79,42 @@ impl RegisterFile {
         ] {
             regs.set(field, value)?;
         }
+        Ok(regs)
+    }
+
+    pub fn captured_fixqp_p_320x240(
+        input_fd: u32,
+        output_fd: u32,
+        recon_write_fd: u32,
+        recon_read_fd: u32,
+        thumb_write_fd: u32,
+        thumb_read_fd: u32,
+        smear_write_fd: u32,
+        smear_read_fd: u32,
+    ) -> Result<Self, String> {
+        let mut regs = Self {
+            ctl: vepu510_p_template::CTL,
+            frame: vepu510_p_template::FRAME,
+            rc: vepu510_p_template::RC,
+            param: vepu510_p_template::PARAM,
+            sqi: vepu510_p_template::SQI,
+            scl: vepu510_p_template::SCL,
+        };
+        for index in 4..=6 {
+            regs.frame[index] = input_fd;
+        }
+        regs.frame[7] = recon_write_fd;
+        regs.frame[8] = recon_write_fd;
+        regs.frame[9] = recon_read_fd;
+        regs.frame[10] = recon_read_fd;
+        regs.frame[13] = thumb_write_fd;
+        regs.frame[14] = thumb_read_fd;
+        for index in 16..=19 {
+            regs.frame[index] = output_fd;
+        }
+        regs.frame[28] = smear_read_fd;
+        regs.frame[29] = smear_write_fd;
+        regs.frame[15] = 0;
         Ok(regs)
     }
 
@@ -170,6 +207,7 @@ fn locate(absolute: usize) -> Option<(&'static str, usize)> {
 mod tests {
     use super::*;
     use crate::hal::vepu510_idr_template;
+    use crate::hal::vepu510_p_template;
 
     #[test]
     fn sections_match_the_lf1_ioctl_trace() {
@@ -227,5 +265,16 @@ mod tests {
         assert_eq!(regs.param, vepu510_idr_template::PARAM);
         assert_eq!(regs.sqi, vepu510_idr_template::SQI);
         assert_eq!(regs.scl, vepu510_idr_template::SCL);
+    }
+
+    #[test]
+    fn captured_fixqp_p_builder_reproduces_the_reference_job() {
+        let regs = RegisterFile::captured_fixqp_p_320x240(9, 10, 16, 13, 17, 14, 18, 15).unwrap();
+        assert_eq!(regs.ctl, vepu510_p_template::CTL);
+        assert_eq!(regs.frame, vepu510_p_template::FRAME);
+        assert_eq!(regs.rc, vepu510_p_template::RC);
+        assert_eq!(regs.param, vepu510_p_template::PARAM);
+        assert_eq!(regs.sqi, vepu510_p_template::SQI);
+        assert_eq!(regs.scl, vepu510_p_template::SCL);
     }
 }

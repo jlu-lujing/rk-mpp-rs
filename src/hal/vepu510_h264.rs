@@ -1,15 +1,15 @@
 //! First RK3576 VEPU510 H.264 hardware path.
 //!
-//! This slice intentionally supports one fully captured configuration: a
-//! 320x240, QP 26, Baseline IDR with no rate control. General syntax, P
-//! pictures and RC are layered on after this job is byte-identical to C MPP.
+//! The current slice supports a fixed-QP 320x240 Baseline IDR followed by one
+//! P picture. Both register images are captured from C MPP; only DMA fds are
+//! patched at runtime.
 
 use crate::codec::h264::encoder::{self, EncoderConfig};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo};
 
-use super::vepu510::{self, RegisterFile};
+use super::vepu510::RegisterFile;
 use super::vepu510_regs;
 
 const WIDTH: usize = 320;
@@ -34,37 +34,83 @@ pub struct Vepu510H264 {
     svc: MppService,
     input: DmaBuf,
     output: DmaBuf,
-    recon: DmaBuf,
-    thumb: DmaBuf,
-    smear: DmaBuf,
+    recon: [DmaBuf; 2],
+    thumb: [DmaBuf; 2],
+    smear: [DmaBuf; 2],
+    idr_done: bool,
 }
 
 impl Vepu510H264 {
     pub fn open() -> Result<Self, String> {
         require_video_encode(VideoEncodeHal::Vepu510)?;
+        let input = DmaBuf::alloc("system", INPUT_SIZE, false)
+            .map_err(|e| format!("allocate VEPU510 input: {e}"))?;
+        let output = DmaBuf::alloc("system", OUTPUT_SIZE, false)
+            .map_err(|e| format!("allocate VEPU510 output: {e}"))?;
+        let mut recon = [
+            DmaBuf::alloc("system", RECON_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 reconstruction 0: {e}"))?,
+            DmaBuf::alloc("system", RECON_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 reconstruction 1: {e}"))?,
+        ];
+        let mut thumb = [
+            DmaBuf::alloc("system", THUMB_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 thumbnail 0: {e}"))?,
+            DmaBuf::alloc("system", THUMB_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 thumbnail 1: {e}"))?,
+        ];
+        let mut smear = [
+            DmaBuf::alloc("system", SMEAR_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 smear 0: {e}"))?,
+            DmaBuf::alloc("system", SMEAR_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 smear 1: {e}"))?,
+        ];
+        for buffer in recon
+            .iter_mut()
+            .chain(thumb.iter_mut())
+            .chain(smear.iter_mut())
+        {
+            zero_buffer(buffer)?;
+        }
         Ok(Self {
             svc: MppService::open(Client::RkvEnc as u32)
                 .map_err(|e| format!("open RK3576 video encoder: {e}"))?,
-            input: DmaBuf::alloc("system", INPUT_SIZE, false)
-                .map_err(|e| format!("allocate VEPU510 input: {e}"))?,
-            output: DmaBuf::alloc("system", OUTPUT_SIZE, false)
-                .map_err(|e| format!("allocate VEPU510 output: {e}"))?,
-            recon: DmaBuf::alloc("system", RECON_SIZE, false)
-                .map_err(|e| format!("allocate VEPU510 reconstruction: {e}"))?,
-            thumb: DmaBuf::alloc("system", THUMB_SIZE, false)
-                .map_err(|e| format!("allocate VEPU510 thumbnail: {e}"))?,
-            smear: DmaBuf::alloc("system", SMEAR_SIZE, false)
-                .map_err(|e| format!("allocate VEPU510 smear: {e}"))?,
+            input,
+            output,
+            recon,
+            thumb,
+            smear,
+            idr_done: false,
         })
     }
 
     pub fn encode_fixed_qp_idr_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
-        if nv12.len() < INPUT_SIZE {
+        if self.idr_done {
+            return Err("this captured VEPU510 session already encoded its IDR".into());
+        }
+        let stream = self.encode_idr(nv12)?;
+        self.idr_done = true;
+        Ok(stream)
+    }
+
+    pub fn encode_fixed_qp_gop2_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        if nv12.len() < INPUT_SIZE * 2 {
             return Err(format!(
-                "VEPU510 input is {} bytes, expected {INPUT_SIZE}",
-                nv12.len()
+                "VEPU510 GOP input is {} bytes, expected {}",
+                nv12.len(),
+                INPUT_SIZE * 2
             ));
         }
+        if self.idr_done {
+            return Err("this captured VEPU510 session already encoded its IDR".into());
+        }
+        let mut stream = self.encode_idr(&nv12[..INPUT_SIZE])?;
+        self.idr_done = true;
+        stream.extend(self.encode_p(&nv12[INPUT_SIZE..INPUT_SIZE * 2])?);
+        Ok(stream)
+    }
+
+    fn encode_idr(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
         let mut config = EncoderConfig::new(WIDTH, HEIGHT);
         config.vui_log2_max_mv_length = 15;
         let header = encoder::build_headers(&config).map_err(|e| e.to_string())?;
@@ -74,7 +120,42 @@ impl Vepu510H264 {
                 header.len()
             ));
         }
+        let registers = RegisterFile::captured_fixqp_idr_320x240(
+            self.input.fd() as u32,
+            self.output.fd() as u32,
+            self.recon[0].fd() as u32,
+            self.thumb[0].fd() as u32,
+            self.smear[0].fd() as u32,
+        )?;
+        self.run_job(nv12, &registers, &header)
+    }
 
+    fn encode_p(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        let registers = RegisterFile::captured_fixqp_p_320x240(
+            self.input.fd() as u32,
+            self.output.fd() as u32,
+            self.recon[1].fd() as u32,
+            self.recon[0].fd() as u32,
+            self.thumb[1].fd() as u32,
+            self.thumb[0].fd() as u32,
+            self.smear[1].fd() as u32,
+            self.smear[0].fd() as u32,
+        )?;
+        self.run_job(nv12, &registers, &[])
+    }
+
+    fn run_job(
+        &mut self,
+        nv12: &[u8],
+        registers: &RegisterFile,
+        prefix: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        if nv12.len() < INPUT_SIZE {
+            return Err(format!(
+                "VEPU510 input is {} bytes, expected {INPUT_SIZE}",
+                nv12.len()
+            ));
+        }
         self.input
             .sync_write_begin()
             .map_err(|e| format!("VEPU510 input sync begin: {e}"))?;
@@ -83,31 +164,16 @@ impl Vepu510H264 {
             .sync_write_end()
             .map_err(|e| format!("VEPU510 input flush: {e}"))?;
 
-        for buffer in [&mut self.recon, &mut self.thumb, &mut self.smear] {
-            buffer
+        if !prefix.is_empty() {
+            self.output
                 .sync_write_begin()
-                .map_err(|e| format!("VEPU510 scratch sync begin: {e}"))?;
-            buffer.as_mut_slice().fill(0);
-            buffer
+                .map_err(|e| format!("VEPU510 output sync begin: {e}"))?;
+            self.output.as_mut_slice()[..prefix.len()].copy_from_slice(prefix);
+            self.output
                 .sync_write_end()
-                .map_err(|e| format!("VEPU510 scratch flush: {e}"))?;
+                .map_err(|e| format!("VEPU510 output prefix flush: {e}"))?;
         }
 
-        self.output
-            .sync_write_begin()
-            .map_err(|e| format!("VEPU510 output sync begin: {e}"))?;
-        self.output.as_mut_slice()[..header.len()].copy_from_slice(&header);
-        self.output
-            .sync_write_end()
-            .map_err(|e| format!("VEPU510 output header flush: {e}"))?;
-
-        let registers = RegisterFile::captured_fixqp_idr_320x240(
-            self.input.fd() as u32,
-            self.output.fd() as u32,
-            self.recon.fd() as u32,
-            self.thumb.fd() as u32,
-            self.smear.fd() as u32,
-        )?;
         let luma_size = WIDTH * HEIGHT;
         let offsets = vec![
             RegOffsetInfo {
@@ -124,7 +190,7 @@ impl Vepu510H264 {
             },
             RegOffsetInfo {
                 reg_idx: 174,
-                offset: header.len() as u32,
+                offset: prefix.len() as u32,
             },
             RegOffsetInfo {
                 reg_idx: 164,
@@ -164,7 +230,7 @@ impl Vepu510H264 {
             ));
         }
         let payload_len = status[0] as usize;
-        let stream_len = header
+        let stream_len = prefix
             .len()
             .checked_add(payload_len)
             .ok_or_else(|| "VEPU510 stream length overflow".to_string())?;
@@ -187,14 +253,18 @@ impl Vepu510H264 {
     }
 }
 
+fn zero_buffer(buffer: &mut DmaBuf) -> Result<(), String> {
+    buffer
+        .sync_write_begin()
+        .map_err(|e| format!("VEPU510 scratch sync begin: {e}"))?;
+    buffer.as_mut_slice().fill(0);
+    buffer
+        .sync_write_end()
+        .map_err(|e| format!("VEPU510 scratch flush: {e}"))
+}
+
 fn status_execution_error(status: &[u32]) -> u32 {
-    vepu510::RegisterFile::default()
-        .get(vepu510_regs::STATUS_ST_ENC_ST_ENC)
-        .ok()
-        .map(|_| {
-            let word = status[vepu510_regs::STATUS_ST_ENC_ST_ENC.word - 4096];
-            (word >> vepu510_regs::STATUS_ST_ENC_ST_ENC.shift)
-                & ((1u32 << vepu510_regs::STATUS_ST_ENC_ST_ENC.width) - 1)
-        })
-        .unwrap_or(0)
+    let field = vepu510_regs::STATUS_ST_ENC_ST_ENC;
+    let word = status[field.word - 4096];
+    (word >> field.shift) & ((1u32 << field.width) - 1)
 }

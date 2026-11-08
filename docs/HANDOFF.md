@@ -511,10 +511,13 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   `560ce2420b345c425477770651dc33b52dfee7aebc74b775e29150a774c157df`。
   `src/hal/vepu510_h264.rs` 负责输入/输出/FBC/thumb/smear 缓冲、六段提交和
   `bs_lgth_l32` 回读；`board_rk3576_h264e510_vs_mpp.sh` 是当前入口。
-  下一步扩 P picture 与 RC，而不是继续堆同一 IDR。
+  同一入口的第二格为 IDR+P GOP2：C/Rust 均为 8671 bytes，SHA-256
+  `f7cc121537e3fa7e3f075ec052409c7f9bd9be04a4153a94adf05f68cebaad7b`；
+  P 作业轮换 recon/thumb/smear 槽，slot0 为参考，并切到捕获的 P syntax/AQ。
+  下一步扩 RC 与更长 GOP。
 - t6 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：扩 VEPU510 P frame/RC；之后推进 AV1/AVS2、VPU720 tile input 与 VDPP2。
+- 下一步：扩 VEPU510 RC 与更长 GOP；之后推进 AV1/AVS2、VPU720 tile input 与 VDPP2。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 

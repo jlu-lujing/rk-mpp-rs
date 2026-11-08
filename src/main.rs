@@ -1198,6 +1198,40 @@ fn main() {
         return;
     }
 
+    if args.len() > 1 && args[1] == "h264e510-gop2" {
+        if args.len() != 4 {
+            eprintln!("usage: rk-mpp-rs h264e510-gop2 <in.2x320x240.nv12> <out.264>");
+            std::process::exit(2);
+        }
+        let source = match std::fs::read(&args[2]) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("read {}: {error}", args[2]);
+                std::process::exit(1);
+            }
+        };
+        let mut encoder = match vepu510_h264::Vepu510H264::open() {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        let stream = match encoder.encode_fixed_qp_gop2_320x240(&source) {
+            Ok(stream) => stream,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(error) = std::fs::write(&args[3], &stream) {
+            eprintln!("write {}: {error}", args[3]);
+            std::process::exit(1);
+        }
+        println!("h264e510-gop2: {} bytes", stream.len());
+        return;
+    }
+
     if args.len() > 1 && args[1] == "h264-enc" {
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("");

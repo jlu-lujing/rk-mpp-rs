@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1180
-      enumerated / 1146 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1002 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1181
+      enumerated / 1147 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1003 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3195,7 +3195,12 @@ pipeline uses.
   `560ce2420b345c425477770651dc33b52dfee7aebc74b775e29150a774c157df`.
   Rust writes the 36-byte SPS/PPS prefix, then reads the hardware payload
   length from `bs_lgth_l32`; the same template drives all six write windows.
-- Tests: `cargo test --release --all-targets` enumerates 1180 tests: 1146
+- The first IDR+P GOP is also byte-identical. The two-frame stream is 8671
+  bytes with SHA-256
+  `f7cc121537e3fa7e3f075ec052409c7f9bd9be04a4153a94adf05f68cebaad7b`.
+  The P job alternates FBC reconstruction, thumbnail and smear slots, reads
+  the IDR slot as reference, and uses the captured P syntax/AQ/SQI words.
+- Tests: `cargo test --release --all-targets` enumerates 1181 tests: 1147
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

@@ -67,6 +67,7 @@ pub mod vdpu383_regs;
 pub mod vepu510;
 pub mod vepu510_h264;
 pub mod vepu510_idr_template;
+pub mod vepu510_p_template;
 pub mod vepu510_regs;
 pub mod vepu580_regs;
 pub mod vp8d;
