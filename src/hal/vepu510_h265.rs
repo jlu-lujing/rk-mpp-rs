@@ -455,6 +455,7 @@ pub struct Vepu510H265 {
     smear: [DmaBuf; 2],
     md_info: DmaBuf,
     idr_done: bool,
+    frame_number: u32,
 }
 
 impl Vepu510H265 {
@@ -519,6 +520,7 @@ impl Vepu510H265 {
             smear,
             md_info,
             idr_done: false,
+            frame_number: 0,
         })
     }
 
@@ -529,6 +531,61 @@ impl Vepu510H265 {
             ));
         }
         Self::open()
+    }
+
+    /// Streaming form of the captured fixed-QP path: one IDR followed by P
+    /// pictures for a 320x240 QP26 Main GOP6 sequence.
+    pub fn encode_fixed_qp_next_320x240(
+        &mut self,
+        nv12: &[u8],
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        if nv12.len() < INPUT_SIZE {
+            return Err(format!(
+                "VEPU510 H.265 input is {} bytes, expected at least {INPUT_SIZE}",
+                nv12.len()
+            ));
+        }
+        let config = lf1_h265_config()?;
+        let prefix = lf1_fixed_qp_prefix(&config, QP, GOP)?;
+        if !self.idr_done {
+            let registers = RegisterFile::captured_fixqp_idr_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[0].fd() as u32,
+                self.colmv[0].fd() as u32,
+                self.thumb[0].fd() as u32,
+                self.smear[0].fd() as u32,
+                self.md_info.fd() as u32,
+            )?;
+            let stream = self.run_job(&nv12[..INPUT_SIZE], &registers, &prefix)?;
+            self.idr_done = true;
+            self.frame_number = 0;
+            return Ok((stream, true, 0, 0));
+        }
+        self.frame_number = self.frame_number.saturating_add(1);
+        let current = self.frame_number as usize & 1;
+        let reference = 1 - current;
+        let registers = RegisterFile::captured_fixqp_p_320x240(
+            self.input.fd() as u32,
+            self.output.fd() as u32,
+            self.recon[current].fd() as u32,
+            self.recon[reference].fd() as u32,
+            self.colmv[current].fd() as u32,
+            self.colmv[reference].fd() as u32,
+            self.thumb[current].fd() as u32,
+            self.thumb[reference].fd() as u32,
+            self.smear[current].fd() as u32,
+            self.smear[reference].fd() as u32,
+            self.md_info.fd() as u32,
+            self.frame_number,
+        )?;
+        let stream = self.run_job(&nv12[..INPUT_SIZE], &registers, &[])?;
+        Ok((
+            stream,
+            false,
+            self.frame_number,
+            self.frame_number as i32 * 2,
+        ))
     }
 
     pub fn encode_fixed_qp_idr_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {

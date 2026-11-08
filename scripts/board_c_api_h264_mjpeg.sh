@@ -85,6 +85,9 @@ h264_raw_i420=/tmp/rk_mpp_c_api_encoder.i420
 h264_api=/tmp/rk_mpp_c_api_encoder.264
 h264_api_i420=/tmp/rk_mpp_c_api_encoder_i420.264
 h264_cli=/tmp/rk_mpp_c_api_encoder_cli.264
+h265_api=/tmp/rk_mpp_c_api_encoder.265
+h265_api_i420=/tmp/rk_mpp_c_api_encoder_i420.265
+h265_cli=/tmp/rk_mpp_c_api_encoder_cli.265
 h265=/tmp/rk_mpp_c_api_h265.265
 h265_10=/tmp/rk_mpp_c_api_h265_10.265
 mjpeg_dir=/tmp/rk_mpp_c_api_mjpeg
@@ -185,12 +188,29 @@ else
         > /tmp/rk_mpp_c_api_encoder_cli.log 2>&1
 fi
 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
-    /tmp/rk_mpp_c_api_encoder nv12 "$h264_api" 320 240 26 6 6 "$h264_raw"
+    /tmp/rk_mpp_c_api_encoder h264 nv12 "$h264_api" 320 240 26 6 6 \
+    "$h264_raw"
 cmp "$h264_cli" "$h264_api"
 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
-    /tmp/rk_mpp_c_api_encoder i420 "$h264_api_i420" 320 240 26 6 6 \
+    /tmp/rk_mpp_c_api_encoder h264 i420 "$h264_api_i420" 320 240 26 6 6 \
     "$h264_raw_i420"
 cmp "$h264_cli" "$h264_api_i420"
+
+if H265_GOP=6 ./target/debug/rk-mpp-rs h265-gop "$h264_raw" "$h265_cli" \
+    320 240 6 26 > /tmp/rk_mpp_c_api_encoder_h265_cli.log 2>&1; then
+    :
+else
+    ./target/debug/rk-mpp-rs h265e510-gop6 "$h264_raw" "$h265_cli" \
+        > /tmp/rk_mpp_c_api_encoder_h265_cli.log 2>&1
+fi
+LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_encoder h265 nv12 "$h265_api" 320 240 26 6 6 \
+    "$h264_raw"
+cmp "$h265_cli" "$h265_api"
+LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_encoder h265 i420 "$h265_api_i420" 320 240 26 6 6 \
+    "$h264_raw_i420"
+cmp "$h265_cli" "$h265_api_i420"
 
 rm -f "$c_h265"
 LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
@@ -434,6 +454,7 @@ sha256sum "$c_api_h264" "$c_h264" \
     "$c_api_av1_p0" "$c_av1_p0" \
     "$c_api_av1_p0_i420" "$c_av1_p0_i420" \
     "$c_api_av1_p2" "$c_av1_p2_planar" \
-    "$h264_api" "$h264_api_i420" "$h264_cli"
-printf 'PASS rk_mpp C/C++ decoder + H.264 encoder API\n'
+    "$h264_api" "$h264_api_i420" "$h264_cli" \
+    "$h265_api" "$h265_api_i420" "$h265_cli"
+printf 'PASS rk_mpp C/C++ decoder + H.264/H.265 encoder API\n'
 REMOTE

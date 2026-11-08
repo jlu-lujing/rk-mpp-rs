@@ -54,6 +54,8 @@
 | AV1 full gates | lf1/t6 all-targets green | 1186 passed / 0 failed / 37 ignored; t6 lib 1042/0/0 | PASS |
 | H.264 encoder API | VEPU580 and VEPU510 | 6-frame NV12/I420 output matches CLI oracle on lf1/t6 | PASS |
 | H.264 encoder full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
+| H.265 encoder API | VEPU580 and VEPU510 | 6-frame NV12/I420 output matches CLI oracle on lf1/t6 | PASS |
+| H.265 encoder full gates | lf1/t6 all-targets green | 1188 passed / 0 failed / 37 ignored; t6 lib 1044/0/0 | PASS |
 
 ### Phase 6.2: VP9 Public Decoder
 - **Status:** complete on lf1 and t6
@@ -87,6 +89,14 @@
 - t6 VEPU580 and lf1 VEPU510 six-frame outputs match their respective CLI
   oracles, SHA-256 `aa6276ba…173d1` and `0e65b51a…81f33`; NV12 and I420
   inputs match each other on each board.
+
+### Phase 6.4.2: H.265 Public Encoder
+- **Status:** complete on lf1 and t6 for exposed paths
+- Added H.265 to the shared encoder handle and API version 1.5.
+- t6 VEPU580 supports width/height, QP and GOP; lf1 VEPU510 exposes the
+  captured 320x240 QP26 GOP6 path.
+- Six-frame NV12/I420 output matches platform CLI oracles, SHA-256
+  `6c285115…979e9` on t6 and `8088e821…7fe397` on lf1.
 
 ### Errors
 

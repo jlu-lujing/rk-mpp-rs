@@ -21,7 +21,7 @@ context 也已闭合完整 `av1_lr` key+P 流。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
-**对外 SDK 推进（2026-11-08）**：已新增版本化 `rk_mpp_*` V1.4 C ABI
+**对外 SDK 推进（2026-11-08）**：已新增版本化 `rk_mpp_*` V1.5 C ABI
 (`include/rk_mpp_rs.h`) 和 Rust `sdk` 模块，优先覆盖 H.264、H.265、VP9、AV1
 与 MJPEG 解码。
 构建同时产出 `cdylib`、`staticlib`、`rlib`；packet 可任意分块，frame 由
@@ -44,6 +44,10 @@ BOARD=t6 ./scripts/board_c_api_h264_mjpeg.sh
 持有到显式 release。t6 支持 baseline/main/high 与通用 level/GOP/QP/fps；
 RK3576 目前只开放板验过的 320×240 Baseline QP26 GOP6 @30fps 捕获路径。
 lf1/t6 的 6 帧输出均与对应 CLI oracle 逐字节一致。
+
+H.265 编码复用同一 encoder handle：t6 VEPU580 支持 width/height、QP、GOP；
+RK3576 VEPU510 只开放已捕获并板验的 320×240 Main QP26 GOP6 @30fps。
+lf1/t6 的 6 帧 H.265 输出也分别与 `h265e510-gop6` / `h265-gop` 逐字节。
 
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。

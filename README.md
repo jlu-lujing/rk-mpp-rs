@@ -179,13 +179,13 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.4 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.5 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
 - 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
 - 优先编解码器：H.264、H.265/HEVC、VP9、AV1 和 MJPEG/JPEG decode；
-  H.264 VEPU580/VEPU510 encode
+  H.264/H.265 VEPU580/VEPU510 encode
 
 接口接受内存中的任意分块码流，不绑定文件路径。一个 decoder handle 可持续
 提交 packet、接收 frame、显式释放 frame，并支持 `flush`、`reset`、
@@ -216,6 +216,11 @@ geometry，再以同步 packet queue 返回 Annex-B。t6 VEPU580 支持
 baseline/main/high、level、GOP、QP 和帧率；RK3576 VEPU510 当前只开放已板验的
 320×240 Baseline QP26 GOP6 @30fps 路径。两端都把 6 帧 GOP 与现有 CLI 输出
 逐字节比较，并验证 reset 复用和 packet release。
+
+H.265 编码共享同一套原有 encoder ABI。t6 VEPU580 开放 width/height、QP
+和 GOP；RK3576 VEPU510 当前只开放板验过的 320×240 Main QP26 GOP6 @30fps
+路径。H.264/H.265 都接受 NV12 或 I420，packet 带 keyframe/frame_num/POC
+元数据。
 
 ## 怎么验证的
 

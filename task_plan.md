@@ -6,8 +6,8 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-6.4.1 are complete for the decoder matrix and H.264 encoding. The next
-priority is the H.265 encoder backend, followed by JPEG.
+Phases 1-6.4.2 are complete for the decoder matrix, H.264 and H.265 encoding.
+The next priority is the JPEG encoder backend.
 
 ## Phases
 
@@ -80,16 +80,16 @@ priority is the H.265 encoder backend, followed by JPEG.
 - **Status:** complete for VEPU580 and the currently captured VEPU510 path.
 
 ### Phase 6.4.2: H.265 Encoder API
-- [ ] Select VEPU580 or VEPU510 from the configured SoC.
-- [ ] Expose copied NV12 input and owned Annex-B packet output.
-- [ ] Verify fixed-QP IDR/GOP production starts on lf1 and t6.
-- **Status:** pending
+- [x] Select VEPU580 or VEPU510 from the configured SoC.
+- [x] Expose copied NV12/I420 input and owned Annex-B packet output.
+- [x] Verify fixed-QP IDR/GOP output on lf1 and t6.
+- **Status:** complete for VEPU580 and the captured VEPU510 path.
 
 ### Phase 6.4.3: JPEG Encoder API
 - [ ] Add deterministic NV12 input and JPEG packet output.
 - [ ] Expose quality, chroma and restart configuration.
 - [ ] Verify byte equality on lf1 and t6.
-- **Status:** pending
+- **Status:** in_progress
 
 ### Phase 7: Full Verification and Handoff
 - [x] Run host-independent gates on lf1 and t6.
@@ -105,6 +105,8 @@ priority is the H.265 encoder backend, followed by JPEG.
 - [x] Run final AV1 full suite and commit the API 1.3 slice.
 - [x] Run lf1/t6 H.264 encoder API gates and full suites.
 - [x] Commit the H.264 encoder/API 1.4 slice.
+- [x] Run lf1/t6 H.265 encoder API gates.
+- [x] Run final H.265 encoder full suite and commit the API 1.5 slice.
 - **Status:** complete
 
 ## Decisions Made

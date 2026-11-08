@@ -9,7 +9,7 @@ use crate::codec::h264::encoder::{
     self as h264_encoder, EncoderConfig as H264EncoderConfig, PROFILE_BASELINE, PROFILE_HIGH,
     PROFILE_MAIN,
 };
-use crate::hal::{h264e, vepu510_h264};
+use crate::hal::{h264e, h265e_session, vepu510_h264, vepu510_h265};
 use crate::sdk::{Codec, Error, PixelFormat};
 use crate::service::soc::{SocProfile, VideoEncodeHal};
 
@@ -183,6 +183,8 @@ impl Packet {
 enum Backend {
     H264Vepu580(h264e::Vepu580H264),
     H264Vepu510(vepu510_h264::Vepu510H264),
+    H265Vepu580(h265e_session::Vepu580H265),
+    H265Vepu510(vepu510_h265::Vepu510H265),
 }
 
 /// Persistent encoder session. Frames are encoded synchronously into an owned
@@ -198,7 +200,8 @@ impl Encoder {
     pub fn new(config: EncoderConfig) -> Result<Self, Error> {
         let backend = match config.codec {
             Codec::H264 => open_h264_backend(config)?,
-            Codec::H265 | Codec::Mjpeg | Codec::Vp9 | Codec::Av1 => {
+            Codec::H265 => open_h265_backend(config)?,
+            Codec::Mjpeg | Codec::Vp9 | Codec::Av1 => {
                 return Err(Error::Unsupported(format!(
                     "encoder backend for {:?} is not implemented",
                     config.codec
@@ -223,7 +226,7 @@ impl Encoder {
         }
         match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
-                let input = format_h264_input(self.config, frame.data)?;
+                let input = format_nv12_input(self.config, frame.data)?;
                 let encoded = encoder
                     .encode_frame(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
@@ -241,7 +244,40 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H264Vepu510(encoder) => {
-                let input = format_h264_input(self.config, frame.data)?;
+                let input = format_nv12_input(self.config, frame.data)?;
+                let (data, keyframe, frame_num, poc) = encoder
+                    .encode_fixed_qp_next_320x240(&input)
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                self.packets.push_back(Packet {
+                    data,
+                    pts: frame.pts,
+                    dts: frame.dts,
+                    keyframe,
+                    frame_num,
+                    poc,
+                });
+                Ok(1)
+            }
+            Backend::H265Vepu580(encoder) => {
+                let input = format_nv12_input(self.config, frame.data)?;
+                let encoded = encoder
+                    .encode_frame_packets(&input)
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                let count = encoded.packets.len();
+                for data in encoded.packets {
+                    self.packets.push_back(Packet {
+                        data,
+                        pts: frame.pts,
+                        dts: frame.dts,
+                        keyframe: encoded.is_idr,
+                        frame_num: encoded.frame_num,
+                        poc: encoded.frame_num as i32 * 2,
+                    });
+                }
+                Ok(count)
+            }
+            Backend::H265Vepu510(encoder) => {
+                let input = format_nv12_input(self.config, frame.data)?;
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
@@ -276,6 +312,7 @@ impl Encoder {
         self.eos = false;
         self.backend = match self.config.codec {
             Codec::H264 => open_h264_backend(self.config)?,
+            Codec::H265 => open_h265_backend(self.config)?,
             _ => {
                 return Err(Error::Unsupported(
                     "encoder backend reset is unsupported".to_string(),
@@ -361,18 +398,77 @@ fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264,
     vepu510_h264::Vepu510H264::open().map_err(|error| Error::Hardware(error.to_string()))
 }
 
-fn format_h264_input(config: EncoderConfig, data: &[u8]) -> Result<Vec<u8>, Error> {
+fn open_h265_backend(config: EncoderConfig) -> Result<Backend, Error> {
+    validate_h265_input(config)?;
+    let profile = SocProfile::detect().map_err(|error| Error::Hardware(error.to_string()))?;
+    match profile.video_encode {
+        VideoEncodeHal::Vepu580 => Ok(Backend::H265Vepu580(open_h265_vepu580(config)?)),
+        VideoEncodeHal::Vepu510 => Ok(Backend::H265Vepu510(open_h265_vepu510(config)?)),
+        other => Err(Error::Unsupported(format!(
+            "no H.265 encoder backend for {other:?}"
+        ))),
+    }
+}
+
+fn validate_h265_input(config: EncoderConfig) -> Result<(), Error> {
+    if !matches!(config.input_format, PixelFormat::Nv12 | PixelFormat::I420) {
+        return Err(Error::Unsupported(
+            "H.265 encoder accepts NV12 or I420 input".to_string(),
+        ));
+    }
+    if config.profile != 0 {
+        return Err(Error::Unsupported(
+            "H.265 encoder profile selection is not exposed yet".to_string(),
+        ));
+    }
+    if config.width % 2 != 0 || config.height % 2 != 0 {
+        return Err(Error::InvalidInput(
+            "H.265 NV12/I420 dimensions must be even".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265, Error> {
+    let mut encoder =
+        h265e_session::Vepu580H265::open_gop(config.width, config.height, u32::from(config.qp))
+            .map_err(|error| Error::Hardware(error.to_string()))?;
+    encoder
+        .set_gop(config.gop.max(1))
+        .map_err(|error| Error::Hardware(error.to_string()))?;
+    Ok(encoder)
+}
+
+fn open_h265_vepu510(config: EncoderConfig) -> Result<vepu510_h265::Vepu510H265, Error> {
+    if config.width != 320
+        || config.height != 240
+        || config.qp != 26
+        || config.gop != 6
+        || config.fps_num != 30
+        || config.fps_den != 1
+        || !matches!(config.level, 0 | 30)
+    {
+        return Err(Error::Unsupported(
+            "RK3576 H.265 encoder currently supports only 320x240 Main QP26 \
+             GOP6 at 30 fps"
+                .to_string(),
+        ));
+    }
+    vepu510_h265::Vepu510H265::open().map_err(|error| Error::Hardware(error.to_string()))
+}
+
+fn format_nv12_input(config: EncoderConfig, data: &[u8]) -> Result<Vec<u8>, Error> {
     let visible_luma = config
         .width
         .checked_mul(config.height)
-        .ok_or_else(|| Error::InvalidInput("H.264 input size overflow".to_string()))?;
+        .ok_or_else(|| Error::InvalidInput("video input size overflow".to_string()))?;
     let visible_nv12 = visible_luma
         .checked_mul(3)
         .map(|bytes| bytes / 2)
-        .ok_or_else(|| Error::InvalidInput("H.264 input size overflow".to_string()))?;
+        .ok_or_else(|| Error::InvalidInput("video input size overflow".to_string()))?;
     if data.len() < visible_nv12 {
         return Err(Error::InvalidInput(format!(
-            "H.264 input is {} bytes, expected at least {visible_nv12}",
+            "video input is {} bytes, expected at least {visible_nv12}",
             data.len()
         )));
     }
@@ -381,7 +477,7 @@ fn format_h264_input(config: EncoderConfig, data: &[u8]) -> Result<Vec<u8>, Erro
     let coded_size = coded_width
         .checked_mul(coded_height)
         .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
-        .ok_or_else(|| Error::InvalidInput("H.264 coded size overflow".to_string()))?;
+        .ok_or_else(|| Error::InvalidInput("video coded size overflow".to_string()))?;
     let mut output = vec![0u8; coded_size];
     for row in 0..config.height {
         let src = row * config.width;
@@ -413,7 +509,7 @@ fn format_h264_input(config: EncoderConfig, data: &[u8]) -> Result<Vec<u8>, Erro
                 }
             }
         }
-        _ => unreachable!("open_h264 validated the input format"),
+        _ => unreachable!("encoder constructor validated the input format"),
     }
     Ok(output)
 }

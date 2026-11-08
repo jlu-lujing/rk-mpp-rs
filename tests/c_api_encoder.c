@@ -47,6 +47,18 @@ static int parse_format(const char *name, uint32_t *format) {
     return -1;
 }
 
+static int parse_codec(const char *name, uint32_t *codec) {
+    if (!strcmp(name, "h264")) {
+        *codec = RK_MPP_CODEC_H264;
+        return 0;
+    }
+    if (!strcmp(name, "h265")) {
+        *codec = RK_MPP_CODEC_H265;
+        return 0;
+    }
+    return -1;
+}
+
 static int drain_packets(rk_mpp_encoder_t *encoder,
                          rk_mpp_encoded_packet_t *packet, FILE *out,
                          uint64_t *packets, uint64_t *keyframes,
@@ -95,6 +107,7 @@ int main(int argc, char **argv) {
     size_t input_size = 0;
     size_t frame_size;
     uint32_t format;
+    uint32_t codec;
     uint32_t width;
     uint32_t height;
     uint32_t qp;
@@ -107,21 +120,22 @@ int main(int argc, char **argv) {
     int ret = 1;
     uint32_t index;
 
-    if (argc != 9 || parse_format(argv[1], &format)) {
+    if (argc != 10 || parse_codec(argv[1], &codec) ||
+        parse_format(argv[2], &format)) {
         fprintf(stderr,
-                "usage: %s <nv12|i420> <out> <width> <height> <qp> "
-                "<frames> <gop> <in>\n",
+                "usage: %s <h264|h265> <nv12|i420> <out> <width> <height> "
+                "<qp> <frames> <gop> <in>\n",
                 argv[0]);
         return 2;
     }
-    width = (uint32_t)strtoul(argv[3], NULL, 0);
-    height = (uint32_t)strtoul(argv[4], NULL, 0);
-    qp = (uint32_t)strtoul(argv[5], NULL, 0);
-    frames = (uint32_t)strtoul(argv[6], NULL, 0);
-    gop = (uint32_t)strtoul(argv[7], NULL, 0);
+    width = (uint32_t)strtoul(argv[4], NULL, 0);
+    height = (uint32_t)strtoul(argv[5], NULL, 0);
+    qp = (uint32_t)strtoul(argv[6], NULL, 0);
+    frames = (uint32_t)strtoul(argv[7], NULL, 0);
+    gop = (uint32_t)strtoul(argv[8], NULL, 0);
     frame_size = (size_t)width * height * 3 / 2;
     if (!width || !height || !frames || !gop || !frame_size ||
-        read_file(argv[8], &input, &input_size)) {
+        read_file(argv[9], &input, &input_size)) {
         fprintf(stderr, "invalid encoder arguments or input\n");
         return 2;
     }
@@ -130,7 +144,7 @@ int main(int argc, char **argv) {
                 frame_size * frames);
         goto done;
     }
-    if (rk_mpp_encoder_config_init(&config, RK_MPP_CODEC_H264, width, height,
+    if (rk_mpp_encoder_config_init(&config, codec, width, height,
                                    format) != RK_MPP_OK)
         goto done;
     config.qp = qp;
@@ -142,9 +156,9 @@ int main(int argc, char **argv) {
     }
     if (rk_mpp_encoded_packet_init(&packet) != RK_MPP_OK)
         goto done;
-    out = fopen(argv[2], "wb");
+    out = fopen(argv[3], "wb");
     if (!out) {
-        fprintf(stderr, "%s: %s\n", argv[2], strerror(errno));
+        fprintf(stderr, "%s: %s\n", argv[3], strerror(errno));
         goto done;
     }
     for (index = 0; index < frames; index++) {
@@ -188,7 +202,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "encoder reset/reuse did not emit two keyframes\n");
         goto done;
     }
-    printf("PASS H.264 API packets=%llu api=%u\n",
+    printf("PASS %s API packets=%llu api=%u\n", argv[1],
            (unsigned long long)packets, rk_mpp_api_version());
     ret = 0;
 

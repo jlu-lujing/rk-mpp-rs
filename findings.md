@@ -72,6 +72,12 @@
   (SHA-256 `aa6276ba…173d1`) and `h264e510-gop6` on lf1
   (`0e65b51a…81f33`). NV12 and converted I420 inputs match each other on each
   board; the two SoCs use different hardware bitstreams by design.
+- VEPU580 H.265 already exposes a frame-level fixed-QP session, so the public
+  encoder can queue one parsed packet per picture. RK3576's captured VEPU510
+  path remains limited to 320x240 QP26 GOP6 but now emits one picture per
+  submit through a small streaming wrapper.
+- Verified H.265 hashes are `6c285115…979e9` on t6 VEPU580 and
+  `8088e821…7fe397` on lf1 VEPU510; NV12 and I420 match on each platform.
 - Verified VP9 SHA-256 values are
   `c5381bbf…3949a` (profile 0 NV12),
   `53bc3dd4…0abea69` (profile 0 I420), and
