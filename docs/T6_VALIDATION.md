@@ -63,6 +63,21 @@ t62 back to the RK3588 reference board.
   produces the same 4710-byte IDR as its ordinary path on RK3576; Rust rejects
   a two-column request before DMA or hardware allocation. Tiles are therefore
   a platform boundary rather than an unimplemented register path.
+
+## 2026-11-08 RK3576 / lf1 VDPU383 AV1 header foundation
+
+- The official C HAL was built with `scripts/av1_vdpu383_dump.patch`; it dumped
+  thirteen 672-byte global headers for the ten displayed frames of
+  `av1_tiles_320x240_10.ivf`.
+- `src/hal/av1d383.rs` reproduces `vdpu38x_av1d_uncomp_hdr()` including the
+  C `mpp_put_bits` little-endian 64-bit packing, 5160-bit payload, 128-bit
+  alignment and the 16-byte trailing reservation.
+- The first keyframe is byte-identical to C: SHA-256
+  `5dc26be2b7f1d2a76d135b64435c737cd62d8b6c2ab720a0fb83c83efddfbf56`
+  and FNV `0x8da389d2e180d680`.
+- This is a header/ABI foundation only. The 276-word AV1 register plan,
+  CDF/segmentation buffers, RCB sizing and hardware decode are still open.
+
 - RK3576 H.265 is an initial core-path closure. Random bit-flip injection and
   wider conformance streams still need lf1 evidence.
 
@@ -115,8 +130,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1200 tests**. The
-regular suite passes **1166 / 0 failed / 34 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1203 tests**. The
+regular suite passes **1169 / 0 failed / 34 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.

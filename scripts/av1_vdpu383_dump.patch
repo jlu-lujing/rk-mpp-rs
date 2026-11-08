@@ -1,0 +1,39 @@
+diff --git a/mpp/hal/rkdec/av1d/hal_av1d_vdpu383.c b/mpp/hal/rkdec/av1d/hal_av1d_vdpu383.c
+--- a/mpp/hal/rkdec/av1d/hal_av1d_vdpu383.c
++++ b/mpp/hal/rkdec/av1d/hal_av1d_vdpu383.c
+@@ -10,2 +10,4 @@
+ #include "mpp_env.h"
+ #include "mpp_mem.h"
++#include <stdio.h>
++#include <stdlib.h>
+@@ -389,4 +391,31 @@ MPP_RET vdpu383_av1d_gen_regs(void *hal, HalTaskInfo *task)
+                                &regs->comm_addrs.reg184_av1_noncoef_rd_base,
+                                &regs->comm_addrs.reg185_av1_noncoef_wr_base);
+     mpp_buffer_sync_end(ctx->bufs);
++    {
++        const char *dump_dir = getenv("AV1_383_DUMP_DIR");
++        static RK_U32 av1_383_dump_index;
++
++        if (dump_dir) {
++            char path[512];
++            FILE *fp;
++
++            snprintf(path, sizeof(path), "%s/global_%03u.bin", dump_dir,
++                     av1_383_dump_index);
++            fp = fopen(path, "wb");
++            if (fp) {
++                fwrite((char *)ctx->bufs_ptr + ctx->offset_uncomps, 1,
++                       VDPU383_UNCMPS_HEADER_SIZE, fp);
++                fclose(fp);
++            }
++
++            snprintf(path, sizeof(path), "%s/regs_%03u.bin", dump_dir,
++                     av1_383_dump_index);
++            fp = fopen(path, "wb");
++            if (fp) {
++                fwrite(regs, 1, sizeof(*regs), fp);
++                fclose(fp);
++            }
++            av1_383_dump_index++;
++        }
++    }
