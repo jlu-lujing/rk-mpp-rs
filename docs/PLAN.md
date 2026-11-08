@@ -483,7 +483,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [~] W12-2 RK3568/RK3576 等目标板适配（各自 VEPU/VDEC 版本）
       RK3576 已确认 VDPU383/VEPU510/VPU720/VDPP2，并生成 VDPU383
       276-word 寄存器表；VDPU383 H.264 640x480 12 帧已与 C MPP 逐字节，
-      前两帧 global-config/RPS 也逐 word 相同；H.265 初始 10/10 矩阵
+      720p/B、1080p hard、PAFF 与 LTR 边界 4/4 通过（PAFF 用 FFmpeg 判定
+      C 侧场序差异）；H.265 初始 10/10 矩阵
       （Main/Main10、B、tiles、真实 WPP、720p、DSLICE、SPS/PPS scaling list）
       也已逐字节，176-byte global packet 与 C dump 相同；VP9 初始 7/7
       （profile 0/2、8/10-bit、lossless、tiles，两个 C bug 由 libvpx 判定）。

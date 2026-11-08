@@ -22,7 +22,8 @@
   驱动它（见 ROADMAP 的能力表）。
 - **RK3576 正在适配，尚不属于完整保证范围。** 已确认
   VDPU383/VEPU510/VPU720/VDPP2，且 RK3576 H.264 640x480 12 帧已与 C MPP
-  逐字节；VDPU383 H.265 初始 10/10 矩阵（Main/Main10、B、tiles、真实 WPP、
+  逐字节，720p/B、1080p、PAFF 和 LTR 边界矩阵也通过；VDPU383 H.265 初始
+  10/10 矩阵（Main/Main10、B、tiles、真实 WPP、
   1280x720、JCT-VC DSLICE、SPS/PPS scaling list）也已逐字节；VDPU383 VP9
   初始 7/7 矩阵（profile 0/2、8/10-bit、lossless、tiles）通过，两个既有 C
   bug 路径由 libvpx 判定。LTR/error rows、AV1、编码、JPEG、VDPP2 和 H.264
@@ -178,6 +179,7 @@ ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h265_tile_vs_mpp.sh          # H.265 水平 tiles：2/2
 BOARD=luck2 ./scripts/board_rk3576_h265_vs_mpp.sh # RK3576 VDPU383：10/10
 BOARD=luck2 ./scripts/board_rk3576_vp9_vs_mpp.sh  # RK3576 VDPU383 VP9：7/7
+BOARD=luck2 ./scripts/board_rk3576_h264_edges_vs_mpp.sh # H.264 边界：4/4
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh

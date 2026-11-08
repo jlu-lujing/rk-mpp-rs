@@ -3163,7 +3163,10 @@ pipeline uses.
   The first VDPU383 H.264 640x480 12-frame High-profile path is byte-identical
   to stock C MPP on lf1 (`615ee129c46e10f7fb4cb2cf8af3cb370523f7605abee7e7315e073a4421b112`
   on both sides), with `global_cfg`/`rps` word-identical for the first two
-  frames. The VDPU383 H.265 initial matrix is 10/10 byte-identical: single IDR,
+  frames. The H.264 edge matrix is 4/4: 720p/B, 1080p hard and LTR are
+  byte-identical to C MPP; PAFF matches FFmpeg and the stock C harness has a
+  known field-order difference. The VDPU383 H.265 initial matrix is 10/10
+  byte-identical: single IDR,
   640x480 IPPP, B-pyramid, Main10, 2x2 tiles, real WPP (five entry points),
   1280x720 WPP, JCT-VC DSLICE, and explicit SPS/PPS scaling lists. Its 176-byte
   global packet matches the patched C dump and is pinned by FNV
