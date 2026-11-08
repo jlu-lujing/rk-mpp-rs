@@ -77,7 +77,7 @@ check_input_case() {
     local rust_yuv="/tmp/rk3576_h265_${name}_rust.yuv"
 
     rm -f "$c_raw" "$c_yuv" "$rust_yuv"
-    LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
+    timeout 600 env LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
         /usr/local/bin/mpi_dec_test \
         -i "$input" -t 16777220 -n "$frames" -o "$c_raw" \
         -w "$width" -h "$height" -v q < /dev/null
@@ -149,11 +149,26 @@ ffmpeg -nostdin -hide_banner -loglevel trace \
     grep -c 'entropy_coding_sync_enabled_flag[[:space:]]*1 = 1' >/dev/null
 
 if [ ! -s /tmp/rk3576_h265_dslice.bit ]; then
-    curl --fail --location --silent --show-error \
+    curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
         https://fate-suite.ffmpeg.org/hevc-conformance/DSLICE_A_HHI_5.bit \
         -o /tmp/rk3576_h265_dslice.bit
 fi
 check_input_case dslice /tmp/rk3576_h265_dslice.bit 1920 1080 50
+
+if [ ! -s /tmp/rk3576_h265_ltr_sps.bit ]; then
+    curl --fail --location --retry 3 --retry-all-errors --silent --show-error \
+        https://fate-suite.ffmpeg.org/hevc-conformance/LTRPSPS_A_Qualcomm_1.bit \
+        -o /tmp/rk3576_h265_ltr_sps.bit
+fi
+echo '8f8e50fa408b7e96e76e6936b380fc34c208271efb8c283b15a42cb1f8c78ae7  /tmp/rk3576_h265_ltr_sps.bit' |
+    sha256sum -c -
+ffmpeg -nostdin -hide_banner -loglevel trace \
+    -i /tmp/rk3576_h265_ltr_sps.bit -c copy -bsf:v trace_headers -f null - 2>&1 |
+    grep -q 'num_long_term_ref_pics_sps.*= 8'
+ffmpeg -nostdin -hide_banner -loglevel trace \
+    -i /tmp/rk3576_h265_ltr_sps.bit -c copy -bsf:v trace_headers -f null - 2>&1 |
+    grep -q 'lt_idx_sps\[0\].*= 4'
+check_input_case ltr_sps /tmp/rk3576_h265_ltr_sps.bit 416 240 500
 
 ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i testsrc2=size=256x256:rate=30 -frames:v 10 \

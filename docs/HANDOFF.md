@@ -482,15 +482,19 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   与 C MPP 逐字节；PAFF 与 FFmpeg
   逐字节，C harness 的场序输出是既知差异。入口为
   `scripts/board_rk3576_h264_edges_vs_mpp.sh`。
-- H.265 11/11 矩阵已在 lf1 通过：320×240 单 IDR、640×480 IPPP 与
+- H.265 12/12 矩阵已在 lf1 通过：320×240 单 IDR、640×480 IPPP 与
   B-pyramid、Main10、2×2 tiles、真实 WPP（640×360，5 个 entry point）、
   1280×720 WPP、JCT-VC DSLICE，以及显式 SPS/PPS scaling list；Rust/YUV 与
   C MPP 逐字节相同。176-byte VDPU383 global packet 与 C dump 相同，单测固定
-  FNV `0xe97a26406128e428`。缺失参考格从一个 12 帧 x265 流删除第 6 个
+  FNV `0xe97a26406128e428`。JCT-VC
+  `LTRPSPS_A_Qualcomm_1.bit` 为 416×240、500 帧，SPS 声明 8 个长期参考，
+  各切片反复选择 `lt_idx_sps=4/7`；C/Rust 均输出 500 帧，SHA-256 同为
+  `e0d7db1516ed31d3046c63c33240ec0866150774eb74b5e88f67bc186ba51bee`。
+  缺失参考格从一个 12 帧 x265 流删除第 6 个
   AUD access unit：C 报 `Could not find ref with POC 5`，两侧均输出 5 帧，
   YUV SHA-256 同为
   `7d67c91340892c5de09e45db43fc160f3991b8f950e30c7d2b0ff5590626a74d`。
-- H.265 的 LTR 和更宽 conformance 矩阵仍需 lf1 实跑；
+- H.265 的随机 bit-flip 错误注入和更宽 conformance 矩阵仍需 lf1 实跑；
   `scripts/board_rk3576_h265_vs_mpp.sh` 是当前入口。
 - VDPU383 VP9 初始 7/7 已在 lf1 通过：profile 0/2、8/10-bit、lossless、
   errres tiles 和 720p；普通行与 C MPP 逐字节，720p errres 与 321x241

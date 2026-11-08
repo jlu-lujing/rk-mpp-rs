@@ -93,7 +93,7 @@ check "ioctl tracer (/tmp/mpp_trace.so)" "test -f /tmp/mpp_trace.so" || fail=1
 # scratch dumps are not - they are what the tests produce.
 CORPUS="$ORACLE_HOME/corpus"
 ssh "$BOARD" "mkdir -p $CORPUS"
-ssh "$BOARD" "cd /tmp && cp -a *.264 *.hevc *.ivf *.m2v *.m4v *.263 *.jpg $CORPUS/ 2>/dev/null || true"
+ssh "$BOARD" "cd /tmp && cp -a *.264 *.hevc *.bit *.ivf *.m2v *.m4v *.263 *.jpg $CORPUS/ 2>/dev/null || true"
 ssh "$BOARD" "cd /tmp && for f in *_ffmpeg.yuv *_ffmpeg_*.yuv *_mpp.yuv *_mpp_planar.yuv *_ref*.yuv *_planar.yuv; do
         case \"\$f\" in *_rust.yuv|*_now.yuv|*_repro.yuv|*_trace*.yuv|*src*.yuv) continue;; esac
         test -f \"\$f\" && cp -n \"\$f\" $CORPUS/ 2>/dev/null
