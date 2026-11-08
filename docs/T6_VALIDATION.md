@@ -88,8 +88,18 @@ t62 back to the RK3588 reference board.
 - Stock C MPP and Rust both emit 115,200-byte 320x240 YUV420p with SHA-256
   `6f5b544f53584c7de6d3acad5f4611ca2ee3d75ae259ab981ffca5e599b1b9fe`.
   The explicit gate is `scripts/board_rk3576_av1_vdpu383_key.sh`.
-- Multi-frame reference scheduling, inter pictures, 10-bit output and film
-  grain remain open.
+- The complete fixture now decodes all ten visible frames through VDPU383.
+  The Rust sequence models persistent output, colmv and working-CDF buffers for
+  all eight reference slots, including hidden pictures and
+  `show_existing_frame`. Its primary-reference coefficient-CDF state is
+  inherited exactly like C; the older current-frame `base_q_idx` shortcut
+  caused the first state divergence on the fourth coded job.
+- C and Rust both emit 1,152,000 bytes of 320x240 YUV420p. Frame-by-frame and
+  whole-sequence comparison is byte-identical, with SHA-256
+  `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`.
+  The explicit full-sequence gate is
+  `scripts/board_rk3576_av1_vdpu383_sequence.sh`.
+- VDPU383 10-bit output and film grain remain open.
 
 - RK3576 H.265 is an initial core-path closure. Random bit-flip injection and
   wider conformance streams still need lf1 evidence.
@@ -143,8 +153,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1207 tests**. The
-regular suite passes **1172 / 0 failed / 35 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1210 tests**. The
+regular suite passes **1174 / 0 failed / 36 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.

@@ -7,9 +7,10 @@
 
 use std::io;
 
-use crate::codec::av1::picparams::Av1PicParams;
+use crate::codec::av1::picparams::{Av1PicParams, PicReference};
 use crate::codec::yuv::nv12_to_planar;
 use crate::hal::vdpu383_regs::{self as reg, Field};
+use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_decode, VideoDecodeHal};
 use crate::service::{Batch, Client, MppService, RcbInfo, RegOffsetInfo, MPP_CMD_SET_RCB_INFO};
 
@@ -30,21 +31,25 @@ pub fn default_cdf_image() -> &'static [u8; DEFAULT_CDF_SIZE] {
 
 pub struct Session {
     svc: MppService,
-    global_header: crate::service::dma_heap::DmaBuf,
-    default_cdf: crate::service::dma_heap::DmaBuf,
-    working_cdf: crate::service::dma_heap::DmaBuf,
-    rcb: crate::service::dma_heap::DmaBuf,
-    colmv: crate::service::dma_heap::DmaBuf,
-    output: crate::service::dma_heap::DmaBuf,
-    stream: Option<crate::service::dma_heap::DmaBuf>,
+    global_header: DmaBuf,
+    default_cdf: DmaBuf,
+    rcb: DmaBuf,
+    stream: Option<DmaBuf>,
     width: usize,
     height: usize,
-    output_stride: usize,
-    output_height: usize,
     rcb_info_supported: bool,
     batch: Batch,
+    reference_cdf_state: [ReferenceCdfState; 8],
     pub last_status: (u32, u32, u32),
     pub last_hardware_error: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ReferenceCdfState {
+    // C's `Vdpu38xRefInfo` carries these two values beside each reference
+    // slot; they are not reconstructed from the decoded frame header.
+    valid: bool,
+    coefficient_index: u8,
 }
 
 impl Session {
@@ -57,58 +62,50 @@ impl Session {
         params.format.subsampling_x = 1;
         params.format.subsampling_y = 1;
         let plan = buffer_plan(&params);
-        let stride = tile_output_stride(width);
-        let ver_stride = align(height, 8);
-        let mut output =
-            crate::service::dma_heap::DmaBuf::alloc("system", stride * ver_stride * 2, false)
-                .map_err(|error| context(error, "allocate output"))?;
-        zero(&mut output).map_err(|error| context(error, "zero output"))?;
-        let mut working_cdf =
-            crate::service::dma_heap::DmaBuf::alloc("system", plan.working_cdf, false)
-                .map_err(|error| context(error, "allocate working CDF"))?;
-        zero(&mut working_cdf).map_err(|error| context(error, "zero working CDF"))?;
-        let mut rcb = crate::service::dma_heap::DmaBuf::alloc("system", plan.rcb.max(64), false)
+        let mut rcb = DmaBuf::alloc("system", plan.rcb.max(64), false)
             .map_err(|error| context(error, "allocate RCB"))?;
         zero(&mut rcb).map_err(|error| context(error, "zero RCB"))?;
-        let mut colmv =
-            crate::service::dma_heap::DmaBuf::alloc("system", plan.colmv.max(128), false)
-                .map_err(|error| context(error, "allocate colmv"))?;
-        zero(&mut colmv).map_err(|error| context(error, "zero colmv"))?;
         let svc = MppService::open(Client::RkvDec as u32)
             .map_err(|error| context(error, "open AV1 service"))?;
         let rcb_info_supported = svc.cmd_supported(MPP_CMD_SET_RCB_INFO);
-        let global_header =
-            crate::service::dma_heap::DmaBuf::alloc("system", plan.global_header, false)
-                .map_err(|error| context(error, "allocate global header"))?;
-        let default_cdf =
-            crate::service::dma_heap::DmaBuf::alloc("system", plan.default_cdf, false)
-                .map_err(|error| context(error, "allocate default CDF"))?;
+        let global_header = DmaBuf::alloc("system", plan.global_header, false)
+            .map_err(|error| context(error, "allocate global header"))?;
+        let default_cdf = DmaBuf::alloc("system", plan.default_cdf, false)
+            .map_err(|error| context(error, "allocate default CDF"))?;
         Ok(Self {
             svc,
             global_header,
             default_cdf,
-            working_cdf,
             rcb,
-            colmv,
-            output,
             stream: None,
             width,
             height,
-            output_stride: stride,
-            output_height: ver_stride,
             rcb_info_supported,
             batch: Batch::new(),
+            reference_cdf_state: [ReferenceCdfState::default(); 8],
             last_status: (0, 0, 0),
             last_hardware_error: false,
         })
     }
 
-    /// Decode one 8-bit intra picture into tightly packed YUV420p.
-    pub fn decode_intra(&mut self, params: &Av1PicParams, stream: &[u8]) -> io::Result<Vec<u8>> {
+    /// Decode one 8-bit picture into a persistent reference-capable frame.
+    pub fn decode(
+        &mut self,
+        params: &Av1PicParams,
+        stream: &[u8],
+        current: &mut Frame,
+        references: &[Option<&Frame>; 8],
+    ) -> io::Result<Vec<u8>> {
         if params.width as usize != self.width || params.height as usize != self.height {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "VDPU383 AV1 session geometry changed",
+            ));
+        }
+        if current.width != self.width || current.height != self.height {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "VDPU383 AV1 current frame geometry changed",
             ));
         }
         if params.bitdepth > 8 {
@@ -120,10 +117,15 @@ impl Session {
         let header = build_uncompressed_header(params);
         write(&mut self.global_header, &header)?;
         write(&mut self.default_cdf, DEFAULT_CDF)?;
-        zero(&mut self.working_cdf)?;
         zero(&mut self.rcb)?;
-        zero(&mut self.colmv)?;
-        zero(&mut self.output)?;
+        current.prepare_job()?;
+
+        let reference_outputs = references.map(|reference| reference.map(Frame::output_fd));
+        let reference_colmv = references.map(|reference| reference.map(Frame::colmv_fd));
+        let reference_cdfs = references.map(|reference| reference.map(Frame::cdf_fd));
+        let coefficient_index = self.coefficient_cdf_index(params);
+        let cdf_reference =
+            self.reference_cdf(params, &reference_cdfs, self.default_cdf.fd() as u32);
 
         let padded = align(stream.len(), 128).max(128);
         if self
@@ -132,9 +134,7 @@ impl Session {
             .is_none_or(|buffer| buffer.len() < padded)
         {
             self.stream = None;
-            self.stream = Some(crate::service::dma_heap::DmaBuf::alloc(
-                "system", padded, false,
-            )?);
+            self.stream = Some(DmaBuf::alloc("system", padded, false)?);
         }
         let stream_buffer = self.stream.as_mut().unwrap();
         write_padded(stream_buffer, stream, padded)?;
@@ -145,11 +145,15 @@ impl Session {
             global_header: self.global_header.fd() as u32,
             rcb: self.rcb.fd() as u32,
             cdf_default: self.default_cdf.fd() as u32,
-            cdf_current: self.working_cdf.fd() as u32,
-            output: self.output.fd() as u32,
-            colmv: self.colmv.fd() as u32,
+            cdf_current: current.cdf_fd() as u32,
+            cdf_reference,
+            output: current.output_fd() as u32,
+            colmv: current.colmv_fd() as u32,
+            reference_outputs,
+            reference_colmv,
+            reference_cdfs,
         };
-        let registers = Registers::build_intra(params, &buffers)
+        let registers = Registers::build(params, &buffers, coefficient_index)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let offsets = registers
             .offsets()
@@ -166,29 +170,6 @@ impl Session {
                 size: region.size,
             })
             .collect::<Vec<_>>();
-
-        if let Some(directory) = std::env::var_os("AV1_383_RUST_TRACE_DIR") {
-            use std::fmt::Write as _;
-
-            let directory = std::path::PathBuf::from(directory);
-            std::fs::create_dir_all(&directory)?;
-            std::fs::write(directory.join("global.bin"), header)?;
-            let mut text = String::new();
-            for (index, word) in registers.words().iter().enumerate() {
-                writeln!(text, "{index:03} {word:08x}").unwrap();
-            }
-            std::fs::write(directory.join("regs.txt"), &text)?;
-            text.clear();
-            for (index, offset) in offsets.iter().enumerate() {
-                writeln!(
-                    text,
-                    "{index:02} reg={} offset={}",
-                    offset.reg_idx, offset.offset
-                )
-                .unwrap();
-            }
-            std::fs::write(directory.join("offsets.txt"), text)?;
-        }
 
         let mut readback = [0u32; REGISTER_WORD_COUNT];
         self.batch.clear();
@@ -220,7 +201,134 @@ impl Session {
             )));
         }
 
-        let luma_size = self.output_stride * self.output_height;
+        self.update_reference_cdf_state(params, coefficient_index);
+        current.read_planar()
+    }
+
+    pub fn recover_session(&mut self) -> io::Result<()> {
+        self.svc.restart_after_hardware_error()
+    }
+
+    fn coefficient_cdf_index(&self, params: &Av1PicParams) -> u8 {
+        // A key frame or "primary reference none" selects from the current
+        // frame. Otherwise C reuses the primary reference slot's saved
+        // coefficient partition, even when the current base_q_idx differs.
+        if matches!(params.format.frame_type, 0 | 2) || params.primary_ref_frame >= 7 {
+            coefficient_index_for_q(params.quantization.base_qindex)
+        } else {
+            let slot = params.ref_frame_idx[params.primary_ref_frame as usize] as usize & 7;
+            self.reference_cdf_state[slot].coefficient_index
+        }
+    }
+
+    fn reference_cdf(
+        &self,
+        params: &Av1PicParams,
+        reference_cdfs: &[Option<u32>; 8],
+        default_cdf: u32,
+    ) -> Option<u32> {
+        if matches!(params.format.frame_type, 0 | 2) || params.primary_ref_frame >= 7 {
+            return None;
+        }
+        let slot = params.ref_frame_idx[params.primary_ref_frame as usize] as usize & 7;
+        if coding_bit(params.coding, 29) == 0 && self.reference_cdf_state[slot].valid {
+            Some(reference_cdfs[slot].unwrap_or(default_cdf))
+        } else {
+            Some(default_cdf)
+        }
+    }
+
+    fn update_reference_cdf_state(&mut self, params: &Av1PicParams, coefficient_index: u8) {
+        let frame_is_intra = matches!(params.format.frame_type, 0 | 2);
+        if frame_is_intra {
+            for state in &mut self.reference_cdf_state {
+                state.valid = false;
+            }
+        }
+        let disable_frame_end_update = coding_bit(params.coding, 29) != 0;
+        for slot in 0..8 {
+            if params.refresh_frame_flags & (1 << slot) == 0 {
+                continue;
+            }
+            if disable_frame_end_update {
+                self.reference_cdf_state[slot].coefficient_index =
+                    if frame_is_intra && params.show_existing_frame != 0 {
+                        let source = params.frame_to_show_map_idx as usize & 7;
+                        self.reference_cdf_state[source].coefficient_index
+                    } else {
+                        coefficient_index
+                    };
+            } else {
+                self.reference_cdf_state[slot].valid = true;
+                self.reference_cdf_state[slot].coefficient_index = 0;
+            }
+        }
+    }
+}
+
+pub struct Frame {
+    output: DmaBuf,
+    colmv: DmaBuf,
+    cdf: DmaBuf,
+    width: usize,
+    height: usize,
+    stride: usize,
+    ver_stride: usize,
+    pub texture_index: u8,
+}
+
+impl Frame {
+    pub fn new(width: usize, height: usize, texture_index: u8) -> io::Result<Self> {
+        let mut params = Av1PicParams::default();
+        params.width = width as u16;
+        params.height = height as u16;
+        params.bitdepth = 8;
+        params.format.subsampling_x = 1;
+        params.format.subsampling_y = 1;
+        let plan = buffer_plan(&params);
+        let stride = tile_output_stride(width);
+        let ver_stride = align(height, 8);
+        let mut output = DmaBuf::alloc("system", stride * ver_stride * 2, false)
+            .map_err(|error| context(error, "allocate output"))?;
+        zero(&mut output).map_err(|error| context(error, "zero output"))?;
+        let mut colmv = DmaBuf::alloc("system", plan.colmv.max(128), false)
+            .map_err(|error| context(error, "allocate colmv"))?;
+        zero(&mut colmv).map_err(|error| context(error, "zero colmv"))?;
+        let mut cdf = DmaBuf::alloc("system", plan.working_cdf, false)
+            .map_err(|error| context(error, "allocate working CDF"))?;
+        zero(&mut cdf).map_err(|error| context(error, "zero working CDF"))?;
+        Ok(Self {
+            output,
+            colmv,
+            cdf,
+            width,
+            height,
+            stride,
+            ver_stride,
+            texture_index,
+        })
+    }
+
+    pub fn output_fd(&self) -> u32 {
+        self.output.fd() as u32
+    }
+
+    pub fn colmv_fd(&self) -> u32 {
+        self.colmv.fd() as u32
+    }
+
+    pub fn cdf_fd(&self) -> u32 {
+        self.cdf.fd() as u32
+    }
+
+    fn prepare_job(&mut self) -> io::Result<()> {
+        zero(&mut self.output)?;
+        zero(&mut self.colmv)?;
+        zero(&mut self.cdf)
+    }
+
+    pub fn read_planar(&mut self) -> io::Result<Vec<u8>> {
+        let luma_size = self.stride * self.ver_stride;
         let output_size = luma_size * 3 / 2;
         self.output.sync_read_begin()?;
         let yuv = {
@@ -230,15 +338,11 @@ impl Session {
                 &bytes[luma_size..output_size],
                 self.width,
                 self.height,
-                self.output_stride,
+                self.stride,
             )
         };
         self.output.sync_read_end()?;
         Ok(yuv)
-    }
-
-    pub fn recover_session(&mut self) -> io::Result<()> {
-        self.svc.restart_after_hardware_error()
     }
 }
 
@@ -355,6 +459,7 @@ impl BitWriter {
 /// Serialize the VDPU383 AV1 global header exactly as
 /// `vdpu38x_av1d_uncomp_hdr()` does for RK3576.
 pub fn build_uncompressed_header(params: &Av1PicParams) -> [u8; UNCOMPRESSED_HEADER_SIZE] {
+    let params = &vdpu383_params(params);
     assert_ne!(params.width, 0);
     assert_ne!(params.height, 0);
     let mut w = BitWriter::new();
@@ -432,7 +537,7 @@ pub fn build_uncompressed_header(params: &Av1PicParams) -> [u8; UNCOMPRESSED_HEA
     }
     for index in 0..7 {
         let reference = params.ref_frame_idx[index] as usize & 7;
-        let bias = if params.order_hint_bits == 0 || params.frame_refs[index].index < 0 {
+        let bias = if params.order_hint_bits == 0 || params.frame_refs[reference].index < 0 {
             0
         } else {
             u32::from(
@@ -673,8 +778,12 @@ pub struct DmaBuffers {
     pub rcb: u32,
     pub cdf_default: u32,
     pub cdf_current: u32,
+    pub cdf_reference: Option<u32>,
     pub output: u32,
     pub colmv: u32,
+    pub reference_outputs: [Option<u32>; 8],
+    pub reference_colmv: [Option<u32>; 8],
+    pub reference_cdfs: [Option<u32>; 8],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -718,6 +827,19 @@ impl Registers {
         if !matches!(params.format.frame_type, 0 | 2) {
             return Err("VDPU383 AV1 register foundation currently accepts intra frames");
         }
+        Self::build(
+            params,
+            buffers,
+            coefficient_index_for_q(params.quantization.base_qindex),
+        )
+    }
+
+    pub fn build(
+        params: &Av1PicParams,
+        buffers: &DmaBuffers,
+        coefficient_index: u8,
+    ) -> Result<Self, &'static str> {
+        let params = &vdpu383_params(params);
         if params.width == 0 || params.height == 0 {
             return Err("VDPU383 AV1 picture has zero geometry");
         }
@@ -768,24 +890,25 @@ impl Registers {
         regs.words[131] = buffers.global_header;
         regs.words[168] = buffers.output;
         regs.words[169] = buffers.stream;
-        regs.words[178] = buffers.cdf_default;
+        let cdf_read = if matches!(params.format.frame_type, 0 | 2) || params.primary_ref_frame >= 7
+        {
+            buffers.cdf_default
+        } else {
+            buffers.cdf_reference.unwrap_or(buffers.cdf_default)
+        };
+        regs.words[178] = cdf_read;
         regs.words[179] = buffers.cdf_current;
+        regs.words[181] = buffers.cdf_reference.unwrap_or(0);
         regs.words[182] = buffers.cdf_current;
-        regs.words[184] = buffers.cdf_default;
+        regs.words[184] = cdf_read;
         regs.words[185] = buffers.cdf_current;
         regs.words[192] = buffers.output;
         regs.words[216] = buffers.colmv;
 
-        let coefficient_index = match params.quantization.base_qindex {
-            0..=20 => 0,
-            21..=60 => 1,
-            61..=120 => 2,
-            _ => 3,
-        };
         regs.offsets.extend([
             RegOffset {
                 reg_idx: 178,
-                offset: NON_COEF_CDF_SIZE + COEF_CDF_SIZE * coefficient_index,
+                offset: NON_COEF_CDF_SIZE + COEF_CDF_SIZE * u32::from(coefficient_index),
             },
             RegOffset {
                 reg_idx: 179,
@@ -800,6 +923,33 @@ impl Registers {
                 offset: ALL_CDF_SIZE,
             },
         ]);
+        for logical in 0..7 {
+            let mapped = params.ref_frame_idx[logical] as usize & 7;
+            if let Some(fd) = buffers.reference_outputs[mapped] {
+                regs.words[170 + mapped] = fd;
+                regs.words[195 + mapped] = fd;
+                let width = params.frame_ref_state[mapped].frame_width as usize;
+                let height = params.frame_ref_state[mapped].frame_height as usize;
+                if width != 0 && height != 0 {
+                    let stride = tile_output_stride(width);
+                    regs.words[83 + mapped * 3] = (stride / 16) as u32;
+                    regs.words[84 + mapped * 3] = (stride / 16) as u32;
+                    regs.words[85 + mapped * 3] = (stride * align(height, 8) / 16) as u32;
+                }
+            }
+        }
+        let present_colmv = buffers
+            .reference_colmv
+            .iter()
+            .filter_map(|fd| *fd)
+            .collect::<Vec<_>>();
+        for index in 0..8 {
+            if let Some(fd) = buffers.reference_colmv[index] {
+                regs.words[217 + index] = fd;
+            } else if present_colmv.len() == 1 {
+                regs.words[217 + index] = present_colmv[0];
+            }
+        }
         regs.offsets.sort_unstable_by_key(|offset| offset.reg_idx);
         Ok(regs)
     }
@@ -833,6 +983,20 @@ impl Registers {
         self.words[field.word] =
             (self.words[field.word] & !(mask << shift)) | ((value & mask) << shift);
     }
+}
+
+fn vdpu383_params(params: &Av1PicParams) -> Av1PicParams {
+    let mut output = *params;
+    if params.ref_frame_valued == 0 {
+        return output;
+    }
+    let logical = params.frame_refs;
+    output.frame_refs = [PicReference::default(); 8];
+    for index in 0..7 {
+        let mapped = params.ref_frame_idx[index] as usize & 7;
+        output.frame_refs[mapped] = logical[index];
+    }
+    output
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -984,6 +1148,15 @@ fn coding_bit(coding: u64, bit: u8) -> u32 {
     ((coding >> bit) & 1) as u32
 }
 
+fn coefficient_index_for_q(base_qindex: u8) -> u8 {
+    match base_qindex {
+        0..=20 => 0,
+        21..=60 => 1,
+        61..=120 => 2,
+        _ => 3,
+    }
+}
+
 fn coding_bits(coding: u64, first: u8, width: u8) -> u32 {
     let mask = if width == 64 {
         u64::MAX
@@ -1105,6 +1278,41 @@ mod tests {
         (params, frame.stream_len)
     }
 
+    fn first_two_coded_frames() -> (
+        crate::codec::av1::parser::SequenceHeader,
+        crate::codec::av1::assembler::Av1CodedFrame,
+        crate::codec::av1::assembler::Av1CodedFrame,
+    ) {
+        let data = include_bytes!("../../tests/data/av1_tiles_320x240_10.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut parser = Av1PacketParser::new();
+        let mut frames = Vec::new();
+        for packet in &ivf.frames {
+            parser.begin_packet();
+            let obus = split_obus(packet.data).unwrap();
+            let mut cursor = 0;
+            while let Some(event) = parser.parse_next_event(&obus, &mut cursor).unwrap() {
+                let Av1PacketEvent::Coded(frame) = event else {
+                    continue;
+                };
+                if frames.is_empty() {
+                    let hardware = frame.cdf.regular.as_bytes().to_vec();
+                    parser.apply_hardware_cdf(frame.header.refresh_frame_flags, true, &hardware);
+                    frames.push(frame);
+                } else {
+                    frames.push(frame);
+                    break;
+                }
+            }
+            if frames.len() == 2 {
+                break;
+            }
+        }
+        let second = frames.pop().unwrap();
+        let first = frames.pop().unwrap();
+        (parser.sequence().unwrap().clone(), first, second)
+    }
+
     #[test]
     fn real_keyframe_header_matches_the_c_vdpu383_dump() {
         let golden = include_bytes!("../../tests/data/av1_vdpu383_global_key_320x240.bin");
@@ -1130,8 +1338,12 @@ mod tests {
             rcb: 15,
             cdf_default: 12,
             cdf_current: 19,
+            cdf_reference: None,
             output: 14,
             colmv: 18,
+            reference_outputs: [None; 8],
+            reference_colmv: [None; 8],
+            reference_cdfs: [None; 8],
         };
         let registers = Registers::build_intra(&params, &buffers).unwrap();
         let golden = include_bytes!("../../tests/data/av1_vdpu383_regs_key_320x240.bin");
@@ -1140,5 +1352,76 @@ mod tests {
             .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
             .collect::<Vec<_>>();
         assert_eq!(registers.reference_sections(), expected);
+    }
+
+    #[test]
+    fn first_inter_registers_match_the_c_vdpu383_dump() {
+        let (sequence, _, frame) = first_two_coded_frames();
+        let params = Av1PicParams::build(
+            &sequence,
+            &frame.header,
+            &frame.references_at_header,
+            &frame.cdf,
+            &frame.tile_ranges,
+            frame.frame_start,
+            frame.frame_tag_size,
+            1,
+            &[0; 8],
+            PicParamsPointers::default(),
+        );
+        let buffers = DmaBuffers {
+            stream: 20,
+            stream_len: frame.stream_len,
+            global_header: 11,
+            rcb: 15,
+            cdf_default: 12,
+            cdf_current: 23,
+            cdf_reference: None,
+            output: 21,
+            colmv: 22,
+            reference_outputs: [Some(14), None, None, None, None, None, None, None],
+            reference_colmv: [Some(18), None, None, None, None, None, None, None],
+            reference_cdfs: [None; 8],
+        };
+        let registers = Registers::build(
+            &params,
+            &buffers,
+            coefficient_index_for_q(params.quantization.base_qindex),
+        )
+        .unwrap();
+        let golden = include_bytes!("../../tests/data/av1_vdpu383_regs_inter_320x240.bin");
+        let expected = golden
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(registers.reference_sections(), expected);
+    }
+
+    #[test]
+    fn inter_frames_use_the_primary_reference_coefficient_cdf_index() {
+        let (sequence, _, frame) = first_two_coded_frames();
+        let params = Av1PicParams::build(
+            &sequence,
+            &frame.header,
+            &frame.references_at_header,
+            &frame.cdf,
+            &frame.tile_ranges,
+            frame.frame_start,
+            frame.frame_tag_size,
+            1,
+            &[0; 8],
+            PicParamsPointers::default(),
+        );
+        let buffers = DmaBuffers::default();
+
+        for (coefficient_index, expected_offset) in [(0, 6_944), (1, 12_608), (2, 18_272)] {
+            let registers = Registers::build(&params, &buffers, coefficient_index).unwrap();
+            let offset = registers
+                .offsets()
+                .iter()
+                .find(|offset| offset.reg_idx == 178)
+                .unwrap();
+            assert_eq!(offset.offset, expected_offset);
+        }
     }
 }

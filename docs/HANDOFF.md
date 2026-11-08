@@ -512,8 +512,14 @@ colmv。下一步优先做真实 STATUS 异常恢复，而不是重复已完成�
   提交真实 VDPU383 首 keyframe；320x240 YUV420p 与 stock C MPP 逐字节，
   SHA-256
   `6f5b544f53584c7de6d3acad5f4611ca2ee3d75ae259ab981ffca5e599b1b9fe`。
-  下一步是 multi-frame/reference CDF state、inter pictures、10-bit 和
-  film-grain。
+  多帧路径现已闭合：`Session::decode` 接收当前 persistent `Frame` 和八个参考槽，
+  每个 frame 持有 output/colmv/working-CDF DMA；session 按 C 的
+  `ref_info_tbl[].cdf_valid/coeff_idx` 维护主参考的 coefficient-CDF 分区。
+  320x240 的 10 个显示帧与 stock C MPP 三平面逐字节相同，共 1,152,000 bytes，
+  SHA-256
+  `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`。
+  完整入口为 `scripts/board_rk3576_av1_vdpu383_sequence.sh`；仍待实现的是
+  VDPU383 10-bit output 和 film grain。
 - VDPU383 VP9 初始 7/7 已在 lf1 通过：profile 0/2、8/10-bit、lossless、
   errres tiles 和 720p；普通行与 C MPP 逐字节，720p errres 与 321x241
   继续按既有 libvpx 判据处理 C 侧 bug。VDPU383 的 global header、1312-byte

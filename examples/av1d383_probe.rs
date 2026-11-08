@@ -1,7 +1,7 @@
 use rk_mpp_rs::codec::av1::assembler::{Av1PacketEvent, Av1PacketParser};
 use rk_mpp_rs::codec::av1::parser::{parse_ivf, split_obus};
 use rk_mpp_rs::codec::av1::picparams::{Av1PicParams, PicParamsPointers};
-use rk_mpp_rs::hal::av1d383::Session;
+use rk_mpp_rs::hal::av1d383::{Frame, Session};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
@@ -42,7 +42,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get(start..end)
         .ok_or("frame stream exceeds packet")?;
     let mut session = Session::open(params.width as usize, params.height as usize)?;
-    let yuv = session.decode_intra(&params, stream)?;
+    let mut frame = Frame::new(params.width as usize, params.height as usize, 0)?;
+    let yuv = session.decode(&params, stream, &mut frame, &[None; 8])?;
     std::fs::write(&args[2], yuv)?;
     println!(
         "decoded {}x{} status={:?} hardware_error={}",

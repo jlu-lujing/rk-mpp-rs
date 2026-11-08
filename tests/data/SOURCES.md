@@ -22,6 +22,12 @@ cargo test --test fixture_manifest
   `Vdpu383RegSet` from the same C job.
 - `av1_vdpu383_key_frame_320x240.yuv` is the first displayed 320x240 YUV420p
   frame emitted by stock C MPP for that job.
+- `av1_vdpu383_regs_inter_320x240.bin` is the 848-byte serialized
+  `Vdpu383RegSet` for the first inter-coded job in the same fixture.
+- `av1_vdpu383_sequence_320x240.yuv` is the complete ten-frame, 1,152,000-byte
+  planar output emitted by stock C MPP for `av1_tiles_320x240_10.ivf` on lf1.
+  Rust VDPU383 output is byte-identical and has SHA-256
+  `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`.
 - `av1_lr_320x240.ivf` is two frames of FFmpeg `testsrc2` encoded by libaom
   `aomenc` with 64x64 superblocks, CDEF and loop restoration enabled, and
   palette/intra-BC disabled:

@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1207
-      enumerated / 1172 regular pass / 0 failed / 35 board-only ignored, and
-      the release library suite is 1028 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1210
+      enumerated / 1174 regular pass / 0 failed / 36 board-only ignored, and
+      the release library suite is 1030 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3205,9 +3205,20 @@ pipeline uses.
   commands and DMA binding now drive a real first-keyframe job. Its 320x240
   YUV420p output is 115,200 bytes and byte-exact to stock C MPP, SHA-256
   `6f5b544f53584c7de6d3acad5f4611ca2ee3d75ae259ab981ffca5e599b1b9fe`.
-  Multi-frame reference scheduling, inter pictures, 10-bit and film grain
-  remain open. H.265 random-error rows, AV1/AVS2, VEPU510, VPU720 tile input
-  and VDPP2 remain in progress. VPU720 low-delay is an explicit reject:
+  The first inter job's serialized `Vdpu383RegSet` is also byte-exact
+  (`fbff4195893b347dc2428c33d347e2d818e6fcd96e32e20a1903b2765dde61c2`).
+  The full ten-picture sequence is also byte-exact. Persistent frames own
+  output/colmv/working-CDF DMA, the eight reference slots remain live through
+  hidden and `show_existing_frame` pictures, and the session carries C's
+  `ref_info_tbl[].cdf_valid/coeff_idx` state so an inter picture reads the
+  primary reference's coefficient-CDF partition. Recomputing that partition
+  from the current `base_q_idx` first diverged on coded job four. The complete
+  1,152,000-byte C/Rust planar output has SHA-256
+  `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`;
+  `scripts/board_rk3576_av1_vdpu383_sequence.sh` is the gate. VDPU383 10-bit
+  and film grain remain open. H.265 random-error rows, AV1/AVS2, VEPU510,
+  VPU720 tile input and VDPP2 remain in progress. VPU720 low-delay is an
+  explicit reject:
   its C HAL has null `part_start`/`part_wait`, which makes the reference probe
   spin on zero-length packets.
 - The first VEPU510 H.264 foundation is generated from the C structs:
@@ -3308,8 +3319,8 @@ pipeline uses.
   Rust's `open_tile_columns(2)` rejects before any DMA or hardware allocation.
   With this boundary and the 10-bit rejection, the VEPU510 H.265 board matrix
   is 15/15. Wider STATUS feedback remains open.
-- Tests: `cargo test --release --all-targets` enumerates 1207 tests: 1172
-  regular pass and 35 ignored hardware tests on t6. The four JPEG hardware
+- Tests: `cargo test --release --all-targets` enumerates 1210 tests: 1174
+  regular pass and 36 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.
   Coverage includes OBU/frame-header/CDF/PicParams snapshots, AV1 software
