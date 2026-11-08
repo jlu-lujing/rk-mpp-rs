@@ -71,10 +71,11 @@ t62 back to the RK3588 reference board.
 
 ## 2026-11-08 RK3576 / lf1 VPU720 JPEG bring-up
 
-- The VPU720 qfactor-50 matrix is **15/15**. NV12 passes at 320x240, 640x480,
+- The VPU720 qfactor-50 matrix is **19/19**. NV12 passes at 320x240, 640x480,
   1280x720 and with a 320x240 60-MCU restart; 320x240 NV16, I420, NV21,
   YUV422P, NV61, YUYV, YVYU, UYVY, VYUY, NV24 and YUV444P also match the
-  installed C MPP byte-for-byte.
+  installed C MPP byte-for-byte. YUV400 input and 400/420/422/444 output add
+  the last four rows.
 - NV12 output sizes are 5,029, 12,028, 28,124 and 5,041 bytes. The 320x240
   4:2:0 variants are 5,029, 4:2:2/packed variants are 5,009, and 4:4:4 variants
   are 4,967 bytes. The Rust path uses client 20, the VPU720 43-word register
@@ -82,9 +83,11 @@ t62 back to the RK3588 reference board.
   byte count.
 - `scripts/board_rk3576_jpege_vs_mpp.sh` is the reproducible lf1 gate. A shared
   layout model derives storage size, U/V offsets, chroma stride and UV-swap.
-  Tile/YUV400 input, non-420 output and low-delay remain; the low-delay C probe
-  currently enters a zero-length packet loop. The C VPU720 HAL exposes neither
-  an RGB input case nor a rotation register, so Rust rejects both explicitly.
+  Tile input remains. C's 422/444 outputs are only 623 bytes for the NV12
+  fixture, and Rust matches those bytes. Low-delay is an explicit reject
+  because the C VPU720 HAL has null `part_start`/`part_wait`; the reference
+  probe spins on zero-length packets. The HAL also exposes neither an RGB input
+  case nor a rotation register, so Rust rejects both explicitly.
 
 ## Environment
 
@@ -99,8 +102,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1173 tests**. The
-regular suite passes **1139 / 0 failed / 34 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1175 tests**. The
+regular suite passes **1141 / 0 failed / 34 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.

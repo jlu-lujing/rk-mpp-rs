@@ -257,9 +257,11 @@ fn build_registers(
     header_len: usize,
     config: EncoderConfig,
 ) -> Result<RegisterFile, String> {
-    let encode_width = align(config.width, 16);
-    let encode_height = align(config.height, 16);
-    let mcu_count = (encode_width / 16) * (encode_height / 16);
+    let (mcu_width, mcu_height) = config.chroma.mcu_size();
+    let encode_width = align(config.width, mcu_width);
+    let encode_height = align(config.height, mcu_height);
+    let (mcu_hor, mcu_ver) = config.mcu_counts();
+    let mcu_count = mcu_hor * mcu_ver;
     let mut words = [0u32; BASE_REG_COUNT];
     words[1] = 1 << 8; // JPEG_VPU720_ENC_MODE_ONE_FRAME
     words[4] = 0x1fff;
@@ -291,10 +293,11 @@ fn build_registers(
         InputFormat::Vyuy => (9, true),      // UYVY422 with U/V swap
         InputFormat::Nv24 => (12, false),    // YUV444SP
         InputFormat::Yuv444p => (13, false), // YUV444P
+        InputFormat::Yuv400 => (10, false),  // YUV400
         _ => return Err("unsupported VPU720 input format".into()),
     };
     let layout = config.input_layout()?;
-    words[32] = (input_format << 2) | ((uv_swap as u32) << 1) | (1 << 6); // YUV420 output
+    words[32] = (input_format << 2) | ((uv_swap as u32) << 1) | (config.chroma.vpu720_bits() << 6);
     words[34] = config.hor_stride as u32;
     words[35] = layout.uv_stride as u32;
     let restart = config
@@ -336,6 +339,12 @@ fn validate_config(config: EncoderConfig) -> Result<(), String> {
     config.validate()?;
     if config.rotation != Rotation::None {
         return Err("VPU720 does not support rotation".into());
+    }
+    if config.low_delay {
+        return Err(
+            "VPU720 does not expose the part_start/part_wait path required for low-delay output"
+                .into(),
+        );
     }
     if !config.input.supported_by_vpu720() {
         return Err(format!("VPU720 does not support {:?} input", config.input));
@@ -410,6 +419,7 @@ mod tests {
             (InputFormat::Nv61, 4, 1, 320, 76_800, 0, 153_600),
             (InputFormat::Nv24, 12, 0, 640, 76_800, 0, 230_400),
             (InputFormat::Yuv444p, 13, 0, 320, 76_800, 153_600, 230_400),
+            (InputFormat::Yuv400, 10, 0, 0, 0, 0, 76_800),
         ] {
             let config = EncoderConfig::new_for_input(320, 240, input);
             let regs = build_registers(1, 2, 3, 4096, 623, config).unwrap();
@@ -435,5 +445,34 @@ mod tests {
                 (v_offset != 0).then_some(v_offset)
             );
         }
+    }
+
+    #[test]
+    fn vpu720_registers_describe_all_four_output_chroma_modes() {
+        for (chroma, output_bits, mcu_count) in [
+            (ChromaFormat::Gray, 0, 40 * 30),
+            (ChromaFormat::Yuv420, 1, 20 * 15),
+            (ChromaFormat::Yuv422, 2, 20 * 30),
+            (ChromaFormat::Yuv444, 3, 40 * 30),
+        ] {
+            let config = EncoderConfig {
+                chroma,
+                ..EncoderConfig::new(320, 240)
+            };
+            let regs = build_registers(1, 2, 3, 4096, 623, config).unwrap();
+            assert_eq!(regs.words[11], (mcu_count as u32) * 1000);
+            assert_eq!(regs.words[32], (6 << 2) | (output_bits << 6));
+        }
+    }
+
+    #[test]
+    fn vpu720_rejects_low_delay_output_without_part_methods() {
+        let config = EncoderConfig {
+            low_delay: true,
+            split_mcus: Some(60),
+            ..EncoderConfig::new(320, 240)
+        };
+        let error = validate_config(config).unwrap_err();
+        assert!(error.contains("part_start/part_wait"));
     }
 }

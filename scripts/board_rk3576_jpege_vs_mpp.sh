@@ -33,7 +33,8 @@ check_case() {
     local height="$2"
     local split="${3:-0}"
     local input="${4:-nv12}"
-    local tag="${width}x${height}_${input}"
+    local output="${5:-420}"
+    local tag="${width}x${height}_${input}_out${output}"
     local src="/tmp/vpu720_${tag}.raw"
     local suffix=""
     [ "$split" -eq 0 ] || suffix="_rst${split}"
@@ -41,7 +42,7 @@ check_case() {
     local rust_out="/tmp/vpu720_${tag}${suffix}_rust.jpg"
     local c_log="/tmp/vpu720_${tag}${suffix}_c.log"
     local rust_log="/tmp/vpu720_${tag}${suffix}_rust.log"
-    local pix_fmt mpp_fmt derive=""
+    local pix_fmt mpp_fmt mpp_output rust_chroma derive=""
 
     case "$input" in
         nv12)
@@ -94,8 +95,35 @@ check_case() {
             pix_fmt=yuv444p
             mpp_fmt=16
             ;;
+        yuv400)
+            pix_fmt=gray
+            mpp_fmt=12
+            ;;
         *)
             printf 'unsupported input format: %s\n' "$input" >&2
+            return 2
+            ;;
+    esac
+
+    case "$output" in
+        400|gray)
+            mpp_output=1
+            rust_chroma=gray
+            ;;
+        420)
+            mpp_output=4
+            rust_chroma=420
+            ;;
+        422)
+            mpp_output=5
+            rust_chroma=422
+            ;;
+        444)
+            mpp_output=7
+            rust_chroma=444
+            ;;
+        *)
+            printf 'unsupported output chroma: %s\n' "$output" >&2
             return 2
             ;;
     esac
@@ -129,11 +157,12 @@ os.replace(temporary, src)
     rm -f "$c_out" "$rust_out" "$c_log" "$rust_log"
     LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/jpege_probe720 \
         "$src" "$c_out" "$width" "$height" 50 "$split" 0 "$mpp_fmt" \
+        "$mpp_output" \
         >"$c_log" 2>&1
     local rust_extra=()
     [ "$split" -eq 0 ] || rust_extra=("rst${split}")
     timeout 120 ./target/debug/rk-mpp-rs jpeg-enc \
-        "$src" "$rust_out" "$width" "$height" qf50 420 "$input" \
+        "$src" "$rust_out" "$width" "$height" qf50 "$rust_chroma" "$input" \
         "${rust_extra[@]}" >"$rust_log" 2>&1
     cmp "$c_out" "$rust_out"
     printf 'PASS %-12s split=%-3s %s bytes\n' \
@@ -155,5 +184,9 @@ check_case 320 240 0 uyvy
 check_case 320 240 0 vyuy
 check_case 320 240 0 nv24
 check_case 320 240 0 yuv444p
+check_case 320 240 0 yuv400
+check_case 320 240 0 nv12 400
+check_case 320 240 0 nv12 422
+check_case 320 240 0 nv12 444
 printf 'PASS RK3576 VPU720 JPEG baseline matrix\n'
 REMOTE

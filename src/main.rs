@@ -2074,7 +2074,7 @@ fn main() {
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         if src.is_empty() || dst.is_empty() {
             eprintln!(
-                "usage: rk-mpp-rs jpeg-enc <in.yuv> <out.jpg> <width> <height> [quant 0..10|qf<1..100>] [420|422|gray|444] [nv12|nv21|i420|nv16|nv61|yuv422p|yuyv|yvyu|uyvy|vyuy|nv24|yuv444p|rgb565|bgr565|rgb555|bgr555|rgb444|bgr444|rgb101010|bgr101010|argb8888|abgr8888|bgra8888|rgba8888] [rst<mcus>] [rot90|rot270] [splitout:lowdelay]"
+                "usage: rk-mpp-rs jpeg-enc <in.yuv> <out.jpg> <width> <height> [quant 0..10|qf<1..100>] [420|422|gray|444] [nv12|nv21|i420|nv16|nv61|yuv422p|yuyv|yvyu|uyvy|vyuy|nv24|yuv444p|yuv400|rgb565|bgr565|rgb555|bgr555|rgb444|bgr444|rgb101010|bgr101010|argb8888|abgr8888|bgra8888|rgba8888] [rst<mcus>] [rot90|rot270] [splitout:lowdelay]"
             );
             std::process::exit(2);
         }
@@ -2118,6 +2118,7 @@ fn main() {
             Some("vyuy") => jpege::InputFormat::Vyuy,
             Some("nv24") => jpege::InputFormat::Nv24,
             Some("yuv444p") => jpege::InputFormat::Yuv444p,
+            Some("yuv400") => jpege::InputFormat::Yuv400,
             Some("rgb565") => jpege::InputFormat::Rgb565,
             Some("bgr565") => jpege::InputFormat::Bgr565,
             Some("rgb555") => jpege::InputFormat::Rgb555,

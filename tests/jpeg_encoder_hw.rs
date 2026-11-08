@@ -317,17 +317,19 @@ fn non_420_output_is_rejected_before_hardware_submission() {
 }
 
 #[test]
-fn config_rejects_non_420_output() {
-    for chroma in [
-        ChromaFormat::Gray,
-        ChromaFormat::Yuv422,
-        ChromaFormat::Yuv444,
+fn config_accepts_all_output_chroma_modes() {
+    for (chroma, mcu_size) in [
+        (ChromaFormat::Gray, (8, 8)),
+        (ChromaFormat::Yuv420, (16, 16)),
+        (ChromaFormat::Yuv422, (16, 8)),
+        (ChromaFormat::Yuv444, (8, 8)),
     ] {
         let config = EncoderConfig {
             chroma,
             ..EncoderConfig::new(320, 240)
         };
-        assert!(config.validate().is_err());
+        assert!(config.validate().is_ok());
+        assert_eq!(config.mcu_counts(), (320 / mcu_size.0, 240 / mcu_size.1));
     }
 
     let yuyv = EncoderConfig::new_for_input(320, 240, InputFormat::Yuyv);

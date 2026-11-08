@@ -118,6 +118,20 @@ impl ChromaFormat {
             Self::Yuv444 => &[(1, 1, 1, 0), (2, 1, 1, 1), (3, 1, 1, 1)],
         }
     }
+
+    pub(crate) fn mcu_size(self) -> (usize, usize) {
+        let (_, h, v, _) = self.components()[0];
+        (h as usize * 8, v as usize * 8)
+    }
+
+    pub(crate) fn vpu720_bits(self) -> u32 {
+        match self {
+            Self::Gray => 0,
+            Self::Yuv420 => 1,
+            Self::Yuv422 => 2,
+            Self::Yuv444 => 3,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -146,6 +160,8 @@ pub enum InputFormat {
     Nv24,
     /// Planar 4:4:4: Y, then U, then V.
     Yuv444p,
+    /// Luma-only 4:0:0 input.
+    Yuv400,
     Rgb565,
     Bgr565,
     Rgb555,
@@ -172,7 +188,8 @@ impl InputFormat {
             | Self::Yuv422p
             | Self::Nv61
             | Self::Nv24
-            | Self::Yuv444p => 1,
+            | Self::Yuv444p
+            | Self::Yuv400 => 1,
             Self::Yuyv
             | Self::Yvyu
             | Self::Uyvy
@@ -207,6 +224,7 @@ impl InputFormat {
                 | Self::Vyuy
                 | Self::Nv24
                 | Self::Yuv444p
+                | Self::Yuv400
         )
     }
 
@@ -230,7 +248,8 @@ impl InputFormat {
             | Self::Yvyu
             | Self::Vyuy
             | Self::Nv24
-            | Self::Yuv444p => None,
+            | Self::Yuv444p
+            | Self::Yuv400 => None,
         }
     }
 
@@ -257,7 +276,8 @@ impl InputFormat {
             | Self::Yvyu
             | Self::Vyuy
             | Self::Nv24
-            | Self::Yuv444p => 0,
+            | Self::Yuv444p
+            | Self::Yuv400 => 0,
         }
     }
 
@@ -276,6 +296,7 @@ impl InputFormat {
                 | Self::Vyuy
                 | Self::Nv24
                 | Self::Yuv444p
+                | Self::Yuv400
         )
     }
 
@@ -308,7 +329,8 @@ impl InputFormat {
             | Self::Uyvy
             | Self::Vyuy
             | Self::Nv24
-            | Self::Yuv444p => None,
+            | Self::Yuv444p
+            | Self::Yuv400 => None,
         }
     }
 }
@@ -436,12 +458,6 @@ impl EncoderConfig {
         }
         if self.width > u16::MAX as usize || self.height > u16::MAX as usize {
             return Err("baseline JPEG dimensions must fit in 16 bits".into());
-        }
-        if self.chroma != ChromaFormat::Yuv420 {
-            return Err(format!(
-                "{:?} output is unsupported on this hardware; JPEG encoding is limited to 4:2:0",
-                self.chroma
-            ));
         }
         let minimum_stride = self
             .width
@@ -627,7 +643,11 @@ impl EncoderConfig {
     /// MCU 16x16, matching `init_jpeg_component_info()`.
     pub fn mcu_counts(self) -> (usize, usize) {
         let (width, height) = self.output_size();
-        (align(width, 16) / 16, align(height, 16) / 16)
+        let (mcu_width, mcu_height) = self.chroma.mcu_size();
+        (
+            align(width, mcu_width) / mcu_width,
+            align(height, mcu_height) / mcu_height,
+        )
     }
 
     /// The split plan and derived restart interval, mirroring the
@@ -852,12 +872,7 @@ impl Vepu2Jpeg {
         input: &[u8],
         config: EncoderConfig,
     ) -> Result<EncodedJpeg, String> {
-        if config.input.vepu_format().is_none() {
-            return Err(format!(
-                "VEPU2 JPEG does not support {:?} input",
-                config.input
-            ));
-        }
+        validate_config(config)?;
         let input_size = config.input_size()?;
         let input_allocation_size = config.input_allocation_size()?;
         if input.len() < input_size {
@@ -902,7 +917,7 @@ impl Vepu2Jpeg {
         input_fd: i32,
         config: EncoderConfig,
     ) -> Result<EncodedJpeg, String> {
-        config.validate()?;
+        validate_config(config)?;
         let prepared = prepare_header(config)?;
         if self.output.as_ref().map(DmaBuf::len).unwrap_or(0) < config.output_capacity {
             self.output = Some(
@@ -1301,6 +1316,23 @@ fn find_marker(stream: &[u8], marker: u16) -> Option<usize> {
     stream
         .windows(2)
         .position(|window| window == marker.as_slice())
+}
+
+fn validate_config(config: EncoderConfig) -> Result<(), String> {
+    config.validate()?;
+    if config.chroma != ChromaFormat::Yuv420 {
+        return Err(format!(
+            "{:?} output is unsupported on this hardware; VEPU2 JPEG is limited to 4:2:0",
+            config.chroma
+        ));
+    }
+    if config.input.vepu_format().is_none() {
+        return Err(format!(
+            "VEPU2 JPEG does not support {:?} input",
+            config.input
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn prepare_header(config: EncoderConfig) -> Result<PreparedHeader, String> {

@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1173
-      enumerated / 1139 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 995 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1175
+      enumerated / 1141 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 997 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3175,14 +3175,17 @@ pipeline uses.
   lossless, error-resilient tiles and 720p. Regular rows are byte-identical to
   C MPP; the 720p segmentation and 321x241 frame-count rows retain the existing
   libvpx adjudication of C defects. The VPU720 JPEG path is byte-identical over
-  15/15 qfactor-50 cells: 320x240/640x480/1280x720 NV12, a 320x240 60-MCU
-  restart, and 320x240 NV16, I420, NV21, YUV422P, NV61, YUYV, YVYU, UYVY,
-  VYUY, NV24 and YUV444P input to YUV420 output. One input-layout model now
-  derives storage size, U/V offsets, chroma stride and UV-swap for both packed
-  and planar formats; source formats, reg035 and reg023/024 offsets follow the
-  C setup-format switch. LTR/error rows, AV1/AVS2, VEPU510, VPU720 tile/YUV400/
-  low-delay modes and VDPP2 remain in progress.
-- Tests: `cargo test --release --all-targets` enumerates 1173 tests: 1139
+  19/19 qfactor-50 cells: 320x240/640x480/1280x720 NV12, a 320x240 60-MCU
+  restart, 320x240 NV16, I420, NV21, YUV422P, NV61, YUYV, YVYU, UYVY, VYUY,
+  NV24, YUV444P and YUV400 input, plus 400/420/422/444 output. One input-layout
+  model derives storage size, U/V offsets, chroma stride and UV-swap for both
+  packed and planar formats; source formats, reg035 and reg023/024 offsets
+  follow the C setup-format switch. C emits the same short 623-byte 422/444
+  streams from the NV12 fixture. LTR/error rows, AV1/AVS2, VEPU510, VPU720 tile
+  input and VDPP2 remain in progress. VPU720 low-delay is an explicit reject:
+  its C HAL has null `part_start`/`part_wait`, which makes the reference probe
+  spin on zero-length packets.
+- Tests: `cargo test --release --all-targets` enumerates 1175 tests: 1141
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

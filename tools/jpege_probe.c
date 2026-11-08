@@ -4,7 +4,7 @@
  *
  * Usage:
  *   jpege_probe in.raw out.jpg width height qfactor split_arg low_delay
- *               [mpp_input_format]
+ *               [mpp_input_format] [mpp_output_chroma]
  *
  * `split_arg` is MPP_ENC_SPLIT_BY_CTU's MCU count. Zero disables the split.
  * `low_delay` sets base:low_delay and split:out=1. Packets are drained to EOI
@@ -13,6 +13,7 @@
  * `mpp_input_format` defaults to MPP_FMT_YUV420SP. It accepts the 8-bit
  * NV12/NV21/I420, NV16/NV61/422P, four packed 4:2:2 orders, and NV24/444P
  * families used by the RK3576 VPU720 gate.
+ * `mpp_output_chroma` defaults to MPP_CHROMA_UNSPECIFIED (which selects 4:2:0).
  */
 
 #include <errno.h>
@@ -140,6 +141,9 @@ int main(int argc, char **argv)
     int low_delay = argc > 7 ? atoi(argv[7]) : 0;
     MppFrameFormat input_format =
         argc > 8 ? (MppFrameFormat)atoi(argv[8]) : MPP_FMT_YUV420SP;
+    MppFrameChromaFormat output_chroma =
+        argc > 9 ? (MppFrameChromaFormat)atoi(argv[9])
+                 : MPP_CHROMA_UNSPECIFIED;
     int packed_yuv422 = input_format == MPP_FMT_YUV422_YUYV ||
                         input_format == MPP_FMT_YUV422_YVYU ||
                         input_format == MPP_FMT_YUV422_UYVY ||
@@ -181,7 +185,8 @@ int main(int argc, char **argv)
         width < 16 || height < 16 || (width & 1) || (height & 1)) {
         fprintf(stderr,
                 "usage: jpege_probe in.raw out.jpg width height "
-                "qfactor split_arg low_delay [mpp_input_format]\n");
+                "qfactor split_arg low_delay [mpp_input_format] "
+                "[mpp_output_chroma]\n");
         return 2;
     }
 
@@ -221,6 +226,8 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", input_format));
+    if (output_chroma != MPP_CHROMA_UNSPECIFIED)
+        CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format_out", output_chroma));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:mode", MPP_ENC_RC_MODE_FIXQP));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 60));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", 0));

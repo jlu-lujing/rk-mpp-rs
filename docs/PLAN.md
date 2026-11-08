@@ -488,8 +488,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       （Main/Main10、B、tiles、真实 WPP、720p、DSLICE、SPS/PPS scaling list）
       也已逐字节，176-byte global packet 与 C dump 相同；VP9 初始 7/7
       （profile 0/2、8/10-bit、lossless、tiles，两个 C bug 由 libvpx 判定）；
-      VPU720 JPEG 15/15（3 sizes + 60-MCU restart + 420/422/444 planar/
-      semi-planar/packed YUV）逐字节。
+      VPU720 JPEG 19/19（3 sizes + 60-MCU restart + 420/422/444 planar/
+      semi-planar/packed/YUV400 输入与 400/420/422/444 输出）逐字节。
       AV1/AVS2、LTR/error 边界、完整 H.264 边界矩阵、H.264/H.265/VEPU510
       编码、VPU720 扩展模式与 VDPP2 仍需完成。
 - [ ] W12-3 每个 SoC 独立验收矩阵（同一能力在多个块上允许不同 HAL）
