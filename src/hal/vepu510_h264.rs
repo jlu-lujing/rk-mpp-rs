@@ -137,9 +137,21 @@ impl Vepu510H264 {
         nv12: &[u8],
         frames: usize,
     ) -> Result<Vec<u8>, String> {
+        self.encode_rate_gop_320x240(nv12, frames, RcMode::Cbr)
+    }
+
+    pub fn encode_rate_gop_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        rc_mode: RcMode,
+    ) -> Result<Vec<u8>, String> {
+        if rc_mode == RcMode::FixedQp {
+            return Err("fixed-QP GOP uses encode_fixed_qp_gop_320x240".into());
+        }
         if !(1..=6).contains(&frames) {
             return Err(format!(
-                "captured VEPU510 CBR GOP length {frames} is outside 1..=6"
+                "captured VEPU510 rate-control GOP length {frames} is outside 1..=6"
             ));
         }
         let expected = INPUT_SIZE
@@ -147,7 +159,7 @@ impl Vepu510H264 {
             .ok_or_else(|| "VEPU510 CBR input size overflow".to_string())?;
         if nv12.len() < expected {
             return Err(format!(
-                "VEPU510 CBR input is {} bytes, expected {expected}",
+                "VEPU510 rate-control input is {} bytes, expected {expected}",
                 nv12.len()
             ));
         }
@@ -157,7 +169,7 @@ impl Vepu510H264 {
 
         let mut config = EncoderConfig::new(WIDTH, HEIGHT);
         config.vui_log2_max_mv_length = 15;
-        config.rc_mode = RcMode::Cbr;
+        config.rc_mode = rc_mode;
         config.gop = 60;
         config.quality_auto = true;
         config.bps_target = 300_000;

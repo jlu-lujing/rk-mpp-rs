@@ -1201,7 +1201,11 @@ fn main() {
     if args.len() > 1
         && matches!(
             args[1].as_str(),
-            "h264e510-gop2" | "h264e510-gop6" | "h264e510-cbr6"
+            "h264e510-gop2"
+                | "h264e510-gop6"
+                | "h264e510-cbr6"
+                | "h264e510-vbr6"
+                | "h264e510-avbr6"
         )
     {
         if args.len() != 4 {
@@ -1223,10 +1227,17 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let result = if args[1] == "h264e510-cbr6" {
-            encoder.encode_cbr_gop_320x240(&source, frames)
-        } else {
-            encoder.encode_fixed_qp_gop_320x240(&source, frames)
+        let result = match args[1].as_str() {
+            "h264e510-cbr6" => {
+                encoder.encode_rate_gop_320x240(&source, frames, h264_syntax::RcMode::Cbr)
+            }
+            "h264e510-vbr6" => {
+                encoder.encode_rate_gop_320x240(&source, frames, h264_syntax::RcMode::Vbr)
+            }
+            "h264e510-avbr6" => {
+                encoder.encode_rate_gop_320x240(&source, frames, h264_syntax::RcMode::Avbr)
+            }
+            _ => encoder.encode_fixed_qp_gop_320x240(&source, frames),
         };
         let stream = match result {
             Ok(stream) => stream,

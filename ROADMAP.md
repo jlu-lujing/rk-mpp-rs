@@ -3208,6 +3208,11 @@ pipeline uses.
   with SHA-256 `d9de49270ab4140b1005a8cadf161a6e81c65e73ea65a356b0901656b24ac87c`.
   Rust feeds `rc_model_v2` back from `bs_lgth_l32`, `qp_sum` and the intra-block
   counts, then maps its target/QP through the VEPU510 RC/ROI/threshold windows.
+- VBR and AVBR share the same mapper with their own model allocators:
+  VBR6 is 15616 bytes (`ea64b21ca254534e4c9a3a240ed5ececad37c7f912c964eb7a68ccef858e41ec`)
+  and AVBR6 is 12313 bytes
+  (`bfeb985dc98842900a84f030d1d3ae6d33237a62da458ea1604518523eea58d8`).
+  Both streams and every per-picture target/QP match stock C MPP.
 - Tests: `cargo test --release --all-targets` enumerates 1181 tests: 1147
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
