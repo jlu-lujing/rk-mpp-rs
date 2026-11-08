@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1193
-      enumerated / 1159 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1015 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1194
+      enumerated / 1160 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1016 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3244,8 +3244,13 @@ pipeline uses.
   switches to the second recon/colmv/thumb/smear slots and reads slot zero as
   reference. IDR+P GOP2 is byte-identical at 6810 bytes
   (`7a44882d3da7d72059b28735a38fdf9bb1bf32ee144e78f2d1a61642816f4569`).
-  Longer GOP, RC, GDR/ROI/split and STATUS feedback remain.
-- Tests: `cargo test --release --all-targets` enumerates 1193 tests: 1159
+  The two reconstruction/colmv/thumbnail/smear slot sets alternate by frame
+  number. A six-picture trace shows only POC LSB advancing per P picture, with
+  `smear_load_en` set from the second P onward; GOP6 is byte-identical at
+  16994 bytes
+  (`8088e821a066e1565e9ab58a64194eccdd34a42000593a731bca2c9f957fe397`).
+  RC, GDR/ROI/split and STATUS feedback remain.
+- Tests: `cargo test --release --all-targets` enumerates 1194 tests: 1160
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

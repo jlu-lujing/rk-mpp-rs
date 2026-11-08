@@ -125,7 +125,13 @@ impl RegisterFile {
         smear_write_fd: u32,
         smear_read_fd: u32,
         md_info_fd: u32,
+        frame_number: u32,
     ) -> Result<Self, String> {
+        if frame_number == 0 || frame_number > 32_767 {
+            return Err(format!(
+                "captured VEPU510 H.265 P frame number {frame_number} is outside 1..=32767"
+            ));
+        }
         let mut regs = Self {
             ctl: p_template::CTL,
             frame: p_template::FRAME,
@@ -151,6 +157,10 @@ impl RegisterFile {
         }
         regs.frame[28] = smear_read_fd;
         regs.frame[29] = smear_write_fd;
+        regs.set(regs::H265_SYNT_SLI2_SLI_POC_LSB, frame_number)?;
+        if frame_number >= 2 {
+            regs.set(regs::SQI_SMEAR_OPT_CFG0_SMEAR_LOAD_EN, 1)?;
+        }
         Ok(regs)
     }
 
@@ -327,14 +337,32 @@ impl Vepu510H265 {
     }
 
     pub fn encode_fixed_qp_gop2_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        self.encode_fixed_qp_gop_320x240(nv12, 2)
+    }
+
+    pub fn encode_fixed_qp_gop6_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+        self.encode_fixed_qp_gop_320x240(nv12, 6)
+    }
+
+    fn encode_fixed_qp_gop_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+    ) -> Result<Vec<u8>, String> {
         if self.idr_done {
             return Err("this VEPU510 H.265 session already encoded its IDR".into());
         }
-        if nv12.len() < INPUT_SIZE * 2 {
+        if !(1..=6).contains(&frames) {
+            return Err(format!(
+                "captured VEPU510 H.265 GOP length {frames} is outside 1..=6"
+            ));
+        }
+        let expected = INPUT_SIZE * frames;
+        if nv12.len() < expected {
             return Err(format!(
                 "VEPU510 H.265 GOP input is {} bytes, expected {}",
                 nv12.len(),
-                INPUT_SIZE * 2
+                expected
             ));
         }
         let config = lf1_h265_config()?;
@@ -349,20 +377,27 @@ impl Vepu510H265 {
             self.md_info.fd() as u32,
         )?;
         let mut stream = self.run_job(&nv12[..INPUT_SIZE], &idr, &prefix)?;
-        let p = RegisterFile::captured_fixqp_p_320x240(
-            self.input.fd() as u32,
-            self.output.fd() as u32,
-            self.recon[1].fd() as u32,
-            self.recon[0].fd() as u32,
-            self.colmv[1].fd() as u32,
-            self.colmv[0].fd() as u32,
-            self.thumb[1].fd() as u32,
-            self.thumb[0].fd() as u32,
-            self.smear[1].fd() as u32,
-            self.smear[0].fd() as u32,
-            self.md_info.fd() as u32,
-        )?;
-        stream.extend(self.run_job(&nv12[INPUT_SIZE..INPUT_SIZE * 2], &p, &[])?);
+        for frame_number in 1..frames {
+            let current = frame_number & 1;
+            let reference = 1 - current;
+            let p = RegisterFile::captured_fixqp_p_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.colmv[current].fd() as u32,
+                self.colmv[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                self.md_info.fd() as u32,
+                frame_number as u32,
+            )?;
+            let start = frame_number * INPUT_SIZE;
+            let end = start + INPUT_SIZE;
+            stream.extend(self.run_job(&nv12[start..end], &p, &[])?);
+        }
         self.idr_done = true;
         Ok(stream)
     }
@@ -557,7 +592,7 @@ mod tests {
     #[test]
     fn p_builder_reproduces_the_lf1_job() {
         let regs =
-            RegisterFile::captured_fixqp_p_320x240(9, 10, 18, 14, 20, 16, 19, 15, 21, 17, 11)
+            RegisterFile::captured_fixqp_p_320x240(9, 10, 18, 14, 20, 16, 19, 15, 21, 17, 11, 1)
                 .unwrap();
         assert_eq!(regs.ctl, p_template::CTL);
         assert_eq!(regs.frame, p_template::FRAME);
@@ -565,6 +600,15 @@ mod tests {
         assert_eq!(regs.param, p_template::PARAM);
         assert_eq!(regs.sqi, p_template::SQI);
         assert_eq!(regs.scl, p_template::SCL);
+    }
+
+    #[test]
+    fn later_p_pictures_advance_poc_and_load_smear() {
+        let regs =
+            RegisterFile::captured_fixqp_p_320x240(9, 10, 14, 18, 16, 20, 15, 19, 17, 21, 11, 2)
+                .unwrap();
+        assert_eq!(regs.get(regs::H265_SYNT_SLI2_SLI_POC_LSB).unwrap(), 2);
+        assert_eq!(regs.get(regs::SQI_SMEAR_OPT_CFG0_SMEAR_LOAD_EN).unwrap(), 1);
     }
 
     #[test]
