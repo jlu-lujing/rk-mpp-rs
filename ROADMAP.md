@@ -3174,8 +3174,9 @@ pipeline uses.
   `0xe97a26406128e428`. The VDPU383 VP9 matrix is 7/7: profile 0/2, 8/10-bit,
   lossless, error-resilient tiles and 720p. Regular rows are byte-identical to
   C MPP; the 720p segmentation and 321x241 frame-count rows retain the existing
-  libvpx adjudication of C defects. The VPU720 baseline JPEG path is byte-
-  identical at 320x240, 640x480 and 1280x720 using NV12/YUV420 qfactor 50.
+  libvpx adjudication of C defects. The VPU720 JPEG path is byte-identical at
+  320x240, 640x480, 1280x720 and a 320x240 60-MCU restart cell using NV12/
+  YUV420 qfactor 50.
   LTR/error rows, AV1/AVS2, VEPU510, VPU720 extended modes and VDPP2 remain in
   progress.
 - Tests: `cargo test --release --all-targets` enumerates 1171 tests: 1137
