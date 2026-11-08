@@ -41,6 +41,8 @@ rm -f /tmp/h264e510_c.264 /tmp/h264e510_rust.264
 rm -f /tmp/h264e510_c.log /tmp/h264e510_rust.log
 rm -f /tmp/h264e510_gop2_c.264 /tmp/h264e510_gop2_rust.264
 rm -f /tmp/h264e510_gop2_c.log /tmp/h264e510_gop2_rust.log
+rm -f /tmp/h264e510_roi2_c.264 /tmp/h264e510_roi2_rust.264
+rm -f /tmp/h264e510_roi2_c.log /tmp/h264e510_roi2_rust.log
 rm -f /tmp/h264e510_gop6_c.264 /tmp/h264e510_gop6_rust.264
 rm -f /tmp/h264e510_gop6_c.log /tmp/h264e510_gop6_rust.log
 rm -f /tmp/h264e510_cbr6_c.264 /tmp/h264e510_cbr6_rust.264
@@ -73,6 +75,18 @@ cmp /tmp/h264e510_gop2_c.264 /tmp/h264e510_gop2_rust.264
 sha256sum /tmp/h264e510_gop2_c.264 /tmp/h264e510_gop2_rust.264
 printf 'PASS RK3576 VEPU510 H.264 fixed-QP GOP2: %s bytes\n' \
     "$(stat -c %s /tmp/h264e510_gop2_c.264)"
+
+LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h264e_probe510_self \
+    /tmp/h264e510_2x320x240.nv12 /tmp/h264e510_roi2_c.264 \
+    320 240 2 0 26 roi 0 0 160 120 1 1 30 seioff \
+    > /tmp/h264e510_roi2_c.log 2>&1
+timeout 120 ./target/debug/rk-mpp-rs h264e510-roi2 \
+    /tmp/h264e510_2x320x240.nv12 /tmp/h264e510_roi2_rust.264 \
+    > /tmp/h264e510_roi2_rust.log 2>&1
+cmp /tmp/h264e510_roi2_c.264 /tmp/h264e510_roi2_rust.264
+sha256sum /tmp/h264e510_roi2_c.264 /tmp/h264e510_roi2_rust.264
+printf 'PASS RK3576 VEPU510 H.264 ROI GOP2: %s bytes\n' \
+    "$(stat -c %s /tmp/h264e510_roi2_c.264)"
 
 LD_LIBRARY_PATH=/usr/local/lib timeout 120 /tmp/h264e_probe510_self \
     /tmp/h264e510_6x320x240.nv12 /tmp/h264e510_gop6_c.264 \

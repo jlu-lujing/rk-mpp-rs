@@ -90,7 +90,7 @@ impl Vepu510H264 {
         if self.idr_done {
             return Err("this captured VEPU510 session already encoded its IDR".into());
         }
-        let stream = self.encode_idr(nv12)?;
+        let stream = self.encode_idr(nv12, &[])?;
         self.idr_done = true;
         Ok(stream)
     }
@@ -103,6 +103,24 @@ impl Vepu510H264 {
         &mut self,
         nv12: &[u8],
         frames: usize,
+    ) -> Result<Vec<u8>, String> {
+        self.encode_fixed_qp_gop_with_rois(nv12, frames, &[])
+    }
+
+    pub fn encode_fixed_qp_gop_roi_320x240(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        rois: &[encoder::RoiRegion],
+    ) -> Result<Vec<u8>, String> {
+        self.encode_fixed_qp_gop_with_rois(nv12, frames, rois)
+    }
+
+    fn encode_fixed_qp_gop_with_rois(
+        &mut self,
+        nv12: &[u8],
+        frames: usize,
+        rois: &[encoder::RoiRegion],
     ) -> Result<Vec<u8>, String> {
         if !(1..=6).contains(&frames) {
             return Err(format!(
@@ -122,12 +140,12 @@ impl Vepu510H264 {
         if self.idr_done {
             return Err("this captured VEPU510 session already encoded its IDR".into());
         }
-        let mut stream = self.encode_idr(&nv12[..INPUT_SIZE])?;
+        let mut stream = self.encode_idr(&nv12[..INPUT_SIZE], rois)?;
         self.idr_done = true;
         for frame_number in 1..frames {
             let start = frame_number * INPUT_SIZE;
             let end = start + INPUT_SIZE;
-            stream.extend(self.encode_p(&nv12[start..end], frame_number as u32)?);
+            stream.extend(self.encode_p(&nv12[start..end], frame_number as u32, rois)?);
         }
         Ok(stream)
     }
@@ -228,6 +246,7 @@ impl Vepu510H264 {
             let start = frame_number * INPUT_SIZE;
             let end = start + INPUT_SIZE;
             let prefix = if is_idr { header.as_slice() } else { &[] };
+            registers.apply_roi_regions(&[])?;
             let (job_stream, status) =
                 self.run_job_with_status(&nv12[start..end], &registers, prefix)?;
             let measured = measured_from_status(&status);
@@ -239,7 +258,7 @@ impl Vepu510H264 {
         Ok(stream)
     }
 
-    fn encode_idr(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
+    fn encode_idr(&mut self, nv12: &[u8], rois: &[encoder::RoiRegion]) -> Result<Vec<u8>, String> {
         let mut config = EncoderConfig::new(WIDTH, HEIGHT);
         config.vui_log2_max_mv_length = 15;
         let header = encoder::build_headers(&config).map_err(|e| e.to_string())?;
@@ -249,20 +268,26 @@ impl Vepu510H264 {
                 header.len()
             ));
         }
-        let registers = RegisterFile::captured_fixqp_idr_320x240(
+        let mut registers = RegisterFile::captured_fixqp_idr_320x240(
             self.input.fd() as u32,
             self.output.fd() as u32,
             self.recon[0].fd() as u32,
             self.thumb[0].fd() as u32,
             self.smear[0].fd() as u32,
         )?;
+        registers.apply_roi_regions(rois)?;
         self.run_job(nv12, &registers, &header)
     }
 
-    fn encode_p(&mut self, nv12: &[u8], frame_number: u32) -> Result<Vec<u8>, String> {
+    fn encode_p(
+        &mut self,
+        nv12: &[u8],
+        frame_number: u32,
+        rois: &[encoder::RoiRegion],
+    ) -> Result<Vec<u8>, String> {
         let current = (frame_number & 1) as usize;
         let reference = 1 - current;
-        let registers = RegisterFile::captured_fixqp_p_320x240(
+        let mut registers = RegisterFile::captured_fixqp_p_320x240(
             self.input.fd() as u32,
             self.output.fd() as u32,
             self.recon[current].fd() as u32,
@@ -273,6 +298,7 @@ impl Vepu510H264 {
             self.smear[reference].fd() as u32,
             frame_number,
         )?;
+        registers.apply_roi_regions(rois)?;
         self.run_job(nv12, &registers, &[])
     }
 

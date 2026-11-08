@@ -1677,9 +1677,9 @@ in what order the evidence gets produced.
       fractional luma MV and changed the first mask columns. The formal
       `real_two_by_two_tile_inter_frames_match_libaom` test is no longer
       ignored: all ten displayed frames match `aomdec` Y/U/V byte for byte.
-      The current t6 `cargo test --release --all-targets` run is 1181
-      enumerated / 1147 regular pass / 0 failed / 34 board-only ignored, and
-      the release library suite is 1003 passed / 0 failed.
+      The current t6 `cargo test --release --all-targets` run is 1182
+      enumerated / 1148 regular pass / 0 failed / 34 board-only ignored, and
+      the release library suite is 1004 passed / 0 failed.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence
@@ -3213,7 +3213,11 @@ pipeline uses.
   and AVBR6 is 12313 bytes
   (`bfeb985dc98842900a84f030d1d3ae6d33237a62da458ea1604518523eea58d8`).
   Both streams and every per-picture target/QP match stock C MPP.
-- Tests: `cargo test --release --all-targets` enumerates 1181 tests: 1147
+- VEPU510's legacy ROI metadata maps directly into four-word hardware regions.
+  A two-frame fixed-QP cell with one forced-intra absolute-QP region is
+  byte-identical to C at 10845 bytes
+  (`a34ef76313cb570f152e8b5d7e0fd43d7ff433a29b5f9086ea59d43e5f3c187a`).
+- Tests: `cargo test --release --all-targets` enumerates 1182 tests: 1148
   regular pass and 34 ignored hardware tests on t6. The four JPEG hardware
   tests relevant to this slice were rerun separately and pass 4/4 under the
   current 80% OPP cap.

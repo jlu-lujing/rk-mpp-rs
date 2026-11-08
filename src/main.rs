@@ -1202,6 +1202,7 @@ fn main() {
         && matches!(
             args[1].as_str(),
             "h264e510-gop2"
+                | "h264e510-roi2"
                 | "h264e510-gop6"
                 | "h264e510-cbr6"
                 | "h264e510-vbr6"
@@ -1212,7 +1213,11 @@ fn main() {
             eprintln!("usage: rk-mpp-rs {} <in.Nx320x240.nv12> <out.264>", args[1]);
             std::process::exit(2);
         }
-        let frames = if args[1] == "h264e510-gop2" { 2 } else { 6 };
+        let frames = if matches!(args[1].as_str(), "h264e510-gop2" | "h264e510-roi2") {
+            2
+        } else {
+            6
+        };
         let source = match std::fs::read(&args[2]) {
             Ok(source) => source,
             Err(error) => {
@@ -1237,6 +1242,19 @@ fn main() {
             "h264e510-avbr6" => {
                 encoder.encode_rate_gop_320x240(&source, frames, h264_syntax::RcMode::Avbr)
             }
+            "h264e510-roi2" => encoder.encode_fixed_qp_gop_roi_320x240(
+                &source,
+                frames,
+                &[h264_syntax::RoiRegion {
+                    x: 0,
+                    y: 0,
+                    w: 160,
+                    h: 120,
+                    force_intra: true,
+                    qp_absolute: true,
+                    qp_val: 30,
+                }],
+            ),
             _ => encoder.encode_fixed_qp_gop_320x240(&source, frames),
         };
         let stream = match result {

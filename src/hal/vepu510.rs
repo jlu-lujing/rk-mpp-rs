@@ -3,6 +3,7 @@
 use super::vepu510_idr_template;
 use super::vepu510_p_template;
 use super::vepu510_regs::{self, Field};
+use crate::codec::h264::encoder::RoiRegion;
 
 pub const CTL_WORDS: usize = 24;
 pub const FRAME_WORDS: usize = 98;
@@ -220,6 +221,33 @@ impl RegisterFile {
         self.set(vepu510_regs::RC_ROI_QTHD3_QPMAP_MODE, 1)
     }
 
+    pub fn apply_roi_regions(&mut self, regions: &[RoiRegion]) -> Result<(), String> {
+        if regions.len() > 8 {
+            return Err(format!(
+                "VEPU510 accepts at most 8 ROI regions, got {}",
+                regions.len()
+            ));
+        }
+        self.rc[36..68].fill(0);
+        for (index, region) in regions.iter().enumerate() {
+            let left = (region.x.clamp(0, 320) as usize).div_ceil(16);
+            let top = (region.y.clamp(0, 240) as usize).div_ceil(16);
+            let right = (region.x.saturating_add(region.w).clamp(0, 320) as usize).div_ceil(16);
+            let bottom = (region.y.saturating_add(region.h).clamp(0, 240) as usize).div_ceil(16);
+            let base = 36 + index * 4;
+            self.rc[base] = left as u32 | (top as u32) << 16;
+            self.rc[base + 1] = right as u32 | (bottom as u32) << 16;
+            self.rc[base + 2] = (region.qp_val as u32 & 0x7f)
+                | (u32::from(region.qp_absolute) << 7)
+                | (0x1f << 8)
+                | (1 << 13);
+            if region.force_intra {
+                self.rc[base + 3] = (1 << 8) | (1 << 20);
+            }
+        }
+        Ok(())
+    }
+
     fn set_signed(&mut self, field: Field, value: i32) -> Result<(), String> {
         let mask = (1u32 << field.width) - 1;
         self.set(field, value as u32 & mask)
@@ -384,5 +412,23 @@ mod tests {
         assert_eq!(regs.param, vepu510_p_template::PARAM);
         assert_eq!(regs.sqi, vepu510_p_template::SQI);
         assert_eq!(regs.scl, vepu510_p_template::SCL);
+    }
+
+    #[test]
+    fn roi_region_matches_the_c_vpu510_words() {
+        let mut regs = RegisterFile::default();
+        regs.apply_roi_regions(&[RoiRegion {
+            x: 0,
+            y: 0,
+            w: 160,
+            h: 120,
+            force_intra: true,
+            qp_absolute: true,
+            qp_val: 30,
+        }])
+        .unwrap();
+        assert_eq!(regs.rc[37], 0x0008_000a);
+        assert_eq!(regs.rc[38], 0x0000_3f9e);
+        assert_eq!(regs.rc[39], 0x0010_0100);
     }
 }
