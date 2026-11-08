@@ -81,7 +81,7 @@
 
 整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-102 项完成、6 项未完成（含缩进子项为 140 / 10）；未完成项里有硬件不存在、无 conformance
+103 项完成、6 项未完成（含缩进子项为 141 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
 AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
@@ -183,6 +183,7 @@ partition/mode/skip/tx_depth、
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
+- Raw FFI：workspace crate `rk-mpp-rs-sys`
 - 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
 - 优先编解码器：H.264、H.265/HEVC、VP9、AV1、VP8、MPEG-2、MPEG-4、
   H.263 和 MJPEG/JPEG decode；
@@ -252,6 +253,18 @@ Rust 最小示例：
 ```bash
 cargo run --example sdk_decode -- h264 input.264 output.yuv
 cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 26 6
+```
+
+`rk-mpp-rs-sys` 暴露 V1.10 的全部 34 个 C 导出、enum、struct 和不透明句柄。
+链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
+`target/<profile>`：
+
+```bash
+RK_MPP_RS_SYS_LIB_DIR="$PWD/target/release" \
+LD_LIBRARY_PATH="$PWD/target/release" \
+cargo test --release -p rk-mpp-rs-sys
+
+./scripts/board_sys_crate.sh   # dynamic + static + pkg-config 板级门
 ```
 
 ABI 和完整安装 consumer 门：

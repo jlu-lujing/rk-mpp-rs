@@ -12,6 +12,8 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   low-delay packet output through typed Rust and C configuration.
 - Verified H.264 and H.265 VEPU580 ROI, GDR and slice controls against their
   validated CLI paths on t6.
+- Added the raw `rk-mpp-rs-sys` workspace crate with all 34 V1.10 exports,
+  exact C layouts, explicit-path/pkg-config discovery and dynamic/static tests.
 
 ## [1.9] - 2026-11-09
 

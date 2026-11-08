@@ -193,6 +193,14 @@ callers.
 - **Status:** complete on t6/VEPU580; RK3576 streaming controls are an explicit
   platform SKIP.
 
+### Phase 10: rk-mpp-rs-sys Raw Bindings
+- [x] Add a workspace member crate with complete V1.10 raw declarations.
+- [x] Discover explicit, pkg-config and in-tree native libraries.
+- [x] Verify every public C struct size/offset and function link.
+- [x] Run version/init smoke consumers on t6 and lf1.
+- [x] Document shared/static linking for downstream Rust projects.
+- **Status:** complete on t6 and lf1.
+
 ## Decisions Made
 
 | Decision | Rationale |

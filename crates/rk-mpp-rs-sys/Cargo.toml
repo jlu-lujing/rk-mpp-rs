@@ -1,0 +1,14 @@
+[package]
+name = "rk-mpp-rs-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Raw FFI bindings for the rk-mpp-rs V1 C ABI"
+license = "MIT OR Apache-2.0"
+links = "rk_mpp_rs"
+build = "build.rs"
+
+[lib]
+name = "rk_mpp_rs_sys"
+path = "src/lib.rs"
+
+[dependencies]

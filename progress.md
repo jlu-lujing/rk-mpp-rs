@@ -2,6 +2,20 @@
 
 ## Session: 2026-11-09
 
+### Phase 10: rk-mpp-rs-sys Raw Bindings
+- **Status:** complete on t6 and lf1.
+- Added the `rk-mpp-rs-sys` workspace crate with hand-written V1.10 enums,
+  constants, fixed-layout structs, opaque handles and all 34 exported C
+  functions.
+- Added an offline build script supporting explicit library directories,
+  installed pkg-config metadata, workspace target fallback, shared linking and
+  static linking.
+- t6 and lf1 pass ABI layout, native symbol-linkability and initializer smoke
+  tests through explicit dynamic, static and pkg-config consumers.
+- Workspace `--all-targets` gates pass on both boards with
+  `1197 passed / 0 failed / 37 ignored` (root 1193 + sys 4); workspace rustfmt
+  and strict rustdoc pass.
+
 ### Phase 9.2: ROI, GDR and Slice Controls
 - **Status:** complete on t6/VEPU580; RK3576 streaming controls are an explicit
   platform SKIP.
@@ -14,7 +28,7 @@
 - t6 V1.8 base and V1.9 advanced consumers ran against the V1.10 library.
   lf1 compiled the V1.9 consumer and reported the VEPU510 runtime control
   boundary as SKIP.
-- t6 and lf1 package gates and final `--all-targets` gates passed with
+- t6 and lf1 package gates and final root `--all-targets` gates passed with
   `1193 passed / 0 failed / 37 ignored`; rustfmt and strict rustdoc passed.
 
 ### Phase 9.1: Stable Rate-Control Configuration

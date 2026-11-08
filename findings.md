@@ -54,6 +54,13 @@
   for up to eight regions, so no caller pointer has to outlive create.
 - t6 control byte sizes matched the CLI exactly: H.264
   slice/ROI/GDR `21148/26266/23445`; H.265 `16391/16022/17104`.
+- The sys crate will use checked-in hand-written declarations rather than
+  bindgen: the public header is already fixed-width C, CI is offline, and exact
+  enum/function coverage can be asserted without a libclang dependency.
+- `rk-mpp-rs-sys` declarations exactly match the 34-symbol ABI snapshot. The
+  final workspace gate is 1197 tests: 1193 from the root SDK and four sys-crate
+  layout/native tests. Static release linking requires `LTO=false` with the
+  current Rust staticlib archive.
 
 ## Research Findings
 

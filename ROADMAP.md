@@ -359,6 +359,10 @@ in what order the evidence gets produced.
       slice-lowdelay outputs match the validated CLI in six cases, and a V1.9
       advanced consumer links to the V1.10 library. RK3576 streaming controls
       remain an explicit platform boundary.
+- [x] Raw `rk-mpp-rs-sys` crate: all 34 V1.10 C exports, enums, structs and
+      opaque handles have checked-in Rust declarations. ABI size/offset tests,
+      explicit-path dynamic linking, static linking and installed pkg-config
+      discovery pass on t6 and lf1.
 - [x] Public H.265 encoder API V1.5: the same owned packet/release and
       synchronous submit path with NV12/I420 input. t6 VEPU580 exposes
       width/height, QP and GOP; RK3576 VEPU510 exposes the captured
