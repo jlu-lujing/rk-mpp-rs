@@ -393,6 +393,15 @@ time services, OSAL allocation, SoC name/type, spinlocks, `MppDecCfg`,
 singleton/trie metadata and the kmpp/cfg startup objects. Logging currently
 keeps the variadic call ABI but prints the unexpanded format string.
 
+`scripts/board_mpp_standalone_encode.sh` exercises the same replacement on
+the encoder side. The unchanged `mpi_enc_test` resolves `librockchip_mpp.so.1`
+to `librk_mpp_rs.so`, creates a local key/value `MppEncCfg`, and runs
+`MPP_ENC_SET_CFG` through the existing encoder bridge. On t6, H.264 and H.265
+standalone streams decode byte-identically to the vendor streams
+(`9d8c6f54…24ac6fc` and `c7c74e0c…eb03643`), while MJPEG is stream-identical
+(`08eb7c6f…b5388623`). This closes the one-frame object path; reference-cfg
+dispatch and advanced encoder controls remain open.
+
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older
 uncapped-profile peaks are retained only as historical observations.

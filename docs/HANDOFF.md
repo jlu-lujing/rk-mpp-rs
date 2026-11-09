@@ -187,6 +187,18 @@ SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg �
 均与 vendor C 逐字节一致。当前日志 shim 不展开 printf 变参，standalone
 encoder cfg/object 路径仍需继续。
 
+第十三个 slice 把 standalone 从 decoder 扩到编码对象路径。未修改的
+`mpi_enc_test` 现在能只加载 `librk_mpp_rs.so` 完成 H.264、H.265 和 MJPEG
+单帧编码。补入的是一张真实的 key/value `MppEncCfg`，因此现有
+`MPP_ENC_SET_CFG` 会通过 `mpp_enc_cfg_get_s32` 读取 codec、geometry、RC、
+GOP、QP 等值，而不是依赖 vendor dlsym。另一个兼容点是旧版 `mpp_opt_add`
+会把 `MppOptInfo *` 直接传给 `mpp_trie_add_info`、并从
+`mpp_trie_get_info` 取回同一 `MppOptInfo *`；shim 按指针是否与参数地址
+同区辨识这套旧 ABI，同时保持新版 `MppTrieInfo + name + ctx` 布局。
+t6 的三编码 standalone 编码门通过：H.264/H.265 解码重建与 vendor
+一致，MJPEG stream 逐字节一致。完整 reference-cfg 调度和高级编码控制
+仍未接入。
+
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test
 MPP_INCLUDE=/tmp/mpp-develop/inc \

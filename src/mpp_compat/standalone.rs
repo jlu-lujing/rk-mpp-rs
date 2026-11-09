@@ -11,6 +11,7 @@ const MPP_OK: c_int = 0;
 const MPP_NOK: c_int = -1;
 const MPP_ERR_NULL_PTR: c_int = -3;
 const DEC_CFG_MAGIC: u64 = 0x524b_4445_4343_4647;
+const ENC_CFG_MAGIC: u64 = 0x524b_454e_4343_4647;
 
 #[no_mangle]
 pub static mut mpp_debug: c_uint = 0;
@@ -636,14 +637,21 @@ pub unsafe extern "C" fn mpp_trie_init(trie: *mut *mut c_void, name: *const c_ch
     if trie.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let name = match obj_def_name(name) {
-        Ok(name) => name,
-        Err(error) => return error,
+    let legacy_opt = name.is_null() || (name as usize) < 0x10000;
+    let name = if legacy_opt {
+        CString::new("standalone-trie").unwrap()
+    } else {
+        match obj_def_name(name) {
+            Ok(name) => name,
+            Err(error) => return error,
+        }
     };
     let pointer = Box::into_raw(Box::new(TrieStub {
         name,
         nodes: 0,
         infos: Vec::new(),
+        names: Vec::new(),
+        legacy_opt,
     })) as usize;
     tries().lock().unwrap().push(pointer);
     unsafe { trie.write(pointer as *mut c_void) };
@@ -664,14 +672,28 @@ pub unsafe extern "C" fn mpp_trie_deinit(_trie: *mut c_void) -> i32 {
 pub unsafe extern "C" fn mpp_trie_add_info(
     trie: *mut c_void,
     name: *const c_char,
-    context: *mut c_void,
-    context_size: u32,
+    mut context: *mut c_void,
+    mut context_size: u32,
 ) -> i32 {
     let Some(trie) = trie_mut(trie) else {
         return MPP_NOK;
     };
     if name.is_null() {
         return MPP_OK;
+    }
+    let name = if trie.legacy_opt {
+        let stored_name = unsafe { std::ptr::read_unaligned(name.cast::<usize>()) };
+        if stored_name <= 0x10000 || stored_name >= (1usize << 56) {
+            return MPP_NOK;
+        }
+        context = name.cast_mut().cast::<c_void>();
+        context_size = 32;
+        stored_name as *const c_char
+    } else {
+        name
+    };
+    if name.is_null() {
+        return MPP_NOK;
     }
     let name = unsafe { CStr::from_ptr(name) }.to_bytes();
     let context_size = usize::try_from(context_size).unwrap_or(0);
@@ -689,8 +711,13 @@ pub unsafe extern "C" fn mpp_trie_add_info(
         info[4 + string_size..4 + string_size + context_size].copy_from_slice(context);
     }
     trie.nodes += 1;
-    trie.infos
-        .push(Box::into_raw(info.into_boxed_slice()).cast::<u8>() as usize);
+    let pointer = Box::into_raw(info.into_boxed_slice()).cast::<u8>() as usize;
+    trie.infos.push(pointer);
+    trie.names.push((
+        unsafe { CStr::from_ptr(name.as_ptr()) }.to_owned(),
+        pointer,
+        context as usize,
+    ));
     MPP_OK
 }
 
@@ -760,25 +787,39 @@ pub unsafe extern "C" fn mpp_trie_get_info(trie: *mut c_void, name: *const c_cha
     let Some(trie) = trie_mut(trie) else {
         return ptr::null_mut();
     };
-    let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+    let name = unsafe { CStr::from_ptr(name) };
     trie.infos
         .iter()
         .copied()
-        .find(|pointer| {
-            let info = *pointer as *const u8;
-            let header = unsafe { std::ptr::read_unaligned(info.cast::<u32>()) };
-            let length = (header >> 24) as usize;
-            let stored = unsafe { std::slice::from_raw_parts(info.add(4), length) };
-            stored.starts_with(name) && stored.get(name.len()) == Some(&0)
+        .find_map(|pointer| {
+            trie.names
+                .iter()
+                .find(|(stored, candidate, _)| candidate == &pointer && stored.as_c_str() == name)
+                .map(|(_, _, context)| {
+                    if trie.legacy_opt {
+                        *context as *mut c_void
+                    } else {
+                        pointer as *mut c_void
+                    }
+                })
         })
-        .map_or(ptr::null_mut(), |pointer| pointer as *mut c_void)
+        .unwrap_or(ptr::null_mut())
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_trie_get_info_first(trie: *mut c_void) -> *mut c_void {
-    trie_mut(trie)
-        .and_then(|trie| trie.infos.first().copied())
-        .map_or(ptr::null_mut(), |pointer| pointer as *mut c_void)
+    let Some(trie) = trie_mut(trie) else {
+        return ptr::null_mut();
+    };
+    trie.names
+        .first()
+        .map_or(ptr::null_mut(), |(_, info, context)| {
+            if trie.legacy_opt {
+                *context as *mut c_void
+            } else {
+                *info as *mut c_void
+            }
+        })
 }
 
 #[no_mangle]
@@ -789,17 +830,24 @@ pub unsafe extern "C" fn mpp_trie_get_info_next(
     let Some(trie) = trie_mut(trie) else {
         return ptr::null_mut();
     };
-    let Some(index) = trie
-        .infos
-        .iter()
-        .position(|pointer| *pointer == info as usize)
-    else {
+    let Some(index) = trie.names.iter().position(|(_, pointer, context)| {
+        if trie.legacy_opt {
+            *context == info as usize
+        } else {
+            *pointer == info as usize
+        }
+    }) else {
         return ptr::null_mut();
     };
-    trie.infos
+    trie.names
         .get(index + 1)
-        .copied()
-        .map_or(ptr::null_mut(), |pointer| pointer as *mut c_void)
+        .map_or(ptr::null_mut(), |(_, pointer, context)| {
+            if trie.legacy_opt {
+                *context as *mut c_void
+            } else {
+                *pointer as *mut c_void
+            }
+        })
 }
 
 #[no_mangle]
@@ -839,6 +887,11 @@ struct DecCfg {
     values: HashMap<CString, ConfigValue>,
 }
 
+struct EncCfg {
+    magic: u64,
+    values: HashMap<CString, ConfigValue>,
+}
+
 static ENV_STRINGS: OnceLock<Mutex<Vec<CString>>> = OnceLock::new();
 static SOC_NAME: OnceLock<CString> = OnceLock::new();
 static OBJ_DEFS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
@@ -848,6 +901,8 @@ struct TrieStub {
     name: CString,
     nodes: i32,
     infos: Vec<usize>,
+    names: Vec<(CString, usize, usize)>,
+    legacy_opt: bool,
 }
 
 fn env_strings() -> &'static Mutex<Vec<CString>> {
@@ -967,6 +1022,22 @@ fn dec_cfg_mut(config: *mut c_void) -> Option<&'static mut DecCfg> {
     }
     let config = unsafe { &mut *config.cast::<DecCfg>() };
     (config.magic == DEC_CFG_MAGIC).then_some(config)
+}
+
+fn enc_cfg_mut(config: *mut c_void) -> Option<&'static mut EncCfg> {
+    if config.is_null() {
+        return None;
+    }
+    let config = unsafe { &mut *config.cast::<EncCfg>() };
+    (config.magic == ENC_CFG_MAGIC).then_some(config)
+}
+
+fn enc_cfg_ref(config: *mut c_void) -> Option<&'static EncCfg> {
+    if config.is_null() {
+        return None;
+    }
+    let config = unsafe { &*config.cast::<EncCfg>() };
+    (config.magic == ENC_CFG_MAGIC).then_some(config)
 }
 
 fn dec_cfg_ref(config: *mut c_void) -> Option<&'static DecCfg> {
@@ -1381,6 +1452,362 @@ pub unsafe extern "C" fn mpp_dec_cfg_get_ptr(
 #[no_mangle]
 pub extern "C" fn mpp_dec_cfg_show() {}
 
+fn new_enc_cfg() -> EncCfg {
+    EncCfg {
+        magic: ENC_CFG_MAGIC,
+        values: HashMap::new(),
+    }
+}
+
+fn enc_set_value(config: *mut c_void, name: *const c_char, value: ConfigValue) -> i32 {
+    let Some(config) = enc_cfg_mut(config) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let name = match c_name(name) {
+        Ok(name) => name,
+        Err(error) => return error,
+    };
+    config.values.insert(name.to_owned(), value);
+    MPP_OK
+}
+
+unsafe fn enc_get_value<T: Default>(
+    config: *mut c_void,
+    name: *const c_char,
+    output: *mut T,
+    convert: impl Fn(ConfigValue) -> Option<T>,
+) -> i32 {
+    if output.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(config) = enc_cfg_ref(config) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let name = match c_name(name) {
+        Ok(name) => name,
+        Err(error) => return error,
+    };
+    let value = config
+        .values
+        .get(name)
+        .copied()
+        .and_then(convert)
+        .unwrap_or_default();
+    unsafe { output.write(value) };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_init(config: *mut *mut c_void) -> i32 {
+    if config.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    unsafe { config.write(Box::into_raw(Box::new(new_enc_cfg())).cast()) };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_init_k(config: *mut *mut c_void) -> i32 {
+    unsafe { mpp_enc_cfg_init(config) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_create(config: *mut *mut c_void, _mode: u32) -> i32 {
+    unsafe { mpp_enc_cfg_init(config) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_deinit(config: *mut c_void) -> i32 {
+    let Some(config) = enc_cfg_mut(config) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    config.magic = 0;
+    drop(unsafe { Box::from_raw((config as *mut EncCfg).cast::<c_void>()) });
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_s8(
+    config: *mut c_void,
+    name: *const c_char,
+    value: i8,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::S32(i32::from(value)))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_u8(
+    config: *mut c_void,
+    name: *const c_char,
+    value: u8,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::U32(u32::from(value)))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_s16(
+    config: *mut c_void,
+    name: *const c_char,
+    value: i16,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::S32(i32::from(value)))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_u16(
+    config: *mut c_void,
+    name: *const c_char,
+    value: u16,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::U32(u32::from(value)))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_s32(
+    config: *mut c_void,
+    name: *const c_char,
+    value: i32,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::S32(value))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_u32(
+    config: *mut c_void,
+    name: *const c_char,
+    value: u32,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::U32(value))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_s64(
+    config: *mut c_void,
+    name: *const c_char,
+    value: i64,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::S64(value))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_u64(
+    config: *mut c_void,
+    name: *const c_char,
+    value: u64,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::U64(value))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_ptr(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut c_void,
+) -> i32 {
+    enc_set_value(config, name, ConfigValue::Ptr(value as usize))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_set_st(
+    _config: *mut c_void,
+    _name: *const c_char,
+    _value: *mut c_void,
+) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_s8(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut i8,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::S32(value) => i8::try_from(value).ok(),
+            ConfigValue::U32(value) => i8::try_from(value).ok(),
+            _ => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_u8(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut u8,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::S32(value) => u8::try_from(value).ok(),
+            ConfigValue::U32(value) => u8::try_from(value).ok(),
+            _ => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_s16(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut i16,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::S32(value) => i16::try_from(value).ok(),
+            ConfigValue::U32(value) => i16::try_from(value).ok(),
+            _ => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_u16(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut u16,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::S32(value) => u16::try_from(value).ok(),
+            ConfigValue::U32(value) => u16::try_from(value).ok(),
+            _ => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_s32(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut i32,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::S32(value) => Some(value),
+            ConfigValue::U32(value) => i32::try_from(value).ok(),
+            ConfigValue::S64(value) => i32::try_from(value).ok(),
+            ConfigValue::U64(value) => i32::try_from(value).ok(),
+            ConfigValue::Ptr(_) => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_u32(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut u32,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::S32(value) => u32::try_from(value).ok(),
+            ConfigValue::U32(value) => Some(value),
+            ConfigValue::S64(value) => u32::try_from(value).ok(),
+            ConfigValue::U64(value) => u32::try_from(value).ok(),
+            ConfigValue::Ptr(_) => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_s64(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut i64,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::S32(value) => Some(i64::from(value)),
+            ConfigValue::U32(value) => Some(i64::from(value)),
+            ConfigValue::S64(value) => Some(value),
+            ConfigValue::U64(value) => i64::try_from(value).ok(),
+            ConfigValue::Ptr(_) => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_u64(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut u64,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::S32(value) => u64::try_from(value).ok(),
+            ConfigValue::U32(value) => Some(u64::from(value)),
+            ConfigValue::S64(value) => u64::try_from(value).ok(),
+            ConfigValue::U64(value) => Some(value),
+            ConfigValue::Ptr(_) => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_ptr(
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut *mut c_void,
+) -> i32 {
+    unsafe {
+        enc_get_value(config, name, value, |value| match value {
+            ConfigValue::Ptr(value) => Some(value as *mut c_void),
+            _ => None,
+        })
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_get_st(
+    _config: *mut c_void,
+    _name: *const c_char,
+    _value: *mut c_void,
+) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_show() {}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_extract(
+    _config: *mut c_void,
+    _format: i32,
+    buffer: *mut *mut c_char,
+) -> i32 {
+    if buffer.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let output = unsafe { libc::malloc(1) }.cast::<c_char>();
+    if output.is_null() {
+        return MPP_NOK;
+    }
+    unsafe {
+        output.write(0);
+        buffer.write(output);
+    }
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_apply(
+    _config: *mut c_void,
+    _format: i32,
+    _buffer: *mut c_char,
+) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_cfg_apply_file(
+    _config: *mut c_void,
+    _format: i32,
+    _path: *const c_char,
+) -> i32 {
+    MPP_OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1413,6 +1840,33 @@ mod tests {
             MPP_NOK
         );
         assert_eq!(unsafe { mpp_dec_cfg_deinit(cfg) }, MPP_OK);
+    }
+
+    #[test]
+    fn encoder_cfg_round_trips_types_and_codec() {
+        let mut cfg = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_cfg_init(&mut cfg) }, MPP_OK);
+        assert_eq!(
+            unsafe { mpp_enc_cfg_set_s32(cfg, c"codec:type".as_ptr(), 0x0100_0004) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_enc_cfg_set_u32(cfg, c"prep:width".as_ptr(), 320) },
+            MPP_OK
+        );
+        let mut codec = 0;
+        let mut width = 0;
+        assert_eq!(
+            unsafe { mpp_enc_cfg_get_s32(cfg, c"codec:type".as_ptr(), &mut codec) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_enc_cfg_get_u32(cfg, c"prep:width".as_ptr(), &mut width) },
+            MPP_OK
+        );
+        assert_eq!(codec, 0x0100_0004);
+        assert_eq!(width, 320);
+        assert_eq!(unsafe { mpp_enc_cfg_deinit(cfg) }, MPP_OK);
     }
 
     #[test]
@@ -1462,6 +1916,31 @@ mod tests {
             unsafe { std::slice::from_raw_parts(info.add(context_offset).cast::<u64>(), 3) };
         assert_eq!(stored_name, b"i\0");
         assert_eq!(stored_context, context);
+    }
+
+    #[test]
+    fn legacy_option_trie_returns_the_mpp_opt_info_context() {
+        let mut trie = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { mpp_trie_init(&mut trie, 0x47 as *const c_char) },
+            MPP_OK
+        );
+        let name = c"codec";
+        let mut option = [
+            name.as_ptr().cast::<c_void>(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ];
+        assert_eq!(
+            unsafe { mpp_trie_add_info(trie, option.as_mut_ptr().cast(), std::ptr::null_mut(), 0) },
+            MPP_OK
+        );
+        let info = unsafe { mpp_trie_get_info(trie, name.as_ptr()) };
+        assert_eq!(
+            info.cast_const().cast::<c_void>(),
+            option.as_mut_ptr().cast()
+        );
     }
 
     #[test]
