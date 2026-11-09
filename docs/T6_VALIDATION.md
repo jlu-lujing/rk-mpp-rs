@@ -321,7 +321,12 @@ H.264/H.265/VP9 and MJPEG also accept the caller frame's dma-buf as the next
 hardware output surface. On lf1, the focused C advanced test verifies frame and
 buffer identity plus byte-identical H.265/MJPEG output; H.264 640x480 six-frame
 advanced output is byte-identical to the native C golden
-(`338214ea…374b815`). VP9 advanced injection and AV1 pool injection remain open.
+(`338214ea…374b815`). The VP9 consumer now splits IVF packets one frame per
+submit, keeps output surfaces alive across the reference DPB, and reserves the
+caller frame only for `show_frame`. Its direct DMA-BUF path preserves the
+256-odd hardware stride and 9/5 frame allocation. On both t6 and lf1, all 12
+frames of `vp9_p0_lossless_320x240_12.ivf` match C MPP byte for byte
+(`c5381bbf…3949a`). AV1 pool injection remains open.
 
 Performance gate:
 

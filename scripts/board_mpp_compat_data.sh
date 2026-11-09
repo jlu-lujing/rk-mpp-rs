@@ -7,11 +7,19 @@ cd "$repo"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 mpp_ref="${MPP_REF:-$HOME/rk-mpp-rs/refs/mpp}"
+mpp_include="${MPP_INCLUDE:-$mpp_ref/inc}"
 stream="${H264_STREAM:-/tmp/h264_multi_idr.264}"
 output="${H264_OUTPUT:-/tmp/rk_mpp_compat_data.yuv}"
 
-if [ ! -f "$mpp_ref/inc/rk_mpi.h" ]; then
-    printf 'missing official MPP headers under %s\n' "$mpp_ref" >&2
+if [ ! -f "$mpp_include/rk_mpi.h" ]; then
+    if [ -f /usr/local/include/rockchip/rk_mpi.h ]; then
+        mpp_include=/usr/local/include/rockchip
+    elif [ -f /tmp/mpp-develop/inc/rk_mpi.h ]; then
+        mpp_include=/tmp/mpp-develop/inc
+    fi
+fi
+if [ ! -f "$mpp_include/rk_mpi.h" ]; then
+    printf 'missing official MPP rk_mpi.h under %s\n' "$mpp_include" >&2
     exit 2
 fi
 cargo build --release --offline --lib
@@ -21,7 +29,7 @@ ln -sfn "$repo/target/release/librk_mpp_rs.so" "$libdir/librk_mpp_rs.so"
 ln -sfn "$repo/target/release/librk_mpp_rs.so" "$libdir/librk_mpp_rs.so.1"
 
 gcc -std=c11 -Wall -Wextra -Werror \
-    -I"$mpp_ref/inc" "$repo/tests/c_mpp_data_path.c" \
+    -I"$mpp_include" "$repo/tests/c_mpp_data_path.c" \
     -L"$libdir" -lrk_mpp_rs \
     -Wl,-rpath,"$libdir" \
     -o /tmp/rk_mpp_official_data
@@ -58,6 +66,28 @@ run_case h264-multiframe "$stream" 7 15 1728000 \
 run_case h265-portable "$repo/tests/data/h265e_c_fixqp_qp26_320x240.265" \
     16777220 1 115200 \
     fcedb435aa69996d93a2bd87b2c5ffb5f22ccc48d86ea7fe3d935d0311d805e0
+
+vp9_input="$repo/tests/data/vp9_p0_lossless_320x240_12.ivf"
+vp9_golden=/tmp/rk_mpp_compat_vp9_golden.nv12
+vp9_output=/tmp/rk_mpp_compat_vp9_ours.nv12
+if [ -s "$vp9_input" ] && [ -x /usr/local/bin/mpi_dec_test ]; then
+    sudo rm -f "$vp9_golden" "$vp9_output"
+    if sudo env LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
+        timeout 120 /usr/local/bin/mpi_dec_test -i "$vp9_input" \
+        -t 10 -w 320 -h 240 -n 12 -o "$vp9_golden" -v q \
+        < /dev/null > /tmp/rk_mpp_compat_vp9_c.log 2>&1; then
+        LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+            /tmp/rk_mpp_official_data "$vp9_input" "$vp9_output" 10 12 \
+            320 240
+        cmp "$vp9_golden" "$vp9_output"
+        printf 'PASS vp9 official data path matches C MPP (%s)\n' \
+            "$(sha256sum "$vp9_output" | cut -d' ' -f1)"
+    else
+        printf 'SKIP vp9 (system C decoder oracle failed)\n'
+    fi
+else
+    printf 'SKIP vp9 (fixture or system C decoder oracle missing)\n'
+fi
 
 mjpeg_input=/tmp/rk_mpp_compat_mjpeg.jpg
 mjpeg_golden=/tmp/rk_mpp_compat_mjpeg_golden.nv12

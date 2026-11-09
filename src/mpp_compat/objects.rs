@@ -961,28 +961,42 @@ pub(super) unsafe fn frame_fill_from_sdk(
 
     let width = u32::try_from(decoded.width()).map_err(|_| ())?;
     let height = u32::try_from(decoded.height()).map_err(|_| ())?;
-    let hor_stride = align(width, 16);
-    let ver_stride = align(height, 16);
-    let luma_size = usize::try_from(hor_stride)
+    let packed_hor_stride = align(width, 16);
+    let packed_ver_stride = align(height, 16);
+    let packed_luma_size = usize::try_from(packed_hor_stride)
         .ok()
-        .and_then(|stride| stride.checked_mul(ver_stride as usize))
+        .and_then(|stride| stride.checked_mul(packed_ver_stride as usize))
         .ok_or(())?;
     let (format, buffer_size) = match decoded.format() {
-        sdk::PixelFormat::Nv12 => (MPP_FMT_YUV420SP, luma_size.checked_mul(3).ok_or(())? / 2),
-        sdk::PixelFormat::I420 => (MPP_FMT_YUV420P, luma_size.checked_mul(3).ok_or(())? / 2),
+        sdk::PixelFormat::Nv12 => (
+            MPP_FMT_YUV420SP,
+            packed_luma_size.checked_mul(3).ok_or(())? / 2,
+        ),
+        sdk::PixelFormat::I420 => (
+            MPP_FMT_YUV420P,
+            packed_luma_size.checked_mul(3).ok_or(())? / 2,
+        ),
         sdk::PixelFormat::I420P10 => return Err(()),
     };
     if unsafe { frame_matches_decoded_dmabuf(target, &decoded) } {
+        let plane = decoded.dmabuf_plane(0).ok_or(())?;
+        let hor_stride = usize::try_from(plane.stride()).map_err(|_| ())?;
+        let luma_size = usize::try_from(plane.size()).map_err(|_| ())?;
+        if hor_stride < width as usize || luma_size < hor_stride || luma_size % hor_stride != 0 {
+            return Err(());
+        }
+        let ver_stride = u32::try_from(luma_size / hor_stride).map_err(|_| ())?;
+        let target_buffer = unsafe { buffer_mut(target.buffer) }.ok_or(())?;
         target.width = width;
         target.height = height;
-        target.hor_stride = hor_stride;
+        target.hor_stride = u32::try_from(hor_stride).map_err(|_| ())?;
         target.ver_stride = ver_stride;
         target.format = format;
         target.poc = decoded.poc().max(0) as u32;
         target.pts = decoded.pts();
         target.dts = decoded.dts();
         target.errinfo = decoded.err_info();
-        target.buffer_size = buffer_size;
+        target.buffer_size = buffer_len(target_buffer);
         target.eos = 0;
         target.info_change = 0;
         return Ok(());
@@ -1019,8 +1033,8 @@ pub(super) unsafe fn frame_fill_from_sdk(
 
     let y = decoded.plane(0).ok_or(())?;
     if !copy_rows(
-        &mut destination[..luma_size],
-        hor_stride as usize,
+        &mut destination[..packed_luma_size],
+        packed_hor_stride as usize,
         y.data,
         y.stride,
         width as usize,
@@ -1031,8 +1045,8 @@ pub(super) unsafe fn frame_fill_from_sdk(
     if format == MPP_FMT_YUV420SP {
         let uv = decoded.plane(1).ok_or(())?;
         if !copy_rows(
-            &mut destination[luma_size..],
-            hor_stride as usize,
+            &mut destination[packed_luma_size..],
+            packed_hor_stride as usize,
             uv.data,
             uv.stride,
             width as usize,
@@ -1042,20 +1056,20 @@ pub(super) unsafe fn frame_fill_from_sdk(
         }
     } else {
         let chroma_height = height.div_ceil(2) as usize;
-        let chroma_stride = hor_stride as usize / 2;
+        let chroma_stride = packed_hor_stride as usize / 2;
         let chroma_size = chroma_stride.checked_mul(chroma_height).ok_or(())?;
         let chroma_width = width.div_ceil(2) as usize;
         let u = decoded.plane(1).ok_or(())?;
         let v = decoded.plane(2).ok_or(())?;
         if !copy_rows(
-            &mut destination[luma_size..luma_size + chroma_size],
+            &mut destination[packed_luma_size..packed_luma_size + chroma_size],
             chroma_stride,
             u.data,
             u.stride,
             chroma_width,
             chroma_height,
         ) || !copy_rows(
-            &mut destination[luma_size + chroma_size..],
+            &mut destination[packed_luma_size + chroma_size..],
             chroma_stride,
             v.data,
             v.stride,
@@ -1075,8 +1089,8 @@ pub(super) unsafe fn frame_fill_from_sdk(
 
     target.width = width;
     target.height = height;
-    target.hor_stride = hor_stride;
-    target.ver_stride = ver_stride;
+    target.hor_stride = packed_hor_stride;
+    target.ver_stride = packed_ver_stride;
     target.format = format;
     target.poc = decoded.poc().max(0) as u32;
     target.pts = decoded.pts();

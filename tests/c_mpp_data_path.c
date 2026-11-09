@@ -9,8 +9,38 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+static uint16_t le16(const uint8_t *p) {
+    return (uint16_t)p[0] | (uint16_t)p[1] << 8;
+}
+
+static uint32_t le32(const uint8_t *p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 |
+           (uint32_t)p[3] << 24;
+}
+
+static uint64_t le64(const uint8_t *p) {
+    return (uint64_t)le32(p) | (uint64_t)le32(p + 4) << 32;
+}
+
+static uint32_t align_up(uint32_t value, uint32_t alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+static size_t output_layout(int coding, uint32_t width, uint32_t height,
+                            uint32_t *hor_stride, uint32_t *ver_stride) {
+    *ver_stride = align_up(height, 16);
+    if (coding == MPP_VIDEO_CodingVP9) {
+        *hor_stride = ((width + 255) & ~255u) | 256u;
+        return (size_t)*hor_stride * *ver_stride * 9 / 5;
+    }
+    *hor_stride = align_up(width, 16);
+    return (size_t)*hor_stride * *ver_stride * 3 / 2;
+}
+
 static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output,
-                        MppFrame expected_frame, MppBuffer expected_buffer) {
+                        MppFrame expected_frame, MppBuffer expected_buffer,
+                        uint32_t expected_hor_stride,
+                        size_t expected_buffer_size, int *returned_any) {
     int frames = 0;
 
     for (;;) {
@@ -27,6 +57,8 @@ static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output,
             break;
         }
 
+        if (returned_any)
+            *returned_any = 1;
         if (expected_frame && frames == 0 && frame != expected_frame) {
             fprintf(stderr, "advanced output frame identity changed: %p != %p\n",
                     frame, expected_frame);
@@ -36,6 +68,17 @@ static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output,
         if (expected_buffer && frames == 0 &&
             mpp_frame_get_buffer(frame) != expected_buffer) {
             fprintf(stderr, "advanced output buffer identity changed\n");
+            mpp_frame_deinit(&frame);
+            return -1;
+        }
+        if (expected_frame && frames == 0 &&
+            (mpp_frame_get_hor_stride(frame) != expected_hor_stride ||
+             mpp_frame_get_buf_size(frame) < expected_buffer_size)) {
+            fprintf(stderr,
+                    "advanced output fell back from injected DMA-BUF: "
+                    "stride %u/%u buffer %zu/%zu\n",
+                    mpp_frame_get_hor_stride(frame), expected_hor_stride,
+                    mpp_frame_get_buf_size(frame), expected_buffer_size);
             mpp_frame_deinit(&frame);
             return -1;
         }
@@ -74,6 +117,169 @@ static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output,
     }
 
     return frames;
+}
+
+static int decode_packet(MppApi *mpi, MppCtx ctx, MppBufferGroup group,
+                         const uint8_t *data, size_t size, int64_t pts,
+                         uint32_t width, uint32_t height, size_t buffer_size,
+                         uint32_t hor_stride, uint32_t ver_stride,
+                         FILE *output, MppBuffer *retained_buffer) {
+    MppPacket packet = NULL;
+    MppBuffer output_buffer = NULL;
+    MppFrame output_frame = NULL;
+    int returned_any = 0;
+    int frames = -1;
+
+    *retained_buffer = NULL;
+    if (mpp_buffer_get(group, &output_buffer, buffer_size) != MPP_OK ||
+        mpp_frame_init(&output_frame) != MPP_OK ||
+        mpp_packet_init(&packet, (void *)data, size) != MPP_OK) {
+        fprintf(stderr, "advanced packet allocation failed\n");
+        goto done;
+    }
+    mpp_frame_set_width(output_frame, width);
+    mpp_frame_set_height(output_frame, height);
+    mpp_frame_set_hor_stride(output_frame, hor_stride);
+    mpp_frame_set_ver_stride(output_frame, ver_stride);
+    mpp_frame_set_fmt(output_frame, MPP_FMT_YUV420SP);
+    mpp_frame_set_buffer(output_frame, output_buffer);
+    if (mpp_meta_set_frame(mpp_packet_get_meta(packet), KEY_OUTPUT_FRAME,
+                           output_frame) != MPP_OK) {
+        fprintf(stderr, "advanced output frame metadata failed\n");
+        goto done;
+    }
+    mpp_packet_set_pts(packet, pts);
+    if (mpi->decode_put_packet(ctx, packet) != MPP_OK ||
+        mpp_packet_get_length(packet) != 0) {
+        fprintf(stderr, "decode_put_packet failed\n");
+        goto done;
+    }
+    frames =
+        drain_frames(mpi, ctx, output, output_frame, output_buffer,
+                     hor_stride, buffer_size, &returned_any);
+
+done:
+    mpp_packet_deinit(&packet);
+    if (output_frame) {
+        if (returned_any)
+            output_frame = NULL;
+        else
+            mpp_frame_deinit(&output_frame);
+    }
+    if (output_buffer) {
+        if (frames >= 0)
+            *retained_buffer = output_buffer;
+        else
+            mpp_buffer_put(output_buffer);
+    }
+    return frames;
+}
+
+static int run_packets(MppApi *mpi, MppCtx ctx, MppBufferGroup group,
+                       const uint8_t *data, size_t size, uint32_t width,
+                       uint32_t height, size_t buffer_size, uint32_t hor_stride,
+                       uint32_t ver_stride, FILE *output, int *decoded_frames) {
+    int is_ivf =
+        size >= 32 && !memcmp(data, "DKIF", 4);
+    size_t offset;
+    uint64_t sequence = 1;
+    MppBuffer *retained = NULL;
+    size_t retained_count = 0;
+    size_t retained_capacity = 0;
+    int result = -1;
+
+    *decoded_frames = 0;
+    if (is_ivf) {
+        size_t header_size = le16(data + 6);
+
+        if (header_size < 32 || header_size > size) {
+            fprintf(stderr, "invalid IVF header size\n");
+            goto done;
+        }
+        offset = header_size;
+    } else {
+        offset = 0;
+    }
+
+    do {
+        const uint8_t *packet_data;
+        size_t packet_size;
+        uint64_t pts = sequence;
+        int frames;
+        MppBuffer retained_buffer = NULL;
+
+        if (is_ivf) {
+            size_t next;
+
+            if (size - offset < 12) {
+                fprintf(stderr, "truncated IVF frame header\n");
+                goto done;
+            }
+            packet_size = le32(data + offset);
+            pts = le64(data + offset + 4);
+            next = offset + 12;
+            if (packet_size > size - next) {
+                fprintf(stderr, "truncated IVF packet\n");
+                goto done;
+            }
+            packet_data = data + next;
+            offset = next + packet_size;
+        } else {
+            packet_data = data;
+            packet_size = size;
+            offset = size;
+        }
+
+        frames = decode_packet(mpi, ctx, group, packet_data, packet_size,
+                               (int64_t)pts, width, height, buffer_size,
+                               hor_stride, ver_stride, output,
+                               &retained_buffer);
+        if (frames < 0)
+            goto done;
+        if (retained_buffer) {
+            if (retained_count == retained_capacity) {
+                size_t capacity = retained_capacity ? retained_capacity * 2 : 16;
+                MppBuffer *grown =
+                    realloc(retained, capacity * sizeof(*retained));
+
+                if (!grown) {
+                    fprintf(stderr, "output buffer list allocation failed\n");
+                    mpp_buffer_put(retained_buffer);
+                    goto done;
+                }
+                retained = grown;
+                retained_capacity = capacity;
+            }
+            retained[retained_count++] = retained_buffer;
+        }
+        *decoded_frames += frames;
+        sequence++;
+    } while (is_ivf && offset < size);
+
+    {
+        MppPacket packet = NULL;
+        int tail;
+
+        if (mpp_packet_init(&packet, NULL, 0) != MPP_OK ||
+            mpp_packet_set_eos(packet) != MPP_OK ||
+            mpi->decode_put_packet(ctx, packet) != MPP_OK) {
+            fprintf(stderr, "EOS submit failed\n");
+            mpp_packet_deinit(&packet);
+            goto done;
+        }
+        mpp_packet_deinit(&packet);
+        tail = drain_frames(mpi, ctx, output, NULL, NULL, 0, 0, NULL);
+        if (tail < 0)
+            goto done;
+        *decoded_frames += tail;
+    }
+    result = 0;
+
+done:
+    for (size_t i = 0; i < retained_count; i++)
+        mpp_buffer_put(retained[i]);
+    free(retained);
+    return result;
 }
 
 static int object_api_checks(void) {
@@ -294,10 +500,7 @@ static int object_api_checks(void) {
 int main(int argc, char **argv) {
     MppCtx ctx = NULL;
     MppApi *mpi = NULL;
-    MppPacket packet = NULL;
     MppBufferGroup output_group = NULL;
-    MppBuffer output_buffer = NULL;
-    MppFrame output_frame = NULL;
     FILE *input = NULL;
     FILE *output = NULL;
     uint8_t *data = NULL;
@@ -307,6 +510,9 @@ int main(int argc, char **argv) {
     int expected_frames;
     int width;
     int height;
+    uint32_t hor_stride;
+    uint32_t ver_stride;
+    size_t buffer_size;
     int rc = 1;
 
     if (argc != 7) {
@@ -348,48 +554,18 @@ int main(int argc, char **argv) {
     if (mpp_create(&ctx, &mpi) != MPP_OK ||
         mpp_init(ctx, MPP_CTX_DEC, coding) != MPP_OK ||
         mpp_buffer_group_get_internal(&output_group,
-                                      MPP_BUFFER_TYPE_DMA_HEAP) != MPP_OK ||
-        mpp_buffer_get(output_group, &output_buffer,
-                       (size_t)width * height * 3 / 2) != MPP_OK ||
-        mpp_frame_init(&output_frame) != MPP_OK ||
-        mpp_packet_init(&packet, data, (size_t)size) != MPP_OK) {
+                                      MPP_BUFFER_TYPE_DMA_HEAP) != MPP_OK) {
         fprintf(stderr, "decoder initialization failed\n");
         goto done;
     }
-    mpp_frame_set_width(output_frame, width);
-    mpp_frame_set_height(output_frame, height);
-    mpp_frame_set_hor_stride(output_frame, (width + 15) & ~15);
-    mpp_frame_set_ver_stride(output_frame, (height + 15) & ~15);
-    mpp_frame_set_fmt(output_frame, MPP_FMT_YUV420SP);
-    mpp_frame_set_buffer(output_frame, output_buffer);
-    if (mpp_meta_set_frame(mpp_packet_get_meta(packet), KEY_OUTPUT_FRAME,
-                           output_frame) != MPP_OK) {
-        fprintf(stderr, "advanced output frame metadata failed\n");
+    buffer_size = output_layout(coding, (uint32_t)width, (uint32_t)height,
+                                &hor_stride, &ver_stride);
+    if (!buffer_size ||
+        run_packets(mpi, ctx, output_group, data, (size_t)size,
+                    (uint32_t)width, (uint32_t)height, buffer_size, hor_stride,
+                    ver_stride, output, &frames)) {
         goto done;
     }
-    mpp_packet_set_pts(packet, 1);
-    if (mpi->decode_put_packet(ctx, packet) != MPP_OK ||
-        mpp_packet_get_length(packet) != 0) {
-        fprintf(stderr, "decode_put_packet failed\n");
-        goto done;
-    }
-    frames = drain_frames(mpi, ctx, output, output_frame, output_buffer);
-    if (frames < 0)
-        goto done;
-    if (frames > 0)
-        output_frame = NULL;
-
-    mpp_packet_deinit(&packet);
-    if (mpp_packet_init(&packet, NULL, 0) != MPP_OK ||
-        mpp_packet_set_eos(packet) != MPP_OK ||
-        mpi->decode_put_packet(ctx, packet) != MPP_OK) {
-        fprintf(stderr, "EOS submit failed\n");
-        goto done;
-    }
-    int tail = drain_frames(mpi, ctx, output, NULL, NULL);
-    if (tail < 0)
-        goto done;
-    frames += tail;
 
     if (frames != expected_frames) {
         fprintf(stderr, "decoded %d frames, expected %d\n", frames,
@@ -401,9 +577,6 @@ int main(int argc, char **argv) {
     rc = 0;
 
 done:
-    mpp_packet_deinit(&packet);
-    mpp_frame_deinit(&output_frame);
-    mpp_buffer_put(output_buffer);
     mpp_buffer_group_put(output_group);
     if (ctx && mpp_destroy(ctx) != MPP_OK)
         rc = 1;

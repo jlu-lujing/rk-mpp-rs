@@ -148,6 +148,15 @@ H.265/MJPEG advanced frame identity 门通过；H.264 640×480 6 帧 advanced
 输出 SHA `338214ea…f815` 与 C golden 逐字节一致。VP9 advanced injection
 仍需板级矩阵，AV1 当前保留 plane-to-frame 写入。
 
+第九个 slice 闭合 VP9 advanced injection。C consumer 现在按 IVF frame
+header 逐 packet 提交，而不是把整个容器塞进一个 `MppPacket`；每次输出 buffer
+只作一个硬件 surface，并至少存活到 DPB 释放，避免 reference surface 被下一帧
+覆盖。VP9 decoder 只允许 `show_frame` 消耗 `KEY_OUTPUT_FRAME`，隐藏的
+alt-ref/reference frame 使用内部 surface。同 dma-buf 快路径保留真实
+`mpp_align_256_odd` stride 和 MPP 的 9/5 frame allocation size，避免 metadata
+回退成 packed NV12。t6 与 lf1 的 320×240 lossless 12 帧 advanced 输出均与
+C MPP 逐字节一致，SHA `c5381bbf…3949a`；AV1 pool injection 继续保持未完成。
+
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test
 MPP_INCLUDE=/tmp/mpp-develop/inc \

@@ -270,9 +270,11 @@ external `MppBuffer` 现可通过
 `mpp_buffer_import` 接收 caller pointer/fd，并支持 external group 的
 commit/get、unused recycle 和 usage 统计；fd-only import 会建立独立映射。
 支持的 decoder 现在直接产出 DMA-BUF frame，advanced `KEY_OUTPUT_FRAME`
-可把调用方 dma-buf fd 注入 H.264/H.265/VP9/MJPEG output pool；H.264/H.265/
-MJPEG 已验证目标 frame 由硬件直接写入，不再创建临时 MppFrame/整帧 buffer。
-无法注入或尚未验证的编码回退到从 decoder planes 直写目标 frame。
+可把调用方 dma-buf fd 注入 H.264/H.265/VP9/MJPEG output pool；
+H.264/H.265/VP9/MJPEG 已验证目标 frame 由硬件直接写入，不再创建临时
+MppFrame/整帧 buffer。VP9 会保留硬件的 256-odd stride 和 9/5 帧容量，
+且只让 `show_frame` surface 占用调用方输出，隐藏参考帧不会偷用 packet 的
+`KEY_OUTPUT_FRAME`。AV1 当前仍从 decoder planes 直写目标 frame。
 已可在保留 vendor
 log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
 `mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。

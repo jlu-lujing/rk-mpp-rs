@@ -433,11 +433,13 @@ impl Decoder {
         if index >= MAX_FRAME_SLOTS {
             return Err(std::io::Error::other("VP9 DPB exhausted all frame slots"));
         }
-        if let Some(buffer) = self.output_injection.take() {
-            self.video_pool.clear();
-            self.video_pool
-                .import(buffer)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
+        if header.show_frame {
+            if let Some(buffer) = self.output_injection.take() {
+                self.video_pool.clear();
+                self.video_pool
+                    .import(buffer)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+            }
         }
         self.frames[index] = Some(if self.hw.uses_vdpu383() {
             Frame::acquire_383(
