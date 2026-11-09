@@ -1,10 +1,78 @@
+#define _GNU_SOURCE
+
 #include "rk_mpp_rs.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/dma-buf.h>
+#include <linux/dma-heap.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+struct dma_input {
+    int fd;
+    void *mapping;
+    size_t size;
+};
+
+static int dma_input_open(struct dma_input *input, size_t size) {
+    struct dma_heap_allocation_data allocation = {
+        .len = size,
+        .fd_flags = O_RDWR | O_CLOEXEC,
+    };
+    int heap;
+
+    memset(input, 0, sizeof(*input));
+    input->fd = -1;
+    heap = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+    if (heap < 0)
+        return -1;
+    if (ioctl(heap, DMA_HEAP_IOCTL_ALLOC, &allocation) < 0) {
+        close(heap);
+        return -1;
+    }
+    close(heap);
+    input->fd = (int)allocation.fd;
+    input->size = size;
+    input->mapping = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                          input->fd, 0);
+    if (input->mapping == MAP_FAILED) {
+        input->mapping = NULL;
+        close(input->fd);
+        input->fd = -1;
+        return -1;
+    }
+    memset(input->mapping, 0, size);
+    return 0;
+}
+
+static int dma_input_write(struct dma_input *input, const uint8_t *data,
+                           size_t size) {
+    struct dma_buf_sync sync = {
+        .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE,
+    };
+
+    if (size > input->size ||
+        ioctl(input->fd, DMA_BUF_IOCTL_SYNC, &sync))
+        return -1;
+    memcpy(input->mapping, data, size);
+    sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+    return ioctl(input->fd, DMA_BUF_IOCTL_SYNC, &sync) ? -1 : 0;
+}
+
+static void dma_input_close(struct dma_input *input) {
+    if (input->mapping)
+        munmap(input->mapping, input->size);
+    if (input->fd >= 0)
+        close(input->fd);
+    memset(input, 0, sizeof(*input));
+    input->fd = -1;
+}
 
 static int read_file(const char *path, uint8_t **data, size_t *size) {
     FILE *file = fopen(path, "rb");
@@ -179,8 +247,13 @@ int main(int argc, char **argv) {
     int saw_eos = 0;
     int ret = 1;
     uint32_t index;
+    struct dma_input dma = {.fd = -1};
+    uint32_t dma_hor_stride = 0;
+    uint32_t dma_ver_stride = 0;
+    size_t dma_size = 0;
     const char *rate_mode_name = getenv("RATE_CONTROL_MODE");
     const char *control_mode = getenv("CONTROL_MODE");
+    int use_dmabuf = getenv("DMABUF_INPUT") != NULL;
 
     if (argc != 10 || parse_codec(argv[1], &codec) ||
         parse_format(argv[2], &format)) {
@@ -318,6 +391,25 @@ int main(int argc, char **argv) {
         fprintf(stderr, "encoder create failed\n");
         goto done;
     }
+    if (use_dmabuf) {
+        uint32_t width_align = codec == RK_MPP_CODEC_MJPEG ? 8u : 16u;
+        uint32_t height_align = codec == RK_MPP_CODEC_MJPEG ? 2u : 16u;
+
+        if (format != RK_MPP_PIXEL_FORMAT_NV12 ||
+            width % width_align || height % height_align) {
+            fprintf(stderr,
+                    "DMABUF_INPUT needs aligned NV12 dimensions\n");
+            goto done;
+        }
+        dma_hor_stride = width;
+        dma_ver_stride = height;
+        dma_size = (size_t)dma_hor_stride * dma_ver_stride * 3 / 2;
+        if (dma_input_open(&dma, dma_size)) {
+            fprintf(stderr, "dma-heap input allocation failed: %s\n",
+                    strerror(errno));
+            goto done;
+        }
+    }
     if (rk_mpp_encoded_packet_init(&packet) != RK_MPP_OK)
         goto done;
     out = fopen(argv[3], "wb");
@@ -326,8 +418,22 @@ int main(int argc, char **argv) {
         goto done;
     }
     for (index = 0; index < frames; index++) {
-        int status = rk_mpp_encoder_submit_frame(
-            encoder, input + (size_t)index * frame_size, frame_size, index, 0);
+        int status;
+
+        if (use_dmabuf) {
+            if (dma_input_write(&dma, input + (size_t)index * frame_size,
+                                frame_size)) {
+                fprintf(stderr, "dma-heap input write failed\n");
+                goto done;
+            }
+            status = rk_mpp_encoder_submit_frame_dmabuf(
+                encoder, dma.fd, dma.size, dma_hor_stride, dma_ver_stride,
+                index, 0);
+        } else {
+            status = rk_mpp_encoder_submit_frame(
+                encoder, input + (size_t)index * frame_size, frame_size,
+                index, 0);
+        }
         if (status != RK_MPP_OK) {
             fprintf(stderr, "submit frame failed: %s\n",
                     rk_mpp_strerror(status));
@@ -371,6 +477,7 @@ int main(int argc, char **argv) {
     ret = 0;
 
 done:
+    dma_input_close(&dma);
     if (out)
         fclose(out);
     if (encoder)

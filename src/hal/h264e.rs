@@ -640,6 +640,7 @@ pub struct Vepu580H264 {
     rc: Option<rc_model::Model>,
     /// The scene-motion detector, updated from every picture's STATUS window.
     tune: SceneTune,
+    input_fd_override: Option<i32>,
     /// The ROI tables, written once: the regions do not move between
     /// pictures, exactly as in the reference harness that adds the same
     /// regions to every frame's meta.
@@ -765,6 +766,7 @@ impl Vepu580H264 {
             next_slot_override: None,
             next_reference_override: None,
             tune: SceneTune::new(false),
+            input_fd_override: None,
             rc: match config.rc_mode {
                 RcMode::FixedQp => None,
                 RcMode::Cbr | RcMode::Vbr | RcMode::Avbr => {
@@ -854,6 +856,7 @@ impl Vepu580H264 {
         reference_slot: usize,
         save_pass1: bool,
         use_pass1: bool,
+        input_fd: i32,
     ) -> Result<(Vec<u8>, Vec<usize>, Statistics), String> {
         let pass1_fd = self.pass1.as_ref().map_or(-1, |b| b.fd());
         let current_fd = if save_pass1 {
@@ -863,7 +866,7 @@ impl Vepu580H264 {
         };
         let job = Job {
             config: &self.config,
-            input_fd: self.input.fd(),
+            input_fd,
             output_fd: self.output.fd(),
             current_fd,
             current_thumb_fd: self.recons[current_slot].thumb.fd(),
@@ -988,6 +991,14 @@ impl Vepu580H264 {
 
     /// Encode one picture, continuing the GOP: the first call of a session is an
     /// IDR and every `gop`-th picture after it opens a new one.
+    pub fn encode_frame_fd(&mut self, input_fd: i32) -> Result<EncodedFrame, String> {
+        if input_fd < 0 {
+            return Err("H.264 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_frame(&[])
+    }
+
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
         let previous_state = self.state;
         let previous_slot = self.slot;
@@ -1013,20 +1024,27 @@ impl Vepu580H264 {
         }
         let state = self.state;
         let expected = input_size(&self.config)?;
-        if nv12.len() < expected {
-            return Err(format!(
-                "H.264 input is {} bytes, expected at least {expected}",
-                nv12.len()
-            ));
-        }
-
-        self.input
-            .sync_write_begin()
-            .map_err(|e| format!("H.264 input sync begin: {e}"))?;
-        self.input.as_mut_slice()[..expected].copy_from_slice(&nv12[..expected]);
-        self.input
-            .sync_write_end()
-            .map_err(|e| format!("H.264 input flush: {e}"))?;
+        let input_fd = if let Some(input_fd) = self.input_fd_override.take() {
+            if input_fd < 0 {
+                return Err("H.264 input fd is invalid".to_string());
+            }
+            input_fd
+        } else {
+            if nv12.len() < expected {
+                return Err(format!(
+                    "H.264 input is {} bytes, expected at least {expected}",
+                    nv12.len()
+                ));
+            }
+            self.input
+                .sync_write_begin()
+                .map_err(|e| format!("H.264 input sync begin: {e}"))?;
+            self.input.as_mut_slice()[..expected].copy_from_slice(&nv12[..expected]);
+            self.input
+                .sync_write_end()
+                .map_err(|e| format!("H.264 input flush: {e}"))?;
+            self.input.fd()
+        };
 
         let reference_slot = self.next_reference_override.take().unwrap_or_else(|| {
             if state.is_idr || state.is_vi || state.index <= 1 {
@@ -1060,6 +1078,7 @@ impl Vepu580H264 {
                 previous_slot,
                 true,
                 false,
+                input_fd,
             )?;
             true
         } else {
@@ -1078,8 +1097,15 @@ impl Vepu580H264 {
                 qp_delta_row: 2,
                 qp_delta_row_i: 2,
             });
-            let (payload, slice_lengths, statistics) =
-                self.run_hardware_job(state, rc, self.slot, reference_slot, false, use_pass1)?;
+            let (payload, slice_lengths, statistics) = self.run_hardware_job(
+                state,
+                rc,
+                self.slot,
+                reference_slot,
+                false,
+                use_pass1,
+                input_fd,
+            )?;
             let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as u32;
             let measured = rc_model::Measured {
                 bits: statistics.bitstream_bytes as i32 * 8,

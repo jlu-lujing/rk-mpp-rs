@@ -741,6 +741,46 @@ pub unsafe extern "C" fn rk_mpp_encoder_submit_frame(
     }
 }
 
+/// Submit one NV12 frame from an externally allocated dma-buf.
+///
+/// The fd points at the luma plane (offset zero). `size` is the full imported
+/// allocation length; `hor_stride`/`ver_stride` describe the coded NV12 layout.
+///
+/// # Safety
+/// `encoder` must be live and `fd` must reference a readable dma-buf.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_submit_frame_dmabuf(
+    encoder: *mut RkMppEncoder,
+    fd: c_int,
+    size: u64,
+    hor_stride: u32,
+    ver_stride: u32,
+    pts: i64,
+    dts: i64,
+) -> c_int {
+    if encoder.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    let Ok(size) = usize::try_from(size) else {
+        return RK_MPP_ERR_TOO_LARGE;
+    };
+    let Ok(hor_stride) = usize::try_from(hor_stride) else {
+        return RK_MPP_ERR_INVALID;
+    };
+    let Ok(ver_stride) = usize::try_from(ver_stride) else {
+        return RK_MPP_ERR_INVALID;
+    };
+    let input = match encoder::DmaBufInput::new(fd as i32, size, hor_stride, ver_stride) {
+        Ok(input) => input.with_pts(pts).with_dts(dts),
+        Err(error) => return error_code(&error),
+    };
+    // SAFETY: encoder is live and exclusively used for this call.
+    match unsafe { &mut *encoder }.inner.submit_dmabuf_frame(input) {
+        Ok(_) => RK_MPP_OK,
+        Err(error) => error_code(&error),
+    }
+}
+
 /// # Safety
 /// `encoder` must be live and `packet` writable initialized storage.
 #[no_mangle]

@@ -87,6 +87,11 @@
   raw `DmaBuf` per frame. VDPU383 output now comes from the same buffer-pool
   abstraction; `output_refs() > 1` excludes a delayed SDK frame from slot
   reuse, and DMA mode skips the normal planar CPU readback.
+- Encoder fd input reuses the hardware address fields that already point at the
+  encoder's staging surface. H.264 VEPU580 passes the fd into its job builder;
+  H.265 and both VEPU510 paths use a one-shot override consumed by the next
+  picture. JPEG already had fd-capable VEPU2/VPU720 implementations, so the SDK
+  only needed stride validation and enum dispatch.
 
 ## Research Findings
 

@@ -9,7 +9,7 @@ fn version_and_initializers_match_the_native_library() {
         let version = CStr::from_ptr(rk_mpp_api_version_string())
             .to_str()
             .unwrap();
-        assert_eq!(version, "1.11");
+        assert_eq!(version, "1.12");
         assert!(!rk_mpp_strerror(RK_MPP_OK).is_null());
 
         let mut decoder = rk_mpp_decoder_config_t::default();
@@ -96,7 +96,7 @@ fn version_and_initializers_match_the_native_library() {
 
 #[test]
 fn every_public_symbol_is_linkable() {
-    let symbols: [usize; 35] = [
+    let symbols: [usize; 36] = [
         rk_mpp_api_version as usize,
         rk_mpp_api_version_string as usize,
         rk_mpp_strerror as usize,
@@ -124,6 +124,7 @@ fn every_public_symbol_is_linkable() {
         rk_mpp_encoder_create_advanced as usize,
         rk_mpp_encoder_create_advanced_v2 as usize,
         rk_mpp_encoder_submit_frame as usize,
+        rk_mpp_encoder_submit_frame_dmabuf as usize,
         rk_mpp_encoder_receive_packet as usize,
         rk_mpp_encoded_packet_release as usize,
         rk_mpp_encoder_flush as usize,

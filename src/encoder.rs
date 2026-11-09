@@ -19,6 +19,7 @@ use crate::codec::h265::roi::RoiRegion as H265RoiRegion;
 use crate::hal::h265e::RefreshMode as H265RefreshMode;
 use crate::hal::{h264e, h265e_session, jpege, jpege720, vepu510_h264, vepu510_h265};
 use crate::sdk::{Codec, Error, PixelFormat};
+use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{SocProfile, VideoEncodeHal};
 
 pub const MAX_ROI_REGIONS: usize = 8;
@@ -629,6 +630,45 @@ impl<'a> InputFrame<'a> {
     }
 }
 
+/// One externally allocated NV12 frame submitted by fd.
+///
+/// The constructor duplicates and maps the caller's fd. Submission is
+/// synchronous, so the caller may reuse the surface after it returns.
+pub struct DmaBufInput {
+    buffer: DmaBuf,
+    hor_stride: usize,
+    ver_stride: usize,
+    pts: i64,
+    dts: i64,
+}
+
+impl DmaBufInput {
+    pub fn new(fd: i32, size: usize, hor_stride: usize, ver_stride: usize) -> Result<Self, Error> {
+        if fd < 0 || size == 0 || hor_stride == 0 || ver_stride == 0 {
+            return Err(Error::InvalidInput(
+                "DMA-BUF input fd, size and strides must be nonzero".to_string(),
+            ));
+        }
+        Ok(Self {
+            buffer: DmaBuf::import_fd(fd, size, false).map_err(Error::from)?,
+            hor_stride,
+            ver_stride,
+            pts: 0,
+            dts: 0,
+        })
+    }
+
+    pub const fn with_pts(mut self, pts: i64) -> Self {
+        self.pts = pts;
+        self
+    }
+
+    pub const fn with_dts(mut self, dts: i64) -> Self {
+        self.dts = dts;
+        self
+    }
+}
+
 /// One encoded packet in emission order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Packet {
@@ -823,6 +863,100 @@ impl Encoder {
                 let jpeg = jpeg_config(self.config)?;
                 let encoded = encoder
                     .encode_packets(&input, jpeg)
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                let count = encoded.packets.len();
+                for range in encoded.packets {
+                    self.packets.push_back(Packet {
+                        data: encoded.bytes[range].to_vec(),
+                        pts: frame.pts,
+                        dts: frame.dts,
+                        keyframe: true,
+                        frame_num: *frame_number,
+                        poc: *frame_number as i32,
+                    });
+                }
+                *frame_number = frame_number.saturating_add(1);
+                Ok(count)
+            }
+        }
+    }
+
+    pub fn submit_dmabuf_frame(&mut self, frame: DmaBufInput) -> Result<usize, Error> {
+        if self.eos {
+            return Err(Error::State("frame submitted after encoder EOS"));
+        }
+        validate_dmabuf_input(self.config, &frame)?;
+        let input_fd = frame.buffer.fd();
+        match &mut self.backend {
+            Backend::H264Vepu580(encoder) => {
+                let encoded = encoder
+                    .encode_frame_fd(input_fd)
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                let count = encoded.packets.len();
+                for data in encoded.packets {
+                    self.packets.push_back(Packet {
+                        data,
+                        pts: frame.pts,
+                        dts: frame.dts,
+                        keyframe: encoded.is_idr,
+                        frame_num: encoded.frame_num,
+                        poc: encoded.poc,
+                    });
+                }
+                Ok(count)
+            }
+            Backend::H264Vepu510(encoder) => {
+                let (data, keyframe, frame_num, poc) = encoder
+                    .encode_fixed_qp_next_320x240_fd(input_fd)
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                self.packets.push_back(Packet {
+                    data,
+                    pts: frame.pts,
+                    dts: frame.dts,
+                    keyframe,
+                    frame_num,
+                    poc,
+                });
+                Ok(1)
+            }
+            Backend::H265Vepu580(encoder) => {
+                let encoded = encoder
+                    .encode_frame_packets_fd(input_fd)
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                let count = encoded.packets.len();
+                for data in encoded.packets {
+                    self.packets.push_back(Packet {
+                        data,
+                        pts: frame.pts,
+                        dts: frame.dts,
+                        keyframe: encoded.is_idr,
+                        frame_num: encoded.frame_num,
+                        poc: encoded.frame_num as i32 * 2,
+                    });
+                }
+                Ok(count)
+            }
+            Backend::H265Vepu510(encoder) => {
+                let (data, keyframe, frame_num, poc) = encoder
+                    .encode_fixed_qp_next_320x240_fd(input_fd)
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                self.packets.push_back(Packet {
+                    data,
+                    pts: frame.pts,
+                    dts: frame.dts,
+                    keyframe,
+                    frame_num,
+                    poc,
+                });
+                Ok(1)
+            }
+            Backend::Jpeg {
+                encoder,
+                frame_number,
+            } => {
+                let jpeg = jpeg_config(self.config)?;
+                let encoded = encoder
+                    .encode_fd_packets(input_fd, jpeg)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
                 for range in encoded.packets {
@@ -1179,6 +1313,43 @@ fn jpeg_config(config: EncoderConfig) -> Result<jpege::EncoderConfig, Error> {
     jpeg.split_mcus = (config.jpeg_restart_mcus != 0).then_some(config.jpeg_restart_mcus as u16);
     jpeg.validate().map_err(Error::InvalidInput)?;
     Ok(jpeg)
+}
+
+fn validate_dmabuf_input(config: EncoderConfig, input: &DmaBufInput) -> Result<(), Error> {
+    if config.input_format != PixelFormat::Nv12 {
+        return Err(Error::Unsupported(
+            "DMA-BUF encoder input requires NV12".to_string(),
+        ));
+    }
+    let (width_align, height_align) = if config.codec == Codec::Mjpeg {
+        (8, 2)
+    } else {
+        (16, 16)
+    };
+    let expected_hor_stride = align_up(config.width, width_align);
+    let expected_ver_stride = align_up(config.height, height_align);
+    if input.hor_stride != expected_hor_stride || input.ver_stride != expected_ver_stride {
+        return Err(Error::InvalidInput(format!(
+            "DMA-BUF encoder input stride {}x{} does not match required {}x{}",
+            input.hor_stride, input.ver_stride, expected_hor_stride, expected_ver_stride
+        )));
+    }
+    let required = input
+        .hor_stride
+        .checked_mul(input.ver_stride)
+        .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
+        .ok_or_else(|| Error::InvalidInput("DMA-BUF encoder input size overflow".to_string()))?;
+    if input.buffer.len() < required {
+        return Err(Error::InvalidInput(format!(
+            "DMA-BUF encoder input is {} bytes, expected at least {required}",
+            input.buffer.len()
+        )));
+    }
+    Ok(())
+}
+
+fn align_up(value: usize, alignment: usize) -> usize {
+    value.div_ceil(alignment) * alignment
 }
 
 fn format_nv12_input(config: EncoderConfig, data: &[u8]) -> Result<Vec<u8>, Error> {

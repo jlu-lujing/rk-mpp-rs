@@ -44,6 +44,22 @@ impl JpegEncoder {
         }
     }
 
+    pub fn encode_fd_packets(
+        &mut self,
+        input_fd: i32,
+        config: EncoderConfig,
+    ) -> Result<EncodedJpeg, String> {
+        match self {
+            Self::Vepu2(encoder) => encoder.encode_fd_packets(input_fd, config),
+            Self::Vpu720(encoder) => encoder.encode_fd_packets(input_fd, config),
+        }
+    }
+
+    pub fn encode_fd(&mut self, input_fd: i32, config: EncoderConfig) -> Result<Vec<u8>, String> {
+        self.encode_fd_packets(input_fd, config)
+            .map(|encoded| encoded.bytes)
+    }
+
     pub fn encode_nv12(&mut self, input: &[u8], config: EncoderConfig) -> Result<Vec<u8>, String> {
         match self {
             Self::Vepu2(encoder) => encoder.encode_nv12(input, config),

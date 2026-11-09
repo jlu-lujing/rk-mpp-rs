@@ -4,6 +4,15 @@ All notable changes to the public SDK are recorded here. The project version and
 the C ABI version are independent: the crate is currently `0.1.x`, while
 `RK_MPP_API_VERSION_MAJOR` defines shared-library ABI compatibility.
 
+## [1.12] - 2026-11-09
+
+- Added `DmaBufInput` and `Encoder::submit_dmabuf_frame()` for NV12 encoder
+  input without copying to the encoder's internal staging surface.
+- Added `rk_mpp_encoder_submit_frame_dmabuf()` with fd, allocation size and
+  coded Y/UV stride metadata.
+- Copied-input APIs remain unchanged. H.264, H.265 and JPEG DMA input produce
+  byte-identical packets on t6/VEPU580 and lf1/VEPU510+VPU720.
+
 ## [1.11] - 2026-11-09
 
 - H.264, 8-bit 4:2:0 H.265/VP9/AV1 and MJPEG NV12 decoding can retain their

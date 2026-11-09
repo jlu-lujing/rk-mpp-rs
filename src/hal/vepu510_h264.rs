@@ -59,6 +59,7 @@ pub struct Vepu510H264 {
     smear: [DmaBuf; 2],
     idr_done: bool,
     frame_number: u32,
+    input_fd_override: Option<i32>,
 }
 
 impl Vepu510H264 {
@@ -103,6 +104,7 @@ impl Vepu510H264 {
             smear,
             idr_done: false,
             frame_number: 0,
+            input_fd_override: None,
         })
     }
 
@@ -112,21 +114,27 @@ impl Vepu510H264 {
         &mut self,
         nv12: &[u8],
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
-        if nv12.len() < INPUT_SIZE {
+        let direct_input = self.input_fd_override.is_some();
+        if !direct_input && nv12.len() < INPUT_SIZE {
             return Err(format!(
                 "VEPU510 input is {} bytes, expected at least {INPUT_SIZE}",
                 nv12.len()
             ));
         }
+        let input_data = if direct_input {
+            &[]
+        } else {
+            &nv12[..INPUT_SIZE]
+        };
         if !self.idr_done {
-            let encoded = self.encode_idr(&nv12[..INPUT_SIZE], &[], SplitMode::None, 0, 0)?;
+            let encoded = self.encode_idr(input_data, &[], SplitMode::None, 0, 0)?;
             self.idr_done = true;
             self.frame_number = 0;
             return Ok((encoded.stream, true, 0, 0));
         }
         self.frame_number = self.frame_number.saturating_add(1);
         let encoded = self.encode_p(
-            &nv12[..INPUT_SIZE],
+            input_data,
             self.frame_number,
             &[],
             SplitMode::None,
@@ -141,6 +149,17 @@ impl Vepu510H264 {
             self.frame_number,
             self.frame_number as i32 * 2,
         ))
+    }
+
+    pub fn encode_fixed_qp_next_320x240_fd(
+        &mut self,
+        input_fd: i32,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        if input_fd < 0 {
+            return Err("VEPU510 H.264 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_fixed_qp_next_320x240(&[])
     }
 
     pub fn encode_fixed_qp_idr_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
@@ -514,19 +533,24 @@ impl Vepu510H264 {
         prefix: &[u8],
         split_out: u32,
     ) -> Result<JobOutput, String> {
-        if nv12.len() < INPUT_SIZE {
-            return Err(format!(
-                "VEPU510 input is {} bytes, expected {INPUT_SIZE}",
-                nv12.len()
-            ));
-        }
-        self.input
-            .sync_write_begin()
-            .map_err(|e| format!("VEPU510 input sync begin: {e}"))?;
-        self.input.as_mut_slice()[..INPUT_SIZE].copy_from_slice(&nv12[..INPUT_SIZE]);
-        self.input
-            .sync_write_end()
-            .map_err(|e| format!("VEPU510 input flush: {e}"))?;
+        let input_fd = if let Some(input_fd) = self.input_fd_override.take() {
+            input_fd
+        } else {
+            if nv12.len() < INPUT_SIZE {
+                return Err(format!(
+                    "VEPU510 input is {} bytes, expected {INPUT_SIZE}",
+                    nv12.len()
+                ));
+            }
+            self.input
+                .sync_write_begin()
+                .map_err(|e| format!("VEPU510 input sync begin: {e}"))?;
+            self.input.as_mut_slice()[..INPUT_SIZE].copy_from_slice(&nv12[..INPUT_SIZE]);
+            self.input
+                .sync_write_end()
+                .map_err(|e| format!("VEPU510 input flush: {e}"))?;
+            self.input.fd()
+        };
 
         if !prefix.is_empty() {
             self.output
@@ -569,6 +593,10 @@ impl Vepu510H264 {
         let mut int_state = [0u32; 1];
         let mut status = [0u32; STATUS_WORDS];
         let mut batch = Batch::new();
+        let mut registers = registers.clone();
+        for index in 4..=6 {
+            registers.frame[index] = input_fd as u32;
+        }
         batch.reg_write(&registers.ctl, CTL_OFFSET);
         batch.reg_write(&registers.frame, FRAME_OFFSET);
         batch.reg_write(&registers.rc, RC_OFFSET);

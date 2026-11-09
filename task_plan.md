@@ -247,6 +247,16 @@ callers.
 - [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
 - **Status:** complete on t6 and lf1 for 8-bit NV12.
 
+### Phase 16: Encoder DMA-BUF Input API V1.12
+- [x] Add Rust `DmaBufInput` with fd import and NV12 stride validation.
+- [x] Add `rk_mpp_encoder_submit_frame_dmabuf()` and raw FFI declaration.
+- [x] Wire VEPU580 and VEPU510 H.264/H.265 jobs to an external input fd.
+- [x] Wire VEPU2 and VPU720 JPEG jobs to an external input fd.
+- [x] Preserve all copied-input APIs and outputs.
+- [x] Verify copied and DMA input are byte-identical on t6/lf1.
+- [x] Re-run package, workspace and ABI gates on t6/lf1.
+- **Status:** complete on t6 and lf1 for NV12 H.264/H.265/JPEG.
+
 ## Decisions Made
 
 | Decision | Rationale |

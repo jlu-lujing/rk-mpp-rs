@@ -456,6 +456,7 @@ pub struct Vepu510H265 {
     md_info: DmaBuf,
     idr_done: bool,
     frame_number: u32,
+    input_fd_override: Option<i32>,
 }
 
 impl Vepu510H265 {
@@ -521,6 +522,7 @@ impl Vepu510H265 {
             md_info,
             idr_done: false,
             frame_number: 0,
+            input_fd_override: None,
         })
     }
 
@@ -539,7 +541,8 @@ impl Vepu510H265 {
         &mut self,
         nv12: &[u8],
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
-        if nv12.len() < INPUT_SIZE {
+        let direct_input = self.input_fd_override.is_some();
+        if !direct_input && nv12.len() < INPUT_SIZE {
             return Err(format!(
                 "VEPU510 H.265 input is {} bytes, expected at least {INPUT_SIZE}",
                 nv12.len()
@@ -547,9 +550,15 @@ impl Vepu510H265 {
         }
         let config = lf1_h265_config()?;
         let prefix = lf1_fixed_qp_prefix(&config, QP, GOP)?;
+        let input_fd = self.input_fd_override.unwrap_or_else(|| self.input.fd());
+        let input_data = if direct_input {
+            &[]
+        } else {
+            &nv12[..INPUT_SIZE]
+        };
         if !self.idr_done {
             let registers = RegisterFile::captured_fixqp_idr_320x240(
-                self.input.fd() as u32,
+                input_fd as u32,
                 self.output.fd() as u32,
                 self.recon[0].fd() as u32,
                 self.colmv[0].fd() as u32,
@@ -557,7 +566,7 @@ impl Vepu510H265 {
                 self.smear[0].fd() as u32,
                 self.md_info.fd() as u32,
             )?;
-            let stream = self.run_job(&nv12[..INPUT_SIZE], &registers, &prefix)?;
+            let stream = self.run_job(input_data, &registers, &prefix)?;
             self.idr_done = true;
             self.frame_number = 0;
             return Ok((stream, true, 0, 0));
@@ -566,7 +575,7 @@ impl Vepu510H265 {
         let current = self.frame_number as usize & 1;
         let reference = 1 - current;
         let registers = RegisterFile::captured_fixqp_p_320x240(
-            self.input.fd() as u32,
+            input_fd as u32,
             self.output.fd() as u32,
             self.recon[current].fd() as u32,
             self.recon[reference].fd() as u32,
@@ -579,13 +588,24 @@ impl Vepu510H265 {
             self.md_info.fd() as u32,
             self.frame_number,
         )?;
-        let stream = self.run_job(&nv12[..INPUT_SIZE], &registers, &[])?;
+        let stream = self.run_job(input_data, &registers, &[])?;
         Ok((
             stream,
             false,
             self.frame_number,
             self.frame_number as i32 * 2,
         ))
+    }
+
+    pub fn encode_fixed_qp_next_320x240_fd(
+        &mut self,
+        input_fd: i32,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        if input_fd < 0 {
+            return Err("VEPU510 H.265 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_fixed_qp_next_320x240(&[])
     }
 
     pub fn encode_fixed_qp_idr_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
@@ -915,13 +935,18 @@ impl Vepu510H265 {
         prefix: &[u8],
         split_out: u32,
     ) -> Result<(Vec<u8>, [u32; regs::STATUS_WORDS], Vec<usize>), String> {
-        self.input
-            .sync_write_begin()
-            .map_err(|e| format!("VEPU510 H.265 input sync begin: {e}"))?;
-        self.input.as_mut_slice()[..INPUT_SIZE].copy_from_slice(nv12);
-        self.input
-            .sync_write_end()
-            .map_err(|e| format!("VEPU510 H.265 input flush: {e}"))?;
+        let input_fd = if let Some(input_fd) = self.input_fd_override.take() {
+            input_fd
+        } else {
+            self.input
+                .sync_write_begin()
+                .map_err(|e| format!("VEPU510 H.265 input sync begin: {e}"))?;
+            self.input.as_mut_slice()[..INPUT_SIZE].copy_from_slice(nv12);
+            self.input
+                .sync_write_end()
+                .map_err(|e| format!("VEPU510 H.265 input flush: {e}"))?;
+            self.input.fd()
+        };
 
         self.output
             .sync_write_begin()
@@ -962,6 +987,10 @@ impl Vepu510H265 {
         let mut int_state = [0u32; 1];
         let mut status = [0u32; regs::STATUS_WORDS];
         let mut batch = Batch::new();
+        let mut registers = registers.clone();
+        for index in 4..=6 {
+            registers.frame[index] = input_fd as u32;
+        }
         batch.reg_write(&registers.ctl, CTL_OFFSET);
         batch.reg_write(&registers.frame, FRAME_OFFSET);
         batch.reg_write(&registers.rc, RC_OFFSET);

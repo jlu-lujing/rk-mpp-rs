@@ -19,7 +19,7 @@ pub const RK_MPP_ERR_IO: c_int = -7;
 pub const RK_MPP_ERR_TOO_LARGE: c_int = -8;
 pub const RK_MPP_DECODER_FLAG_DMABUF_OUTPUT: u32 = 1 << 0;
 
-static VERSION: &[u8] = b"1.11\0";
+static VERSION: &[u8] = b"1.12\0";
 static OK: &[u8] = b"ok\0";
 static INVALID: &[u8] = b"invalid argument\0";
 static UNSUPPORTED: &[u8] = b"unsupported operation\0";

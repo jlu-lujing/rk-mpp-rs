@@ -47,7 +47,7 @@ trap 'rm -rf "$stage"' EXIT
 installed="$stage/usr/local"
 test -L "$installed/lib/librk_mpp_rs.so"
 test -L "$installed/lib/librk_mpp_rs.so.1"
-test -f "$installed/lib/librk_mpp_rs.so.1.11.0"
+test -f "$installed/lib/librk_mpp_rs.so.1.12.0"
 test -f "$installed/lib/librk_mpp_rs.a"
 test -f "$installed/include/rk_mpp_rs.h"
 test -f "$installed/lib/pkgconfig/rk-mpp-rs.pc"

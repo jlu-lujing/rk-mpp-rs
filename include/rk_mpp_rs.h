@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 11u
+#define RK_MPP_API_VERSION_MINOR 12u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -359,6 +359,13 @@ int rk_mpp_encoder_submit_frame(rk_mpp_encoder_t *encoder,
                                 uint64_t size,
                                 int64_t pts,
                                 int64_t dts);
+int rk_mpp_encoder_submit_frame_dmabuf(rk_mpp_encoder_t *encoder,
+                                       int fd,
+                                       uint64_t size,
+                                       uint32_t hor_stride,
+                                       uint32_t ver_stride,
+                                       int64_t pts,
+                                       int64_t dts);
 /*
  * Returns OK with one packet, AGAIN when no packet is currently ready, or EOS
  * after flush and all queued packets have drained. Release each packet before

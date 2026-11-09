@@ -145,6 +145,7 @@ pub struct Vepu580H265 {
     md_info: DmaBuf,
     tile_line_bufs: Vec<DmaBuf>,
     tile_warmed: bool,
+    input_fd_override: Option<i32>,
 }
 
 impl Vepu580H265 {
@@ -246,6 +247,7 @@ impl Vepu580H265 {
                 .map_err(|e| format!("allocate H.265 motion info: {e}"))?,
             tile_line_bufs: Vec::new(),
             tile_warmed: false,
+            input_fd_override: None,
         })
     }
 
@@ -254,6 +256,10 @@ impl Vepu580H265 {
     /// `MppEncHeaderStatus` makes the C do once per sequence.
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
         Ok(self.encode_frame_packets(nv12)?.annex_b)
+    }
+
+    pub fn encode_frame_fd(&mut self, input_fd: i32) -> Result<Vec<u8>, String> {
+        Ok(self.encode_frame_packets_fd(input_fd)?.annex_b)
     }
 
     /// Encode the next picture and retain MPP's packet view. With low-delay
@@ -320,6 +326,14 @@ impl Vepu580H265 {
         self.slot = 1 - self.slot;
         self.frames += 1;
         Ok(encoded)
+    }
+
+    pub fn encode_frame_packets_fd(&mut self, input_fd: i32) -> Result<EncodedFrame, String> {
+        if input_fd < 0 {
+            return Err("H.265 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_frame_packets(&[])
     }
 
     fn encode_picture_packets(
@@ -559,6 +573,34 @@ impl Vepu580H265 {
         recovery_prefix: bool,
         rc: Option<RateControl>,
     ) -> Result<EncodedFrame, String> {
+        let input_fd = if let Some(input_fd) = self.input_fd_override.take() {
+            input_fd
+        } else {
+            // dma-heap rounds the allocation up to a page, so the usable picture is
+            // the logical size, not `self.input.len()`.
+            let input_size = luma_bytes(self.width, self.height) * 3 / 2;
+            if nv12.len() < input_size {
+                return Err(format!(
+                    "H.265 input is {} bytes, the {}x{} surface needs {}",
+                    nv12.len(),
+                    self.width,
+                    self.height,
+                    input_size
+                ));
+            }
+            self.input
+                .sync_write_begin()
+                .map_err(|e| format!("H.265 input sync: {e}"))?;
+            self.input
+                .as_mut_slice()
+                .get_mut(..input_size)
+                .ok_or_else(|| "H.265 input buffer shorter than the picture".to_string())?
+                .copy_from_slice(&nv12[..input_size]);
+            self.input
+                .sync_write_end()
+                .map_err(|e| format!("H.265 input flush: {e}"))?;
+            self.input.fd()
+        };
         // The VEPU580 carries dual-core handshake state between processes, and
         // the first tiled picture of a session reads it. The reference is not
         // immune either: the same C probe at 320x240 with `auto_tile` produces
@@ -571,31 +613,9 @@ impl Vepu580H265 {
         // predecessor is one of our own.
         if self.tile_widths().len() > 1 && !self.tile_warmed {
             self.tile_warmed = true;
+            self.input_fd_override = Some(input_fd);
             self.encode_picture_rc(nv12, picture, false, false, rc)?;
         }
-        // dma-heap rounds the allocation up to a page, so the usable picture is
-        // the logical size, not `self.input.len()`.
-        let input_size = luma_bytes(self.width, self.height) * 3 / 2;
-        if nv12.len() < input_size {
-            return Err(format!(
-                "H.265 input is {} bytes, the {}x{} surface needs {}",
-                nv12.len(),
-                self.width,
-                self.height,
-                input_size
-            ));
-        }
-        self.input
-            .sync_write_begin()
-            .map_err(|e| format!("H.265 input sync: {e}"))?;
-        self.input
-            .as_mut_slice()
-            .get_mut(..input_size)
-            .ok_or_else(|| "H.265 input buffer shorter than the picture".to_string())?
-            .copy_from_slice(&nv12[..input_size]);
-        self.input
-            .sync_write_end()
-            .map_err(|e| format!("H.265 input flush: {e}"))?;
 
         // The GOP's long-term reference is the opening IDR (`used_by_lt_flg0` and
         // the SPS LT entry): every P predicts from slot 0 and reconstructs into
@@ -676,7 +696,7 @@ impl Vepu580H265 {
                 tile,
                 roi_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.0.fd()),
                 roi_qp_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.1.fd()),
-                input_fd: self.input.fd(),
+                input_fd,
                 output_fd: self.output.fd(),
                 current_fd: current_pixel,
                 current_thumb_fd: current_dsp,
@@ -689,7 +709,7 @@ impl Vepu580H265 {
             // motion info are shared by every tile. The tile line buffers alternate
             // through regs 176/177.
             let base = &mut registers.base;
-            let input = self.input.fd() as u32;
+            let input = input_fd as u32;
             let output = self.output.fd() as u32;
             base[0] = input;
             base[1] = input;

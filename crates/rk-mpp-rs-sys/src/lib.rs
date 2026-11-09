@@ -1,4 +1,4 @@
-//! Raw FFI declarations for the `rk-mpp-rs` V1.11 C ABI.
+//! Raw FFI declarations for the `rk-mpp-rs` V1.12 C ABI.
 //!
 //! Every function in this crate is unsafe: callers must follow the ownership,
 //! struct-size, threading and lifetime rules documented in
@@ -10,7 +10,7 @@
 use core::ffi::{c_char, c_int};
 
 pub const RK_MPP_API_VERSION_MAJOR: u32 = 1;
-pub const RK_MPP_API_VERSION_MINOR: u32 = 11;
+pub const RK_MPP_API_VERSION_MINOR: u32 = 12;
 pub const RK_MPP_API_VERSION: u32 = (RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR;
 
 pub const RK_MPP_OK: c_int = 0;
@@ -478,6 +478,15 @@ unsafe extern "C" {
         encoder: *mut rk_mpp_encoder_t,
         data: *const u8,
         size: u64,
+        pts: i64,
+        dts: i64,
+    ) -> c_int;
+    pub fn rk_mpp_encoder_submit_frame_dmabuf(
+        encoder: *mut rk_mpp_encoder_t,
+        fd: c_int,
+        size: u64,
+        hor_stride: u32,
+        ver_stride: u32,
         pts: i64,
         dts: i64,
     ) -> c_int;

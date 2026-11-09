@@ -2,6 +2,24 @@
 
 ## Session: 2026-11-09
 
+### Phase 16: Encoder DMA-BUF Input API V1.12
+- **Status:** complete on t6 and lf1 for NV12 H.264/H.265/JPEG.
+- Added `DmaBufInput`, `Encoder::submit_dmabuf_frame()` and
+  `rk_mpp_encoder_submit_frame_dmabuf()`. The fd is imported for the synchronous
+  encode call; the original copied-input API remains unchanged.
+- VEPU580 H.264/H.265, VEPU510 H.264/H.265, VEPU2 JPEG and VPU720 JPEG now
+  accept the external surface directly. Stride validation requires the coded
+  16-aligned video layout or JPEG's 8x2 alignment.
+- t6 and lf1 pass `scripts/board_sdk_encoder_dmabuf.sh`: copied and fd input
+  produce byte-identical H.264, H.265 and JPEG output on both boards.
+- t6 C/C++ API gate includes fd-input runs and remains byte-identical to the C
+  MPP/CLI oracles for H.264, H.265 and JPEG.
+- The workspace gate is now reproducible via `scripts/board_workspace_gate.sh`;
+  both boards pass `1199 passed / 0 failed / 38 ignored` with rustfmt and strict
+  rustdoc.
+- SDK V1.12 package, 36-symbol ABI snapshot, pkg-config, CMake and dynamic/static
+  consumer gates pass on t6 and lf1.
+
 ### Phase 15: AV1 DMA-BUF Frame Output
 - **Status:** complete on t6 and lf1 for 8-bit NV12.
 - VDPU34x AV1 export clones the existing pooled post-processed display lease.

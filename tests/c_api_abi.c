@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-_Static_assert(RK_MPP_API_VERSION == 0x1000bu, "API version changed");
+_Static_assert(RK_MPP_API_VERSION == 0x1000cu, "API version changed");
 
 _Static_assert(RK_MPP_CODEC_H264 == 1, "codec id changed");
 _Static_assert(RK_MPP_CODEC_MJPEG == 2, "codec id changed");

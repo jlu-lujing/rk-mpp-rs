@@ -81,7 +81,7 @@
 
 整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-104 项完成、6 项未完成（含缩进子项为 142 / 10）；未完成项里有硬件不存在、无 conformance
+105 项完成、6 项未完成（含缩进子项为 143 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
 AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
@@ -179,7 +179,7 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.11 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.12 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
@@ -231,8 +231,8 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 安装布局：
 
 - `include/rk_mpp_rs.h`
-- `lib/librk_mpp_rs.so.1.11.0`
-- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.11.0`
+- `lib/librk_mpp_rs.so.1.12.0`
+- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.12.0`
 - `lib/librk_mpp_rs.so -> librk_mpp_rs.so.1`
 - `lib/librk_mpp_rs.a`
 - `lib/pkgconfig/rk-mpp-rs.pc`
@@ -255,7 +255,7 @@ cargo run --example sdk_decode -- h264 input.264 output.yuv
 cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 26 6
 ```
 
-`rk-mpp-rs-sys` 暴露 V1.11 的全部 35 个 C 导出、enum、struct 和不透明句柄。
+`rk-mpp-rs-sys` 暴露 V1.12 的全部 36 个 C 导出、enum、struct 和不透明句柄。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
 `target/<profile>`：
 
@@ -334,6 +334,23 @@ Rust 对应 `DecoderConfig::with_dmabuf_output(true)`、
 
 ```bash
 ./scripts/board_sdk_dmabuf.sh
+```
+
+V1.12 保留原有字节数组输入，同时允许 H.264/H.265/JPEG 直接编码 NV12
+dma-buf。调用方传入 fd、完整 allocation 长度和 coded Y/UV stride；H.264/H.265
+要求 stride 为 16 对齐，JPEG 要求 8×2 对齐。提交是同步的，函数返回后调用方
+即可复用输入 surface：
+
+```c
+rk_mpp_encoder_submit_frame_dmabuf(
+    encoder, fd, allocation_size, hor_stride, ver_stride, pts, dts);
+```
+
+Rust 对应 `DmaBufInput::new(...)` 和 `Encoder::submit_dmabuf_frame()`。
+lf1/t6 上 H.264、H.265、JPEG 的 fd 输入输出与 copied-input 输出逐字节一致：
+
+```bash
+./scripts/board_sdk_encoder_dmabuf.sh
 ```
 
 JPEG 编码沿用同一 encoder handle，支持 NV12/I420、0–10 内置量化档和可选

@@ -44,6 +44,7 @@ for symbol in \
     rk_mpp_encoded_packet_init \
     rk_mpp_encoder_create \
     rk_mpp_encoder_submit_frame \
+    rk_mpp_encoder_submit_frame_dmabuf \
     rk_mpp_encoder_receive_packet \
     rk_mpp_encoded_packet_release \
     rk_mpp_encoder_flush \
@@ -85,12 +86,15 @@ h264=/tmp/rk_mpp_c_api_h264.264
 h264_raw=/tmp/rk_mpp_c_api_encoder.nv12
 h264_raw_i420=/tmp/rk_mpp_c_api_encoder.i420
 h264_api=/tmp/rk_mpp_c_api_encoder.264
+h264_api_dmabuf=/tmp/rk_mpp_c_api_encoder_dmabuf.264
 h264_api_i420=/tmp/rk_mpp_c_api_encoder_i420.264
 h264_cli=/tmp/rk_mpp_c_api_encoder_cli.264
 h265_api=/tmp/rk_mpp_c_api_encoder.265
+h265_api_dmabuf=/tmp/rk_mpp_c_api_encoder_dmabuf.265
 h265_api_i420=/tmp/rk_mpp_c_api_encoder_i420.265
 h265_cli=/tmp/rk_mpp_c_api_encoder_cli.265
 jpeg_api=/tmp/rk_mpp_c_api_encoder.jpg
+jpeg_api_dmabuf=/tmp/rk_mpp_c_api_encoder_dmabuf.jpg
 jpeg_api_i420=/tmp/rk_mpp_c_api_encoder_i420.jpg
 jpeg_cli=/tmp/rk_mpp_c_api_encoder_cli.jpg
 jpeg_restart_api=/tmp/rk_mpp_c_api_encoder_restart.jpg
@@ -220,6 +224,10 @@ LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_encoder h264 nv12 "$h264_api" 320 240 26 6 6 \
     "$h264_raw"
 cmp "$h264_cli" "$h264_api"
+DMABUF_INPUT=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_encoder h264 nv12 "$h264_api_dmabuf" 320 240 26 6 6 \
+    "$h264_raw"
+cmp "$h264_api" "$h264_api_dmabuf"
 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_encoder h264 i420 "$h264_api_i420" 320 240 26 6 6 \
     "$h264_raw_i420"
@@ -236,6 +244,10 @@ LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_encoder h265 nv12 "$h265_api" 320 240 26 6 6 \
     "$h264_raw"
 cmp "$h265_cli" "$h265_api"
+DMABUF_INPUT=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_encoder h265 nv12 "$h265_api_dmabuf" 320 240 26 6 6 \
+    "$h264_raw"
+cmp "$h265_api" "$h265_api_dmabuf"
 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_encoder h265 i420 "$h265_api_i420" 320 240 26 6 6 \
     "$h264_raw_i420"
@@ -247,6 +259,10 @@ LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_encoder jpeg nv12 "$jpeg_api" 320 240 10 1 1 \
     "$h264_raw"
 cmp "$jpeg_cli" "$jpeg_api"
+DMABUF_INPUT=1 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
+    /tmp/rk_mpp_c_api_encoder jpeg nv12 "$jpeg_api_dmabuf" 320 240 10 1 1 \
+    "$h264_raw"
+cmp "$jpeg_api" "$jpeg_api_dmabuf"
 LD_LIBRARY_PATH="$PWD/target/debug:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_c_api_encoder jpeg i420 "$jpeg_api_i420" 320 240 10 1 1 \
     "$h264_raw_i420"
