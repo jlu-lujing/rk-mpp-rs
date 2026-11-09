@@ -24,8 +24,9 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   the public MPP entry points to this crate while vendor helper symbols remain
   available. The same object bridge now accepts vendor `MppEncCfg`, submits
   `MppFrame` pictures and returns encoded `MppPacket`s; t6 H.265/MJPEG streams
-  are byte-identical and H.264 one-frame reconstruction matches C MPP.
-  Imported DMA-BUF objects and H.264 multi-frame convergence remain reserved.
+  are byte-identical and H.264 six-frame VCL output/reconstruction matches C
+  MPP, with only the build-identity version SEI text differing. Imported
+  DMA-BUF objects and the RK3576 H.264/H.265 matrix remain reserved.
 
 ## [1.11] - 2026-11-09
 

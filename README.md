@@ -267,7 +267,8 @@ log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
 `mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6 的 H.265/MJPEG 单帧 stream 与 C MPP 逐字节一致，
-H.264 单帧解码重建一致。H.264 多帧和 RK3576 H.264/H.265 官方参数矩阵仍在
+H.264 6 帧的 SPS/PPS/rc-SEI 和全部 VCL NAL 也一致，解码重建逐帧相同；
+仅 version-SEI 的构建身份文本长度不同。RK3576 H.264/H.265 官方参数矩阵仍在
 收敛，不能把当前 encoder 路径标成完整兼容。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
 `target/<profile>`：

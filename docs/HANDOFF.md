@@ -123,8 +123,11 @@ encoder 对象流已开始接通：`MPP_ENC_SET_CFG` 通过 vendor `MppEncCfg`
 `encode_get_packet` 返回 owned `MppPacket`。在 t6，未修改的 vendor
 `mpi_enc_test` 生成 H.265（SHA `1f0067…52e84a`）和 MJPEG（SHA
 `08eb7c…88623`）与 C MPP 逐字节一致；H.264 单帧解码 YUV 为
-`9d8c6f…24ac6fc`，与 C 相同，但 H.264 多帧仍有重建差异。lf1 的
-MJPEG 对象流逐字节一致，H.264/H.265 官方参数面暂明确 SKIP。
+`9d8c6f…24ac6fc`，与 C 相同。默认 MPP CPB 的 IDR-only reference 调度和
+slice-header amend 已补齐：H.264 320×240 6 帧的 SPS/PPS、rc-SEI、IDR 和
+P1–P5 VCL 与 C 完全一致，解码重建逐帧相同；只有 version-SEI 的构建文本
+长度不同。lf1 的 MJPEG 对象流逐字节一致，H.264/H.265 官方参数面暂明确
+SKIP。
 
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。

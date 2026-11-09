@@ -402,7 +402,21 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                 }
             };
             match encoder::Encoder::new(config) {
-                Ok(encoder) => {
+                Ok(mut encoder) => {
+                    if context.coding == MPP_VIDEO_CODING_AVC {
+                        if !matches!(config.profile(), 0 | 66) {
+                            eprintln!(
+                                "rk-mpp-rs mpp: default H.264 CPB amendment currently requires Baseline"
+                            );
+                            return MPP_NOK;
+                        }
+                        if encoder.force_reference_slot(Some(0)).is_err() {
+                            eprintln!(
+                                "rk-mpp-rs mpp: default MPP H.264 reference schedule is unavailable"
+                            );
+                            return MPP_NOK;
+                        }
+                    }
                     context.encoder = Some(encoder);
                     MPP_OK
                 }
@@ -423,12 +437,6 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             if context.ctx_type != MPP_CTX_ENC {
                 return MPP_ERR_VALUE;
             }
-            let Some(encoder) = context.encoder.as_mut() else {
-                return MPP_ERR_VALUE;
-            };
-            // VEPU580 H.264 consumes an IDR id while producing this header.
-            // Other supported object backends have no equivalent state yet.
-            let _ = encoder.prime_header_sync();
             MPP_OK
         }
         _ => {

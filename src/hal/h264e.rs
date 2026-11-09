@@ -644,6 +644,7 @@ pub struct Vepu580H264 {
     tune: SceneTune,
     input_fd_override: Option<i32>,
     input_prepared: bool,
+    forced_reference_slot: Option<usize>,
     /// The ROI tables, written once: the regions do not move between
     /// pictures, exactly as in the reference harness that adds the same
     /// regions to every frame's meta.
@@ -771,6 +772,7 @@ impl Vepu580H264 {
             tune: SceneTune::new(false),
             input_fd_override: None,
             input_prepared: false,
+            forced_reference_slot: None,
             rc: match config.rc_mode {
                 RcMode::FixedQp => None,
                 RcMode::Cbr | RcMode::Vbr | RcMode::Avbr => {
@@ -785,10 +787,12 @@ impl Vepu580H264 {
         &self.config
     }
 
-    /// Match `h264e_slice_init` consuming an IDR ID while the reference encoder
-    /// writes its synchronous header packet before the first frame.
-    pub fn prime_header_sync(&mut self) {
-        self.state.idr_pic_id = (self.state.idr_pic_id + 1) % 16;
+    pub fn force_reference_slot(&mut self, slot: Option<usize>) -> Result<(), String> {
+        if slot.is_some_and(|slot| slot >= self.recons.len()) {
+            return Err("H.264 reference slot is outside the reconstruction pool".to_string());
+        }
+        self.forced_reference_slot = slot;
+        Ok(())
     }
 
     /// Read one complete input picture directly into the preallocated DMA
@@ -1031,12 +1035,20 @@ impl Vepu580H264 {
         self.output
             .sync_read_begin()
             .map_err(|e| format!("H.264 output invalidate: {e}"))?;
-        let payload = self.output.as_slice()[..payload_len].to_vec();
+        let mut payload = self.output.as_slice()[..payload_len].to_vec();
         let nal_validation = validate_nal_bytes(&payload, if state.is_idr { 5 } else { 1 });
         self.output
             .sync_read_end()
             .map_err(|e| format!("H.264 output sync end: {e}"))?;
         nal_validation?;
+        if self.forced_reference_slot == Some(0) {
+            payload = amend_default_reference_slice(
+                payload,
+                &self.config,
+                &state,
+                &self.parameter_sets()?,
+            )?;
+        }
 
         let statistics = Statistics::from_words(&status);
         dump_statistics(&state, &status);
@@ -1104,12 +1116,15 @@ impl Vepu580H264 {
             self.input.fd()
         };
 
-        let reference_slot = self.next_reference_override.take().unwrap_or_else(|| {
-            if state.is_idr || state.is_vi || state.index <= 1 {
-                0
-            } else {
-                previous_slot
-            }
+        let override_slot = self.next_reference_override.take();
+        let reference_slot = self.forced_reference_slot.unwrap_or_else(|| {
+            override_slot.unwrap_or_else(|| {
+                if state.is_idr || state.is_vi || state.index <= 1 {
+                    0
+                } else {
+                    previous_slot
+                }
+            })
         });
         // The model decides the picture's bits and QP before the register file is
         // built; under fixed QP there is no decision to make. The C re-encodes
@@ -3143,6 +3158,168 @@ fn logical_output_size(config: &EncoderConfig) -> Result<usize, String> {
     input_size(config)?
         .checked_add(REFERENCE_OUTPUT_MARGIN)
         .ok_or_else(|| "H.264 output size overflow".into())
+}
+
+/// The reference encoder patches its baseline slice header after VEPU580 has
+/// produced the payload. The default CPB keeps the opening IDR long-term and
+/// points later P pictures at long-term index zero. The hardware's reference
+/// address can be redirected by the HAL, but those slice-header bits are a
+/// software amendment, so replay them here for the official MPP object path.
+fn amend_default_reference_slice(
+    payload: Vec<u8>,
+    config: &EncoderConfig,
+    state: &FrameState,
+    parameter_sets: &[u8],
+) -> Result<Vec<u8>, String> {
+    if config.entropy_coding {
+        return Ok(payload);
+    }
+    let hardware_nals = crate::codec::h264::split_annex_b(&payload);
+    let vcl_count = hardware_nals
+        .iter()
+        .filter(|nal| nal.unit_type == 1 || nal.unit_type == 5)
+        .count();
+    if vcl_count != 1 {
+        return Err(format!(
+            "H.264 amendment expects one slice NAL, found {vcl_count}"
+        ));
+    }
+    let hardware_slice = hardware_nals
+        .iter()
+        .find(|nal| nal.unit_type == 1 || nal.unit_type == 5)
+        .ok_or_else(|| "H.264 amendment found no slice NAL".to_string())?;
+    let headers = crate::codec::h264::split_annex_b(parameter_sets);
+    let sps_nal = headers
+        .iter()
+        .find(|nal| nal.unit_type == 7)
+        .ok_or_else(|| "H.264 amendment found no SPS".to_string())?;
+    let pps_nal = headers
+        .iter()
+        .find(|nal| nal.unit_type == 8)
+        .ok_or_else(|| "H.264 amendment found no PPS".to_string())?;
+    let sps = crate::codec::h264::parse_sps(&sps_nal.rbsp)
+        .map_err(|error| format!("H.264 amendment SPS: {error}"))?;
+    let pps = crate::codec::h264::parse_pps(&pps_nal.rbsp)
+        .map_err(|error| format!("H.264 amendment PPS: {error}"))?;
+    let header = crate::codec::h264::parse_slice_header(
+        &hardware_slice.rbsp,
+        &sps,
+        &pps,
+        hardware_slice.unit_type,
+        hardware_slice.ref_idc,
+    )
+    .map_err(|error| format!("H.264 amendment slice: {error}"))?;
+    if header.weights.is_some() {
+        return Err("H.264 amendment does not support weighted prediction".into());
+    }
+    let source_bits = bytes_to_bits(&hardware_slice.rbsp);
+    if header.data_offset_bits > source_bits.len() {
+        return Err("H.264 amendment slice data offset overflow".into());
+    }
+
+    let mut bits = Vec::new();
+    put_ue(&mut bits, header.first_mb);
+    put_ue(&mut bits, header.slice_type);
+    put_ue(&mut bits, header.pps_id);
+    let frame_num_bits = config.log2_max_frame_num_minus4 as u32 + 4;
+    put_bits(
+        &mut bits,
+        header.frame_num & ((1 << frame_num_bits) - 1),
+        frame_num_bits,
+    );
+    if header.slice_type % 5 == 2 {
+        put_ue(&mut bits, header.idr_pic_id.unwrap_or(0));
+    }
+    if sps.poc_type == 0 {
+        let poc_bits = config.log2_max_poc_lsb_minus4 as u32 + 4;
+        put_bits(
+            &mut bits,
+            header.poc_lsb.unwrap_or(state.poc as u32) & ((1 << poc_bits) - 1),
+            poc_bits,
+        );
+    }
+    if header.redundant_pic_cnt.is_some() {
+        put_ue(&mut bits, header.redundant_pic_cnt.unwrap());
+    }
+    if header.slice_type % 5 == 0 {
+        let override_active = header.ref_idx_l0_active != pps.num_ref_idx_l0;
+        put_bits(&mut bits, u32::from(override_active), 1);
+        if override_active {
+            put_ue(&mut bits, header.ref_idx_l0_active);
+        }
+        let reorder_to_long_term = state.index >= 2;
+        put_bits(&mut bits, u32::from(reorder_to_long_term), 1);
+        if reorder_to_long_term {
+            put_ue(&mut bits, 2); // long_term_pic_num
+            put_ue(&mut bits, 0);
+            put_ue(&mut bits, 3); // end of ref_pic_list_modification
+        }
+    } else if header.slice_type % 5 == 1 {
+        return Err("H.264 amendment does not support B slices".into());
+    }
+    if header.nal_ref_idc != 0 {
+        if header.slice_type % 5 == 2 {
+            put_bits(&mut bits, u32::from(header.no_output_of_prior_pics), 1);
+            put_bits(&mut bits, 1, 1); // long_term_reference_flag
+        } else {
+            if header.adaptive_ref_pic_buffering || !header.mmco.is_empty() {
+                return Err("H.264 amendment does not support adaptive marking".into());
+            }
+            put_bits(&mut bits, 0, 1); // adaptive_ref_pic_buffering_mode
+        }
+    }
+    put_se(&mut bits, header.qp_delta);
+    if pps.deblocking_filter_control {
+        put_ue(&mut bits, header.deblocking_disable_idc);
+        if header.deblocking_disable_idc != 1 {
+            put_se(&mut bits, header.deblocking_alpha);
+            put_se(&mut bits, header.deblocking_beta);
+        }
+    }
+    bits.extend_from_slice(&source_bits[header.data_offset_bits..]);
+    while bits.len() % 8 != 0 {
+        bits.push(false);
+    }
+    let rbsp = bits_to_bytes(&bits);
+    let mut escaped = Vec::with_capacity(rbsp.len() + 4);
+    let mut zeroes = 0usize;
+    for byte in rbsp {
+        if zeroes >= 2 && byte <= 3 {
+            escaped.push(3);
+            zeroes = 0;
+        }
+        escaped.push(byte);
+        if byte == 0 {
+            zeroes += 1;
+        } else {
+            zeroes = 0;
+        }
+    }
+    while escaped.last() == Some(&0) {
+        escaped.pop();
+    }
+    let mut amended = Vec::with_capacity(escaped.len() + 4);
+    amended.extend_from_slice(&[0, 0, 0, 1]);
+    amended.push((header.nal_ref_idc << 5) | hardware_slice.unit_type);
+    amended.extend_from_slice(&escaped);
+    Ok(amended)
+}
+
+fn bytes_to_bits(bytes: &[u8]) -> Vec<bool> {
+    bytes
+        .iter()
+        .flat_map(|byte| (0..8).rev().map(move |bit| byte & (1 << bit) != 0))
+        .collect()
+}
+
+fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
+    bits.chunks(8)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .fold(0u8, |byte, bit| (byte << 1) | u8::from(*bit))
+        })
+        .collect()
 }
 
 /// The hardware writes the slice's own NAL header, so the payload has to open

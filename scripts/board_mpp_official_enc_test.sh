@@ -31,22 +31,38 @@ ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 1 \
     -pix_fmt nv12 -f rawvideo "$raw"
 
-run_vendor() {
+run_vendor_frames() {
     local output="$1"
+    local frames="$2"
+    shift
     shift
     LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
         timeout 30 "$enc_test" -i "$raw" -o "$output" \
-        -w 320 -h 240 -n 1 -rc 2 -fps 30 -g "$gop" "$@" \
+        -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g "$gop" "$@" \
         < /dev/null > /dev/null 2>&1
+}
+
+run_compat_frames() {
+    local output="$1"
+    local frames="$2"
+    shift
+    shift
+    LD_PRELOAD="$preload" LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
+        timeout 30 "$enc_test" -i "$raw" -o "$output" \
+        -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g "$gop" "$@" \
+        < /dev/null > /dev/null 2>&1
+}
+
+run_vendor() {
+    local output="$1"
+    shift
+    run_vendor_frames "$output" 1 "$@"
 }
 
 run_compat() {
     local output="$1"
     shift
-    LD_PRELOAD="$preload" LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
-        timeout 30 "$enc_test" -i "$raw" -o "$output" \
-        -w 320 -h 240 -n 1 -rc 2 -fps 30 -g "$gop" "$@" \
-        < /dev/null > /dev/null 2>&1
+    run_compat_frames "$output" 1 "$@"
 }
 
 if [ "${SKIP_H264:-0}" = 1 ]; then
@@ -65,6 +81,21 @@ else
     cmp "$h264_c_yuv" "$h264_r_yuv"
     printf 'PASS h264 one-frame reconstruction through unchanged mpi_enc_test (%s)\n' \
         "$(sha256sum "$h264_r_yuv" | cut -d' ' -f1)"
+
+    h264_multi_c=/tmp/rk_mpp_official_enc_h264_multi_c.264
+    h264_multi_r=/tmp/rk_mpp_official_enc_h264_multi_r.264
+    run_vendor_frames "$h264_multi_c" 6 -t 7 -qc 26
+    run_compat_frames "$h264_multi_r" 6 -t 7 -qc 26
+    python3 "$repo/scripts/compare_streams.py" "$h264_multi_c" "$h264_multi_r"
+    LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
+        "$cli" h264dec "$h264_multi_c" /tmp/rk_mpp_official_enc_h264_multi_c.yuv \
+        > /dev/null
+    LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
+        "$cli" h264dec "$h264_multi_r" /tmp/rk_mpp_official_enc_h264_multi_r.yuv \
+        > /dev/null
+    cmp /tmp/rk_mpp_official_enc_h264_multi_c.yuv \
+        /tmp/rk_mpp_official_enc_h264_multi_r.yuv
+    printf 'PASS h264 six-frame stream and reconstruction through unchanged mpi_enc_test\n'
 fi
 
 if [ "${SKIP_H265:-0}" = 1 ]; then

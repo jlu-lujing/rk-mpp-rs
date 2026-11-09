@@ -3,14 +3,15 @@
 ## Session: 2026-11-09
 
 ### Phase 20: Official `mpi_enc_test` Object Bridge
-- **Status:** encoder object path partial on t6; MJPEG also passes on lf1.
+- **Status:** t6 H.264/H.265/MJPEG object path matches; MJPEG also passes on lf1.
 - `MPP_ENC_SET_CFG` reads vendor `MppEncCfg` through `mpp_enc_cfg_get_s32`,
   maps it to the existing stable encoder API, and handles official header/RC
   control commands.
 - `encode_put_frame` submits packed NV12 from an opaque `MppFrame`;
   `encode_get_packet` returns owned `MppPacket` data.
 - t6 H.265 and MJPEG one-frame streams are byte-identical to vendor C MPP.
-  H.264 one-frame decoded pixels are identical; multi-frame H.264 differs.
+  H.264 six-frame SPS/PPS/rc-SEI/VCL and decoded reconstruction match; only the
+  build-identity version SEI text differs.
 - lf1 MJPEG is byte-identical. RK3576 H.264/H.265 official parameter coverage
   remains explicitly skipped.
 

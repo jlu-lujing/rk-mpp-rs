@@ -117,9 +117,14 @@
   exposing its Rust types. The vendor test's `MppEncCfg` is opaque, so the
   minimal bridge reads keys through dynamically resolved
   `mpp_enc_cfg_get_s32`; frames are packed from `MppBuffer`, and output packets
-  own their copied stream bytes. `MPP_ENC_GET_HDR_SYNC` must also preserve the
-  old encoder's IDR-id side effect even when the header packet is not emitted
-  separately.
+  own their copied stream bytes. The old encoder starts with `idr_pic_id=0`;
+  the synchronous header query must not consume an extra IDR id.
+- The default vendor encoder CPB does not simply reference the previous P
+  picture: after the opening IDR it keeps referencing slot zero and emits
+  `long_term_reference_flag=1` plus `ref_pic_list_modification` entries for
+  later P pictures. VEPU580's register file can use the same reference address,
+  but those header bits are applied by MPP's software stream amendment layer.
+  Replaying that amendment yields exact six-frame VCL output and reconstruction.
 
 ## Research Findings
 

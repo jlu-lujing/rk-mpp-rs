@@ -276,10 +276,12 @@ the test's NV12 `MppFrame`, and drains owned `MppPacket` objects:
   `08eb7c6f097f70e9e5424111a83dddef4d7cc46fc01d2772b42dc565b5388623`.
 - H.264 320x240 one picture: both streams decode to identical YUV, SHA
   `9d8c6f546089d1564f8d5c0401d652dfa4c0e9b24a634dbb7aa33722324ac6fc`.
+- H.264 320x240 six pictures: all SPS/PPS, rc-SEI and VCL NAL units match C
+  MPP; all six decoded YUV pictures are byte-identical. Only the version-SEI
+  build text differs, which the stream comparator checks for framing only.
 
-H.264 multi-frame still has reconstruction differences and is not claimed as
-complete. On lf1 only MJPEG currently passes byte identity; RK3576
-H.264/H.265 official encoder parameters remain explicit SKIPs.
+On lf1 only MJPEG currently passes byte identity; RK3576 H.264/H.265 official
+encoder parameters remain explicit SKIPs.
 
 Performance gate:
 

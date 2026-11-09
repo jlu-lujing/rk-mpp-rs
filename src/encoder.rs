@@ -807,14 +807,13 @@ impl Encoder {
         self.config
     }
 
-    pub fn prime_header_sync(&mut self) -> Result<(), Error> {
+    pub fn force_reference_slot(&mut self, slot: Option<usize>) -> Result<(), Error> {
         match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
-                encoder.prime_header_sync();
-                Ok(())
+                encoder.force_reference_slot(slot).map_err(Error::Hardware)
             }
             _ => Err(Error::Unsupported(
-                "synchronous header priming is currently implemented for VEPU580 H.264".to_string(),
+                "reference-slot forcing is currently implemented for VEPU580 H.264".to_string(),
             )),
         }
     }
