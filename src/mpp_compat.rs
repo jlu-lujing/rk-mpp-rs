@@ -7,6 +7,7 @@ use crate::{encoder, sdk};
 
 mod cfg;
 mod objects;
+mod standalone;
 
 type MppCtx = *mut c_void;
 type MppFrame = *mut c_void;

@@ -212,6 +212,7 @@ MPEG-2/MPEG-4/H.263 使用同一 handle 接收任意分块 elementary stream；�
 BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh
 BOARD=t6 ./scripts/board_c_api_h264_mjpeg.sh
 STREAM_COUNTS="1 2 4 6 8" RUST_DMABUF=1 ./scripts/board_multistream_bench.sh
+./scripts/board_mpp_standalone.sh
 ```
 
 lf1 和 t6 已验证共享库和静态库链接、全部公开符号、生命周期错误路径，以及 H.264
@@ -280,9 +281,11 @@ MppFrame/整帧 buffer。VP9 会保留硬件的 256-odd stride 和 9/5 帧容量
 `KEY_OUTPUT_FRAME`。AV1 在 VDPU34x 的 display pool 和 VDPU383 的
 output/reference pool 上同样支持注入；coded `show_frame` 直接使用调用方
 surface，`show_existing` 则按参考帧语义复制历史 display surface。
-已可在保留 vendor
-log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
-`mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。
+**未修改的** vendor `mpi_dec_test` 现在可以只把 `librk_mpp_rs.so`
+重命名为 `librockchip_mpp.so.1` 后直接运行，不再加载 vendor MPP。t6/lf1
+的 H.264/H.265/VP9/AV1/MJPEG 输出均与 vendor C 逐字节一致。当前
+standalone 日志 shim 只保证符号与调用兼容，不展开 printf 变参文本；
+完整 standalone encoder/cfg 对象仍待继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的
 `mpi_enc_test` 中跑通。H.264 单帧与真实 6 帧的 SPS/PPS、rc-SEI、VCL NAL

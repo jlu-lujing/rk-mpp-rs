@@ -381,6 +381,18 @@ process-count claim. At 6+ streams both implementations are dominated by the
 shared rkvdec service ceiling; the Rust-specific disadvantage is gone once
 pixel conversion is removed.
 
+Standalone drop-in decode is also closed. `scripts/board_mpp_standalone.sh`
+creates an overlay directory whose only `librockchip_mpp.so.1` is a symlink to
+`librk_mpp_rs.so`, verifies the unchanged vendor `mpi_dec_test` resolves that
+symlink through `ldd`, and compares its output against a second run using the
+real vendor library. On both t6 and lf1 all five cases match byte-for-byte:
+H.264 640x480/6 frames (`338214ea…f815`), H.265 (`fcedb435…05e0`), VP9
+12 frames (`c5381bbf…3949a`), AV1 10 frames (`88f34ea5…c5f8e`) and MJPEG
+(`98c5f9cc…a689f8`). The local shim covers log/data symbols, environment and
+time services, OSAL allocation, SoC name/type, spinlocks, `MppDecCfg`,
+singleton/trie metadata and the kmpp/cfg startup objects. Logging currently
+keeps the variadic call ABI but prints the unexpanded format string.
+
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older
 uncapped-profile peaks are retained only as historical observations.

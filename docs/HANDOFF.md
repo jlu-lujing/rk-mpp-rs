@@ -177,6 +177,16 @@ DMA-BUF frame 模式不需要 CPU 生成 planar YUV，CLI 现在通过
 6/8 路与 C 基本持平，24 路每路仍有 65.7 FPS。固定 200 µs 非阻塞 poll
 改成 `yield_now()` 的单次实验反而把单路降到 305 FPS，已回退。
 
+第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
+`librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
+SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；
+`mpp_opt` 注册的 option 元数据按 C 的 `MppTrieInfo + name + ctx` 布局返回，
+所以官方测试命令行仍由原 binary 自己解析。脚本通过只含
+`librockchip_mpp.so.1 -> librk_mpp_rs.so` 的目录运行并用 `ldd` 证明 vendor
+库未加载。t6/lf1 的 H.264 6 帧、H.265、VP9 12 帧、AV1 10 帧和 MJPEG
+均与 vendor C 逐字节一致。当前日志 shim 不展开 printf 变参，standalone
+encoder cfg/object 路径仍需继续。
+
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test
 MPP_INCLUDE=/tmp/mpp-develop/inc \
