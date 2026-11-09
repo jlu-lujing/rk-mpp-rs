@@ -404,6 +404,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       C MPP on both boards. Meta, imported DMABUF buffers and encoder object
       flow remain.
 - [ ] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
+      **Decode partial landed:** the unchanged vendor `mpi_dec_test` runs
+      H.264/H.265/MJPEG under `LD_PRELOAD` with byte-identical output on
+      t6/lf1. Vendor log/cfg/OSAL helpers remain linked from the native MPP;
+      standalone linking and `mpi_enc_test` remain.
 - [x] W7-4 头文件与符号导出策略（前缀、版本、`-sys` crate）。
       **V1.11 头文件、`rk_mpp_` 前缀、SONAME、pkg-config/CMake、符号快照和
       版本化 advanced encoder config、完整 `rk-mpp-rs-sys` 已完成**

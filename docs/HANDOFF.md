@@ -109,8 +109,13 @@ CPU NV12 解码：`decode_put_packet` 把 packet 复制进现有 SDK session，
 t6/lf1 的 15-frame H.264、单帧 H.265 和单帧 MJPEG 输出均与 C MPP
 逐字节一致（SHA-256 分别为 `22a8…23f7`、`fced…05e0`、`98c5…89f8`）。
 `MppMeta`、advanced buffer import/external frame、DMABUF-backed MppBuffer
-和 encoder 对象流仍未实现，因此下一层仍是 W7-3 的官方工具兼容，而不是
-宣称 drop-in 已完成。
+和 encoder 对象流仍未完整实现。第三个 slice 已把最小 packet meta
+（`KEY_OUTPUT_FRAME`）接到 advanced MJPEG 路径：vendor `mpi_dec_test`
+二进制无需重编译，通过 `LD_PRELOAD` 切到 rk-mpp-rs 后，H.264 640×480
+6 帧、H.265 和 MJPEG 在 t6/lf1 都成功，输出 SHA 与原生 MPP 相同，且
+advanced MJPEG 不再报告 frame identity mismatch。vendor log/cfg/OSAL
+辅助符号目前仍由原生库提供；完全 standalone 替换和 encoder 对象流仍是
+后续工作。
 
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。

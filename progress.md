@@ -2,6 +2,18 @@
 
 ## Session: 2026-11-09
 
+### Phase 19: Official `mpi_dec_test` Compatibility
+- **Status:** decoder compatibility partial on t6 and lf1.
+- The unchanged vendor `mpi_dec_test` binary runs through `LD_PRELOAD`, with
+  public MPP entry points from rk-mpp-rs and vendor log/cfg/OSAL helpers from
+  the native library.
+- H.264 640x480 6-frame B-frame, H.265 320x240 and MJPEG 320x240 all match the
+  native output byte for byte on both boards.
+- A minimal packet `MppMeta` preserves `KEY_OUTPUT_FRAME`, so advanced MJPEG
+  returns the exact preallocated `MppFrame` and no longer logs an identity
+  mismatch.
+- Standalone linking without vendor helpers and `mpi_enc_test` remain.
+
 ### Phase 18: Official MPP Drop-in Lifecycle Foundation
 - **Status:** lifecycle plus CPU decode data path complete on t6 and lf1.
 - Exported `mpp_create`, `mpp_init`, `mpp_destroy`,

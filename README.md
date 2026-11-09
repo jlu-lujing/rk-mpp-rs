@@ -261,9 +261,10 @@ cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 2
 `mpp_destroy`、格式查询和官方 `MppApi` 184-byte 函数表。当前只保证生命周期
 与函数表布局，并提供 `MppFrame`/`MppPacket`/`MppBuffer`、packet/frame
 访问器和 H.264/H.265/MJPEG 的 CPU NV12 `decode_put_packet` /
-`decode_get_frame` 数据面。`MppMeta`、advanced buffer import、encoder
-对象流和官方 `mpi_dec_test` 所需的完整配置面仍未接入，因此还不能直接替换
-该测试程序。
+`decode_get_frame` 数据面。完整 `MppMeta`、advanced buffer import、encoder
+对象流和 standalone 所需的完整内部辅助符号仍未接入。已可在保留 vendor
+log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
+`mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
 `target/<profile>`：
 

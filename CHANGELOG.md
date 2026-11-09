@@ -19,8 +19,10 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   `mpp_show_support_format`, `mpp_show_color_format`, and a layout-compatible
   `MppApi` function table. `MppPacket`, `MppFrame`, `MppBuffer`, and the
   H.264/H.265/MJPEG `decode_put_packet` / `decode_get_frame` CPU data path now
-  run through an official-header C consumer; advanced metadata, imported
-  DMA-BUF buffers, and encoder data flow remain reserved.
+  run through an official-header C consumer. The unchanged vendor
+  `mpi_dec_test` binary also passes H.264/H.265/MJPEG when `LD_PRELOAD` routes
+  the public MPP entry points to this crate while vendor helper symbols remain
+  available. Imported DMA-BUF buffers and encoder data flow remain reserved.
 
 ## [1.11] - 2026-11-09
 

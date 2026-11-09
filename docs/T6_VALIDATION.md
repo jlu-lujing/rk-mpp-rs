@@ -245,6 +245,27 @@ now exclude both; reference trees remain managed by
 `~/rk-mpp-oracles/corpus`, the H.264 and HEVC decode suites were rerun and every
 case passed with no decoder SKIP.
 
+## Official `mpi_dec_test` compatibility
+
+`scripts/board_mpp_official_dec_test.sh` runs the vendor `mpi_dec_test`
+executable without modifying or relinking the test source. `LD_PRELOAD` routes
+`mpp_create/init/destroy`, packet/frame/buffer objects and
+`decode_put_packet/decode_get_frame` to rk-mpp-rs, while the native library
+continues to provide its test-only log, cfg and OSAL helpers.
+
+| case | t6 | lf1 |
+|---|---|---|
+| H.264 640x480, 6 B-frame pictures | PASS, byte-identical | PASS, byte-identical |
+| H.265 320x240, 1 picture | PASS, byte-identical | PASS, byte-identical |
+| MJPEG 320x240, 1 picture | PASS, byte-identical | PASS, byte-identical |
+
+For advanced MJPEG, the compatibility layer implements the minimal packet
+`MppMeta` path for `KEY_OUTPUT_FRAME`: the preallocated frame supplied by the
+official tool is filled and returned unchanged in identity. A returned
+frame-identity mismatch is now a hard test failure. This is a real official
+decoder-tool gate, but not yet a standalone replacement: removing the vendor
+helper library and passing `mpi_enc_test` remain W7-3 work.
+
 Performance gate:
 
 - H.264 720p: C MPP 121.5 FPS, Rust 283.8 FPS (**+133.7%**)

@@ -277,6 +277,14 @@ callers.
 - **Status:** lifecycle and basic decode data path complete; official-tool
       compatibility, meta and encoder object flow remain.
 
+### Phase 19: Official `mpi_dec_test` Compatibility
+- [x] Interpose public MPP symbols into unchanged vendor `mpi_dec_test`.
+- [x] Preserve advanced MJPEG `KEY_OUTPUT_FRAME` through packet `MppMeta`.
+- [x] Validate H.264/H.265/MJPEG against native outputs on t6 and lf1.
+- [ ] Remove the remaining dependency on vendor log/cfg/OSAL helper symbols.
+- [ ] Pass unchanged `mpi_enc_test`.
+- **Status:** decoder path complete under vendor-helper preload.
+
 ## Decisions Made
 
 | Decision | Rationale |

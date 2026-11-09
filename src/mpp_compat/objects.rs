@@ -16,6 +16,7 @@ const MPP_FMT_YUV420P: u32 = 4;
 
 const BUFFER_MAGIC: u64 = 0x4d50_5052_4246_4652;
 const GROUP_MAGIC: u64 = 0x4d50_5052_4752_4f50;
+const META_MAGIC: u64 = 0x4d50_5052_4d45_5441;
 const PACKET_MAGIC: u64 = 0x4d50_5052_504b_5458;
 const FRAME_MAGIC: u64 = 0x4d50_5052_4652_4d45;
 
@@ -24,6 +25,13 @@ pub(super) type MppBufferGroup = *mut c_void;
 pub(super) type MppPacket = *mut c_void;
 pub(super) type MppFrame = *mut c_void;
 type MppMeta = *mut c_void;
+
+#[repr(C)]
+struct CompatMeta {
+    magic: u64,
+    output_frame: MppFrame,
+    input_packet: MppPacket,
+}
 
 #[repr(C)]
 pub(super) struct CompatBufferInfo {
@@ -67,7 +75,7 @@ struct CompatPacket {
     eos: bool,
     extra_data: bool,
     buffer: MppBuffer,
-    meta: MppMeta,
+    meta: Option<Box<CompatMeta>>,
     owned: Option<Box<[u8]>>,
 }
 
@@ -168,6 +176,10 @@ unsafe fn packet_mut(packet: MppPacket) -> Option<&'static mut CompatPacket> {
     unsafe { magic_mut(packet, PACKET_MAGIC) }
 }
 
+unsafe fn meta_mut(meta: MppMeta) -> Option<&'static mut CompatMeta> {
+    unsafe { magic_mut(meta, META_MAGIC) }
+}
+
 pub(super) unsafe fn packet_bytes(packet: MppPacket) -> Option<&'static [u8]> {
     let packet = unsafe { packet_ref(packet) }?;
     if packet.length == 0 {
@@ -184,6 +196,12 @@ pub(super) unsafe fn packet_bytes(packet: MppPacket) -> Option<&'static [u8]> {
 pub(super) unsafe fn packet_metadata(packet: MppPacket) -> Option<(i64, i64, bool)> {
     let packet = unsafe { packet_ref(packet) }?;
     Some((packet.pts, packet.dts, packet.eos))
+}
+
+pub(super) unsafe fn packet_output_frame(packet: MppPacket) -> Option<MppFrame> {
+    let packet = unsafe { packet_ref(packet) }?;
+    let meta = packet.meta.as_ref()?;
+    (!meta.output_frame.is_null()).then_some(meta.output_frame)
 }
 
 pub(super) unsafe fn packet_consume(packet: MppPacket) -> bool {
@@ -247,7 +265,7 @@ unsafe fn new_packet(data: *mut u8, size: usize) -> MppPacket {
         eos: false,
         extra_data: false,
         buffer: std::ptr::null_mut(),
-        meta: std::ptr::null_mut(),
+        meta: None,
         owned: None,
     }))
     .cast()
@@ -263,6 +281,19 @@ unsafe fn new_buffer(bytes: Vec<u8>) -> MppBuffer {
         refs: 1,
     }))
     .cast()
+}
+
+unsafe fn discard_frame_object(frame_pointer: MppFrame) {
+    let Some(frame) = (unsafe { frame_mut(frame_pointer) }) else {
+        return;
+    };
+    let buffer = frame.buffer;
+    frame.magic = 0;
+    // SAFETY: frame_from_sdk/frame_init allocated this Box.
+    drop(unsafe { Box::from_raw(frame_pointer.cast::<CompatFrame>()) });
+    if !buffer.is_null() {
+        let _ = unsafe { buffer_put_raw(buffer) };
+    }
 }
 
 pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()> {
@@ -358,6 +389,61 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
     }))
     .cast();
     Ok(frame)
+}
+
+pub(super) unsafe fn frame_fill_from_sdk(
+    target_pointer: MppFrame,
+    decoded: sdk::Frame,
+) -> Result<(), ()> {
+    let source_pointer = unsafe { frame_from_sdk(decoded) }?;
+    let Some(source) = (unsafe { frame_mut(source_pointer) }) else {
+        return Err(());
+    };
+    let Some(target) = (unsafe { frame_mut(target_pointer) }) else {
+        unsafe { discard_frame_object(source_pointer) };
+        return Err(());
+    };
+    let source_buffer_pointer = source.buffer;
+    let target_buffer_pointer = target.buffer;
+
+    if !target_buffer_pointer.is_null() {
+        if target_buffer_pointer == source_buffer_pointer {
+            unsafe { discard_frame_object(source_pointer) };
+            return Err(());
+        }
+        let Some(source_buffer) = (unsafe { buffer_ref(source_buffer_pointer) }) else {
+            unsafe { discard_frame_object(source_pointer) };
+            return Err(());
+        };
+        let Some(target_buffer) = (unsafe { buffer_mut(target_buffer_pointer) }) else {
+            unsafe { discard_frame_object(source_pointer) };
+            return Err(());
+        };
+        if target_buffer.data.len() < source_buffer.data.len() {
+            unsafe { discard_frame_object(source_pointer) };
+            return Err(());
+        }
+        target_buffer.data[..source_buffer.data.len()].copy_from_slice(&source_buffer.data);
+    } else {
+        target.buffer = source_buffer_pointer;
+        source.buffer = std::ptr::null_mut();
+    }
+
+    target.width = source.width;
+    target.height = source.height;
+    target.hor_stride = source.hor_stride;
+    target.ver_stride = source.ver_stride;
+    target.format = source.format;
+    target.poc = source.poc;
+    target.pts = source.pts;
+    target.dts = source.dts;
+    target.errinfo = source.errinfo;
+    target.buffer_size = source.buffer_size;
+    target.eos = source.eos;
+    target.info_change = source.info_change;
+
+    unsafe { discard_frame_object(source_pointer) };
+    Ok(())
 }
 
 pub(super) unsafe fn frame_eos() -> MppFrame {
@@ -1068,13 +1154,85 @@ pub unsafe extern "C" fn mpp_packet_write(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_packet_has_meta(_packet: MppPacket) -> c_int {
-    0
+pub unsafe extern "C" fn mpp_packet_has_meta(packet: MppPacket) -> c_int {
+    unsafe { packet_ref(packet) }
+        .and_then(|packet| packet.meta.as_ref())
+        .map(|_| 1)
+        .unwrap_or(0)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_packet_get_meta(_packet: MppPacket) -> MppMeta {
-    std::ptr::null_mut()
+pub unsafe extern "C" fn mpp_packet_get_meta(packet: MppPacket) -> MppMeta {
+    let Some(packet) = (unsafe { packet_mut(packet) }) else {
+        return std::ptr::null_mut();
+    };
+    if packet.meta.is_none() {
+        let meta = Box::new(CompatMeta {
+            magic: META_MAGIC,
+            output_frame: std::ptr::null_mut(),
+            input_packet: std::ptr::null_mut(),
+        });
+        packet.meta = Some(meta);
+    }
+    packet
+        .meta
+        .as_mut()
+        .map(|meta| (&mut **meta as *mut CompatMeta).cast())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_set_frame(meta: MppMeta, _key: c_int, frame: MppFrame) -> c_int {
+    let Some(meta) = (unsafe { meta_mut(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    meta.output_frame = frame;
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_frame(
+    meta: MppMeta,
+    _key: c_int,
+    frame: *mut MppFrame,
+) -> c_int {
+    if frame.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(meta) = (unsafe { meta_mut(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    unsafe { *frame = meta.output_frame };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_set_packet(
+    meta: MppMeta,
+    _key: c_int,
+    packet: MppPacket,
+) -> c_int {
+    let Some(meta) = (unsafe { meta_mut(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    meta.input_packet = packet;
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_packet(
+    meta: MppMeta,
+    _key: c_int,
+    packet: *mut MppPacket,
+) -> c_int {
+    if packet.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(meta) = (unsafe { meta_mut(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    unsafe { *packet = meta.input_packet };
+    MPP_OK
 }
 
 #[no_mangle]

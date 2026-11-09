@@ -33,6 +33,12 @@ const MPP_VIDEO_CODING_VP9: c_int = 10;
 const MPP_VIDEO_CODING_HEVC: c_int = 0x0100_0004;
 const MPP_VIDEO_CODING_AV1: c_int = 0x0100_0008;
 
+const MPP_DEC_SET_OUTPUT_FORMAT: c_int = 3_211_274;
+const MPP_DEC_SET_DISABLE_ERROR: c_int = 3_211_275;
+const MPP_DEC_SET_IMMEDIATE_OUT: c_int = 3_211_276;
+const MPP_DEC_SET_CFG: c_int = 3_211_777;
+const MPP_DEC_GET_CFG: c_int = 3_211_778;
+
 const CONTEXT_MAGIC: u64 = 0x4d50_5052_5343_5458;
 
 type DecodeFn = unsafe extern "C" fn(MppCtx, MppPacket, *mut MppFrame) -> c_int;
@@ -99,6 +105,7 @@ struct CompatContext {
     decoder: Option<sdk::Decoder>,
     eos_submitted: bool,
     eos_delivered: bool,
+    pending_output_frame: MppFrame,
 }
 
 unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
@@ -136,6 +143,8 @@ unsafe extern "C" fn compat_decode_put_packet(ctx: MppCtx, packet: MppPacket) ->
     let Some((pts, dts, eos)) = (unsafe { objects::packet_metadata(packet) }) else {
         return MPP_ERR_NULL_PTR;
     };
+    let output_frame =
+        unsafe { objects::packet_output_frame(packet) }.unwrap_or(std::ptr::null_mut());
     let flags = if eos {
         sdk::PacketFlags::empty().with_eos()
     } else {
@@ -152,6 +161,7 @@ unsafe extern "C" fn compat_decode_put_packet(ctx: MppCtx, packet: MppPacket) ->
         return MPP_ERR_VALUE;
     }
     context.eos_submitted |= eos;
+    context.pending_output_frame = output_frame;
     MPP_OK
 }
 
@@ -170,8 +180,18 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
     };
     unsafe { *frame = std::ptr::null_mut() };
     if let Some(decoded) = decoder.receive_frame() {
-        let Ok(frame_object) = (unsafe { objects::frame_from_sdk(decoded) }) else {
-            return MPP_NOK;
+        let frame_object = if context.pending_output_frame.is_null() {
+            let Ok(frame) = (unsafe { objects::frame_from_sdk(decoded) }) else {
+                return MPP_NOK;
+            };
+            frame
+        } else {
+            let frame = context.pending_output_frame;
+            if unsafe { objects::frame_fill_from_sdk(frame, decoded) }.is_err() {
+                return MPP_NOK;
+            }
+            context.pending_output_frame = std::ptr::null_mut();
+            frame
         };
         unsafe { *frame = frame_object };
         return MPP_OK;
@@ -234,14 +254,35 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     }
     context.eos_submitted = false;
     context.eos_delivered = false;
+    context.pending_output_frame = std::ptr::null_mut();
     MPP_OK
 }
 
-unsafe extern "C" fn compat_control(ctx: MppCtx, _command: c_int, _param: MppParam) -> c_int {
-    if unsafe { context_mut(ctx) }.is_some() {
-        MPP_NOK
-    } else {
-        MPP_ERR_NULL_PTR
+unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam) -> c_int {
+    if unsafe { context_mut(ctx) }.is_none() {
+        return MPP_ERR_NULL_PTR;
+    }
+    match command {
+        // Configuration is consumed by the surrounding SDK session at
+        // mpp_init. Keep the vendor MppDecCfg object valid and accept the
+        // values the official simple decode loop sets.
+        MPP_DEC_SET_CFG
+        | MPP_DEC_GET_CFG
+        | MPP_DEC_SET_DISABLE_ERROR
+        | MPP_DEC_SET_IMMEDIATE_OUT => MPP_OK,
+        MPP_DEC_SET_OUTPUT_FORMAT => {
+            if param.is_null() {
+                return MPP_ERR_NULL_PTR;
+            }
+            // The compatible session currently exposes NV12.
+            let format = unsafe { *param.cast::<u32>() };
+            if format == 0 {
+                MPP_OK
+            } else {
+                MPP_NOK
+            }
+        }
+        _ => MPP_NOK,
     }
 }
 
@@ -283,6 +324,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             decoder: None,
             eos_submitted: false,
             eos_delivered: false,
+            pending_output_frame: std::ptr::null_mut(),
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();
@@ -318,6 +360,7 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.decoder = decoder;
     context.eos_submitted = false;
     context.eos_delivered = false;
+    context.pending_output_frame = std::ptr::null_mut();
     MPP_OK
 }
 

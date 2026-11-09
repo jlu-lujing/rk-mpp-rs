@@ -107,6 +107,12 @@
   `hor_stride = align16(width)` and `ver_stride = align16(height)` preserves
   byte identity with `dump_mpp_frame_to_file`; H.264, H.265 and MJPEG all pass
   the same official-header C consumer on t6 and lf1.
+- Replacing all of `librockchip_mpp` directly is not the first useful W7-3
+  gate: the vendor test utilities also call internal log, cfg, meta and OSAL
+  symbols. `LD_PRELOAD` cleanly interposes the public MPP entry points while
+  retaining those helpers, and proves the unchanged `mpi_dec_test` control
+  loop itself. The advanced MJPEG path passes the preallocated output frame via
+  `KEY_OUTPUT_FRAME`, so the returned `MppFrame` identity must be preserved.
 
 ## Research Findings
 
