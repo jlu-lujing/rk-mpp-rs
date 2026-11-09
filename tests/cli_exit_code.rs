@@ -47,3 +47,23 @@ fn hevc_decode_failure_returns_nonzero() {
 fn h264_decode_failure_returns_nonzero() {
     assert_failed(run_invalid_decode("h264dec"));
 }
+
+#[test]
+fn h264_dmabuf_output_requires_dev_null() {
+    let output = std::env::temp_dir().join(format!("rk-mpp-rs-dmabuf-{}.yuv", std::process::id()));
+    let result = Command::new(env!("CARGO_BIN_EXE_rk-mpp-rs"))
+        .arg("h264dec")
+        .arg("unused.264")
+        .arg(&output)
+        .env("RKMPP_DECODE_DMABUF", "1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&output);
+
+    assert_eq!(result.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("requires an output of /dev/null"),
+        "stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}

@@ -3465,6 +3465,11 @@ fn main() {
             eprintln!("usage: rk-mpp-rs h264dec <in.264> <out.yuv>");
             std::process::exit(1);
         }
+        let dmabuf_output = std::env::var_os("RKMPP_DECODE_DMABUF").is_some();
+        if dmabuf_output && dst != "/dev/null" {
+            eprintln!("RKMPP_DECODE_DMABUF requires an output of /dev/null");
+            std::process::exit(2);
+        }
         let data = match std::fs::read(src) {
             Ok(data) => data,
             Err(e) => {
@@ -3485,6 +3490,9 @@ fn main() {
                 std::process::exit(1);
             }
         };
+        if dmabuf_output {
+            dec.set_output_dmabuf(true);
+        }
         use std::io::Write;
         let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
         let mut reorder = rk_mpp_rs::codec::h264::DisplayReorder::new(dec.max_num_reorder_frames());

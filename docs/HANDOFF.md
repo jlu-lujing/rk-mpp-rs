@@ -167,6 +167,16 @@ surface 复制，不能把 packet 的新 buffer 追认成旧帧。C consumer 同
 逐字节一致，SHA `88f34ea5…c5f8e`。`BufferPool::import` 现在复用 `clear()`
 留下的 Empty slot，避免长码流超过池上限后错误返回 `Full`。
 
+第十一个 slice 处理持续运动的多路回退。H.264 默认 planar 输出为了
+I420 语义会逐帧做 NV12 chroma deinterleave；单路时仍比 C 快约 80%，但
+4/6 个独立进程把 CPU copy/分配开销叠加后，聚合吞吐反而比 C 低约 10%。
+DMA-BUF frame 模式不需要 CPU 生成 planar YUV，CLI 现在通过
+`RKMPP_DECODE_DMABUF=1` 明确选择该测量路径（只允许 `/dev/null`，
+避免把零字节文件伪装成 YUV）。同时删掉 DMA 路径里无意义的映射与
+`DMA_BUF_SYNC`。4 路从中位数 1048 提升到 1240 aggregate FPS，
+6/8 路与 C 基本持平，24 路每路仍有 65.7 FPS。固定 200 µs 非阻塞 poll
+改成 `yield_now()` 的单次实验反而把单路降到 305 FPS，已回退。
+
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test
 MPP_INCLUDE=/tmp/mpp-develop/inc \

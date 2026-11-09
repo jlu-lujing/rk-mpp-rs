@@ -653,73 +653,68 @@ impl Decoder {
         // MPP never exposes pixel data for an invalid or hardware-errored job.
         let (yuv, nv12, raw_uv, dmabuf) = if combined_err_info == 0 {
             let frame = self.frames[slot].as_ref().unwrap();
-            let dmabuf_lease = if self.output_dmabuf {
-                Some(
-                    frame
-                        .nv12
-                        .try_clone()
-                        .map_err(|error| format!("H.264 DMA-BUF lease: {error}"))?,
-                )
-            } else {
-                None
-            };
-            let view = frame
-                .nv12
-                .data()
-                .map_err(|error| format!("H.264 output pool: {error}"))?;
-            let y_size = frame.hor_stride * frame.ver_stride;
-            let y = &view[..y_size];
-            let uv = &view[y_size..y_size + y_size / 2];
-            let _ = view.buffer().sync_read_begin();
-            let (yuv, nv12, dmabuf) = if self.output_dmabuf {
+            if self.output_dmabuf {
+                let lease = frame
+                    .nv12
+                    .try_clone()
+                    .map_err(|error| format!("H.264 DMA-BUF lease: {error}"))?;
                 (
                     Vec::new(),
                     None,
+                    Vec::new(),
                     Some(DmaBufPicture::pooled(
-                        dmabuf_lease.expect("DMA lease was cloned above"),
+                        lease,
                         frame.hor_stride,
                         frame.ver_stride,
                     )),
                 )
-            } else if self.output_nv12 {
-                (
-                    Vec::new(),
-                    Some(crate::codec::yuv::nv12_to_packed(
-                        y,
-                        uv,
-                        self.width,
-                        self.height,
-                        frame.hor_stride,
-                    )),
-                    None,
-                )
             } else {
-                (
-                    crate::codec::yuv::nv12_to_planar(
-                        y,
-                        uv,
-                        self.width,
-                        self.height,
-                        frame.hor_stride,
-                    ),
-                    None,
-                    None,
-                )
-            };
-            // The interleaved chroma is only ever dumped by the debug path; the
-            // hardware wrote it into the same buffer the planar copy just read.
-            let raw_uv: Vec<u8> = if self.capture_raw_uv {
-                (0..self.height / 2)
-                    .flat_map(|row| {
-                        let off = row * frame.hor_stride;
-                        uv[off..off + self.width].to_vec()
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let _ = view.buffer().sync_read_end();
-            (yuv, nv12, raw_uv, dmabuf)
+                let view = frame
+                    .nv12
+                    .data()
+                    .map_err(|error| format!("H.264 output pool: {error}"))?;
+                let y_size = frame.hor_stride * frame.ver_stride;
+                let y = &view[..y_size];
+                let uv = &view[y_size..y_size + y_size / 2];
+                let _ = view.buffer().sync_read_begin();
+                let (yuv, nv12) = if self.output_nv12 {
+                    (
+                        Vec::new(),
+                        Some(crate::codec::yuv::nv12_to_packed(
+                            y,
+                            uv,
+                            self.width,
+                            self.height,
+                            frame.hor_stride,
+                        )),
+                    )
+                } else {
+                    (
+                        crate::codec::yuv::nv12_to_planar(
+                            y,
+                            uv,
+                            self.width,
+                            self.height,
+                            frame.hor_stride,
+                        ),
+                        None,
+                    )
+                };
+                // The interleaved chroma is only ever dumped by the debug path; the
+                // hardware wrote it into the same buffer the planar copy just read.
+                let raw_uv: Vec<u8> = if self.capture_raw_uv {
+                    (0..self.height / 2)
+                        .flat_map(|row| {
+                            let off = row * frame.hor_stride;
+                            uv[off..off + self.width].to_vec()
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let _ = view.buffer().sync_read_end();
+                (yuv, nv12, raw_uv, None)
+            }
         } else {
             (Vec::new(), None, Vec::new(), None)
         };

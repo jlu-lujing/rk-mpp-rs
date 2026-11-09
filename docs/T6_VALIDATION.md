@@ -344,6 +344,43 @@ Performance gate:
 - 640×480→640 RGB scale: 0.4687 ms (limit 0.50)
 - 1930×1080→640 RGB scale: 1.4702 ms (limit 1.65)
 
+Sustained-motion and concurrent decode evidence uses a generated
+`testsrc2` 1280x720/30 fps stream with actual inter-frame motion. H.264,
+H.265 and VP9 are 120 frames; AV1 is 60 frames. Single-stream figures are the
+median of nine interleaved C/Rust samples at the 80% OPP cap:
+
+| codec | C MPP | Rust | Rust delta |
+|---|---:|---:|---:|
+| H.264 | 209.8 FPS | 378.0 FPS | +80.2% |
+| H.265 | 228.1 FPS | 292.8 FPS | +28.4% |
+| VP9 | 207.6 FPS | 244.2 FPS | +17.6% |
+| AV1 | 201.3 FPS | 310.7 FPS | +54.3% |
+
+The first concurrent matrix exposed the real regression: H.264 with planar
+I420 conversion reached 413.8 FPS at one process, fell to 262.0 FPS/process at
+four and 210.5 at six, making aggregate Rust throughput 10–11% slower than C.
+The DMA-BUF frame path removes the per-frame CPU NV12 copy, and the H.264
+decoder now skips even the redundant mapping and `DMA_BUF_SYNC` when it will
+not read pixels. `board_multistream_bench.sh` then measured:
+
+| streams | C aggregate | Rust DMA aggregate | Rust per stream | delta |
+|---:|---:|---:|---:|---:|
+| 1 | 186.0 FPS | 381.0 FPS | 381.0 FPS | +104.8% |
+| 2 | 582.5 FPS | 854.1 FPS | 427.0 FPS | +46.6% |
+| 4 | 1151.1 FPS | 1240.3 FPS | 310.1 FPS | +7.8% |
+| 6 | 1541.8 FPS | 1525.4 FPS | 254.2 FPS | -1.1% |
+| 8 | 1550.9 FPS | 1540.9 FPS | 192.6 FPS | -0.6% |
+| 12 | 1621.6 FPS | 1629.0 FPS | 135.7 FPS | +0.5% |
+| 16 | 1679.8 FPS | 1606.7 FPS | 100.4 FPS | -4.4% |
+| 24 | 1696.1 FPS | 1577.2 FPS | 65.7 FPS | -7.0% |
+
+Thus 24 independent 720p playback processes were measured above real-time
+simultaneously. Extrapolating the measured 1.58k aggregate ceiling gives about
+52 streams at 30 fps, but that is a throughput estimate rather than a
+process-count claim. At 6+ streams both implementations are dominated by the
+shared rkvdec service ceiling; the Rust-specific disadvantage is gone once
+pixel conversion is removed.
+
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older
 uncapped-profile peaks are retained only as historical observations.

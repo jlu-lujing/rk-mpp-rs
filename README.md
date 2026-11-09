@@ -211,6 +211,7 @@ MPEG-2/MPEG-4/H.263 使用同一 handle 接收任意分块 elementary stream；�
 ```bash
 BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh
 BOARD=t6 ./scripts/board_c_api_h264_mjpeg.sh
+STREAM_COUNTS="1 2 4 6 8" RUST_DMABUF=1 ./scripts/board_multistream_bench.sh
 ```
 
 lf1 和 t6 已验证共享库和静态库链接、全部公开符号、生命周期错误路径，以及 H.264
@@ -253,6 +254,8 @@ Rust 最小示例：
 ```bash
 cargo run --example sdk_decode -- h264 input.264 output.yuv
 cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 26 6
+rk-mpp-rs h264dec input.264 output.yuv
+RKMPP_DECODE_DMABUF=1 rk-mpp-rs h264dec input.264 /dev/null
 ```
 
 `rk-mpp-rs-sys` 暴露 V1.12 的全部 36 个 C 导出、enum、struct 和不透明句柄。

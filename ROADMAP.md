@@ -3192,6 +3192,16 @@ pipeline uses.
       hardware submission. Host tests cover delayed jobs and queued
       cancellation; the t6 async JPEG demo prints and validates the same
       counters alongside its byte-identical sync comparison.
+- [x] **Sustained-motion and concurrent decode benchmark.** A reusable
+      `board_multistream_bench.sh` interleaves independent C MPP and Rust
+      processes at 1/2/4/6/8/12/16/24 streams. On continuous 720p motion H.264
+      the CPU-planar Rust path loses 10–11% aggregate throughput at 4–6 streams;
+      selecting the existing DMA-BUF frame output removes the per-frame YUV
+      conversion and raises 4-stream throughput from 1048 to 1240 aggregate FPS
+      (+18%), moving 6–24-stream results to parity or within 7% of C. Both
+      implementations plateau near 1.55–1.70k aggregate FPS, so the high
+      concurrency limit is shared rkvdec service throughput rather than Rust
+      parser/allocation overhead.
  - [ ] dma-fence in/out, buffer import/export - surveyed, not implementable on
        this vintage: `refs/mpp` has no fence surface at all (the command table
        ends at 0x404, `MppReqV1`/kmpp/vcodec_service carry no fence fields, the
