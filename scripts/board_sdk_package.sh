@@ -12,7 +12,7 @@ COPYFILE_DISABLE=1 tar \
     --exclude .worktrees \
     --exclude refs \
     -cf - . |
-    ssh "$board" 'tar -xf - -C "$HOME/rk-mpp-rs"'
+    ssh "$board" 'tar -xmf - -C "$HOME/rk-mpp-rs"'
 
 ssh "$board" 'RUST_MIN_STACK=16777216 CARGO_BUILD_JOBS=1 bash -s' <<'REMOTE'
 set -euo pipefail

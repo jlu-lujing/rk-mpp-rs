@@ -266,6 +266,15 @@ callers.
 - [x] Re-run workspace gates after adding NV12 scale tests.
 - **Status:** complete on t6 and lf1; 1201/0/38 workspace gate.
 
+### Phase 18: Official MPP Drop-in Lifecycle Foundation
+- [x] Export `mpp_create`, `mpp_init`, `mpp_destroy`, support and show-format.
+- [x] Match the official 184-byte `MppApi` function-table layout.
+- [x] Compile a C consumer against the vendor `rk_mpi.h` and run on t6/lf1.
+- [x] Add deterministic null/value/init/reset/control lifecycle checks.
+- [ ] Implement MppFrame/MppPacket/MppBuffer ownership and real data flow.
+- [ ] Link and run official `mpi_dec_test` unchanged.
+- **Status:** lifecycle foundation complete; W7-2 data path remains active work.
+
 ## Decisions Made
 
 | Decision | Rationale |

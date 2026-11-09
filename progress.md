@@ -2,6 +2,19 @@
 
 ## Session: 2026-11-09
 
+### Phase 18: Official MPP Drop-in Lifecycle Foundation
+- **Status:** lifecycle foundation complete on t6 and lf1; data path not implemented.
+- Exported `mpp_create`, `mpp_init`, `mpp_destroy`,
+  `mpp_check_support_format`, `mpp_show_support_format` and
+  `mpp_show_color_format`.
+- The exported `MppApi` table matches the vendor header's 184-byte aarch64
+  layout and exposes deterministic stub functions for all data/control slots.
+- A C consumer compiled against the vendor `rk_mpi.h` verifies null handling,
+  supported coding types, init/reset/control contracts and destroy ownership on
+  both boards. `scripts/board_mpp_compat_lifecycle.sh` is the gate.
+- This does not yet run official `mpi_dec_test`; frame/packet/buffer ownership
+  and the real decode put/get data path remain W7-2 work.
+
 ### Phase 17: W8-2 Decode-to-Model-Input Direct Scaling
 - **Status:** complete on t6 and lf1.
 - `Scaler::letterbox_nv12_strided()` and `Frame::letterbox_nv12()` now read the

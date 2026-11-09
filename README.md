@@ -256,6 +256,12 @@ cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 2
 ```
 
 `rk-mpp-rs-sys` 暴露 V1.12 的全部 36 个 C 导出、enum、struct 和不透明句柄。
+
+另有进行中的官方 MPP drop-in ABI 基础层：`mpp_create`、`mpp_init`、
+`mpp_destroy`、格式查询和官方 `MppApi` 184-byte 函数表。当前只保证生命周期
+与函数表布局，`MppFrame`/`MppPacket`/`MppBuffer` 和真实
+`decode_put_packet`/`decode_get_frame` 尚未接入，因此还不能替换
+`mpi_dec_test` 所使用的完整 MPP API。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
 `target/<profile>`：
 

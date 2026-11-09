@@ -14,7 +14,7 @@ COPYFILE_DISABLE=1 tar \
     --exclude .worktrees \
     --exclude refs \
     -cf - . |
-    ssh "$board" 'tar -xf - -C "$HOME/rk-mpp-rs"'
+    ssh "$board" 'tar -xmf - -C "$HOME/rk-mpp-rs"'
 
 ssh "$board" 'bash -s' <<'REMOTE'
 set -euo pipefail

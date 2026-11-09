@@ -98,6 +98,10 @@
   1080p→640 path this reduced t6/lf1 work from 20.32/24.36 ms to 4.93/5.95 ms,
   while the real 720p CPU/DMA decode output remained byte-identical after
   scaling.
+- The official `MppApi` table is 184 bytes on aarch64: two 32-bit header words,
+  fourteen function pointers and sixteen reserved 32-bit words. Lifecycle can
+  be implemented independently, but the table's data entries must remain
+  explicit stubs until MppFrame/MppPacket/MppBuffer ownership is defined.
 
 ## Research Findings
 

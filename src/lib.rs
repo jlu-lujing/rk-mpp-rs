@@ -14,6 +14,7 @@ pub mod service;
 
 mod c_api;
 mod c_api_encoder;
+mod mpp_compat;
 
 use std::ffi::{c_char, CStr};
 

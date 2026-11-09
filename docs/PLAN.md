@@ -397,6 +397,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       **全部已实现 decoder 与 H.264/H.265/JPEG encoder 已完成**
 - [ ] W7-2 C ABI：`mpp_create/mpp_init/mpp_destroy`、`MppApi` 函数表子集、
       `mpp_frame/mpp_packet/mpp_buffer` 最小实现
+      **Foundation landed:** official-header lifecycle and support-query
+      symbols plus the complete 184-byte `MppApi` table layout pass on t6/lf1.
+      Decode/encode entries are reserved stubs; frame/packet/buffer ownership
+      and real data flow remain the next slice.
 - [ ] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
 - [x] W7-4 头文件与符号导出策略（前缀、版本、`-sys` crate）。
       **V1.11 头文件、`rk_mpp_` 前缀、SONAME、pkg-config/CMake、符号快照和

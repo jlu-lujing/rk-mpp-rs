@@ -14,6 +14,11 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   byte-identical packets on t6/VEPU580 and lf1/VEPU510+VPU720.
 - `Frame::letterbox_nv12()` and the scaler can read strided NV12 CPU/DMA frames
   directly into RGB model input without a whole-frame intermediate copy.
+- Added the first official-MPP compatibility symbols:
+  `mpp_create`, `mpp_init`, `mpp_destroy`, `mpp_check_support_format`,
+  `mpp_show_support_format`, `mpp_show_color_format`, and a layout-compatible
+  `MppApi` function table. Decode/encode table entries are reserved stubs for
+  the subsequent frame/packet compatibility work.
 
 ## [1.11] - 2026-11-09
 

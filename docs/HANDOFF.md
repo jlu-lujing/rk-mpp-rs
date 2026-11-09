@@ -101,6 +101,12 @@ V1.12 增加编码器 DMA-BUF 输入。`DmaBufInput` /
 stride；H.264/H.265 要求 16 对齐，JPEG 要求 8×2 对齐。原 copied-input API
 保持不变。t6 VEPU580、lf1 VEPU510 与 lf1 VPU720 的 fd/copied 输出逐字节相同。
 
+官方 MPP drop-in 兼容层的第一个 slice 已落地：`mpp_create/init/destroy`、
+格式查询和官方 `MppApi` 函数表布局已通过 vendor `rk_mpi.h` consumer。
+`mpi->decode*`/`encode*` 目前仍是 stub；下一 slice 必须先实现 frame、packet、
+buffer 的所有权，再接入真实会话，不能把只通过 lifecycle 误报成可替换
+`mpi_dec_test`。
+
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。
 
