@@ -266,6 +266,21 @@ frame-identity mismatch is now a hard test failure. This is a real official
 decoder-tool gate, but not yet a standalone replacement: removing the vendor
 helper library and passing `mpi_enc_test` remain W7-3 work.
 
+`scripts/board_mpp_official_enc_test.sh` now exercises the same bridge for the
+vendor encoder tool. It reads `MppEncCfg` from the vendor helper object, submits
+the test's NV12 `MppFrame`, and drains owned `MppPacket` objects:
+
+- H.265 320x240 one picture: byte-identical, SHA
+  `1f00679ad21815e45c08f1fedd2873d4604cc654ccb131a6ce44ce6fd352e84a`.
+- MJPEG 320x240 one picture: byte-identical, SHA
+  `08eb7c6f097f70e9e5424111a83dddef4d7cc46fc01d2772b42dc565b5388623`.
+- H.264 320x240 one picture: both streams decode to identical YUV, SHA
+  `9d8c6f546089d1564f8d5c0401d652dfa4c0e9b24a634dbb7aa33722324ac6fc`.
+
+H.264 multi-frame still has reconstruction differences and is not claimed as
+complete. On lf1 only MJPEG currently passes byte identity; RK3576
+H.264/H.265 official encoder parameters remain explicit SKIPs.
+
 Performance gate:
 
 - H.264 720p: C MPP 121.5 FPS, Rust 283.8 FPS (**+133.7%**)

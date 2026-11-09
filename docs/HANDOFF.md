@@ -117,6 +117,15 @@ advanced MJPEG 不再报告 frame identity mismatch。vendor log/cfg/OSAL
 辅助符号目前仍由原生库提供；完全 standalone 替换和 encoder 对象流仍是
 后续工作。
 
+encoder 对象流已开始接通：`MPP_ENC_SET_CFG` 通过 vendor `MppEncCfg`
+读取 codec、size、profile、RC、GOP、fps 和 JPEG q-factor，再创建统一
+`encoder::Encoder`；`encode_put_frame` 将 `MppFrame` 的 NV12 buffer 提交，
+`encode_get_packet` 返回 owned `MppPacket`。在 t6，未修改的 vendor
+`mpi_enc_test` 生成 H.265（SHA `1f0067…52e84a`）和 MJPEG（SHA
+`08eb7c…88623`）与 C MPP 逐字节一致；H.264 单帧解码 YUV 为
+`9d8c6f…24ac6fc`，与 C 相同，但 H.264 多帧仍有重建差异。lf1 的
+MJPEG 对象流逐字节一致，H.264/H.265 官方参数面暂明确 SKIP。
+
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。
 

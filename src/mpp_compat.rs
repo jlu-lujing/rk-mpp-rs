@@ -3,8 +3,9 @@
 use std::ffi::{c_int, c_void};
 use std::mem::size_of;
 
-use crate::sdk;
+use crate::{encoder, sdk};
 
+mod cfg;
 mod objects;
 
 type MppCtx = *mut c_void;
@@ -38,6 +39,16 @@ const MPP_DEC_SET_DISABLE_ERROR: c_int = 3_211_275;
 const MPP_DEC_SET_IMMEDIATE_OUT: c_int = 3_211_276;
 const MPP_DEC_SET_CFG: c_int = 3_211_777;
 const MPP_DEC_GET_CFG: c_int = 3_211_778;
+
+const MPP_ENC_SET_CFG: c_int = 3_276_801;
+const MPP_ENC_GET_CFG: c_int = 3_276_802;
+const MPP_ENC_SET_IDR_FRAME: c_int = 3_276_809;
+const MPP_ENC_GET_HDR_SYNC: c_int = 3_276_813;
+const MPP_ENC_SET_SEI_CFG: c_int = 3_276_815;
+const MPP_ENC_SET_HEADER_MODE: c_int = 3_309_569;
+const MPP_ENC_SET_OSD_PLT_CFG: c_int = 3_310_593;
+const MPP_ENC_SET_RC_API: c_int = 3_277_317;
+const MPP_SET_OUTPUT_TIMEOUT: c_int = 2_097_159;
 
 const CONTEXT_MAGIC: u64 = 0x4d50_5052_5343_5458;
 
@@ -103,6 +114,7 @@ struct CompatContext {
     ctx_type: c_int,
     coding: c_int,
     decoder: Option<sdk::Decoder>,
+    encoder: Option<encoder::Encoder>,
     eos_submitted: bool,
     eos_delivered: bool,
     pending_output_frame: MppFrame,
@@ -117,6 +129,42 @@ unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
     // still readable, without pretending arbitrary pointers are valid.
     let context = unsafe { &mut *(ctx.cast::<CompatContext>()) };
     (context.magic == CONTEXT_MAGIC).then_some(context)
+}
+
+fn nv12_input(frame: &objects::FrameInputView) -> Result<Vec<u8>, c_int> {
+    let luma_size = frame
+        .hor_stride
+        .checked_mul(frame.ver_stride)
+        .ok_or(MPP_ERR_VALUE)?;
+    let output_size = frame
+        .width
+        .checked_mul(frame.height)
+        .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
+        .ok_or(MPP_ERR_VALUE)?;
+    if frame.data.is_null()
+        || frame.len < luma_size
+        || frame.hor_stride < frame.width
+        || frame.height % 2 != 0
+    {
+        return Err(MPP_ERR_VALUE);
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(frame.data, frame.len) };
+    let mut output = vec![0u8; output_size];
+    for row in 0..frame.height {
+        let source = row * frame.hor_stride;
+        let destination = row * frame.width;
+        output[destination..destination + frame.width]
+            .copy_from_slice(&bytes[source..source + frame.width]);
+    }
+    let uv_source = luma_size;
+    let uv_destination = frame.width * frame.height;
+    for row in 0..frame.height / 2 {
+        let source = uv_source + row * frame.hor_stride;
+        let destination = uv_destination + row * frame.width;
+        output[destination..destination + frame.width]
+            .copy_from_slice(&bytes[source..source + frame.width]);
+    }
+    Ok(output)
 }
 
 unsafe extern "C" fn compat_decode(ctx: MppCtx, packet: MppPacket, frame: *mut MppFrame) -> c_int {
@@ -203,20 +251,79 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
     MPP_OK
 }
 
-unsafe extern "C" fn compat_encode(
-    _ctx: MppCtx,
-    _frame: MppFrame,
-    _packet: *mut MppPacket,
-) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_encode(ctx: MppCtx, frame: MppFrame, packet: *mut MppPacket) -> c_int {
+    let put = unsafe { compat_encode_put_frame(ctx, frame) };
+    if put != MPP_OK {
+        return put;
+    }
+    unsafe { compat_encode_get_packet(ctx, packet) }
 }
 
-unsafe extern "C" fn compat_encode_put_frame(_ctx: MppCtx, _frame: MppFrame) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_int {
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if context.ctx_type != MPP_CTX_ENC {
+        return MPP_ERR_VALUE;
+    }
+    let Some(encoder) = context.encoder.as_mut() else {
+        return MPP_ERR_VALUE;
+    };
+    let Some(frame) = (unsafe { objects::frame_input_view(frame) }) else {
+        eprintln!("rk-mpp-rs mpp: encode frame has no readable buffer");
+        return MPP_ERR_NULL_PTR;
+    };
+    if frame.eos {
+        return MPP_OK;
+    }
+    if frame.width == 0 || frame.height == 0 || frame.format != 0 {
+        eprintln!(
+            "rk-mpp-rs mpp: encode frame has invalid geometry/format {}x{} fmt {}",
+            frame.width, frame.height, frame.format
+        );
+        return MPP_ERR_VALUE;
+    }
+    let input = match nv12_input(&frame) {
+        Ok(input) => input,
+        Err(ret) => {
+            eprintln!("rk-mpp-rs mpp: encode frame is not a complete NV12 picture");
+            return ret;
+        }
+    };
+    let input = encoder::InputFrame::new(&input)
+        .with_pts(frame.pts)
+        .with_dts(frame.dts);
+    match encoder.submit_frame(input) {
+        Ok(_) => MPP_OK,
+        Err(error) => {
+            eprintln!("rk-mpp-rs mpp: encode frame failed: {error}");
+            MPP_NOK
+        }
+    }
 }
 
-unsafe extern "C" fn compat_encode_get_packet(_ctx: MppCtx, _packet: *mut MppPacket) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_encode_get_packet(ctx: MppCtx, packet: *mut MppPacket) -> c_int {
+    if packet.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if context.ctx_type != MPP_CTX_ENC {
+        return MPP_ERR_VALUE;
+    }
+    let Some(encoder) = context.encoder.as_mut() else {
+        return MPP_ERR_VALUE;
+    };
+    unsafe { *packet = std::ptr::null_mut() };
+    if let Some(encoded) = encoder.receive_packet() {
+        let pts = encoded.pts();
+        let dts = encoded.dts();
+        unsafe {
+            *packet = objects::packet_from_bytes(encoded.into_data(), pts, dts);
+        }
+    }
+    MPP_OK
 }
 
 unsafe extern "C" fn compat_isp(_ctx: MppCtx, _dst: MppFrame, _src: MppFrame) -> c_int {
@@ -252,6 +359,7 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
             return MPP_NOK;
         }
     }
+    context.encoder = None;
     context.eos_submitted = false;
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
@@ -259,9 +367,9 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
 }
 
 unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam) -> c_int {
-    if unsafe { context_mut(ctx) }.is_none() {
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
         return MPP_ERR_NULL_PTR;
-    }
+    };
     match command {
         // Configuration is consumed by the surrounding SDK session at
         // mpp_init. Keep the vendor MppDecCfg object valid and accept the
@@ -282,7 +390,51 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                 MPP_NOK
             }
         }
-        _ => MPP_NOK,
+        MPP_ENC_SET_CFG => {
+            if context.ctx_type != MPP_CTX_ENC || param.is_null() {
+                return MPP_ERR_VALUE;
+            }
+            let config = match unsafe { cfg::encoder_config(param) } {
+                Ok(config) => config,
+                Err(error) => {
+                    eprintln!("rk-mpp-rs mpp: encoder config rejected: {error}");
+                    return MPP_NOK;
+                }
+            };
+            match encoder::Encoder::new(config) {
+                Ok(encoder) => {
+                    context.encoder = Some(encoder);
+                    MPP_OK
+                }
+                Err(error) => {
+                    eprintln!("rk-mpp-rs mpp: encoder open failed: {error}");
+                    MPP_NOK
+                }
+            }
+        }
+        MPP_ENC_GET_CFG
+        | MPP_ENC_SET_IDR_FRAME
+        | MPP_ENC_SET_SEI_CFG
+        | MPP_ENC_SET_HEADER_MODE
+        | MPP_ENC_SET_OSD_PLT_CFG
+        | MPP_ENC_SET_RC_API
+        | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
+        MPP_ENC_GET_HDR_SYNC => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            let Some(encoder) = context.encoder.as_mut() else {
+                return MPP_ERR_VALUE;
+            };
+            // VEPU580 H.264 consumes an IDR id while producing this header.
+            // Other supported object backends have no equivalent state yet.
+            let _ = encoder.prime_header_sync();
+            MPP_OK
+        }
+        _ => {
+            eprintln!("rk-mpp-rs mpp: unsupported control command {command}");
+            MPP_NOK
+        }
     }
 }
 
@@ -322,6 +474,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             ctx_type: MPP_CTX_BUTT,
             coding: 0,
             decoder: None,
+            encoder: None,
             eos_submitted: false,
             eos_delivered: false,
             pending_output_frame: std::ptr::null_mut(),
@@ -358,6 +511,7 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.ctx_type = ctx_type;
     context.coding = coding;
     context.decoder = decoder;
+    context.encoder = None;
     context.eos_submitted = false;
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();

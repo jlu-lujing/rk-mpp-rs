@@ -285,6 +285,14 @@ callers.
 - [ ] Pass unchanged `mpi_enc_test`.
 - **Status:** decoder path complete under vendor-helper preload.
 
+### Phase 20: Official `mpi_enc_test` Object Bridge
+- [x] Parse vendor `MppEncCfg` into the stable encoder configuration.
+- [x] Bridge opaque `MppFrame` input and owned `MppPacket` output.
+- [x] Validate t6 H.265/MJPEG byte identity and H.264 one-frame reconstruction.
+- [ ] Close H.264 multi-frame reconstruction and lf1 H.264/H.265 parameter gaps.
+- [ ] Remove vendor helper dependency and pass standalone `mpi_enc_test`.
+- **Status:** encoder object bridge partial.
+
 ## Decisions Made
 
 | Decision | Rationale |

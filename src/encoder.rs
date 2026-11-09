@@ -392,9 +392,11 @@ pub struct EncoderConfig {
     level: u8,
     gop: u32,
     qp: u8,
+    num_ref_frames: u32,
     fps_num: u32,
     fps_den: u32,
     jpeg_quality: u32,
+    jpeg_qfactor: Option<u32>,
     jpeg_restart_mcus: u32,
     rate_control: Option<RateControlConfig>,
     roi: Option<RoiConfig>,
@@ -413,9 +415,11 @@ impl EncoderConfig {
             level: 30,
             gop: 1,
             qp: 26,
+            num_ref_frames: 0,
             fps_num: 30,
             fps_den: 1,
             jpeg_quality: 10,
+            jpeg_qfactor: None,
             jpeg_restart_mcus: 0,
             rate_control: None,
             roi: None,
@@ -456,6 +460,10 @@ impl EncoderConfig {
         self.qp
     }
 
+    pub const fn num_ref_frames(self) -> u32 {
+        self.num_ref_frames
+    }
+
     pub const fn fps(self) -> (u32, u32) {
         (self.fps_num, self.fps_den)
     }
@@ -466,6 +474,10 @@ impl EncoderConfig {
 
     pub const fn jpeg_restart_mcus(self) -> u32 {
         self.jpeg_restart_mcus
+    }
+
+    pub const fn jpeg_qfactor(self) -> Option<u32> {
+        self.jpeg_qfactor
     }
 
     pub const fn rate_control(self) -> Option<RateControlConfig> {
@@ -509,6 +521,11 @@ impl EncoderConfig {
         self
     }
 
+    pub const fn with_num_ref_frames(mut self, frames: u32) -> Self {
+        self.num_ref_frames = frames;
+        self
+    }
+
     pub const fn with_fps(mut self, fps_num: u32, fps_den: u32) -> Self {
         self.fps_num = fps_num;
         self.fps_den = fps_den;
@@ -517,6 +534,12 @@ impl EncoderConfig {
 
     pub const fn with_jpeg_quality(mut self, quality: u32) -> Self {
         self.jpeg_quality = quality;
+        self.jpeg_qfactor = None;
+        self
+    }
+
+    pub const fn with_jpeg_qfactor(mut self, qfactor: u32) -> Self {
+        self.jpeg_qfactor = Some(qfactor);
         self
     }
 
@@ -782,6 +805,18 @@ impl Encoder {
 
     pub const fn config(&self) -> EncoderConfig {
         self.config
+    }
+
+    pub fn prime_header_sync(&mut self) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H264Vepu580(encoder) => {
+                encoder.prime_header_sync();
+                Ok(())
+            }
+            _ => Err(Error::Unsupported(
+                "synchronous header priming is currently implemented for VEPU580 H.264".to_string(),
+            )),
+        }
     }
 
     pub fn submit_frame(&mut self, frame: InputFrame<'_>) -> Result<usize, Error> {
@@ -1050,6 +1085,9 @@ fn open_h264_vepu580(config: EncoderConfig) -> Result<h264e::Vepu580H264, Error>
     h264.level_idc = config.level;
     h264.gop = config.gop.max(1);
     h264.qp_init = config.qp;
+    if config.num_ref_frames != 0 {
+        h264.num_ref_frames = config.num_ref_frames;
+    }
     h264.fps_num = config.fps_num;
     h264.fps_den = config.fps_den;
     h264.entropy_coding = profile >= PROFILE_MAIN;
@@ -1139,11 +1177,18 @@ fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264,
         || !matches!(config.profile, 0 | 66)
         || !matches!(config.level, 0 | 30)
     {
-        return Err(Error::Unsupported(
+        return Err(Error::Unsupported(format!(
             "RK3576 H.264 encoder currently supports only 320x240 Baseline QP26 \
-             GOP6 at 30 fps"
-                .to_string(),
-        ));
+             GOP6 at 30 fps; got {}x{} profile {} level {} QP {} GOP {} at {}/{} fps",
+            config.width,
+            config.height,
+            config.profile,
+            config.level,
+            config.qp,
+            config.gop,
+            config.fps_num,
+            config.fps_den
+        )));
     }
     vepu510_h264::Vepu510H264::open().map_err(|error| Error::Hardware(error.to_string()))
 }
@@ -1296,9 +1341,17 @@ fn open_jpeg() -> Result<jpege720::JpegEncoder, Error> {
 }
 
 fn jpeg_config(config: EncoderConfig) -> Result<jpege::EncoderConfig, Error> {
-    if config.jpeg_quality > 10 {
+    if config.jpeg_qfactor.is_none() && config.jpeg_quality > 10 {
         return Err(Error::InvalidInput(
             "JPEG quality must be in 0..=10".to_string(),
+        ));
+    }
+    if config
+        .jpeg_qfactor
+        .is_some_and(|qfactor| !(1..=100).contains(&qfactor))
+    {
+        return Err(Error::InvalidInput(
+            "JPEG q_factor must be in 1..=100".to_string(),
         ));
     }
     if config.jpeg_restart_mcus > u16::MAX as u32 {
@@ -1307,7 +1360,10 @@ fn jpeg_config(config: EncoderConfig) -> Result<jpege::EncoderConfig, Error> {
         ));
     }
     let mut jpeg = jpege::EncoderConfig::new(config.width, config.height);
-    jpeg.quality = jpege::Quality::Quant(config.jpeg_quality as u8);
+    jpeg.quality = match config.jpeg_qfactor {
+        Some(qfactor) => jpege::Quality::QFactor(qfactor as u8),
+        None => jpege::Quality::Quant(config.jpeg_quality as u8),
+    };
     jpeg.input = jpege::InputFormat::Nv12;
     jpeg.chroma = jpege::ChromaFormat::Yuv420;
     jpeg.split_mcus = (config.jpeg_restart_mcus != 0).then_some(config.jpeg_restart_mcus as u16);

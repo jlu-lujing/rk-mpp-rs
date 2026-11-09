@@ -22,7 +22,10 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   run through an official-header C consumer. The unchanged vendor
   `mpi_dec_test` binary also passes H.264/H.265/MJPEG when `LD_PRELOAD` routes
   the public MPP entry points to this crate while vendor helper symbols remain
-  available. Imported DMA-BUF buffers and encoder data flow remain reserved.
+  available. The same object bridge now accepts vendor `MppEncCfg`, submits
+  `MppFrame` pictures and returns encoded `MppPacket`s; t6 H.265/MJPEG streams
+  are byte-identical and H.264 one-frame reconstruction matches C MPP.
+  Imported DMA-BUF objects and H.264 multi-frame convergence remain reserved.
 
 ## [1.11] - 2026-11-09
 

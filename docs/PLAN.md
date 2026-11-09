@@ -408,6 +408,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       H.264/H.265/MJPEG under `LD_PRELOAD` with byte-identical output on
       t6/lf1. Vendor log/cfg/OSAL helpers remain linked from the native MPP;
       standalone linking and `mpi_enc_test` remain.
+      **Encoder partial landed:** vendor `MppEncCfg`, `MppFrame` input and
+      `MppPacket` output are bridged into `encoder::Encoder`. t6 H.265/MJPEG
+      streams are byte-identical and H.264 one-frame reconstruction matches;
+      H.264 multi-frame and the RK3576 H.264/H.265 matrix remain.
 - [x] W7-4 头文件与符号导出策略（前缀、版本、`-sys` crate）。
       **V1.11 头文件、`rk_mpp_` 前缀、SONAME、pkg-config/CMake、符号快照和
       版本化 advanced encoder config、完整 `rk-mpp-rs-sys` 已完成**

@@ -265,6 +265,10 @@ cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 2
 对象流和 standalone 所需的完整内部辅助符号仍未接入。已可在保留 vendor
 log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
 `mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。
+同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
+`encode_get_packet`：t6 的 H.265/MJPEG 单帧 stream 与 C MPP 逐字节一致，
+H.264 单帧解码重建一致。H.264 多帧和 RK3576 H.264/H.265 官方参数矩阵仍在
+收敛，不能把当前 encoder 路径标成完整兼容。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
 `target/<profile>`：
 

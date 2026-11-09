@@ -26,6 +26,19 @@ pub(super) type MppPacket = *mut c_void;
 pub(super) type MppFrame = *mut c_void;
 type MppMeta = *mut c_void;
 
+pub(super) struct FrameInputView {
+    pub data: *const u8,
+    pub len: usize,
+    pub width: usize,
+    pub height: usize,
+    pub hor_stride: usize,
+    pub ver_stride: usize,
+    pub format: u32,
+    pub pts: i64,
+    pub dts: i64,
+    pub eos: bool,
+}
+
 #[repr(C)]
 struct CompatMeta {
     magic: u64,
@@ -202,6 +215,35 @@ pub(super) unsafe fn packet_output_frame(packet: MppPacket) -> Option<MppFrame> 
     let packet = unsafe { packet_ref(packet) }?;
     let meta = packet.meta.as_ref()?;
     (!meta.output_frame.is_null()).then_some(meta.output_frame)
+}
+
+pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView> {
+    let frame = unsafe { frame_ref(frame) }?;
+    let buffer = unsafe { buffer_mut(frame.buffer) }?;
+    Some(FrameInputView {
+        data: buffer.data.as_ptr(),
+        len: buffer.data.len(),
+        width: frame.width as usize,
+        height: frame.height as usize,
+        hor_stride: frame.hor_stride as usize,
+        ver_stride: frame.ver_stride as usize,
+        format: frame.format,
+        pts: frame.pts,
+        dts: frame.dts,
+        eos: frame.eos != 0,
+    })
+}
+
+pub(super) unsafe fn packet_from_bytes(bytes: Vec<u8>, pts: i64, dts: i64) -> MppPacket {
+    let owned = bytes.into_boxed_slice();
+    let data = owned.as_ptr() as *mut u8;
+    let packet = new_packet(data, owned.len());
+    // SAFETY: packet was just allocated above.
+    let packet_object = unsafe { packet_mut(packet) }.unwrap();
+    packet_object.owned = Some(owned);
+    packet_object.pts = pts;
+    packet_object.dts = dts;
+    packet
 }
 
 pub(super) unsafe fn packet_consume(packet: MppPacket) -> bool {

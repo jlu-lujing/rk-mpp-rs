@@ -785,6 +785,12 @@ impl Vepu580H264 {
         &self.config
     }
 
+    /// Match `h264e_slice_init` consuming an IDR ID while the reference encoder
+    /// writes its synchronous header packet before the first frame.
+    pub fn prime_header_sync(&mut self) {
+        self.state.idr_pic_id = (self.state.idr_pic_id + 1) % 16;
+    }
+
     /// Read one complete input picture directly into the preallocated DMA
     /// mapping. No staging `Vec` or second copy is involved.
     pub fn load_input_frame<R: Read>(

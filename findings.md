@@ -113,6 +113,13 @@
   retaining those helpers, and proves the unchanged `mpi_dec_test` control
   loop itself. The advanced MJPEG path passes the preallocated output frame via
   `KEY_OUTPUT_FRAME`, so the returned `MppFrame` identity must be preserved.
+- Encoder compatibility can reuse the stable `encoder::Encoder` backend without
+  exposing its Rust types. The vendor test's `MppEncCfg` is opaque, so the
+  minimal bridge reads keys through dynamically resolved
+  `mpp_enc_cfg_get_s32`; frames are packed from `MppBuffer`, and output packets
+  own their copied stream bytes. `MPP_ENC_GET_HDR_SYNC` must also preserve the
+  old encoder's IDR-id side effect even when the header packet is not emitted
+  separately.
 
 ## Research Findings
 
