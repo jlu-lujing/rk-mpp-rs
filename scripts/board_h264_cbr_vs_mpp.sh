@@ -66,8 +66,9 @@ for entry in cbr:1:0 vbr:0:0 avbr:2:0 cbr-mpi:1:1; do
   if ! ssh "$BOARD" "test -s /tmp/rc_ours_$mode.264 && test -s /tmp/rc_c_$mode.264"; then
     printf 'FAIL %s (one side produced no stream)\n' "$mode"; fail=1; continue
   fi
-  scp -q "$BOARD":"/tmp/rc_ours_$mode.264" "$BOARD":"/tmp/rc_c_$mode.264" /tmp/ 2>/dev/null
-  if python3 scripts/compare_streams.py "/tmp/rc_c_$mode.264" "/tmp/rc_ours_$mode.264"; then
+  if scp -q "$BOARD":"/tmp/rc_c_$mode.264" /tmp/ &&
+     scp -q "$BOARD":"/tmp/rc_ours_$mode.264" /tmp/ &&
+     python3 scripts/compare_streams.py "/tmp/rc_c_$mode.264" "/tmp/rc_ours_$mode.264"; then
     printf 'PASS %s (%s, %d frames, %s:%s:%s)\n' "$mode" "$SIZE" "$FRAMES" \
       "$BPS_TARGET" "$BPS_MIN" "$BPS_MAX"
   else
@@ -90,7 +91,8 @@ for entry in cbr:1 vbr:0 avbr:2; do
   if ! ssh "$BOARD" "test -s /tmp/rc_ours_hier-$mode.264 && test -s /tmp/rc_c_hier-$mode.264"; then
     printf 'FAIL hier-%s (one side produced no stream)\n' "$mode"
     fail=1
-  elif scp -q "$BOARD":/tmp/rc_ours_hier-$mode.264 "$BOARD":/tmp/rc_c_hier-$mode.264 /tmp/ 2>/dev/null &&
+  elif scp -q "$BOARD":/tmp/rc_c_hier-$mode.264 /tmp/ &&
+       scp -q "$BOARD":/tmp/rc_ours_hier-$mode.264 /tmp/ &&
        python3 scripts/compare_streams.py /tmp/rc_c_hier-$mode.264 /tmp/rc_ours_hier-$mode.264; then
     printf 'PASS hier-%s (%s, %d frames, deltas %s)\n' "$mode" "$SIZE" "$FRAMES" "$HIER"
   else
