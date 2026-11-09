@@ -65,13 +65,15 @@ static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output) {
 static int object_api_checks(void) {
     MppBufferGroup group = NULL;
     MppBuffer buffer = NULL;
+    MppBuffer original_buffer = NULL;
     MppPacket packet = NULL;
     MppPacket packet_copy = NULL;
     MppFrame frame = NULL;
     MppBufferGroup external_group = NULL;
     MppBuffer external_buffer = NULL;
+    MppBuffer original_external_buffer = NULL;
     MppBuffer imported_buffer = NULL;
-    MppBufferInfo info;
+    MppBufferInfo info = {0};
     MppBufferInfo external_info = {0};
     uint8_t source[16];
     uint8_t copied[16] = {0};
@@ -86,23 +88,49 @@ static int object_api_checks(void) {
     if (ret != MPP_OK || !group)
         return -1;
     ret = mpp_buffer_get(group, &buffer, 64);
-    if (ret != MPP_OK || !buffer || mpp_buffer_get_size(buffer) != 64)
-        return -1;
-    if (mpp_buffer_info_get(buffer, &info) != MPP_OK || info.size != 64 ||
-        info.ptr != mpp_buffer_get_ptr(buffer) ||
-        mpp_buffer_get_fd(buffer) != -1 ||
-        mpp_buffer_group_mode(group) != MPP_BUFFER_INTERNAL ||
-        mpp_buffer_group_type(group) != MPP_BUFFER_TYPE_DMA_HEAP) {
+    if (ret != MPP_OK || !buffer || mpp_buffer_get_size(buffer) != 64) {
+        fprintf(stderr, "internal buffer allocation failed: ret %d size %zu\n",
+                ret, buffer ? mpp_buffer_get_size(buffer) : 0);
         return -1;
     }
-    if (mpp_buffer_write(buffer, 7, source, sizeof(source)) != MPP_OK ||
+    original_buffer = buffer;
+    if (mpp_buffer_info_get(buffer, &info) != MPP_OK || info.size != 64 ||
+        info.ptr != mpp_buffer_get_ptr(buffer) ||
+        mpp_buffer_get_fd(buffer) < 0 || info.fd != mpp_buffer_get_fd(buffer) ||
+        info.type != MPP_BUFFER_TYPE_DMA_HEAP ||
+        mpp_buffer_group_mode(group) != MPP_BUFFER_INTERNAL ||
+        mpp_buffer_group_type(group) != MPP_BUFFER_TYPE_DMA_HEAP) {
+        fprintf(stderr,
+                "internal buffer info failed: type %d size %zu fd %d "
+                "mode %d group_type %d\n",
+                info.type, info.size, info.fd, mpp_buffer_group_mode(group),
+                mpp_buffer_group_type(group));
+        return -1;
+    }
+    if (mpp_buffer_sync_begin(buffer) != MPP_OK ||
+        mpp_buffer_sync_end(buffer) != MPP_OK ||
+        mpp_buffer_write(buffer, 7, source, sizeof(source)) != MPP_OK ||
         mpp_buffer_read(buffer, 7, copied, sizeof(copied)) != MPP_OK ||
         memcmp(source, copied, sizeof(source)) != 0) {
+        fprintf(stderr, "internal buffer sync/read/write failed\n");
         return -1;
     }
     if (mpp_buffer_inc_ref(buffer) != MPP_OK ||
         mpp_buffer_put(buffer) != MPP_OK ||
         mpp_buffer_put(buffer) != MPP_OK) {
+        fprintf(stderr, "internal buffer refcount failed\n");
+        return -1;
+    }
+    if (mpp_buffer_group_unused(group) != 1 ||
+        mpp_buffer_group_usage(group) != 64 ||
+        mpp_buffer_get(group, &buffer, 64) != MPP_OK ||
+        buffer != original_buffer ||
+        mpp_buffer_put(buffer) != MPP_OK) {
+        fprintf(stderr,
+                "internal buffer recycle failed: unused %d usage %zu "
+                "buffer %p original %p\n",
+                mpp_buffer_group_unused(group), mpp_buffer_group_usage(group),
+                buffer, original_buffer);
         return -1;
     }
 
@@ -151,24 +179,57 @@ static int object_api_checks(void) {
     external_info.index = 23;
     if (mpp_buffer_group_get_external(&external_group,
                                       MPP_BUFFER_TYPE_NORMAL) != MPP_OK ||
-        external_group == NULL ||
-        mpp_buffer_commit(external_group, &external_info) != MPP_OK ||
-        mpp_buffer_group_unused(external_group) != 1 ||
-        mpp_buffer_get(external_group, &external_buffer,
+        external_group == NULL) {
+        fprintf(stderr, "external group creation failed\n");
+        return -1;
+    }
+    if (mpp_buffer_commit(external_group, &external_info) != MPP_OK ||
+        mpp_buffer_group_unused(external_group) != 1) {
+        fprintf(stderr, "external commit failed: unused %d\n",
+                mpp_buffer_group_unused(external_group));
+        return -1;
+    }
+    if (mpp_buffer_get(external_group, &external_buffer,
                        sizeof(external)) != MPP_OK ||
-        external_buffer == NULL ||
-        mpp_buffer_get_ptr(external_buffer) != external ||
+        external_buffer == NULL) {
+        fprintf(stderr, "external get failed\n");
+        return -1;
+    }
+    original_external_buffer = external_buffer;
+    if (mpp_buffer_get_ptr(external_buffer) != external ||
         mpp_buffer_get_size(external_buffer) != sizeof(external) ||
         mpp_buffer_get_index(external_buffer) != 23 ||
         mpp_buffer_info_get(external_buffer, &info) != MPP_OK ||
         info.type != MPP_BUFFER_TYPE_NORMAL || info.ptr != external ||
         info.size != sizeof(external) || info.fd != -1 ||
-        info.index != 23 ||
-        mpp_buffer_write(external_buffer, 3, source, sizeof(source)) != MPP_OK ||
+        info.index != 23) {
+        fprintf(stderr,
+                "external info failed: type %d size %zu fd %d index %d\n",
+                info.type, info.size, info.fd, info.index);
+        return -1;
+    }
+    if (mpp_buffer_write(external_buffer, 3, source, sizeof(source)) != MPP_OK ||
         memcmp(external + 3, source, sizeof(source)) != 0 ||
-        mpp_buffer_put(external_buffer) != MPP_OK ||
-        mpp_buffer_group_unused(external_group) != 0 ||
-        mpp_buffer_group_put(external_group) != MPP_OK) {
+        mpp_buffer_put(external_buffer) != MPP_OK) {
+        fprintf(stderr, "external write failed\n");
+        return -1;
+    }
+    if (mpp_buffer_group_unused(external_group) != 1 ||
+        mpp_buffer_group_usage(external_group) != sizeof(external) ||
+        mpp_buffer_get(external_group, &external_buffer,
+                       sizeof(external)) != MPP_OK ||
+        external_buffer != original_external_buffer ||
+        mpp_buffer_get_ptr(external_buffer) != external ||
+        mpp_buffer_put(external_buffer) != MPP_OK) {
+        fprintf(stderr,
+                "external recycle failed: unused %d usage %zu buffer %p "
+                "original %p\n",
+                mpp_buffer_group_unused(external_group),
+                mpp_buffer_group_usage(external_group), external_buffer,
+                original_external_buffer);
+        return -1;
+    }
+    if (mpp_buffer_group_put(external_group) != MPP_OK) {
         return -1;
     }
 

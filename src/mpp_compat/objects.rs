@@ -4,10 +4,12 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::sdk;
+use crate::service::dma_heap::DmaBuf;
 
 const MPP_OK: c_int = 0;
 const MPP_NOK: c_int = -1;
 const MPP_ERR_NULL_PTR: c_int = -3;
+const MPP_ERR_MALLOC: c_int = -4;
 const MPP_ERR_VALUE: c_int = -6;
 
 const MPP_BUFFER_TYPE_DMA_HEAP: c_int = 4;
@@ -273,12 +275,15 @@ pub(super) struct CompatBufferInfo {
 #[repr(C)]
 struct CompatBuffer {
     magic: u64,
+    size: usize,
     data: Vec<u8>,
+    dma: Option<DmaBuf>,
     external_ptr: *mut u8,
     external_size: usize,
     mapped: bool,
     type_: c_int,
     hnd: *mut c_void,
+    group: MppBufferGroup,
     fd: c_int,
     index: c_int,
     offset: usize,
@@ -292,6 +297,8 @@ struct CompatBufferGroup {
     mode: c_int,
     limit_size: usize,
     limit_count: isize,
+    usage: usize,
+    buffer_count: usize,
     unused: Vec<MppBuffer>,
 }
 
@@ -358,7 +365,9 @@ unsafe fn magic_mut<T>(ptr: *mut c_void, magic: u64) -> Option<&'static mut T> {
 }
 
 fn buffer_ptr(buffer: &CompatBuffer) -> *mut u8 {
-    if buffer.external_ptr.is_null() {
+    if let Some(dma) = &buffer.dma {
+        dma.as_slice().as_ptr().cast_mut()
+    } else if buffer.external_ptr.is_null() {
         buffer.data.as_ptr().cast_mut()
     } else {
         buffer.external_ptr
@@ -366,11 +375,7 @@ fn buffer_ptr(buffer: &CompatBuffer) -> *mut u8 {
 }
 
 fn buffer_len(buffer: &CompatBuffer) -> usize {
-    if buffer.external_ptr.is_null() {
-        buffer.data.len()
-    } else {
-        buffer.external_size
-    }
+    buffer.size
 }
 
 impl Drop for CompatBuffer {
@@ -404,7 +409,10 @@ unsafe fn group_drop_unused(group: &mut CompatBufferGroup) {
         let Some(object) = (unsafe { buffer_mut(buffer) }) else {
             continue;
         };
+        let size = buffer_len(object);
         object.magic = 0;
+        group.usage = group.usage.saturating_sub(size);
+        group.buffer_count = group.buffer_count.saturating_sub(1);
         drop(unsafe { Box::from_raw(buffer.cast::<CompatBuffer>()) });
     }
 }
@@ -422,6 +430,14 @@ pub(super) unsafe fn buffer_put_raw(buffer: MppBuffer) -> bool {
     object.refs -= 1;
     if object.refs != 0 {
         return true;
+    }
+    let group = object.group;
+    if !group.is_null() {
+        if let Some(group_object) = unsafe { group_mut(group) } {
+            object.refs = 0;
+            group_object.unused.push(buffer);
+            return true;
+        }
     }
     object.magic = 0;
     // SAFETY: refs reached zero and only mpp_buffer_get/inc_ref created owners.
@@ -568,8 +584,18 @@ pub(super) unsafe fn buffer_replace(buffer: MppBuffer, data: &[u8]) -> bool {
     if data.len() > buffer_len(buffer) {
         return false;
     }
+    if let Some(dma) = &buffer.dma {
+        if dma.sync_write_begin().is_err() {
+            return false;
+        }
+    }
     unsafe {
         std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_ptr(buffer), data.len());
+    }
+    if let Some(dma) = &buffer.dma {
+        if dma.sync_write_end().is_err() {
+            return false;
+        }
     }
     true
 }
@@ -653,26 +679,89 @@ unsafe fn new_packet(data: *mut u8, size: usize) -> MppPacket {
     .cast()
 }
 
-unsafe fn new_buffer(bytes: Vec<u8>) -> MppBuffer {
-    Box::into_raw(Box::new(CompatBuffer {
+unsafe fn new_internal_buffer(
+    size: usize,
+    initial: Option<&[u8]>,
+    type_: c_int,
+    group: MppBufferGroup,
+) -> Result<MppBuffer, c_int> {
+    if size == 0 || initial.is_some_and(|data| data.len() > size) {
+        return Err(MPP_ERR_VALUE);
+    }
+    if !group.is_null() {
+        let Some(group_object) = (unsafe { group_ref(group) }) else {
+            return Err(MPP_ERR_NULL_PTR);
+        };
+        if group_object.limit_size != 0 && size > group_object.limit_size {
+            return Err(MPP_NOK);
+        }
+        if group_object.limit_count > 0
+            && group_object.buffer_count >= group_object.limit_count as usize
+        {
+            return Err(MPP_NOK);
+        }
+    }
+    let (data, dma, fd) = if type_ & 0xffff == 0 {
+        let mut data = vec![0; size];
+        if let Some(initial) = initial {
+            data[..initial.len()].copy_from_slice(initial);
+        }
+        (data, None, -1)
+    } else {
+        let mut dma = DmaBuf::alloc("system", size, false).map_err(|_| MPP_ERR_MALLOC)?;
+        if let Some(initial) = initial {
+            dma.sync_write_begin().map_err(|_| MPP_NOK)?;
+            dma.as_mut_slice()[..initial.len()].copy_from_slice(initial);
+            dma.sync_write_end().map_err(|_| MPP_NOK)?;
+        }
+        let fd = dma.fd();
+        (Vec::new(), Some(dma), fd)
+    };
+    if !group.is_null() {
+        let Some(group_object) = (unsafe { group_mut(group) }) else {
+            return Err(MPP_ERR_NULL_PTR);
+        };
+        group_object.usage = group_object.usage.saturating_add(size);
+        group_object.buffer_count = group_object.buffer_count.saturating_add(1);
+    }
+    Ok(Box::into_raw(Box::new(CompatBuffer {
         magic: BUFFER_MAGIC,
-        data: bytes,
+        size,
+        data,
+        dma,
         external_ptr: std::ptr::null_mut(),
         external_size: 0,
         mapped: false,
-        type_: MPP_BUFFER_TYPE_DMA_HEAP,
+        type_,
         hnd: std::ptr::null_mut(),
-        fd: -1,
+        group,
+        fd,
         index: 0,
         offset: 0,
         refs: 1,
     }))
-    .cast()
+    .cast())
 }
 
-unsafe fn new_external_buffer(info: &CompatBufferInfo) -> Result<MppBuffer, c_int> {
+unsafe fn new_external_buffer(
+    info: &CompatBufferInfo,
+    group: MppBufferGroup,
+) -> Result<MppBuffer, c_int> {
     if info.size == 0 || (info.ptr.is_null() && info.fd < 0) {
         return Err(MPP_ERR_VALUE);
+    }
+    if !group.is_null() {
+        let Some(group_object) = (unsafe { group_ref(group) }) else {
+            return Err(MPP_ERR_NULL_PTR);
+        };
+        if group_object.limit_size != 0 && info.size > group_object.limit_size {
+            return Err(MPP_NOK);
+        }
+        if group_object.limit_count > 0
+            && group_object.buffer_count >= group_object.limit_count as usize
+        {
+            return Err(MPP_NOK);
+        }
     }
     let mut mapped = false;
     let pointer = if info.ptr.is_null() {
@@ -694,14 +783,24 @@ unsafe fn new_external_buffer(info: &CompatBufferInfo) -> Result<MppBuffer, c_in
     } else {
         info.ptr.cast::<u8>()
     };
+    if !group.is_null() {
+        let Some(group_object) = (unsafe { group_mut(group) }) else {
+            return Err(MPP_ERR_NULL_PTR);
+        };
+        group_object.usage = group_object.usage.saturating_add(info.size);
+        group_object.buffer_count = group_object.buffer_count.saturating_add(1);
+    }
     Ok(Box::into_raw(Box::new(CompatBuffer {
         magic: BUFFER_MAGIC,
+        size: info.size,
         data: Vec::new(),
+        dma: None,
         external_ptr: pointer,
         external_size: info.size,
         mapped,
         type_: info.type_,
         hnd: info.hnd,
+        group,
         fd: info.fd,
         index: info.index,
         offset: 0,
@@ -794,7 +893,17 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
         }
     }
 
-    let buffer = unsafe { new_buffer(packed) };
+    let buffer = match unsafe {
+        new_internal_buffer(
+            packed.len(),
+            Some(&packed),
+            MPP_BUFFER_TYPE_DMA_HEAP,
+            std::ptr::null_mut(),
+        )
+    } {
+        Ok(buffer) => buffer,
+        Err(_) => return Err(()),
+    };
     let frame = Box::into_raw(Box::new(CompatFrame {
         magic: FRAME_MAGIC,
         width,
@@ -855,12 +964,36 @@ pub(super) unsafe fn frame_fill_from_sdk(
             unsafe { discard_frame_object(source_pointer) };
             return Err(());
         }
+        if source_buffer
+            .dma
+            .as_ref()
+            .is_some_and(|dma| dma.sync_read_begin().is_err())
+            || target_buffer
+                .dma
+                .as_ref()
+                .is_some_and(|dma| dma.sync_write_begin().is_err())
+        {
+            unsafe { discard_frame_object(source_pointer) };
+            return Err(());
+        }
         unsafe {
             std::ptr::copy_nonoverlapping(
                 buffer_ptr(source_buffer),
                 buffer_ptr(target_buffer),
                 source_len,
             );
+        }
+        if source_buffer
+            .dma
+            .as_ref()
+            .is_some_and(|dma| dma.sync_read_end().is_err())
+            || target_buffer
+                .dma
+                .as_ref()
+                .is_some_and(|dma| dma.sync_write_end().is_err())
+        {
+            unsafe { discard_frame_object(source_pointer) };
+            return Err(());
         }
     } else {
         target.buffer = source_buffer_pointer;
@@ -933,6 +1066,8 @@ pub unsafe extern "C" fn mpp_buffer_group_get(
             mode,
             limit_size: 0,
             limit_count: 0,
+            usage: 0,
+            buffer_count: 0,
             unused: Vec::new(),
         }))
         .cast();
@@ -969,8 +1104,10 @@ pub unsafe extern "C" fn mpp_buffer_group_unused(group: MppBufferGroup) -> c_int
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_buffer_group_usage(_group: MppBufferGroup) -> usize {
-    0
+pub unsafe extern "C" fn mpp_buffer_group_usage(group: MppBufferGroup) -> usize {
+    unsafe { group_ref(group) }
+        .map(|group| group.usage)
+        .unwrap_or(0)
 }
 
 #[no_mangle]
@@ -1026,7 +1163,7 @@ pub unsafe extern "C" fn mpp_buffer_import_with_tag(
             return MPP_NOK;
         }
     }
-    let buffer_object = match unsafe { new_external_buffer(info) } {
+    let buffer_object = match unsafe { new_external_buffer(info, group) } {
         Ok(buffer) => buffer,
         Err(error) => return error,
     };
@@ -1064,26 +1201,36 @@ pub unsafe extern "C" fn mpp_buffer_get_with_tag(
         let Some(group) = (unsafe { group_mut(group) }) else {
             return MPP_ERR_NULL_PTR;
         };
-        if group.mode == MPP_BUFFER_EXTERNAL {
-            let found = group.unused.iter().position(|&candidate| {
-                unsafe { buffer_ref(candidate) }.is_some_and(|object| buffer_len(object) >= size)
-            });
-            if let Some(index) = found {
-                let candidate = group.unused.remove(index);
-                if let Some(object) = unsafe { buffer_mut(candidate) } {
-                    object.refs = 1;
-                }
-                unsafe { *buffer = candidate };
-                return MPP_OK;
+        let found = group.unused.iter().position(|&candidate| {
+            unsafe { buffer_ref(candidate) }.is_some_and(|object| buffer_len(object) >= size)
+        });
+        if let Some(index) = found {
+            let candidate = group.unused.remove(index);
+            if let Some(object) = unsafe { buffer_mut(candidate) } {
+                object.refs = 1;
             }
+            unsafe { *buffer = candidate };
+            return MPP_OK;
+        }
+        if group.mode == MPP_BUFFER_EXTERNAL {
             return MPP_NOK;
         }
     }
-    // SAFETY: the out pointer is writable by contract.
-    unsafe {
-        *buffer = new_buffer(vec![0; size]);
+    let type_ = if group.is_null() {
+        MPP_BUFFER_TYPE_DMA_HEAP
+    } else {
+        let Some(group) = (unsafe { group_ref(group) }) else {
+            return MPP_ERR_NULL_PTR;
+        };
+        group.type_
+    };
+    match unsafe { new_internal_buffer(size, None, type_, group) } {
+        Ok(allocation) => {
+            unsafe { *buffer = allocation };
+            MPP_OK
+        }
+        Err(error) => error,
     }
-    MPP_OK
 }
 
 #[no_mangle]
@@ -1166,11 +1313,26 @@ pub unsafe extern "C" fn mpp_buffer_read_with_caller(
     if end > length {
         return MPP_ERR_VALUE;
     }
+    if buffer
+        .dma
+        .as_ref()
+        .is_some_and(|dma| dma.sync_read_begin().is_err())
+    {
+        return MPP_NOK;
+    }
     // SAFETY: bounds were checked and the C destination is writable for size.
     unsafe {
         std::ptr::copy_nonoverlapping(buffer_ptr(buffer).add(offset), data.cast::<u8>(), size);
     }
-    MPP_OK
+    if buffer
+        .dma
+        .as_ref()
+        .is_some_and(|dma| dma.sync_read_end().is_err())
+    {
+        MPP_NOK
+    } else {
+        MPP_OK
+    }
 }
 
 #[no_mangle]
@@ -1194,11 +1356,26 @@ pub unsafe extern "C" fn mpp_buffer_write_with_caller(
     if end > length {
         return MPP_ERR_VALUE;
     }
+    if buffer
+        .dma
+        .as_ref()
+        .is_some_and(|dma| dma.sync_write_begin().is_err())
+    {
+        return MPP_NOK;
+    }
     // SAFETY: bounds were checked and the C source is readable for size.
     unsafe {
         std::ptr::copy_nonoverlapping(data.cast::<u8>(), buffer_ptr(buffer).add(offset), size);
     }
-    MPP_OK
+    if buffer
+        .dma
+        .as_ref()
+        .is_some_and(|dma| dma.sync_write_end().is_err())
+    {
+        MPP_NOK
+    } else {
+        MPP_OK
+    }
 }
 
 #[no_mangle]
@@ -1278,26 +1455,48 @@ pub unsafe extern "C" fn mpp_buffer_set_offset_with_caller(
 #[no_mangle]
 pub unsafe extern "C" fn mpp_buffer_sync_begin_f(
     buffer: MppBuffer,
-    _read_only: c_int,
+    read_only: c_int,
     _caller: *const c_char,
 ) -> c_int {
-    if unsafe { buffer_ref(buffer) }.is_some() {
+    let Some(buffer) = (unsafe { buffer_ref(buffer) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let Some(dma) = &buffer.dma else {
+        return MPP_OK;
+    };
+    let result = if read_only != 0 {
+        dma.sync_read_begin()
+    } else {
+        dma.sync_write_begin()
+    };
+    if result.is_ok() {
         MPP_OK
     } else {
-        MPP_ERR_NULL_PTR
+        MPP_NOK
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_buffer_sync_end_f(
     buffer: MppBuffer,
-    _read_only: c_int,
+    read_only: c_int,
     _caller: *const c_char,
 ) -> c_int {
-    if unsafe { buffer_ref(buffer) }.is_some() {
+    let Some(buffer) = (unsafe { buffer_ref(buffer) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let Some(dma) = &buffer.dma else {
+        return MPP_OK;
+    };
+    let result = if read_only != 0 {
+        dma.sync_read_end()
+    } else {
+        dma.sync_write_end()
+    };
+    if result.is_ok() {
         MPP_OK
     } else {
-        MPP_ERR_NULL_PTR
+        MPP_NOK
     }
 }
 

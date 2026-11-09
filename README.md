@@ -265,9 +265,11 @@ cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 2
 frame/packet/buffer、用户数据深拷贝、duplicate/ref/lifetime，并接入 frame 和
 packet 的惰性持有以及 advanced decode 的 `KEY_OUTPUT_FRAME`/
 `KEY_INPUT_PACKET`；kernel meta、advanced buffer import 和 standalone 所需的
-完整内部辅助符号仍未接入。外部 `MppBuffer` 现可通过
+完整内部辅助符号仍未接入。internal `MppBuffer` 已使用真实 dma-heap fd，
+external `MppBuffer` 现可通过
 `mpp_buffer_import` 接收 caller pointer/fd，并支持 external group 的
-commit/get 流程；fd-only import 会建立独立映射。已可在保留 vendor
+commit/get、unused recycle 和 usage 统计；fd-only import 会建立独立映射。
+已可在保留 vendor
 log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
 `mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和

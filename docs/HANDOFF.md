@@ -121,17 +121,20 @@ duplicate/ref/lifetime，以及 frame/packet 的惰性 meta 持有均已接入�
 `scripts/board_mpp_compat_meta.sh` 在 t6/lf1 通过；t6 还用未修改的原生
 `mpp_meta_test` 跑了 2 线程 10 轮，返回值为 0。advanced decode 现在同时
 处理 packet 的 `KEY_OUTPUT_FRAME` 和输出 frame 的 `KEY_INPUT_PACKET`。
-kernel meta、advanced buffer import/external frame、DMABUF-backed MppBuffer
-仍未完整实现。
+kernel meta、advanced zero-copy frame 仍未完整实现。
 
 第五个 slice 已补上外部 `MppBuffer` 所有权入口：
 `mpp_buffer_import_with_tag` 接受 caller pointer 或 dma-buf fd，
 `mpp_buffer_group_get_external`/`mpp_buffer_commit`/`mpp_buffer_get` 的
 一次性 commit 流程已接通，fd-only 导入由兼容层独立 mmap 并在最终 put 时
 解除映射。lf1 C consumer 覆盖 pointer import、external group commit/get、
-fd-only import、读写和 `MppBufferInfo` round-trip。internal buffer 的真实
-fd 分配、group unused-buffer recycle/usage 统计和 advanced zero-copy frame
-仍是后续工作。
+fd-only import、读写和 `MppBufferInfo` round-trip。
+
+第六个 slice 把 internal `MppBuffer` 切到真实 dma-heap fd，并补 group
+unused-buffer recycle：buffer 最终 put 后回到 group，下一次同尺寸 get 会复用
+同一对象；`mpp_buffer_group_usage/unused` 和 limit size/count 现在有实际值。
+lf1 C consumer 校验 internal fd/info/sync、internal/external recycle、usage、
+fd-only import 和 refcount。advanced zero-copy frame 继续保留为下一步工作。
 
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test

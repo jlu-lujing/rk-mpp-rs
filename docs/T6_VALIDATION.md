@@ -306,7 +306,9 @@ With `CHECK_MOTION_INFO=1`, the script also compares the caller-owned
 The compatibility C consumer now also covers external buffer ownership:
 caller-pointer `mpp_buffer_import`, external-group `commit/get`, fd-only import
 through a memfd-backed mapping, `MppBufferInfo` round-trip, index propagation,
-and pointer/read/write behavior. These checks run as part of
+and pointer/read/write behavior. Internal buffers now carry a real dma-heap fd
+and are recycled from the group's unused list; usage and count limits are
+updated on actual allocations. These checks run as part of
 `board_mpp_compat_data.sh` on lf1.
 
 Performance gate:
