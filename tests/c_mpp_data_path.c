@@ -9,7 +9,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output) {
+static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output,
+                        MppFrame expected_frame, MppBuffer expected_buffer) {
     int frames = 0;
 
     for (;;) {
@@ -24,6 +25,19 @@ static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output) {
         if (mpp_frame_get_eos(frame)) {
             mpp_frame_deinit(&frame);
             break;
+        }
+
+        if (expected_frame && frames == 0 && frame != expected_frame) {
+            fprintf(stderr, "advanced output frame identity changed: %p != %p\n",
+                    frame, expected_frame);
+            mpp_frame_deinit(&frame);
+            return -1;
+        }
+        if (expected_buffer && frames == 0 &&
+            mpp_frame_get_buffer(frame) != expected_buffer) {
+            fprintf(stderr, "advanced output buffer identity changed\n");
+            mpp_frame_deinit(&frame);
+            return -1;
         }
 
         MppBuffer buffer = mpp_frame_get_buffer(frame);
@@ -281,6 +295,9 @@ int main(int argc, char **argv) {
     MppCtx ctx = NULL;
     MppApi *mpi = NULL;
     MppPacket packet = NULL;
+    MppBufferGroup output_group = NULL;
+    MppBuffer output_buffer = NULL;
+    MppFrame output_frame = NULL;
     FILE *input = NULL;
     FILE *output = NULL;
     uint8_t *data = NULL;
@@ -288,17 +305,22 @@ int main(int argc, char **argv) {
     int frames;
     int coding;
     int expected_frames;
+    int width;
+    int height;
     int rc = 1;
 
-    if (argc != 5) {
-        fprintf(stderr, "usage: %s <stream> <out.nv12> <coding> <frames>\n",
+    if (argc != 7) {
+        fprintf(stderr,
+                "usage: %s <stream> <out.nv12> <coding> <frames> <width> <height>\n",
                 argv[0]);
         return 2;
     }
     coding = atoi(argv[3]);
     expected_frames = atoi(argv[4]);
-    if (coding <= 0 || expected_frames <= 0) {
-        fprintf(stderr, "invalid coding or frame count\n");
+    width = atoi(argv[5]);
+    height = atoi(argv[6]);
+    if (coding <= 0 || expected_frames <= 0 || width <= 0 || height <= 0) {
+        fprintf(stderr, "invalid coding, frame count or geometry\n");
         return 2;
     }
     if (object_api_checks()) {
@@ -325,8 +347,24 @@ int main(int argc, char **argv) {
 
     if (mpp_create(&ctx, &mpi) != MPP_OK ||
         mpp_init(ctx, MPP_CTX_DEC, coding) != MPP_OK ||
+        mpp_buffer_group_get_internal(&output_group,
+                                      MPP_BUFFER_TYPE_DMA_HEAP) != MPP_OK ||
+        mpp_buffer_get(output_group, &output_buffer,
+                       (size_t)width * height * 3 / 2) != MPP_OK ||
+        mpp_frame_init(&output_frame) != MPP_OK ||
         mpp_packet_init(&packet, data, (size_t)size) != MPP_OK) {
         fprintf(stderr, "decoder initialization failed\n");
+        goto done;
+    }
+    mpp_frame_set_width(output_frame, width);
+    mpp_frame_set_height(output_frame, height);
+    mpp_frame_set_hor_stride(output_frame, (width + 15) & ~15);
+    mpp_frame_set_ver_stride(output_frame, (height + 15) & ~15);
+    mpp_frame_set_fmt(output_frame, MPP_FMT_YUV420SP);
+    mpp_frame_set_buffer(output_frame, output_buffer);
+    if (mpp_meta_set_frame(mpp_packet_get_meta(packet), KEY_OUTPUT_FRAME,
+                           output_frame) != MPP_OK) {
+        fprintf(stderr, "advanced output frame metadata failed\n");
         goto done;
     }
     mpp_packet_set_pts(packet, 1);
@@ -335,9 +373,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "decode_put_packet failed\n");
         goto done;
     }
-    frames = drain_frames(mpi, ctx, output);
+    frames = drain_frames(mpi, ctx, output, output_frame, output_buffer);
     if (frames < 0)
         goto done;
+    if (frames > 0)
+        output_frame = NULL;
 
     mpp_packet_deinit(&packet);
     if (mpp_packet_init(&packet, NULL, 0) != MPP_OK ||
@@ -346,7 +386,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "EOS submit failed\n");
         goto done;
     }
-    int tail = drain_frames(mpi, ctx, output);
+    int tail = drain_frames(mpi, ctx, output, NULL, NULL);
     if (tail < 0)
         goto done;
     frames += tail;
@@ -362,6 +402,9 @@ int main(int argc, char **argv) {
 
 done:
     mpp_packet_deinit(&packet);
+    mpp_frame_deinit(&output_frame);
+    mpp_buffer_put(output_buffer);
+    mpp_buffer_group_put(output_group);
     if (ctx && mpp_destroy(ctx) != MPP_OK)
         rc = 1;
     free(data);

@@ -106,6 +106,7 @@ pub struct Decoder {
     frames: Vec<Option<Frame>>,
     nv12_pool: BufferPool<DmaBuf>,
     colmv_pool: BufferPool<DmaBuf>,
+    output_injection: Option<DmaBuf>,
     width: usize,
     height: usize,
     coded_height: usize,
@@ -225,6 +226,7 @@ impl Decoder {
             frames: (0..17).map(|_| None).collect(),
             nv12_pool: BufferPool::new(17),
             colmv_pool: BufferPool::new(17),
+            output_injection: None,
             width: 0,
             height: 0,
             coded_height: 0,
@@ -253,6 +255,12 @@ impl Decoder {
 
     fn ensure_frame(&mut self, slot: usize, sps: &Sps) -> io::Result<()> {
         if self.frames[slot].is_none() {
+            if let Some(buffer) = self.output_injection.take() {
+                self.nv12_pool.clear();
+                self.nv12_pool
+                    .import(buffer)
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+            }
             let frame = if self.vdpu383 {
                 Frame::acquire_vdpu383(
                     &self.nv12_pool,
@@ -746,6 +754,12 @@ impl Decoder {
         if enabled {
             self.output_nv12 = true;
         }
+    }
+
+    pub fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), String> {
+        self.set_output_dmabuf(true);
+        self.output_injection = Some(buffer);
+        Ok(())
     }
 }
 

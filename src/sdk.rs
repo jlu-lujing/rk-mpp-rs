@@ -1141,6 +1141,7 @@ struct MjpegBackend {
     service: Option<MppService>,
     format: PixelFormat,
     dmabuf_output: bool,
+    output_override: Option<DmaBuf>,
     input: Vec<u8>,
     eos: bool,
 }
@@ -1269,6 +1270,23 @@ impl Decoder {
 
     pub fn receive_frame(&mut self) -> Option<Frame> {
         self.frames.pop_front()
+    }
+
+    pub fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), Error> {
+        let result = match &mut self.backend {
+            Backend::H264(backend) => backend.decoder.import_output_dmabuf(buffer),
+            Backend::H265(backend) => backend.decoder.import_output_dmabuf(buffer),
+            Backend::Mjpeg(backend) => backend
+                .import_output_dmabuf(buffer)
+                .map_err(|error| error.to_string()),
+            Backend::Vp9(backend) => backend.decoder.import_output_dmabuf(buffer),
+            Backend::Av1(_) | Backend::Vp8(_) | Backend::Legacy(_) => {
+                return Err(Error::Unsupported(
+                    "output DMA-BUF injection is unavailable for this decoder".to_string(),
+                ));
+            }
+        };
+        result.map_err(Error::Hardware)
     }
 
     pub fn is_finished(&self) -> bool {
@@ -1933,6 +1951,7 @@ impl MjpegBackend {
             service: None,
             format: config.output_format,
             dmabuf_output: config.dmabuf_output,
+            output_override: None,
             input: Vec::new(),
             eos: false,
         })
@@ -1987,7 +2006,15 @@ impl MjpegBackend {
         write_dma(&mut table, tables.as_slice())?;
         let mut stream = DmaBuf::alloc("system", data.len(), false).map_err(Error::from)?;
         write_dma(&mut stream, data)?;
-        let output = DmaBuf::alloc("system", geometry.frame_size, false).map_err(Error::from)?;
+        let output = match self.output_override.take() {
+            Some(output) if output.len() >= geometry.frame_size => output,
+            Some(_) => {
+                return Err(Error::Resource(
+                    "caller JPEG output buffer is too small".to_string(),
+                ));
+            }
+            None => DmaBuf::alloc("system", geometry.frame_size, false).map_err(Error::from)?,
+        };
         let (registers, output_geometry) = jpegd::build(&jpegd::Job {
             info: &info,
             table_fd: table.fd(),
@@ -2034,6 +2061,12 @@ impl MjpegBackend {
             output.sync_read_end().map_err(Error::from)?;
             result
         }
+    }
+
+    fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), Error> {
+        self.dmabuf_output = true;
+        self.output_override = Some(buffer);
+        Ok(())
     }
 }
 

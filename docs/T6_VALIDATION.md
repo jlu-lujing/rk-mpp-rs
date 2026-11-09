@@ -317,6 +317,12 @@ decoder's mapped planes instead of allocating an intermediate frame/buffer and
 copying twice. The unchanged `mpi_dec_test` suite still matches native MPP
 byte-for-byte for H.264, H.265 and MJPEG on both boards.
 
+H.264/H.265/VP9 and MJPEG also accept the caller frame's dma-buf as the next
+hardware output surface. On lf1, the focused C advanced test verifies frame and
+buffer identity plus byte-identical H.265/MJPEG output; H.264 640x480 six-frame
+advanced output is byte-identical to the native C golden
+(`338214ea…374b815`). VP9 advanced injection and AV1 pool injection remain open.
+
 Performance gate:
 
 - H.264 720p: C MPP 121.5 FPS, Rust 283.8 FPS (**+133.7%**)

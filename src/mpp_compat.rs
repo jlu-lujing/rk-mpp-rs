@@ -194,6 +194,22 @@ unsafe extern "C" fn compat_decode_put_packet(ctx: MppCtx, packet: MppPacket) ->
     };
     let output_frame =
         unsafe { objects::packet_output_frame(packet) }.unwrap_or(std::ptr::null_mut());
+    if !output_frame.is_null() {
+        if let Some(buffer) = unsafe { objects::frame_output_dmabuf(output_frame) } {
+            if matches!(
+                context.coding,
+                MPP_VIDEO_CODING_AVC
+                    | MPP_VIDEO_CODING_MJPEG
+                    | MPP_VIDEO_CODING_VP9
+                    | MPP_VIDEO_CODING_HEVC
+            ) {
+                if let Err(error) = decoder.import_output_dmabuf(buffer) {
+                    eprintln!("rk-mpp-rs mpp: output buffer import failed: {error}");
+                    return MPP_NOK;
+                }
+            }
+        }
+    }
     let flags = if eos {
         sdk::PacketFlags::empty().with_eos()
     } else {

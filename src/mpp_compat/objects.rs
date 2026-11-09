@@ -577,6 +577,43 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
     })
 }
 
+pub(super) unsafe fn frame_output_dmabuf(frame: MppFrame) -> Option<DmaBuf> {
+    let frame = unsafe { frame_ref(frame) }?;
+    let buffer = unsafe { buffer_ref(frame.buffer) }?;
+    if let Some(dma) = &buffer.dma {
+        return dma.try_clone().ok();
+    }
+    (buffer.fd >= 0)
+        .then(|| DmaBuf::import_fd(buffer.fd, buffer_len(buffer), false).ok())
+        .flatten()
+}
+
+fn fd_identity(fd: c_int) -> Option<(u64, u64)> {
+    if fd < 0 {
+        return None;
+    }
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    Some((stat.st_dev as u64, stat.st_ino as u64))
+}
+
+unsafe fn frame_matches_decoded_dmabuf(frame: &CompatFrame, decoded: &sdk::Frame) -> bool {
+    if frame.buffer.is_null() {
+        return false;
+    }
+    let Some(buffer) = (unsafe { buffer_ref(frame.buffer) }) else {
+        return false;
+    };
+    let target_fd = buffer.dma.as_ref().map(DmaBuf::fd).unwrap_or(buffer.fd);
+    let Some(plane) = decoded.dmabuf_plane(0) else {
+        return false;
+    };
+    fd_identity(target_fd).is_some_and(|target| fd_identity(plane.fd()) == Some(target))
+}
+
 pub(super) unsafe fn buffer_replace(buffer: MppBuffer, data: &[u8]) -> bool {
     let Some(buffer) = (unsafe { buffer_mut(buffer) }) else {
         return false;
@@ -935,6 +972,21 @@ pub(super) unsafe fn frame_fill_from_sdk(
         sdk::PixelFormat::I420 => (MPP_FMT_YUV420P, luma_size.checked_mul(3).ok_or(())? / 2),
         sdk::PixelFormat::I420P10 => return Err(()),
     };
+    if unsafe { frame_matches_decoded_dmabuf(target, &decoded) } {
+        target.width = width;
+        target.height = height;
+        target.hor_stride = hor_stride;
+        target.ver_stride = ver_stride;
+        target.format = format;
+        target.poc = decoded.poc().max(0) as u32;
+        target.pts = decoded.pts();
+        target.dts = decoded.dts();
+        target.errinfo = decoded.err_info();
+        target.buffer_size = buffer_size;
+        target.eos = 0;
+        target.info_change = 0;
+        return Ok(());
+    }
 
     let mut target_buffer = target.buffer;
     if target_buffer.is_null() {

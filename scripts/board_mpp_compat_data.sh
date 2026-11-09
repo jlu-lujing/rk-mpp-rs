@@ -39,7 +39,8 @@ run_case() {
         return 0
     fi
     LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
-        /tmp/rk_mpp_official_data "$input" "$case_output" "$coding" "$frames"
+        /tmp/rk_mpp_official_data "$input" "$case_output" "$coding" "$frames" \
+        320 240
     test "$(stat -c %s "$case_output")" -eq "$expected_size"
     local actual_sha
     actual_sha="$(sha256sum "$case_output" | cut -d' ' -f1)"
@@ -73,7 +74,8 @@ if command -v ffmpeg >/dev/null 2>&1 &&
         -t 8 -w 320 -h 240 -n 1 -o "$mjpeg_golden" -v q \
         < /dev/null > /tmp/rk_mpp_compat_mjpeg_c.log 2>&1; then
         LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
-            /tmp/rk_mpp_official_data "$mjpeg_input" "$mjpeg_output" 8 1
+            /tmp/rk_mpp_official_data "$mjpeg_input" "$mjpeg_output" 8 1 \
+            320 240
         cmp "$mjpeg_golden" "$mjpeg_output"
         printf 'PASS mjpeg official data path matches C MPP (%s)\n' \
             "$(sha256sum "$mjpeg_output" | cut -d' ' -f1)"
