@@ -66,6 +66,10 @@ fn spinlock_mut(lock: *mut SpinLock) -> Option<&'static mut SpinLock> {
     (!lock.is_null()).then(|| unsafe { &mut *lock })
 }
 
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux")
+)))]
 unsafe fn log_unformatted(tag: *const c_char, format: *const c_char, function: *const c_char) {
     let tag = if tag.is_null() {
         None
@@ -93,6 +97,28 @@ unsafe fn log_unformatted(tag: *const c_char, format: *const c_char, function: *
     }
 }
 
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux")
+))]
+#[no_mangle]
+#[unsafe(naked)]
+pub unsafe extern "C" fn _mpp_log_l(
+    _level: c_int,
+    _tag: *const c_char,
+    _format: *const c_char,
+    _function: *const c_char,
+) {
+    #[cfg(target_arch = "aarch64")]
+    core::arch::naked_asm!("b rk_mpp_vlog_l");
+    #[cfg(target_arch = "x86_64")]
+    core::arch::naked_asm!("jmp rk_mpp_vlog_l");
+}
+
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux")
+)))]
 #[no_mangle]
 pub unsafe extern "C" fn _mpp_log_l(
     _level: c_int,
@@ -103,6 +129,27 @@ pub unsafe extern "C" fn _mpp_log_l(
     log_unformatted(tag, format, function);
 }
 
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux")
+))]
+#[no_mangle]
+#[unsafe(naked)]
+pub unsafe extern "C" fn _mpp_log(
+    _tag: *const c_char,
+    _format: *const c_char,
+    _function: *const c_char,
+) {
+    #[cfg(target_arch = "aarch64")]
+    core::arch::naked_asm!("b rk_mpp_vlog");
+    #[cfg(target_arch = "x86_64")]
+    core::arch::naked_asm!("jmp rk_mpp_vlog");
+}
+
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux")
+)))]
 #[no_mangle]
 pub unsafe extern "C" fn _mpp_log(
     tag: *const c_char,
@@ -112,6 +159,28 @@ pub unsafe extern "C" fn _mpp_log(
     log_unformatted(tag, format, function);
 }
 
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux")
+))]
+#[no_mangle]
+#[unsafe(naked)]
+pub unsafe extern "C" fn mpp_llog(
+    _level: c_int,
+    _tag: *const c_char,
+    _format: *const c_char,
+    _function: *const c_char,
+) {
+    #[cfg(target_arch = "aarch64")]
+    core::arch::naked_asm!("b rk_mpp_vllog");
+    #[cfg(target_arch = "x86_64")]
+    core::arch::naked_asm!("jmp rk_mpp_vllog");
+}
+
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "x86_64", target_os = "linux")
+)))]
 #[no_mangle]
 pub unsafe extern "C" fn mpp_llog(
     _level: c_int,

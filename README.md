@@ -285,7 +285,8 @@ surface，`show_existing` 则按参考帧语义复制历史 display surface。
 **未修改的** vendor `mpi_dec_test` 现在可以只把 `librk_mpp_rs.so`
 重命名为 `librockchip_mpp.so.1` 后直接运行，不再加载 vendor MPP。t6/lf1
 的 H.264/H.265/VP9/AV1/MJPEG 输出均与 vendor C 逐字节一致。当前
-standalone 日志 shim 只保证符号与调用兼容，不展开 printf 变参文本；
+standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
+`vfprintf` helper，实际展开 printf 变参；
 未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG
 单帧编码：H.264/H.265 重建逐字节一致，MJPEG stream 逐字节一致。
 `MppEncRefCfg` 的 create/reset/LT/ST add/check 与

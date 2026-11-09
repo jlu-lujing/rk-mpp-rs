@@ -391,7 +391,10 @@ H.264 640x480/6 frames (`338214ea…f815`), H.265 (`fcedb435…05e0`), VP9
 (`98c5f9cc…a689f8`). The local shim covers log/data symbols, environment and
 time services, OSAL allocation, SoC name/type, spinlocks, `MppDecCfg`,
 singleton/trie metadata and the kmpp/cfg startup objects. Logging currently
-keeps the variadic call ABI but prints the unexpanded format string.
+uses Rust naked ABI trampolines to preserve the variadic registers before
+tail-calling a local C `vfprintf` helper. The board regression requires the
+unchanged decoder log to contain the actual `320x240` and coding type rather
+than unexpanded `%d` placeholders.
 
 `scripts/board_mpp_standalone_encode.sh` exercises the same replacement on
 the encoder side. The unchanged `mpi_enc_test` resolves `librockchip_mpp.so.1`

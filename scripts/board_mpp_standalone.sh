@@ -56,6 +56,8 @@ run_case() {
         timeout 120 "$dec_test" -i "$input" -o "$ours" \
         -w "$width" -h "$height" -t "$coding" -f 0 -n "$frames" -v q \
         < /dev/null > "/tmp/rk_mpp_standalone_${name}_ours.log" 2>&1
+    grep -F "decoder test start w $width h $height type $coding" \
+        "/tmp/rk_mpp_standalone_${name}_ours.log" >/dev/null
     cmp "$golden" "$ours"
     printf 'PASS %-8s standalone decoder (%s, %s bytes)\n' \
         "$name" "$(sha256sum "$ours" | cut -d' ' -f1)" "$(stat -c %s "$ours")"
