@@ -47,10 +47,29 @@ struct GeneralChunk {
     weights: [i16; 16],
 }
 
+#[inline]
+fn bilinear(a: u32, b: u32, c: u32, d: u32, wx: u32, wy: u32) -> u32 {
+    let top = a * (256 - wx) + b * wx;
+    let bottom = c * (256 - wx) + d * wx;
+    (top * (256 - wy) + bottom * wy + 32_768) >> 16
+}
+
+#[inline]
+fn write_bt601_rgb(y: i32, u: i32, v: i32, out: &mut [u8]) {
+    let c = (y - 16).max(0);
+    let d = u - 128;
+    let e = v - 128;
+    let clamp = |value: i32| value.clamp(0, 255) as u8;
+    out[0] = clamp((298 * c + 409 * e + 128) >> 8);
+    out[1] = clamp((298 * c - 100 * d - 208 * e + 128) >> 8);
+    out[2] = clamp((298 * c + 516 * d + 128) >> 8);
+}
+
 pub struct Scaler {
     dw: usize,
     dh: usize,
     xmap: Vec<XMap>,
+    chroma_xmap: Vec<XMap>,
     map_sw: usize,
     map_nw: usize,
     map_scale: f32,
@@ -76,6 +95,7 @@ impl Scaler {
             dw,
             dh,
             xmap: Vec::new(),
+            chroma_xmap: Vec::new(),
             map_sw: 0,
             map_nw: 0,
             map_scale: 0.0,
@@ -139,6 +159,30 @@ impl Scaler {
         self.map_nw = g.new_w;
         self.map_scale = g.scale;
         self.map_wx_zero = self.xmap.iter().all(|m| m.wx == 0);
+        self.chroma_xmap.clear();
+        self.chroma_xmap.reserve(g.new_w);
+        let chroma_width = sw.div_ceil(2);
+        let max_chroma = (chroma_width - 1) as f32;
+        for x in 0..g.new_w {
+            let mut fx = ((x as f32 + 0.5) * inv - 0.5) * 0.5;
+            if fx < 0.0 {
+                fx = 0.0;
+            }
+            if fx > max_chroma {
+                fx = max_chroma;
+            }
+            let x0 = fx as u32;
+            let x1 = if x0 as usize + 1 < chroma_width {
+                x0 + 1
+            } else {
+                x0
+            };
+            self.chroma_xmap.push(XMap {
+                x0,
+                x1,
+                wx: ((fx - x0 as f32) * 256.0) as u16,
+            });
+        }
         self.mode = classify_map(&self.xmap);
         self.general_chunks.clear();
         if self.mode == MapMode::General {
@@ -228,6 +272,98 @@ impl Scaler {
             } else {
                 let (_, mut out) = out.split_at_mut(done * 3);
                 Self::row_scalar(&mut out, &xmap[done..], r0, r1, wy, false, sw);
+            }
+        }
+        g
+    }
+
+    /// Resize strided NV12 directly into RGB888 model input.
+    ///
+    /// Luma and chroma are bilinearly sampled from the decoder surfaces. This
+    /// avoids materialising either a full-frame packed NV12 copy or an
+    /// intermediate RGB frame when the source is a DMA-BUF-backed SDK frame.
+    pub fn letterbox_nv12_strided(
+        &mut self,
+        y_plane: &[u8],
+        uv_plane: &[u8],
+        src_stride: usize,
+        sw: usize,
+        sh: usize,
+        dst: &mut [u8],
+    ) -> Geometry {
+        assert!(sw > 0 && sh > 0 && sw % 2 == 0 && sh % 2 == 0);
+        assert!(src_stride >= sw);
+        assert!(y_plane.len() >= src_stride * (sh - 1) + sw);
+        assert!(uv_plane.len() >= src_stride * (sh / 2 - 1) + sw);
+        assert_eq!(dst.len(), self.dw * self.dh * 3);
+        let g = self.geometry(sw, sh);
+        self.build_map(sw, &g);
+        let covers_all =
+            g.pad_left == 0 && g.pad_top == 0 && g.new_w == self.dw && g.new_h == self.dh;
+        if !covers_all {
+            dst.fill(114);
+        }
+
+        let inv = 1.0f32 / g.scale;
+        let chroma_height = sh / 2;
+        let max_chroma_y = (chroma_height - 1) as f32;
+        for y in 0..g.new_h {
+            let mut fy = (y as f32 + 0.5) * inv - 0.5;
+            if fy < 0.0 {
+                fy = 0.0;
+            }
+            let max_y = (sh - 1) as f32;
+            if fy > max_y {
+                fy = max_y;
+            }
+            let y0 = fy as usize;
+            let y1 = if y0 + 1 < sh { y0 + 1 } else { y0 };
+            let wy = ((fy - y0 as f32) * 256.0) as u32;
+            let mut cy = fy * 0.5;
+            if cy > max_chroma_y {
+                cy = max_chroma_y;
+            }
+            let cy0 = cy as usize;
+            let cy1 = if cy0 + 1 < chroma_height {
+                cy0 + 1
+            } else {
+                cy0
+            };
+            let cwy = ((cy - cy0 as f32) * 256.0) as u32;
+
+            let y_row0 = &y_plane[y0 * src_stride..(y0 + 1) * src_stride];
+            let y_row1 = &y_plane[y1 * src_stride..(y1 + 1) * src_stride];
+            let uv_row0 = &uv_plane[cy0 * src_stride..(cy0 + 1) * src_stride];
+            let uv_row1 = &uv_plane[cy1 * src_stride..(cy1 + 1) * src_stride];
+            let out_row = &mut dst
+                [((g.pad_top as usize + y) * self.dw + g.pad_left as usize) * 3..][..g.new_w * 3];
+            for (x, (luma, chroma)) in self.xmap.iter().zip(&self.chroma_xmap).enumerate() {
+                let y_value = bilinear(
+                    y_row0[luma.x0 as usize] as u32,
+                    y_row0[luma.x1 as usize] as u32,
+                    y_row1[luma.x0 as usize] as u32,
+                    y_row1[luma.x1 as usize] as u32,
+                    luma.wx.into(),
+                    wy,
+                );
+                let u_value = bilinear(
+                    uv_row0[chroma.x0 as usize * 2] as u32,
+                    uv_row0[chroma.x1 as usize * 2] as u32,
+                    uv_row1[chroma.x0 as usize * 2] as u32,
+                    uv_row1[chroma.x1 as usize * 2] as u32,
+                    chroma.wx.into(),
+                    cwy,
+                );
+                let v_value = bilinear(
+                    uv_row0[chroma.x0 as usize * 2 + 1] as u32,
+                    uv_row0[chroma.x1 as usize * 2 + 1] as u32,
+                    uv_row1[chroma.x0 as usize * 2 + 1] as u32,
+                    uv_row1[chroma.x1 as usize * 2 + 1] as u32,
+                    chroma.wx.into(),
+                    cwy,
+                );
+                let pixel = &mut out_row[x * 3..x * 3 + 3];
+                write_bt601_rgb(y_value as i32, u_value as i32, v_value as i32, pixel);
             }
         }
         g
@@ -763,6 +899,43 @@ mod tests {
                 (state >> 33) as u8
             })
             .collect()
+    }
+
+    #[test]
+    fn strided_nv12_identity_uses_bt601_limited_range() {
+        let (w, h, stride) = (4usize, 2usize, 8usize);
+        let y = vec![76u8; stride * h];
+        let mut uv = vec![0u8; stride * (h / 2)];
+        for pair in uv.chunks_exact_mut(2) {
+            pair.copy_from_slice(&[85, 255]);
+        }
+        let mut dst = vec![0u8; w * h * 3];
+        let mut scaler = Scaler::new(w, h);
+        let geometry = scaler.letterbox_nv12_strided(&y, &uv, stride, w, h, &mut dst);
+        assert_eq!((geometry.new_w, geometry.new_h), (w, h));
+        for pixel in dst.chunks_exact(3) {
+            assert_eq!(pixel, [255, 0, 0]);
+        }
+    }
+
+    #[test]
+    fn nv12_letterbox_keeps_padding_outside_the_scaled_picture() {
+        let (w, h, stride) = (8usize, 4usize, 12usize);
+        let y = vec![76u8; stride * h];
+        let mut uv = vec![0u8; stride * (h / 2)];
+        for pair in uv.chunks_exact_mut(2) {
+            pair.copy_from_slice(&[85, 255]);
+        }
+        let mut dst = vec![0u8; 4 * 4 * 3];
+        let mut scaler = Scaler::new(4, 4);
+        let geometry = scaler.letterbox_nv12_strided(&y, &uv, stride, w, h, &mut dst);
+        assert_eq!((geometry.new_w, geometry.new_h), (4, 2));
+        assert_eq!(geometry.pad_top, 1);
+        assert!(dst[..4 * 3].iter().all(|&value| value == 114));
+        for pixel in dst[4 * 3..12 * 3].chunks_exact(3) {
+            assert_eq!(pixel, [255, 0, 0]);
+        }
+        assert!(dst[12 * 3..].iter().all(|&value| value == 114));
     }
 
     #[test]

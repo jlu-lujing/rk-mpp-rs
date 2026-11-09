@@ -41,7 +41,7 @@
 
 | 能力 | 状态 | 证据 / 边界 |
 |---|---|---|
-| RGB 缩放 / letterbox | 完成 | 自研实现比 RGA 快 2.9–3.8× |
+| RGB 缩放 / letterbox | 完成 | 自研 RGB 实现比 RGA 快 2.9–3.8×；`Frame::letterbox_nv12()` 直接读取 CPU/DMA-BUF 的 strided NV12 plane，在缩放中转换 BT.601 RGB，省掉整帧 NV12→RGB 中间副本。真实 H.264 720p CPU/DMA frame 输出逐字节一致；1080p→640 在 t6/lf1 为 4.93/5.95 ms |
 | IEP2 模式 | 完成 | I5O2/I5O1T/B、I2O2、I1O1T/B、DISABLE、BYPASS 9/9，含 TFF/BFF 与 1280×720，原始双 dst slot |
 | IEP2 格式 | 完成 | 420/422 × SP/Planar × UV/VU 6/6 |
 | IEP2 PD/DECT 逆 telecine | 完成 | 场序 + pulldown 状态机；telecine/逐行 + 322×242/722×482/1366×768 共 5/5，逐字节且逐帧状态相同 |

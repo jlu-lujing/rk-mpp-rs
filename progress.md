@@ -2,6 +2,20 @@
 
 ## Session: 2026-11-09
 
+### Phase 17: W8-2 Decode-to-Model-Input Direct Scaling
+- **Status:** complete on t6 and lf1.
+- `Scaler::letterbox_nv12_strided()` and `Frame::letterbox_nv12()` now read the
+  decoded strided Y/UV planes directly and perform bilinear scaling plus BT.601
+  RGB conversion in one output pass.
+- CPU-backed and DMA-BUF-backed H.264 frames produce byte-identical 640x640 RGB
+  model input for a real 1280x720 stream on both boards. No whole-frame NV12 or
+  RGB intermediate allocation is required.
+- `scripts/board_sdk_decode_scale.sh` locks the real decode→scale path.
+- 1080p→640 direct scaling measures 4.93 ms on t6 and 5.95 ms on lf1, versus
+  20.32/24.36 ms for full-frame NV12→RGB plus RGB scale.
+- Workspace gates pass on both boards after adding two NV12 scaling tests:
+  `1201 passed / 0 failed / 38 ignored`; rustfmt and strict rustdoc are clean.
+
 ### Phase 16: Encoder DMA-BUF Input API V1.12
 - **Status:** complete on t6 and lf1 for NV12 H.264/H.265/JPEG.
 - Added `DmaBufInput`, `Encoder::submit_dmabuf_frame()` and

@@ -257,6 +257,15 @@ callers.
 - [x] Re-run package, workspace and ABI gates on t6/lf1.
 - **Status:** complete on t6 and lf1 for NV12 H.264/H.265/JPEG.
 
+### Phase 17: W8-2 Decode-to-Model-Input Direct Scaling
+- [x] Add strided NV12 bilinear resize and BT.601 RGB conversion to `Scaler`.
+- [x] Add `Frame::letterbox_nv12()` for CPU and DMA-BUF SDK frames.
+- [x] Avoid full-frame NV12 or RGB intermediate copies.
+- [x] Verify H.264 CPU and DMA frame output is byte-identical on t6/lf1.
+- [x] Benchmark direct scaling against the full-frame conversion path.
+- [x] Re-run workspace gates after adding NV12 scale tests.
+- **Status:** complete on t6 and lf1; 1201/0/38 workspace gate.
+
 ## Decisions Made
 
 | Decision | Rationale |

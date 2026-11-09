@@ -12,6 +12,8 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   coded Y/UV stride metadata.
 - Copied-input APIs remain unchanged. H.264, H.265 and JPEG DMA input produce
   byte-identical packets on t6/VEPU580 and lf1/VEPU510+VPU720.
+- `Frame::letterbox_nv12()` and the scaler can read strided NV12 CPU/DMA frames
+  directly into RGB model input without a whole-frame intermediate copy.
 
 ## [1.11] - 2026-11-09
 

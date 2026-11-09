@@ -415,7 +415,12 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       t6 `60` 次交错采样中，非整数 `1930x1080→640x640` 从 `2.804` ms
       降到 `1.321` ms（约 `2.12x`），全部 General/int ratio 样例与标量输出
       逐字节相同。
-- [ ] W8-2 零拷贝链路：解码→缩放→推理输入，减少 DMA_BUF sync 次数
+- [x] W8-2 零拷贝链路：解码→缩放→推理输入，减少 DMA_BUF sync 次数。
+      `Frame::letterbox_nv12()` 直接读取 CPU 或 DMA-BUF frame 的 strided
+      Y/UV planes，在缩放时完成 BT.601 RGB 转换，不生成整帧 NV12/RGB 中间副本。
+      H.264 1280x720→640x360 在 t6/lf1 的 CPU/DMA 路径 RGB 输出逐字节一致；
+      1080p→640x640 在 t6 为 4.93 ms、lf1 为 5.95 ms，相比
+      “整帧 NV12→RGB + RGB scale”的 20.32/24.36 ms 分别减少约 76%/76%。
 - [x] W8-3 编码器缓冲复用：`Vepu580H264::open` 一次性分配 input、output、
       两个 recon 的 FBC pixel/thumb、motion-info、ROI、GDR 和 CIME extension
       表；后续 `encode_frame` 只做 sync、copy、寄存器提交和 STATUS 读取，

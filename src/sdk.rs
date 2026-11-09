@@ -448,6 +448,29 @@ impl Frame {
         }
     }
 
+    /// Scale a strided NV12 frame directly into RGB888 model input.
+    ///
+    /// DMA-BUF frames are read in place; no whole-frame CPU NV12 or RGB
+    /// intermediate is allocated.
+    pub fn letterbox_nv12(
+        &self,
+        scaler: &mut crate::scale::Scaler,
+        dst: &mut [u8],
+    ) -> Result<crate::scale::Geometry, Error> {
+        if self.format != PixelFormat::Nv12 {
+            return Err(Error::Unsupported(
+                "direct NV12 scaling requires an NV12 frame".to_string(),
+            ));
+        }
+        let y = self
+            .plane(0)
+            .ok_or_else(|| Error::State("NV12 frame has no luma plane"))?;
+        let uv = self
+            .plane(1)
+            .ok_or_else(|| Error::State("NV12 frame has no chroma plane"))?;
+        Ok(scaler.letterbox_nv12_strided(y.data, uv.data, y.stride, self.width, self.height, dst))
+    }
+
     fn from_h264(
         picture: h264::Picture,
         format: PixelFormat,

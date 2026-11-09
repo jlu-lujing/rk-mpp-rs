@@ -75,7 +75,7 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的逐帧
 streaming RC 尚未接入，接口明确返回 unsupported。
 t6/lf1 的 workspace 最终全量门均为
-`1199 passed / 0 failed / 38 ignored`（root SDK 1195 + sys crate 4），
+`1201 passed / 0 failed / 38 ignored`（root SDK 1197 + sys crate 4），
 rustfmt 与严格 workspace rustdoc 同时通过。
 
 V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice，
@@ -275,7 +275,7 @@ H.264/H.265 普通 slice split 与低延迟逐 slice packet 都已在 t6 上通�
 | `src/hal/` | 各硬件块寄存器生成（h264d, hevc, av1d, vp9d, vp8d, jpegd/jpege, h264e） |
 | `src/hal/h264e.rs` | VEPU580 H.264 编码器：缓冲、寄存器、提交、STATUS 读取 |
 | `src/codec/rc/` | 码率控制移植（`data.rs` = MppDataV2，`model.rs` = rc_model_v2 的 CBR/VBR） |
-| `src/scale.rs` | 自研 RGB 缩放/letterbox（替代 RGA，比 RGA 快 2.9–3.8×） |
+| `src/scale.rs` | 自研 RGB 缩放/letterbox（替代 RGA，比 RGA 快 2.9–3.8×），并支持 CPU/DMA Frame 的 strided NV12 直缩到 RGB model input |
 | `src/sdk.rs`, `src/c_api.rs`, `include/rk_mpp_rs.h` | 稳定 Rust/C 解码 SDK、V1 ABI、frame/packet 生命周期 |
 | `src/reference/` | 自研软件参考解码器（M11：CABAC、HEVC 反变换、H.264 CAVLC/4×4+8×8 扫描/反量化/残差/DC；AV1 key/intra 滤波链、SavedCdf、单参考 integer/fractional inter、average/distance-weighted/difference-weighted/wedge compound、inter-intra、OBMC、local warp、单参考/compound global warp 与 temporal MV fields、inter residual 与 frame 内混合 intra/inter、多 tile tile-group：逐 tile 从帧初始 CDF 重启、帧末 CDF 取 context_update_tile_id，帧级 mi/segment 状态跨 tile 携带而邻块上下文、MV 单点候选、OBMC/projection 与 CDEF 单元按 tile 裁剪。2×2 tile 的 10 个 inter coded frame 已全部与 `aomdec` Y/U/V 逐字节一致；temporal motion field 会按 half-res cell 清除 intra 覆盖、在 base-invalid 时继续 extension probes、应用 order-hint sign bias，difference-weighted chroma mask 使用 luma 域重算） |
 | `scripts/board_*.sh` | 板上验证脚本（回归、吞吐、寄存器捕获） |
@@ -533,8 +533,11 @@ H.264/VEPU580 编码已做到：
   I1O1T/B、DISABLE、BYPASS。T 模式只写 dst0，B 模式只写 dst1，未用槽为零。
 - 格式矩阵已闭合：420/422 × SP/Planar × UV/VU 为 **6/6**，输入 fixture、
   C probe 和 Rust 两侧同一格式，两个 raw dst slot 逐字节一致。
-- 现有 `src/scale.rs` 已覆盖推理链路需要的 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×），
-  不需要为了 YOLO 去移植 IEP；做完整性再做。
+- `src/scale.rs` 已覆盖推理链路需要的 RGB 缩放/letterbox，并新增
+  `Frame::letterbox_nv12()`：直接读取 CPU/DMA Frame 的 Y/UV plane，在缩放中
+  转 BT.601 RGB，不再生成整帧中间副本。真实 H.264 720p CPU/DMA 输出逐字节一致；
+  1080p→640 在 t6/lf1 为 4.93/5.95 ms，旧“NV12→RGB + RGB scale”为
+  20.32/24.36 ms。不需要为了 YOLO 去移植 IEP；做完整性再做。
 
 ### 5.6 M10 framework（29k，最大缺口）
 

@@ -92,6 +92,12 @@
   H.265 and both VEPU510 paths use a one-shot override consumed by the next
   picture. JPEG already had fd-capable VEPU2/VPU720 implementations, so the SDK
   only needed stride validation and enum dispatch.
+- Scaling H.264/H.265 decoder NV12 through a materialised RGB frame is the
+  dominant avoidable copy on large inputs. Sampling the strided Y/UV planes
+  directly in the output-pixel loop avoids both full-frame copies. On the
+  1080p→640 path this reduced t6/lf1 work from 20.32/24.36 ms to 4.93/5.95 ms,
+  while the real 720p CPU/DMA decode output remained byte-identical after
+  scaling.
 
 ## Research Findings
 
