@@ -146,7 +146,9 @@ P1–P5 VCL 与 C 完全一致，解码重建逐帧相同；只有 version-SEI �
 NAL/解码重建一致，H.265 单帧和 6 帧、MJPEG 均逐字节一致。RK3576 使用
 单独的 High CABAC/8x8 寄存器模板、MEIW `KEY_MOTION_INFO` buffer，以及
 `mpi_enc_test` 的 H.265 参数集/无 SEI 对象流，不再复用直连 CLI 的 4710-byte
-前缀格式。
+前缀格式。`CHECK_MOTION_INFO=1` 还会用 `tools/mpp_mdinfo_dump.c` 抓取调用方
+buffer：H.264 1200-byte（SHA `655a3ef0…5955273`）和 H.265 1280-byte
+（SHA `bfe492ba…09f462`）均与 C 逐字节一致。
 
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。

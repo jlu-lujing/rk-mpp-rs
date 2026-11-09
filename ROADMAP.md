@@ -111,7 +111,7 @@ elsewhere is W12 in [docs/PLAN.md](docs/PLAN.md).
 | M0 | Public video decoder SDK: H.264/H.265/VP9/AV1/VP8/MPEG-2/MPEG-4/H.263/MJPEG | — | **done where hardware exists** |
 | M0 | Public H.264/H.265/JPEG encoder SDK: VEPU580/VEPU510 and VEPU2/VPU720 | — | **done on lf1 and t6 for the exposed paths** |
 | M0 | Installable SDK: Linux SONAME, pkg-config/CMake, ABI snapshot and examples | — | **done on lf1 and t6** |
-| M0 | Official MPP drop-in object layer: lifecycle, MppApi, buffers, packets, frames, local MppMeta | — | **local object/meta subset passes on lf1 and t6; official decoder and encoder tools close H.264/H.265/MJPEG on both boards, standalone helper replacement remains open** |
+| M0 | Official MPP drop-in object layer: lifecycle, MppApi, buffers, packets, frames, local MppMeta | — | **local object/meta subset passes on lf1 and t6; official decoder and encoder tools close H.264/H.265/MJPEG on both boards, and RK3576 caller-owned KEY_MOTION_INFO is byte-identical; standalone helper replacement remains open** |
 | M1 | H.264 syntax: Annex-B, RBSP, Exp-Golomb, SPS/PPS/slice header, scaling lists | 3.5k | **done** |
 | M1 | H.264 register map generated from `hal_h264d_rkv_reg.h` (80 words, 122 fields) | 0.25k | **done** |
 | M2 | H.264 decode on rkvdec: reg writer, DPB, reference lists, MMCO, MBAFF, field-coded, error propagation | 6.0k | **frame/MBAFF/PAFF/long-term/error-path bit-exact** |

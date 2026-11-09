@@ -752,6 +752,7 @@ pub struct Encoder {
     packets: VecDeque<Packet>,
     eos: bool,
     mpi_compat: bool,
+    last_motion_info: Option<Vec<u8>>,
 }
 
 impl Encoder {
@@ -810,6 +811,7 @@ impl Encoder {
             packets: VecDeque::new(),
             eos: false,
             mpi_compat,
+            last_motion_info: None,
         })
     }
 
@@ -832,7 +834,7 @@ impl Encoder {
         if self.eos {
             return Err(Error::State("frame submitted after encoder EOS"));
         }
-        match &mut self.backend {
+        let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
                 let input = format_nv12_input(self.config, frame.data)?;
                 let encoded = encoder
@@ -922,7 +924,22 @@ impl Encoder {
                 *frame_number = frame_number.saturating_add(1);
                 Ok(count)
             }
-        }
+        };
+        let count = submitted?;
+        self.last_motion_info = match &mut self.backend {
+            Backend::H264Vepu510(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Backend::H265Vepu510(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            _ => None,
+        };
+        Ok(count)
     }
 
     pub fn submit_dmabuf_frame(&mut self, frame: DmaBufInput) -> Result<usize, Error> {
@@ -931,7 +948,7 @@ impl Encoder {
         }
         validate_dmabuf_input(self.config, &frame)?;
         let input_fd = frame.buffer.fd();
-        match &mut self.backend {
+        let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
                 let encoded = encoder
                     .encode_frame_fd(input_fd)
@@ -1016,11 +1033,30 @@ impl Encoder {
                 *frame_number = frame_number.saturating_add(1);
                 Ok(count)
             }
-        }
+        };
+        let count = submitted?;
+        self.last_motion_info = match &mut self.backend {
+            Backend::H264Vepu510(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Backend::H265Vepu510(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            _ => None,
+        };
+        Ok(count)
     }
 
     pub fn receive_packet(&mut self) -> Option<Packet> {
         self.packets.pop_front()
+    }
+
+    pub(crate) fn take_motion_info(&mut self) -> Option<Vec<u8>> {
+        self.last_motion_info.take()
     }
 
     pub fn flush(&mut self) -> usize {
@@ -1035,6 +1071,7 @@ impl Encoder {
     pub fn reset(&mut self) -> Result<(), Error> {
         self.packets.clear();
         self.eos = false;
+        self.last_motion_info = None;
         self.backend = match self.config.codec {
             Codec::H264 => open_h264_backend(self.config)?,
             Codec::H265 => open_h265_backend_with_mode(self.config, self.mpi_compat)?,

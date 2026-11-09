@@ -166,6 +166,17 @@ impl Vepu510H264 {
         ))
     }
 
+    pub fn read_motion_info(&mut self) -> Result<Vec<u8>, String> {
+        self.md_info
+            .sync_read_begin()
+            .map_err(|e| format!("VEPU510 motion info invalidate: {e}"))?;
+        let data = self.md_info.as_slice()[..MD_INFO_SIZE].to_vec();
+        self.md_info
+            .sync_read_end()
+            .map_err(|e| format!("VEPU510 motion info sync end: {e}"))?;
+        Ok(data)
+    }
+
     pub fn encode_fixed_qp_next_320x240_fd(
         &mut self,
         input_fd: i32,

@@ -273,7 +273,8 @@ log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
 `mpi_enc_test` 中跑通。H.264 单帧与真实 6 帧的 SPS/PPS、rc-SEI、VCL NAL
 和解码重建一致，仅 version-SEI 的构建身份文本长度不同；H.265 单帧和
 6 帧、MJPEG 均 stream 逐字节一致。RK3576 High-profile 的 CABAC/8x8 模板、
-MEIW buffer 和普通 GOP60 现已接入。
+MEIW buffer 和普通 GOP60 现已接入；调用方通过 `KEY_MOTION_INFO` 传入的
+1200-byte H.264 / 1280-byte H.265 结果 buffer 也与原生 C MPP 逐字节一致。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
 `target/<profile>`：
 

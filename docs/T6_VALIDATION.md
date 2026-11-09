@@ -298,6 +298,10 @@ six pictures are byte-identical (`8c693d15…1efa97a7`,
 `cf6b5f6a…eba2e5fd`); MJPEG is byte-identical (`93d7ac00…eab945e`). The RK3576
 object path uses its own CABAC/8x8 and H.265 register templates plus a MEIW
 buffer; it does not reuse the direct CLI's 4710-byte H.265 prefix format.
+With `CHECK_MOTION_INFO=1`, the script also compares the caller-owned
+`KEY_MOTION_INFO` buffer: H.264's 1200 bytes are byte-identical
+(`655a3ef0…5955273`) and H.265's 1280 bytes are byte-identical
+(`bfe492ba…09f462`).
 
 Performance gate:
 

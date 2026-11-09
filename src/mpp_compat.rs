@@ -280,6 +280,7 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         eprintln!("rk-mpp-rs mpp: encode frame has no readable buffer");
         return MPP_ERR_NULL_PTR;
     };
+    let motion_info = frame.motion_info;
     if frame.eos {
         return MPP_OK;
     }
@@ -301,7 +302,19 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         .with_pts(frame.pts)
         .with_dts(frame.dts);
     match encoder.submit_frame(input) {
-        Ok(_) => MPP_OK,
+        Ok(_) => {
+            if !motion_info.is_null() {
+                if let Some(data) = encoder.take_motion_info() {
+                    if !unsafe { objects::buffer_replace(motion_info, &data) } {
+                        eprintln!(
+                            "rk-mpp-rs mpp: KEY_MOTION_INFO buffer is smaller than the encoder output"
+                        );
+                        return MPP_NOK;
+                    }
+                }
+            }
+            MPP_OK
+        }
         Err(error) => {
             eprintln!("rk-mpp-rs mpp: encode frame failed: {error}");
             MPP_NOK

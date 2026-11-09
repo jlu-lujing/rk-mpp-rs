@@ -17,6 +17,10 @@ raw="${ENC_RAW:-/tmp/rk_mpp_official_enc_320x240.nv12}"
 raw_multi="${ENC_RAW_MULTI:-/tmp/rk_mpp_official_enc_320x240_6.nv12}"
 gop="${ENC_GOP:-60}"
 gop_spec="${ENC_GOP_SPEC:-0:$gop}"
+check_motion="${CHECK_MOTION_INFO:-0}"
+mdinfo_shim=""
+vendor_preload=""
+compat_preload="$preload"
 
 if [ ! -x "$enc_test" ] || [ ! -f "$mpp_lib/librockchip_mpp.so.0" ]; then
     printf 'missing vendor mpi_enc_test under %s\n' "$mpp_old" >&2
@@ -28,6 +32,23 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 
 cargo build --release --offline --lib --bin rk-mpp-rs
+if [ "$check_motion" = 1 ]; then
+    mpp_include="${ENC_INCLUDE:-$mpp_old/inc}"
+    if [ ! -f "$mpp_include/rk_mpi.h" ]; then
+        mpp_include=/usr/local/include/rockchip
+    fi
+    if [ ! -f "$mpp_include/rk_mpi.h" ]; then
+        printf 'missing official MPP headers for motion-info probe\n' >&2
+        exit 2
+    fi
+    mdinfo_shim=/tmp/rk_mpp_mdinfo_dump.so
+    gcc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC \
+        -I"$mpp_include" "$repo/tools/mpp_mdinfo_dump.c" \
+        -ldl -o "$mdinfo_shim"
+    vendor_preload="$mdinfo_shim"
+    compat_preload="$mdinfo_shim:$preload"
+fi
+
 ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 1 \
     -pix_fmt nv12 -f rawvideo "$raw"
@@ -42,7 +63,8 @@ run_vendor_frames() {
     shift
     shift
     shift
-    LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
+    LD_PRELOAD="$vendor_preload" \
+        LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
         timeout 30 "$enc_test" -i "$input" -o "$output" \
         -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g "$gop_spec" "$@" \
         < /dev/null > /dev/null 2>&1
@@ -55,7 +77,8 @@ run_compat_frames() {
     shift
     shift
     shift
-    LD_PRELOAD="$preload" LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
+    LD_PRELOAD="$compat_preload" \
+        LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
         timeout 30 "$enc_test" -i "$input" -o "$output" \
         -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g "$gop_spec" "$@" \
         < /dev/null > /dev/null 2>&1
@@ -80,8 +103,19 @@ else
     h264_r=/tmp/rk_mpp_official_enc_h264_r.264
     h264_c_yuv=/tmp/rk_mpp_official_enc_h264_c.yuv
     h264_r_yuv=/tmp/rk_mpp_official_enc_h264_r.yuv
+    h264_md_c=/tmp/rk_mpp_official_enc_h264_md_c.bin
+    h264_md_r=/tmp/rk_mpp_official_enc_h264_md_r.bin
+    rm -f "$h264_md_c" "$h264_md_r"
+    MPP_MD_INFO_DUMP="$h264_md_c" \
     run_vendor "$h264_c" -t 7 -qc 26
+    MPP_MD_INFO_DUMP="$h264_md_r" \
     run_compat "$h264_r" -t 7 -qc 26
+    if [ "$check_motion" = 1 ]; then
+        test "$(stat -c %s "$h264_md_c")" -eq 1200
+        cmp "$h264_md_c" "$h264_md_r"
+        printf 'PASS h264 KEY_MOTION_INFO matches C MPP (%s)\n' \
+            "$(sha256sum "$h264_md_r" | cut -d' ' -f1)"
+    fi
     LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
         "$cli" h264dec "$h264_c" "$h264_c_yuv" > /dev/null
     LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
@@ -111,8 +145,19 @@ if [ "${SKIP_H265:-0}" = 1 ]; then
 else
     h265_c=/tmp/rk_mpp_official_enc_h265_c.265
     h265_r=/tmp/rk_mpp_official_enc_h265_r.265
+    h265_md_c=/tmp/rk_mpp_official_enc_h265_md_c.bin
+    h265_md_r=/tmp/rk_mpp_official_enc_h265_md_r.bin
+    rm -f "$h265_md_c" "$h265_md_r"
+    MPP_MD_INFO_DUMP="$h265_md_c" \
     run_vendor "$h265_c" -t 16777220 -qc 26
+    MPP_MD_INFO_DUMP="$h265_md_r" \
     run_compat "$h265_r" -t 16777220 -qc 26
+    if [ "$check_motion" = 1 ]; then
+        test "$(stat -c %s "$h265_md_c")" -eq 1280
+        cmp "$h265_md_c" "$h265_md_r"
+        printf 'PASS h265 KEY_MOTION_INFO matches C MPP (%s)\n' \
+            "$(sha256sum "$h265_md_r" | cut -d' ' -f1)"
+    fi
     cmp "$h265_c" "$h265_r"
     printf 'PASS h265 stream through unchanged mpi_enc_test (%s)\n' \
         "$(sha256sum "$h265_r" | cut -d' ' -f1)"

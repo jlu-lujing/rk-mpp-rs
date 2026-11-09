@@ -96,6 +96,7 @@ pub(super) struct FrameInputView {
     pub pts: i64,
     pub dts: i64,
     pub eos: bool,
+    pub motion_info: MppBuffer,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -462,6 +463,14 @@ unsafe fn meta_set_object(meta: MppMeta, key: c_int, value: *mut c_void) -> c_in
     MPP_OK
 }
 
+unsafe fn meta_peek_object(meta: MppMeta, key: c_int) -> Option<*mut c_void> {
+    let object = unsafe { meta_ref(meta) }?;
+    match object.entries.get(&key) {
+        Some(MetaValue::Object(value)) => Some(*value),
+        _ => None,
+    }
+}
+
 pub(super) unsafe fn packet_bytes(packet: MppPacket) -> Option<&'static [u8]> {
     let packet = unsafe { packet_ref(packet) }?;
     if packet.length == 0 {
@@ -497,6 +506,8 @@ pub(super) unsafe fn frame_set_input_packet(frame: MppFrame, packet: MppPacket) 
 
 pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView> {
     let frame = unsafe { frame_ref(frame) }?;
+    let motion_info =
+        unsafe { meta_peek_object(frame.meta, KEY_MOTION_INFO) }.unwrap_or(std::ptr::null_mut());
     let buffer = unsafe { buffer_mut(frame.buffer) }?;
     Some(FrameInputView {
         data: buffer.data.as_ptr(),
@@ -509,7 +520,19 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
         pts: frame.pts,
         dts: frame.dts,
         eos: frame.eos != 0,
+        motion_info,
     })
+}
+
+pub(super) unsafe fn buffer_replace(buffer: MppBuffer, data: &[u8]) -> bool {
+    let Some(buffer) = (unsafe { buffer_mut(buffer) }) else {
+        return false;
+    };
+    if data.len() > buffer.data.len() {
+        return false;
+    }
+    buffer.data[..data.len()].copy_from_slice(data);
+    true
 }
 
 pub(super) unsafe fn packet_from_bytes(bytes: Vec<u8>, pts: i64, dts: i64) -> MppPacket {
