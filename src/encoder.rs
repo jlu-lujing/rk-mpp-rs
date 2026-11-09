@@ -1493,8 +1493,10 @@ mod tests {
             .with_level(31)
             .with_gop(30)
             .with_qp(30)
+            .with_num_ref_frames(2)
             .with_fps(25, 1)
             .with_jpeg_quality(7)
+            .with_jpeg_qfactor(80)
             .with_jpeg_restart_mcus(16)
             .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
@@ -1503,8 +1505,10 @@ mod tests {
         assert_eq!(config.level(), 31);
         assert_eq!(config.gop(), 30);
         assert_eq!(config.qp(), 30);
+        assert_eq!(config.num_ref_frames(), 2);
         assert_eq!(config.fps(), (25, 1));
         assert_eq!(config.jpeg_quality(), 7);
+        assert_eq!(config.jpeg_qfactor(), Some(80));
         assert_eq!(config.jpeg_restart_mcus(), 16);
         assert_eq!(config.rate_control(), Some(rate_control));
     }
