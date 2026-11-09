@@ -269,6 +269,8 @@ packet 的惰性持有以及 advanced decode 的 `KEY_OUTPUT_FRAME`/
 external `MppBuffer` 现可通过
 `mpp_buffer_import` 接收 caller pointer/fd，并支持 external group 的
 commit/get、unused recycle 和 usage 统计；fd-only import 会建立独立映射。
+支持的 decoder 现在直接产出 DMA-BUF frame，advanced `KEY_OUTPUT_FRAME`
+从 decoder planes 写入目标 frame，不再创建临时 MppFrame/整帧 buffer。
 已可在保留 vendor
 log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
 `mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。

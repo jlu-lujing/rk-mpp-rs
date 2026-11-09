@@ -311,6 +311,12 @@ and are recycled from the group's unused list; usage and count limits are
 updated on actual allocations. These checks run as part of
 `board_mpp_compat_data.sh` on lf1.
 
+H.264/H.265/VP9/AV1/MJPEG compatibility decoders now request DMA-BUF SDK
+frames. Advanced `KEY_OUTPUT_FRAME` fills the caller frame directly from the
+decoder's mapped planes instead of allocating an intermediate frame/buffer and
+copying twice. The unchanged `mpi_dec_test` suite still matches native MPP
+byte-for-byte for H.264, H.265 and MJPEG on both boards.
+
 Performance gate:
 
 - H.264 720p: C MPP 121.5 FPS, Rust 283.8 FPS (**+133.7%**)

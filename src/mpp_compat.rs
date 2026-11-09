@@ -532,7 +532,16 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
         let Some(codec) = sdk_codec(coding) else {
             return MPP_NOK;
         };
-        let config = sdk::DecoderConfig::new(codec).with_output_format(sdk::PixelFormat::Nv12);
+        let config = sdk::DecoderConfig::new(codec)
+            .with_output_format(sdk::PixelFormat::Nv12)
+            .with_dmabuf_output(matches!(
+                coding,
+                MPP_VIDEO_CODING_AVC
+                    | MPP_VIDEO_CODING_MJPEG
+                    | MPP_VIDEO_CODING_VP9
+                    | MPP_VIDEO_CODING_HEVC
+                    | MPP_VIDEO_CODING_AV1
+            ));
         match sdk::Decoder::new(config) {
             Ok(decoder) => Some(decoder),
             Err(_) => return MPP_NOK,

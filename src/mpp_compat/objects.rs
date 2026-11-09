@@ -809,23 +809,6 @@ unsafe fn new_external_buffer(
     .cast())
 }
 
-unsafe fn discard_frame_object(frame_pointer: MppFrame) {
-    let Some(frame) = (unsafe { frame_mut(frame_pointer) }) else {
-        return;
-    };
-    let buffer = frame.buffer;
-    let meta = frame.meta;
-    frame.magic = 0;
-    // SAFETY: frame_from_sdk/frame_init allocated this Box.
-    drop(unsafe { Box::from_raw(frame_pointer.cast::<CompatFrame>()) });
-    if !buffer.is_null() {
-        let _ = unsafe { buffer_put_raw(buffer) };
-    }
-    if !meta.is_null() {
-        let _ = unsafe { meta_put_raw(meta) };
-    }
-}
-
 pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()> {
     let width = u32::try_from(decoded.width()).map_err(|_| ())?;
     let height = u32::try_from(decoded.height()).map_err(|_| ())?;
@@ -935,85 +918,121 @@ pub(super) unsafe fn frame_fill_from_sdk(
     target_pointer: MppFrame,
     decoded: sdk::Frame,
 ) -> Result<(), ()> {
-    let source_pointer = unsafe { frame_from_sdk(decoded) }?;
-    let Some(source) = (unsafe { frame_mut(source_pointer) }) else {
-        return Err(());
-    };
     let Some(target) = (unsafe { frame_mut(target_pointer) }) else {
-        unsafe { discard_frame_object(source_pointer) };
         return Err(());
     };
-    let source_buffer_pointer = source.buffer;
-    let target_buffer_pointer = target.buffer;
 
-    if !target_buffer_pointer.is_null() {
-        if target_buffer_pointer == source_buffer_pointer {
-            unsafe { discard_frame_object(source_pointer) };
-            return Err(());
+    let width = u32::try_from(decoded.width()).map_err(|_| ())?;
+    let height = u32::try_from(decoded.height()).map_err(|_| ())?;
+    let hor_stride = align(width, 16);
+    let ver_stride = align(height, 16);
+    let luma_size = usize::try_from(hor_stride)
+        .ok()
+        .and_then(|stride| stride.checked_mul(ver_stride as usize))
+        .ok_or(())?;
+    let (format, buffer_size) = match decoded.format() {
+        sdk::PixelFormat::Nv12 => (MPP_FMT_YUV420SP, luma_size.checked_mul(3).ok_or(())? / 2),
+        sdk::PixelFormat::I420 => (MPP_FMT_YUV420P, luma_size.checked_mul(3).ok_or(())? / 2),
+        sdk::PixelFormat::I420P10 => return Err(()),
+    };
+
+    let mut target_buffer = target.buffer;
+    if target_buffer.is_null() {
+        target_buffer = unsafe {
+            new_internal_buffer(
+                buffer_size,
+                None,
+                MPP_BUFFER_TYPE_DMA_HEAP,
+                std::ptr::null_mut(),
+            )
         }
-        let Some(source_buffer) = (unsafe { buffer_ref(source_buffer_pointer) }) else {
-            unsafe { discard_frame_object(source_pointer) };
-            return Err(());
-        };
-        let Some(target_buffer) = (unsafe { buffer_mut(target_buffer_pointer) }) else {
-            unsafe { discard_frame_object(source_pointer) };
-            return Err(());
-        };
-        let source_len = buffer_len(source_buffer);
-        if buffer_len(target_buffer) < source_len {
-            unsafe { discard_frame_object(source_pointer) };
-            return Err(());
-        }
-        if source_buffer
-            .dma
-            .as_ref()
-            .is_some_and(|dma| dma.sync_read_begin().is_err())
-            || target_buffer
-                .dma
-                .as_ref()
-                .is_some_and(|dma| dma.sync_write_begin().is_err())
-        {
-            unsafe { discard_frame_object(source_pointer) };
-            return Err(());
-        }
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                buffer_ptr(source_buffer),
-                buffer_ptr(target_buffer),
-                source_len,
-            );
-        }
-        if source_buffer
-            .dma
-            .as_ref()
-            .is_some_and(|dma| dma.sync_read_end().is_err())
-            || target_buffer
-                .dma
-                .as_ref()
-                .is_some_and(|dma| dma.sync_write_end().is_err())
-        {
-            unsafe { discard_frame_object(source_pointer) };
+        .map_err(|_| ())?;
+        target.buffer = target_buffer;
+    }
+    let Some(buffer) = (unsafe { buffer_mut(target_buffer) }) else {
+        return Err(());
+    };
+    if buffer_len(buffer) < buffer_size {
+        return Err(());
+    }
+    if buffer
+        .dma
+        .as_ref()
+        .is_some_and(|dma| dma.sync_write_begin().is_err())
+    {
+        return Err(());
+    }
+    let destination =
+        unsafe { std::slice::from_raw_parts_mut(buffer_ptr(buffer), buffer_len(buffer)) };
+
+    let y = decoded.plane(0).ok_or(())?;
+    if !copy_rows(
+        &mut destination[..luma_size],
+        hor_stride as usize,
+        y.data,
+        y.stride,
+        width as usize,
+        height as usize,
+    ) {
+        return Err(());
+    }
+    if format == MPP_FMT_YUV420SP {
+        let uv = decoded.plane(1).ok_or(())?;
+        if !copy_rows(
+            &mut destination[luma_size..],
+            hor_stride as usize,
+            uv.data,
+            uv.stride,
+            width as usize,
+            height.div_ceil(2) as usize,
+        ) {
             return Err(());
         }
     } else {
-        target.buffer = source_buffer_pointer;
-        source.buffer = std::ptr::null_mut();
+        let chroma_height = height.div_ceil(2) as usize;
+        let chroma_stride = hor_stride as usize / 2;
+        let chroma_size = chroma_stride.checked_mul(chroma_height).ok_or(())?;
+        let chroma_width = width.div_ceil(2) as usize;
+        let u = decoded.plane(1).ok_or(())?;
+        let v = decoded.plane(2).ok_or(())?;
+        if !copy_rows(
+            &mut destination[luma_size..luma_size + chroma_size],
+            chroma_stride,
+            u.data,
+            u.stride,
+            chroma_width,
+            chroma_height,
+        ) || !copy_rows(
+            &mut destination[luma_size + chroma_size..],
+            chroma_stride,
+            v.data,
+            v.stride,
+            chroma_width,
+            chroma_height,
+        ) {
+            return Err(());
+        }
+    }
+    if buffer
+        .dma
+        .as_ref()
+        .is_some_and(|dma| dma.sync_write_end().is_err())
+    {
+        return Err(());
     }
 
-    target.width = source.width;
-    target.height = source.height;
-    target.hor_stride = source.hor_stride;
-    target.ver_stride = source.ver_stride;
-    target.format = source.format;
-    target.poc = source.poc;
-    target.pts = source.pts;
-    target.dts = source.dts;
-    target.errinfo = source.errinfo;
-    target.buffer_size = source.buffer_size;
-    target.eos = source.eos;
-    target.info_change = source.info_change;
-
-    unsafe { discard_frame_object(source_pointer) };
+    target.width = width;
+    target.height = height;
+    target.hor_stride = hor_stride;
+    target.ver_stride = ver_stride;
+    target.format = format;
+    target.poc = decoded.poc().max(0) as u32;
+    target.pts = decoded.pts();
+    target.dts = decoded.dts();
+    target.errinfo = decoded.err_info();
+    target.buffer_size = buffer_size;
+    target.eos = 0;
+    target.info_change = 0;
     Ok(())
 }
 

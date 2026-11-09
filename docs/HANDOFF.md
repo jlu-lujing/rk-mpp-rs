@@ -136,6 +136,13 @@ unused-buffer recycle：buffer 最终 put 后回到 group，下一次同尺寸 g
 lf1 C consumer 校验 internal fd/info/sync、internal/external recycle、usage、
 fd-only import 和 refcount。advanced zero-copy frame 继续保留为下一步工作。
 
+第七个 slice 先把 advanced decode 的重复复制收敛掉：H.264/H.265/VP9/AV1/
+MJPEG 兼容 decoder 请求 DMA-BUF `sdk::Frame`，`frame_fill_from_sdk` 直接从
+decoder planes 按 stride 写入调用方 frame buffer，不再先分配临时 MppFrame
+和临时 dma buffer 再复制。official `mpi_dec_test` 的三编码输出仍逐字节一致。
+真正把调用方 fd 注入 decoder output pool、消除最后一次 CPU row copy 仍是后续
+工作。
+
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test
 MPP_INCLUDE=/tmp/mpp-develop/inc \
