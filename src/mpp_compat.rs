@@ -118,6 +118,7 @@ struct CompatContext {
     eos_submitted: bool,
     eos_delivered: bool,
     pending_output_frame: MppFrame,
+    pending_input_packet: MppPacket,
 }
 
 unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
@@ -210,6 +211,7 @@ unsafe extern "C" fn compat_decode_put_packet(ctx: MppCtx, packet: MppPacket) ->
     }
     context.eos_submitted |= eos;
     context.pending_output_frame = output_frame;
+    context.pending_input_packet = packet;
     MPP_OK
 }
 
@@ -241,6 +243,11 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
             context.pending_output_frame = std::ptr::null_mut();
             frame
         };
+        if !context.pending_input_packet.is_null() {
+            let _ = unsafe {
+                objects::frame_set_input_packet(frame_object, context.pending_input_packet)
+            };
+        }
         unsafe { *frame = frame_object };
         return MPP_OK;
     }
@@ -363,6 +370,7 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.eos_submitted = false;
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
+    context.pending_input_packet = std::ptr::null_mut();
     MPP_OK
 }
 
@@ -486,6 +494,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             eos_submitted: false,
             eos_delivered: false,
             pending_output_frame: std::ptr::null_mut(),
+            pending_input_packet: std::ptr::null_mut(),
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();
@@ -523,6 +532,7 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.eos_submitted = false;
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
+    context.pending_input_packet = std::ptr::null_mut();
     MPP_OK
 }
 

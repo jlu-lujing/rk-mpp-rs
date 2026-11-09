@@ -261,8 +261,11 @@ cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 2
 `mpp_destroy`、格式查询和官方 `MppApi` 184-byte 函数表。当前只保证生命周期
 与函数表布局，并提供 `MppFrame`/`MppPacket`/`MppBuffer`、packet/frame
 访问器和 H.264/H.265/MJPEG 的 CPU NV12 `decode_put_packet` /
-`decode_get_frame` 数据面。完整 `MppMeta`、advanced buffer import、encoder
-对象流和 standalone 所需的完整内部辅助符号仍未接入。已可在保留 vendor
+`decode_get_frame` 数据面。本地 `MppMeta` 已覆盖 s32/s64/ptr、
+frame/packet/buffer、用户数据深拷贝、duplicate/ref/lifetime，并接入 frame 和
+packet 的惰性持有以及 advanced decode 的 `KEY_OUTPUT_FRAME`/
+`KEY_INPUT_PACKET`；kernel meta、advanced buffer import 和 standalone 所需的
+完整内部辅助符号仍未接入。已可在保留 vendor
 log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
 `mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和

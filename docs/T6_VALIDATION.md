@@ -259,12 +259,17 @@ continues to provide its test-only log, cfg and OSAL helpers.
 | H.265 320x240, 1 picture | PASS, byte-identical | PASS, byte-identical |
 | MJPEG 320x240, 1 picture | PASS, byte-identical | PASS, byte-identical |
 
-For advanced MJPEG, the compatibility layer implements the minimal packet
-`MppMeta` path for `KEY_OUTPUT_FRAME`: the preallocated frame supplied by the
-official tool is filled and returned unchanged in identity. A returned
-frame-identity mismatch is now a hard test failure. This is a real official
-decoder-tool gate, but not yet a standalone replacement: removing the vendor
-helper library and passing `mpi_enc_test` remain W7-3 work.
+The compatibility layer now implements the local `MppMeta` surface used by
+the official object API: s32/s64/ptr, frame/packet/buffer, default getters,
+duplicate/ref/lifetime and deep copies for `KEY_USER_DATA`/
+`KEY_USER_DATAS`. Advanced decode consumes packet `KEY_OUTPUT_FRAME` and
+publishes `KEY_INPUT_PACKET` on the returned frame, so the preallocated frame
+identity remains unchanged. `scripts/board_mpp_compat_meta.sh` passes on t6
+and lf1; on t6 the unchanged native `mpp_meta_test` also passes with two
+threads and ten loops. A returned frame-identity mismatch is a hard test
+failure. This is a real official decoder-tool gate, but not yet a standalone
+replacement: kernel metadata, removing the vendor helper library and the
+RK3576 H.264/H.265 encoder matrix remain open.
 
 `scripts/board_mpp_official_enc_test.sh` now exercises the same bridge for the
 vendor encoder tool. It reads `MppEncCfg` from the vendor helper object, submits

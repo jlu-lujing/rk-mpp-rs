@@ -401,8 +401,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       symbols plus the complete 184-byte `MppApi` table layout pass on t6/lf1.
       **Decode slice landed:** packet/frame/buffer ownership and CPU NV12
       `decode_put_packet/decode_get_frame` pass H.264, H.265 and MJPEG against
-      C MPP on both boards. Meta, imported DMABUF buffers and encoder object
-      flow remain.
+      C MPP on both boards. Local `MppMeta` now covers scalar/pointer/object
+      values, user-data deep copies, duplicate/ref/lifetime and frame/packet
+      lazy ownership. Imported DMABUF buffers, kernel meta and complete
+      standalone helper symbols remain.
 - [ ] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
       **Decode partial landed:** the unchanged vendor `mpi_dec_test` runs
       H.264/H.265/MJPEG under `LD_PRELOAD` with byte-identical output on

@@ -108,14 +108,30 @@ CPU NV12 解码：`decode_put_packet` 把 packet 复制进现有 SDK session，
 `decode_get_frame` 返回带 packed NV12 `MppBuffer` 的 `MppFrame`。
 t6/lf1 的 15-frame H.264、单帧 H.265 和单帧 MJPEG 输出均与 C MPP
 逐字节一致（SHA-256 分别为 `22a8…23f7`、`fced…05e0`、`98c5…89f8`）。
-`MppMeta`、advanced buffer import/external frame、DMABUF-backed MppBuffer
-和 encoder 对象流仍未完整实现。第三个 slice 已把最小 packet meta
-（`KEY_OUTPUT_FRAME`）接到 advanced MJPEG 路径：vendor `mpi_dec_test`
+第三个 slice 已把最小 packet meta（`KEY_OUTPUT_FRAME`）接到 advanced
+MJPEG 路径：vendor `mpi_dec_test`
 二进制无需重编译，通过 `LD_PRELOAD` 切到 rk-mpp-rs 后，H.264 640×480
 6 帧、H.265 和 MJPEG 在 t6/lf1 都成功，输出 SHA 与原生 MPP 相同，且
 advanced MJPEG 不再报告 frame identity mismatch。vendor log/cfg/OSAL
-辅助符号目前仍由原生库提供；完全 standalone 替换和 encoder 对象流仍是
-后续工作。
+辅助符号目前仍由原生库提供；完全 standalone 替换仍是后续工作。
+
+第四个 slice 已把本地 `MppMeta` 扩成真正的 key-value 容器：
+s32/s64/ptr、frame/packet/buffer、`KEY_USER_DATA(S)` 深拷贝、
+duplicate/ref/lifetime，以及 frame/packet 的惰性 meta 持有均已接入。
+`scripts/board_mpp_compat_meta.sh` 在 t6/lf1 通过；t6 还用未修改的原生
+`mpp_meta_test` 跑了 2 线程 10 轮，返回值为 0。advanced decode 现在同时
+处理 packet 的 `KEY_OUTPUT_FRAME` 和输出 frame 的 `KEY_INPUT_PACKET`。
+kernel meta、advanced buffer import/external frame、DMABUF-backed MppBuffer
+仍未完整实现。
+
+```bash
+# t6: focused C consumer + unchanged vendor mpp_meta_test
+MPP_INCLUDE=/tmp/mpp-develop/inc \
+MPP_META_TEST=/tmp/mpp-develop/build/mpp/base/test/mpp_meta_test \
+./scripts/board_mpp_compat_meta.sh
+# lf1: focused C consumer against /usr/local/include/rockchip
+./scripts/board_mpp_compat_meta.sh
+```
 
 encoder 对象流已开始接通：`MPP_ENC_SET_CFG` 通过 vendor `MppEncCfg`
 读取 codec、size、profile、RC、GOP、fps 和 JPEG q-factor，再创建统一

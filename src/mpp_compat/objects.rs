@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::sdk;
 
@@ -26,6 +28,63 @@ pub(super) type MppPacket = *mut c_void;
 pub(super) type MppFrame = *mut c_void;
 type MppMeta = *mut c_void;
 
+const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> c_int {
+    ((a as c_int) << 24) | ((b as c_int) << 16) | ((c as c_int) << 8) | d as c_int
+}
+
+const KEY_INPUT_FRAME: c_int = fourcc(b'i', b'f', b'r', b'm');
+const KEY_INPUT_PACKET: c_int = fourcc(b'i', b'p', b'k', b't');
+const KEY_OUTPUT_FRAME: c_int = fourcc(b'o', b'f', b'r', b'm');
+const KEY_OUTPUT_PACKET: c_int = fourcc(b'o', b'p', b'k', b't');
+const KEY_MOTION_INFO: c_int = fourcc(b'm', b'v', b'i', b'f');
+const KEY_HDR_INFO: c_int = fourcc(b'h', b'd', b'r', b' ');
+const KEY_HDR_META_OFFSET: c_int = fourcc(b'h', b'd', b'r', b'o');
+const KEY_HDR_META_SIZE: c_int = fourcc(b'h', b'd', b'r', b'l');
+const KEY_INPUT_BLOCK: c_int = fourcc(b'i', b'b', b'l', b'k');
+const KEY_OUTPUT_BLOCK: c_int = fourcc(b'o', b'b', b'l', b'k');
+const KEY_INPUT_IDR_REQ: c_int = fourcc(b'i', b'i', b'd', b'r');
+const KEY_OUTPUT_INTRA: c_int = fourcc(b'o', b'i', b'd', b'r');
+const KEY_TEMPORAL_ID: c_int = fourcc(b't', b'l', b'i', b'd');
+const KEY_LONG_REF_IDX: c_int = fourcc(b'l', b't', b'i', b'd');
+const KEY_ENC_AVERAGE_QP: c_int = fourcc(b'a', b'v', b'g', b'q');
+const KEY_ENC_START_QP: c_int = fourcc(b's', b't', b'r', b'q');
+const KEY_ENC_BPS_RT: c_int = fourcc(b'r', b't', b'b', b'r');
+const KEY_ROI_DATA: c_int = fourcc(b'r', b'o', b'i', b' ');
+const KEY_JPEG_ROI_DATA: c_int = fourcc(b'j', b'r', b'o', b'i');
+const KEY_OSD_DATA: c_int = fourcc(b'o', b's', b'd', b' ');
+const KEY_OSD_DATA2: c_int = fourcc(b'o', b's', b'd', b'2');
+const KEY_OSD_DATA3: c_int = fourcc(b'o', b's', b'd', b'3');
+const KEY_USER_DATA: c_int = fourcc(b'u', b's', b'r', b'd');
+const KEY_USER_DATAS: c_int = fourcc(b'u', b'r', b'd', b's');
+const KEY_LVL64_INTER_NUM: c_int = fourcc(b'l', b'6', b'4', b'p');
+const KEY_LVL32_INTER_NUM: c_int = fourcc(b'l', b'3', b'2', b'p');
+const KEY_LVL16_INTER_NUM: c_int = fourcc(b'l', b'1', b'6', b'p');
+const KEY_LVL8_INTER_NUM: c_int = fourcc(b'l', b'8', b'p', b' ');
+const KEY_LVL32_INTRA_NUM: c_int = fourcc(b'l', b'3', b'2', b'i');
+const KEY_LVL16_INTRA_NUM: c_int = fourcc(b'l', b'1', b'6', b'i');
+const KEY_LVL8_INTRA_NUM: c_int = fourcc(b'l', b'8', b'i', b' ');
+const KEY_LVL4_INTRA_NUM: c_int = fourcc(b'l', b'4', b'i', b' ');
+const KEY_ENC_MADI_B16: c_int = fourcc(b'm', b'a', b'd', b'i');
+const KEY_ENC_MADP_CTU: c_int = fourcc(b'm', b'a', b'd', b'p');
+const KEY_OUTPUT_PSKIP: c_int = fourcc(b'o', b'p', b's', b'p');
+const KEY_INPUT_PSKIP: c_int = fourcc(b'i', b'p', b's', b'p');
+const KEY_INPUT_PSKIP_NON_REF: c_int = fourcc(b'i', b'p', b'n', b'r');
+const KEY_INPUT_PSKIP_NUM: c_int = fourcc(b'i', b'p', b's', b'n');
+const KEY_ENC_SSE: c_int = fourcc(b'e', b's', b's', b'e');
+const KEY_ROI_DATA2: c_int = fourcc(b'r', b'o', b'i', b'2');
+const KEY_QPMAP0: c_int = fourcc(b'e', b'q', b'm', b'0');
+const KEY_NPU_SOBJ_FLAG: c_int = fourcc(b'n', b'p', b'u', b's');
+const KEY_NPU_UOBJ_FLAG: c_int = fourcc(b'n', b'p', b'u', b'u');
+const KEY_BUFFER_UPSCALE: c_int = fourcc(b'u', b'b', b'u', b'f');
+const KEY_BUFFER_DOWNSCALE: c_int = fourcc(b'd', b'b', b'u', b'f');
+const KEY_ENC_MARK_LTR: c_int = fourcc(b'm', b'l', b't', b'r');
+const KEY_ENC_USE_LTR: c_int = fourcc(b'u', b'l', b't', b'r');
+const KEY_ENC_FRAME_QP: c_int = fourcc(b'f', b'r', b'm', b'q');
+const KEY_ENC_BASE_LAYER_PID: c_int = fourcc(b'b', b'p', b'i', b'd');
+const KEY_DEC_TBN_EN: c_int = fourcc(b't', b'b', b'e', b'n');
+const KEY_DEC_TBN_Y_OFFSET: c_int = fourcc(b't', b'b', b'y', b'o');
+const KEY_DEC_TBN_UV_OFFSET: c_int = fourcc(b't', b'b', b'c', b'o');
+
 pub(super) struct FrameInputView {
     pub data: *const u8,
     pub len: usize,
@@ -39,11 +98,164 @@ pub(super) struct FrameInputView {
     pub eos: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MetaType {
+    S32,
+    S64,
+    Ptr,
+    Object,
+}
+
+fn meta_key_type(key: c_int) -> Option<MetaType> {
+    match key {
+        KEY_INPUT_FRAME | KEY_OUTPUT_FRAME | KEY_INPUT_PACKET | KEY_OUTPUT_PACKET
+        | KEY_MOTION_INFO | KEY_HDR_INFO | KEY_QPMAP0 | KEY_NPU_SOBJ_FLAG | KEY_BUFFER_UPSCALE
+        | KEY_BUFFER_DOWNSCALE => Some(MetaType::Object),
+        KEY_ROI_DATA | KEY_ROI_DATA2 | KEY_JPEG_ROI_DATA | KEY_OSD_DATA | KEY_OSD_DATA2
+        | KEY_OSD_DATA3 | KEY_USER_DATA | KEY_USER_DATAS | KEY_NPU_UOBJ_FLAG => Some(MetaType::Ptr),
+        KEY_ENC_SSE => Some(MetaType::S64),
+        KEY_HDR_META_OFFSET
+        | KEY_HDR_META_SIZE
+        | KEY_OUTPUT_INTRA
+        | KEY_INPUT_BLOCK
+        | KEY_OUTPUT_BLOCK
+        | KEY_INPUT_IDR_REQ
+        | KEY_TEMPORAL_ID
+        | KEY_LONG_REF_IDX
+        | KEY_ENC_AVERAGE_QP
+        | KEY_ENC_START_QP
+        | KEY_ENC_BPS_RT
+        | KEY_LVL64_INTER_NUM
+        | KEY_LVL32_INTER_NUM
+        | KEY_LVL16_INTER_NUM
+        | KEY_LVL8_INTER_NUM
+        | KEY_LVL32_INTRA_NUM
+        | KEY_LVL16_INTRA_NUM
+        | KEY_LVL8_INTRA_NUM
+        | KEY_LVL4_INTRA_NUM
+        | KEY_ENC_MADI_B16
+        | KEY_ENC_MADP_CTU
+        | KEY_OUTPUT_PSKIP
+        | KEY_INPUT_PSKIP
+        | KEY_INPUT_PSKIP_NON_REF
+        | KEY_INPUT_PSKIP_NUM
+        | KEY_ENC_MARK_LTR
+        | KEY_ENC_USE_LTR
+        | KEY_ENC_FRAME_QP
+        | KEY_ENC_BASE_LAYER_PID
+        | KEY_DEC_TBN_EN
+        | KEY_DEC_TBN_Y_OFFSET
+        | KEY_DEC_TBN_UV_OFFSET => Some(MetaType::S32),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MetaValue {
+    S32(i32),
+    S64(i64),
+    Ptr(*mut c_void),
+    Object(*mut c_void),
+}
+
+#[repr(C)]
+struct CompatEncUserData {
+    len: u32,
+    pdata: *mut c_void,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct CompatEncUserDataFull {
+    len: u32,
+    uuid: *mut u8,
+    pdata: *mut c_void,
+}
+
+#[repr(C)]
+struct CompatEncUserDataSet {
+    count: u32,
+    datas: *mut CompatEncUserDataFull,
+}
+
+struct OwnedUserData {
+    public: CompatEncUserData,
+    data: Box<[u8]>,
+}
+
+impl Clone for OwnedUserData {
+    fn clone(&self) -> Self {
+        let data = self.data.clone();
+        Self {
+            public: CompatEncUserData {
+                len: self.public.len,
+                pdata: data.as_ptr().cast_mut().cast(),
+            },
+            data,
+        }
+    }
+}
+
+struct OwnedUserDataSet {
+    public: CompatEncUserDataSet,
+    entries: Box<[CompatEncUserDataFull]>,
+    _uuids: Vec<Box<[u8]>>,
+    _payloads: Vec<Box<[u8]>>,
+}
+
+impl Clone for OwnedUserDataSet {
+    fn clone(&self) -> Self {
+        let count = self.entries.len();
+        let mut entries = vec![
+            CompatEncUserDataFull {
+                len: 0,
+                uuid: std::ptr::null_mut(),
+                pdata: std::ptr::null_mut(),
+            };
+            count
+        ]
+        .into_boxed_slice();
+        let mut uuids = Vec::with_capacity(count);
+        let mut payloads = Vec::with_capacity(count);
+        for (index, source) in self.entries.iter().enumerate() {
+            entries[index].len = source.len;
+            if !source.uuid.is_null() {
+                let uuid = unsafe { std::slice::from_raw_parts(source.uuid, 16) }
+                    .to_vec()
+                    .into_boxed_slice();
+                entries[index].uuid = uuid.as_ptr().cast_mut();
+                uuids.push(uuid);
+            }
+            if !source.pdata.is_null() {
+                let payload = unsafe {
+                    std::slice::from_raw_parts(source.pdata.cast::<u8>(), source.len as usize)
+                }
+                .to_vec()
+                .into_boxed_slice();
+                entries[index].pdata = payload.as_ptr().cast_mut().cast();
+                payloads.push(payload);
+            }
+        }
+        let datas = entries.as_mut_ptr();
+        Self {
+            public: CompatEncUserDataSet {
+                count: count as u32,
+                datas,
+            },
+            entries,
+            _uuids: uuids,
+            _payloads: payloads,
+        }
+    }
+}
+
 #[repr(C)]
 struct CompatMeta {
     magic: u64,
-    output_frame: MppFrame,
-    input_packet: MppPacket,
+    refs: AtomicU32,
+    entries: BTreeMap<c_int, MetaValue>,
+    user_data: Option<OwnedUserData>,
+    user_data_set: Option<OwnedUserDataSet>,
 }
 
 #[repr(C)]
@@ -88,7 +300,7 @@ struct CompatPacket {
     eos: bool,
     extra_data: bool,
     buffer: MppBuffer,
-    meta: Option<Box<CompatMeta>>,
+    meta: MppMeta,
     owned: Option<Box<[u8]>>,
 }
 
@@ -189,8 +401,65 @@ unsafe fn packet_mut(packet: MppPacket) -> Option<&'static mut CompatPacket> {
     unsafe { magic_mut(packet, PACKET_MAGIC) }
 }
 
+fn new_meta() -> MppMeta {
+    Box::into_raw(Box::new(CompatMeta {
+        magic: META_MAGIC,
+        refs: AtomicU32::new(1),
+        entries: BTreeMap::new(),
+        user_data: None,
+        user_data_set: None,
+    }))
+    .cast()
+}
+
+unsafe fn meta_ref(meta: MppMeta) -> Option<&'static CompatMeta> {
+    unsafe { magic_ref(meta, META_MAGIC) }
+}
+
 unsafe fn meta_mut(meta: MppMeta) -> Option<&'static mut CompatMeta> {
     unsafe { magic_mut(meta, META_MAGIC) }
+}
+
+unsafe fn meta_put_raw(meta: MppMeta) -> bool {
+    let Some(object) = (unsafe { meta_mut(meta) }) else {
+        return false;
+    };
+    if object.refs.load(Ordering::Acquire) == 0 {
+        return false;
+    }
+    if object.refs.fetch_sub(1, Ordering::AcqRel) != 1 {
+        return true;
+    }
+    object.magic = 0;
+    // SAFETY: the final metadata reference was released above.
+    drop(unsafe { Box::from_raw(meta.cast::<CompatMeta>()) });
+    true
+}
+
+unsafe fn meta_get_object(meta: MppMeta, key: c_int) -> Option<*mut c_void> {
+    let object = unsafe { meta_mut(meta) }?;
+    if meta_key_type(key) != Some(MetaType::Object) {
+        return None;
+    }
+    match object.entries.remove(&key) {
+        Some(MetaValue::Object(value)) => Some(value),
+        Some(value) => {
+            object.entries.insert(key, value);
+            None
+        }
+        None => None,
+    }
+}
+
+unsafe fn meta_set_object(meta: MppMeta, key: c_int, value: *mut c_void) -> c_int {
+    let Some(object) = (unsafe { meta_mut(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if meta_key_type(key) != Some(MetaType::Object) {
+        return MPP_NOK;
+    }
+    object.entries.insert(key, MetaValue::Object(value));
+    MPP_OK
 }
 
 pub(super) unsafe fn packet_bytes(packet: MppPacket) -> Option<&'static [u8]> {
@@ -213,8 +482,17 @@ pub(super) unsafe fn packet_metadata(packet: MppPacket) -> Option<(i64, i64, boo
 
 pub(super) unsafe fn packet_output_frame(packet: MppPacket) -> Option<MppFrame> {
     let packet = unsafe { packet_ref(packet) }?;
-    let meta = packet.meta.as_ref()?;
-    (!meta.output_frame.is_null()).then_some(meta.output_frame)
+    unsafe { meta_get_object(packet.meta, KEY_OUTPUT_FRAME) }.filter(|frame| !frame.is_null())
+}
+
+pub(super) unsafe fn frame_set_input_packet(frame: MppFrame, packet: MppPacket) -> bool {
+    let Some(frame) = (unsafe { frame_mut(frame) }) else {
+        return false;
+    };
+    if frame.meta.is_null() {
+        frame.meta = new_meta();
+    }
+    unsafe { meta_set_object(frame.meta, KEY_INPUT_PACKET, packet) == MPP_OK }
 }
 
 pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView> {
@@ -307,7 +585,7 @@ unsafe fn new_packet(data: *mut u8, size: usize) -> MppPacket {
         eos: false,
         extra_data: false,
         buffer: std::ptr::null_mut(),
-        meta: None,
+        meta: std::ptr::null_mut(),
         owned: None,
     }))
     .cast()
@@ -330,11 +608,15 @@ unsafe fn discard_frame_object(frame_pointer: MppFrame) {
         return;
     };
     let buffer = frame.buffer;
+    let meta = frame.meta;
     frame.magic = 0;
     // SAFETY: frame_from_sdk/frame_init allocated this Box.
     drop(unsafe { Box::from_raw(frame_pointer.cast::<CompatFrame>()) });
     if !buffer.is_null() {
         let _ = unsafe { buffer_put_raw(buffer) };
+    }
+    if !meta.is_null() {
+        let _ = unsafe { meta_put_raw(meta) };
     }
 }
 
@@ -951,11 +1233,15 @@ pub unsafe extern "C" fn mpp_packet_deinit(packet: *mut MppPacket) -> c_int {
         return MPP_ERR_VALUE;
     };
     let buffer = packet_object.buffer;
+    let meta = packet_object.meta;
     packet_object.magic = 0;
     // SAFETY: packet_init/new allocated this object and ownership ends here.
     drop(unsafe { Box::from_raw(object.cast::<CompatPacket>()) });
     if !buffer.is_null() {
         let _ = unsafe { buffer_put_raw(buffer) };
+    }
+    if !meta.is_null() {
+        let _ = unsafe { meta_put_raw(meta) };
     }
     unsafe { *packet = std::ptr::null_mut() };
     MPP_OK
@@ -1198,8 +1484,7 @@ pub unsafe extern "C" fn mpp_packet_write(
 #[no_mangle]
 pub unsafe extern "C" fn mpp_packet_has_meta(packet: MppPacket) -> c_int {
     unsafe { packet_ref(packet) }
-        .and_then(|packet| packet.meta.as_ref())
-        .map(|_| 1)
+        .map(|packet| c_int::from(!packet.meta.is_null()))
         .unwrap_or(0)
 }
 
@@ -1208,73 +1493,496 @@ pub unsafe extern "C" fn mpp_packet_get_meta(packet: MppPacket) -> MppMeta {
     let Some(packet) = (unsafe { packet_mut(packet) }) else {
         return std::ptr::null_mut();
     };
-    if packet.meta.is_none() {
-        let meta = Box::new(CompatMeta {
-            magic: META_MAGIC,
-            output_frame: std::ptr::null_mut(),
-            input_packet: std::ptr::null_mut(),
-        });
-        packet.meta = Some(meta);
+    if packet.meta.is_null() {
+        packet.meta = new_meta();
     }
-    packet
-        .meta
-        .as_mut()
-        .map(|meta| (&mut **meta as *mut CompatMeta).cast())
-        .unwrap_or(std::ptr::null_mut())
+    packet.meta
+}
+
+unsafe fn take_meta_value(
+    meta: MppMeta,
+    key: c_int,
+    expected: MetaType,
+) -> Result<Option<MetaValue>, c_int> {
+    let Some(object) = (unsafe { meta_mut(meta) }) else {
+        return Err(MPP_ERR_NULL_PTR);
+    };
+    if meta_key_type(key) != Some(expected) {
+        return Err(MPP_NOK);
+    }
+    let Some(value) = object.entries.remove(&key) else {
+        return Ok(None);
+    };
+    let matches = matches!(
+        (expected, value),
+        (MetaType::S32, MetaValue::S32(_))
+            | (MetaType::S64, MetaValue::S64(_))
+            | (MetaType::Ptr, MetaValue::Ptr(_))
+            | (MetaType::Object, MetaValue::Object(_))
+    );
+    if !matches {
+        object.entries.insert(key, value);
+        return Err(MPP_NOK);
+    }
+    Ok(Some(value))
+}
+
+unsafe fn replace_user_data(meta: &mut CompatMeta, source: *mut CompatEncUserData) {
+    if source.is_null() {
+        meta.user_data = None;
+        return;
+    }
+    let source = unsafe { &*source };
+    let Ok(len) = usize::try_from(source.len) else {
+        meta.user_data = None;
+        return;
+    };
+    if source.pdata.is_null() || len == 0 {
+        meta.user_data = None;
+        return;
+    }
+    let data = unsafe { std::slice::from_raw_parts(source.pdata.cast::<u8>(), len) }
+        .to_vec()
+        .into_boxed_slice();
+    meta.user_data = Some(OwnedUserData {
+        public: CompatEncUserData {
+            len: source.len,
+            pdata: data.as_ptr().cast_mut().cast(),
+        },
+        data,
+    });
+}
+
+unsafe fn replace_user_data_set(meta: &mut CompatMeta, source: *mut CompatEncUserDataSet) {
+    if source.is_null() {
+        meta.user_data_set = None;
+        return;
+    }
+    let source_set = unsafe { &*source };
+    let Ok(count) = usize::try_from(source_set.count) else {
+        meta.user_data_set = None;
+        return;
+    };
+    if count == 0 || source_set.datas.is_null() {
+        meta.user_data_set = None;
+        return;
+    }
+    let source_entries = unsafe { std::slice::from_raw_parts(source_set.datas, count) };
+    let mut entries = vec![
+        CompatEncUserDataFull {
+            len: 0,
+            uuid: std::ptr::null_mut(),
+            pdata: std::ptr::null_mut(),
+        };
+        count
+    ]
+    .into_boxed_slice();
+    let mut uuids = Vec::with_capacity(count);
+    let mut payloads = Vec::with_capacity(count);
+    for (index, source) in source_entries.iter().enumerate() {
+        entries[index].len = source.len;
+        if !source.uuid.is_null() {
+            let uuid = unsafe { std::slice::from_raw_parts(source.uuid, 16) }
+                .to_vec()
+                .into_boxed_slice();
+            entries[index].uuid = uuid.as_ptr().cast_mut();
+            uuids.push(uuid);
+        }
+        if !source.pdata.is_null() {
+            let payload = unsafe {
+                std::slice::from_raw_parts(source.pdata.cast::<u8>(), source.len as usize)
+            }
+            .to_vec()
+            .into_boxed_slice();
+            entries[index].pdata = payload.as_ptr().cast_mut().cast();
+            payloads.push(payload);
+        }
+    }
+    let datas = entries.as_mut_ptr();
+    meta.user_data_set = Some(OwnedUserDataSet {
+        public: CompatEncUserDataSet {
+            count: count as u32,
+            datas,
+        },
+        entries,
+        _uuids: uuids,
+        _payloads: payloads,
+    });
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_meta_set_frame(meta: MppMeta, _key: c_int, frame: MppFrame) -> c_int {
+pub unsafe extern "C" fn mpp_meta_get_with_tag(
+    meta: *mut MppMeta,
+    _tag: *const c_char,
+    _caller: *const c_char,
+) -> c_int {
+    if meta.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    unsafe { *meta = new_meta() };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_put(meta: MppMeta) -> c_int {
+    if meta.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    if unsafe { meta_put_raw(meta) } {
+        MPP_OK
+    } else {
+        MPP_ERR_VALUE
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_inc_ref(meta: MppMeta) -> c_int {
     let Some(meta) = (unsafe { meta_mut(meta) }) else {
         return MPP_ERR_NULL_PTR;
     };
-    meta.output_frame = frame;
+    if meta.refs.load(Ordering::Acquire) == 0 {
+        return MPP_ERR_VALUE;
+    }
+    meta.refs.fetch_add(1, Ordering::AcqRel);
     MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_size(meta: MppMeta) -> c_int {
+    unsafe { meta_ref(meta) }
+        .map(|meta| meta.entries.len().min(c_int::MAX as usize) as c_int)
+        .unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_dup(meta: MppMeta) -> MppMeta {
+    let Some(meta) = (unsafe { meta_ref(meta) }) else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(CompatMeta {
+        magic: META_MAGIC,
+        refs: AtomicU32::new(1),
+        entries: meta.entries.clone(),
+        user_data: meta.user_data.clone(),
+        user_data_set: meta.user_data_set.clone(),
+    }))
+    .cast()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_dump(meta: MppMeta) -> c_int {
+    let Some(meta) = (unsafe { meta_ref(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    println!("rk-mpp-rs meta entries {}", meta.entries.len());
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_set_s32(meta: MppMeta, key: c_int, value: i32) -> c_int {
+    let Some(meta) = (unsafe { meta_mut(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if meta_key_type(key) != Some(MetaType::S32) {
+        return MPP_NOK;
+    }
+    meta.entries.insert(key, MetaValue::S32(value));
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_s32(meta: MppMeta, key: c_int, value: *mut i32) -> c_int {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    match unsafe { take_meta_value(meta, key, MetaType::S32) } {
+        Ok(Some(MetaValue::S32(stored))) => {
+            unsafe { *value = stored };
+            MPP_OK
+        }
+        Ok(_) => MPP_NOK,
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_s32_d(
+    meta: MppMeta,
+    key: c_int,
+    value: *mut i32,
+    default: i32,
+) -> c_int {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    match unsafe { take_meta_value(meta, key, MetaType::S32) } {
+        Ok(Some(MetaValue::S32(stored))) => {
+            unsafe { *value = stored };
+            MPP_OK
+        }
+        Ok(_) => {
+            unsafe { *value = default };
+            MPP_NOK
+        }
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_set_s64(meta: MppMeta, key: c_int, value: i64) -> c_int {
+    let Some(meta) = (unsafe { meta_mut(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if meta_key_type(key) != Some(MetaType::S64) {
+        return MPP_NOK;
+    }
+    meta.entries.insert(key, MetaValue::S64(value));
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_s64(meta: MppMeta, key: c_int, value: *mut i64) -> c_int {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    match unsafe { take_meta_value(meta, key, MetaType::S64) } {
+        Ok(Some(MetaValue::S64(stored))) => {
+            unsafe { *value = stored };
+            MPP_OK
+        }
+        Ok(_) => MPP_NOK,
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_s64_d(
+    meta: MppMeta,
+    key: c_int,
+    value: *mut i64,
+    default: i64,
+) -> c_int {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    match unsafe { take_meta_value(meta, key, MetaType::S64) } {
+        Ok(Some(MetaValue::S64(stored))) => {
+            unsafe { *value = stored };
+            MPP_OK
+        }
+        Ok(_) => {
+            unsafe { *value = default };
+            MPP_NOK
+        }
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_set_ptr(meta: MppMeta, key: c_int, value: *mut c_void) -> c_int {
+    let Some(meta_object) = (unsafe { meta_mut(meta) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if meta_key_type(key) != Some(MetaType::Ptr) {
+        return MPP_NOK;
+    }
+    if key == KEY_USER_DATA {
+        unsafe { replace_user_data(meta_object, value.cast()) };
+    } else if key == KEY_USER_DATAS {
+        unsafe { replace_user_data_set(meta_object, value.cast()) };
+    }
+    meta_object.entries.insert(key, MetaValue::Ptr(value));
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_ptr(
+    meta: MppMeta,
+    key: c_int,
+    value: *mut *mut c_void,
+) -> c_int {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    match unsafe { take_meta_value(meta, key, MetaType::Ptr) } {
+        Ok(Some(MetaValue::Ptr(stored))) => {
+            let output = if key == KEY_USER_DATA {
+                let Some(meta) = (unsafe { meta_mut(meta) }) else {
+                    return MPP_ERR_VALUE;
+                };
+                meta.user_data
+                    .as_mut()
+                    .map(|data| (&mut data.public as *mut CompatEncUserData).cast())
+                    .unwrap_or(std::ptr::null_mut())
+            } else if key == KEY_USER_DATAS {
+                let Some(meta) = (unsafe { meta_mut(meta) }) else {
+                    return MPP_ERR_VALUE;
+                };
+                meta.user_data_set
+                    .as_mut()
+                    .map(|data| (&mut data.public as *mut CompatEncUserDataSet).cast())
+                    .unwrap_or(std::ptr::null_mut())
+            } else {
+                stored
+            };
+            unsafe { *value = output };
+            MPP_OK
+        }
+        Ok(_) => MPP_NOK,
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_ptr_d(
+    meta: MppMeta,
+    key: c_int,
+    value: *mut *mut c_void,
+    default: *mut c_void,
+) -> c_int {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let result = unsafe { mpp_meta_get_ptr(meta, key, value) };
+    if result != MPP_OK && meta_key_type(key) == Some(MetaType::Ptr) {
+        unsafe { *value = default };
+    }
+    result
+}
+
+fn meta_store_object(meta: MppMeta, key: c_int, value: *mut c_void) -> c_int {
+    unsafe { meta_set_object(meta, key, value) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_set_frame(meta: MppMeta, key: c_int, frame: MppFrame) -> c_int {
+    meta_store_object(meta, key, frame)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_meta_get_frame(
     meta: MppMeta,
-    _key: c_int,
+    key: c_int,
     frame: *mut MppFrame,
 ) -> c_int {
     if frame.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let Some(meta) = (unsafe { meta_mut(meta) }) else {
+    match unsafe { take_meta_value(meta, key, MetaType::Object) } {
+        Ok(Some(MetaValue::Object(stored))) => {
+            unsafe { *frame = stored };
+            MPP_OK
+        }
+        Ok(_) => MPP_NOK,
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_frame_d(
+    meta: MppMeta,
+    key: c_int,
+    frame: *mut MppFrame,
+    default: MppFrame,
+) -> c_int {
+    if frame.is_null() {
         return MPP_ERR_NULL_PTR;
-    };
-    unsafe { *frame = meta.output_frame };
-    MPP_OK
+    }
+    let result = unsafe { mpp_meta_get_frame(meta, key, frame) };
+    if result != MPP_OK && meta_key_type(key) == Some(MetaType::Object) {
+        unsafe { *frame = default };
+    }
+    result
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_meta_set_packet(
     meta: MppMeta,
-    _key: c_int,
+    key: c_int,
     packet: MppPacket,
 ) -> c_int {
-    let Some(meta) = (unsafe { meta_mut(meta) }) else {
-        return MPP_ERR_NULL_PTR;
-    };
-    meta.input_packet = packet;
-    MPP_OK
+    meta_store_object(meta, key, packet)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_meta_get_packet(
     meta: MppMeta,
-    _key: c_int,
+    key: c_int,
     packet: *mut MppPacket,
 ) -> c_int {
     if packet.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let Some(meta) = (unsafe { meta_mut(meta) }) else {
+    match unsafe { take_meta_value(meta, key, MetaType::Object) } {
+        Ok(Some(MetaValue::Object(stored))) => {
+            unsafe { *packet = stored };
+            MPP_OK
+        }
+        Ok(_) => MPP_NOK,
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_packet_d(
+    meta: MppMeta,
+    key: c_int,
+    packet: *mut MppPacket,
+    default: MppPacket,
+) -> c_int {
+    if packet.is_null() {
         return MPP_ERR_NULL_PTR;
-    };
-    unsafe { *packet = meta.input_packet };
-    MPP_OK
+    }
+    let result = unsafe { mpp_meta_get_packet(meta, key, packet) };
+    if result != MPP_OK && meta_key_type(key) == Some(MetaType::Object) {
+        unsafe { *packet = default };
+    }
+    result
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_set_buffer(
+    meta: MppMeta,
+    key: c_int,
+    buffer: MppBuffer,
+) -> c_int {
+    meta_store_object(meta, key, buffer)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_buffer(
+    meta: MppMeta,
+    key: c_int,
+    buffer: *mut MppBuffer,
+) -> c_int {
+    if buffer.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    match unsafe { take_meta_value(meta, key, MetaType::Object) } {
+        Ok(Some(MetaValue::Object(stored))) => {
+            unsafe { *buffer = stored };
+            MPP_OK
+        }
+        Ok(_) => MPP_NOK,
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_meta_get_buffer_d(
+    meta: MppMeta,
+    key: c_int,
+    buffer: *mut MppBuffer,
+    default: MppBuffer,
+) -> c_int {
+    if buffer.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let result = unsafe { mpp_meta_get_buffer(meta, key, buffer) };
+    if result != MPP_OK && meta_key_type(key) == Some(MetaType::Object) {
+        unsafe { *buffer = default };
+    }
+    result
 }
 
 #[no_mangle]
@@ -1347,11 +2055,15 @@ pub unsafe extern "C" fn mpp_frame_deinit(frame: *mut MppFrame) -> c_int {
         return MPP_ERR_VALUE;
     };
     let buffer = frame_object.buffer;
+    let meta = frame_object.meta;
     frame_object.magic = 0;
     // SAFETY: frame_init or frame_from_sdk allocated this Box.
     drop(unsafe { Box::from_raw(object.cast::<CompatFrame>()) });
     if !buffer.is_null() {
         let _ = unsafe { buffer_put_raw(buffer) };
+    }
+    if !meta.is_null() {
+        let _ = unsafe { meta_put_raw(meta) };
     }
     unsafe { *frame = std::ptr::null_mut() };
     MPP_OK
@@ -1495,17 +2207,37 @@ pub unsafe extern "C" fn mpp_frame_set_buffer(frame: MppFrame, buffer: MppBuffer
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_frame_has_meta(_frame: MppFrame) -> c_int {
-    0
+pub unsafe extern "C" fn mpp_frame_has_meta(frame: MppFrame) -> c_int {
+    unsafe { frame_ref(frame) }
+        .map(|frame| c_int::from(!frame.meta.is_null()))
+        .unwrap_or(0)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_frame_get_meta(_frame: MppFrame) -> MppMeta {
-    std::ptr::null_mut()
+pub unsafe extern "C" fn mpp_frame_get_meta(frame: MppFrame) -> MppMeta {
+    let Some(frame) = (unsafe { frame_mut(frame) }) else {
+        return std::ptr::null_mut();
+    };
+    if frame.meta.is_null() {
+        frame.meta = new_meta();
+    }
+    frame.meta
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_frame_set_meta(_frame: MppFrame, _meta: MppMeta) {}
+pub unsafe extern "C" fn mpp_frame_set_meta(frame: MppFrame, meta: MppMeta) {
+    let Some(frame) = (unsafe { frame_mut(frame) }) else {
+        return;
+    };
+    if frame.meta == meta {
+        return;
+    }
+    let previous = frame.meta;
+    frame.meta = meta;
+    if !previous.is_null() {
+        let _ = unsafe { meta_put_raw(previous) };
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_frame_get_fmt(frame: MppFrame) -> u32 {
