@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Run the vendor mpi_enc_test binary unchanged with LD_PRELOAD. H.265 and
-# MJPEG are byte-identical; H.264's single-frame reconstructed pixels are
-# compared because the old vendor slice header uses a different IDR state
-# encoding. Multi-frame H.264 remains a known W7-3 divergence.
+# MJPEG are compared byte-for-byte; H.264 compares the complete NAL sequence
+# and decoded reconstruction.
 set -euo pipefail
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -15,7 +14,9 @@ mpp_lib="${MPP_LIB:-$mpp_old/build/mpp}"
 preload="$repo/target/release/librk_mpp_rs.so"
 cli="$repo/target/release/rk-mpp-rs"
 raw="${ENC_RAW:-/tmp/rk_mpp_official_enc_320x240.nv12}"
+raw_multi="${ENC_RAW_MULTI:-/tmp/rk_mpp_official_enc_320x240_6.nv12}"
 gop="${ENC_GOP:-60}"
+gop_spec="${ENC_GOP_SPEC:-0:$gop}"
 
 if [ ! -x "$enc_test" ] || [ ! -f "$mpp_lib/librockchip_mpp.so.0" ]; then
     printf 'missing vendor mpi_enc_test under %s\n' "$mpp_old" >&2
@@ -30,39 +31,46 @@ cargo build --release --offline --lib --bin rk-mpp-rs
 ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 1 \
     -pix_fmt nv12 -f rawvideo "$raw"
+ffmpeg -nostdin -y -hide_banner -loglevel error \
+    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
+    -pix_fmt nv12 -f rawvideo "$raw_multi"
 
 run_vendor_frames() {
-    local output="$1"
-    local frames="$2"
+    local input="$1"
+    local output="$2"
+    local frames="$3"
+    shift
     shift
     shift
     LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
-        timeout 30 "$enc_test" -i "$raw" -o "$output" \
-        -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g "$gop" "$@" \
+        timeout 30 "$enc_test" -i "$input" -o "$output" \
+        -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g "$gop_spec" "$@" \
         < /dev/null > /dev/null 2>&1
 }
 
 run_compat_frames() {
-    local output="$1"
-    local frames="$2"
+    local input="$1"
+    local output="$2"
+    local frames="$3"
+    shift
     shift
     shift
     LD_PRELOAD="$preload" LD_LIBRARY_PATH="$mpp_lib:${LD_LIBRARY_PATH:-}" \
-        timeout 30 "$enc_test" -i "$raw" -o "$output" \
-        -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g "$gop" "$@" \
+        timeout 30 "$enc_test" -i "$input" -o "$output" \
+        -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g "$gop_spec" "$@" \
         < /dev/null > /dev/null 2>&1
 }
 
 run_vendor() {
     local output="$1"
     shift
-    run_vendor_frames "$output" 1 "$@"
+    run_vendor_frames "$raw" "$output" 1 "$@"
 }
 
 run_compat() {
     local output="$1"
     shift
-    run_compat_frames "$output" 1 "$@"
+    run_compat_frames "$raw" "$output" 1 "$@"
 }
 
 if [ "${SKIP_H264:-0}" = 1 ]; then
@@ -84,8 +92,8 @@ else
 
     h264_multi_c=/tmp/rk_mpp_official_enc_h264_multi_c.264
     h264_multi_r=/tmp/rk_mpp_official_enc_h264_multi_r.264
-    run_vendor_frames "$h264_multi_c" 6 -t 7 -qc 26
-    run_compat_frames "$h264_multi_r" 6 -t 7 -qc 26
+    run_vendor_frames "$raw_multi" "$h264_multi_c" 6 -t 7 -qc 26
+    run_compat_frames "$raw_multi" "$h264_multi_r" 6 -t 7 -qc 26
     python3 "$repo/scripts/compare_streams.py" "$h264_multi_c" "$h264_multi_r"
     LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
         "$cli" h264dec "$h264_multi_c" /tmp/rk_mpp_official_enc_h264_multi_c.yuv \
@@ -108,6 +116,14 @@ else
     cmp "$h265_c" "$h265_r"
     printf 'PASS h265 stream through unchanged mpi_enc_test (%s)\n' \
         "$(sha256sum "$h265_r" | cut -d' ' -f1)"
+
+    h265_multi_c=/tmp/rk_mpp_official_enc_h265_multi_c.265
+    h265_multi_r=/tmp/rk_mpp_official_enc_h265_multi_r.265
+    run_vendor_frames "$raw_multi" "$h265_multi_c" 6 -t 16777220 -qc 26
+    run_compat_frames "$raw_multi" "$h265_multi_r" 6 -t 16777220 -qc 26
+    cmp "$h265_multi_c" "$h265_multi_r"
+    printf 'PASS h265 six-frame stream through unchanged mpi_enc_test (%s)\n' \
+        "$(sha256sum "$h265_multi_r" | cut -d' ' -f1)"
 fi
 
 mjpeg_c=/tmp/rk_mpp_official_enc_mjpeg_c.jpg

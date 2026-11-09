@@ -75,7 +75,7 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的逐帧
 streaming RC 尚未接入，接口明确返回 unsupported。
 t6/lf1 的 workspace 最终全量门均为
-`1201 passed / 0 failed / 38 ignored`（root SDK 1197 + sys crate 4），
+`1205 passed / 0 failed / 38 ignored`（root SDK 1201 + sys crate 4），
 rustfmt 与严格 workspace rustdoc 同时通过。
 
 V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice，
@@ -142,8 +142,11 @@ encoder 对象流已开始接通：`MPP_ENC_SET_CFG` 通过 vendor `MppEncCfg`
 `9d8c6f…24ac6fc`，与 C 相同。默认 MPP CPB 的 IDR-only reference 调度和
 slice-header amend 已补齐：H.264 320×240 6 帧的 SPS/PPS、rc-SEI、IDR 和
 P1–P5 VCL 与 C 完全一致，解码重建逐帧相同；只有 version-SEI 的构建文本
-长度不同。lf1 的 MJPEG 对象流逐字节一致，H.264/H.265 官方参数面暂明确
-SKIP。
+长度不同。lf1 也已通过同一官方工具门：H.264 High 单帧和真实 6 帧的
+NAL/解码重建一致，H.265 单帧和 6 帧、MJPEG 均逐字节一致。RK3576 使用
+单独的 High CABAC/8x8 寄存器模板、MEIW `KEY_MOTION_INFO` buffer，以及
+`mpi_enc_test` 的 H.265 参数集/无 SEI 对象流，不再复用直连 CLI 的 4710-byte
+前缀格式。
 
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。

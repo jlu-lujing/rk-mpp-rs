@@ -409,18 +409,20 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                     return MPP_NOK;
                 }
             };
-            match encoder::Encoder::new(config) {
+            match encoder::Encoder::new_mpi_compat(config) {
                 Ok(mut encoder) => {
                     if context.coding == MPP_VIDEO_CODING_AVC {
-                        if !matches!(config.profile(), 0 | 66) {
+                        if matches!(config.profile(), 0 | 66) {
+                            if encoder.force_reference_slot(Some(0)).is_err() {
+                                eprintln!(
+                                    "rk-mpp-rs mpp: default MPP H.264 reference schedule is unavailable"
+                                );
+                                return MPP_NOK;
+                            }
+                        } else if config.profile() != 100 {
                             eprintln!(
-                                "rk-mpp-rs mpp: default H.264 CPB amendment currently requires Baseline"
-                            );
-                            return MPP_NOK;
-                        }
-                        if encoder.force_reference_slot(Some(0)).is_err() {
-                            eprintln!(
-                                "rk-mpp-rs mpp: default MPP H.264 reference schedule is unavailable"
+                                "rk-mpp-rs mpp: H.264 profile {} is not supported",
+                                config.profile()
                             );
                             return MPP_NOK;
                         }

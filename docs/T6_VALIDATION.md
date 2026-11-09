@@ -275,8 +275,14 @@ RK3576 H.264/H.265 encoder matrix remain open.
 vendor encoder tool. It reads `MppEncCfg` from the vendor helper object, submits
 the test's NV12 `MppFrame`, and drains owned `MppPacket` objects:
 
+The 2024 t6 harness is run with `ENC_GOP_SPEC=60` to preserve its captured
+reference schedule. The 2025 lf1 harness uses the script default `0:60`, which
+sets an ordinary 60-picture GOP without the absent smart-GOP ref config.
+
 - H.265 320x240 one picture: byte-identical, SHA
   `1f00679ad21815e45c08f1fedd2873d4604cc654ccb131a6ce44ce6fd352e84a`.
+- H.265 320x240 six pictures: byte-identical, SHA
+  `e763e3577eff87ec4154438de2a761e35affeba3d92e897ae2742f884af03462`.
 - MJPEG 320x240 one picture: byte-identical, SHA
   `08eb7c6f097f70e9e5424111a83dddef4d7cc46fc01d2772b42dc565b5388623`.
 - H.264 320x240 one picture: both streams decode to identical YUV, SHA
@@ -285,8 +291,13 @@ the test's NV12 `MppFrame`, and drains owned `MppPacket` objects:
   MPP; all six decoded YUV pictures are byte-identical. Only the version-SEI
   build text differs, which the stream comparator checks for framing only.
 
-On lf1 only MJPEG currently passes byte identity; RK3576 H.264/H.265 official
-encoder parameters remain explicit SKIPs.
+On lf1 the unchanged official encoder tool now also passes all exposed codecs:
+H.264 High one picture and a real six-picture stream compare identical NAL
+sequences and decoded reconstruction (version-SEI framing only); H.265 one and
+six pictures are byte-identical (`8c693d15…1efa97a7`,
+`cf6b5f6a…eba2e5fd`); MJPEG is byte-identical (`93d7ac00…eab945e`). The RK3576
+object path uses its own CABAC/8x8 and H.265 register templates plus a MEIW
+buffer; it does not reuse the direct CLI's 4710-byte H.265 prefix format.
 
 Performance gate:
 

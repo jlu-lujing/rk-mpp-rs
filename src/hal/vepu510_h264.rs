@@ -5,7 +5,7 @@
 //! patched at runtime.
 
 use crate::codec::h264::encoder::{
-    self, EncoderConfig, GdrMode, RcMode, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY,
+    self, EncoderConfig, GdrMode, RcMode, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY, PROFILE_HIGH,
 };
 use crate::codec::rc::model as rc_model;
 use crate::service::dma_heap::DmaBuf;
@@ -23,6 +23,7 @@ const OUTPUT_SIZE: usize = 128 * 1024;
 const RECON_SIZE: usize = 128 * 1024;
 const THUMB_SIZE: usize = 8 * 1024;
 const SMEAR_SIZE: usize = 256;
+const MD_INFO_SIZE: usize = 1200;
 const FBC_HEADER_SIZE: usize = 8 * 1024;
 const CTL_OFFSET: u32 = 0;
 const FRAME_OFFSET: u32 = 624;
@@ -51,12 +52,14 @@ struct JobOutput {
 }
 
 pub struct Vepu510H264 {
+    config: EncoderConfig,
     svc: MppService,
     input: DmaBuf,
     output: DmaBuf,
     recon: [DmaBuf; 2],
     thumb: [DmaBuf; 2],
     smear: [DmaBuf; 2],
+    md_info: DmaBuf,
     idr_done: bool,
     frame_number: u32,
     input_fd_override: Option<i32>,
@@ -64,6 +67,13 @@ pub struct Vepu510H264 {
 
 impl Vepu510H264 {
     pub fn open() -> Result<Self, String> {
+        let mut config = EncoderConfig::new(WIDTH, HEIGHT);
+        config.vui_log2_max_mv_length = 15;
+        Self::open_with_config(config)
+    }
+
+    pub fn open_with_config(config: EncoderConfig) -> Result<Self, String> {
+        config.validate().map_err(|error| error.to_string())?;
         require_video_encode(VideoEncodeHal::Vepu510)?;
         let input = DmaBuf::alloc("system", INPUT_SIZE, false)
             .map_err(|e| format!("allocate VEPU510 input: {e}"))?;
@@ -87,14 +97,18 @@ impl Vepu510H264 {
             DmaBuf::alloc("system", SMEAR_SIZE, false)
                 .map_err(|e| format!("allocate VEPU510 smear 1: {e}"))?,
         ];
+        let mut md_info = DmaBuf::alloc("system", MD_INFO_SIZE, true)
+            .map_err(|e| format!("allocate VEPU510 motion info: {e}"))?;
         for buffer in recon
             .iter_mut()
             .chain(thumb.iter_mut())
             .chain(smear.iter_mut())
+            .chain(std::iter::once(&mut md_info))
         {
             zero_buffer(buffer)?;
         }
         Ok(Self {
+            config,
             svc: MppService::open(Client::RkvEnc as u32)
                 .map_err(|e| format!("open RK3576 video encoder: {e}"))?,
             input,
@@ -102,6 +116,7 @@ impl Vepu510H264 {
             recon,
             thumb,
             smear,
+            md_info,
             idr_done: false,
             frame_number: 0,
             input_fd_override: None,
@@ -461,22 +476,32 @@ impl Vepu510H264 {
         split_arg: u32,
         split_out: u32,
     ) -> Result<EncodedFrame, String> {
-        let mut config = EncoderConfig::new(WIDTH, HEIGHT);
-        config.vui_log2_max_mv_length = 15;
-        let header = encoder::build_headers(&config).map_err(|e| e.to_string())?;
-        if header.len() != 36 {
+        let config = &self.config;
+        let header = encoder::build_headers(config).map_err(|e| e.to_string())?;
+        if !matches!(header.len(), 36..=38) {
             return Err(format!(
                 "unexpected no-SEI VEPU510 header length {}",
                 header.len()
             ));
         }
-        let mut registers = RegisterFile::captured_fixqp_idr_320x240(
-            self.input.fd() as u32,
-            self.output.fd() as u32,
-            self.recon[0].fd() as u32,
-            self.thumb[0].fd() as u32,
-            self.smear[0].fd() as u32,
-        )?;
+        let mut registers = if config.profile >= PROFILE_HIGH {
+            RegisterFile::captured_fixqp_idr_320x240_high(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[0].fd() as u32,
+                self.thumb[0].fd() as u32,
+                self.smear[0].fd() as u32,
+                self.md_info.fd() as u32,
+            )?
+        } else {
+            RegisterFile::captured_fixqp_idr_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[0].fd() as u32,
+                self.thumb[0].fd() as u32,
+                self.smear[0].fd() as u32,
+            )?
+        };
         registers.apply_roi_regions(rois)?;
         registers.apply_slice_split(split_mode, split_arg, split_out)?;
         let output = self.run_job_with_status(nv12, &registers, &header, split_out)?;
@@ -499,17 +524,32 @@ impl Vepu510H264 {
     ) -> Result<EncodedFrame, String> {
         let current = (frame_number & 1) as usize;
         let reference = 1 - current;
-        let mut registers = RegisterFile::captured_fixqp_p_320x240(
-            self.input.fd() as u32,
-            self.output.fd() as u32,
-            self.recon[current].fd() as u32,
-            self.recon[reference].fd() as u32,
-            self.thumb[current].fd() as u32,
-            self.thumb[reference].fd() as u32,
-            self.smear[current].fd() as u32,
-            self.smear[reference].fd() as u32,
-            frame_number,
-        )?;
+        let mut registers = if self.config.profile >= PROFILE_HIGH {
+            RegisterFile::captured_fixqp_p_320x240_high(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                frame_number,
+                self.md_info.fd() as u32,
+            )?
+        } else {
+            RegisterFile::captured_fixqp_p_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                frame_number,
+            )?
+        };
         registers.apply_roi_regions(rois)?;
         registers.apply_slice_split(split_mode, split_arg, split_out)?;
         registers.set(
@@ -552,7 +592,8 @@ impl Vepu510H264 {
             self.input.fd()
         };
 
-        if !prefix.is_empty() {
+        let high_profile = self.config.profile >= PROFILE_HIGH;
+        if !prefix.is_empty() && !high_profile {
             self.output
                 .sync_write_begin()
                 .map_err(|e| format!("VEPU510 output sync begin: {e}"))?;
@@ -563,6 +604,12 @@ impl Vepu510H264 {
         }
 
         let luma_size = WIDTH * HEIGHT;
+        let output_capacity = if high_profile {
+            self.output.len() - FBC_HEADER_SIZE
+        } else {
+            self.output.len() - 1
+        };
+        let output_start = if high_profile { 0 } else { prefix.len() };
         let offsets = vec![
             RegOffsetInfo {
                 reg_idx: 161,
@@ -574,11 +621,11 @@ impl Vepu510H264 {
             },
             RegOffsetInfo {
                 reg_idx: 172,
-                offset: (self.output.len() - 1) as u32,
+                offset: output_capacity as u32,
             },
             RegOffsetInfo {
                 reg_idx: 174,
-                offset: prefix.len() as u32,
+                offset: output_start as u32,
             },
             RegOffsetInfo {
                 reg_idx: 164,
@@ -603,9 +650,9 @@ impl Vepu510H264 {
         batch.reg_write(&registers.param, PARAM_OFFSET);
         batch.reg_write(&registers.sqi, SQI_OFFSET);
         batch.reg_write(&registers.scl, SCL_OFFSET);
-        batch.reg_offsets(&offsets);
         batch.reg_read(&mut int_state, HW_STATUS_OFFSET);
         batch.reg_read(&mut status, STATUS_OFFSET);
+        batch.reg_offsets(&offsets);
         self.svc
             .submit_batch_recovering(&mut batch)
             .map_err(|e| format!("VEPU510 submit: {e}"))?;
@@ -653,11 +700,11 @@ impl Vepu510H264 {
             ));
         }
         let payload_len = status[0] as usize;
-        let stream_len = prefix
+        let expected_len = prefix
             .len()
             .checked_add(payload_len)
             .ok_or_else(|| "VEPU510 stream length overflow".to_string())?;
-        if payload_len == 0 || stream_len > self.output.len() {
+        if payload_len == 0 || expected_len > self.output.len() {
             let _ = self.svc.restart_after_hardware_error();
             return Err(format!(
                 "invalid VEPU510 payload length {payload_len} (capacity {})",
@@ -675,10 +722,10 @@ impl Vepu510H264 {
                     .checked_add(*length)
                     .ok_or_else(|| "VEPU510 packet length overflow".to_string())
             })?;
-            if slice_len != stream_len {
+            if slice_len != expected_len {
                 let _ = self.svc.restart_after_hardware_error();
                 return Err(format!(
-                    "VEPU510 slice lengths total {slice_len}, STATUS stream length is {stream_len}"
+                    "VEPU510 slice lengths total {slice_len}, STATUS stream length is {expected_len}"
                 ));
             }
         }
@@ -686,7 +733,14 @@ impl Vepu510H264 {
         self.output
             .sync_read_begin()
             .map_err(|e| format!("VEPU510 output invalidate: {e}"))?;
-        let stream = self.output.as_slice()[..stream_len].to_vec();
+        let stream = if high_profile {
+            let mut stream = Vec::with_capacity(expected_len);
+            stream.extend_from_slice(prefix);
+            stream.extend_from_slice(&self.output.as_slice()[..payload_len]);
+            stream
+        } else {
+            self.output.as_slice()[..expected_len].to_vec()
+        };
         self.output
             .sync_read_end()
             .map_err(|e| format!("VEPU510 output sync end: {e}"))?;

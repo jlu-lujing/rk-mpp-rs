@@ -1,5 +1,7 @@
 //! VEPU510 register-file scaffolding for RK3576 H.264 encoding.
 
+use super::vepu510_high_idr_template;
+use super::vepu510_high_p_template;
 use super::vepu510_idr_template;
 use super::vepu510_p_template;
 use super::vepu510_regs::{self, Field};
@@ -43,13 +45,69 @@ impl RegisterFile {
         thumb_fd: u32,
         smear_fd: u32,
     ) -> Result<Self, String> {
+        Self::captured_fixqp_idr_320x240_with_template(
+            input_fd, output_fd, recon_fd, thumb_fd, smear_fd, None,
+        )
+    }
+
+    pub fn captured_fixqp_idr_320x240_high(
+        input_fd: u32,
+        output_fd: u32,
+        recon_fd: u32,
+        thumb_fd: u32,
+        smear_fd: u32,
+        md_info_fd: u32,
+    ) -> Result<Self, String> {
+        Self::captured_fixqp_idr_320x240_with_template(
+            input_fd,
+            output_fd,
+            recon_fd,
+            thumb_fd,
+            smear_fd,
+            Some(md_info_fd),
+        )
+    }
+
+    fn captured_fixqp_idr_320x240_with_template(
+        input_fd: u32,
+        output_fd: u32,
+        recon_fd: u32,
+        thumb_fd: u32,
+        smear_fd: u32,
+        md_info_fd: Option<u32>,
+    ) -> Result<Self, String> {
+        let high_profile = md_info_fd.is_some();
         let mut regs = Self {
-            ctl: vepu510_idr_template::CTL,
-            frame: vepu510_idr_template::FRAME,
-            rc: vepu510_idr_template::RC,
-            param: vepu510_idr_template::PARAM,
-            sqi: vepu510_idr_template::SQI,
-            scl: vepu510_idr_template::SCL,
+            ctl: if high_profile {
+                vepu510_high_idr_template::CTL
+            } else {
+                vepu510_idr_template::CTL
+            },
+            frame: if high_profile {
+                vepu510_high_idr_template::FRAME
+            } else {
+                vepu510_idr_template::FRAME
+            },
+            rc: if high_profile {
+                vepu510_high_idr_template::RC
+            } else {
+                vepu510_idr_template::RC
+            },
+            param: if high_profile {
+                vepu510_high_idr_template::PARAM
+            } else {
+                vepu510_idr_template::PARAM
+            },
+            sqi: if high_profile {
+                vepu510_high_idr_template::SQI
+            } else {
+                vepu510_idr_template::SQI
+            },
+            scl: if high_profile {
+                vepu510_high_idr_template::SCL
+            } else {
+                vepu510_idr_template::SCL
+            },
         };
 
         for index in 4..=6 {
@@ -65,7 +123,7 @@ impl RegisterFile {
         }
         regs.frame[28] = smear_fd;
         regs.frame[29] = smear_fd;
-        regs.frame[15] = 0;
+        regs.frame[15] = md_info_fd.unwrap_or(0);
 
         for (field, value) in [
             (vepu510_regs::FRAME_ENC_PIC_PIC_QP, 26),
@@ -94,18 +152,97 @@ impl RegisterFile {
         smear_read_fd: u32,
         frame_number: u32,
     ) -> Result<Self, String> {
+        Self::captured_fixqp_p_320x240_with_template(
+            input_fd,
+            output_fd,
+            recon_write_fd,
+            recon_read_fd,
+            thumb_write_fd,
+            thumb_read_fd,
+            smear_write_fd,
+            smear_read_fd,
+            frame_number,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn captured_fixqp_p_320x240_high(
+        input_fd: u32,
+        output_fd: u32,
+        recon_write_fd: u32,
+        recon_read_fd: u32,
+        thumb_write_fd: u32,
+        thumb_read_fd: u32,
+        smear_write_fd: u32,
+        smear_read_fd: u32,
+        frame_number: u32,
+        md_info_fd: u32,
+    ) -> Result<Self, String> {
+        Self::captured_fixqp_p_320x240_with_template(
+            input_fd,
+            output_fd,
+            recon_write_fd,
+            recon_read_fd,
+            thumb_write_fd,
+            thumb_read_fd,
+            smear_write_fd,
+            smear_read_fd,
+            frame_number,
+            Some(md_info_fd),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn captured_fixqp_p_320x240_with_template(
+        input_fd: u32,
+        output_fd: u32,
+        recon_write_fd: u32,
+        recon_read_fd: u32,
+        thumb_write_fd: u32,
+        thumb_read_fd: u32,
+        smear_write_fd: u32,
+        smear_read_fd: u32,
+        frame_number: u32,
+        md_info_fd: Option<u32>,
+    ) -> Result<Self, String> {
+        let high_profile = md_info_fd.is_some();
         if frame_number == 0 || frame_number > 32_767 {
             return Err(format!(
                 "captured VEPU510 P frame number {frame_number} is outside 1..=32767"
             ));
         }
         let mut regs = Self {
-            ctl: vepu510_p_template::CTL,
-            frame: vepu510_p_template::FRAME,
-            rc: vepu510_p_template::RC,
-            param: vepu510_p_template::PARAM,
-            sqi: vepu510_p_template::SQI,
-            scl: vepu510_p_template::SCL,
+            ctl: if high_profile {
+                vepu510_high_p_template::CTL
+            } else {
+                vepu510_p_template::CTL
+            },
+            frame: if high_profile {
+                vepu510_high_p_template::FRAME
+            } else {
+                vepu510_p_template::FRAME
+            },
+            rc: if high_profile {
+                vepu510_high_p_template::RC
+            } else {
+                vepu510_p_template::RC
+            },
+            param: if high_profile {
+                vepu510_high_p_template::PARAM
+            } else {
+                vepu510_p_template::PARAM
+            },
+            sqi: if high_profile {
+                vepu510_high_p_template::SQI
+            } else {
+                vepu510_p_template::SQI
+            },
+            scl: if high_profile {
+                vepu510_high_p_template::SCL
+            } else {
+                vepu510_p_template::SCL
+            },
         };
         for index in 4..=6 {
             regs.frame[index] = input_fd;
@@ -121,14 +258,20 @@ impl RegisterFile {
         }
         regs.frame[28] = smear_read_fd;
         regs.frame[29] = smear_write_fd;
-        regs.frame[15] = 0;
+        regs.frame[15] = md_info_fd.unwrap_or(0);
         regs.set(vepu510_regs::H264_SYNT_SLI0_FRM_NUM, frame_number)?;
         regs.set(vepu510_regs::H264_SYNT_SLI1_IDR_PID, 0xffff)?;
         regs.set(
             vepu510_regs::H264_SYNT_SLI1_POC_LSB,
             frame_number.saturating_mul(2),
         )?;
-        regs.sqi[5] = if frame_number & 1 != 0 {
+        regs.sqi[5] = if high_profile {
+            if frame_number & 1 != 0 {
+                0x0000_2a10
+            } else {
+                0x0000_4a10
+            }
+        } else if frame_number & 1 != 0 {
             0x0000_2810
         } else {
             0x0000_4810
@@ -427,6 +570,8 @@ fn locate(absolute: usize) -> Option<(&'static str, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hal::vepu510_high_idr_template;
+    use crate::hal::vepu510_high_p_template;
     use crate::hal::vepu510_idr_template;
     use crate::hal::vepu510_p_template;
 
@@ -498,6 +643,31 @@ mod tests {
         assert_eq!(regs.param, vepu510_p_template::PARAM);
         assert_eq!(regs.sqi, vepu510_p_template::SQI);
         assert_eq!(regs.scl, vepu510_p_template::SCL);
+    }
+
+    #[test]
+    fn captured_high_profile_templates_match_the_lf1_windows() {
+        assert_eq!(vepu510_high_idr_template::CTL.len(), CTL_WORDS);
+        assert_eq!(vepu510_high_idr_template::FRAME.len(), FRAME_WORDS);
+        assert_eq!(vepu510_high_idr_template::RC.len(), RC_WORDS);
+        assert_eq!(vepu510_high_idr_template::PARAM.len(), PARAM_WORDS);
+        assert_eq!(vepu510_high_idr_template::SQI.len(), SQI_WORDS);
+        assert_eq!(vepu510_high_idr_template::SCL.len(), SCL_WORDS);
+        assert_eq!(vepu510_high_p_template::CTL.len(), CTL_WORDS);
+        assert_eq!(vepu510_high_p_template::FRAME.len(), FRAME_WORDS);
+        assert_eq!(vepu510_high_p_template::RC.len(), RC_WORDS);
+        assert_eq!(vepu510_high_p_template::PARAM.len(), PARAM_WORDS);
+        assert_eq!(vepu510_high_p_template::SQI.len(), SQI_WORDS);
+        assert_eq!(vepu510_high_p_template::SCL.len(), SCL_WORDS);
+
+        let idr = RegisterFile::captured_fixqp_idr_320x240_high(9, 10, 13, 14, 15, 16).unwrap();
+        assert_eq!(idr.frame[15], 16);
+        assert_eq!(idr.param, vepu510_high_idr_template::PARAM);
+        let p = RegisterFile::captured_fixqp_p_320x240_high(9, 10, 16, 13, 17, 14, 18, 15, 1, 19)
+            .unwrap();
+        assert_eq!(p.frame[15], 19);
+        assert_eq!(p.sqi[5], 0x0000_2a10);
+        assert_eq!(p.param, vepu510_high_p_template::PARAM);
     }
 
     #[test]

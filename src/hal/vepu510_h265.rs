@@ -13,6 +13,8 @@ use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
 
 use super::vepu510_h265_idr_template as template;
+use super::vepu510_h265_mpi_idr_template as mpi_template;
+use super::vepu510_h265_mpi_p_template as mpi_p_template;
 use super::vepu510_h265_p_template as p_template;
 use super::vepu510_h265_regs::{self as regs, Field};
 
@@ -92,13 +94,68 @@ impl RegisterFile {
         smear_fd: u32,
         md_info_fd: u32,
     ) -> Result<Self, String> {
+        Self::captured_fixqp_idr_320x240_mode(
+            input_fd, output_fd, recon_fd, colmv_fd, thumb_fd, smear_fd, md_info_fd, false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn captured_mpi_fixqp_idr_320x240(
+        input_fd: u32,
+        output_fd: u32,
+        recon_fd: u32,
+        colmv_fd: u32,
+        thumb_fd: u32,
+        smear_fd: u32,
+        md_info_fd: u32,
+    ) -> Result<Self, String> {
+        Self::captured_fixqp_idr_320x240_mode(
+            input_fd, output_fd, recon_fd, colmv_fd, thumb_fd, smear_fd, md_info_fd, true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn captured_fixqp_idr_320x240_mode(
+        input_fd: u32,
+        output_fd: u32,
+        recon_fd: u32,
+        colmv_fd: u32,
+        thumb_fd: u32,
+        smear_fd: u32,
+        md_info_fd: u32,
+        mpi_mode: bool,
+    ) -> Result<Self, String> {
         let mut regs = Self {
-            ctl: template::CTL,
-            frame: template::FRAME,
-            rc: template::RC,
-            param: template::PARAM,
-            sqi: template::SQI,
-            scl: template::SCL,
+            ctl: if mpi_mode {
+                mpi_template::CTL
+            } else {
+                template::CTL
+            },
+            frame: if mpi_mode {
+                mpi_template::FRAME
+            } else {
+                template::FRAME
+            },
+            rc: if mpi_mode {
+                mpi_template::RC
+            } else {
+                template::RC
+            },
+            param: if mpi_mode {
+                mpi_template::PARAM
+            } else {
+                template::PARAM
+            },
+            sqi: if mpi_mode {
+                mpi_template::SQI
+            } else {
+                template::SQI
+            },
+            scl: if mpi_mode {
+                mpi_template::SCL
+            } else {
+                template::SCL
+            },
         };
         for index in 4..=6 {
             regs.frame[index] = input_fd;
@@ -141,18 +198,107 @@ impl RegisterFile {
         md_info_fd: u32,
         frame_number: u32,
     ) -> Result<Self, String> {
+        Self::captured_fixqp_p_320x240_mode(
+            input_fd,
+            output_fd,
+            recon_write_fd,
+            recon_read_fd,
+            colmv_write_fd,
+            colmv_read_fd,
+            thumb_write_fd,
+            thumb_read_fd,
+            smear_write_fd,
+            smear_read_fd,
+            md_info_fd,
+            frame_number,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn captured_mpi_fixqp_p_320x240(
+        input_fd: u32,
+        output_fd: u32,
+        recon_write_fd: u32,
+        recon_read_fd: u32,
+        colmv_write_fd: u32,
+        colmv_read_fd: u32,
+        thumb_write_fd: u32,
+        thumb_read_fd: u32,
+        smear_write_fd: u32,
+        smear_read_fd: u32,
+        md_info_fd: u32,
+        frame_number: u32,
+    ) -> Result<Self, String> {
+        Self::captured_fixqp_p_320x240_mode(
+            input_fd,
+            output_fd,
+            recon_write_fd,
+            recon_read_fd,
+            colmv_write_fd,
+            colmv_read_fd,
+            thumb_write_fd,
+            thumb_read_fd,
+            smear_write_fd,
+            smear_read_fd,
+            md_info_fd,
+            frame_number,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn captured_fixqp_p_320x240_mode(
+        input_fd: u32,
+        output_fd: u32,
+        recon_write_fd: u32,
+        recon_read_fd: u32,
+        colmv_write_fd: u32,
+        colmv_read_fd: u32,
+        thumb_write_fd: u32,
+        thumb_read_fd: u32,
+        smear_write_fd: u32,
+        smear_read_fd: u32,
+        md_info_fd: u32,
+        frame_number: u32,
+        mpi_mode: bool,
+    ) -> Result<Self, String> {
         if frame_number == 0 || frame_number > 32_767 {
             return Err(format!(
                 "captured VEPU510 H.265 P frame number {frame_number} is outside 1..=32767"
             ));
         }
         let mut regs = Self {
-            ctl: p_template::CTL,
-            frame: p_template::FRAME,
-            rc: p_template::RC,
-            param: p_template::PARAM,
-            sqi: p_template::SQI,
-            scl: p_template::SCL,
+            ctl: if mpi_mode {
+                mpi_p_template::CTL
+            } else {
+                p_template::CTL
+            },
+            frame: if mpi_mode {
+                mpi_p_template::FRAME
+            } else {
+                p_template::FRAME
+            },
+            rc: if mpi_mode {
+                mpi_p_template::RC
+            } else {
+                p_template::RC
+            },
+            param: if mpi_mode {
+                mpi_p_template::PARAM
+            } else {
+                p_template::PARAM
+            },
+            sqi: if mpi_mode {
+                mpi_p_template::SQI
+            } else {
+                p_template::SQI
+            },
+            scl: if mpi_mode {
+                mpi_p_template::SCL
+            } else {
+                p_template::SCL
+            },
         };
         for index in 4..=6 {
             regs.frame[index] = input_fd;
@@ -446,6 +592,7 @@ fn locate(absolute: usize) -> Option<(&'static str, usize)> {
 }
 
 pub struct Vepu510H265 {
+    mpi_compat: bool,
     svc: MppService,
     input: DmaBuf,
     output: DmaBuf,
@@ -465,6 +612,14 @@ impl Vepu510H265 {
     }
 
     pub fn open_bit_depth(bit_depth: u8) -> Result<Self, String> {
+        Self::open_mode(bit_depth, false)
+    }
+
+    pub fn open_mpi_compat() -> Result<Self, String> {
+        Self::open_mode(8, true)
+    }
+
+    fn open_mode(bit_depth: u8, mpi_compat: bool) -> Result<Self, String> {
         if bit_depth != 8 {
             return Err(format!(
                 "VEPU510 H.265 {bit_depth}-bit input is unsupported; lf1 C MPP fails format/color-space allocation and returns no packet"
@@ -511,6 +666,7 @@ impl Vepu510H265 {
             zero_buffer(buffer)?;
         }
         Ok(Self {
+            mpi_compat,
             svc: MppService::open(Client::RkvEnc as u32)
                 .map_err(|e| format!("open RK3576 H.265 encoder: {e}"))?,
             input,
@@ -548,8 +704,14 @@ impl Vepu510H265 {
                 nv12.len()
             ));
         }
-        let config = lf1_h265_config()?;
-        let prefix = lf1_fixed_qp_prefix(&config, QP, GOP)?;
+        let mut config = lf1_h265_config()?;
+        let prefix = if self.mpi_compat {
+            config.video_format = Some(5);
+            config.video_full_range = true;
+            encoder::build_headers(&config).map_err(|e| e.to_string())?
+        } else {
+            lf1_fixed_qp_prefix(&config, QP, GOP)?
+        };
         let input_fd = self.input_fd_override.unwrap_or_else(|| self.input.fd());
         let input_data = if direct_input {
             &[]
@@ -557,15 +719,27 @@ impl Vepu510H265 {
             &nv12[..INPUT_SIZE]
         };
         if !self.idr_done {
-            let registers = RegisterFile::captured_fixqp_idr_320x240(
-                input_fd as u32,
-                self.output.fd() as u32,
-                self.recon[0].fd() as u32,
-                self.colmv[0].fd() as u32,
-                self.thumb[0].fd() as u32,
-                self.smear[0].fd() as u32,
-                self.md_info.fd() as u32,
-            )?;
+            let registers = if self.mpi_compat {
+                RegisterFile::captured_mpi_fixqp_idr_320x240(
+                    input_fd as u32,
+                    self.output.fd() as u32,
+                    self.recon[0].fd() as u32,
+                    self.colmv[0].fd() as u32,
+                    self.thumb[0].fd() as u32,
+                    self.smear[0].fd() as u32,
+                    self.md_info.fd() as u32,
+                )?
+            } else {
+                RegisterFile::captured_fixqp_idr_320x240(
+                    input_fd as u32,
+                    self.output.fd() as u32,
+                    self.recon[0].fd() as u32,
+                    self.colmv[0].fd() as u32,
+                    self.thumb[0].fd() as u32,
+                    self.smear[0].fd() as u32,
+                    self.md_info.fd() as u32,
+                )?
+            };
             let stream = self.run_job(input_data, &registers, &prefix)?;
             self.idr_done = true;
             self.frame_number = 0;
@@ -574,20 +748,37 @@ impl Vepu510H265 {
         self.frame_number = self.frame_number.saturating_add(1);
         let current = self.frame_number as usize & 1;
         let reference = 1 - current;
-        let registers = RegisterFile::captured_fixqp_p_320x240(
-            input_fd as u32,
-            self.output.fd() as u32,
-            self.recon[current].fd() as u32,
-            self.recon[reference].fd() as u32,
-            self.colmv[current].fd() as u32,
-            self.colmv[reference].fd() as u32,
-            self.thumb[current].fd() as u32,
-            self.thumb[reference].fd() as u32,
-            self.smear[current].fd() as u32,
-            self.smear[reference].fd() as u32,
-            self.md_info.fd() as u32,
-            self.frame_number,
-        )?;
+        let registers = if self.mpi_compat {
+            RegisterFile::captured_mpi_fixqp_p_320x240(
+                input_fd as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.colmv[current].fd() as u32,
+                self.colmv[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                self.md_info.fd() as u32,
+                self.frame_number,
+            )?
+        } else {
+            RegisterFile::captured_fixqp_p_320x240(
+                input_fd as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.colmv[current].fd() as u32,
+                self.colmv[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                self.md_info.fd() as u32,
+                self.frame_number,
+            )?
+        };
         let stream = self.run_job(input_data, &registers, &[])?;
         Ok((
             stream,
@@ -1226,6 +1417,32 @@ mod tests {
         assert_eq!(regs.frame[15], 11);
         assert_eq!(&regs.frame[16..=19], &[10, 10, 10, 10]);
         assert_eq!(&regs.frame[28..=29], &[17, 17]);
+    }
+
+    #[test]
+    fn mpi_object_templates_match_the_lf1_tool_jobs() {
+        assert_eq!(mpi_template::CTL.len(), CTL_WORDS);
+        assert_eq!(mpi_template::FRAME.len(), FRAME_WORDS);
+        assert_eq!(mpi_template::RC.len(), RC_WORDS);
+        assert_eq!(mpi_template::PARAM.len(), PARAM_WORDS);
+        assert_eq!(mpi_template::SQI.len(), SQI_WORDS);
+        assert_eq!(mpi_template::SCL.len(), SCL_WORDS);
+        assert_eq!(mpi_p_template::CTL.len(), CTL_WORDS);
+        assert_eq!(mpi_p_template::FRAME.len(), FRAME_WORDS);
+        assert_eq!(mpi_p_template::RC.len(), RC_WORDS);
+        assert_eq!(mpi_p_template::PARAM.len(), PARAM_WORDS);
+        assert_eq!(mpi_p_template::SQI.len(), SQI_WORDS);
+        assert_eq!(mpi_p_template::SCL.len(), SCL_WORDS);
+
+        let idr = RegisterFile::captured_mpi_fixqp_idr_320x240(9, 10, 14, 16, 15, 17, 11).unwrap();
+        assert_eq!(idr.param, mpi_template::PARAM);
+        assert_eq!(idr.frame[15], 11);
+        let p = RegisterFile::captured_mpi_fixqp_p_320x240(
+            9, 10, 18, 14, 20, 16, 19, 15, 21, 17, 11, 1,
+        )
+        .unwrap();
+        assert_eq!(p.param, mpi_p_template::PARAM);
+        assert_eq!(p.frame[15], 11);
     }
 
     #[test]

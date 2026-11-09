@@ -751,10 +751,19 @@ pub struct Encoder {
     backend: Backend,
     packets: VecDeque<Packet>,
     eos: bool,
+    mpi_compat: bool,
 }
 
 impl Encoder {
     pub fn new(config: EncoderConfig) -> Result<Self, Error> {
+        Self::new_with_mode(config, false)
+    }
+
+    pub(crate) fn new_mpi_compat(config: EncoderConfig) -> Result<Self, Error> {
+        Self::new_with_mode(config, true)
+    }
+
+    fn new_with_mode(config: EncoderConfig, mpi_compat: bool) -> Result<Self, Error> {
         config.validate_advanced_controls()?;
         if let Some(rate_control) = config.rate_control {
             rate_control.validate()?;
@@ -783,7 +792,7 @@ impl Encoder {
         }
         let backend = match config.codec {
             Codec::H264 => open_h264_backend(config)?,
-            Codec::H265 => open_h265_backend(config)?,
+            Codec::H265 => open_h265_backend_with_mode(config, mpi_compat)?,
             Codec::Mjpeg => Backend::Jpeg {
                 encoder: open_jpeg()?,
                 frame_number: 0,
@@ -800,6 +809,7 @@ impl Encoder {
             backend,
             packets: VecDeque::new(),
             eos: false,
+            mpi_compat,
         })
     }
 
@@ -1027,7 +1037,7 @@ impl Encoder {
         self.eos = false;
         self.backend = match self.config.codec {
             Codec::H264 => open_h264_backend(self.config)?,
-            Codec::H265 => open_h265_backend(self.config)?,
+            Codec::H265 => open_h265_backend_with_mode(self.config, self.mpi_compat)?,
             Codec::Mjpeg => Backend::Jpeg {
                 encoder: open_jpeg()?,
                 frame_number: 0,
@@ -1069,6 +1079,11 @@ fn validate_h264_input(config: EncoderConfig) -> Result<(), Error> {
 }
 
 fn open_h264_vepu580(config: EncoderConfig) -> Result<h264e::Vepu580H264, Error> {
+    let h264 = h264_encoder_config(config)?;
+    h264e::Vepu580H264::open(h264).map_err(|error| Error::Hardware(error.to_string()))
+}
+
+fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error> {
     let profile = match config.profile {
         0 | PROFILE_BASELINE => PROFILE_BASELINE,
         PROFILE_MAIN => PROFILE_MAIN,
@@ -1150,7 +1165,7 @@ fn open_h264_vepu580(config: EncoderConfig) -> Result<h264e::Vepu580H264, Error>
     }
     h264.validate()
         .map_err(|error| Error::InvalidInput(error.to_string()))?;
-    h264e::Vepu580H264::open(h264).map_err(|error| Error::Hardware(error.to_string()))
+    Ok(h264)
 }
 
 fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264, Error> {
@@ -1170,15 +1185,15 @@ fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264,
     if config.width != 320
         || config.height != 240
         || config.qp != 26
-        || config.gop != 6
+        || !matches!(config.gop, 6 | 60)
         || config.fps_num != 30
         || config.fps_den != 1
-        || !matches!(config.profile, 0 | 66)
-        || !matches!(config.level, 0 | 30)
+        || !matches!(config.profile, 0 | 66 | 100)
+        || !matches!(config.level, 0 | 30 | 40)
     {
         return Err(Error::Unsupported(format!(
-            "RK3576 H.264 encoder currently supports only 320x240 Baseline QP26 \
-             GOP6 at 30 fps; got {}x{} profile {} level {} QP {} GOP {} at {}/{} fps",
+            "RK3576 H.264 encoder currently supports only 320x240 Baseline/High QP26 \
+             GOP6 or GOP60 at 30 fps; got {}x{} profile {} level {} QP {} GOP {} at {}/{} fps",
             config.width,
             config.height,
             config.profile,
@@ -1189,15 +1204,24 @@ fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264,
             config.fps_den
         )));
     }
-    vepu510_h264::Vepu510H264::open().map_err(|error| Error::Hardware(error.to_string()))
+    let mut h264 = h264_encoder_config(config)?;
+    h264.constraint_set = (h264.profile >= PROFILE_HIGH).then_some(0);
+    h264.num_ref_frames = 1;
+    if h264.profile >= PROFILE_HIGH {
+        h264.video_format = Some(5);
+        h264.video_full_range = true;
+    }
+    h264.vui_log2_max_mv_length = 15;
+    vepu510_h264::Vepu510H264::open_with_config(h264)
+        .map_err(|error| Error::Hardware(error.to_string()))
 }
 
-fn open_h265_backend(config: EncoderConfig) -> Result<Backend, Error> {
+fn open_h265_backend_with_mode(config: EncoderConfig, mpi_compat: bool) -> Result<Backend, Error> {
     validate_h265_input(config)?;
     let profile = SocProfile::detect().map_err(|error| Error::Hardware(error.to_string()))?;
     match profile.video_encode {
         VideoEncodeHal::Vepu580 => Ok(Backend::H265Vepu580(open_h265_vepu580(config)?)),
-        VideoEncodeHal::Vepu510 => Ok(Backend::H265Vepu510(open_h265_vepu510(config)?)),
+        VideoEncodeHal::Vepu510 => Ok(Backend::H265Vepu510(open_h265_vepu510(config, mpi_compat)?)),
         other => Err(Error::Unsupported(format!(
             "no H.265 encoder backend for {other:?}"
         ))),
@@ -1304,7 +1328,10 @@ fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265
     Ok(encoder)
 }
 
-fn open_h265_vepu510(config: EncoderConfig) -> Result<vepu510_h265::Vepu510H265, Error> {
+fn open_h265_vepu510(
+    config: EncoderConfig,
+    mpi_compat: bool,
+) -> Result<vepu510_h265::Vepu510H265, Error> {
     if config.roi.is_some() || config.gdr.is_some() || config.slice_split.is_some() {
         return Err(Error::Unsupported(
             "RK3576 H.265 streaming ROI/GDR/slice controls are not exposed yet".to_string(),
@@ -1321,18 +1348,23 @@ fn open_h265_vepu510(config: EncoderConfig) -> Result<vepu510_h265::Vepu510H265,
     if config.width != 320
         || config.height != 240
         || config.qp != 26
-        || config.gop != 6
+        || !matches!(config.gop, 6 | 60)
         || config.fps_num != 30
         || config.fps_den != 1
         || !matches!(config.level, 0 | 30)
     {
         return Err(Error::Unsupported(
             "RK3576 H.265 encoder currently supports only 320x240 Main QP26 \
-             GOP6 at 30 fps"
+             GOP6 or GOP60 at 30 fps"
                 .to_string(),
         ));
     }
-    vepu510_h265::Vepu510H265::open().map_err(|error| Error::Hardware(error.to_string()))
+    if mpi_compat {
+        vepu510_h265::Vepu510H265::open_mpi_compat()
+            .map_err(|error| Error::Hardware(error.to_string()))
+    } else {
+        vepu510_h265::Vepu510H265::open().map_err(|error| Error::Hardware(error.to_string()))
+    }
 }
 
 fn open_jpeg() -> Result<jpege720::JpegEncoder, Error> {

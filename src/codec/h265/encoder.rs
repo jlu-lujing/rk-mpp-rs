@@ -161,6 +161,10 @@ pub struct EncoderConfig {
     pub fps_num: u32,
     pub fps_den: u32,
     pub vui: bool,
+    /// RK3576's `mpi_enc_test` object path carries full-range video format 5
+    /// while the direct fixed-QP CLI oracle leaves video_signal fields absent.
+    pub video_format: Option<u8>,
+    pub video_full_range: bool,
     /// `long_term_ref_pics_present_flag` plus one `(poc_lsb 0, used 0)` entry. The
     /// harness enables this when it is given an explicit `-g` GOP mode, which is
     /// also what makes it emit P pictures; without it the SPS is two bytes shorter.
@@ -226,6 +230,8 @@ impl EncoderConfig {
             fps_den: 1,
             // h265_init sets codec->vui.vui_en = 1.
             vui: true,
+            video_format: None,
+            video_full_range: false,
             long_term_refs: false,
         }
     }
@@ -656,7 +662,12 @@ fn code_profile_tier(w: &mut BitWriter, config: &EncoderConfig) {
 fn code_vui(w: &mut BitWriter, config: &EncoderConfig) {
     w.put_bits(0, 1); // aspect_ratio_info_present_flag
     w.put_bits(0, 1); // overscan_info_present_flag
-    w.put_bits(0, 1); // video_signal_type_present_flag (range not JPEG)
+    w.put_bits(u32::from(config.video_format.is_some()), 1);
+    if let Some(video_format) = config.video_format {
+        w.put_bits(u32::from(video_format & 0x7), 3);
+        w.put_bits(u32::from(config.video_full_range), 1);
+        w.put_bits(0, 1); // colour_description_present_flag
+    }
     w.put_bits(0, 1); // chroma_loc_info_present_flag
     w.put_bits(0, 1); // neutral_chroma_indication_flag
     w.put_bits(0, 1); // field_seq_flag
@@ -1018,6 +1029,24 @@ mod tests {
         assert_eq!(headers.len(), vps.len() + sps.len() + pps.len());
         assert!(headers.starts_with(&vps));
         assert!(headers.ends_with(&pps));
+    }
+
+    #[test]
+    fn rk3576_mpi_object_sps_records_full_range_video() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.max_cu_size = 32;
+        config.tu_log2_max_extra = 1;
+        config.force_cu_qp_delta = true;
+        config.video_format = Some(5);
+        config.video_full_range = true;
+        assert_eq!(
+            build_sps(&config).unwrap(),
+            vec![
+                0, 0, 0, 1, 0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00,
+                0x03, 0x00, 0x00, 0x03, 0x00, 0x78, 0xa0, 0x0a, 0x08, 0x0f, 0x16, 0x36, 0xfb, 0x93,
+                0x29, 0x9b, 0x02, 0x00, 0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x3c, 0x10,
+            ]
+        );
     }
 
     #[test]

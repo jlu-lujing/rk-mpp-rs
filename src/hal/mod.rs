@@ -71,8 +71,14 @@ pub mod vepu510_h265;
 #[allow(dead_code)]
 mod vepu510_h265_idr_template;
 #[allow(dead_code)]
+mod vepu510_h265_mpi_idr_template;
+#[allow(dead_code)]
+mod vepu510_h265_mpi_p_template;
+#[allow(dead_code)]
 mod vepu510_h265_p_template;
 pub mod vepu510_h265_regs;
+pub mod vepu510_high_idr_template;
+pub mod vepu510_high_p_template;
 pub mod vepu510_idr_template;
 pub mod vepu510_p_template;
 pub mod vepu510_regs;

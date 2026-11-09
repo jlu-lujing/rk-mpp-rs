@@ -35,6 +35,10 @@ pub struct EncoderConfig {
     pub width: usize,
     pub height: usize,
     pub profile: u8,
+    /// Some MPP vintages emit a different SPS constraint byte for the same
+    /// profile. `None` selects the 2024 RK3588 rules; RK3576's 2025 encoder is
+    /// captured explicitly with zero constraint flags.
+    pub constraint_set: Option<u8>,
     pub level_idc: u8,
     pub gop: u32,
     pub gaps_in_frame_num_allowed: bool,
@@ -64,6 +68,10 @@ pub struct EncoderConfig {
     pub fps_num: u32,
     pub fps_den: u32,
     pub vui: bool,
+    /// `video_signal_type_present_flag` payload. RK3576's H.264 High encoder
+    /// records video_format=5 and full-range output for the same NV12 frame.
+    pub video_format: Option<u8>,
+    pub video_full_range: bool,
     /// `log2_max_mv_length_horizontal/vertical` in the VUI bitstream
     /// restriction. RK3588's stock 2024 library writes 16; RK3576's 2025
     /// library writes 15 from the same source field.
@@ -247,6 +255,7 @@ impl EncoderConfig {
             width,
             height,
             profile: PROFILE_BASELINE,
+            constraint_set: None,
             level_idc: 30,
             gop: 1,
             gaps_in_frame_num_allowed: true,
@@ -266,6 +275,8 @@ impl EncoderConfig {
             fps_num: 30,
             fps_den: 1,
             vui: true,
+            video_format: None,
+            video_full_range: false,
             vui_log2_max_mv_length: 16,
             quality_auto: false,
             rc_qp_min: 8,
@@ -540,6 +551,9 @@ impl EncoderConfig {
     /// forces them (`constraint_set` stays zero, so the force path in the
     /// reference never fires).
     fn constraints(&self) -> u8 {
+        if let Some(constraint_set) = self.constraint_set {
+            return constraint_set;
+        }
         match self.profile {
             PROFILE_BASELINE => 0b1100_0000,
             PROFILE_MAIN => 0b0100_0000,
@@ -651,7 +665,12 @@ pub fn build_pps(config: &EncoderConfig) -> Result<Vec<u8>, Error> {
 fn write_vui(w: &mut BitWriter, config: &EncoderConfig) {
     w.put_bits(0, 1); // aspect_ratio_info_present_flag
     w.put_bits(0, 1); // overscan_info_present_flag
-    w.put_bits(0, 1); // video_signal_type_present_flag
+    w.put_bits(u32::from(config.video_format.is_some()), 1);
+    if let Some(video_format) = config.video_format {
+        w.put_bits(u32::from(video_format & 0x7), 3);
+        w.put_bits(u32::from(config.video_full_range), 1);
+        w.put_bits(0, 1); // colour_description_present_flag
+    }
     w.put_bits(0, 1); // chroma_loc_info_present_flag
     w.put_bits(1, 1); // timing_info_present_flag
     w.put_bits(config.fps_den, 32); // num_units_in_tick
@@ -832,6 +851,33 @@ mod tests {
             assert_eq!(&got_sps[4..], sps, "{name} SPS");
             assert_eq!(&got_pps[4..], pps, "{name} PPS");
         }
+    }
+
+    #[test]
+    fn rk3576_high_profile_headers_match_the_2025_c_encoder() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.profile = PROFILE_HIGH;
+        config.constraint_set = Some(0);
+        config.level_idc = 40;
+        config.gop = 60;
+        config.num_ref_frames = 1;
+        config.entropy_coding = true;
+        config.transform_8x8 = true;
+        config.vui_log2_max_mv_length = 15;
+        config.video_format = Some(5);
+        config.video_full_range = true;
+
+        assert_eq!(
+            &build_sps(&config).unwrap()[4..],
+            &[
+                0x67, 0x64, 0x00, 0x28, 0xac, 0x1b, 0x1a, 0xa1, 0x41, 0xfa, 0x6c, 0x80, 0x00, 0x00,
+                0x03, 0x00, 0x80, 0x00, 0x00, 0x1e, 0x47, 0x84, 0x02, 0x15,
+            ]
+        );
+        assert_eq!(
+            &build_pps(&config).unwrap()[4..],
+            &[0x68, 0xee, 0x31, 0xb2, 0x1b]
+        );
     }
 
     #[test]
