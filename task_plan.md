@@ -271,9 +271,11 @@ callers.
 - [x] Match the official 184-byte `MppApi` function-table layout.
 - [x] Compile a C consumer against the vendor `rk_mpi.h` and run on t6/lf1.
 - [x] Add deterministic null/value/init/reset/control lifecycle checks.
-- [ ] Implement MppFrame/MppPacket/MppBuffer ownership and real data flow.
+- [x] Implement MppFrame/MppPacket/MppBuffer ownership and H.264/H.265/MJPEG
+      CPU NV12 decode put/get data flow.
 - [ ] Link and run official `mpi_dec_test` unchanged.
-- **Status:** lifecycle foundation complete; W7-2 data path remains active work.
+- **Status:** lifecycle and basic decode data path complete; official-tool
+      compatibility, meta and encoder object flow remain.
 
 ## Decisions Made
 

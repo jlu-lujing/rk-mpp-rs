@@ -103,9 +103,14 @@ stride；H.264/H.265 要求 16 对齐，JPEG 要求 8×2 对齐。原 copied-inp
 
 官方 MPP drop-in 兼容层的第一个 slice 已落地：`mpp_create/init/destroy`、
 格式查询和官方 `MppApi` 函数表布局已通过 vendor `rk_mpi.h` consumer。
-`mpi->decode*`/`encode*` 目前仍是 stub；下一 slice 必须先实现 frame、packet、
-buffer 的所有权，再接入真实会话，不能把只通过 lifecycle 误报成可替换
-`mpi_dec_test`。
+第二个 slice 已接入 packet、frame、buffer 所有权和 H.264/H.265/MJPEG
+CPU NV12 解码：`decode_put_packet` 把 packet 复制进现有 SDK session，
+`decode_get_frame` 返回带 packed NV12 `MppBuffer` 的 `MppFrame`。
+t6/lf1 的 15-frame H.264、单帧 H.265 和单帧 MJPEG 输出均与 C MPP
+逐字节一致（SHA-256 分别为 `22a8…23f7`、`fced…05e0`、`98c5…89f8`）。
+`MppMeta`、advanced buffer import/external frame、DMABUF-backed MppBuffer
+和 encoder 对象流仍未实现，因此下一层仍是 W7-3 的官方工具兼容，而不是
+宣称 drop-in 已完成。
 
 新 V1 暂只承诺 NV12/I420；JPEG 硬件 RGB 输出存在不可重复的 8-byte writeback，
 旧 `rk_jpeg_*` RGB 兼容接口保留。后续工作是把同一契约扩到其余解码器与编码器。

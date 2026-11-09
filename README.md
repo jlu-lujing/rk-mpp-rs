@@ -259,9 +259,11 @@ cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 2
 
 另有进行中的官方 MPP drop-in ABI 基础层：`mpp_create`、`mpp_init`、
 `mpp_destroy`、格式查询和官方 `MppApi` 184-byte 函数表。当前只保证生命周期
-与函数表布局，`MppFrame`/`MppPacket`/`MppBuffer` 和真实
-`decode_put_packet`/`decode_get_frame` 尚未接入，因此还不能替换
-`mpi_dec_test` 所使用的完整 MPP API。
+与函数表布局，并提供 `MppFrame`/`MppPacket`/`MppBuffer`、packet/frame
+访问器和 H.264/H.265/MJPEG 的 CPU NV12 `decode_put_packet` /
+`decode_get_frame` 数据面。`MppMeta`、advanced buffer import、encoder
+对象流和官方 `mpi_dec_test` 所需的完整配置面仍未接入，因此还不能直接替换
+该测试程序。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
 `target/<profile>`：
 

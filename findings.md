@@ -100,8 +100,13 @@
   scaling.
 - The official `MppApi` table is 184 bytes on aarch64: two 32-bit header words,
   fourteen function pointers and sixteen reserved 32-bit words. Lifecycle can
-  be implemented independently, but the table's data entries must remain
-  explicit stubs until MppFrame/MppPacket/MppBuffer ownership is defined.
+  be implemented independently; unsupported encode/ISP/task entries remain
+  explicit failures while object-backed decode entries are wired.
+- The basic vendor decode loop uses opaque packet/frame objects rather than
+  exposing the SDK's Rust frame type. Packing decoded NV12 into
+  `hor_stride = align16(width)` and `ver_stride = align16(height)` preserves
+  byte identity with `dump_mpp_frame_to_file`; H.264, H.265 and MJPEG all pass
+  the same official-header C consumer on t6 and lf1.
 
 ## Research Findings
 

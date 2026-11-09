@@ -3,6 +3,10 @@
 use std::ffi::{c_int, c_void};
 use std::mem::size_of;
 
+use crate::sdk;
+
+mod objects;
+
 type MppCtx = *mut c_void;
 type MppFrame = *mut c_void;
 type MppPacket = *mut c_void;
@@ -19,7 +23,6 @@ const MPP_CTX_ENC: c_int = 1;
 const MPP_CTX_ISP: c_int = 2;
 const MPP_CTX_BUTT: c_int = 3;
 
-const MPP_VIDEO_CODING_AUTO_DETECT: c_int = 1;
 const MPP_VIDEO_CODING_MPEG2: c_int = 2;
 const MPP_VIDEO_CODING_H263: c_int = 3;
 const MPP_VIDEO_CODING_MPEG4: c_int = 4;
@@ -93,6 +96,9 @@ struct CompatContext {
     magic: u64,
     ctx_type: c_int,
     coding: c_int,
+    decoder: Option<sdk::Decoder>,
+    eos_submitted: bool,
+    eos_delivered: bool,
 }
 
 unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
@@ -106,20 +112,75 @@ unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
     (context.magic == CONTEXT_MAGIC).then_some(context)
 }
 
-unsafe extern "C" fn compat_decode(
-    _ctx: MppCtx,
-    _packet: MppPacket,
-    _frame: *mut MppFrame,
-) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_decode(ctx: MppCtx, packet: MppPacket, frame: *mut MppFrame) -> c_int {
+    let put = unsafe { compat_decode_put_packet(ctx, packet) };
+    if put != MPP_OK {
+        return put;
+    }
+    unsafe { compat_decode_get_frame(ctx, frame) }
 }
 
-unsafe extern "C" fn compat_decode_put_packet(_ctx: MppCtx, _packet: MppPacket) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_decode_put_packet(ctx: MppCtx, packet: MppPacket) -> c_int {
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if context.ctx_type != MPP_CTX_DEC {
+        return MPP_ERR_VALUE;
+    }
+    let Some(decoder) = context.decoder.as_mut() else {
+        return MPP_ERR_VALUE;
+    };
+    let Some(bytes) = (unsafe { objects::packet_bytes(packet) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let Some((pts, dts, eos)) = (unsafe { objects::packet_metadata(packet) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let flags = if eos {
+        sdk::PacketFlags::empty().with_eos()
+    } else {
+        sdk::PacketFlags::empty()
+    };
+    let sdk_packet = sdk::Packet::new(bytes)
+        .with_pts(pts)
+        .with_dts(dts)
+        .with_flags(flags);
+    if decoder.submit_packet(sdk_packet).is_err() {
+        return MPP_NOK;
+    }
+    if !unsafe { objects::packet_consume(packet) } {
+        return MPP_ERR_VALUE;
+    }
+    context.eos_submitted |= eos;
+    MPP_OK
 }
 
-unsafe extern "C" fn compat_decode_get_frame(_ctx: MppCtx, _frame: *mut MppFrame) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) -> c_int {
+    if frame.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if context.ctx_type != MPP_CTX_DEC {
+        return MPP_ERR_VALUE;
+    }
+    let Some(decoder) = context.decoder.as_mut() else {
+        return MPP_ERR_VALUE;
+    };
+    unsafe { *frame = std::ptr::null_mut() };
+    if let Some(decoded) = decoder.receive_frame() {
+        let Ok(frame_object) = (unsafe { objects::frame_from_sdk(decoded) }) else {
+            return MPP_NOK;
+        };
+        unsafe { *frame = frame_object };
+        return MPP_OK;
+    }
+    if context.eos_submitted && decoder.is_finished() && !context.eos_delivered {
+        context.eos_delivered = true;
+        unsafe { *frame = objects::frame_eos() };
+    }
+    MPP_OK
 }
 
 unsafe extern "C" fn compat_encode(
@@ -163,11 +224,17 @@ unsafe extern "C" fn compat_enqueue(_ctx: MppCtx, _port: c_int, _task: MppTask) 
 }
 
 unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
-    if unsafe { context_mut(ctx) }.is_some() {
-        MPP_OK
-    } else {
-        MPP_ERR_NULL_PTR
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if let Some(decoder) = context.decoder.as_mut() {
+        if decoder.reset().is_err() {
+            return MPP_NOK;
+        }
     }
+    context.eos_submitted = false;
+    context.eos_delivered = false;
+    MPP_OK
 }
 
 unsafe extern "C" fn compat_control(ctx: MppCtx, _command: c_int, _param: MppParam) -> c_int {
@@ -182,8 +249,7 @@ fn coding_supported(ctx_type: c_int, coding: c_int) -> bool {
     match ctx_type {
         MPP_CTX_DEC => matches!(
             coding,
-            MPP_VIDEO_CODING_AUTO_DETECT
-                | MPP_VIDEO_CODING_MPEG2
+            MPP_VIDEO_CODING_MPEG2
                 | MPP_VIDEO_CODING_H263
                 | MPP_VIDEO_CODING_MPEG4
                 | MPP_VIDEO_CODING_AVC
@@ -214,6 +280,9 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             magic: CONTEXT_MAGIC,
             ctx_type: MPP_CTX_BUTT,
             coding: 0,
+            decoder: None,
+            eos_submitted: false,
+            eos_delivered: false,
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();
@@ -232,9 +301,39 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     if ctx_type == MPP_CTX_ISP {
         return MPP_NOK;
     }
+    let decoder = if ctx_type == MPP_CTX_DEC {
+        let Some(codec) = sdk_codec(coding) else {
+            return MPP_NOK;
+        };
+        let config = sdk::DecoderConfig::new(codec).with_output_format(sdk::PixelFormat::Nv12);
+        match sdk::Decoder::new(config) {
+            Ok(decoder) => Some(decoder),
+            Err(_) => return MPP_NOK,
+        }
+    } else {
+        None
+    };
     context.ctx_type = ctx_type;
     context.coding = coding;
+    context.decoder = decoder;
+    context.eos_submitted = false;
+    context.eos_delivered = false;
     MPP_OK
+}
+
+fn sdk_codec(coding: c_int) -> Option<sdk::Codec> {
+    match coding {
+        MPP_VIDEO_CODING_MPEG2 => Some(sdk::Codec::Mpeg2),
+        MPP_VIDEO_CODING_H263 => Some(sdk::Codec::H263),
+        MPP_VIDEO_CODING_MPEG4 => Some(sdk::Codec::Mpeg4),
+        MPP_VIDEO_CODING_AVC => Some(sdk::Codec::H264),
+        MPP_VIDEO_CODING_MJPEG => Some(sdk::Codec::Mjpeg),
+        MPP_VIDEO_CODING_VP8 => Some(sdk::Codec::Vp8),
+        MPP_VIDEO_CODING_VP9 => Some(sdk::Codec::Vp9),
+        MPP_VIDEO_CODING_HEVC => Some(sdk::Codec::H265),
+        MPP_VIDEO_CODING_AV1 => Some(sdk::Codec::Av1),
+        _ => None,
+    }
 }
 
 #[no_mangle]

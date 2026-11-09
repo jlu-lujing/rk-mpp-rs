@@ -3,7 +3,7 @@
 ## Session: 2026-11-09
 
 ### Phase 18: Official MPP Drop-in Lifecycle Foundation
-- **Status:** lifecycle foundation complete on t6 and lf1; data path not implemented.
+- **Status:** lifecycle plus CPU decode data path complete on t6 and lf1.
 - Exported `mpp_create`, `mpp_init`, `mpp_destroy`,
   `mpp_check_support_format`, `mpp_show_support_format` and
   `mpp_show_color_format`.
@@ -12,8 +12,10 @@
 - A C consumer compiled against the vendor `rk_mpi.h` verifies null handling,
   supported coding types, init/reset/control contracts and destroy ownership on
   both boards. `scripts/board_mpp_compat_lifecycle.sh` is the gate.
-- This does not yet run official `mpi_dec_test`; frame/packet/buffer ownership
-  and the real decode put/get data path remain W7-2 work.
+- `MppPacket`, `MppFrame`, `MppBuffer` and H.264/H.265/MJPEG CPU NV12
+  `decode_put_packet/decode_get_frame` now run through
+  `scripts/board_mpp_compat_data.sh`; all three outputs match C MPP on t6 and
+  lf1. Meta, imported DMABUF buffers and encoder object flow remain.
 
 ### Phase 17: W8-2 Decode-to-Model-Input Direct Scaling
 - **Status:** complete on t6 and lf1.

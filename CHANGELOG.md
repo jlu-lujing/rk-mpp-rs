@@ -17,8 +17,10 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 - Added the first official-MPP compatibility symbols:
   `mpp_create`, `mpp_init`, `mpp_destroy`, `mpp_check_support_format`,
   `mpp_show_support_format`, `mpp_show_color_format`, and a layout-compatible
-  `MppApi` function table. Decode/encode table entries are reserved stubs for
-  the subsequent frame/packet compatibility work.
+  `MppApi` function table. `MppPacket`, `MppFrame`, `MppBuffer`, and the
+  H.264/H.265/MJPEG `decode_put_packet` / `decode_get_frame` CPU data path now
+  run through an official-header C consumer; advanced metadata, imported
+  DMA-BUF buffers, and encoder data flow remain reserved.
 
 ## [1.11] - 2026-11-09
 
