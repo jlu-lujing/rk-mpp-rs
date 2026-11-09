@@ -199,9 +199,14 @@ GOP、QP 等值，而不是依赖 vendor dlsym。另一个兼容点是旧版 `mp
 t6 的三编码 standalone 编码门通过：H.264/H.265 解码重建与 vendor
 一致，MJPEG stream 逐字节一致。`MppEncRefCfg` 的
 create/reset/set_cfg_cnt/add_lt/add_st/check 和旧 option trie ABI
-也已接入，`-g 1:60` 的单帧路径会真实经过 `MPP_ENC_SET_REF_CFG`。
-多帧 TSVC 层级还没有映射到 Rust encoder 的逐帧参考调度，因此不能把
-reference-cfg 标成全部完成；高级编码控制同样仍未接入。
+也已接入。旧版 `mpi_enc_test` 实际把对象挂在
+`mpp_enc_cfg_set_ptr(cfg, "rc:ref_cfg", ref)`，而不是另发
+`MPP_ENC_SET_REF_CFG`；t6 现在会在 `MPP_ENC_SET_CFG` 前解析该指针。
+`-g 1:60` 六帧 TSVC2 已映射到 VEPU580 的逐帧槽位、`nal_ref_idc`、
+frame_num、POC 和 type-14 prefix：16 个 NAL 除 version-SEI 文本外逐字节
+一致，六帧 YUV 的 SHA-256 为 `fec69971…64f0a4`；扩到 12 帧后 28 个
+NAL 仍一致，YUV 为 `d9a3ed55…ecad7e63`。TSVC3/TSVC4 与 VEPU510 多帧
+层级仍未映射，高级编码控制也仍待接入。
 
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test

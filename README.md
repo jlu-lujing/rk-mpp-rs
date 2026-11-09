@@ -290,13 +290,17 @@ standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG
 单帧编码：H.264/H.265 重建逐字节一致，MJPEG stream 逐字节一致。
 `MppEncRefCfg` 的 create/reset/LT/ST add/check 与
-`MPP_ENC_SET_REF_CFG` 已接通；多帧 TSVC/GOP 层级映射和其余高级编码
-控制仍待继续补齐。
+`MPP_ENC_SET_REF_CFG` 已接通，t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
+也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
+（`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则
+一致，YUV SHA-256 为 `d9a3ed55…ecad7e63`。TSVC3/TSVC4 和 VEPU510 多帧
+层级映射、其余高级编码控制仍待继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的
-`mpi_enc_test` 中跑通。H.264 单帧与真实 6 帧的 SPS/PPS、rc-SEI、VCL NAL
-和解码重建一致，仅 version-SEI 的构建身份文本长度不同；H.265 单帧和
-6 帧、MJPEG 均 stream 逐字节一致。RK3576 High-profile 的 CABAC/8x8 模板、
+`mpi_enc_test` 中跑通。H.264 单帧、默认 6 帧以及 t6 TSVC2 6/12 帧的
+SPS/PPS、rc-SEI、type-14 prefix、VCL NAL 和解码重建一致，仅 version-SEI
+的构建身份文本长度不同；H.265 单帧和 6 帧、MJPEG 均 stream 逐字节一致。
+RK3576 High-profile 的 CABAC/8x8 模板、
 MEIW buffer 和普通 GOP60 现已接入；调用方通过 `KEY_MOTION_INFO` 传入的
 1200-byte H.264 / 1280-byte H.265 结果 buffer 也与原生 C MPP 逐字节一致。
 链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace

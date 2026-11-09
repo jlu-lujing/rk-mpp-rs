@@ -830,6 +830,28 @@ impl Encoder {
         }
     }
 
+    pub(crate) fn supports_h264_reference_layout(&self) -> bool {
+        matches!(&self.backend, Backend::H264Vepu580(_))
+    }
+
+    pub fn force_next_picture_layout(
+        &mut self,
+        current_slot: usize,
+        reference_slot: usize,
+        non_reference: bool,
+        temporal_id: Option<u8>,
+    ) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H264Vepu580(encoder) => encoder
+                .force_next_picture_layout(current_slot, reference_slot, non_reference, temporal_id)
+                .map_err(Error::Hardware),
+            _ => Err(Error::Unsupported(
+                "per-picture reference layout is currently implemented for VEPU580 H.264"
+                    .to_string(),
+            )),
+        }
+    }
+
     pub fn submit_frame(&mut self, frame: InputFrame<'_>) -> Result<usize, Error> {
         if self.eos {
             return Err(Error::State("frame submitted after encoder EOS"));

@@ -404,8 +404,24 @@ standalone streams decode byte-identically to the vendor streams
 (`9d8c6f54…24ac6fc` and `c7c74e0c…eb03643`), while MJPEG is stream-identical
 (`08eb7c6f…b5388623`). This closes the one-frame object path; reference-cfg
 objects also survive create/reset/LT/ST add/check and the H.264 case uses
-`-g 1:60`, so `MPP_ENC_SET_REF_CFG` is exercised rather than bypassed.
-Multi-frame TSVC hierarchy mapping and advanced encoder controls remain open.
+`-g 1:60`.
+The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
+multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
+The bridge now reads that pointer before constructing the encoder and maps the
+three TSVC2 short-term entries into the VEPU580 schedule. A six-frame
+`-g 1:60` run produces the vendor alternation of disposable and reference P
+pictures (`nal_ref_idc 0/2/0/2/0`), repeats the type-14 prefix exactly, shares
+the reference picture's frame_num as the C DPB does, advances POC independently,
+and changes the non-reference slot cycle as required. All 16 NAL units match
+the vendor stream except the intentionally different version-SEI text; both
+six-frame outputs decode to the same 320x240 YUV, SHA-256
+`fec69971fb789cf8cf3e2798f85ccbdd01b7e22d532621114e036e672864f0a4`
+(`691200` bytes). Extending the same fixture to 12 frames exercises a second
+slot cycle; all 28 NAL units still match under the version-SEI rule and the
+1,382,400-byte YUV output has SHA-256
+`d9a3ed5528cc4b0dc5895741e12d7092eb37d47a024aaab3417dce7aecad7e63`.
+TSVC3/TSVC4, the VEPU510 multi-frame hierarchy, and advanced encoder controls
+remain open.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older

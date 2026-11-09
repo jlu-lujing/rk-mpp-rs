@@ -992,6 +992,12 @@ struct RefCfg {
     st: [RefStCfg; 16],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ReferenceFrameStep {
+    pub non_reference: bool,
+    pub temporal_id: u8,
+}
+
 static ENV_STRINGS: OnceLock<Mutex<Vec<CString>>> = OnceLock::new();
 static SOC_NAME: OnceLock<CString> = OnceLock::new();
 static OBJ_DEFS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
@@ -1157,6 +1163,34 @@ fn new_ref_cfg() -> RefCfg {
         lt: [RefLtCfg::default(); 16],
         st: [RefStCfg::default(); 16],
     }
+}
+
+pub(super) fn reference_frame_pattern(config: *mut c_void) -> Option<Vec<ReferenceFrameStep>> {
+    let config = ref_cfg_mut(config)?;
+    if config.st_count != 3
+        || !(0..=7).contains(&config.st[1].temporal_id)
+        || !(0..=7).contains(&config.st[2].temporal_id)
+    {
+        return None;
+    }
+    Some(
+        [config.st[1], config.st[2]]
+            .map(|step| ReferenceFrameStep {
+                non_reference: step.is_non_ref != 0,
+                temporal_id: step.temporal_id as u8,
+            })
+            .into(),
+    )
+}
+
+pub(super) fn encoder_cfg_ref_pattern(config: *mut c_void) -> Option<Vec<ReferenceFrameStep>> {
+    let config = enc_cfg_ref(config)?;
+    let key = c"rc:ref_cfg";
+    let reference = match config.values.get(key)? {
+        ConfigValue::Ptr(pointer) => *pointer as *mut c_void,
+        _ => return None,
+    };
+    reference_frame_pattern(reference)
 }
 
 fn dec_cfg_ref(config: *mut c_void) -> Option<&'static DecCfg> {
@@ -2190,6 +2224,70 @@ mod tests {
         assert_eq!(unsafe { mpp_enc_ref_cfg_check(cfg) }, MPP_OK);
         assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut cfg) }, MPP_OK);
         assert!(cfg.is_null());
+    }
+
+    #[test]
+    fn encoder_cfg_reads_tsvc2_reference_pattern() {
+        let mut encoder_cfg = std::ptr::null_mut();
+        let mut reference_cfg = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_cfg_init(&mut encoder_cfg) }, MPP_OK);
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_create(&mut reference_cfg, 0) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_set_cfg_cnt(reference_cfg, 0, 3) },
+            MPP_OK
+        );
+        let st = [
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 0,
+                ref_mode: 3,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 1,
+                ref_mode: 2,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 0,
+                ref_mode: 2,
+                ref_arg: 0,
+                repeat: 0,
+            },
+        ];
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_add_st_cfg(reference_cfg, 3, st.as_ptr()) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_enc_cfg_set_ptr(encoder_cfg, c"rc:ref_cfg".as_ptr(), reference_cfg) },
+            MPP_OK
+        );
+        assert_eq!(
+            encoder_cfg_ref_pattern(encoder_cfg),
+            Some(vec![
+                ReferenceFrameStep {
+                    non_reference: true,
+                    temporal_id: 1,
+                },
+                ReferenceFrameStep {
+                    non_reference: false,
+                    temporal_id: 0,
+                },
+            ])
+        );
+        assert_eq!(unsafe { mpp_enc_cfg_deinit(encoder_cfg) }, MPP_OK);
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_deinit(&mut reference_cfg) },
+            MPP_OK
+        );
     }
 
     #[test]

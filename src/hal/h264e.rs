@@ -115,12 +115,14 @@ pub struct EncodedIdr {
 /// kernel can use it to carry the last flag.
 fn output_packets(
     headers: &[u8],
+    slice_prefix: &[u8],
     payload: &[u8],
     slice_lengths: &[usize],
 ) -> Result<Vec<Vec<u8>>, String> {
     if slice_lengths.is_empty() {
-        let mut packet = Vec::with_capacity(headers.len() + payload.len());
+        let mut packet = Vec::with_capacity(headers.len() + slice_prefix.len() + payload.len());
         packet.extend_from_slice(headers);
+        packet.extend_from_slice(slice_prefix);
         packet.extend_from_slice(payload);
         return Ok(vec![packet]);
     }
@@ -147,11 +149,57 @@ fn output_packets(
         } else {
             Vec::new()
         };
+        if length != 0 {
+            packet.extend_from_slice(slice_prefix);
+        }
         packet.extend_from_slice(&payload[offset..offset + length]);
         packets.push(packet);
         offset += length;
     }
     Ok(packets)
+}
+
+fn prefix_slices(
+    payload: &[u8],
+    slice_lengths: &[usize],
+    slice_prefix: &[u8],
+) -> Result<Vec<u8>, String> {
+    if slice_prefix.is_empty() {
+        return Ok(payload.to_vec());
+    }
+    if slice_lengths.is_empty() {
+        let mut prefixed = Vec::with_capacity(slice_prefix.len() + payload.len());
+        prefixed.extend_from_slice(slice_prefix);
+        prefixed.extend_from_slice(payload);
+        return Ok(prefixed);
+    }
+    let total = slice_lengths
+        .iter()
+        .try_fold(0usize, |total, length| total.checked_add(*length));
+    match total {
+        Some(total) if total == payload.len() => {}
+        Some(total) => {
+            return Err(format!(
+                "H.264 slice lengths sum to {total}, STATUS says {}",
+                payload.len()
+            ))
+        }
+        None => return Err("H.264 slice length sum overflowed usize".into()),
+    }
+    let prefix_bytes = slice_prefix
+        .len()
+        .checked_mul(slice_lengths.len())
+        .ok_or_else(|| "H.264 slice prefix length overflowed usize".to_string())?;
+    let mut prefixed = Vec::with_capacity(payload.len() + prefix_bytes);
+    let mut offset = 0;
+    for length in slice_lengths {
+        if *length != 0 {
+            prefixed.extend_from_slice(slice_prefix);
+            prefixed.extend_from_slice(&payload[offset..offset + *length]);
+            offset += *length;
+        }
+    }
+    Ok(prefixed)
 }
 
 /// One reconstruction slot. VEPU580 writes the FBC-compressed reconstruction and
@@ -270,6 +318,24 @@ impl FrameState {
     }
 }
 
+fn next_picture_state(
+    state: FrameState,
+    gop: u32,
+    refresh_length: usize,
+    tsvc_reference_step: bool,
+    last_non_reference: bool,
+    non_reference: bool,
+) -> FrameState {
+    let mut next = state.next(gop, refresh_length);
+    if tsvc_reference_step && last_non_reference && !non_reference && !next.is_idr {
+        // TSVC2 encodes a disposable temporal-1 P picture and the following
+        // temporal-0 reference P picture as one coded frame, so the reference P
+        // reuses frame_num. Their POCs still advance independently.
+        next.frame_num = state.frame_num;
+    }
+    next
+}
+
 /// One encode job: the picture, the buffers it moves between, and where it sits
 /// in the GOP.
 pub struct Job<'a> {
@@ -310,6 +376,7 @@ pub struct Job<'a> {
     /// `use_pass1`: read that reconstruction as this job's source instead.
     pub save_pass1: bool,
     pub use_pass1: bool,
+    pub non_reference: bool,
     pub pass1_fd: i32,
 }
 
@@ -638,6 +705,9 @@ pub struct Vepu580H264 {
     /// current slot and its previous accepted reference slot.
     next_slot_override: Option<usize>,
     next_reference_override: Option<usize>,
+    next_non_reference_override: Option<bool>,
+    next_prefix_temporal_id_override: Option<u8>,
+    last_non_reference: bool,
     /// The rate-control model, present only in CBR mode.
     rc: Option<rc_model::Model>,
     /// The scene-motion detector, updated from every picture's STATUS window.
@@ -769,6 +839,9 @@ impl Vepu580H264 {
             slot: 0,
             next_slot_override: None,
             next_reference_override: None,
+            next_non_reference_override: None,
+            next_prefix_temporal_id_override: None,
+            last_non_reference: false,
             tune: SceneTune::new(false),
             input_fd_override: None,
             input_prepared: false,
@@ -792,6 +865,26 @@ impl Vepu580H264 {
             return Err("H.264 reference slot is outside the reconstruction pool".to_string());
         }
         self.forced_reference_slot = slot;
+        Ok(())
+    }
+
+    pub fn force_next_picture_layout(
+        &mut self,
+        current_slot: usize,
+        reference_slot: usize,
+        non_reference: bool,
+        temporal_id: Option<u8>,
+    ) -> Result<(), String> {
+        if current_slot >= self.recons.len() || reference_slot >= self.recons.len() {
+            return Err("H.264 picture layout uses a slot outside the reconstruction pool".into());
+        }
+        if temporal_id.is_some_and(|id| id > 7) {
+            return Err("H.264 temporal_id is outside the three-bit SVC range".into());
+        }
+        self.next_slot_override = Some(current_slot);
+        self.next_reference_override = Some(reference_slot);
+        self.next_non_reference_override = Some(non_reference);
+        self.next_prefix_temporal_id_override = temporal_id;
         Ok(())
     }
 
@@ -915,6 +1008,8 @@ impl Vepu580H264 {
         reference_slot: usize,
         save_pass1: bool,
         use_pass1: bool,
+        non_reference: bool,
+        reference_pattern_active: bool,
         input_fd: i32,
     ) -> Result<(Vec<u8>, Vec<usize>, Statistics), String> {
         let pass1_fd = self.pass1.as_ref().map_or(-1, |b| b.fd());
@@ -943,6 +1038,7 @@ impl Vepu580H264 {
             ext_offset: self.ext_line.as_ref().map_or(0, |b| b.1 as u32),
             save_pass1,
             use_pass1,
+            non_reference,
             pass1_fd,
         };
         if self.config.gdr && state.is_i_refresh {
@@ -1041,7 +1137,7 @@ impl Vepu580H264 {
             .sync_read_end()
             .map_err(|e| format!("H.264 output sync end: {e}"))?;
         nal_validation?;
-        if self.forced_reference_slot == Some(0) {
+        if self.forced_reference_slot == Some(0) && !reference_pattern_active {
             payload = amend_default_reference_slice(
                 payload,
                 &self.config,
@@ -1069,10 +1165,17 @@ impl Vepu580H264 {
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
         let previous_state = self.state;
         let previous_slot = self.slot;
+        let non_reference = self.next_non_reference_override.take().unwrap_or(false);
+        let prefix_temporal_id = self.next_prefix_temporal_id_override.take();
         if self.state.index != 0 || self.started {
-            self.state = self
-                .state
-                .next(self.config.gop, self.config.gdr_refresh_length());
+            self.state = next_picture_state(
+                self.state,
+                self.config.gop,
+                self.config.gdr_refresh_length(),
+                prefix_temporal_id.is_some(),
+                self.last_non_reference,
+                non_reference,
+            );
             self.state.is_vi = self.config.smart_p_vgop().is_some_and(|vi_len| {
                 !self.state.is_idr
                     && self.state.index % self.config.gop.max(1) as usize == vi_len as usize
@@ -1117,15 +1220,15 @@ impl Vepu580H264 {
         };
 
         let override_slot = self.next_reference_override.take();
-        let reference_slot = self.forced_reference_slot.unwrap_or_else(|| {
-            override_slot.unwrap_or_else(|| {
+        let reference_slot = override_slot
+            .or(self.forced_reference_slot)
+            .unwrap_or_else(|| {
                 if state.is_idr || state.is_vi || state.index <= 1 {
                     0
                 } else {
                     previous_slot
                 }
-            })
-        });
+            });
         // The model decides the picture's bits and QP before the register file is
         // built; under fixed QP there is no decision to make. The C re-encodes
         // the same picture in the same reconstruction slot when the first result
@@ -1150,6 +1253,8 @@ impl Vepu580H264 {
                 self.slot,
                 previous_slot,
                 true,
+                false,
+                false,
                 false,
                 input_fd,
             )?;
@@ -1177,6 +1282,8 @@ impl Vepu580H264 {
                 reference_slot,
                 false,
                 use_pass1,
+                non_reference,
+                prefix_temporal_id.is_some(),
                 input_fd,
             )?;
             let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as u32;
@@ -1290,10 +1397,26 @@ impl Vepu580H264 {
         } else {
             Vec::new()
         };
+        let slice_prefix = prefix_temporal_id
+            .map(|temporal_id| {
+                svc_prefix_nal(
+                    state.is_idr,
+                    if state.is_idr {
+                        3
+                    } else if non_reference {
+                        0
+                    } else {
+                        2
+                    },
+                    temporal_id,
+                )
+            })
+            .unwrap_or_default();
+        let prefixed_payload = prefix_slices(&payload, &slice_lengths, &slice_prefix)?;
         let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
         annex_b.extend_from_slice(&headers);
-        annex_b.extend_from_slice(&payload);
-        let packets = output_packets(&headers, &payload, &slice_lengths)?;
+        annex_b.extend_from_slice(&prefixed_payload);
+        let packets = output_packets(&headers, &slice_prefix, &payload, &slice_lengths)?;
         self.last_rate_control = self.rc.as_ref().map(|_| RateControl {
             bit_target,
             qp_target: quality_target as u32,
@@ -1327,6 +1450,9 @@ impl Vepu580H264 {
             self.next_slot_override = Some(self.slot);
             self.next_reference_override = Some(reference_slot);
         }
+        if disposition != PictureDisposition::Dropped {
+            self.last_non_reference = non_reference;
+        }
         Ok(EncodedFrame {
             annex_b,
             packets,
@@ -1358,6 +1484,21 @@ fn picture_frame_type(state: &FrameState) -> rc_model::FrameType {
     } else {
         rc_model::FrameType::InterP
     }
+}
+
+fn svc_prefix_nal(is_idr: bool, nal_ref_idc: u8, temporal_id: u8) -> Vec<u8> {
+    debug_assert!(nal_ref_idc <= 3);
+    debug_assert!(temporal_id <= 7);
+    let mut prefix = Vec::with_capacity(if nal_ref_idc == 0 { 4 } else { 5 });
+    prefix.extend_from_slice(&[0, 0, 0, 1]);
+    prefix.push((nal_ref_idc << 5) | 14);
+    prefix.push(0x80 | (u8::from(is_idr) << 6) | temporal_id);
+    prefix.push(0x80);
+    prefix.push((temporal_id << 5) | 0x07);
+    if nal_ref_idc != 0 {
+        prefix.push(0x20);
+    }
+    prefix
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2581,6 +2722,8 @@ impl RegisterFile {
             &vepu580_regs::H264_SYNT_NAL_NAL_REF_IDC,
             if state.is_idr {
                 3
+            } else if job.non_reference {
+                0
             } else if job.save_pass1 {
                 1
             } else {
@@ -3524,6 +3667,7 @@ mod tests {
             output_capacity: 119_296,
             save_pass1: false,
             use_pass1: false,
+            non_reference: false,
             pass1_fd: -1,
         }
     }
@@ -3738,6 +3882,19 @@ mod tests {
                 (false, 2, 4, 1),
                 (true, 0, 0, 2), // IDR
             ]
+        );
+    }
+
+    #[test]
+    fn tsvc2_reference_picture_reuses_frame_num_but_not_poc() {
+        let idr = FrameState::default();
+        let p1 = next_picture_state(idr, 60, 0, true, false, true);
+        let p2 = next_picture_state(p1, 60, 0, true, true, false);
+        let p3 = next_picture_state(p2, 60, 0, true, false, true);
+        let p4 = next_picture_state(p3, 60, 0, true, true, false);
+        assert_eq!(
+            [p1, p2, p3, p4].map(|state| (state.frame_num, state.poc)),
+            [(1, 2), (1, 4), (2, 6), (2, 8)]
         );
     }
 
@@ -5079,28 +5236,51 @@ mod tests {
     #[test]
     fn output_packets_preserve_low_delay_slice_layout() {
         let payload: Vec<u8> = (0..9).collect();
-        let packets = output_packets(&[0xaa, 0xbb], &payload, &[4, 5, 0]).unwrap();
+        let packets = output_packets(&[0xaa, 0xbb], &[0xcc], &payload, &[4, 5, 0]).unwrap();
         assert_eq!(
             packets,
             vec![
-                vec![0xaa, 0xbb, 0, 1, 2, 3],
-                vec![4, 5, 6, 7, 8],
+                vec![0xaa, 0xbb, 0xcc, 0, 1, 2, 3],
+                vec![0xcc, 4, 5, 6, 7, 8],
                 Vec::<u8>::new(),
             ]
         );
 
-        let whole = output_packets(&[0xaa], &payload, &[]).unwrap();
+        let whole = output_packets(&[0xaa], &[0xcc], &payload, &[]).unwrap();
         assert_eq!(whole.len(), 1);
-        assert_eq!(whole[0].len(), payload.len() + 1);
+        assert_eq!(whole[0].len(), payload.len() + 2);
         assert_eq!(whole[0][0], 0xaa);
-        assert_eq!(&whole[0][1..], payload);
+        assert_eq!(whole[0][1], 0xcc);
+        assert_eq!(&whole[0][2..], payload);
     }
 
     #[test]
     fn output_packets_reject_a_partial_slice_sum() {
-        let error = output_packets(&[], &[0; 9], &[4, 4]).unwrap_err();
+        let error = output_packets(&[], &[], &[0; 9], &[4, 4]).unwrap_err();
         assert!(error.contains("sum to 8"));
         assert!(error.contains("STATUS says 9"));
+    }
+
+    #[test]
+    fn tsvc_prefix_matches_the_reference_bit_layout() {
+        assert_eq!(
+            svc_prefix_nal(true, 3, 0),
+            [0, 0, 0, 1, 0x6e, 0xc0, 0x80, 0x07, 0x20]
+        );
+        assert_eq!(
+            svc_prefix_nal(false, 0, 1),
+            [0, 0, 0, 1, 0x0e, 0x81, 0x80, 0x27]
+        );
+        assert_eq!(
+            svc_prefix_nal(false, 2, 0),
+            [0, 0, 0, 1, 0x4e, 0x80, 0x80, 0x07, 0x20]
+        );
+    }
+
+    #[test]
+    fn slice_prefix_is_repeated_before_each_non_empty_low_delay_slice() {
+        let prefixed = prefix_slices(&[1, 2, 3, 4, 5], &[2, 3, 0], &[0xaa]).unwrap();
+        assert_eq!(prefixed, [0xaa, 1, 2, 0xaa, 3, 4, 5]);
     }
 
     #[test]
@@ -5329,6 +5509,7 @@ mod rate_control_registers {
             ext_offset: 0,
             save_pass1: false,
             use_pass1: false,
+            non_reference: false,
             pass1_fd: -1,
         })
         .unwrap();
@@ -5415,6 +5596,7 @@ mod rate_control_registers {
             ext_offset: 0,
             save_pass1: false,
             use_pass1: false,
+            non_reference: false,
             pass1_fd: -1,
         })
         .unwrap();

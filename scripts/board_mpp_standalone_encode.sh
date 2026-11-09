@@ -10,6 +10,7 @@ mpp_root="${MPP_REF:-$HOME/rk-mpp-oracles/mpp-old}"
 enc_test="${ENC_TEST:-$mpp_root/build/test/mpi_enc_test}"
 vendor_lib="${MPP_LIB:-$mpp_root/build/mpp}"
 raw=/tmp/rk_mpp_standalone_encode_320x240.nv12
+raw_multi=/tmp/rk_mpp_standalone_encode_320x240_6.nv12
 overlay=$(mktemp -d /tmp/rk_mpp_standalone_encode.XXXXXX)
 trap 'rm -rf "$overlay"' EXIT
 
@@ -38,19 +39,28 @@ fi
 ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 1 \
     -pix_fmt nv12 -f rawvideo "$raw"
+ffmpeg -nostdin -y -hide_banner -loglevel error \
+    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 12 \
+    -pix_fmt nv12 -f rawvideo "$raw_multi"
 
-run_encoder() {
+run_encoder_frames() {
     local library="$1"
     local output="$2"
     local coding="$3"
     local quality="$4"
     local gop="$5"
+    local frames="$6"
+    local input="$7"
 
     sudo -n rm -f "$output"
     sudo -n env LD_LIBRARY_PATH="$library" timeout 60 "$enc_test" \
-        -i "$raw" -o "$output" -w 320 -h 240 -n 1 -rc 2 -fps 30 \
+        -i "$input" -o "$output" -w 320 -h 240 -n "$frames" -rc 2 -fps 30 \
         -g "$gop" -t "$coding" -qc "$quality" \
         < /dev/null > "${output}.log" 2>&1
+}
+
+run_encoder() {
+    run_encoder_frames "$1" "$2" "$3" "$4" "$5" 1 "$raw"
 }
 
 decode_and_compare() {
@@ -109,3 +119,23 @@ for coding in h264 h265 mjpeg; do
             ;;
     esac
 done
+
+if grep -qi rk3588 /proc/device-tree/compatible 2>/dev/null; then
+    vendor=/tmp/rk_mpp_standalone_encode_h264_tsvc2_vendor.264
+    standalone=/tmp/rk_mpp_standalone_encode_h264_tsvc2_ours.264
+    run_encoder_frames "$vendor_lib" "$vendor" 7 26 1:60 6 "$raw_multi"
+    run_encoder_frames "$overlay" "$standalone" 7 26 1:60 6 "$raw_multi"
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$standalone"
+    decode_and_compare h264dec "$vendor" "$standalone"
+    printf 'PASS h264  six-frame TSVC2 standalone encoder NAL/reconstruction\n'
+
+    vendor=/tmp/rk_mpp_standalone_encode_h264_tsvc2_vendor12.264
+    standalone=/tmp/rk_mpp_standalone_encode_h264_tsvc2_ours12.264
+    run_encoder_frames "$vendor_lib" "$vendor" 7 26 1:60 12 "$raw_multi"
+    run_encoder_frames "$overlay" "$standalone" 7 26 1:60 12 "$raw_multi"
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$standalone"
+    decode_and_compare h264dec "$vendor" "$standalone"
+    printf 'PASS h264  twelve-frame TSVC2 standalone encoder NAL/reconstruction\n'
+else
+    printf 'SKIP h264  six-frame TSVC2 (this SoC uses the VEPU510 encoder path)\n'
+fi

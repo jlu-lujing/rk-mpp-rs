@@ -121,6 +121,9 @@ struct CompatContext {
     eos_delivered: bool,
     pending_output_frame: MppFrame,
     pending_input_packet: MppPacket,
+    encoder_ref_pattern: Vec<standalone::ReferenceFrameStep>,
+    encoder_ref_index: usize,
+    encoder_ref_last_slot: usize,
 }
 
 unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
@@ -292,6 +295,29 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     if context.ctx_type != MPP_CTX_ENC {
         return MPP_ERR_VALUE;
     }
+    let picture_layout = if context.encoder_ref_pattern.is_empty() {
+        None
+    } else {
+        let index = context.encoder_ref_index;
+        if index == 0 {
+            Some((0, 0, false, Some(0)))
+        } else {
+            let step = context.encoder_ref_pattern[(index - 1) % context.encoder_ref_pattern.len()];
+            let current_slot = if index % 2 == 1 {
+                1
+            } else if (index / 2) % 2 == 1 {
+                2
+            } else {
+                0
+            };
+            Some((
+                current_slot,
+                context.encoder_ref_last_slot,
+                step.non_reference,
+                Some(step.temporal_id),
+            ))
+        }
+    };
     let Some(encoder) = context.encoder.as_mut() else {
         return MPP_ERR_VALUE;
     };
@@ -320,8 +346,25 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     let input = encoder::InputFrame::new(&input)
         .with_pts(frame.pts)
         .with_dts(frame.dts);
+    if let Some((current_slot, reference_slot, non_reference, temporal_id)) = picture_layout {
+        if let Err(error) = encoder.force_next_picture_layout(
+            current_slot,
+            reference_slot,
+            non_reference,
+            temporal_id,
+        ) {
+            eprintln!("rk-mpp-rs mpp: reference layout rejected: {error}");
+            return MPP_NOK;
+        }
+    }
     match encoder.submit_frame(input) {
         Ok(_) => {
+            if let Some((current_slot, _, non_reference, _)) = picture_layout {
+                if context.encoder_ref_index > 0 && !non_reference {
+                    context.encoder_ref_last_slot = current_slot;
+                }
+                context.encoder_ref_index += 1;
+            }
             if !motion_info.is_null() {
                 if let Some(data) = encoder.take_motion_info() {
                     if !unsafe { objects::buffer_replace(motion_info, &data) } {
@@ -403,6 +446,9 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
+    context.encoder_ref_pattern.clear();
+    context.encoder_ref_index = 0;
+    context.encoder_ref_last_slot = 0;
     MPP_OK
 }
 
@@ -434,17 +480,44 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             if context.ctx_type != MPP_CTX_ENC || param.is_null() {
                 return MPP_ERR_VALUE;
             }
-            let config = match unsafe { cfg::encoder_config(param) } {
+            context.encoder_ref_pattern =
+                standalone::encoder_cfg_ref_pattern(param).unwrap_or_default();
+            context.encoder_ref_index = 0;
+            context.encoder_ref_last_slot = 0;
+            let mut config = match unsafe { cfg::encoder_config(param) } {
                 Ok(config) => config,
                 Err(error) => {
                     eprintln!("rk-mpp-rs mpp: encoder config rejected: {error}");
                     return MPP_NOK;
                 }
             };
+            if context.encoder_ref_pattern.len() == 2 {
+                // TSVC2 keeps one decoded reference frame. This is the value
+                // mpp_enc_ref_cfg_check publishes to h264e_sps_init.
+                config = config.with_num_ref_frames(1);
+            }
             match encoder::Encoder::new_mpi_compat(config) {
                 Ok(mut encoder) => {
+                    if !encoder.supports_h264_reference_layout()
+                        && !context.encoder_ref_pattern.is_empty()
+                    {
+                        context.encoder_ref_pattern.clear();
+                        context.encoder_ref_index = 0;
+                        context.encoder_ref_last_slot = 0;
+                    }
                     if context.coding == MPP_VIDEO_CODING_AVC {
-                        if matches!(config.profile(), 0 | 66) {
+                        if !context.encoder_ref_pattern.is_empty() {
+                            if !matches!(config.profile(), 0 | 66 | 100) {
+                                eprintln!(
+                                    "rk-mpp-rs mpp: H.264 profile {} is not supported",
+                                    config.profile()
+                                );
+                                return MPP_NOK;
+                            }
+                            if encoder.force_reference_slot(None).is_err() {
+                                return MPP_NOK;
+                            }
+                        } else if matches!(config.profile(), 0 | 66) {
                             if encoder.force_reference_slot(Some(0)).is_err() {
                                 eprintln!(
                                     "rk-mpp-rs mpp: default MPP H.264 reference schedule is unavailable"
@@ -474,8 +547,17 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
         | MPP_ENC_SET_HEADER_MODE
         | MPP_ENC_SET_OSD_PLT_CFG
         | MPP_ENC_SET_RC_API
-        | MPP_ENC_SET_REF_CFG
         | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
+        MPP_ENC_SET_REF_CFG => {
+            if context.ctx_type != MPP_CTX_ENC || param.is_null() {
+                return MPP_ERR_VALUE;
+            }
+            context.encoder_ref_pattern =
+                standalone::reference_frame_pattern(param).unwrap_or_default();
+            context.encoder_ref_index = 0;
+            context.encoder_ref_last_slot = 0;
+            MPP_OK
+        }
         MPP_ENC_GET_HDR_SYNC => {
             if context.ctx_type != MPP_CTX_ENC {
                 return MPP_ERR_VALUE;
@@ -530,6 +612,9 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             eos_delivered: false,
             pending_output_frame: std::ptr::null_mut(),
             pending_input_packet: std::ptr::null_mut(),
+            encoder_ref_pattern: Vec::new(),
+            encoder_ref_index: 0,
+            encoder_ref_last_slot: 0,
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();
@@ -577,6 +662,9 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
+    context.encoder_ref_pattern.clear();
+    context.encoder_ref_index = 0;
+    context.encoder_ref_last_slot = 0;
     MPP_OK
 }
 
