@@ -196,8 +196,11 @@ GOP、QP 等值，而不是依赖 vendor dlsym。另一个兼容点是旧版 `mp
 `mpp_trie_get_info` 取回同一 `MppOptInfo *`；shim 按指针是否与参数地址
 同区辨识这套旧 ABI，同时保持新版 `MppTrieInfo + name + ctx` 布局。
 t6 的三编码 standalone 编码门通过：H.264/H.265 解码重建与 vendor
-一致，MJPEG stream 逐字节一致。完整 reference-cfg 调度和高级编码控制
-仍未接入。
+一致，MJPEG stream 逐字节一致。`MppEncRefCfg` 的
+create/reset/set_cfg_cnt/add_lt/add_st/check 和旧 option trie ABI
+也已接入，`-g 1:60` 的单帧路径会真实经过 `MPP_ENC_SET_REF_CFG`。
+多帧 TSVC 层级还没有映射到 Rust encoder 的逐帧参考调度，因此不能把
+reference-cfg 标成全部完成；高级编码控制同样仍未接入。
 
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test

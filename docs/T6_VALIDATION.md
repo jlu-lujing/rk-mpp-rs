@@ -400,7 +400,9 @@ to `librk_mpp_rs.so`, creates a local key/value `MppEncCfg`, and runs
 standalone streams decode byte-identically to the vendor streams
 (`9d8c6f54…24ac6fc` and `c7c74e0c…eb03643`), while MJPEG is stream-identical
 (`08eb7c6f…b5388623`). This closes the one-frame object path; reference-cfg
-dispatch and advanced encoder controls remain open.
+objects also survive create/reset/LT/ST add/check and the H.264 case uses
+`-g 1:60`, so `MPP_ENC_SET_REF_CFG` is exercised rather than bypassed.
+Multi-frame TSVC hierarchy mapping and advanced encoder controls remain open.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older

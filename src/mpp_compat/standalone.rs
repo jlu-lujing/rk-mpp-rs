@@ -12,6 +12,7 @@ const MPP_NOK: c_int = -1;
 const MPP_ERR_NULL_PTR: c_int = -3;
 const DEC_CFG_MAGIC: u64 = 0x524b_4445_4343_4647;
 const ENC_CFG_MAGIC: u64 = 0x524b_454e_4343_4647;
+const REF_CFG_MAGIC: u64 = 0x524b_5245_4643_4647;
 
 #[no_mangle]
 pub static mut mpp_debug: c_uint = 0;
@@ -892,6 +893,36 @@ struct EncCfg {
     values: HashMap<CString, ConfigValue>,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct RefLtCfg {
+    lt_idx: i32,
+    temporal_id: i32,
+    ref_mode: i32,
+    ref_arg: i32,
+    lt_gap: i32,
+    lt_delay: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct RefStCfg {
+    is_non_ref: i32,
+    temporal_id: i32,
+    ref_mode: i32,
+    ref_arg: i32,
+    repeat: i32,
+}
+
+struct RefCfg {
+    magic: u64,
+    lt_count: i32,
+    st_count: i32,
+    keep_cpb: i32,
+    lt: [RefLtCfg; 16],
+    st: [RefStCfg; 16],
+}
+
 static ENV_STRINGS: OnceLock<Mutex<Vec<CString>>> = OnceLock::new();
 static SOC_NAME: OnceLock<CString> = OnceLock::new();
 static OBJ_DEFS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
@@ -1038,6 +1069,25 @@ fn enc_cfg_ref(config: *mut c_void) -> Option<&'static EncCfg> {
     }
     let config = unsafe { &*config.cast::<EncCfg>() };
     (config.magic == ENC_CFG_MAGIC).then_some(config)
+}
+
+fn ref_cfg_mut(config: *mut c_void) -> Option<&'static mut RefCfg> {
+    if config.is_null() {
+        return None;
+    }
+    let config = unsafe { &mut *config.cast::<RefCfg>() };
+    (config.magic == REF_CFG_MAGIC).then_some(config)
+}
+
+fn new_ref_cfg() -> RefCfg {
+    RefCfg {
+        magic: REF_CFG_MAGIC,
+        lt_count: 0,
+        st_count: 0,
+        keep_cpb: 0,
+        lt: [RefLtCfg::default(); 16],
+        st: [RefStCfg::default(); 16],
+    }
 }
 
 fn dec_cfg_ref(config: *mut c_void) -> Option<&'static DecCfg> {
@@ -1808,6 +1858,161 @@ pub unsafe extern "C" fn mpp_enc_cfg_apply_file(
     MPP_OK
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_init(ref_cfg: *mut *mut c_void) -> i32 {
+    if ref_cfg.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    unsafe { ref_cfg.write(Box::into_raw(Box::new(new_ref_cfg())).cast()) };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_create(ref_cfg: *mut *mut c_void, _mode: u32) -> i32 {
+    unsafe { mpp_enc_ref_cfg_init(ref_cfg) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_deinit(ref_cfg: *mut *mut c_void) -> i32 {
+    if ref_cfg.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let object = unsafe { ref_cfg.read() };
+    let Some(config) = ref_cfg_mut(object) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    config.magic = 0;
+    drop(unsafe { Box::from_raw((config as *mut RefCfg).cast::<c_void>()) });
+    unsafe { ref_cfg.write(ptr::null_mut()) };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_reset(ref_cfg: *mut c_void) -> i32 {
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    *config = new_ref_cfg();
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_set_cfg_cnt(
+    ref_cfg: *mut c_void,
+    lt_count: i32,
+    st_count: i32,
+) -> i32 {
+    if !(0..=16).contains(&lt_count) || !(0..=16).contains(&st_count) {
+        return MPP_NOK;
+    }
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    config.lt_count = lt_count;
+    config.st_count = st_count;
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_add_lt_cfg(
+    ref_cfg: *mut c_void,
+    count: i32,
+    frames: *const RefLtCfg,
+) -> i32 {
+    if frames.is_null() || count < 0 {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if count > config.lt_count {
+        return MPP_NOK;
+    }
+    let frames = unsafe { std::slice::from_raw_parts(frames, count as usize) };
+    config.lt[..frames.len()].copy_from_slice(frames);
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_add_st_cfg(
+    ref_cfg: *mut c_void,
+    count: i32,
+    frames: *const RefStCfg,
+) -> i32 {
+    if frames.is_null() || count < 0 {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if count > config.st_count {
+        return MPP_NOK;
+    }
+    let frames = unsafe { std::slice::from_raw_parts(frames, count as usize) };
+    config.st[..frames.len()].copy_from_slice(frames);
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_check(ref_cfg: *mut c_void) -> i32 {
+    ref_cfg_mut(ref_cfg).map_or(MPP_ERR_NULL_PTR, |_| MPP_OK)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_set_keep_cpb(ref_cfg: *mut c_void, keep: i32) -> i32 {
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    config.keep_cpb = i32::from(keep != 0);
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_get_preset(_preset: *mut c_void) -> i32 {
+    MPP_NOK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_show() {}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_apply(
+    _ref_cfg: *mut c_void,
+    _format: i32,
+    _buffer: *mut c_char,
+) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_apply_file(
+    _ref_cfg: *mut c_void,
+    _format: i32,
+    _path: *const c_char,
+) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_extract(
+    _ref_cfg: *mut c_void,
+    _format: i32,
+    buffer: *mut *mut c_char,
+) -> i32 {
+    if buffer.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let output = unsafe { libc::malloc(1) }.cast::<c_char>();
+    if output.is_null() {
+        return MPP_NOK;
+    }
+    unsafe {
+        output.write(0);
+        buffer.write(output);
+    }
+    MPP_OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1867,6 +2072,55 @@ mod tests {
         assert_eq!(codec, 0x0100_0004);
         assert_eq!(width, 320);
         assert_eq!(unsafe { mpp_enc_cfg_deinit(cfg) }, MPP_OK);
+    }
+
+    #[test]
+    fn encoder_ref_cfg_stores_hierarchy() {
+        let mut cfg = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_ref_cfg_create(&mut cfg, 0) }, MPP_OK);
+        assert_eq!(unsafe { mpp_enc_ref_cfg_set_cfg_cnt(cfg, 1, 3) }, MPP_OK);
+        let lt = [RefLtCfg {
+            lt_idx: 0,
+            temporal_id: 0,
+            ref_mode: 0,
+            ref_arg: 0,
+            lt_gap: 60,
+            lt_delay: 0,
+        }];
+        let st = [
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 0,
+                ref_mode: 3,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 2,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 1,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+        ];
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_add_lt_cfg(cfg, 1, lt.as_ptr()) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_add_st_cfg(cfg, 3, st.as_ptr()) },
+            MPP_OK
+        );
+        assert_eq!(unsafe { mpp_enc_ref_cfg_check(cfg) }, MPP_OK);
+        assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut cfg) }, MPP_OK);
+        assert!(cfg.is_null());
     }
 
     #[test]

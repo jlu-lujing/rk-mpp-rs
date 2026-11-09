@@ -49,6 +49,7 @@ const MPP_ENC_SET_SEI_CFG: c_int = 3_276_815;
 const MPP_ENC_SET_HEADER_MODE: c_int = 3_309_569;
 const MPP_ENC_SET_OSD_PLT_CFG: c_int = 3_310_593;
 const MPP_ENC_SET_RC_API: c_int = 3_277_317;
+const MPP_ENC_SET_REF_CFG: c_int = 3_310_081;
 const MPP_SET_OUTPUT_TIMEOUT: c_int = 2_097_159;
 
 const CONTEXT_MAGIC: u64 = 0x4d50_5052_5343_5458;
@@ -473,6 +474,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
         | MPP_ENC_SET_HEADER_MODE
         | MPP_ENC_SET_OSD_PLT_CFG
         | MPP_ENC_SET_RC_API
+        | MPP_ENC_SET_REF_CFG
         | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
         MPP_ENC_GET_HDR_SYNC => {
             if context.ctx_type != MPP_CTX_ENC {

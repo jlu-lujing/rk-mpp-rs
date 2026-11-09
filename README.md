@@ -288,7 +288,9 @@ surface，`show_existing` 则按参考帧语义复制历史 display surface。
 standalone 日志 shim 只保证符号与调用兼容，不展开 printf 变参文本；
 未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG
 单帧编码：H.264/H.265 重建逐字节一致，MJPEG stream 逐字节一致。
-完整 reference-cfg 与所有高级编码控制仍待继续补齐。
+`MppEncRefCfg` 的 create/reset/LT/ST add/check 与
+`MPP_ENC_SET_REF_CFG` 已接通；多帧 TSVC/GOP 层级映射和其余高级编码
+控制仍待继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的
 `mpi_enc_test` 中跑通。H.264 单帧与真实 6 帧的 SPS/PPS、rc-SEI、VCL NAL

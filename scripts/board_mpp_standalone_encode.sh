@@ -44,11 +44,12 @@ run_encoder() {
     local output="$2"
     local coding="$3"
     local quality="$4"
+    local gop="$5"
 
     sudo -n rm -f "$output"
     sudo -n env LD_LIBRARY_PATH="$library" timeout 60 "$enc_test" \
         -i "$raw" -o "$output" -w 320 -h 240 -n 1 -rc 2 -fps 30 \
-        -g 0:60 -t "$coding" -qc "$quality" \
+        -g "$gop" -t "$coding" -qc "$quality" \
         < /dev/null > "${output}.log" 2>&1
 }
 
@@ -75,22 +76,25 @@ for coding in h264 h265 mjpeg; do
             type=7
             quality=26
             suffix=264
+            gop=1:60
             ;;
         h265)
             type=16777220
             quality=26
             suffix=265
+            gop=0:60
             ;;
         mjpeg)
             type=8
             quality=80
             suffix=jpg
+            gop=0:60
             ;;
     esac
     vendor=/tmp/rk_mpp_standalone_encode_${coding}_vendor.$suffix
     standalone=/tmp/rk_mpp_standalone_encode_${coding}_ours.$suffix
-    run_encoder "$vendor_lib" "$vendor" "$type" "$quality"
-    run_encoder "$overlay" "$standalone" "$type" "$quality"
+    run_encoder "$vendor_lib" "$vendor" "$type" "$quality" "$gop"
+    run_encoder "$overlay" "$standalone" "$type" "$quality" "$gop"
     case "$coding" in
         h264)
             decode_and_compare h264dec "$vendor" "$standalone"
