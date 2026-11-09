@@ -157,6 +157,16 @@ alt-ref/reference frame 使用内部 surface。同 dma-buf 快路径保留真实
 回退成 packed NV12。t6 与 lf1 的 320×240 lossless 12 帧 advanced 输出均与
 C MPP 逐字节一致，SHA `c5381bbf…3949a`；AV1 pool injection 继续保持未完成。
 
+第十个 slice 闭合 AV1 advanced injection，并修复长流池复用。VDPU34x 把
+调用方 dma-buf 导入 display pool，VDPU383 则替换 frame 的 output lease，
+保留同一 frame 的 colmv/CDF。coded `show_frame` 直接写调用方 surface；
+`show_existing` 展示的是已经解码的历史 reference，必须从它的历史 display
+surface 复制，不能把 packet 的新 buffer 追认成旧帧。C consumer 同时接受
+两个 SoC 的 AV1 stride：t6 为 320-byte，lf1 VDPU383 为 448-byte，并按较大
+容量分配。t6/lf1 的 `av1_320x240_10.ivf` 10 帧 advanced 输出均与 C MPP
+逐字节一致，SHA `88f34ea5…c5f8e`。`BufferPool::import` 现在复用 `clear()`
+留下的 Empty slot，避免长码流超过池上限后错误返回 `Full`。
+
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test
 MPP_INCLUDE=/tmp/mpp-develop/inc \

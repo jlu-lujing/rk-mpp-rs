@@ -34,6 +34,7 @@ pub struct Decoder {
     next_poc: u32,
     output_dmabuf: bool,
     output_pool: BufferPool<DmaBuf>,
+    output_injection: Option<DmaBuf>,
 }
 
 impl Decoder {
@@ -49,6 +50,7 @@ impl Decoder {
             next_poc: 1,
             output_dmabuf: false,
             output_pool: BufferPool::new(MAX_FRAMES),
+            output_injection: None,
         }
     }
 
@@ -68,6 +70,15 @@ impl Decoder {
 
     /// Decode one temporal unit and return every displayed picture in it.
     pub fn decode_packet(&mut self, packet: &[u8]) -> Result<Vec<Picture>, String> {
+        let mut output_injection = self.output_injection.take();
+        self.decode_packet_inner(packet, &mut output_injection)
+    }
+
+    fn decode_packet_inner(
+        &mut self,
+        packet: &[u8],
+        output_injection: &mut Option<DmaBuf>,
+    ) -> Result<Vec<Picture>, String> {
         let obus = split_obus(packet).map_err(|error| error.to_string())?;
         self.parser.begin_packet();
         let mut cursor = 0;
@@ -82,7 +93,7 @@ impl Decoder {
                     output.push(self.show_existing(&header)?);
                 }
                 Av1PacketEvent::Coded(frame) => {
-                    if let Some(picture) = self.decode_frame(packet, &frame)? {
+                    if let Some(picture) = self.decode_frame(packet, &frame, output_injection)? {
                         output.push(picture);
                     }
                 }
@@ -95,6 +106,7 @@ impl Decoder {
         &mut self,
         packet: &[u8],
         coded: &Av1CodedFrame,
+        output_injection: &mut Option<DmaBuf>,
     ) -> Result<Option<Picture>, String> {
         let sequence = self
             .parser
@@ -136,6 +148,19 @@ impl Decoder {
                 })
             })
             .ok_or("VDPU383 AV1 DPB exhausted all frame slots")?;
+        let injected_output = if coded.header.show_frame {
+            if let Some(buffer) = output_injection.take() {
+                self.output_pool.clear();
+                self.output_pool
+                    .import(buffer)
+                    .map_err(|error| error.to_string())?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         if self.frames[frame_index]
             .as_ref()
             .is_none_or(|frame| frame.texture_index as usize != frame_index)
@@ -150,6 +175,12 @@ impl Decoder {
                 )
                 .map_err(|error| format!("VDPU383 AV1 frame: {error}"))?,
             );
+        } else if injected_output {
+            self.frames[frame_index]
+                .as_mut()
+                .ok_or("VDPU383 AV1 reusable frame disappeared")?
+                .replace_output(&self.output_pool)
+                .map_err(|error| error.to_string())?;
         }
 
         let texture_slots = std::array::from_fn(|slot| {
@@ -277,6 +308,12 @@ impl Decoder {
 
     pub fn set_output_dmabuf(&mut self, enabled: bool) {
         self.output_dmabuf = enabled;
+    }
+
+    pub fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), String> {
+        self.set_output_dmabuf(true);
+        self.output_injection = Some(buffer);
+        Ok(())
     }
 
     fn ensure_geometry(

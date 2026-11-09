@@ -180,6 +180,16 @@ impl Frame {
         })
     }
 
+    pub fn replace_display(&mut self, display_pool: &BufferPool<DmaBuf>) -> io::Result<()> {
+        let display = display_layout(self.width, self.height, self.bit_depth)?;
+        self.display = display_pool
+            .acquire_lease_reclaiming_idle(display.allocation_size)
+            .map_err(|error| io::Error::other(format!("AV1 display pool: {error}")))?;
+        self.display_hor_stride = display.hor_stride;
+        self.display_ver_stride = display.ver_stride;
+        Ok(())
+    }
+
     pub fn tile_output_fd(&self) -> u32 {
         self.tile_output
             .fd()

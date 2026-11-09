@@ -89,6 +89,28 @@ else
     printf 'SKIP vp9 (fixture or system C decoder oracle missing)\n'
 fi
 
+av1_input="$repo/tests/data/av1_320x240_10.ivf"
+av1_golden=/tmp/rk_mpp_compat_av1_golden.nv12
+av1_output=/tmp/rk_mpp_compat_av1_ours.nv12
+if [ -s "$av1_input" ] && [ -x /usr/local/bin/mpi_dec_test ]; then
+    sudo rm -f "$av1_golden" "$av1_output"
+    if sudo env LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
+        timeout 120 /usr/local/bin/mpi_dec_test -i "$av1_input" \
+        -t 16777224 -w 320 -h 240 -n 10 -o "$av1_golden" -v q \
+        < /dev/null > /tmp/rk_mpp_compat_av1_c.log 2>&1; then
+        LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
+            /tmp/rk_mpp_official_data "$av1_input" "$av1_output" 16777224 10 \
+            320 240
+        cmp "$av1_golden" "$av1_output"
+        printf 'PASS av1 official data path matches C MPP (%s)\n' \
+            "$(sha256sum "$av1_output" | cut -d' ' -f1)"
+    else
+        printf 'SKIP av1 (system C decoder oracle failed)\n'
+    fi
+else
+    printf 'SKIP av1 (fixture or system C decoder oracle missing)\n'
+fi
+
 mjpeg_input=/tmp/rk_mpp_compat_mjpeg.jpg
 mjpeg_golden=/tmp/rk_mpp_compat_mjpeg_golden.nv12
 mjpeg_output=/tmp/rk_mpp_compat_mjpeg_ours.nv12

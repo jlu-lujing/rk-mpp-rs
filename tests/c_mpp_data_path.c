@@ -26,12 +26,28 @@ static uint32_t align_up(uint32_t value, uint32_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
+static uint32_t av1_383_stride(uint32_t width) {
+    uint32_t aligned = align_up(width, 64);
+
+    if ((aligned - 64) % 256 == 128)
+        return aligned;
+    return (align_up(aligned, 128) | 128) + 64;
+}
+
 static size_t output_layout(int coding, uint32_t width, uint32_t height,
                             uint32_t *hor_stride, uint32_t *ver_stride) {
     *ver_stride = align_up(height, 16);
     if (coding == MPP_VIDEO_CodingVP9) {
         *hor_stride = ((width + 255) & ~255u) | 256u;
         return (size_t)*hor_stride * *ver_stride * 9 / 5;
+    }
+    if (coding == MPP_VIDEO_CodingAV1) {
+        uint32_t vdpu34x = align_up(width * 8, 64) / 8;
+        uint32_t vdpu383 = av1_383_stride(width);
+
+        *hor_stride = vdpu34x > vdpu383 ? vdpu34x : vdpu383;
+        *ver_stride = align_up(height, 8);
+        return (size_t)*hor_stride * *ver_stride * 2;
     }
     *hor_stride = align_up(width, 16);
     return (size_t)*hor_stride * *ver_stride * 3 / 2;
@@ -40,7 +56,8 @@ static size_t output_layout(int coding, uint32_t width, uint32_t height,
 static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output,
                         MppFrame expected_frame, MppBuffer expected_buffer,
                         uint32_t expected_hor_stride,
-                        size_t expected_buffer_size, int *returned_any) {
+                        size_t expected_buffer_size, int require_direct,
+                        int *returned_any, int *direct_any) {
     int frames = 0;
 
     for (;;) {
@@ -71,16 +88,23 @@ static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output,
             mpp_frame_deinit(&frame);
             return -1;
         }
-        if (expected_frame && frames == 0 &&
-            (mpp_frame_get_hor_stride(frame) != expected_hor_stride ||
-             mpp_frame_get_buf_size(frame) < expected_buffer_size)) {
-            fprintf(stderr,
-                    "advanced output fell back from injected DMA-BUF: "
-                    "stride %u/%u buffer %zu/%zu\n",
-                    mpp_frame_get_hor_stride(frame), expected_hor_stride,
-                    mpp_frame_get_buf_size(frame), expected_buffer_size);
-            mpp_frame_deinit(&frame);
-            return -1;
+        if (expected_frame && frames == 0) {
+            int direct =
+                (!expected_hor_stride ||
+                 mpp_frame_get_hor_stride(frame) == expected_hor_stride) &&
+                mpp_frame_get_buf_size(frame) >= expected_buffer_size;
+
+            if (direct && direct_any)
+                *direct_any = 1;
+            if (require_direct && !direct) {
+                fprintf(stderr,
+                        "advanced output fell back from injected DMA-BUF: "
+                        "stride %u/%u buffer %zu/%zu\n",
+                        mpp_frame_get_hor_stride(frame), expected_hor_stride,
+                        mpp_frame_get_buf_size(frame), expected_buffer_size);
+                mpp_frame_deinit(&frame);
+                return -1;
+            }
         }
 
         MppBuffer buffer = mpp_frame_get_buffer(frame);
@@ -123,7 +147,9 @@ static int decode_packet(MppApi *mpi, MppCtx ctx, MppBufferGroup group,
                          const uint8_t *data, size_t size, int64_t pts,
                          uint32_t width, uint32_t height, size_t buffer_size,
                          uint32_t hor_stride, uint32_t ver_stride,
-                         FILE *output, MppBuffer *retained_buffer) {
+                         uint32_t check_hor_stride, FILE *output,
+                         size_t packet_index, int require_direct, int *direct_any,
+                         MppBuffer *retained_buffer) {
     MppPacket packet = NULL;
     MppBuffer output_buffer = NULL;
     MppFrame output_frame = NULL;
@@ -156,7 +182,11 @@ static int decode_packet(MppApi *mpi, MppCtx ctx, MppBufferGroup group,
     }
     frames =
         drain_frames(mpi, ctx, output, output_frame, output_buffer,
-                     hor_stride, buffer_size, &returned_any);
+                     check_hor_stride, buffer_size, require_direct, &returned_any,
+                     direct_any);
+    if (frames < 0)
+        fprintf(stderr, "packet %zu failed advanced DMA-BUF validation\n",
+                packet_index);
 
 done:
     mpp_packet_deinit(&packet);
@@ -178,7 +208,8 @@ done:
 static int run_packets(MppApi *mpi, MppCtx ctx, MppBufferGroup group,
                        const uint8_t *data, size_t size, uint32_t width,
                        uint32_t height, size_t buffer_size, uint32_t hor_stride,
-                       uint32_t ver_stride, FILE *output, int *decoded_frames) {
+                       uint32_t ver_stride, int coding, FILE *output,
+                       int *decoded_frames) {
     int is_ivf =
         size >= 32 && !memcmp(data, "DKIF", 4);
     size_t offset;
@@ -186,6 +217,7 @@ static int run_packets(MppApi *mpi, MppCtx ctx, MppBufferGroup group,
     MppBuffer *retained = NULL;
     size_t retained_count = 0;
     size_t retained_capacity = 0;
+    int direct_frames = 0;
     int result = -1;
 
     *decoded_frames = 0;
@@ -232,7 +264,11 @@ static int run_packets(MppApi *mpi, MppCtx ctx, MppBufferGroup group,
 
         frames = decode_packet(mpi, ctx, group, packet_data, packet_size,
                                (int64_t)pts, width, height, buffer_size,
-                               hor_stride, ver_stride, output,
+                               hor_stride, ver_stride,
+                               coding == MPP_VIDEO_CodingAV1 ? 0 : hor_stride,
+                               output,
+                               (size_t)sequence - 1, coding != MPP_VIDEO_CodingAV1,
+                               &direct_frames,
                                &retained_buffer);
         if (frames < 0)
             goto done;
@@ -268,10 +304,14 @@ static int run_packets(MppApi *mpi, MppCtx ctx, MppBufferGroup group,
             goto done;
         }
         mpp_packet_deinit(&packet);
-        tail = drain_frames(mpi, ctx, output, NULL, NULL, 0, 0, NULL);
+        tail = drain_frames(mpi, ctx, output, NULL, NULL, 0, 0, 0, NULL, NULL);
         if (tail < 0)
             goto done;
         *decoded_frames += tail;
+    }
+    if (coding == MPP_VIDEO_CodingAV1 && direct_frames == 0) {
+        fprintf(stderr, "AV1 stream never used the injected output surface\n");
+        goto done;
     }
     result = 0;
 
@@ -563,7 +603,7 @@ int main(int argc, char **argv) {
     if (!buffer_size ||
         run_packets(mpi, ctx, output_group, data, (size_t)size,
                     (uint32_t)width, (uint32_t)height, buffer_size, hor_stride,
-                    ver_stride, output, &frames)) {
+                    ver_stride, coding, output, &frames)) {
         goto done;
     }
 

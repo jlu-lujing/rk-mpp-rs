@@ -1214,6 +1214,13 @@ impl Av1Decoder {
             Self::Vdpu383(decoder) => decoder.set_output_dmabuf(enabled),
         }
     }
+
+    fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), String> {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.import_output_dmabuf(buffer),
+            Self::Vdpu383(decoder) => decoder.import_output_dmabuf(buffer),
+        }
+    }
 }
 
 impl Decoder {
@@ -1280,7 +1287,8 @@ impl Decoder {
                 .import_output_dmabuf(buffer)
                 .map_err(|error| error.to_string()),
             Backend::Vp9(backend) => backend.decoder.import_output_dmabuf(buffer),
-            Backend::Av1(_) | Backend::Vp8(_) | Backend::Legacy(_) => {
+            Backend::Av1(backend) => backend.decoder.import_output_dmabuf(buffer),
+            Backend::Vp8(_) | Backend::Legacy(_) => {
                 return Err(Error::Unsupported(
                     "output DMA-BUF injection is unavailable for this decoder".to_string(),
                 ));

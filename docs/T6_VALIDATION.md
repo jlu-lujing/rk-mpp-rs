@@ -326,7 +326,15 @@ submit, keeps output surfaces alive across the reference DPB, and reserves the
 caller frame only for `show_frame`. Its direct DMA-BUF path preserves the
 256-odd hardware stride and 9/5 frame allocation. On both t6 and lf1, all 12
 frames of `vp9_p0_lossless_320x240_12.ivf` match C MPP byte for byte
-(`c5381bbf…3949a`). AV1 pool injection remains open.
+(`c5381bbf…3949a`). AV1 uses the same packet-level output contract: VDPU34x
+imports the caller buffer into its display pool, while VDPU383 replaces the
+frame's output lease without disturbing colmv/CDF state. Coded `show_frame`
+pictures write that surface directly; `show_existing` copies from the historical
+display surface because its backing reference was decoded in an earlier packet.
+All 10 frames of `av1_320x240_10.ivf` match C MPP on both boards
+(`88f34ea5…c5f8e`). The shared buffer pool now reuses Empty slots after
+`clear()`, so repeated injection no longer hits a false `Full` at the pool's
+historical slot count.
 
 Performance gate:
 

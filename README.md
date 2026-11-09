@@ -274,7 +274,9 @@ commit/get、unused recycle 和 usage 统计；fd-only import 会建立独立映
 H.264/H.265/VP9/MJPEG 已验证目标 frame 由硬件直接写入，不再创建临时
 MppFrame/整帧 buffer。VP9 会保留硬件的 256-odd stride 和 9/5 帧容量，
 且只让 `show_frame` surface 占用调用方输出，隐藏参考帧不会偷用 packet 的
-`KEY_OUTPUT_FRAME`。AV1 当前仍从 decoder planes 直写目标 frame。
+`KEY_OUTPUT_FRAME`。AV1 在 VDPU34x 的 display pool 和 VDPU383 的
+output/reference pool 上同样支持注入；coded `show_frame` 直接使用调用方
+surface，`show_existing` 则按参考帧语义复制历史 display surface。
 已可在保留 vendor
 log/cfg/OSAL 辅助库的条件下，通过 `LD_PRELOAD` 让**未修改的**
 `mpi_dec_test` 解码 H.264/H.265/MJPEG；这还不是完全脱离 vendor 库的替换。

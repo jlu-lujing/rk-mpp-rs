@@ -48,6 +48,7 @@ pub struct Decoder {
     register_state: Av1RegisterState,
     next_poc: u32,
     output_dmabuf: bool,
+    output_injection: Option<DmaBuf>,
 }
 
 impl Decoder {
@@ -62,6 +63,7 @@ impl Decoder {
             register_state: Av1RegisterState::default(),
             next_poc: 1,
             output_dmabuf: false,
+            output_injection: None,
         })
     }
 
@@ -72,6 +74,15 @@ impl Decoder {
     /// Decode one temporal unit. One packet can contain zero, one or several
     /// final pictures.
     pub fn decode_packet(&mut self, packet: &[u8]) -> Result<Vec<Picture>, String> {
+        let mut output_injection = self.output_injection.take();
+        self.decode_packet_inner(packet, &mut output_injection)
+    }
+
+    fn decode_packet_inner(
+        &mut self,
+        packet: &[u8],
+        output_injection: &mut Option<DmaBuf>,
+    ) -> Result<Vec<Picture>, String> {
         let trace = std::env::var_os("RK_MPP_AV1_TRACE").is_some();
         if trace {
             eprintln!(
@@ -101,7 +112,7 @@ impl Decoder {
                     output.push(self.show_existing(header.frame_to_show_map_idx as usize)?);
                 }
                 Av1PacketEvent::Coded(frame) => {
-                    if let Some(picture) = self.decode_frame(&frame, packet)? {
+                    if let Some(picture) = self.decode_frame(&frame, packet, output_injection)? {
                         output.push(picture);
                     }
                 }
@@ -114,6 +125,7 @@ impl Decoder {
         &mut self,
         coded: &Av1CodedFrame,
         packet: &[u8],
+        output_injection: &mut Option<DmaBuf>,
     ) -> Result<Option<Picture>, String> {
         if std::env::var_os("RK_MPP_AV1_TRACE").is_some() {
             eprintln!(
@@ -143,7 +155,7 @@ impl Decoder {
         };
 
         let reference_error = self.reference_error(coded);
-        let frame_index = self.allocate_frame(&sequence, coded)?;
+        let frame_index = self.allocate_frame(&sequence, coded, output_injection)?;
         let (current_slot, reference_texture_slots, hardware_reference_indices) =
             self.hardware_reference_map(coded, frame_index)?;
         let params = Av1PicParams::build(
@@ -337,7 +349,21 @@ impl Decoder {
         &mut self,
         sequence: &SequenceHeader,
         coded: &Av1CodedFrame,
+        output_injection: &mut Option<DmaBuf>,
     ) -> Result<usize, String> {
+        let injected_display = if coded.header.show_frame {
+            if let Some(buffer) = output_injection.take() {
+                self.display_pool.clear();
+                self.display_pool
+                    .import(buffer)
+                    .map_err(|error| error.to_string())?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         let live: Vec<usize> = self
             .reference_slots
             .iter()
@@ -386,6 +412,12 @@ impl Decoder {
                     )
                     .map_err(|error| error.to_string())?,
                 );
+            } else if injected_display {
+                self.frames[index]
+                    .as_mut()
+                    .ok_or("AV1 reusable frame disappeared")?
+                    .replace_display(&self.display_pool)
+                    .map_err(|error| error.to_string())?;
             }
             return Ok(index);
         }
@@ -499,6 +531,12 @@ impl Decoder {
 
     pub fn set_output_dmabuf(&mut self, enabled: bool) {
         self.output_dmabuf = enabled;
+    }
+
+    pub fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), String> {
+        self.set_output_dmabuf(true);
+        self.output_injection = Some(buffer);
+        Ok(())
     }
 }
 

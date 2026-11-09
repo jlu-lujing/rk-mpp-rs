@@ -615,10 +615,22 @@ impl<B: PoolBuffer + 'static> BufferPool<B> {
     /// pool; host tests verify the logic with [`PlainBuf`].
     pub fn import(&self, buf: B) -> Result<(), PoolError> {
         let mut core = self.shared.core.lock().unwrap();
+        if let Some(slot) = core
+            .slots
+            .iter()
+            .position(|slot| matches!(slot, Occupancy::Empty))
+        {
+            core.slots[slot] = Occupancy::Cached(buf);
+            drop(core);
+            self.shared.space_cv.notify_all();
+            return Ok(());
+        }
         if core.slots.len() >= core.limit {
             return Err(PoolError::Full);
         }
         core.slots.push(Occupancy::Cached(buf));
+        drop(core);
+        self.shared.space_cv.notify_all();
         Ok(())
     }
 
@@ -880,6 +892,29 @@ mod tests {
         pool.import(PlainBuf::new(16)).unwrap();
         assert_eq!(pool.import(PlainBuf::new(16)), Err(PoolError::Full));
         let _ = pool.release(h);
+    }
+
+    #[test]
+    fn import_reuses_slots_cleared_by_clear() {
+        let (pool, allocs) = fake_pool(2);
+        let live = pool.acquire(1024).unwrap();
+        pool.import(PlainBuf::new(2048)).unwrap();
+        assert_eq!(
+            pool.clear(),
+            PoolStats {
+                slots: 2,
+                cached: 0,
+                in_use: 1,
+                limit: 2,
+                allocations: 1,
+            }
+        );
+        pool.import(PlainBuf::new(4096)).unwrap();
+        let got = pool.acquire(2048).unwrap();
+        assert_eq!(pool.data(got).unwrap().len(), 4096);
+        assert_eq!(allocs.load(Ordering::SeqCst), 1, "import reused empty slot");
+        let _ = pool.release(got);
+        let _ = pool.release(live);
     }
 
     #[test]

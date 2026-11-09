@@ -378,6 +378,15 @@ impl Frame {
             .map_err(|error| io::Error::other(error.to_string()))
     }
 
+    pub fn replace_output(&mut self, output_pool: &BufferPool<DmaBuf>) -> io::Result<()> {
+        let output = output_pool
+            .acquire_lease_reclaiming_idle(self.stride * self.ver_stride * 2)
+            .map_err(|error| io::Error::other(format!("allocate output: {error}")))?;
+        zero_output(&output).map_err(|error| context(error, "zero output"))?;
+        self.output = output;
+        Ok(())
+    }
+
     pub fn output_refs(&self) -> u32 {
         self.output.refs().unwrap_or(0)
     }

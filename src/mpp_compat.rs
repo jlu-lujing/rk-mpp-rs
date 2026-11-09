@@ -201,6 +201,7 @@ unsafe extern "C" fn compat_decode_put_packet(ctx: MppCtx, packet: MppPacket) ->
                 MPP_VIDEO_CODING_AVC
                     | MPP_VIDEO_CODING_MJPEG
                     | MPP_VIDEO_CODING_VP9
+                    | MPP_VIDEO_CODING_AV1
                     | MPP_VIDEO_CODING_HEVC
             ) {
                 if let Err(error) = decoder.import_output_dmabuf(buffer) {
