@@ -15,6 +15,8 @@
 //! `enc_pic.pic_qp`, `rc_qp.rc_min_qp` and `rc_qp.rc_max_qp`, which is exactly
 //! what the reference writes there for fixed QP.
 
+use std::io::Read;
+
 use crate::codec::h264::encoder::{self, EncoderConfig, GdrMode, RcMode, SplitMode};
 use crate::codec::h264::sei;
 use crate::codec::rc::model as rc_model;
@@ -641,6 +643,7 @@ pub struct Vepu580H264 {
     /// The scene-motion detector, updated from every picture's STATUS window.
     tune: SceneTune,
     input_fd_override: Option<i32>,
+    input_prepared: bool,
     /// The ROI tables, written once: the regions do not move between
     /// pictures, exactly as in the reference harness that adds the same
     /// regions to every frame's meta.
@@ -714,7 +717,7 @@ impl Vepu580H264 {
             svc: MppService::open(Client::RkvEnc as u32)
                 .map_err(|e| format!("open rkv encoder: {e}"))?,
             started: false,
-            input: DmaBuf::alloc("system", input_size, false)
+            input: DmaBuf::alloc("system-uncached", input_size, false)
                 .map_err(|e| format!("allocate H.264 input: {e}"))?,
             output: DmaBuf::alloc("system", output_size, false)
                 .map_err(|e| format!("allocate H.264 output: {e}"))?,
@@ -767,6 +770,7 @@ impl Vepu580H264 {
             next_reference_override: None,
             tune: SceneTune::new(false),
             input_fd_override: None,
+            input_prepared: false,
             rc: match config.rc_mode {
                 RcMode::FixedQp => None,
                 RcMode::Cbr | RcMode::Vbr | RcMode::Avbr => {
@@ -779,6 +783,51 @@ impl Vepu580H264 {
 
     pub fn config(&self) -> &EncoderConfig {
         &self.config
+    }
+
+    /// Read one complete input picture directly into the preallocated DMA
+    /// mapping. No staging `Vec` or second copy is involved.
+    pub fn load_input_frame<R: Read>(
+        &mut self,
+        expected: usize,
+        reader: &mut R,
+    ) -> Result<bool, String> {
+        if expected > self.input.len() {
+            return Err(format!(
+                "H.264 input surface is {} bytes, needs {expected}",
+                self.input.len()
+            ));
+        }
+        self.input_prepared = false;
+        self.input
+            .sync_write_begin()
+            .map_err(|error| format!("H.264 input sync begin: {error}"))?;
+        let read_result = (|| {
+            let mut filled = 0usize;
+            let buffer = &mut self.input.as_mut_slice()[..expected];
+            while filled < expected {
+                match reader.read(&mut buffer[filled..]) {
+                    Ok(0) => return Ok(false),
+                    Ok(count) => filled += count,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            Ok(true)
+        })();
+        self.input
+            .sync_write_end()
+            .map_err(|error| format!("H.264 input flush: {error}"))?;
+        let complete = read_result?;
+        self.input_prepared = complete;
+        Ok(complete)
+    }
+
+    pub fn encode_prepared_frame(&mut self) -> Result<EncodedFrame, String> {
+        if !self.input_prepared {
+            return Err("H.264 input frame was not prepared".to_string());
+        }
+        self.encode_frame(&[])
     }
 
     /// The prefix an IDR carries: SPS, PPS, then the two user-data SEI NALUs.
@@ -1029,6 +1078,9 @@ impl Vepu580H264 {
                 return Err("H.264 input fd is invalid".to_string());
             }
             input_fd
+        } else if self.input_prepared {
+            self.input_prepared = false;
+            self.input.fd()
         } else {
             if nv12.len() < expected {
                 return Err(format!(

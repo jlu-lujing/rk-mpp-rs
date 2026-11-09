@@ -19,10 +19,278 @@ use rk_mpp_rs::service::soc;
 use rk_mpp_rs::service::MppService;
 
 use rk_mpp_rs::service::*;
+use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::sync::mpsc;
 use std::time::Instant;
 
 fn us(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1e6
+}
+
+enum FrameSource {
+    Mapped(MappedFile),
+    Stream(std::io::BufReader<std::fs::File>),
+}
+
+impl FrameSource {
+    fn open(path: &str) -> Result<Self, String> {
+        let file = std::fs::File::open(path).map_err(|error| format!("{path}: {error}"))?;
+        let regular = file
+            .metadata()
+            .map(|metadata| metadata.is_file() && metadata.len() > 0)
+            .unwrap_or(false);
+        if regular {
+            match MappedFile::new(file) {
+                Ok(mapped) => return Ok(Self::Mapped(mapped)),
+                Err(_) => {
+                    let file =
+                        std::fs::File::open(path).map_err(|error| format!("{path}: {error}"))?;
+                    return Ok(Self::Stream(std::io::BufReader::new(file)));
+                }
+            }
+        }
+        Ok(Self::Stream(std::io::BufReader::new(file)))
+    }
+}
+
+impl Read for FrameSource {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Mapped(mapped) => mapped.read(buffer),
+            Self::Stream(stream) => stream.read(buffer),
+        }
+    }
+}
+
+struct MappedFile {
+    _file: std::fs::File,
+    ptr: *const u8,
+    len: usize,
+    position: usize,
+}
+
+impl MappedFile {
+    fn new(file: std::fs::File) -> std::io::Result<Self> {
+        let len = usize::try_from(file.metadata()?.len()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "input file is too large to map",
+            )
+        })?;
+        // SAFETY: the descriptor stays open in `_file`, the mapping is
+        // read-only, and `len` is the exact regular-file length queried above.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            _file: file,
+            ptr: ptr.cast(),
+            len,
+            position: 0,
+        })
+    }
+}
+
+impl Read for MappedFile {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = buffer.len().min(self.len - self.position);
+        if count == 0 {
+            return Ok(0);
+        }
+        // SAFETY: `position + count <= len`, the mapping is live until Drop,
+        // and `buffer` is a separate writable allocation.
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.ptr.add(self.position), buffer.as_mut_ptr(), count);
+        }
+        self.position += count;
+        Ok(count)
+    }
+}
+
+impl Drop for MappedFile {
+    fn drop(&mut self) {
+        // SAFETY: `new` mapped exactly `len` bytes and this value owns that
+        // mapping until it is unmapped here once.
+        unsafe {
+            libc::munmap(self.ptr.cast_mut().cast(), self.len);
+        }
+    }
+}
+
+struct DmaInputFrame {
+    buffer: dma_heap::DmaBuf,
+    index: usize,
+}
+
+enum DmaInputEvent {
+    Frame(DmaInputFrame),
+    Error(String),
+}
+
+struct DmaInputPipeline {
+    frames: mpsc::Receiver<DmaInputEvent>,
+    recycle: mpsc::SyncSender<dma_heap::DmaBuf>,
+    stop: mpsc::SyncSender<()>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DmaInputPipeline {
+    fn start(path: &str, frame_bytes: usize, wanted: usize) -> Result<Self, String> {
+        let (frame_tx, frames) = mpsc::sync_channel(1);
+        let (recycle, recycle_rx) = mpsc::sync_channel(2);
+        let (stop, stop_rx) = mpsc::sync_channel(1);
+        for _ in 0..2 {
+            let buffer = dma_heap::DmaBuf::alloc("system-uncached", frame_bytes, false)
+                .map_err(|error| format!("allocate H.264 input surface: {error}"))?;
+            recycle
+                .send(buffer)
+                .map_err(|_| "H.264 input pipeline stopped during setup".to_string())?;
+        }
+        let path = path.to_string();
+        let reader_cpu = select_input_reader_cpu();
+        let worker = std::thread::Builder::new()
+            .name("rk-mpp-h264-input".to_string())
+            .spawn(move || {
+                if let Some(cpu) = reader_cpu {
+                    pin_current_thread(cpu);
+                }
+                let result = (|| -> Result<(), String> {
+                    let mut source = FrameSource::open(&path)?;
+                    for index in 0..wanted {
+                        let mut buffer = recycle_rx
+                            .recv()
+                            .map_err(|_| "H.264 input pipeline was closed".to_string())?;
+                        fill_dma_input(&mut buffer, frame_bytes, &mut source)?;
+                        frame_tx
+                            .send(DmaInputEvent::Frame(DmaInputFrame { buffer, index }))
+                            .map_err(|_| "H.264 encoder stopped reading input".to_string())?;
+                    }
+                    let _ = stop_rx.recv();
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    let _ = frame_tx.send(DmaInputEvent::Error(error));
+                }
+            })
+            .map_err(|error| format!("start H.264 input pipeline: {error}"))?;
+        Ok(Self {
+            frames,
+            recycle,
+            stop,
+            worker: Some(worker),
+        })
+    }
+
+    fn next(&self, expected: usize) -> Result<dma_heap::DmaBuf, String> {
+        match self
+            .frames
+            .recv()
+            .map_err(|_| "H.264 input pipeline stopped unexpectedly".to_string())?
+        {
+            DmaInputEvent::Frame(frame) => {
+                if frame.index != expected {
+                    return Err(format!(
+                        "H.264 input pipeline frame {} arrived while waiting for {}",
+                        frame.index, expected
+                    ));
+                }
+                Ok(frame.buffer)
+            }
+            DmaInputEvent::Error(error) => Err(error),
+        }
+    }
+
+    fn recycle(&self, buffer: dma_heap::DmaBuf) -> Result<(), String> {
+        self.recycle
+            .send(buffer)
+            .map_err(|_| "H.264 input pipeline stopped before recycle".to_string())
+    }
+
+    fn finish(mut self) {
+        let _ = self.stop.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn fill_dma_input(
+    buffer: &mut dma_heap::DmaBuf,
+    expected: usize,
+    source: &mut impl Read,
+) -> Result<(), String> {
+    if expected > buffer.len() {
+        return Err(format!(
+            "H.264 input surface is {} bytes, needs {expected}",
+            buffer.len()
+        ));
+    }
+    buffer
+        .sync_write_begin()
+        .map_err(|error| format!("H.264 input sync begin: {error}"))?;
+    let read_result = (|| {
+        let mut filled = 0usize;
+        let target = &mut buffer.as_mut_slice()[..expected];
+        while filled < expected {
+            match source.read(&mut target[filled..]) {
+                Ok(0) => return Err(format!("short at byte {filled}, need {expected} bytes")),
+                Ok(count) => filled += count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(())
+    })();
+    buffer
+        .sync_write_end()
+        .map_err(|error| format!("H.264 input flush: {error}"))?;
+    read_result
+}
+
+fn select_input_reader_cpu() -> Option<usize> {
+    if let Some(cpu) = std::env::var("RKMPP_INPUT_CPU")
+        .ok()
+        .and_then(|cpu| cpu.parse::<usize>().ok())
+    {
+        return Some(cpu);
+    }
+    // SAFETY: both cpu_set_t buffers are initialized before use, their size is
+    // passed to the kernel, and CPU ids are checked against CPU_SETSIZE.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
+            return None;
+        }
+        let current = libc::sched_getcpu();
+        (0..libc::CPU_SETSIZE as usize)
+            .rev()
+            .find(|cpu| libc::CPU_ISSET(*cpu, &set) && *cpu as i32 != current)
+    }
+}
+
+fn pin_current_thread(cpu: usize) {
+    if cpu >= libc::CPU_SETSIZE as usize {
+        return;
+    }
+    // SAFETY: `set` is zeroed, CPU_SET stays within its fixed capacity, and
+    // the exact cpu_set_t size is passed to sched_setaffinity.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        libc::CPU_SET(cpu, &mut set);
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+    }
 }
 
 fn encode_h264(
@@ -49,13 +317,10 @@ fn encode_h264(
     split: Option<(h264_syntax::SplitMode, u32)>,
     split_out: u32,
 ) -> Result<(usize, usize, usize, usize, f64), String> {
-    // The frames are read one at a time. slurping the file was fine while the
-    // encoder only ever produced a single IDR, but with a GOP it charges the
-    // whole clip to the encode: 12 frames of 1920x1088 is 37 MB read and held
-    // live to be used 3 MB at a time, which was most of the gap between the
-    // loop's own 58 ms and the command's 135 ms in the throughput measurement.
-    let mut source =
-        std::io::BufReader::new(std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?);
+    // Never slurp the clip into a Vec. A regular file is mapped and its pages
+    // are copied one picture at a time; when process affinity covers multiple
+    // CPUs, the next surface is filled while the encoder drives the current
+    // one. Pipes and other non-regular inputs retain the streaming fallback.
     let mut config = h264_syntax::EncoderConfig::new(width, height);
     // The SPS level is normally derived from the size, which is what MPP's own
     // `h264e_sps_init` does. This override exists for the level matrix that proves
@@ -175,37 +440,54 @@ fn encode_h264(
     // picture whenever the file holds more or fewer frames than asked for.
     let per_frame = frame_bytes;
     let wanted = frames.max(1);
-    let mut frame = vec![0u8; per_frame];
-    let mut read_frame = |buffer: &mut [u8]| -> Result<bool, String> {
-        use std::io::Read;
-        let mut filled = 0usize;
-        while filled < buffer.len() {
-            match source.read(&mut buffer[filled..]) {
-                Ok(0) => return Ok(false),
-                Ok(n) => filled += n,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(error.to_string()),
-            }
-        }
-        Ok(true)
+    let input_parallelism = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let pipeline = if input_parallelism > 1 {
+        Some(DmaInputPipeline::start(path, per_frame, wanted)?)
+    } else {
+        None
     };
-    let mut annex_b = Vec::new();
+    let mut source = if pipeline.is_none() {
+        Some(FrameSource::open(path)?)
+    } else {
+        None
+    };
+    let mut output = if out_path == "/dev/null" {
+        None
+    } else {
+        Some(std::io::BufWriter::with_capacity(
+            1024 * 1024,
+            std::fs::File::create(out_path).map_err(|error| format!("{out_path}: {error}"))?,
+        ))
+    };
+    let mut total_bytes = 0usize;
     let mut headers = 0usize;
     let mut payload = 0usize;
     let mut packets = 0usize;
     let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
     for index in 0..wanted {
-        if !read_frame(&mut frame)? {
-            return Err(format!(
-                "{path}: short at frame {}, need {} bytes each",
-                index + 1,
-                per_frame
-            ));
-        }
-        let encoded = encoder.encode_frame(&frame)?;
+        let mut dma_input = None;
+        let encoded = if let Some(pipeline) = pipeline.as_ref() {
+            let input = pipeline.next(index)?;
+            let encoded = encoder.encode_frame_fd(input.fd())?;
+            dma_input = Some(input);
+            encoded
+        } else {
+            let source = source.as_mut().expect("sequential input source");
+            if !encoder.load_input_frame(per_frame, source)? {
+                return Err(format!(
+                    "{path}: short at frame {}, need {} bytes each",
+                    index + 1,
+                    per_frame
+                ));
+            }
+            encoder.encode_prepared_frame()?
+        };
         headers += encoded.headers.len();
         payload += encoded.payload.len();
         packets += encoded.packets.len();
+        total_bytes += encoded.annex_b.len();
         if trace_packets {
             let sizes = encoded
                 .packets
@@ -218,17 +500,27 @@ fn encode_h264(
                 encoded.packets.len()
             );
         }
-        annex_b.extend_from_slice(&encoded.annex_b);
+        if let Some(output) = output.as_mut() {
+            use std::io::Write;
+            output
+                .write_all(&encoded.annex_b)
+                .map_err(|error| format!("{out_path}: {error}"))?;
+        }
+        if let (Some(pipeline), Some(input)) = (pipeline.as_ref(), dma_input) {
+            pipeline.recycle(input)?;
+        }
+    }
+    if let Some(output) = output.as_mut() {
+        use std::io::Write;
+        output
+            .flush()
+            .map_err(|error| format!("{out_path}: {error}"))?;
     }
     let elapsed = started.elapsed();
-    std::fs::write(out_path, &annex_b).map_err(|e| format!("{out_path}: {e}"))?;
-    Ok((
-        annex_b.len(),
-        headers,
-        payload,
-        packets,
-        us(elapsed) / 1000.0,
-    ))
+    if let Some(pipeline) = pipeline {
+        pipeline.finish();
+    }
+    Ok((total_bytes, headers, payload, packets, us(elapsed) / 1000.0))
 }
 
 /// Write the H.265 VPS/SPS/PPS a fixed-QP IDR carries, and report the QP that the

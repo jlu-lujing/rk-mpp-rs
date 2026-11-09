@@ -257,6 +257,42 @@ These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older
 uncapped-profile peaks are retained only as historical observations.
 
+### H.264 file-input DMA pipeline
+
+The supplied RK3588 `mpi_enc_test` result used MPP's built-in moving
+`fill_image()` input. Reproducing that class of work at 1280x720, High profile,
+QP26, GOP60 and 500 pictures under the persistent 80% OPP cap gives the
+following 11-sample medians:
+
+| path | median | throughput | vs C whole path |
+|---|---:|---:|---:|
+| C MPP built-in fill, core 6 | 1222 ms | 408.97 FPS | baseline |
+| Rust mmap file input, core 6 | 1306.909 ms | 382.58 FPS | -6.4% |
+| Rust two-surface DMA pipeline, cores 6+7 | 999.532 ms | 500.23 FPS | +22.3% |
+
+The single-core Rust path is therefore still slightly behind C's in-memory
+fill loop, but the complete file-input path is not: the old CLI path measured
+about 354 FPS on the same 500-picture fixture. Two changes removed most of the
+remaining software gap:
+
+1. a regular input file is mapped and copied directly into a
+   `system-uncached` DMA surface, avoiding the kernel's `read` /
+   `copy_to_user` path;
+2. on a multi-core affinity, a reader thread fills the next preallocated DMA
+   surface while the encoder core drives VEPU580, so input movement overlaps
+   the hardware job instead of extending it.
+
+The second number deliberately uses two cores. It is a whole-pipeline result,
+not a claim that VEPU580 itself became 22% faster. Both Rust modes produced
+the same 2,995,229-byte bitstream with SHA-256
+`0a039e02910169e9900349a16e676f580c3da9e265b154d15ebcbde3a2bc6a2e`.
+The 691,200,000-byte input fixture is the byte-exact C `fill_image()` output
+with SHA-256
+`db3d065df8ea78f9068aa397dfc6ed3bcd404d27df85b772c307d58aff556546`.
+`scripts/board_t6_h264_encode_pipeline.sh` regenerates the fixture from
+`tools/mpp_nv12_fill.c`, checks both hashes and repeats the interleaved
+benchmark.
+
 The H.264 and HEVC `/tmp` corpora were restored from
 `~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and
 the HEVC suite passed every available large-profile, tile, slice, open-GOP,
