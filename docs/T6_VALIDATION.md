@@ -303,6 +303,12 @@ With `CHECK_MOTION_INFO=1`, the script also compares the caller-owned
 (`655a3ef0…5955273`) and H.265's 1280 bytes are byte-identical
 (`bfe492ba…09f462`).
 
+The compatibility C consumer now also covers external buffer ownership:
+caller-pointer `mpp_buffer_import`, external-group `commit/get`, fd-only import
+through a memfd-backed mapping, `MppBufferInfo` round-trip, index propagation,
+and pointer/read/write behavior. These checks run as part of
+`board_mpp_compat_data.sh` on lf1.
+
 Performance gate:
 
 - H.264 720p: C MPP 121.5 FPS, Rust 283.8 FPS (**+133.7%**)

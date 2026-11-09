@@ -12,6 +12,7 @@ const MPP_ERR_VALUE: c_int = -6;
 
 const MPP_BUFFER_TYPE_DMA_HEAP: c_int = 4;
 const MPP_BUFFER_INTERNAL: c_int = 0;
+const MPP_BUFFER_EXTERNAL: c_int = 1;
 
 const MPP_FMT_YUV420SP: u32 = 0;
 const MPP_FMT_YUV420P: u32 = 4;
@@ -273,6 +274,11 @@ pub(super) struct CompatBufferInfo {
 struct CompatBuffer {
     magic: u64,
     data: Vec<u8>,
+    external_ptr: *mut u8,
+    external_size: usize,
+    mapped: bool,
+    type_: c_int,
+    hnd: *mut c_void,
     fd: c_int,
     index: c_int,
     offset: usize,
@@ -286,6 +292,7 @@ struct CompatBufferGroup {
     mode: c_int,
     limit_size: usize,
     limit_count: isize,
+    unused: Vec<MppBuffer>,
 }
 
 #[repr(C)]
@@ -350,12 +357,30 @@ unsafe fn magic_mut<T>(ptr: *mut c_void, magic: u64) -> Option<&'static mut T> {
     (*object == magic).then(|| unsafe { &mut *ptr.cast::<T>() })
 }
 
-fn buffer_ptr(buffer: &mut CompatBuffer) -> *mut u8 {
-    buffer.data.as_mut_ptr()
+fn buffer_ptr(buffer: &CompatBuffer) -> *mut u8 {
+    if buffer.external_ptr.is_null() {
+        buffer.data.as_ptr().cast_mut()
+    } else {
+        buffer.external_ptr
+    }
 }
 
 fn buffer_len(buffer: &CompatBuffer) -> usize {
-    buffer.data.len()
+    if buffer.external_ptr.is_null() {
+        buffer.data.len()
+    } else {
+        buffer.external_size
+    }
+}
+
+impl Drop for CompatBuffer {
+    fn drop(&mut self) {
+        if self.mapped && !self.external_ptr.is_null() && self.external_size != 0 {
+            unsafe {
+                libc::munmap(self.external_ptr.cast::<c_void>(), self.external_size);
+            }
+        }
+    }
 }
 
 unsafe fn buffer_ref(buffer: MppBuffer) -> Option<&'static CompatBuffer> {
@@ -372,6 +397,16 @@ unsafe fn group_ref(group: MppBufferGroup) -> Option<&'static CompatBufferGroup>
 
 unsafe fn group_mut(group: MppBufferGroup) -> Option<&'static mut CompatBufferGroup> {
     unsafe { magic_mut(group, GROUP_MAGIC) }
+}
+
+unsafe fn group_drop_unused(group: &mut CompatBufferGroup) {
+    for buffer in group.unused.drain(..) {
+        let Some(object) = (unsafe { buffer_mut(buffer) }) else {
+            continue;
+        };
+        object.magic = 0;
+        drop(unsafe { Box::from_raw(buffer.cast::<CompatBuffer>()) });
+    }
 }
 
 pub(super) unsafe fn buffer_put_raw(buffer: MppBuffer) -> bool {
@@ -509,9 +544,11 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
     let motion_info =
         unsafe { meta_peek_object(frame.meta, KEY_MOTION_INFO) }.unwrap_or(std::ptr::null_mut());
     let buffer = unsafe { buffer_mut(frame.buffer) }?;
+    let data = buffer_ptr(buffer);
+    let len = buffer_len(buffer);
     Some(FrameInputView {
-        data: buffer.data.as_ptr(),
-        len: buffer.data.len(),
+        data,
+        len,
         width: frame.width as usize,
         height: frame.height as usize,
         hor_stride: frame.hor_stride as usize,
@@ -528,10 +565,12 @@ pub(super) unsafe fn buffer_replace(buffer: MppBuffer, data: &[u8]) -> bool {
     let Some(buffer) = (unsafe { buffer_mut(buffer) }) else {
         return false;
     };
-    if data.len() > buffer.data.len() {
+    if data.len() > buffer_len(buffer) {
         return false;
     }
-    buffer.data[..data.len()].copy_from_slice(data);
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_ptr(buffer), data.len());
+    }
     true
 }
 
@@ -618,12 +657,57 @@ unsafe fn new_buffer(bytes: Vec<u8>) -> MppBuffer {
     Box::into_raw(Box::new(CompatBuffer {
         magic: BUFFER_MAGIC,
         data: bytes,
+        external_ptr: std::ptr::null_mut(),
+        external_size: 0,
+        mapped: false,
+        type_: MPP_BUFFER_TYPE_DMA_HEAP,
+        hnd: std::ptr::null_mut(),
         fd: -1,
         index: 0,
         offset: 0,
         refs: 1,
     }))
     .cast()
+}
+
+unsafe fn new_external_buffer(info: &CompatBufferInfo) -> Result<MppBuffer, c_int> {
+    if info.size == 0 || (info.ptr.is_null() && info.fd < 0) {
+        return Err(MPP_ERR_VALUE);
+    }
+    let mut mapped = false;
+    let pointer = if info.ptr.is_null() {
+        let pointer = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                info.size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                info.fd,
+                0,
+            )
+        };
+        if pointer == libc::MAP_FAILED {
+            return Err(MPP_NOK);
+        }
+        mapped = true;
+        pointer.cast::<u8>()
+    } else {
+        info.ptr.cast::<u8>()
+    };
+    Ok(Box::into_raw(Box::new(CompatBuffer {
+        magic: BUFFER_MAGIC,
+        data: Vec::new(),
+        external_ptr: pointer,
+        external_size: info.size,
+        mapped,
+        type_: info.type_,
+        hnd: info.hnd,
+        fd: info.fd,
+        index: info.index,
+        offset: 0,
+        refs: 1,
+    }))
+    .cast())
 }
 
 unsafe fn discard_frame_object(frame_pointer: MppFrame) {
@@ -766,11 +850,18 @@ pub(super) unsafe fn frame_fill_from_sdk(
             unsafe { discard_frame_object(source_pointer) };
             return Err(());
         };
-        if target_buffer.data.len() < source_buffer.data.len() {
+        let source_len = buffer_len(source_buffer);
+        if buffer_len(target_buffer) < source_len {
             unsafe { discard_frame_object(source_pointer) };
             return Err(());
         }
-        target_buffer.data[..source_buffer.data.len()].copy_from_slice(&source_buffer.data);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                buffer_ptr(source_buffer),
+                buffer_ptr(target_buffer),
+                source_len,
+            );
+        }
     } else {
         target.buffer = source_buffer_pointer;
         source.buffer = std::ptr::null_mut();
@@ -831,7 +922,7 @@ pub unsafe extern "C" fn mpp_buffer_group_get(
     if group.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    if mode != MPP_BUFFER_INTERNAL {
+    if !matches!(mode, MPP_BUFFER_INTERNAL | MPP_BUFFER_EXTERNAL) {
         return MPP_NOK;
     }
     // SAFETY: the output pointer was checked above.
@@ -842,6 +933,7 @@ pub unsafe extern "C" fn mpp_buffer_group_get(
             mode,
             limit_size: 0,
             limit_count: 0,
+            unused: Vec::new(),
         }))
         .cast();
     }
@@ -853,6 +945,7 @@ pub unsafe extern "C" fn mpp_buffer_group_put(group: MppBufferGroup) -> c_int {
     let Some(object) = (unsafe { group_mut(group) }) else {
         return MPP_ERR_NULL_PTR;
     };
+    unsafe { group_drop_unused(object) };
     object.magic = 0;
     // SAFETY: mpp_buffer_group_get allocated this Box and ownership ends here.
     drop(unsafe { Box::from_raw(group.cast::<CompatBufferGroup>()) });
@@ -861,16 +954,18 @@ pub unsafe extern "C" fn mpp_buffer_group_put(group: MppBufferGroup) -> c_int {
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_buffer_group_clear(group: MppBufferGroup) -> c_int {
-    if unsafe { group_ref(group) }.is_some() {
-        MPP_OK
-    } else {
-        MPP_ERR_NULL_PTR
-    }
+    let Some(group) = (unsafe { group_mut(group) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    unsafe { group_drop_unused(group) };
+    MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_buffer_group_unused(_group: MppBufferGroup) -> c_int {
-    0
+pub unsafe extern "C" fn mpp_buffer_group_unused(group: MppBufferGroup) -> c_int {
+    unsafe { group_ref(group) }
+        .map(|group| group.unused.len().min(c_int::MAX as usize) as c_int)
+        .unwrap_or(-1)
 }
 
 #[no_mangle]
@@ -907,8 +1002,52 @@ pub unsafe extern "C" fn mpp_buffer_group_limit_config(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn mpp_buffer_import_with_tag(
+    group: MppBufferGroup,
+    info: *mut CompatBufferInfo,
+    buffer: *mut MppBuffer,
+    _tag: *const c_char,
+    _caller: *const c_char,
+) -> c_int {
+    if info.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let info = unsafe { &*info };
+    if buffer.is_null() && group.is_null() {
+        return MPP_ERR_VALUE;
+    }
+    if !group.is_null() {
+        let Some(group_object) = (unsafe { group_mut(group) }) else {
+            return MPP_ERR_NULL_PTR;
+        };
+        if group_object.mode != MPP_BUFFER_EXTERNAL
+            || (group_object.type_ & 0xffff) != (info.type_ & 0xffff)
+        {
+            return MPP_NOK;
+        }
+    }
+    let buffer_object = match unsafe { new_external_buffer(info) } {
+        Ok(buffer) => buffer,
+        Err(error) => return error,
+    };
+    if buffer.is_null() {
+        let Some(object) = (unsafe { buffer_mut(buffer_object) }) else {
+            return MPP_NOK;
+        };
+        object.refs = 0;
+        let Some(group) = (unsafe { group_mut(group) }) else {
+            return MPP_ERR_NULL_PTR;
+        };
+        group.unused.push(buffer_object);
+    } else {
+        unsafe { *buffer = buffer_object };
+    }
+    MPP_OK
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn mpp_buffer_get_with_tag(
-    _group: MppBufferGroup,
+    group: MppBufferGroup,
     buffer: *mut MppBuffer,
     size: usize,
     _tag: *const c_char,
@@ -917,13 +1056,32 @@ pub unsafe extern "C" fn mpp_buffer_get_with_tag(
     if buffer.is_null() {
         return MPP_ERR_NULL_PTR;
     }
+    unsafe { *buffer = std::ptr::null_mut() };
+    if size == 0 {
+        return MPP_ERR_VALUE;
+    }
+    if !group.is_null() {
+        let Some(group) = (unsafe { group_mut(group) }) else {
+            return MPP_ERR_NULL_PTR;
+        };
+        if group.mode == MPP_BUFFER_EXTERNAL {
+            let found = group.unused.iter().position(|&candidate| {
+                unsafe { buffer_ref(candidate) }.is_some_and(|object| buffer_len(object) >= size)
+            });
+            if let Some(index) = found {
+                let candidate = group.unused.remove(index);
+                if let Some(object) = unsafe { buffer_mut(candidate) } {
+                    object.refs = 1;
+                }
+                unsafe { *buffer = candidate };
+                return MPP_OK;
+            }
+            return MPP_NOK;
+        }
+    }
     // SAFETY: the out pointer is writable by contract.
     unsafe {
-        *buffer = if size == 0 {
-            std::ptr::null_mut()
-        } else {
-            new_buffer(vec![0; size])
-        };
+        *buffer = new_buffer(vec![0; size]);
     }
     MPP_OK
 }
@@ -976,10 +1134,10 @@ pub unsafe extern "C" fn mpp_buffer_info_get_with_caller(
     // SAFETY: the caller supplied writable MppBufferInfo storage.
     unsafe {
         info.write(CompatBufferInfo {
-            type_: MPP_BUFFER_TYPE_DMA_HEAP,
+            type_: buffer.type_,
             size: buffer_len(buffer),
             ptr,
-            hnd: std::ptr::null_mut(),
+            hnd: buffer.hnd,
             fd: buffer.fd,
             index: buffer.index,
         });

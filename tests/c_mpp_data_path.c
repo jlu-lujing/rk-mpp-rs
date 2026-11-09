@@ -1,9 +1,13 @@
+#define _GNU_SOURCE
+
 #include <rk_mpi.h>
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 static int drain_frames(MppApi *mpi, MppCtx ctx, FILE *output) {
     int frames = 0;
@@ -64,9 +68,14 @@ static int object_api_checks(void) {
     MppPacket packet = NULL;
     MppPacket packet_copy = NULL;
     MppFrame frame = NULL;
+    MppBufferGroup external_group = NULL;
+    MppBuffer external_buffer = NULL;
+    MppBuffer imported_buffer = NULL;
     MppBufferInfo info;
+    MppBufferInfo external_info = {0};
     uint8_t source[16];
     uint8_t copied[16] = {0};
+    uint8_t external[64] = {0};
     uint8_t packet_data[8] = {0, 1, 2, 3, 4, 5, 6, 7};
     MPP_RET ret;
 
@@ -134,6 +143,74 @@ static int object_api_checks(void) {
     }
     if (mpp_frame_deinit(&frame) != MPP_OK || frame != NULL)
         return -1;
+
+    external_info.type = MPP_BUFFER_TYPE_NORMAL;
+    external_info.size = sizeof(external);
+    external_info.ptr = external;
+    external_info.fd = -1;
+    external_info.index = 23;
+    if (mpp_buffer_group_get_external(&external_group,
+                                      MPP_BUFFER_TYPE_NORMAL) != MPP_OK ||
+        external_group == NULL ||
+        mpp_buffer_commit(external_group, &external_info) != MPP_OK ||
+        mpp_buffer_group_unused(external_group) != 1 ||
+        mpp_buffer_get(external_group, &external_buffer,
+                       sizeof(external)) != MPP_OK ||
+        external_buffer == NULL ||
+        mpp_buffer_get_ptr(external_buffer) != external ||
+        mpp_buffer_get_size(external_buffer) != sizeof(external) ||
+        mpp_buffer_get_index(external_buffer) != 23 ||
+        mpp_buffer_info_get(external_buffer, &info) != MPP_OK ||
+        info.type != MPP_BUFFER_TYPE_NORMAL || info.ptr != external ||
+        info.size != sizeof(external) || info.fd != -1 ||
+        info.index != 23 ||
+        mpp_buffer_write(external_buffer, 3, source, sizeof(source)) != MPP_OK ||
+        memcmp(external + 3, source, sizeof(source)) != 0 ||
+        mpp_buffer_put(external_buffer) != MPP_OK ||
+        mpp_buffer_group_unused(external_group) != 0 ||
+        mpp_buffer_group_put(external_group) != MPP_OK) {
+        return -1;
+    }
+
+    external_info.index = 29;
+    if (mpp_buffer_import(&imported_buffer, &external_info) != MPP_OK ||
+        imported_buffer == NULL ||
+        mpp_buffer_get_ptr(imported_buffer) != external ||
+        mpp_buffer_get_fd(imported_buffer) != -1 ||
+        mpp_buffer_get_index(imported_buffer) != 29 ||
+        mpp_buffer_read(imported_buffer, 3, copied, sizeof(copied)) != MPP_OK ||
+        memcmp(copied, source, sizeof(source)) != 0 ||
+        mpp_buffer_put(imported_buffer) != MPP_OK) {
+        return -1;
+    }
+
+    int external_fd = memfd_create("rk-mpp-external", MFD_CLOEXEC);
+    if (external_fd < 0 || ftruncate(external_fd, sizeof(external)) != 0) {
+        if (external_fd >= 0)
+            close(external_fd);
+        return -1;
+    }
+    external_info.ptr = NULL;
+    external_info.type = MPP_BUFFER_TYPE_EXT_DMA;
+    external_info.size = sizeof(external);
+    external_info.fd = external_fd;
+    external_info.index = 31;
+    if (mpp_buffer_import(&imported_buffer, &external_info) != MPP_OK ||
+        imported_buffer == NULL ||
+        mpp_buffer_get_fd(imported_buffer) != external_fd ||
+        mpp_buffer_get_ptr(imported_buffer) == NULL ||
+        mpp_buffer_write(imported_buffer, 5, source, sizeof(source)) != MPP_OK ||
+        mpp_buffer_read(imported_buffer, 5, copied, sizeof(copied)) != MPP_OK ||
+        memcmp(copied, source, sizeof(source)) != 0 ||
+        mpp_buffer_info_get(imported_buffer, &info) != MPP_OK ||
+        info.type != MPP_BUFFER_TYPE_EXT_DMA ||
+        info.fd != external_fd || info.index != 31 ||
+        mpp_buffer_put(imported_buffer) != MPP_OK) {
+        close(external_fd);
+        return -1;
+    }
+    close(external_fd);
+
     if (mpp_buffer_group_put(group) != MPP_OK)
         return -1;
     return 0;

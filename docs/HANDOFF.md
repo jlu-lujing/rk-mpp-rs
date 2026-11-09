@@ -124,6 +124,15 @@ duplicate/ref/lifetime，以及 frame/packet 的惰性 meta 持有均已接入�
 kernel meta、advanced buffer import/external frame、DMABUF-backed MppBuffer
 仍未完整实现。
 
+第五个 slice 已补上外部 `MppBuffer` 所有权入口：
+`mpp_buffer_import_with_tag` 接受 caller pointer 或 dma-buf fd，
+`mpp_buffer_group_get_external`/`mpp_buffer_commit`/`mpp_buffer_get` 的
+一次性 commit 流程已接通，fd-only 导入由兼容层独立 mmap 并在最终 put 时
+解除映射。lf1 C consumer 覆盖 pointer import、external group commit/get、
+fd-only import、读写和 `MppBufferInfo` round-trip。internal buffer 的真实
+fd 分配、group unused-buffer recycle/usage 统计和 advanced zero-copy frame
+仍是后续工作。
+
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test
 MPP_INCLUDE=/tmp/mpp-develop/inc \
