@@ -1,4 +1,4 @@
-# t6 validation — 2026-11-08
+# t6 validation — 2026-11-11
 
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1240 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1243 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1244 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1247 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -40,6 +40,20 @@ t62 back to the RK3588 reference board.
   combinations on lf1 against the vendor probe. H.264 CBR/VBR/AVBR are 9,426 /
   10,283 / 8,660 bytes; H.265 are 11,192 / 11,795 / 9,676 bytes, all
   byte-identical. The t6 VEPU580 command remains part of the same script.
+
+## 2026-11-11 AV1 software film-grain synthesis
+
+- The independent M11 decoder now applies film grain only to displayed copies.
+  `ReferenceFrameStore` keeps post-filter, pre-grain pixels and the frame's grain
+  parameter set, so ordinary output and `show_existing_frame` use the historical
+  frame's parameters without contaminating inter prediction.
+- Stock `aomdec --output-bit-depth=10` is the oracle. The 8-bit stream passes
+  **10/10 grain-applied frames**. The 10-bit stream passes **10/10 clean
+  pre-grain frames** and **10/10 grain-applied frames**; all thirty frame
+  projections are sample-exact after accounting for aomdec's 16-bit container
+  alignment.
+- The complete AV1 software-reference suite passes **348/348** on t6 at the
+  persistent 80 % OPP cap.
 
 ## 2026-11-08 W5-4 pool closeout
 

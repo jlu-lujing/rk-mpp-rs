@@ -7,7 +7,7 @@
 提升；结果与 C 不一致即视为缺陷，除非另外证明 C 是 bug。功能前沿（tiles/WPP/SAO、B 帧、
 refresh/GDR 分配等）冻结，先把已实现路径上的已知差异关掉。
 
-**该口径之后的实际推进（截至 2026-11-07）**：deblock/SAO 细调、H.264 two-pass deflicker、
+**该口径之后的实际推进（截至 2026-11-11）**：deblock/SAO 细调、H.264 two-pass deflicker、
 >4096 宽 P 帧与 **H.265 水平 tiles** 已按同一逐字节标准落地（tiles 见 ROADMAP 的
 `H.265 (rkvenc): uniform horizontal tiles`）；AV1 软件参考解码器已完成 fractional
 single-reference inter、inter residual、recursive transform tree、frame 内混合
@@ -20,7 +20,12 @@ context 也已闭合完整 `av1_lr` key+P 流。第 104 slice 又补上
 `SavedFilmGrain[refFrame]`：刷新参考槽时保存完整 grain 参数，`update_grain=0`
 时按 `film_grain_params_ref_idx` 继承 scaling points 和 AR coefficients，仅替换
 seed。真实 OBU 集成门从现有 grain IVF 的 inter header 构造短分支变体，验证
-21-bit 继承语法、seed 保留和完整参数复制。
+21-bit 继承语法、seed 保留和完整参数复制。第 105 slice 完成软件 film grain
+synthesis：移植 libaom 的 seeded AR 模板、32×32 subblock 随机偏移、2/1 像素
+overlap、Y/Cb/Cr scaling LUT、restricted-range clipping 与高位深加噪路径。
+参考槽保留 post-filter/pre-grain 像素和对应参数，普通显示与
+`show_existing_frame` 只在输出副本上施加 grain。真实的 8-bit grain-applied 10 帧、
+10-bit clean 10 帧和 10-bit grain-applied 10 帧全部与 stock `aomdec` 逐样本一致。
 仍未闭合的前沿是 WPP、B 帧与多参考调度。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
@@ -80,8 +85,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1240 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1244 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1243 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1247 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。

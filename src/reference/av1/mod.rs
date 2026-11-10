@@ -17,6 +17,7 @@ pub mod coeff_tables;
 pub mod context;
 pub mod deblock;
 pub mod delta;
+pub mod film_grain;
 pub mod filter_intra;
 pub mod frame_header;
 pub mod idct;

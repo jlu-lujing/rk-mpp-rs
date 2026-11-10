@@ -82,8 +82,15 @@
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 108 项完成、6 项未完成（含缩进子项为 146 / 9）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 104 个
-AV1 slice。第 104 slice 增加 `SavedFilmGrain` 参考槽持久化：`update_grain=0` 时复制
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 105 个
+AV1 slice。第 105 slice 完成软件参考解码器的 film grain synthesis：移植 libaom 的
+64×64 luma / 32×32 chroma AR grain 模板、每 32×32 subblock 的 seed-derived 偏移、
+2/1 像素 overlap、luma/chroma scaling LUT、restricted-range clipping 与 8/10/12-bit
+整数路径。参考槽和 `show_existing_frame` 始终保存 post-filter、pre-grain 画面，只在
+显示输出时施加该帧自己的 grain 参数。8-bit 320×240 的 10 个显示帧全部与 libaom
+grain-applied 输出逐样本一致；10-bit 流同时锁定 10 个 clean pre-grain 帧和 10 个
+grain-applied 帧，三十个真实显示帧投影全部通过。第 104 slice 增加
+`SavedFilmGrain` 参考槽持久化：`update_grain=0` 时复制
 引用槽的 scaling points/AR coefficients，只替换 `grain_seed`。真实集成门从现有
 film-grain 流的 inter header 生成 `update_grain=0` 变体，确认短分支只消费 21 bits
 且完整参数继承。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
@@ -177,7 +184,7 @@ partition/mode/skip/tx_depth、
 `ReferenceStream`、块级 transform 选择、
 统一帧内预测入口、帧头参考状态、tile-group 拆包、
 §5.9 完整帧头、§8.1 位流描述符、§5.2 OBU/IVF 解复用与 §5.5 序列头），
-逐项证据见 `docs/CAPABILITY.md` 的 M11 表与 `ROADMAP.md` 尾部；上文的 89% 是按里程碑
+逐项证据见 `docs/CAPABILITY.md` 的 M11 表与 `ROADMAP.md` 尾部；上文的 90% 是按里程碑
 工作量重算的加权估算。
 
 ## 对外 API

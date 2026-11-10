@@ -11,7 +11,9 @@ use crate::reference::av1::coeff::coeff_q_context;
 use crate::reference::av1::deblock::{
     DeblockCell, DeblockEdgeInfo, DeblockGrid, SEG_LVL_ALT_LF_Y_V,
 };
-use crate::reference::av1::frame_header::{get_relative_dist, FrameHeader, PRIMARY_REF_NONE};
+use crate::reference::av1::frame_header::{
+    get_relative_dist, FilmGrainParams, FrameHeader, PRIMARY_REF_NONE,
+};
 use crate::reference::av1::inter::{
     CompoundType, InterBlock, InterIntraMode, InterMode, MotionMode, MotionVector, ALTREF2_FRAME,
     ALTREF_FRAME, BWDREF_FRAME, GOLDEN_FRAME, INTRA_FRAME, LAST2_FRAME, LAST_FRAME, NONE_FRAME,
@@ -217,6 +219,7 @@ struct ReferenceSlot {
     order_hint: u8,
     motion_field: Option<FrameMotionField>,
     segment_map: SegmentMap,
+    film_grain: FilmGrainParams,
 }
 
 fn build_frame_motion_field(
@@ -311,6 +314,13 @@ impl ReferenceFrameStore {
             .get(slot)
             .and_then(Option::as_ref)
             .map(|slot| slot.order_hint)
+    }
+
+    pub fn get_film_grain(&self, slot: usize) -> Option<&FilmGrainParams> {
+        self.slots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .map(|slot| &slot.film_grain)
     }
 
     pub fn load_cdfs(&self, slot: usize) -> Option<CdfState> {
@@ -494,6 +504,7 @@ impl ReferenceFrameStore {
                     order_hint: header.order_hint,
                     motion_field: motion_field.clone(),
                     segment_map: segment_map.clone(),
+                    film_grain: header.film_grain.clone(),
                 });
             }
         }
@@ -2366,6 +2377,7 @@ pub fn decode_inter_tile_group(
 mod tests {
     use super::*;
     use crate::reference::av1::cdf_state::CdfState;
+    use crate::reference::av1::film_grain::apply_film_grain_params;
     use crate::reference::av1::frame_header::PRIMARY_REF_NONE;
     use crate::reference::av1::inter::{CompoundMode, InterMode};
     use crate::reference::av1::intra_frame::{
@@ -2554,7 +2566,30 @@ mod tests {
             })
     }
 
+    fn visible_frame_hash(frame: &IntraFrame) -> u64 {
+        [Some(&frame.y), frame.u.as_ref(), frame.v.as_ref()]
+            .into_iter()
+            .flatten()
+            .flat_map(|plane| {
+                plane
+                    .data
+                    .chunks_exact(plane.stride)
+                    .take(plane.height)
+                    .flat_map(|row| &row[..plane.width])
+            })
+            .fold(0xcbf29ce484222325u64, |hash, sample| {
+                (hash ^ u64::from(*sample)).wrapping_mul(0x100000001b3)
+            })
+    }
+
     fn decode_picture_stream(data: &[u8]) -> (Vec<IntraFrame>, Vec<Vec<InterSyntaxBlock>>) {
+        decode_picture_stream_with_grain(data, true)
+    }
+
+    fn decode_picture_stream_with_grain(
+        data: &[u8],
+        apply_grain: bool,
+    ) -> (Vec<IntraFrame>, Vec<Vec<InterSyntaxBlock>>) {
         let ivf = parse_ivf(data).unwrap();
         let mut stream = ReferenceStream::new();
         let events = stream.parse_ivf(&ivf).unwrap();
@@ -2565,12 +2600,13 @@ mod tests {
 
         for event in events.iter().flatten() {
             if let StreamEvent::ShowExisting(header) = event {
-                pictures.push(
-                    references
-                        .get(header.frame_to_show_map_idx as usize)
-                        .unwrap()
-                        .clone(),
-                );
+                let slot = header.frame_to_show_map_idx as usize;
+                let mut picture = references.get(slot).unwrap().clone();
+                if apply_grain {
+                    let grain = references.get_film_grain(slot).unwrap();
+                    apply_film_grain_params(sequence, grain, &mut picture).unwrap();
+                }
+                pictures.push(picture);
                 continue;
             }
             let StreamEvent::CodedFrame(frame) = event else {
@@ -2690,7 +2726,12 @@ mod tests {
                 segment_map,
             );
             if frame.header.show_frame {
-                pictures.push(picture);
+                let mut display = picture;
+                if apply_grain {
+                    apply_film_grain_params(sequence, &frame.header.film_grain, &mut display)
+                        .unwrap();
+                }
+                pictures.push(display);
             }
         }
         (pictures, inter_frames)
@@ -2699,6 +2740,72 @@ mod tests {
     fn decode_two_picture_stream(data: &[u8]) -> (Vec<IntraFrame>, Vec<InterSyntaxBlock>) {
         let (pictures, mut inter_frames) = decode_picture_stream(data);
         (pictures, inter_frames.pop().unwrap_or_default())
+    }
+
+    #[test]
+    fn real_film_grain_stream_matches_libaom_after_synthesis() {
+        let data = include_bytes!("../../../tests/data/av1_film_grain_320x240_10.ivf");
+        let (pictures, _) = decode_picture_stream(data);
+
+        assert_eq!(
+            pictures.iter().map(visible_frame_hash).collect::<Vec<_>>(),
+            [
+                0xc11cbbcd3cab2a08,
+                0xd6a00b8ee3a161c6,
+                0x7dd2615ec74bbb91,
+                0xc7ee24f4e3d93cfb,
+                0x18fc4f20f58afd59,
+                0xc428a5a58dbe6808,
+                0x06c118bda2aa313b,
+                0x1471e33d7202356b,
+                0xa3cdff289fba8e06,
+                0x30d83d47c2b9ff3b,
+            ]
+        );
+    }
+
+    #[test]
+    fn real_ten_bit_film_grain_stream_matches_libaom_after_synthesis() {
+        let data = include_bytes!("../../../tests/data/film_grain_10bit.ivf");
+        let (pictures, _) = decode_picture_stream(data);
+
+        assert_eq!(
+            pictures.iter().map(visible_frame_hash).collect::<Vec<_>>(),
+            [
+                0xd50fddb69d68df95,
+                0x3841f3ebb492f93a,
+                0x1c8dddba91732a6d,
+                0x5c741c416524381e,
+                0xc2fa474fe5d5f8ea,
+                0xb8a45eb3859694a8,
+                0x6c191cf34666f170,
+                0xf9f43fced83b6e96,
+                0x9d7367a93ae385af,
+                0x75c23e775c8e5319,
+            ]
+        );
+    }
+
+    #[test]
+    fn real_ten_bit_film_grain_stream_clean_pictures_match_libaom() {
+        let data = include_bytes!("../../../tests/data/film_grain_10bit.ivf");
+        let (pictures, _) = decode_picture_stream_with_grain(data, false);
+
+        assert_eq!(
+            pictures.iter().map(visible_frame_hash).collect::<Vec<_>>(),
+            [
+                0xf97d03bc3cb41196,
+                0xf31c77c0cd3d7859,
+                0xe0a583a7d3ba9445,
+                0xe7495692d7cc4891,
+                0x72c0773fc61ac58e,
+                0x786f7d0d0b8e9511,
+                0xced198a7300732ac,
+                0x1ad73db5c4bbaea6,
+                0x2dfe30ef60cc7873,
+                0x77e080d062826eec,
+            ]
+        );
     }
 
     #[test]

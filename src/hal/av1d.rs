@@ -19,6 +19,7 @@ mod film_grain;
 #[path = "av1_film_grain_table.rs"]
 mod film_grain_table;
 pub use film_grain::{build_film_grain_memory, FilmGrainError, FILM_GRAIN_MEMORY_SIZE};
+pub(crate) use film_grain_table::GAUSSIAN_SEQUENCE;
 
 pub const AV1_TILE_INFO_SIZE: usize = 128 * 16;
 pub const GLOBAL_MODEL_COUNT: usize = 7;
