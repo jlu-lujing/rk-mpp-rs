@@ -2173,6 +2173,23 @@ mod tests {
     }
 
     #[test]
+    fn kmpp_objdef_get_and_register_clear_the_current_lf1_abi_output() {
+        let mut def = 1usize as *mut c_void;
+        assert_eq!(
+            unsafe { kmpp_objdef_get(&mut def, c"kmpp_frame".as_ptr()) },
+            MPP_NOK
+        );
+        assert!(def.is_null());
+
+        def = 1usize as *mut c_void;
+        assert_eq!(
+            unsafe { kmpp_objdef_register(&mut def, 80, c"kmpp_frame".as_ptr()) },
+            MPP_NOK
+        );
+        assert!(def.is_null());
+    }
+
+    #[test]
     fn dec_cfg_rejects_unknown_keys() {
         let mut cfg = std::ptr::null_mut();
         assert_eq!(unsafe { mpp_dec_cfg_init(&mut cfg) }, MPP_OK);
