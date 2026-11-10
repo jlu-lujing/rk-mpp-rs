@@ -75,7 +75,7 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的逐帧
 streaming RC 尚未接入，接口明确返回 unsupported。
 t6/lf1 的 workspace 最终全量门均为
-`1224 passed / 0 failed / 38 ignored`，
+`1226 passed / 0 failed / 38 ignored`，
 rustfmt 与严格 workspace rustdoc 同时通过。
 
 V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice，
@@ -221,7 +221,11 @@ oracle。相关项均已登记在 `docs/DIVERGENCES.md`。
 `SEI_CFG` 已接通。帧 2/4 强制 IDR 在 t6/lf1 均为 12 NAL 和 YUV
 逐字节一致；`HEADER_MODE_EACH_IDR` 重发 SPS/PPS，`SEI_MODE_DISABLE`
 不再静默吞掉。H.265 VEPU580 也已接通同一组控制：15 NAL 和 YUV 为
-`b2765277…3c56607`，IDR 后的 POC 重置正确。其余高级编码控制仍待接入。
+`b2765277…3c56607`，IDR 后的 POC 重置正确。RC API 的查询、注册/替换、
+按编码类型过滤和当前策略选择已在 t6/lf1 与原厂逐行一致；自定义策略的
+逐帧回调尚未接入，选择后会明确拒绝编码，避免静默使用默认 RC。
+其中 `smart` 也属于尚未接入的非默认策略。
+其余高级编码控制仍待接入。
 
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test

@@ -443,6 +443,13 @@ same schedule and matches 15 NALs; its YUV SHA-256 is
 `b2765277b355c52eae77bae10997ec4284c03b20d76f2b1cadfeacf0f3c56607`.
 POC restarts at 1 after each forced IDR. Other encoder controls remain open.
 
+The RC API control-plane probe matches vendor output on t6 and lf1. Both list
+the same six built-in strategies (`default` for AVC/HEVC/MJPEG/VP8 and `smart`
+for AVC/HEVC), filter AVC to two entries, report the initial
+`default,type=0` selection, append a registered `test_h264e_rc`, select and
+restore it by `GET/SET_RC_API_CURRENT`. The callbacks of a user-defined
+strategy do not drive frames yet; that state is rejected before encoding.
+
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older
 uncapped-profile peaks are retained only as historical observations.

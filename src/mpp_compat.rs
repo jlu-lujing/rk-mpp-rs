@@ -7,6 +7,7 @@ use crate::{encoder, sdk};
 
 mod cfg;
 mod objects;
+mod rc_api;
 mod standalone;
 
 type MppCtx = *mut c_void;
@@ -48,7 +49,11 @@ const MPP_ENC_GET_HDR_SYNC: c_int = 3_276_813;
 const MPP_ENC_SET_SEI_CFG: c_int = 3_276_815;
 const MPP_ENC_SET_HEADER_MODE: c_int = 3_309_569;
 const MPP_ENC_SET_OSD_PLT_CFG: c_int = 3_310_593;
-const MPP_ENC_SET_RC_API: c_int = 3_277_317;
+const MPP_ENC_GET_RC_API_ALL: c_int = 3_277_313;
+const MPP_ENC_GET_RC_API_BY_TYPE: c_int = 3_277_314;
+const MPP_ENC_SET_RC_API_CFG: c_int = 3_277_315;
+const MPP_ENC_GET_RC_API_CURRENT: c_int = 3_277_316;
+const MPP_ENC_SET_RC_API_CURRENT: c_int = 3_277_317;
 const MPP_ENC_SET_REF_CFG: c_int = 3_310_081;
 const MPP_SET_OUTPUT_TIMEOUT: c_int = 2_097_159;
 
@@ -129,6 +134,7 @@ struct CompatContext {
     pending_input_packet: MppPacket,
     encoder_ref_pattern: Vec<standalone::ReferenceFrameStep>,
     encoder_ref_schedule: Option<ReferenceSchedule>,
+    rc_api: rc_api::Selection,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -535,6 +541,13 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     if context.ctx_type != MPP_CTX_ENC {
         return MPP_ERR_VALUE;
     }
+    if !context.rc_api.is_native_default() {
+        eprintln!(
+            "rk-mpp-rs mpp: selected RC API {:?} cannot execute yet",
+            context.rc_api.name()
+        );
+        return MPP_NOK;
+    }
     let picture_layout = match context.encoder_ref_schedule.as_ref() {
         Some(schedule) => match schedule.prepare() {
             Ok(frame) => Some(frame),
@@ -709,6 +722,13 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             if context.ctx_type != MPP_CTX_ENC || param.is_null() {
                 return MPP_ERR_VALUE;
             }
+            if !context.rc_api.is_native_default() {
+                eprintln!(
+                    "rk-mpp-rs mpp: selected RC API {:?} cannot drive the encoder yet",
+                    context.rc_api.name()
+                );
+                return MPP_NOK;
+            }
             context.encoder_ref_pattern =
                 standalone::encoder_cfg_ref_pattern(param).unwrap_or_default();
             let encoder_ref_long_term = standalone::encoder_cfg_long_term_config(param);
@@ -788,8 +808,36 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                 }
             }
         }
-        MPP_ENC_GET_CFG | MPP_ENC_SET_OSD_PLT_CFG | MPP_ENC_SET_RC_API | MPP_SET_OUTPUT_TIMEOUT => {
-            MPP_OK
+        MPP_ENC_GET_CFG | MPP_ENC_SET_OSD_PLT_CFG | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
+        MPP_ENC_GET_RC_API_ALL => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            unsafe { rc_api::query_all(param.cast()) }
+        }
+        MPP_ENC_GET_RC_API_BY_TYPE => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            unsafe { rc_api::query_by_type(param.cast()) }
+        }
+        MPP_ENC_SET_RC_API_CFG => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            unsafe { rc_api::add(param.cast()) }
+        }
+        MPP_ENC_GET_RC_API_CURRENT => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            context.rc_api.get(param.cast())
+        }
+        MPP_ENC_SET_RC_API_CURRENT => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            context.rc_api.set(param.cast(), context.coding)
         }
         MPP_ENC_SET_IDR_FRAME => {
             if context.ctx_type != MPP_CTX_ENC {
@@ -917,6 +965,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             pending_input_packet: std::ptr::null_mut(),
             encoder_ref_pattern: Vec::new(),
             encoder_ref_schedule: None,
+            rc_api: rc_api::Selection::new(),
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();
