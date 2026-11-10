@@ -53,6 +53,11 @@ const MPP_ENC_SET_REF_CFG: c_int = 3_310_081;
 const MPP_SET_OUTPUT_TIMEOUT: c_int = 2_097_159;
 
 const CONTEXT_MAGIC: u64 = 0x4d50_5052_5343_5458;
+const REF_TO_PREV_REF_FRM: u8 = 0;
+const REF_TO_PREV_INTRA: u8 = 3;
+const REF_TO_TEMPORAL_LAYER: u8 = 4;
+const RECONSTRUCTION_SLOTS: usize = 3;
+const REFERENCE_DPB_SIZE: usize = 2;
 
 type DecodeFn = unsafe extern "C" fn(MppCtx, MppPacket, *mut MppFrame) -> c_int;
 type DecodePutFn = unsafe extern "C" fn(MppCtx, MppPacket) -> c_int;
@@ -122,8 +127,157 @@ struct CompatContext {
     pending_output_frame: MppFrame,
     pending_input_packet: MppPacket,
     encoder_ref_pattern: Vec<standalone::ReferenceFrameStep>,
-    encoder_ref_index: usize,
-    encoder_ref_last_slot: usize,
+    encoder_ref_schedule: Option<ReferenceSchedule>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveReference {
+    sequence: usize,
+    slot: usize,
+    temporal_id: u8,
+    frame_num: u32,
+    intra: bool,
+}
+
+struct ReferenceSchedule {
+    steps: Vec<standalone::ReferenceFrameStep>,
+    next_sequence: usize,
+    frame_num: u32,
+    last_non_reference: bool,
+    active: Vec<ActiveReference>,
+}
+
+struct PendingReferenceFrame {
+    current_slot: usize,
+    reference_slot: usize,
+    non_reference: bool,
+    temporal_id: u8,
+    short_term_reorder: Option<encoder::ShortTermReorder>,
+    commit: Option<ActiveReference>,
+}
+
+impl ReferenceSchedule {
+    fn new(steps: Vec<standalone::ReferenceFrameStep>) -> Self {
+        Self {
+            steps,
+            next_sequence: 0,
+            frame_num: 0,
+            last_non_reference: false,
+            active: Vec::with_capacity(REFERENCE_DPB_SIZE),
+        }
+    }
+
+    fn prepare(&self) -> Result<PendingReferenceFrame, String> {
+        let sequence = self.next_sequence;
+        if sequence == 0 {
+            return Ok(PendingReferenceFrame {
+                current_slot: 0,
+                reference_slot: 0,
+                non_reference: false,
+                temporal_id: 0,
+                short_term_reorder: None,
+                commit: Some(ActiveReference {
+                    sequence,
+                    slot: 0,
+                    temporal_id: 0,
+                    frame_num: 0,
+                    intra: true,
+                }),
+            });
+        }
+        if self.steps.is_empty() {
+            return Err("H.264 reference schedule has no short-term steps".into());
+        }
+        let step = self
+            .steps
+            .get((sequence - 1) % self.steps.len())
+            .copied()
+            .ok_or_else(|| "H.264 reference schedule has no short-term steps".to_string())?;
+        let frame_num = if !step.non_reference && self.last_non_reference {
+            self.frame_num
+        } else {
+            self.frame_num
+                .checked_add(1)
+                .ok_or_else(|| "H.264 TSVC frame_num overflowed".to_string())?
+        };
+        let reference = self.resolve_reference(step)?;
+        let current_slot = (0..RECONSTRUCTION_SLOTS)
+            .find(|slot| self.active.iter().all(|reference| reference.slot != *slot))
+            .ok_or_else(|| {
+                "H.264 reference schedule has no free reconstruction slot".to_string()
+            })?;
+        let latest = self
+            .active
+            .iter()
+            .max_by_key(|reference| reference.sequence)
+            .ok_or_else(|| "H.264 reference schedule has no active reference".to_string())?;
+        let short_term_reorder = (reference.sequence != latest.sequence)
+            .then(|| encoder::ShortTermReorder::new(frame_num, reference.frame_num));
+        let commit = (!step.non_reference).then_some(ActiveReference {
+            sequence,
+            slot: current_slot,
+            temporal_id: step.temporal_id,
+            frame_num,
+            intra: false,
+        });
+        Ok(PendingReferenceFrame {
+            current_slot,
+            reference_slot: reference.slot,
+            non_reference: step.non_reference,
+            temporal_id: step.temporal_id,
+            short_term_reorder,
+            commit,
+        })
+    }
+
+    fn resolve_reference(
+        &self,
+        step: standalone::ReferenceFrameStep,
+    ) -> Result<ActiveReference, String> {
+        let reference = match step.reference_mode {
+            REF_TO_PREV_REF_FRM => self
+                .active
+                .iter()
+                .max_by_key(|reference| reference.sequence),
+            REF_TO_PREV_INTRA => self.active.iter().find(|reference| reference.intra),
+            REF_TO_TEMPORAL_LAYER => {
+                let temporal_id = u8::try_from(step.reference_argument)
+                    .map_err(|_| "H.264 temporal-layer reference is out of range".to_string())?;
+                self.active
+                    .iter()
+                    .filter(|reference| reference.temporal_id == temporal_id)
+                    .max_by_key(|reference| reference.sequence)
+            }
+            mode => return Err(format!("H.264 reference mode {mode} is not implemented")),
+        };
+        reference.copied().ok_or_else(|| {
+            format!(
+                "H.264 reference mode {} has no valid target",
+                step.reference_mode
+            )
+        })
+    }
+
+    fn commit(&mut self, frame: PendingReferenceFrame) {
+        self.next_sequence += 1;
+        if let Some(reference) = frame.commit {
+            self.frame_num = reference.frame_num;
+            self.active.push(reference);
+            while self.active.len() > REFERENCE_DPB_SIZE {
+                let oldest = self
+                    .active
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, reference)| reference.sequence)
+                    .map(|(index, _)| index)
+                    .expect("non-empty reference DPB");
+                self.active.remove(oldest);
+            }
+        } else {
+            self.frame_num = self.frame_num.saturating_add(1);
+        }
+        self.last_non_reference = frame.non_reference;
+    }
 }
 
 unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
@@ -295,28 +449,15 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     if context.ctx_type != MPP_CTX_ENC {
         return MPP_ERR_VALUE;
     }
-    let picture_layout = if context.encoder_ref_pattern.is_empty() {
-        None
-    } else {
-        let index = context.encoder_ref_index;
-        if index == 0 {
-            Some((0, 0, false, Some(0)))
-        } else {
-            let step = context.encoder_ref_pattern[(index - 1) % context.encoder_ref_pattern.len()];
-            let current_slot = if index % 2 == 1 {
-                1
-            } else if (index / 2) % 2 == 1 {
-                2
-            } else {
-                0
-            };
-            Some((
-                current_slot,
-                context.encoder_ref_last_slot,
-                step.non_reference,
-                Some(step.temporal_id),
-            ))
-        }
+    let picture_layout = match context.encoder_ref_schedule.as_ref() {
+        Some(schedule) => match schedule.prepare() {
+            Ok(frame) => Some(frame),
+            Err(error) => {
+                eprintln!("rk-mpp-rs mpp: reference schedule rejected: {error}");
+                return MPP_NOK;
+            }
+        },
+        None => None,
     };
     let Some(encoder) = context.encoder.as_mut() else {
         return MPP_ERR_VALUE;
@@ -346,12 +487,13 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     let input = encoder::InputFrame::new(&input)
         .with_pts(frame.pts)
         .with_dts(frame.dts);
-    if let Some((current_slot, reference_slot, non_reference, temporal_id)) = picture_layout {
+    if let Some(frame) = picture_layout.as_ref() {
         if let Err(error) = encoder.force_next_picture_layout(
-            current_slot,
-            reference_slot,
-            non_reference,
-            temporal_id,
+            frame.current_slot,
+            frame.reference_slot,
+            frame.non_reference,
+            Some(frame.temporal_id),
+            frame.short_term_reorder,
         ) {
             eprintln!("rk-mpp-rs mpp: reference layout rejected: {error}");
             return MPP_NOK;
@@ -359,11 +501,10 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     }
     match encoder.submit_frame(input) {
         Ok(_) => {
-            if let Some((current_slot, _, non_reference, _)) = picture_layout {
-                if context.encoder_ref_index > 0 && !non_reference {
-                    context.encoder_ref_last_slot = current_slot;
-                }
-                context.encoder_ref_index += 1;
+            if let (Some(schedule), Some(frame)) =
+                (context.encoder_ref_schedule.as_mut(), picture_layout)
+            {
+                schedule.commit(frame);
             }
             if !motion_info.is_null() {
                 if let Some(data) = encoder.take_motion_info() {
@@ -447,8 +588,7 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
     context.encoder_ref_pattern.clear();
-    context.encoder_ref_index = 0;
-    context.encoder_ref_last_slot = 0;
+    context.encoder_ref_schedule = None;
     MPP_OK
 }
 
@@ -482,8 +622,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             }
             context.encoder_ref_pattern =
                 standalone::encoder_cfg_ref_pattern(param).unwrap_or_default();
-            context.encoder_ref_index = 0;
-            context.encoder_ref_last_slot = 0;
+            context.encoder_ref_schedule = None;
             let mut config = match unsafe { cfg::encoder_config(param) } {
                 Ok(config) => config,
                 Err(error) => {
@@ -491,10 +630,12 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                     return MPP_NOK;
                 }
             };
-            if context.encoder_ref_pattern.len() == 2 {
-                // TSVC2 keeps one decoded reference frame. This is the value
-                // mpp_enc_ref_cfg_check publishes to h264e_sps_init.
-                config = config.with_num_ref_frames(1);
+            match context.encoder_ref_pattern.len() {
+                // mpp_enc_ref_cfg_check publishes the short-term CPB depth
+                // into h264e_sps_init.
+                0 => {}
+                2 => config = config.with_num_ref_frames(1),
+                _ => config = config.with_num_ref_frames(2),
             }
             match encoder::Encoder::new_mpi_compat(config) {
                 Ok(mut encoder) => {
@@ -502,8 +643,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                         && !context.encoder_ref_pattern.is_empty()
                     {
                         context.encoder_ref_pattern.clear();
-                        context.encoder_ref_index = 0;
-                        context.encoder_ref_last_slot = 0;
+                        context.encoder_ref_schedule = None;
                     }
                     if context.coding == MPP_VIDEO_CODING_AVC {
                         if !context.encoder_ref_pattern.is_empty() {
@@ -532,6 +672,10 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                             return MPP_NOK;
                         }
                     }
+                    if !context.encoder_ref_pattern.is_empty() {
+                        context.encoder_ref_schedule =
+                            Some(ReferenceSchedule::new(context.encoder_ref_pattern.clone()));
+                    }
                     context.encoder = Some(encoder);
                     MPP_OK
                 }
@@ -554,8 +698,8 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             }
             context.encoder_ref_pattern =
                 standalone::reference_frame_pattern(param).unwrap_or_default();
-            context.encoder_ref_index = 0;
-            context.encoder_ref_last_slot = 0;
+            context.encoder_ref_schedule = (!context.encoder_ref_pattern.is_empty())
+                .then(|| ReferenceSchedule::new(context.encoder_ref_pattern.clone()));
             MPP_OK
         }
         MPP_ENC_GET_HDR_SYNC => {
@@ -613,8 +757,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             pending_output_frame: std::ptr::null_mut(),
             pending_input_packet: std::ptr::null_mut(),
             encoder_ref_pattern: Vec::new(),
-            encoder_ref_index: 0,
-            encoder_ref_last_slot: 0,
+            encoder_ref_schedule: None,
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();
@@ -663,8 +806,7 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
     context.encoder_ref_pattern.clear();
-    context.encoder_ref_index = 0;
-    context.encoder_ref_last_slot = 0;
+    context.encoder_ref_schedule = None;
     MPP_OK
 }
 
@@ -680,6 +822,62 @@ fn sdk_codec(coding: c_int) -> Option<sdk::Codec> {
         MPP_VIDEO_CODING_HEVC => Some(sdk::Codec::H265),
         MPP_VIDEO_CODING_AV1 => Some(sdk::Codec::Av1),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(
+        non_reference: bool,
+        temporal_id: u8,
+        reference_mode: u8,
+    ) -> standalone::ReferenceFrameStep {
+        standalone::ReferenceFrameStep {
+            non_reference,
+            temporal_id,
+            reference_mode,
+            reference_argument: 0,
+        }
+    }
+
+    #[test]
+    fn tsvc3_schedule_tracks_references_and_reorders_temporal_zero() {
+        let mut schedule = ReferenceSchedule::new(vec![
+            step(true, 2, REF_TO_PREV_REF_FRM),
+            step(false, 1, REF_TO_PREV_REF_FRM),
+            step(true, 2, REF_TO_PREV_REF_FRM),
+            step(false, 0, REF_TO_TEMPORAL_LAYER),
+        ]);
+        let mut frames = Vec::new();
+        for _ in 0..9 {
+            let frame = schedule.prepare().unwrap();
+            frames.push((
+                frame.current_slot,
+                frame.reference_slot,
+                frame.non_reference,
+                frame.temporal_id,
+                frame.short_term_reorder,
+            ));
+            schedule.commit(frame);
+        }
+        assert_eq!(
+            frames,
+            [
+                (0, 0, false, 0, None),
+                (1, 0, true, 2, None),
+                (1, 0, false, 1, None),
+                (2, 1, true, 2, None),
+                (2, 0, false, 0, Some(encoder::ShortTermReorder::new(2, 0))),
+                (0, 2, true, 2, None),
+                (0, 2, false, 1, None),
+                (1, 0, true, 2, None),
+                (1, 2, false, 0, Some(encoder::ShortTermReorder::new(4, 2))),
+            ]
+        );
+        assert_eq!(schedule.frame_num, 4);
+        assert_eq!(schedule.next_sequence, 9);
     }
 }
 

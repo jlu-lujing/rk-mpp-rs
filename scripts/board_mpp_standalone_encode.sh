@@ -136,6 +136,14 @@ if grep -qi rk3588 /proc/device-tree/compatible 2>/dev/null; then
     python3 "$repo/scripts/compare_streams.py" "$vendor" "$standalone"
     decode_and_compare h264dec "$vendor" "$standalone"
     printf 'PASS h264  twelve-frame TSVC2 standalone encoder NAL/reconstruction\n'
+
+    vendor=/tmp/rk_mpp_standalone_encode_h264_tsvc3_vendor12.264
+    standalone=/tmp/rk_mpp_standalone_encode_h264_tsvc3_ours12.264
+    run_encoder_frames "$vendor_lib" "$vendor" 7 26 2:60 12 "$raw_multi"
+    run_encoder_frames "$overlay" "$standalone" 7 26 2:60 12 "$raw_multi"
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$standalone"
+    decode_and_compare h264dec "$vendor" "$standalone"
+    printf 'PASS h264  twelve-frame TSVC3 standalone encoder NAL/reconstruction\n'
 else
-    printf 'SKIP h264  six-frame TSVC2 (this SoC uses the VEPU510 encoder path)\n'
+    printf 'SKIP h264  TSVC2/TSVC3 (this SoC uses the VEPU510 encoder path)\n'
 fi

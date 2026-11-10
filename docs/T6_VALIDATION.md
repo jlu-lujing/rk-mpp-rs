@@ -420,8 +420,13 @@ six-frame outputs decode to the same 320x240 YUV, SHA-256
 slot cycle; all 28 NAL units still match under the version-SEI rule and the
 1,382,400-byte YUV output has SHA-256
 `d9a3ed5528cc4b0dc5895741e12d7092eb37d47a024aaab3417dce7aecad7e63`.
-TSVC3/TSVC4, the VEPU510 multi-frame hierarchy, and advanced encoder controls
-remain open.
+TSVC3 uses four repeating short-term steps with temporal ids `2, 1, 2, 0`.
+The temporal-zero step walks back to the previous temporal-zero reference,
+which produces a short-term list reorder at the following reference picture.
+Over the same 12-frame fixture its 28 NAL units match and the YUV SHA-256 is
+`7794eb885e695c780f9e98c979677f74bac09a45f80b1deefc7f733f7488f8e2`.
+TSVC4, the VEPU510 multi-frame hierarchy, and advanced encoder controls remain
+open.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older

@@ -996,6 +996,8 @@ struct RefCfg {
 pub(super) struct ReferenceFrameStep {
     pub non_reference: bool,
     pub temporal_id: u8,
+    pub reference_mode: u8,
+    pub reference_argument: i32,
 }
 
 static ENV_STRINGS: OnceLock<Mutex<Vec<CString>>> = OnceLock::new();
@@ -1167,19 +1169,27 @@ fn new_ref_cfg() -> RefCfg {
 
 pub(super) fn reference_frame_pattern(config: *mut c_void) -> Option<Vec<ReferenceFrameStep>> {
     let config = ref_cfg_mut(config)?;
-    if config.st_count != 3
-        || !(0..=7).contains(&config.st[1].temporal_id)
-        || !(0..=7).contains(&config.st[2].temporal_id)
+    let step_count = match config.st_count {
+        3 | 5 => config.st_count as usize,
+        _ => return None,
+    };
+    if config.st[1..step_count]
+        .iter()
+        .any(|step| !(0..=7).contains(&step.temporal_id))
     {
         return None;
     }
     Some(
-        [config.st[1], config.st[2]]
+        config.st[1..step_count]
+            .iter()
+            .copied()
             .map(|step| ReferenceFrameStep {
                 non_reference: step.is_non_ref != 0,
                 temporal_id: step.temporal_id as u8,
+                reference_mode: step.ref_mode as u8,
+                reference_argument: step.ref_arg,
             })
-            .into(),
+            .collect(),
     )
 }
 
@@ -2194,7 +2204,7 @@ mod tests {
             RefStCfg {
                 is_non_ref: 0,
                 temporal_id: 0,
-                ref_mode: 3,
+                ref_mode: 4,
                 ref_arg: 0,
                 repeat: 0,
             },
@@ -2250,14 +2260,14 @@ mod tests {
             RefStCfg {
                 is_non_ref: 1,
                 temporal_id: 1,
-                ref_mode: 2,
+                ref_mode: 0,
                 ref_arg: 0,
                 repeat: 0,
             },
             RefStCfg {
                 is_non_ref: 0,
                 temporal_id: 0,
-                ref_mode: 2,
+                ref_mode: 0,
                 ref_arg: 0,
                 repeat: 0,
             },
@@ -2276,10 +2286,14 @@ mod tests {
                 ReferenceFrameStep {
                     non_reference: true,
                     temporal_id: 1,
+                    reference_mode: 0,
+                    reference_argument: 0,
                 },
                 ReferenceFrameStep {
                     non_reference: false,
                     temporal_id: 0,
+                    reference_mode: 0,
+                    reference_argument: 0,
                 },
             ])
         );
@@ -2287,6 +2301,68 @@ mod tests {
         assert_eq!(
             unsafe { mpp_enc_ref_cfg_deinit(&mut reference_cfg) },
             MPP_OK
+        );
+    }
+
+    #[test]
+    fn reference_cfg_reads_tsvc3_steps() {
+        let mut config = new_ref_cfg();
+        config.st_count = 5;
+        config.st[..5].copy_from_slice(&[
+            RefStCfg {
+                temporal_id: 0,
+                ref_mode: 4,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 2,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                temporal_id: 1,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 2,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                temporal_id: 0,
+                ref_mode: 4,
+                ..RefStCfg::default()
+            },
+        ]);
+        let pattern = reference_frame_pattern((&mut config as *mut RefCfg).cast()).unwrap();
+        assert_eq!(
+            pattern,
+            [
+                ReferenceFrameStep {
+                    non_reference: true,
+                    temporal_id: 2,
+                    reference_mode: 0,
+                    reference_argument: 0,
+                },
+                ReferenceFrameStep {
+                    non_reference: false,
+                    temporal_id: 1,
+                    reference_mode: 0,
+                    reference_argument: 0,
+                },
+                ReferenceFrameStep {
+                    non_reference: true,
+                    temporal_id: 2,
+                    reference_mode: 0,
+                    reference_argument: 0,
+                },
+                ReferenceFrameStep {
+                    non_reference: false,
+                    temporal_id: 0,
+                    reference_mode: 4,
+                    reference_argument: 0,
+                },
+            ]
         );
     }
 

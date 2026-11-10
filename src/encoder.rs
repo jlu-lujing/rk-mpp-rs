@@ -55,6 +55,29 @@ impl RateControlMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShortTermReorder {
+    current_frame_num: u32,
+    reference_frame_num: u32,
+}
+
+impl ShortTermReorder {
+    pub const fn new(current_frame_num: u32, reference_frame_num: u32) -> Self {
+        Self {
+            current_frame_num,
+            reference_frame_num,
+        }
+    }
+
+    pub const fn current_frame_num(self) -> u32 {
+        self.current_frame_num
+    }
+
+    pub const fn reference_frame_num(self) -> u32 {
+        self.reference_frame_num
+    }
+}
+
 /// Bitrate and QP bounds for [`RateControlMode::Cbr`],
 /// [`RateControlMode::Vbr`] and [`RateControlMode::Avbr`].
 ///
@@ -840,10 +863,17 @@ impl Encoder {
         reference_slot: usize,
         non_reference: bool,
         temporal_id: Option<u8>,
+        short_term_reorder: Option<ShortTermReorder>,
     ) -> Result<(), Error> {
         match &mut self.backend {
             Backend::H264Vepu580(encoder) => encoder
-                .force_next_picture_layout(current_slot, reference_slot, non_reference, temporal_id)
+                .force_next_picture_layout(
+                    current_slot,
+                    reference_slot,
+                    non_reference,
+                    temporal_id,
+                    short_term_reorder,
+                )
                 .map_err(Error::Hardware),
             _ => Err(Error::Unsupported(
                 "per-picture reference layout is currently implemented for VEPU580 H.264"

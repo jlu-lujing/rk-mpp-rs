@@ -205,8 +205,10 @@ create/reset/set_cfg_cnt/add_lt/add_st/check 和旧 option trie ABI
 `-g 1:60` 六帧 TSVC2 已映射到 VEPU580 的逐帧槽位、`nal_ref_idc`、
 frame_num、POC 和 type-14 prefix：16 个 NAL 除 version-SEI 文本外逐字节
 一致，六帧 YUV 的 SHA-256 为 `fec69971…64f0a4`；扩到 12 帧后 28 个
-NAL 仍一致，YUV 为 `d9a3ed55…ecad7e63`。TSVC3/TSVC4 与 VEPU510 多帧
-层级仍未映射，高级编码控制也仍待接入。
+NAL 仍一致，YUV 为 `d9a3ed55…ecad7e63`。TSVC3 的 4-step 调度、temporal
+layer 回指和 short-term reorder 也已闭合，12 帧 YUV 为
+`7794eb88…488f8e2`。TSVC4 的 long-term 配置与 VEPU510 多帧层级仍未
+映射，高级编码控制也仍待接入。
 
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test
