@@ -339,7 +339,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [x] W5-5 多实例：H.264 的 CIME extension 与 H.265 tile line buffer 都是
       session-owned；t6 上 1/2/3 线程在 64x64/320x240/640x480 产出一致且
       与 C 参考相同，旧的“每进程单会话”结论已撤回
-- [ ] W5-6 多核 CCU：分发与回退（若该 SoC 无 CCU，则只做单核路径并记录）
+- [x] W5-6 多核 CCU：设备树探测 vdec/venc/jpeg，`BatchServer` 用
+      `SET_SESSION_FD` 把最多 8 个 session 合成一个提交批次；t6 两个独立
+      VEPU2 JPEG session 的批量结果与各自单会话逐字节一致。6.1 内核的批量
+      wait 不填 `mpp_bat_msg.ret`，因此提交后回退到每个真实 session 的 poll；
+      无 CCU 或 `SET_SESSION_FD` 不支持时自动走单会话路径。
 - [~] W5-7 secure/TA：无 TA 可验；服务层现已在任何 secure batch 下发前
       返回 `Unsupported`，但仍需真实 TA/kernel 提供能力探测接口后才能实现安全路径
 - [x] W5-8 错误恢复：HW timeout 进入 close/reopen recovery，legacy VDPU2

@@ -4795,6 +4795,11 @@ fn main() {
                 profile.jpeg_encode,
                 profile.video_post_processor
             );
+            let ccu = soc::CcuTopology::detect();
+            println!(
+                "  CCU: decode={} encode={} jpeg={}",
+                ccu.video_decode, ccu.video_encode, ccu.jpeg_encode
+            );
         }
         Err(error) => println!("  soc detect failed: {error}"),
     }

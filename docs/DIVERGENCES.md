@@ -77,5 +77,6 @@ Dispositions:
 
 | Case | Disposition | Evidence |
 |---|---|---|
-| fences, multi-core CCU, secure mode | NOT IMPLEMENTED | Surveyed in `docs/framework-m10.md`; blocked on this kernel/board or on a TA. |
+| multi-core CCU | **FIXED** | `BatchServer` submits up to eight real sessions with `MPP_CMD_SET_SESSION_FD`. This 6.1 kernel does not fill every batch result slot, so completion falls back to per-session polling after the shared submission. On t6, two independent VEPU2 JPEG sessions produce byte-identical output to their standalone references. |
+| fences, secure mode | NOT IMPLEMENTED | The service protocol has no fence fields and the board has no verifiable TA capability; surveyed in `docs/framework-m10.md`. |
 | rkvenc multi-instance | **FIXED** | H.264 CIME extension lines and H.265 tile line buffers are session-owned. On t6, two and three live VEPU580 H.264 sessions in one process each produced the same stream as the serial run at 64x64, 320x240 and 640x480. The earlier one-session-per-process result came from stale goldens that also failed serially. |

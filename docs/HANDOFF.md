@@ -76,8 +76,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1236 passed / 0 failed / 39 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1240 passed / 0 failed / 39 ignored`，严格 rustdoc
+`1238 passed / 0 failed / 40 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1242 passed / 0 failed / 40 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
@@ -453,7 +453,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 107 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 108 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
@@ -750,10 +750,17 @@ tile 恢复。最后一项用无效 input fd 在 t6 触发真实 `int_sta=0`；�
 清空 tile line buffer、重新执行丢弃预跑，并强制下一帧为带参数集的 IDR，
 输出与全新会话逐字节一致。`board_framework_recovery.sh` 为 4/4。
 
-仍缺：内核协议没有 dma-fence；多核 CCU、secure/TA 无可用接口或设备。
+多核 CCU 也已落地：`CcuTopology` 探测 vdec/venc/jpeg 设备树节点，
+`BatchServer` 用 `SET_SESSION_FD` 把最多 8 个真实 session 合成一个提交链。
+内核 6.1 的批量 wait 不填充每条 `mpp_bat_msg.ret`，所以采用“共享提交、
+逐 session poll”的分层回退。t6 的两条独立 VEPU2 JPEG 640x480 session
+同批编码后，输出分别与各自单会话逐字节一致；无 CCU 或命令不支持时自动
+退回顺序单会话。`scripts/board_framework_ccu.sh` 为 3/3。
+
+仍缺：内核协议没有 dma-fence；secure/TA 无可用接口或设备。
 VP8 与 H.264/HEVC/AV1/VP9 的池化帧已经真正持有 DPB lease；H.265
 保留 DPB 引用，AV1 只复用非参考帧，VP9 保护 hardware previous/last
-colmv。下一步回到多核分发与跨 SoC 验收，不再重复队列或恢复基础设施。
+colmv。下一步转到跨 SoC 验收和其余解码边界，不再重复队列、CCU 或恢复基础设施。
 
 ### 5.6.1 W12 RK3576 bring-up（新板，不是 RK3588 的别名）
 

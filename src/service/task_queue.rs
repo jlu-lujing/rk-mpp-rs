@@ -48,12 +48,10 @@
 //! block is also a reasonable sizing choice), but it is no longer a
 //! correctness requirement.
 //!
-//! Multi-core CCU distribution (W5-6) lives below this layer: the
-//! driver-side batching C performs with `MPP_CMD_SET_SESSION_FD` inside one
-//! batch ioctl (`osal/driver/mpp_server.c`) is a service-protocol feature,
-//! not a queue feature. Our queue hands one job to one worker; the job may
-//! itself use `MppService::submit_batch`, and a per-session preamble is the
-//! hook point for spreading several sessions over cores later.
+//! Multi-core CCU distribution (W5-6) lives below this layer in
+//! [`crate::service::batch`]. The queue hands one job to one worker; callers
+//! that already have several prepared jobs can submit their request batches
+//! through one `SET_SESSION_FD` chain and then poll the real sessions.
 //!
 //! dma-fence (W5-3): the MPP tree this project mirrors (refs/mpp develop)
 //! exposes no fence ioctl at all — see `docs/framework-m10.md` for the

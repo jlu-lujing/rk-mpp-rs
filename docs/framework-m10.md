@@ -1,8 +1,8 @@
 # M10 framework: task queue, buffer pool, dma-fence survey (W5 subset)
 
-Status: the queue, timing/metrics and the pool are implemented and verified on
-host and t6. The fence entry below remains a protocol survey, not an
-implementation.
+Status: the queue, timing/metrics, pool, hardware recovery and cross-session
+CCU submission are implemented and verified on host and t6. The fence entry
+below remains a protocol survey, not an implementation.
 ROADMAP draft entries live at the bottom; the ledger itself is updated by
 whoever lands the board evidence.
 
@@ -138,11 +138,16 @@ state machine change.
   equal to the serial result and the C reference. `task_queue::SessionGate`
   remains available when callers deliberately share one session, but it is
   no longer a correctness requirement.
-- **CCU (W5-6)**: driver-side multi-session batching is `MPP_CMD_SET_SESSION_FD`
-  (`osal/driver/mpp_server.c` batches per-session task lists into one
-  batch ioctl). This belongs to the service layer below the queue; the
-  queue's only future obligation is that one job maps to one session,
-  which holds by construction.
+- **CCU (W5-6)**: `src/service/batch.rs` is the Rust counterpart of
+  `mpp_server.c`. It opens one server descriptor, inserts
+  `MPP_CMD_SET_SESSION_FD` before each task, keeps internal boundaries free of
+  `LAST_MSG`, and marks only the final task as the end of the ioctl chain.
+  The 6.1 kernel's `mpp_collect_msgs()` triggers every external session, but
+  does not populate each `mpp_bat_msg.ret`; completion therefore falls back to
+  the real session's `POLL_HW_FINISH`. `CcuTopology` records the vdec/venc/JPEG
+  device-tree nodes, and callers fall back to sequential jobs when neither the
+  CCU nor `SET_SESSION_FD` is available. On t6, two independent VEPU2 JPEG
+  sessions submitted together match their standalone streams byte for byte.
 - **Secure (W5-7)**: `MPP_FLAGS_SECURE_MODE` (0x10000) is exposed as a
   constant for protocol completeness. Every batch submit rejects a request
   carrying that bit with `ErrorKind::Unsupported` before issuing an ioctl.
@@ -199,6 +204,10 @@ Draft — mirrored here for context; the authoritative ledger is `ROADMAP.md`.
       service protocol expose no fence ioctl (see docs/framework-m10.md
       §3); poll_hw_finish_try ships as the host-visible poll surface,
       kernel errno contract unverified.
+- [x] W5 CCU batching (M10): device-tree CCU detection, one
+      `SET_SESSION_FD` submission for up to eight sessions, and
+      per-session poll fallback on the 6.1 batch-result limitation.
+      Two independent VEPU2 JPEG sessions match standalone output on t6.
 ```
 
 ## 7. Commands for the orchestrator (board)
@@ -219,4 +228,6 @@ ssh -n t6 'export PATH=$HOME/.cargo/bin:$PATH; cd ~/rk-mpp-rs && \
   cargo test --test h264_encoder_hw \
   concurrent_live_sessions_match_the_serial_reference \
   -- --ignored --nocapture --test-threads=1'
+# 6. W5-6 cross-session CCU batch:
+./scripts/board_framework_ccu.sh
 ```

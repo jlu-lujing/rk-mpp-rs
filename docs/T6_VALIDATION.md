@@ -25,10 +25,10 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1236 passed / 0 failed /
-  39 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1240 passed /
-  0 failed / 39 ignored**. `cargo fmt --all --check` and `git diff --check`
+- The current t6 crate `--all-targets` gate is **1238 passed / 0 failed /
+  40 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1242 passed /
+  0 failed / 40 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
   packet metadata **1/1**. VEPU510 H.264/H.265 fixed-QP moving and still
@@ -259,6 +259,18 @@ That recovered IDR is byte-identical to a newly opened encoder. The complete
 `scripts/board_framework_recovery.sh` gate is **4/4**: two session replacement
 checks, the H.265 tile recovery case, and the real VP8 damaged-packet STATUS
 case.
+
+W5-6 cross-session CCU submission is now board-verified as well. The t6 device
+tree exposes vdec/venc/jpeg `rockchip,ccu` topology, and `BatchServer` emits one
+`SET_SESSION_FD` chain for multiple real session fds. The kernel source's
+`mpp_collect_msgs()` ends a task at the next delimiter and accepts `LAST_MSG`
+only on the final task, so internal tasks are explicitly kept non-final. This
+6.1 driver triggers both sessions but does not fill every `mpp_bat_msg.ret`;
+the Rust path therefore polls each real session after the shared submit.
+`tests/framework_ccu_hw.rs` opens two independent VEPU2 JPEG sessions and
+encodes different 640x480 NV12 pictures through one batch. Both JPEG streams
+match standalone references byte for byte. `scripts/board_framework_ccu.sh`
+passes **3/3** repeated runs.
 
 The previous board disappearance was not thermal: package readings were
 38–39°C. The prior boot log ends with CPU6 soft-lockup and RCU stall while

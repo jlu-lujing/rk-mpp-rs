@@ -7,9 +7,20 @@
 
 use std::fs;
 use std::io;
+use std::path::Path;
 
 pub const COMPATIBLE_PATH: &str = "/proc/device-tree/compatible";
 pub const MODEL_PATH: &str = "/proc/device-tree/model";
+const VDEC_CCU_STATUS_PATH: &str = "/proc/device-tree/rkvdec-ccu/status";
+const VENC_CCU_STATUS_PATH: &str = "/proc/device-tree/rkvenc-ccu/status";
+const VDEC_CCU_PATHS: &[&str] = &[
+    "/proc/device-tree/rkvdec-core@fdc48000/rockchip,ccu",
+    "/proc/device-tree/rkvdec-core@fdc38100/rockchip,ccu",
+];
+const JPEG_CCU_PATHS: &[&str] = &[
+    "/proc/device-tree/jpege-core@fdba0000/rockchip,ccu",
+    "/proc/device-tree/jpege-core@fdba8000/rockchip,ccu",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocId {
@@ -70,6 +81,25 @@ pub struct SocProfile {
     pub video_encode: VideoEncodeHal,
     pub jpeg_encode: JpegEncodeHal,
     pub video_post_processor: VideoPostProcessor,
+}
+
+/// Distributed-core handshake nodes advertised by the board device tree.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CcuTopology {
+    pub video_decode: bool,
+    pub video_encode: bool,
+    pub jpeg_encode: bool,
+}
+
+impl CcuTopology {
+    pub fn detect() -> Self {
+        Self {
+            video_decode: dt_status_enabled(Path::new(VDEC_CCU_STATUS_PATH))
+                || VDEC_CCU_PATHS.iter().any(|path| Path::new(path).exists()),
+            video_encode: dt_status_enabled(Path::new(VENC_CCU_STATUS_PATH)),
+            jpeg_encode: JPEG_CCU_PATHS.iter().any(|path| Path::new(path).exists()),
+        }
+    }
 }
 
 impl SocProfile {
@@ -225,6 +255,18 @@ fn read_dt_string(path: &str) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+fn dt_status_enabled(path: &Path) -> bool {
+    let Ok(bytes) = fs::read(path) else {
+        return false;
+    };
+    matches!(
+        String::from_utf8_lossy(&bytes)
+            .trim_end_matches('\0')
+            .trim(),
+        "okay" | "ok"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +306,19 @@ mod tests {
         let profile = SocProfile::from_device_tree("vendor,mystery\0", "");
         assert_eq!(profile.id, SocId::Unknown);
         assert_eq!(profile.video_decode, VideoDecodeHal::Unknown);
+    }
+
+    #[test]
+    fn device_tree_status_accepts_only_enabled_nodes() {
+        let root = std::env::temp_dir().join(format!("rk-mpp-dt-status-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let okay = root.join("okay");
+        let disabled = root.join("disabled");
+        std::fs::write(&okay, b"okay\0").unwrap();
+        std::fs::write(&disabled, b"disabled\0").unwrap();
+        assert!(dt_status_enabled(&okay));
+        assert!(!dt_status_enabled(&disabled));
+        assert!(!dt_status_enabled(&root.join("missing")));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

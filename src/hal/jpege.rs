@@ -18,8 +18,9 @@
 use std::io;
 use std::ops::Range;
 
+use crate::service::batch::{BatchJob, BatchServer};
 use crate::service::dma_heap::DmaBuf;
-use crate::service::soc::{require_jpeg_encode, JpegEncodeHal};
+use crate::service::soc::{require_jpeg_encode, CcuTopology, JpegEncodeHal};
 use crate::service::{Batch, Client, MppBatCmd, MppService, RegOffsetInfo};
 
 use super::jpege_tables as tables;
@@ -821,6 +822,16 @@ pub struct EncodedJpeg {
     pub packets: Vec<Range<usize>>,
 }
 
+/// Two independently owned JPEG sessions submitted through one CCU batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchEncodedJpeg {
+    pub left: EncodedJpeg,
+    pub right: EncodedJpeg,
+    /// False when the kernel lacks `SET_SESSION_FD`; both sessions were then
+    /// encoded through the ordinary single-session path.
+    pub batched: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct RegisterFile {
     pub words: [u32; REG_COUNT],
@@ -833,6 +844,13 @@ pub struct Vepu2Jpeg {
     input: Option<DmaBuf>,
     output: Option<DmaBuf>,
     scratch: Vec<DmaBuf>,
+}
+
+#[derive(Debug)]
+struct PreparedSingleJob {
+    registers: RegisterFile,
+    config: EncoderConfig,
+    prepared_len: usize,
 }
 
 impl Vepu2Jpeg {
@@ -1011,6 +1029,178 @@ impl Vepu2Jpeg {
             bytes: result,
             packets,
         })
+    }
+
+    /// Encode on two independent VEPU2 sessions with one CCU batch. If the
+    /// kernel does not expose `SET_SESSION_FD`, both jobs run sequentially and
+    /// `BatchEncodedJpeg::batched` is false.
+    pub fn encode_fd_pair(
+        left: &mut Self,
+        left_input_fd: i32,
+        left_config: EncoderConfig,
+        right: &mut Self,
+        right_input_fd: i32,
+        right_config: EncoderConfig,
+    ) -> Result<BatchEncodedJpeg, String> {
+        validate_config(left_config)?;
+        validate_config(right_config)?;
+        let can_share_batch = CcuTopology::detect().jpeg_encode
+            && left_config.multi_core_plan().is_none()
+            && right_config.multi_core_plan().is_none();
+        let server = if can_share_batch {
+            match BatchServer::open(Client::Vepu2Jpeg as u32) {
+                Ok(server) => Some(server),
+                Err(error) if error.kind() == io::ErrorKind::Unsupported => None,
+                Err(error) => return Err(format!("open JPEG batch server: {error}")),
+            }
+        } else {
+            None
+        };
+        let Some(server) = server else {
+            return Ok(BatchEncodedJpeg {
+                left: left.encode_fd_packets(left_input_fd, left_config)?,
+                right: right.encode_fd_packets(right_input_fd, right_config)?,
+                batched: false,
+            });
+        };
+
+        let mut left_job = left.prepare_single_job(left_input_fd, left_config)?;
+        let mut right_job = right.prepare_single_job(right_input_fd, right_config)?;
+        let mut left_batch = left_job.batch();
+        let mut right_batch = right_job.batch();
+        let mut jobs = [
+            BatchJob {
+                session: &mut left.svc,
+                batch: &mut left_batch,
+            },
+            BatchJob {
+                session: &mut right.svc,
+                batch: &mut right_batch,
+            },
+        ];
+        let submission = server.submit(&mut jobs);
+        drop(jobs);
+        drop(left_batch);
+        drop(right_batch);
+        let outcomes = match submission {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                let _ = left.svc.restart_after_hardware_error();
+                let _ = right.svc.restart_after_hardware_error();
+                return Err(format!("JPEG two-session CCU batch: {error}"));
+            }
+        };
+
+        let left_result = outcomes[0]
+            .as_ref()
+            .map_err(ToString::to_string)
+            .and_then(|_| left.finish_single_job(left_job));
+        let right_result = outcomes[1]
+            .as_ref()
+            .map_err(ToString::to_string)
+            .and_then(|_| right.finish_single_job(right_job));
+        match (left_result, right_result) {
+            (Ok(left), Ok(right)) => Ok(BatchEncodedJpeg {
+                left,
+                right,
+                batched: true,
+            }),
+            (left, right) => Err(format!(
+                "JPEG CCU pair failed: left={left:?}, right={right:?}"
+            )),
+        }
+    }
+
+    fn prepare_single_job(
+        &mut self,
+        input_fd: i32,
+        config: EncoderConfig,
+    ) -> Result<PreparedSingleJob, String> {
+        if input_fd < 0 {
+            return Err("JPEG input fd is invalid".into());
+        }
+        if config.multi_core_plan().is_some() {
+            return Err("JPEG CCU pair expects one hardware job per session".into());
+        }
+        let prepared = prepare_header(config)?;
+        if self.output.as_ref().map(DmaBuf::len).unwrap_or(0) < config.output_capacity {
+            self.output = Some(
+                DmaBuf::alloc("system", config.output_capacity, false)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        let output = self.output.as_mut().unwrap();
+        output
+            .sync_write_begin()
+            .map_err(|error| format!("output dma-buf write sync: {error}"))?;
+        output.as_mut_slice()[..prepared.bytes.len()].copy_from_slice(&prepared.bytes);
+        output
+            .sync_write_end()
+            .map_err(|error| format!("output dma-buf flush: {error}"))?;
+        let registers = build_registers(
+            input_fd,
+            output.fd(),
+            config,
+            prepared.bytes.len(),
+            &output.as_slice()[..prepared.bytes.len()],
+            &prepared.quant,
+        )?;
+        Ok(PreparedSingleJob {
+            registers,
+            config,
+            prepared_len: prepared.bytes.len(),
+        })
+    }
+
+    fn finish_single_job(&mut self, prepared: PreparedSingleJob) -> Result<EncodedJpeg, String> {
+        let status = prepared.registers.words[IRQ_CONFIG] & STATUS_MASK;
+        if status != 0 {
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "VEPU2 JPEG hardware error 0x{status:02x} (reg109=0x{:08x})",
+                prepared.registers.words[IRQ_CONFIG]
+            ));
+        }
+        let hardware_bits = prepared.registers.words[STREAM_CAPACITY];
+        if hardware_bits & 7 != 0 {
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "VEPU2 JPEG returned a non-byte stream length ({hardware_bits} bits)"
+            ));
+        }
+        let stream_len = (prepared.prepared_len & !7)
+            .checked_add(hardware_bits as usize / 8)
+            .ok_or_else(|| "JPEG stream length overflow".to_string())?;
+        if stream_len <= prepared.prepared_len || stream_len > prepared.config.output_capacity {
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "invalid VEPU2 JPEG output length {stream_len} (header {}, capacity {})",
+                prepared.prepared_len, prepared.config.output_capacity
+            ));
+        }
+        let output = self.output.as_mut().unwrap();
+        output
+            .sync_read_begin()
+            .map_err(|error| format!("output dma-buf invalidate: {error}"))?;
+        let result = output.as_slice()[..stream_len].to_vec();
+        output
+            .sync_read_end()
+            .map_err(|error| format!("output dma-buf read sync end: {error}"))?;
+        let packets = packet_ranges(&result, prepared.config)?;
+        Ok(EncodedJpeg {
+            bytes: result,
+            packets,
+        })
+    }
+}
+
+impl PreparedSingleJob {
+    fn batch(&mut self) -> Batch {
+        let mut batch = Batch::new();
+        batch.reg_write(&self.registers.words, 0);
+        batch.reg_offsets(&self.registers.offsets);
+        batch.reg_read(&mut self.registers.words, 0);
+        batch
     }
 }
 

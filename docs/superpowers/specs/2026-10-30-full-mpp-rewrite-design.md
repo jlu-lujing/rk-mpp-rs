@@ -193,7 +193,7 @@ A→G 合计约 9 万行量级，属数月工程。按上表顺序推进，每�
 | rkv-enc（16）H.264 | 固定 QP / CBR / VBR 逐 NAL 相同；AVBR、ROI/GDR、slice split、>4096 未完 |
 | rkv-enc（16）H.265 | 未开始 |
 | vepu-jpeg（19） | baseline 4:2:0 完成 |
-| framework | 仅同步 submit+poll；异步/fence/多核/secure 未做 |
+| framework | 同步/异步、错误恢复、缓冲池和 CCU 批量提交已完成；fence/secure 受内核/TA 限制 |
 
 整体约五成（按 `ROADMAP.md` 的里程碑工作量估加权）；后续顺序与注意事项见
 `docs/HANDOFF.md`。

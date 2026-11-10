@@ -133,6 +133,15 @@ All complete JPEGs are byte-identical. The 1280x720 boundary is also byte-identi
 Seven alternating whole-process 1080p/qf50 samples had medians of 64.7 ms for
 C and 60.7 ms for Rust; this is a regression guard, not a stable microbenchmark.
 
+The companion W5-6 path batches two *independent encoder sessions*, rather
+than four bands of one picture. `BatchServer` prefixes each session's request
+list with `MPP_CMD_SET_SESSION_FD`, leaves `LAST_MSG` only on the final task,
+and polls each real session after the shared submission. On t6 the two
+640x480 outputs are byte-identical to standalone encodes. This 6.1 kernel
+triggers both sessions but leaves every `mpp_bat_msg.ret` at `EAGAIN`, which
+is why the implementation deliberately separates batched submit from
+per-session completion.
+
 Rotated band plans use the post-rotation MCU grid while reg103's high field
 keeps C's `mcu_hor` value; input offsets run along x and 270-degree bands use
 the reverse order. An explicit split whose balance table makes the final band
