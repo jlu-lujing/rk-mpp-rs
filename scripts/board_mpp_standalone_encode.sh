@@ -144,6 +144,26 @@ if grep -qi rk3588 /proc/device-tree/compatible 2>/dev/null; then
     python3 "$repo/scripts/compare_streams.py" "$vendor" "$standalone"
     decode_and_compare h264dec "$vendor" "$standalone"
     printf 'PASS h264  twelve-frame TSVC3 standalone encoder NAL/reconstruction\n'
+
+    vendor=/tmp/rk_mpp_standalone_encode_h264_tsvc4_vendor12.264
+    standalone=/tmp/rk_mpp_standalone_encode_h264_tsvc4_ours12.264
+    run_encoder_frames "$vendor_lib" "$vendor" 7 26 3:60 12 "$raw_multi"
+    run_encoder_frames "$overlay" "$standalone" 7 26 3:60 12 "$raw_multi"
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$standalone"
+    decode_and_compare h264dec "$vendor" "$standalone"
+    printf 'PASS h264  twelve-frame TSVC4 standalone encoder NAL/reconstruction\n'
+
+    raw_long=/tmp/rk_mpp_standalone_encode_320x240_64.nv12
+    ffmpeg -nostdin -y -hide_banner -loglevel error \
+        -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 64 \
+        -pix_fmt nv12 -f rawvideo "$raw_long"
+    vendor=/tmp/rk_mpp_standalone_encode_h264_tsvc4_gop64_vendor.264
+    standalone=/tmp/rk_mpp_standalone_encode_h264_tsvc4_gop64_ours.264
+    run_encoder_frames "$vendor_lib" "$vendor" 7 26 3:60 64 "$raw_long"
+    run_encoder_frames "$overlay" "$standalone" 7 26 3:60 64 "$raw_long"
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$standalone"
+    decode_and_compare h264dec "$vendor" "$standalone"
+    printf 'PASS h264  TSVC4 64-frame IGOP restart NAL/reconstruction\n'
 else
-    printf 'SKIP h264  TSVC2/TSVC3 (this SoC uses the VEPU510 encoder path)\n'
+    printf 'SKIP h264  TSVC2/TSVC3/TSVC4 (this SoC uses the VEPU510 encoder path)\n'
 fi

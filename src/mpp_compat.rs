@@ -54,6 +54,7 @@ const MPP_SET_OUTPUT_TIMEOUT: c_int = 2_097_159;
 
 const CONTEXT_MAGIC: u64 = 0x4d50_5052_5343_5458;
 const REF_TO_PREV_REF_FRM: u8 = 0;
+const REF_TO_PREV_LT_REF: u8 = 2;
 const REF_TO_PREV_INTRA: u8 = 3;
 const REF_TO_TEMPORAL_LAYER: u8 = 4;
 const RECONSTRUCTION_SLOTS: usize = 3;
@@ -137,6 +138,7 @@ struct ActiveReference {
     temporal_id: u8,
     frame_num: u32,
     intra: bool,
+    long_term: Option<u32>,
 }
 
 struct ReferenceSchedule {
@@ -145,6 +147,8 @@ struct ReferenceSchedule {
     frame_num: u32,
     last_non_reference: bool,
     active: Vec<ActiveReference>,
+    long_term: Option<standalone::LongTermReferenceConfig>,
+    igop: usize,
 }
 
 struct PendingReferenceFrame {
@@ -152,47 +156,67 @@ struct PendingReferenceFrame {
     reference_slot: usize,
     non_reference: bool,
     temporal_id: u8,
-    short_term_reorder: Option<encoder::ShortTermReorder>,
+    reference_reorder: Option<encoder::ReferenceReorder>,
+    current_long_term_index: Option<u32>,
     commit: Option<ActiveReference>,
 }
 
 impl ReferenceSchedule {
-    fn new(steps: Vec<standalone::ReferenceFrameStep>) -> Self {
+    fn new(
+        steps: Vec<standalone::ReferenceFrameStep>,
+        long_term: Option<standalone::LongTermReferenceConfig>,
+        igop: usize,
+    ) -> Self {
         Self {
             steps,
             next_sequence: 0,
             frame_num: 0,
             last_non_reference: false,
             active: Vec::with_capacity(REFERENCE_DPB_SIZE),
+            long_term,
+            igop: igop.max(1),
         }
     }
 
     fn prepare(&self) -> Result<PendingReferenceFrame, String> {
         let sequence = self.next_sequence;
         if sequence == 0 {
+            let current_long_term_index = self.long_term.map(|long_term| long_term.index);
             return Ok(PendingReferenceFrame {
                 current_slot: 0,
                 reference_slot: 0,
                 non_reference: false,
                 temporal_id: 0,
-                short_term_reorder: None,
+                reference_reorder: None,
+                current_long_term_index,
                 commit: Some(ActiveReference {
                     sequence,
                     slot: 0,
                     temporal_id: 0,
                     frame_num: 0,
                     intra: true,
+                    long_term: current_long_term_index,
                 }),
             });
         }
         if self.steps.is_empty() {
             return Err("H.264 reference schedule has no short-term steps".into());
         }
-        let step = self
+        let mut step = self
             .steps
             .get((sequence - 1) % self.steps.len())
             .copied()
             .ok_or_else(|| "H.264 reference schedule has no short-term steps".to_string())?;
+        let current_long_term_index = self
+            .is_long_term_frame(sequence)
+            .then(|| self.long_term.map(|long_term| long_term.index))
+            .flatten();
+        if let (Some(long_term), Some(_)) = (self.long_term, current_long_term_index) {
+            step.non_reference = false;
+            step.temporal_id = 0;
+            step.reference_mode = long_term.reference_mode;
+            step.reference_argument = long_term.reference_argument;
+        }
         let frame_num = if !step.non_reference && self.last_non_reference {
             self.frame_num
         } else {
@@ -206,27 +230,51 @@ impl ReferenceSchedule {
             .ok_or_else(|| {
                 "H.264 reference schedule has no free reconstruction slot".to_string()
             })?;
-        let latest = self
-            .active
-            .iter()
-            .max_by_key(|reference| reference.sequence)
-            .ok_or_else(|| "H.264 reference schedule has no active reference".to_string())?;
-        let short_term_reorder = (reference.sequence != latest.sequence)
-            .then(|| encoder::ShortTermReorder::new(frame_num, reference.frame_num));
+        let reference_reorder = if let Some(long_term_pic_num) = reference.long_term {
+            self.active
+                .iter()
+                .any(|active| active.long_term.is_none())
+                .then_some(encoder::ReferenceReorder::LongTerm { long_term_pic_num })
+        } else {
+            let latest_short_term = self
+                .active
+                .iter()
+                .filter(|active| active.long_term.is_none())
+                .max_by_key(|active| active.sequence)
+                .ok_or_else(|| {
+                    "H.264 reference schedule has no active short-term reference".to_string()
+                })?;
+            (reference.sequence != latest_short_term.sequence).then(|| {
+                encoder::ReferenceReorder::ShortTerm(encoder::ShortTermReorder::new(
+                    frame_num,
+                    reference.frame_num,
+                ))
+            })
+        };
         let commit = (!step.non_reference).then_some(ActiveReference {
             sequence,
             slot: current_slot,
             temporal_id: step.temporal_id,
             frame_num,
             intra: false,
+            long_term: current_long_term_index,
         });
         Ok(PendingReferenceFrame {
             current_slot,
             reference_slot: reference.slot,
             non_reference: step.non_reference,
             temporal_id: step.temporal_id,
-            short_term_reorder,
+            reference_reorder,
+            current_long_term_index,
             commit,
+        })
+    }
+
+    fn is_long_term_frame(&self, sequence: usize) -> bool {
+        self.long_term.is_some_and(|long_term| {
+            long_term.gap != 0
+                && sequence >= long_term.delay
+                && (sequence - long_term.delay) % long_term.gap == 0
         })
     }
 
@@ -238,6 +286,11 @@ impl ReferenceSchedule {
             REF_TO_PREV_REF_FRM => self
                 .active
                 .iter()
+                .max_by_key(|reference| reference.sequence),
+            REF_TO_PREV_LT_REF => self
+                .active
+                .iter()
+                .filter(|reference| reference.long_term.is_some())
                 .max_by_key(|reference| reference.sequence),
             REF_TO_PREV_INTRA => self.active.iter().find(|reference| reference.intra),
             REF_TO_TEMPORAL_LAYER => {
@@ -262,14 +315,26 @@ impl ReferenceSchedule {
         self.next_sequence += 1;
         if let Some(reference) = frame.commit {
             self.frame_num = reference.frame_num;
+            if let Some(long_term_index) = reference.long_term {
+                self.active
+                    .retain(|active| active.long_term != Some(long_term_index));
+            }
             self.active.push(reference);
             while self.active.len() > REFERENCE_DPB_SIZE {
                 let oldest = self
                     .active
                     .iter()
                     .enumerate()
+                    .filter(|(_, reference)| reference.long_term.is_none())
                     .min_by_key(|(_, reference)| reference.sequence)
                     .map(|(index, _)| index)
+                    .or_else(|| {
+                        self.active
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, reference)| reference.sequence)
+                            .map(|(index, _)| index)
+                    })
                     .expect("non-empty reference DPB");
                 self.active.remove(oldest);
             }
@@ -277,6 +342,12 @@ impl ReferenceSchedule {
             self.frame_num = self.frame_num.saturating_add(1);
         }
         self.last_non_reference = frame.non_reference;
+        if self.next_sequence >= self.igop {
+            self.next_sequence = 0;
+            self.frame_num = 0;
+            self.last_non_reference = false;
+            self.active.clear();
+        }
     }
 }
 
@@ -493,7 +564,8 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             frame.reference_slot,
             frame.non_reference,
             Some(frame.temporal_id),
-            frame.short_term_reorder,
+            frame.reference_reorder,
+            frame.current_long_term_index,
         ) {
             eprintln!("rk-mpp-rs mpp: reference layout rejected: {error}");
             return MPP_NOK;
@@ -622,6 +694,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             }
             context.encoder_ref_pattern =
                 standalone::encoder_cfg_ref_pattern(param).unwrap_or_default();
+            let encoder_ref_long_term = standalone::encoder_cfg_long_term_config(param);
             context.encoder_ref_schedule = None;
             let mut config = match unsafe { cfg::encoder_config(param) } {
                 Ok(config) => config,
@@ -673,8 +746,11 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                         }
                     }
                     if !context.encoder_ref_pattern.is_empty() {
-                        context.encoder_ref_schedule =
-                            Some(ReferenceSchedule::new(context.encoder_ref_pattern.clone()));
+                        context.encoder_ref_schedule = Some(ReferenceSchedule::new(
+                            context.encoder_ref_pattern.clone(),
+                            encoder_ref_long_term,
+                            config.gop() as usize,
+                        ));
                     }
                     context.encoder = Some(encoder);
                     MPP_OK
@@ -698,8 +774,18 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             }
             context.encoder_ref_pattern =
                 standalone::reference_frame_pattern(param).unwrap_or_default();
-            context.encoder_ref_schedule = (!context.encoder_ref_pattern.is_empty())
-                .then(|| ReferenceSchedule::new(context.encoder_ref_pattern.clone()));
+            let encoder_ref_long_term = standalone::reference_long_term_config(param);
+            context.encoder_ref_schedule = (!context.encoder_ref_pattern.is_empty()).then(|| {
+                let igop = context
+                    .encoder
+                    .as_ref()
+                    .map_or(60, |encoder| encoder.config().gop() as usize);
+                ReferenceSchedule::new(
+                    context.encoder_ref_pattern.clone(),
+                    encoder_ref_long_term,
+                    igop,
+                )
+            });
             MPP_OK
         }
         MPP_ENC_GET_HDR_SYNC => {
@@ -844,12 +930,16 @@ mod tests {
 
     #[test]
     fn tsvc3_schedule_tracks_references_and_reorders_temporal_zero() {
-        let mut schedule = ReferenceSchedule::new(vec![
-            step(true, 2, REF_TO_PREV_REF_FRM),
-            step(false, 1, REF_TO_PREV_REF_FRM),
-            step(true, 2, REF_TO_PREV_REF_FRM),
-            step(false, 0, REF_TO_TEMPORAL_LAYER),
-        ]);
+        let mut schedule = ReferenceSchedule::new(
+            vec![
+                step(true, 2, REF_TO_PREV_REF_FRM),
+                step(false, 1, REF_TO_PREV_REF_FRM),
+                step(true, 2, REF_TO_PREV_REF_FRM),
+                step(false, 0, REF_TO_TEMPORAL_LAYER),
+            ],
+            None,
+            60,
+        );
         let mut frames = Vec::new();
         for _ in 0..9 {
             let frame = schedule.prepare().unwrap();
@@ -858,7 +948,7 @@ mod tests {
                 frame.reference_slot,
                 frame.non_reference,
                 frame.temporal_id,
-                frame.short_term_reorder,
+                frame.reference_reorder,
             ));
             schedule.commit(frame);
         }
@@ -869,15 +959,146 @@ mod tests {
                 (1, 0, true, 2, None),
                 (1, 0, false, 1, None),
                 (2, 1, true, 2, None),
-                (2, 0, false, 0, Some(encoder::ShortTermReorder::new(2, 0))),
+                (
+                    2,
+                    0,
+                    false,
+                    0,
+                    Some(encoder::ReferenceReorder::ShortTerm(
+                        encoder::ShortTermReorder::new(2, 0),
+                    )),
+                ),
                 (0, 2, true, 2, None),
                 (0, 2, false, 1, None),
                 (1, 0, true, 2, None),
-                (1, 2, false, 0, Some(encoder::ShortTermReorder::new(4, 2))),
+                (
+                    1,
+                    2,
+                    false,
+                    0,
+                    Some(encoder::ReferenceReorder::ShortTerm(
+                        encoder::ShortTermReorder::new(4, 2),
+                    )),
+                ),
             ]
         );
         assert_eq!(schedule.frame_num, 4);
         assert_eq!(schedule.next_sequence, 9);
+    }
+
+    #[test]
+    fn tsvc4_schedule_replaces_the_long_term_reference_every_eight_frames() {
+        let mut schedule = ReferenceSchedule::new(
+            vec![
+                step(true, 3, REF_TO_PREV_REF_FRM),
+                step(false, 2, REF_TO_PREV_REF_FRM),
+                step(true, 3, REF_TO_PREV_REF_FRM),
+                step(false, 1, REF_TO_PREV_LT_REF),
+                step(true, 3, REF_TO_PREV_REF_FRM),
+                step(false, 2, REF_TO_PREV_REF_FRM),
+                step(true, 3, REF_TO_PREV_REF_FRM),
+                step(false, 0, REF_TO_TEMPORAL_LAYER),
+            ],
+            Some(standalone::LongTermReferenceConfig {
+                index: 0,
+                gap: 8,
+                delay: 0,
+                reference_mode: REF_TO_PREV_LT_REF,
+                reference_argument: 0,
+            }),
+            60,
+        );
+        let mut frames = Vec::new();
+        for _ in 0..12 {
+            let frame = schedule.prepare().unwrap();
+            frames.push((
+                frame.current_slot,
+                frame.reference_slot,
+                frame.non_reference,
+                frame.temporal_id,
+                frame.reference_reorder,
+                frame.current_long_term_index,
+            ));
+            schedule.commit(frame);
+        }
+        assert_eq!(
+            frames,
+            [
+                (0, 0, false, 0, None, Some(0)),
+                (1, 0, true, 3, None, None),
+                (1, 0, false, 2, None, None),
+                (2, 1, true, 3, None, None),
+                (
+                    2,
+                    0,
+                    false,
+                    1,
+                    Some(encoder::ReferenceReorder::LongTerm {
+                        long_term_pic_num: 0
+                    }),
+                    None
+                ),
+                (1, 2, true, 3, None, None),
+                (1, 2, false, 2, None, None),
+                (2, 1, true, 3, None, None),
+                (
+                    2,
+                    0,
+                    false,
+                    0,
+                    Some(encoder::ReferenceReorder::LongTerm {
+                        long_term_pic_num: 0
+                    }),
+                    Some(0)
+                ),
+                (
+                    0,
+                    2,
+                    true,
+                    3,
+                    Some(encoder::ReferenceReorder::LongTerm {
+                        long_term_pic_num: 0
+                    }),
+                    None
+                ),
+                (
+                    0,
+                    2,
+                    false,
+                    2,
+                    Some(encoder::ReferenceReorder::LongTerm {
+                        long_term_pic_num: 0
+                    }),
+                    None
+                ),
+                (1, 0, true, 3, None, None),
+            ]
+        );
+        assert_eq!(schedule.frame_num, 6);
+        assert_eq!(schedule.active[0].sequence, 8);
+        assert_eq!(schedule.active[1].sequence, 10);
+    }
+
+    #[test]
+    fn reference_schedule_restarts_at_the_igop_boundary() {
+        let mut schedule = ReferenceSchedule::new(
+            vec![
+                step(true, 1, REF_TO_PREV_REF_FRM),
+                step(false, 0, REF_TO_PREV_REF_FRM),
+            ],
+            None,
+            3,
+        );
+        for _ in 0..3 {
+            let frame = schedule.prepare().unwrap();
+            schedule.commit(frame);
+        }
+        assert_eq!(schedule.next_sequence, 0);
+        assert!(schedule.active.is_empty());
+        let idr = schedule.prepare().unwrap();
+        assert_eq!(idr.current_slot, 0);
+        assert!(!idr.non_reference);
+        assert_eq!(idr.current_long_term_index, None);
     }
 }
 

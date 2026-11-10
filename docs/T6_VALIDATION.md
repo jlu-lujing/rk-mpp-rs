@@ -425,8 +425,16 @@ The temporal-zero step walks back to the previous temporal-zero reference,
 which produces a short-term list reorder at the following reference picture.
 Over the same 12-frame fixture its 28 NAL units match and the YUV SHA-256 is
 `7794eb885e695c780f9e98c979677f74bac09a45f80b1deefc7f733f7488f8e2`.
-TSVC4, the VEPU510 multi-frame hierarchy, and advanced encoder controls remain
-open.
+TSVC4 adds a one-frame long-term reference. The opening IDR sets
+`long_term_reference_flag`, frame 8 replaces LT0 with MMCO6, and later pictures
+reorder the P list to `long_term_pic_num=0`. Its 12-frame stream again has 28
+matching NAL units and decoded YUV SHA-256
+`33923dd26ff83f4d2d59d380b372614875bd2e7f58d281f5bce062eb8db1186a`.
+A 64-frame run crosses `gop=60`: the second IDR re-emits SPS/PPS and both SEIs,
+the reference schedule clears, and all 136 NAL units match. Its 7,372,800-byte
+YUV output has SHA-256
+`a3ad1bc65ac3ee66c2014ef3e2075722c5dc7aec77b29ec6568155f0f35a0593`.
+The VEPU510 multi-frame hierarchy and advanced encoder controls remain open.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older

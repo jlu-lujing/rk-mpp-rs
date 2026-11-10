@@ -1000,6 +1000,15 @@ pub(super) struct ReferenceFrameStep {
     pub reference_argument: i32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct LongTermReferenceConfig {
+    pub index: u32,
+    pub gap: usize,
+    pub delay: usize,
+    pub reference_mode: u8,
+    pub reference_argument: i32,
+}
+
 static ENV_STRINGS: OnceLock<Mutex<Vec<CString>>> = OnceLock::new();
 static SOC_NAME: OnceLock<CString> = OnceLock::new();
 static OBJ_DEFS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
@@ -1170,7 +1179,7 @@ fn new_ref_cfg() -> RefCfg {
 pub(super) fn reference_frame_pattern(config: *mut c_void) -> Option<Vec<ReferenceFrameStep>> {
     let config = ref_cfg_mut(config)?;
     let step_count = match config.st_count {
-        3 | 5 => config.st_count as usize,
+        3 | 5 | 9 => config.st_count as usize,
         _ => return None,
     };
     if config.st[1..step_count]
@@ -1193,14 +1202,45 @@ pub(super) fn reference_frame_pattern(config: *mut c_void) -> Option<Vec<Referen
     )
 }
 
+pub(super) fn reference_long_term_config(config: *mut c_void) -> Option<LongTermReferenceConfig> {
+    let config = ref_cfg_mut(config)?;
+    match config.lt_count {
+        0 => None,
+        1 => {
+            let long_term = config.lt[0];
+            (long_term.lt_idx >= 0
+                && long_term.temporal_id == 0
+                && long_term.lt_gap >= 0
+                && long_term.lt_delay >= 0)
+                .then_some(LongTermReferenceConfig {
+                    index: long_term.lt_idx as u32,
+                    gap: long_term.lt_gap as usize,
+                    delay: long_term.lt_delay as usize,
+                    reference_mode: long_term.ref_mode as u8,
+                    reference_argument: long_term.ref_arg,
+                })
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn encoder_cfg_ref_pattern(config: *mut c_void) -> Option<Vec<ReferenceFrameStep>> {
+    let reference = encoder_cfg_reference(config)?;
+    reference_frame_pattern(reference)
+}
+
+pub(super) fn encoder_cfg_long_term_config(config: *mut c_void) -> Option<LongTermReferenceConfig> {
+    let reference = encoder_cfg_reference(config)?;
+    reference_long_term_config(reference)
+}
+
+fn encoder_cfg_reference(config: *mut c_void) -> Option<*mut c_void> {
     let config = enc_cfg_ref(config)?;
     let key = c"rc:ref_cfg";
-    let reference = match config.values.get(key)? {
-        ConfigValue::Ptr(pointer) => *pointer as *mut c_void,
+    match config.values.get(key)? {
+        ConfigValue::Ptr(pointer) => Some(*pointer as *mut c_void),
         _ => return None,
-    };
-    reference_frame_pattern(reference)
+    }
 }
 
 fn dec_cfg_ref(config: *mut c_void) -> Option<&'static DecCfg> {
@@ -2363,6 +2403,83 @@ mod tests {
                     reference_argument: 0,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn reference_cfg_reads_tsvc4_and_long_term() {
+        let mut config = new_ref_cfg();
+        config.lt_count = 1;
+        config.lt[0] = RefLtCfg {
+            lt_idx: 0,
+            temporal_id: 0,
+            ref_mode: 2,
+            ref_arg: 0,
+            lt_gap: 8,
+            lt_delay: 0,
+        };
+        config.st_count = 9;
+        config.st[..9].copy_from_slice(&[
+            RefStCfg {
+                temporal_id: 0,
+                ref_mode: 4,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 3,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                temporal_id: 2,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 3,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                temporal_id: 1,
+                ref_mode: 2,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 3,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                temporal_id: 2,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 3,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                temporal_id: 0,
+                ref_mode: 4,
+                ..RefStCfg::default()
+            },
+        ]);
+        let pointer = (&mut config as *mut RefCfg).cast();
+        let pattern = reference_frame_pattern(pointer).unwrap();
+        assert_eq!(pattern.len(), 8);
+        assert_eq!(pattern[0].temporal_id, 3);
+        assert!(pattern[0].non_reference);
+        assert_eq!(pattern[3].reference_mode, 2);
+        assert_eq!(pattern[7].reference_mode, 4);
+        assert_eq!(
+            reference_long_term_config(pointer),
+            Some(LongTermReferenceConfig {
+                index: 0,
+                gap: 8,
+                delay: 0,
+                reference_mode: 2,
+                reference_argument: 0,
+            })
         );
     }
 

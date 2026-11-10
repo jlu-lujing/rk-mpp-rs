@@ -207,8 +207,11 @@ frame_num、POC 和 type-14 prefix：16 个 NAL 除 version-SEI 文本外逐字�
 一致，六帧 YUV 的 SHA-256 为 `fec69971…64f0a4`；扩到 12 帧后 28 个
 NAL 仍一致，YUV 为 `d9a3ed55…ecad7e63`。TSVC3 的 4-step 调度、temporal
 layer 回指和 short-term reorder 也已闭合，12 帧 YUV 为
-`7794eb88…488f8e2`。TSVC4 的 long-term 配置与 VEPU510 多帧层级仍未
-映射，高级编码控制也仍待接入。
+`7794eb88…488f8e2`。TSVC4 的 LT0 周期替换、LT reorder、IDR
+`long_term_reference_flag` 和 P 帧 MMCO6 也已闭合，12 帧 YUV 为
+`33923dd2…d1186a`；64 帧跨 `gop=60` 的 136 NAL 也一致，包含第二个
+SPS/PPS/SEI IDR 前缀和参考状态重置，YUV 为 `a3ad1bc6…35a0593`。
+VEPU510 多帧层级仍未映射，高级编码控制也仍待接入。
 
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test

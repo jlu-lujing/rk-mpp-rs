@@ -78,6 +78,12 @@ impl ShortTermReorder {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceReorder {
+    ShortTerm(ShortTermReorder),
+    LongTerm { long_term_pic_num: u32 },
+}
+
 /// Bitrate and QP bounds for [`RateControlMode::Cbr`],
 /// [`RateControlMode::Vbr`] and [`RateControlMode::Avbr`].
 ///
@@ -863,7 +869,8 @@ impl Encoder {
         reference_slot: usize,
         non_reference: bool,
         temporal_id: Option<u8>,
-        short_term_reorder: Option<ShortTermReorder>,
+        reference_reorder: Option<ReferenceReorder>,
+        current_long_term_index: Option<u32>,
     ) -> Result<(), Error> {
         match &mut self.backend {
             Backend::H264Vepu580(encoder) => encoder
@@ -872,7 +879,8 @@ impl Encoder {
                     reference_slot,
                     non_reference,
                     temporal_id,
-                    short_term_reorder,
+                    reference_reorder,
+                    current_long_term_index,
                 )
                 .map_err(Error::Hardware),
             _ => Err(Error::Unsupported(

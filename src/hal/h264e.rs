@@ -377,6 +377,7 @@ pub struct Job<'a> {
     pub save_pass1: bool,
     pub use_pass1: bool,
     pub non_reference: bool,
+    pub current_long_term: bool,
     pub pass1_fd: i32,
 }
 
@@ -707,7 +708,8 @@ pub struct Vepu580H264 {
     next_reference_override: Option<usize>,
     next_non_reference_override: Option<bool>,
     next_prefix_temporal_id_override: Option<u8>,
-    next_short_term_reorder_override: Option<crate::encoder::ShortTermReorder>,
+    next_reference_reorder_override: Option<crate::encoder::ReferenceReorder>,
+    next_current_long_term_override: Option<u32>,
     last_non_reference: bool,
     /// The rate-control model, present only in CBR mode.
     rc: Option<rc_model::Model>,
@@ -842,7 +844,8 @@ impl Vepu580H264 {
             next_reference_override: None,
             next_non_reference_override: None,
             next_prefix_temporal_id_override: None,
-            next_short_term_reorder_override: None,
+            next_reference_reorder_override: None,
+            next_current_long_term_override: None,
             last_non_reference: false,
             tune: SceneTune::new(false),
             input_fd_override: None,
@@ -876,7 +879,8 @@ impl Vepu580H264 {
         reference_slot: usize,
         non_reference: bool,
         temporal_id: Option<u8>,
-        short_term_reorder: Option<crate::encoder::ShortTermReorder>,
+        reference_reorder: Option<crate::encoder::ReferenceReorder>,
+        current_long_term_index: Option<u32>,
     ) -> Result<(), String> {
         if current_slot >= self.recons.len() || reference_slot >= self.recons.len() {
             return Err("H.264 picture layout uses a slot outside the reconstruction pool".into());
@@ -888,7 +892,8 @@ impl Vepu580H264 {
         self.next_reference_override = Some(reference_slot);
         self.next_non_reference_override = Some(non_reference);
         self.next_prefix_temporal_id_override = temporal_id;
-        self.next_short_term_reorder_override = short_term_reorder;
+        self.next_reference_reorder_override = reference_reorder;
+        self.next_current_long_term_override = current_long_term_index;
         Ok(())
     }
 
@@ -1014,7 +1019,8 @@ impl Vepu580H264 {
         use_pass1: bool,
         non_reference: bool,
         reference_pattern_active: bool,
-        short_term_reorder: Option<crate::encoder::ShortTermReorder>,
+        reference_reorder: Option<crate::encoder::ReferenceReorder>,
+        current_long_term_index: Option<u32>,
         input_fd: i32,
     ) -> Result<(Vec<u8>, Vec<usize>, Statistics), String> {
         let pass1_fd = self.pass1.as_ref().map_or(-1, |b| b.fd());
@@ -1044,6 +1050,7 @@ impl Vepu580H264 {
             save_pass1,
             use_pass1,
             non_reference,
+            current_long_term: current_long_term_index.is_some(),
             pass1_fd,
         };
         if self.config.gdr && state.is_i_refresh {
@@ -1149,13 +1156,14 @@ impl Vepu580H264 {
                 &state,
                 &self.parameter_sets()?,
             )?;
-        } else if let Some(reorder) = short_term_reorder {
+        } else if reference_reorder.is_some() || current_long_term_index.is_some() {
             payload = amend_reference_slice(
                 payload,
                 &self.config,
                 &state,
                 &self.parameter_sets()?,
-                ReferenceSliceReorder::ShortTerm(reorder),
+                reference_reorder,
+                current_long_term_index,
             )?;
         }
 
@@ -1180,7 +1188,8 @@ impl Vepu580H264 {
         let previous_slot = self.slot;
         let non_reference = self.next_non_reference_override.take().unwrap_or(false);
         let prefix_temporal_id = self.next_prefix_temporal_id_override.take();
-        let short_term_reorder = self.next_short_term_reorder_override.take();
+        let reference_reorder = self.next_reference_reorder_override.take();
+        let current_long_term = self.next_current_long_term_override.take();
         if self.state.index != 0 || self.started {
             self.state = next_picture_state(
                 self.state,
@@ -1271,6 +1280,7 @@ impl Vepu580H264 {
                 false,
                 false,
                 None,
+                None,
                 input_fd,
             )?;
             true
@@ -1299,7 +1309,8 @@ impl Vepu580H264 {
                 use_pass1,
                 non_reference,
                 prefix_temporal_id.is_some(),
-                short_term_reorder,
+                reference_reorder,
+                current_long_term,
                 input_fd,
             )?;
             let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as u32;
@@ -1392,12 +1403,8 @@ impl Vepu580H264 {
         let headers = if disposition != PictureDisposition::Accepted {
             Vec::new()
         } else if state.is_idr {
-            let mut out = if self.hdr_added {
-                Vec::new()
-            } else {
-                self.hdr_added = true;
-                self.parameter_sets()?
-            };
+            let mut out = self.parameter_sets()?;
+            self.hdr_added = true;
             out.extend(self.idr_seis()?);
             out
         } else if sweep_open {
@@ -2729,7 +2736,7 @@ impl RegisterFile {
         // the IDR's `long_term_reference_flag` in dec_ref_pic_marking.
         self.set(
             &vepu580_regs::H264_SYNT_REFM0_LTRF_FLG,
-            u32::from(state.is_idr && config.smart_p_vgop().is_some()),
+            u32::from(state.is_idr && (config.smart_p_vgop().is_some() || job.current_long_term)),
         )?;
         // `setup_vepu580_codec` takes the NAL header from the slice: an I slice
         // is type 5 with nal_ref_idc 3, a P slice is type 1 with 2. Without this
@@ -3324,24 +3331,22 @@ fn logical_output_size(config: &EncoderConfig) -> Result<usize, String> {
 /// points later P pictures at long-term index zero. The hardware's reference
 /// address can be redirected by the HAL, but those slice-header bits are a
 /// software amendment, so replay them here for the official MPP object path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReferenceSliceReorder {
-    DefaultLongTerm,
-    ShortTerm(crate::encoder::ShortTermReorder),
-}
-
 fn amend_default_reference_slice(
     payload: Vec<u8>,
     config: &EncoderConfig,
     state: &FrameState,
     parameter_sets: &[u8],
 ) -> Result<Vec<u8>, String> {
+    let reorder = (state.index >= 2).then_some(crate::encoder::ReferenceReorder::LongTerm {
+        long_term_pic_num: 2,
+    });
     amend_reference_slice(
         payload,
         config,
         state,
         parameter_sets,
-        ReferenceSliceReorder::DefaultLongTerm,
+        reorder,
+        state.is_idr.then_some(0),
     )
 }
 
@@ -3350,7 +3355,8 @@ fn amend_reference_slice(
     config: &EncoderConfig,
     state: &FrameState,
     parameter_sets: &[u8],
-    reorder: ReferenceSliceReorder,
+    reorder: Option<crate::encoder::ReferenceReorder>,
+    current_long_term_index: Option<u32>,
 ) -> Result<Vec<u8>, String> {
     if config.entropy_coding {
         return Ok(payload);
@@ -3429,35 +3435,37 @@ fn amend_reference_slice(
             put_ue(&mut bits, header.ref_idx_l0_active);
         }
         match reorder {
-            ReferenceSliceReorder::DefaultLongTerm => {
-                let reorder_to_long_term = state.index >= 2;
-                put_bits(&mut bits, u32::from(reorder_to_long_term), 1);
-                if reorder_to_long_term {
-                    put_ue(&mut bits, 2); // long_term_pic_num
-                    put_ue(&mut bits, 0);
-                    put_ue(&mut bits, 3); // end of ref_pic_list_modification
-                }
-            }
-            ReferenceSliceReorder::ShortTerm(order) => {
+            Some(reorder) => {
                 put_bits(&mut bits, 1, 1);
-                let max_pic_num = 1u32 << (config.log2_max_frame_num_minus4 as u32 + 4);
-                let forward = order
-                    .current_frame_num()
-                    .wrapping_add(max_pic_num)
-                    .wrapping_sub(order.reference_frame_num())
-                    % max_pic_num;
-                let (direction, distance) = if forward <= max_pic_num / 2 {
-                    (0, forward)
-                } else {
-                    (1, max_pic_num - forward)
-                };
-                if distance == 0 {
-                    return Err("H.264 reference reorder resolves to the current frame".into());
+                match reorder {
+                    crate::encoder::ReferenceReorder::LongTerm { long_term_pic_num } => {
+                        put_ue(&mut bits, 2);
+                        put_ue(&mut bits, long_term_pic_num);
+                    }
+                    crate::encoder::ReferenceReorder::ShortTerm(order) => {
+                        let max_pic_num = 1u32 << (config.log2_max_frame_num_minus4 as u32 + 4);
+                        let forward = order
+                            .current_frame_num()
+                            .wrapping_add(max_pic_num)
+                            .wrapping_sub(order.reference_frame_num())
+                            % max_pic_num;
+                        let (direction, distance) = if forward <= max_pic_num / 2 {
+                            (0, forward)
+                        } else {
+                            (1, max_pic_num - forward)
+                        };
+                        if distance == 0 {
+                            return Err(
+                                "H.264 reference reorder resolves to the current frame".into()
+                            );
+                        }
+                        put_ue(&mut bits, direction);
+                        put_ue(&mut bits, distance - 1);
+                    }
                 }
-                put_ue(&mut bits, direction);
-                put_ue(&mut bits, distance - 1);
                 put_ue(&mut bits, 3); // end of ref_pic_list_modification
             }
+            None => put_bits(&mut bits, 0, 1),
         }
     } else if header.slice_type % 5 == 1 {
         return Err("H.264 amendment does not support B slices".into());
@@ -3465,12 +3473,19 @@ fn amend_reference_slice(
     if header.nal_ref_idc != 0 {
         if header.slice_type % 5 == 2 {
             put_bits(&mut bits, u32::from(header.no_output_of_prior_pics), 1);
-            put_bits(&mut bits, 1, 1); // long_term_reference_flag
+            put_bits(&mut bits, u32::from(current_long_term_index.is_some()), 1);
         } else {
             if header.adaptive_ref_pic_buffering || !header.mmco.is_empty() {
                 return Err("H.264 amendment does not support adaptive marking".into());
             }
-            put_bits(&mut bits, 0, 1); // adaptive_ref_pic_buffering_mode
+            if let Some(long_term_index) = current_long_term_index {
+                put_bits(&mut bits, 1, 1); // adaptive_ref_pic_buffering_mode
+                put_ue(&mut bits, 6); // memory_management_control_operation
+                put_ue(&mut bits, long_term_index);
+                put_ue(&mut bits, 0); // end of memory_management_control_operation
+            } else {
+                put_bits(&mut bits, 0, 1); // adaptive_ref_pic_buffering_mode
+            }
         }
     }
     put_se(&mut bits, header.qp_delta);
@@ -3730,6 +3745,7 @@ mod tests {
             save_pass1: false,
             use_pass1: false,
             non_reference: false,
+            current_long_term: false,
             pass1_fd: -1,
         }
     }
@@ -5572,6 +5588,7 @@ mod rate_control_registers {
             save_pass1: false,
             use_pass1: false,
             non_reference: false,
+            current_long_term: false,
             pass1_fd: -1,
         })
         .unwrap();
@@ -5659,6 +5676,7 @@ mod rate_control_registers {
             save_pass1: false,
             use_pass1: false,
             non_reference: false,
+            current_long_term: false,
             pass1_fd: -1,
         })
         .unwrap();
