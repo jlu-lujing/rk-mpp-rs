@@ -19,6 +19,21 @@ ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
     -pix_fmt nv12 -f rawvideo "$fixture"
 
+rk3576=0
+case "$(tr '\0' '\n' < /proc/device-tree/compatible)" in
+    *rockchip,rk3576*)
+        rk3576=1
+        mpp_inc=/usr/local/include/rockchip
+        mpp_lib=/usr/local/lib
+        cc -D_GNU_SOURCE -DH264E_PROBE_NO_ROI -std=c11 -O2 -Wall -Wextra -Werror \
+            -pthread -I"$mpp_inc" -I"$repo/tools" "$repo/tools/h264e_probe.c" \
+            "$mpp_lib/librockchip_mpp.so.1" -o /tmp/rk_mpp_sdk_h264_probe
+        cc -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra -Werror \
+            -pthread -I"$mpp_inc" -I"$repo/tools" "$repo/tools/h265e_probe.c" \
+            "$mpp_lib/librockchip_mpp.so.1" -o /tmp/rk_mpp_sdk_h265_probe
+        ;;
+esac
+
 gcc -std=c11 -Wall -Wextra -Werror \
     -I"$include" "$repo/tests/c_api_encoder.c" \
     -L"$libdir" -lrk_mpp_rs \
@@ -32,14 +47,6 @@ gcc -std=c11 -Wall -Wextra -Werror \
 
 /tmp/rk_mpp_encoder_v18 "$fixture" /tmp/rk_mpp_encoder_v18.264
 test -s /tmp/rk_mpp_encoder_v18.264
-
-compatible=$(tr '\0' '\n' < /proc/device-tree/compatible)
-case "$compatible" in
-    *rockchip,rk3576*)
-        printf 'PASS rk-mpp-rs V1.8 consumer; VEPU510 streaming RC platform SKIP\n'
-        exit 0
-        ;;
-esac
 
 compare_case() {
     codec=$1
@@ -61,7 +68,22 @@ compare_case() {
         /tmp/rk_mpp_encoder_v19 \
             "$codec" nv12 "$c_api_out" 320 240 26 6 "$gop" "$fixture"
 
-    if [ "$codec" = h264 ]; then
+    if [ "$rk3576" -eq 1 ]; then
+        case "$mode" in
+            cbr) rc_mode=1 ;;
+            vbr) rc_mode=2 ;;
+            avbr) rc_mode=3 ;;
+        esac
+        if [ "$codec" = h264 ]; then
+            sudo -n env LD_LIBRARY_PATH="$mpp_lib" timeout 120 \
+                /tmp/rk_mpp_sdk_h264_probe "$fixture" "$cli_out" \
+                320 240 6 "$rc_mode" 26 seioff gop "$gop"
+        else
+            sudo -n env FRAMES=6 GOP=60 LD_LIBRARY_PATH="$mpp_lib" timeout 120 \
+                /tmp/rk_mpp_sdk_h265_probe "$fixture" "$cli_out" \
+                320 240 "$rc_mode" 26
+        fi
+    elif [ "$codec" = h264 ]; then
         target/release/rk-mpp-rs h264-enc \
             "$fixture" "$cli_out" 320 240 26 baseline 6 6 \
             "$mode:$target:$minimum:$maximum" qprc:10:51
@@ -72,8 +94,10 @@ compare_case() {
     fi
 
     cmp "$c_api_out" "$cli_out"
-    printf 'PASS %s %s C API == CLI (%s bytes)\n' \
-        "$codec" "$mode" "$(wc -c < "$c_api_out")"
+    printf 'PASS %s %s C API == %s (%s bytes)\n' \
+        "$codec" "$mode" \
+        "$(if [ "$rk3576" -eq 1 ]; then printf vendor; else printf CLI; fi)" \
+        "$(wc -c < "$c_api_out")"
 }
 
 for codec in h264 h265; do
@@ -87,4 +111,4 @@ for codec in h264 h265; do
     done
 done
 
-printf 'PASS rk-mpp-rs V1.8 compatibility and V1.9 VEPU580 rate-control ABI\n'
+printf 'PASS rk-mpp-rs V1.8 compatibility and V1.9 VEPU580/VEPU510 rate-control ABI\n'

@@ -79,7 +79,7 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；新增 strided NV12 直缩，直接从 CPU/DMA Frame 读取 Y/UV 并在缩放中转换 RGB，不再生成整帧中间副本。1080p→640 在 t6/lf1 为 4.93/5.95 ms，对应旧“NV12→RGB + scale”为 20.32/24.36 ms。IEP2 的 **PD/DECT 逆 telecine** 两遍路径（反向下拉 + 场序状态机）已接入：3:2 telecine 与逐行素材 **2/2 与 C probe 逐字节一致**，逐帧 `pd_flag/pd_types/dil_order/frm_mode/ratio` 也逐行相同，322x242/722x482/1366x768 等非 16 对齐尺寸同样逐字节；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件、排队/执行/端到端耗时与成功/失败/取消累计统计）、引用计数 dma-heap 缓冲池；pooled JPEG 保证先关闭 MPP service 再归还共享 dma-buf，t6 连续 3000 jobs 压测通过；VP8 与 H.264/HEVC/AV1/VP9 的 DPB surface 已持有 RAII lease，四类解码边界回归在 t6 通过；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成 90%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
+整体约完成 91%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 105 项完成、6 项未完成（含缩进子项为 143 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
@@ -334,8 +334,8 @@ JPEG 的 start/average quality 也已按 vendor 回填为 q-factor；VEPU2 保�
 vendor 的“无 intra 标志”，VPU720 则回填 `KEY_OUTPUT_INTRA=0`。
 固定 QP 和 CBR 在静止、持续运动各两帧上为 2/2 逐 packet 一致；CBR
 还暴露并修正了 H.265 I-QP delta 与 rate-controlled PPS 的两个旧偏差。
-RK3576 VEPU510 的 fixed-QP 静止/运动矩阵同样为 H.264/H.265 各 2/2；
-VEPU510 的 streaming CBR metadata 仍随 RC 边界明确跳过。
+RK3576 VEPU510 的 fixed-QP、CBR、VBR、AVBR 静止/运动矩阵同样全部通过；
+CBR/VBR/AVBR 的 6 帧持续会话也与 vendor stream/YUV/metadata 一致。
 其余高级编码控制仍待继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的
@@ -382,8 +382,8 @@ V1.9 增加独立的 `rk_mpp_encoder_advanced_config_t` 和
 `RateControlConfig`/`RateControlMode`；C 使用
 `rk_mpp_encoder_rate_control_t`。t6 VEPU580 H.264/H.265 支持 CBR、VBR、
 AVBR、目标/最小/最大码率和初始/最小/最大 QP；C API 六组输出与已验证 CLI
-逐字节相同。RK3576 VEPU510 的逐帧 streaming RC 尚未开放，当前明确返回
-unsupported。
+逐字节相同。RK3576 VEPU510 也支持逐帧 CBR/VBR/AVBR，320×240 六帧矩阵与
+vendor 和 CLI 均一致。
 
 ```bash
 ./scripts/board_sdk_encoder_rc.sh

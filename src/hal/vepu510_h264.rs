@@ -80,6 +80,9 @@ pub struct Vepu510H264 {
     force_next_idr: bool,
     headers_each_idr: bool,
     last_status: Option<[u32; STATUS_WORDS]>,
+    rate_model: Option<rc_model::Model>,
+    last_quality_target: Option<i32>,
+    last_rt_bits: Option<i32>,
 }
 
 impl Vepu510H264 {
@@ -130,6 +133,11 @@ impl Vepu510H264 {
         {
             zero_buffer(buffer)?;
         }
+        let rate_model = if config.rc_mode == RcMode::FixedQp {
+            None
+        } else {
+            Some(rc_model::Model::new(h264e::rc_model_config(&config)?))
+        };
         Ok(Self {
             config,
             svc: MppService::open(Client::RkvEnc as u32)
@@ -148,6 +156,9 @@ impl Vepu510H264 {
             force_next_idr: false,
             headers_each_idr: false,
             last_status: None,
+            rate_model,
+            last_quality_target: None,
+            last_rt_bits: None,
         })
     }
 
@@ -195,6 +206,8 @@ impl Vepu510H264 {
         &mut self,
         nv12: &[u8],
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        self.last_quality_target = Some(i32::from(self.config.qp_init));
+        self.last_rt_bits = Some(0);
         let layout = self.next_layout.take();
         let force_idr = std::mem::take(&mut self.force_next_idr);
         let direct_input = self.input_fd_override.is_some();
@@ -246,6 +259,112 @@ impl Vepu510H264 {
         Ok((encoded.stream, false, frame_num, poc))
     }
 
+    pub fn encode_next_320x240(
+        &mut self,
+        nv12: &[u8],
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        if self.rate_model.is_some() {
+            self.encode_rate_next_320x240(nv12)
+        } else {
+            self.encode_fixed_qp_next_320x240(nv12)
+        }
+    }
+
+    fn encode_rate_next_320x240(
+        &mut self,
+        nv12: &[u8],
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        let force_idr = std::mem::take(&mut self.force_next_idr);
+        let direct_input = self.input_fd_override.is_some();
+        if !direct_input && nv12.len() < INPUT_SIZE {
+            return Err(format!(
+                "VEPU510 rate-control input is {} bytes, expected at least {INPUT_SIZE}",
+                nv12.len()
+            ));
+        }
+        let is_idr = !self.idr_done || force_idr;
+        if force_idr && self.idr_done {
+            self.idr_pic_id = self.idr_pic_id.saturating_add(1);
+        }
+        let frame_number = if is_idr {
+            0
+        } else {
+            self.frame_number.saturating_add(1)
+        };
+        let frame_type = if is_idr {
+            rc_model::FrameType::Intra
+        } else {
+            rc_model::FrameType::InterP
+        };
+        let (bit_target, quality_target, rt_bits) = {
+            let model = self.rate_model.as_mut().expect("rate-control model");
+            let (bit_target, quality_target) = model.start(frame_type);
+            (bit_target, quality_target, model.ins_bps())
+        };
+        let prefix = if is_idr && (!self.idr_done || self.headers_each_idr) {
+            encoder::build_headers(&self.config).map_err(|error| error.to_string())?
+        } else {
+            Vec::new()
+        };
+        let mut registers = if is_idr {
+            RegisterFile::captured_fixqp_idr_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[0].fd() as u32,
+                self.thumb[0].fd() as u32,
+                self.smear[0].fd() as u32,
+            )?
+        } else {
+            let current = (frame_number & 1) as usize;
+            let reference = 1 - current;
+            RegisterFile::captured_fixqp_p_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                frame_number,
+            )?
+        };
+        registers.apply_cbr_rate_control(
+            bit_target,
+            quality_target as u32,
+            self.config.rc_qp_min,
+            self.config.rc_qp_max,
+            is_idr,
+        )?;
+        registers.apply_roi_regions(&self.config.rois)?;
+        let input_data = if direct_input {
+            &[]
+        } else {
+            &nv12[..INPUT_SIZE]
+        };
+        let output = self.run_job_with_status(input_data, &registers, &prefix, 0)?;
+        let measured = measured_from_status(&output.status);
+        let model = self.rate_model.as_mut().expect("rate-control model");
+        model.end_with(frame_type, bit_target, measured);
+        model.accept_frame();
+        self.last_quality_target = Some(quality_target);
+        self.last_rt_bits = Some(rt_bits);
+        self.idr_done = true;
+        self.frame_number = frame_number;
+        Ok((output.stream, is_idr, frame_number, frame_number as i32 * 2))
+    }
+
+    pub fn encode_next_320x240_fd(
+        &mut self,
+        input_fd: i32,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        if input_fd < 0 {
+            return Err("VEPU510 H.264 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_next_320x240(&[])
+    }
+
     pub fn read_motion_info(&mut self) -> Result<Vec<u8>, String> {
         self.md_info
             .sync_read_begin()
@@ -265,12 +384,15 @@ impl Vepu510H264 {
         } else {
             (status[3] / macroblocks) as i32
         };
-        Some(crate::encoder::PacketMeta::from_vepu510_status(
+        let mut meta = crate::encoder::PacketMeta::from_vepu510_status(
             status,
             is_intra,
-            i32::from(self.config.qp_init),
+            self.last_quality_target
+                .unwrap_or(i32::from(self.config.qp_init)),
             average_qp,
-        ))
+        );
+        meta.rt_bits = self.last_rt_bits;
+        Some(meta)
     }
 
     pub fn encode_fixed_qp_next_320x240_fd(

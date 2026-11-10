@@ -25,6 +25,7 @@ if grep -qi rk3576 /proc/device-tree/compatible 2>/dev/null; then
 fi
 
 raw=/tmp/rk_mpp_packet_meta_2.nv12
+raw6=/tmp/rk_mpp_packet_meta_6.nv12
 still_one=/tmp/rk_mpp_packet_meta_still.nv12
 still=/tmp/rk_mpp_packet_meta_still_2.nv12
 overlay=$(mktemp -d /tmp/rk_mpp_packet_meta.XXXXXX)
@@ -34,10 +35,17 @@ cargo build --release --offline --lib
 ln -s "$repo/target/release/librk_mpp_rs.so" \
     "$overlay/librockchip_mpp.so.1"
 
-cc -D_GNU_SOURCE -DH264E_PROBE_NO_ROI -std=c11 -O2 -Wall -Wextra -Werror \
+h264_meta_flag=()
+h265_meta_flag=()
+if [ "$rk3576" -eq 1 ]; then
+    h264_meta_flag=(-DH264E_DUMP_RT_BITS)
+    h265_meta_flag=(-DH265E_DUMP_RT_BITS)
+fi
+cc -D_GNU_SOURCE -DH264E_PROBE_NO_ROI "${h264_meta_flag[@]}" \
+    -std=c11 -O2 -Wall -Wextra -Werror \
     -pthread -I"$inc" -I"$repo/tools" "$repo/tools/h264e_probe.c" \
     "$lib/librockchip_mpp.so.1" -o /tmp/rk_mpp_packet_meta_h264
-cc -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra -Werror \
+cc -D_GNU_SOURCE "${h265_meta_flag[@]}" -std=c11 -O2 -Wall -Wextra -Werror \
     -pthread -I"$inc" -I"$repo/tools" "$repo/tools/h265e_probe.c" \
     "$lib/librockchip_mpp.so.1" -o /tmp/rk_mpp_packet_meta_h265
 cc -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra -Werror \
@@ -47,6 +55,9 @@ cc -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra -Werror \
 ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 2 \
     -pix_fmt nv12 -f rawvideo "$raw"
+ffmpeg -nostdin -y -hide_banner -loglevel error \
+    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
+    -pix_fmt nv12 -f rawvideo "$raw6"
 dd if="$raw" of="$still_one" bs=115200 count=1 status=none
 cp "$still_one" "$still"
 dd if="$still_one" of="$still" bs=115200 seek=1 conv=notrunc status=none
@@ -56,6 +67,7 @@ run_h264() {
     local prefix="$2"
     local mode="$3"
     local input="${4:-}"
+    local frames="${5:-2}"
 
     if [ -z "$input" ]; then
         input="$raw"
@@ -66,7 +78,7 @@ run_h264() {
 
     sudo -n rm -f "$prefix.264" "$prefix.log" "$prefix.264.yuv"
     sudo -n env DUMP_META=1 LD_LIBRARY_PATH="$library" \
-        /tmp/rk_mpp_packet_meta_h264 "$input" "$prefix.264" 320 240 2 "$mode" 26 seioff \
+        /tmp/rk_mpp_packet_meta_h264 "$input" "$prefix.264" 320 240 "$frames" "$mode" 26 seioff \
         > "$prefix.stdout" 2> "$prefix.log"
     grep ' meta:' "$prefix.log" > "$prefix.meta"
 }
@@ -76,6 +88,7 @@ run_h265() {
     local prefix="$2"
     local mode="$3"
     local input="${4:-}"
+    local frames="${5:-2}"
 
     if [ -z "$input" ]; then
         input="$raw"
@@ -85,7 +98,7 @@ run_h265() {
     fi
 
     sudo -n rm -f "$prefix.265" "$prefix.log" "$prefix.265.yuv"
-    sudo -n env DUMP_META=1 FRAMES=2 GOP=60 LD_LIBRARY_PATH="$library" \
+    sudo -n env DUMP_META=1 FRAMES="$frames" GOP=60 LD_LIBRARY_PATH="$library" \
         /tmp/rk_mpp_packet_meta_h265 "$input" "$prefix.265" 320 240 "$mode" 26 seioff \
         > "$prefix.stdout" 2> "$prefix.log"
     grep ' meta:' "$prefix.log" > "$prefix.meta"
@@ -102,9 +115,9 @@ run_jpeg() {
     grep ' meta:' "$prefix.log" > "$prefix.meta"
 }
 
-modes=(0)
-if [ "$rk3576" -eq 0 ]; then
-    modes=(0 1)
+modes=(0 1)
+if [ "$rk3576" -eq 1 ]; then
+    modes=(0 1 2 3)
 fi
 for mode in "${modes[@]}"; do
     vendor_h264="/tmp/rk_mpp_packet_meta_vendor_h264_m${mode}"
@@ -150,6 +163,30 @@ if [ "$rk3576" -eq 1 ]; then
         "$ours_h265.265" "$ours_h265.265.yuv" > /dev/null
     cmp "$vendor_h265.265.yuv" "$ours_h265.265.yuv"
     printf 'PASS VEPU510 H.265 fixed-QP still packet meta: 2/2 pictures\n'
+
+    for codec in h264 h265; do
+        for mode in 1 2 3; do
+            vendor="/tmp/rk_mpp_packet_meta_vendor_${codec}_m${mode}_6f"
+            ours="/tmp/rk_mpp_packet_meta_ours_${codec}_m${mode}_6f"
+            if [ "$codec" = h264 ]; then
+                run_h264 "$lib" "$vendor" "$mode" "$raw6" 6
+                run_h264 "$overlay" "$ours" "$mode" "$raw6" 6
+                cmp "$vendor.meta" "$ours.meta"
+                cmp "$vendor.264" "$ours.264"
+            else
+                run_h265 "$lib" "$vendor" "$mode" "$raw6" 6
+                run_h265 "$overlay" "$ours" "$mode" "$raw6" 6
+                cmp "$vendor.meta" "$ours.meta"
+                cmp "$vendor.265" "$ours.265"
+                sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+                    "$vendor.265" "$vendor.265.yuv" > /dev/null
+                sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+                    "$ours.265" "$ours.265.yuv" > /dev/null
+                cmp "$vendor.265.yuv" "$ours.265.yuv"
+            fi
+            printf 'PASS VEPU510 %s RC mode %d: 6/6 pictures\n' "$codec" "$mode"
+        done
+    done
 fi
 
 if [ "$rk3576" -eq 0 ]; then
@@ -183,6 +220,3 @@ run_jpeg "$overlay" "$ours_jpeg"
 cmp "$vendor_jpeg.meta" "$ours_jpeg.meta"
 cmp "$vendor_jpeg.jpg" "$ours_jpeg.jpg"
 printf 'PASS JPEG packet meta: 1/1 picture\n'
-if [ "$rk3576" -eq 1 ]; then
-    printf 'SKIP VEPU510 CBR packet feedback on RK3576: streaming RC is unsupported\n'
-fi

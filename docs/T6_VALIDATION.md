@@ -25,14 +25,18 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 workspace gate is **1231 passed / 0 failed / 38 ignored**;
+- The current t6 workspace gate is **1232 passed / 0 failed / 38 ignored**;
   `cargo fmt --all -- --check` and `git diff --check` are clean.
-- The lf1 reduced gate is **1086 library tests passed / 0 failed** plus JPEG
+- The lf1 reduced gate is **1087 library tests passed / 0 failed** plus JPEG
   packet metadata **1/1**. VEPU510 H.264/H.265 fixed-QP moving and still
-  matrices are both **2/2** per codec; streaming CBR metadata is explicitly
-  skipped because the VEPU510 streaming RC path is unsupported. The reduced
-  scope avoids LTO-linking 253 independent `--all-targets` test binaries one
-  at a time under `CARGO_BUILD_JOBS=1`.
+  matrices are both **2/2** per codec. Built-in CBR/VBR/AVBR are also connected:
+  both codecs pass 2-frame metadata and 6-frame stream/YUV/rt_bits matrices.
+  The reduced scope avoids LTO-linking 253 independent `--all-targets` test
+  binaries one at a time under `CARGO_BUILD_JOBS=1`.
+- `scripts/board_sdk_encoder_rc.sh` now passes all six V1.9 H.264/H.265 RC
+  combinations on lf1 against the vendor probe. H.264 CBR/VBR/AVBR are 9,426 /
+  10,283 / 8,660 bytes; H.265 are 11,192 / 11,795 / 9,676 bytes, all
+  byte-identical. The t6 VEPU580 command remains part of the same script.
 
 ## 2026-11-08 W5-4 pool closeout
 
@@ -300,8 +304,9 @@ and lf1; on t6 the unchanged native `mpp_meta_test` also passes with two
 threads and ten loops. A returned frame-identity mismatch is a hard test
 failure. This is a real official decoder-tool gate. The VEPU580
 H.264/H.265 encoder packet kernel metadata was subsequently closed on
-2026-11-10 for VEPU580 and the VEPU510 fixed-QP path. VEPU510 streaming CBR
-metadata remains outside its explicit unsupported RC boundary.
+2026-11-10 for VEPU580 and VEPU510. VEPU510 built-in CBR/VBR/AVBR now use the
+same per-frame session; only user-defined streaming RC callbacks remain outside
+that supported boundary.
 
 `scripts/board_mpp_official_enc_test.sh` now exercises the same bridge for the
 vendor encoder tool. It reads `MppEncCfg` from the vendor helper object, submits
@@ -708,7 +713,7 @@ Re-run against the committed tree:
 | `scripts/board_framework_recovery.sh` | 3/3 (two close-before-open replacements, one VDPU2 damaged-packet gate) |
 | `scripts/board_framework_async_vs_sync.sh` | ALL PASS: 6/6 jobs identical, `submitted=6 done=6 failed=0 cancelled=0`, avg wait 2.134 ms, avg run 4.937 ms, 9 pool allocations under a cap of 10 |
 | `scripts/board_iep_modes_vs_probe.sh` | 9 PASS, 0 FAIL |
-| `scripts/board_mpp_packet_meta.sh` | t6 VEPU580 H.264/H.265 fixed-QP/CBR still+moving 8/8; lf1 VEPU510 fixed-QP still+moving 4/4; JPEG 2/2; H.265 motion-info hashes exact |
+| `scripts/board_mpp_packet_meta.sh` | t6 VEPU580 H.264/H.265 fixed-QP/CBR still+moving 8/8; lf1 VEPU510 fixed-QP/CBR/VBR/AVBR 2-frame matrix plus 6-frame RC stream/YUV; JPEG 2/2; H.265 motion-info hashes exact |
 
 Environment for this run: kernel 6.1.57 with the persistent cap service active
 (`policy0` 1,416,000 kHz, `policy4`/`policy6` 1,800,000 kHz). Two

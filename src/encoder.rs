@@ -1301,7 +1301,7 @@ impl Encoder {
                 }
                 let input = format_nv12_input(self.config, frame.data)?;
                 let (data, keyframe, frame_num, poc) = encoder
-                    .encode_fixed_qp_next_320x240(&input)
+                    .encode_next_320x240(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let meta = encoder
                     .last_packet_meta(keyframe)
@@ -1364,7 +1364,7 @@ impl Encoder {
                 }
                 let input = format_nv12_input(self.config, frame.data)?;
                 let (data, keyframe, frame_num, poc) = encoder
-                    .encode_fixed_qp_next_320x240(&input)
+                    .encode_next_320x240(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let meta = encoder
                     .last_packet_meta(keyframe)
@@ -1506,7 +1506,7 @@ impl Encoder {
                     ));
                 }
                 let (data, keyframe, frame_num, poc) = encoder
-                    .encode_fixed_qp_next_320x240_fd(input_fd)
+                    .encode_next_320x240_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let meta = encoder
                     .last_packet_meta(keyframe)
@@ -1554,7 +1554,7 @@ impl Encoder {
                     ));
                 }
                 let (data, keyframe, frame_num, poc) = encoder
-                    .encode_fixed_qp_next_320x240_fd(input_fd)
+                    .encode_next_320x240_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let meta = encoder
                     .last_packet_meta(keyframe)
@@ -1801,17 +1801,12 @@ fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264,
             "RK3576 H.264 streaming ROI/GDR/slice controls are not exposed yet".to_string(),
         ));
     }
-    if config
+    let fixed_qp = config
         .rate_control
-        .is_some_and(|rate_control| rate_control.mode != RateControlMode::FixedQp)
-    {
-        return Err(Error::Unsupported(
-            "RK3576 H.264 streaming rate control is not exposed yet".to_string(),
-        ));
-    }
+        .is_none_or(|rate_control| rate_control.mode == RateControlMode::FixedQp);
     if config.width != 320
         || config.height != 240
-        || config.qp != 26
+        || (fixed_qp && config.qp != 26)
         || !matches!(config.gop, 6 | 60)
         || config.fps_num != 30
         || config.fps_den != 1
@@ -1819,8 +1814,9 @@ fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264,
         || !matches!(config.level, 0 | 30 | 40)
     {
         return Err(Error::Unsupported(format!(
-            "RK3576 H.264 encoder currently supports only 320x240 Baseline/High QP26 \
-             GOP6 or GOP60 at 30 fps; got {}x{} profile {} level {} QP {} GOP {} at {}/{} fps",
+            "RK3576 H.264 encoder supports only 320x240 Baseline/High GOP6 or GOP60 at \
+             30 fps (fixed-QP requires QP26); got {}x{} profile {} level {} QP {} GOP {} \
+             at {}/{} fps",
             config.width,
             config.height,
             config.profile,
@@ -1968,27 +1964,49 @@ fn open_h265_vepu510(
             "RK3576 H.265 streaming ROI/GDR/slice controls are not exposed yet".to_string(),
         ));
     }
-    if config
+    let fixed_qp = config
         .rate_control
-        .is_some_and(|rate_control| rate_control.mode != RateControlMode::FixedQp)
-    {
-        return Err(Error::Unsupported(
-            "RK3576 H.265 streaming rate control is not exposed yet".to_string(),
-        ));
-    }
+        .is_none_or(|rate_control| rate_control.mode == RateControlMode::FixedQp);
     if config.width != 320
         || config.height != 240
-        || config.qp != 26
+        || (fixed_qp && config.qp != 26)
         || !matches!(config.gop, 6 | 60)
         || config.fps_num != 30
         || config.fps_den != 1
         || !matches!(config.level, 0 | 30)
     {
         return Err(Error::Unsupported(
-            "RK3576 H.265 encoder currently supports only 320x240 Main QP26 \
-             GOP6 or GOP60 at 30 fps"
+            "RK3576 H.265 encoder supports only 320x240 Main GOP6 or GOP60 at 30 fps \
+             (fixed-QP requires QP26)"
                 .to_string(),
         ));
+    }
+    if let Some(rate) = config
+        .rate_control
+        .filter(|rate| rate.mode != RateControlMode::FixedQp)
+    {
+        let mode = match rate.mode {
+            RateControlMode::Cbr => h265e_session::RcMode::Cbr,
+            RateControlMode::Vbr => h265e_session::RcMode::Vbr,
+            RateControlMode::Avbr => h265e_session::RcMode::Avbr,
+            RateControlMode::FixedQp => unreachable!(),
+        };
+        let mut h265 = crate::codec::h265::encoder::EncoderConfig::new(config.width, config.height);
+        h265.max_cu_size = 32;
+        h265.tu_log2_max_extra = 1;
+        return vepu510_h265::Vepu510H265::open_streaming(
+            h265,
+            false,
+            mode,
+            rate.bps_target as i32,
+            rate.bps_min as i32,
+            rate.bps_max as i32,
+            i32::from(rate.initial_qp),
+            u32::from(rate.min_qp),
+            u32::from(rate.max_qp),
+            config.gop,
+        )
+        .map_err(|error| Error::Hardware(error));
     }
     vepu510_h265::Vepu510H265::open().map_err(|error| Error::Hardware(error.to_string()))
 }
