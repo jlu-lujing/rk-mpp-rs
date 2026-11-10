@@ -879,6 +879,8 @@ impl Vepu580H264 {
         reference_slot: usize,
         non_reference: bool,
         temporal_id: Option<u8>,
+        _frame_num: u32,
+        _poc: u32,
         reference_reorder: Option<crate::encoder::ReferenceReorder>,
         current_long_term_index: Option<u32>,
     ) -> Result<(), String> {
@@ -1509,7 +1511,7 @@ fn picture_frame_type(state: &FrameState) -> rc_model::FrameType {
     }
 }
 
-fn svc_prefix_nal(is_idr: bool, nal_ref_idc: u8, temporal_id: u8) -> Vec<u8> {
+pub(super) fn svc_prefix_nal(is_idr: bool, nal_ref_idc: u8, temporal_id: u8) -> Vec<u8> {
     debug_assert!(nal_ref_idc <= 3);
     debug_assert!(temporal_id <= 7);
     let mut prefix = Vec::with_capacity(if nal_ref_idc == 0 { 4 } else { 5 });

@@ -156,6 +156,8 @@ struct PendingReferenceFrame {
     reference_slot: usize,
     non_reference: bool,
     temporal_id: u8,
+    frame_num: u32,
+    poc: u32,
     reference_reorder: Option<encoder::ReferenceReorder>,
     current_long_term_index: Option<u32>,
     commit: Option<ActiveReference>,
@@ -187,6 +189,8 @@ impl ReferenceSchedule {
                 reference_slot: 0,
                 non_reference: false,
                 temporal_id: 0,
+                frame_num: 0,
+                poc: 0,
                 reference_reorder: None,
                 current_long_term_index,
                 commit: Some(ActiveReference {
@@ -264,6 +268,10 @@ impl ReferenceSchedule {
             reference_slot: reference.slot,
             non_reference: step.non_reference,
             temporal_id: step.temporal_id,
+            frame_num,
+            poc: u32::try_from(sequence)
+                .map_err(|_| "H.264 POC sequence overflowed".to_string())?
+                .saturating_mul(2),
             reference_reorder,
             current_long_term_index,
             commit,
@@ -564,6 +572,8 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             frame.reference_slot,
             frame.non_reference,
             Some(frame.temporal_id),
+            frame.frame_num,
+            frame.poc,
             frame.reference_reorder,
             frame.current_long_term_index,
         ) {

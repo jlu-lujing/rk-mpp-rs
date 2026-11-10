@@ -211,7 +211,13 @@ layer 回指和 short-term reorder 也已闭合，12 帧 YUV 为
 `long_term_reference_flag` 和 P 帧 MMCO6 也已闭合，12 帧 YUV 为
 `33923dd2…d1186a`；64 帧跨 `gop=60` 的 136 NAL 也一致，包含第二个
 SPS/PPS/SEI IDR 前缀和参考状态重置，YUV 为 `a3ad1bc6…35a0593`。
-VEPU510 多帧层级仍未映射，高级编码控制也仍待接入。
+lf1 VEPU510 的 TSVC2 12 帧也达到 26 NAL 和 YUV
+`77a92442…fe35ab` 一致。VEPU510 TSVC3 的 C 输出前 7 帧漏发 type-14
+prefix，但两路重建仍完全相同。VEPU510 TSVC4 的 C packet assembly 冷启动
+不稳定：5 次中 3 次与 Rust 的 26 NAL/YUV 完全一致，另外两次漏 prefix，
+其中一次重建也不同；板级门会重试 C 直到取得稳定 oracle。两项均已登记在
+`docs/DIVERGENCES.md`。
+高级编码控制仍待接入。
 
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test

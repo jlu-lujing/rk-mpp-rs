@@ -853,14 +853,19 @@ impl Encoder {
             Backend::H264Vepu580(encoder) => {
                 encoder.force_reference_slot(slot).map_err(Error::Hardware)
             }
+            Backend::H264Vepu510(_) if slot.is_none() => Ok(()),
             _ => Err(Error::Unsupported(
-                "reference-slot forcing is currently implemented for VEPU580 H.264".to_string(),
+                "reference-slot forcing requires the per-picture VEPU580/VEPU510 layout"
+                    .to_string(),
             )),
         }
     }
 
     pub(crate) fn supports_h264_reference_layout(&self) -> bool {
-        matches!(&self.backend, Backend::H264Vepu580(_))
+        matches!(
+            &self.backend,
+            Backend::H264Vepu580(_) | Backend::H264Vepu510(_)
+        )
     }
 
     pub fn force_next_picture_layout(
@@ -869,6 +874,8 @@ impl Encoder {
         reference_slot: usize,
         non_reference: bool,
         temporal_id: Option<u8>,
+        frame_num: u32,
+        poc: u32,
         reference_reorder: Option<ReferenceReorder>,
         current_long_term_index: Option<u32>,
     ) -> Result<(), Error> {
@@ -879,6 +886,20 @@ impl Encoder {
                     reference_slot,
                     non_reference,
                     temporal_id,
+                    frame_num,
+                    poc,
+                    reference_reorder,
+                    current_long_term_index,
+                )
+                .map_err(Error::Hardware),
+            Backend::H264Vepu510(encoder) => encoder
+                .force_next_picture_layout(
+                    current_slot,
+                    reference_slot,
+                    non_reference,
+                    temporal_id.unwrap_or(0),
+                    frame_num,
+                    poc,
                     reference_reorder,
                     current_long_term_index,
                 )
@@ -1303,7 +1324,11 @@ fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264,
     }
     let mut h264 = h264_encoder_config(config)?;
     h264.constraint_set = (h264.profile >= PROFILE_HIGH).then_some(0);
-    h264.num_ref_frames = 1;
+    h264.num_ref_frames = if config.num_ref_frames == 0 {
+        1
+    } else {
+        config.num_ref_frames
+    };
     if h264.profile >= PROFILE_HIGH {
         h264.video_format = Some(5);
         h264.video_full_range = true;

@@ -51,18 +51,31 @@ struct JobOutput {
     packet_lengths: Vec<usize>,
 }
 
+#[derive(Clone, Copy)]
+struct PictureLayout {
+    current_slot: usize,
+    reference_slot: usize,
+    non_reference: bool,
+    temporal_id: u8,
+    frame_num: u32,
+    poc: u32,
+    reference_reorder: Option<crate::encoder::ReferenceReorder>,
+    current_long_term_index: Option<u32>,
+}
+
 pub struct Vepu510H264 {
     config: EncoderConfig,
     svc: MppService,
     input: DmaBuf,
     output: DmaBuf,
-    recon: [DmaBuf; 2],
-    thumb: [DmaBuf; 2],
-    smear: [DmaBuf; 2],
+    recon: [DmaBuf; 3],
+    thumb: [DmaBuf; 3],
+    smear: [DmaBuf; 3],
     md_info: DmaBuf,
     idr_done: bool,
     frame_number: u32,
     input_fd_override: Option<i32>,
+    next_layout: Option<PictureLayout>,
 }
 
 impl Vepu510H264 {
@@ -84,18 +97,24 @@ impl Vepu510H264 {
                 .map_err(|e| format!("allocate VEPU510 reconstruction 0: {e}"))?,
             DmaBuf::alloc("system", RECON_SIZE, false)
                 .map_err(|e| format!("allocate VEPU510 reconstruction 1: {e}"))?,
+            DmaBuf::alloc("system", RECON_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 reconstruction 2: {e}"))?,
         ];
         let mut thumb = [
             DmaBuf::alloc("system", THUMB_SIZE, false)
                 .map_err(|e| format!("allocate VEPU510 thumbnail 0: {e}"))?,
             DmaBuf::alloc("system", THUMB_SIZE, false)
                 .map_err(|e| format!("allocate VEPU510 thumbnail 1: {e}"))?,
+            DmaBuf::alloc("system", THUMB_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 thumbnail 2: {e}"))?,
         ];
         let mut smear = [
             DmaBuf::alloc("system", SMEAR_SIZE, false)
                 .map_err(|e| format!("allocate VEPU510 smear 0: {e}"))?,
             DmaBuf::alloc("system", SMEAR_SIZE, false)
                 .map_err(|e| format!("allocate VEPU510 smear 1: {e}"))?,
+            DmaBuf::alloc("system", SMEAR_SIZE, false)
+                .map_err(|e| format!("allocate VEPU510 smear 2: {e}"))?,
         ];
         let mut md_info = DmaBuf::alloc("system", MD_INFO_SIZE, true)
             .map_err(|e| format!("allocate VEPU510 motion info: {e}"))?;
@@ -120,7 +139,36 @@ impl Vepu510H264 {
             idr_done: false,
             frame_number: 0,
             input_fd_override: None,
+            next_layout: None,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn force_next_picture_layout(
+        &mut self,
+        current_slot: usize,
+        reference_slot: usize,
+        non_reference: bool,
+        temporal_id: u8,
+        frame_num: u32,
+        poc: u32,
+        reference_reorder: Option<crate::encoder::ReferenceReorder>,
+        current_long_term_index: Option<u32>,
+    ) -> Result<(), String> {
+        if current_slot >= self.recon.len() || reference_slot >= self.recon.len() {
+            return Err("VEPU510 picture layout uses a slot outside its recon pool".into());
+        }
+        self.next_layout = Some(PictureLayout {
+            current_slot,
+            reference_slot,
+            non_reference,
+            temporal_id,
+            frame_num,
+            poc,
+            reference_reorder,
+            current_long_term_index,
+        });
+        Ok(())
     }
 
     /// Streaming variant of the captured fixed-QP path: one IDR followed by P
@@ -129,6 +177,7 @@ impl Vepu510H264 {
         &mut self,
         nv12: &[u8],
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        let layout = self.next_layout.take();
         let direct_input = self.input_fd_override.is_some();
         if !direct_input && nv12.len() < INPUT_SIZE {
             return Err(format!(
@@ -142,28 +191,29 @@ impl Vepu510H264 {
             &nv12[..INPUT_SIZE]
         };
         if !self.idr_done {
-            let encoded = self.encode_idr(input_data, &[], SplitMode::None, 0, 0)?;
+            let encoded =
+                self.encode_idr_with_layout(input_data, &[], SplitMode::None, 0, 0, layout)?;
             self.idr_done = true;
             self.frame_number = 0;
             return Ok((encoded.stream, true, 0, 0));
         }
-        self.frame_number = self.frame_number.saturating_add(1);
-        let encoded = self.encode_p(
+        let frame_num = layout.map_or(self.frame_number.saturating_add(1), |layout| {
+            layout.frame_num
+        });
+        let poc = layout.map_or(frame_num as i32 * 2, |layout| layout.poc as i32);
+        self.frame_number = frame_num;
+        let encoded = self.encode_p_with_layout(
             input_data,
-            self.frame_number,
+            frame_num,
             &[],
             SplitMode::None,
             0,
             0,
             &[],
             None,
+            layout,
         )?;
-        Ok((
-            encoded.stream,
-            false,
-            self.frame_number,
-            self.frame_number as i32 * 2,
-        ))
+        Ok((encoded.stream, false, frame_num, poc))
     }
 
     pub fn read_motion_info(&mut self) -> Result<Vec<u8>, String> {
@@ -487,6 +537,18 @@ impl Vepu510H264 {
         split_arg: u32,
         split_out: u32,
     ) -> Result<EncodedFrame, String> {
+        self.encode_idr_with_layout(nv12, rois, split_mode, split_arg, split_out, None)
+    }
+
+    fn encode_idr_with_layout(
+        &mut self,
+        nv12: &[u8],
+        rois: &[encoder::RoiRegion],
+        split_mode: SplitMode,
+        split_arg: u32,
+        split_out: u32,
+        layout: Option<PictureLayout>,
+    ) -> Result<EncodedFrame, String> {
         let config = &self.config;
         let header = encoder::build_headers(config).map_err(|e| e.to_string())?;
         if !matches!(header.len(), 36..=38) {
@@ -495,27 +557,42 @@ impl Vepu510H264 {
                 header.len()
             ));
         }
+        let current_slot = layout.map_or(0, |layout| layout.current_slot);
         let mut registers = if config.profile >= PROFILE_HIGH {
             RegisterFile::captured_fixqp_idr_320x240_high(
                 self.input.fd() as u32,
                 self.output.fd() as u32,
-                self.recon[0].fd() as u32,
-                self.thumb[0].fd() as u32,
-                self.smear[0].fd() as u32,
+                self.recon[current_slot].fd() as u32,
+                self.thumb[current_slot].fd() as u32,
+                self.smear[current_slot].fd() as u32,
                 self.md_info.fd() as u32,
             )?
         } else {
             RegisterFile::captured_fixqp_idr_320x240(
                 self.input.fd() as u32,
                 self.output.fd() as u32,
-                self.recon[0].fd() as u32,
-                self.thumb[0].fd() as u32,
-                self.smear[0].fd() as u32,
+                self.recon[current_slot].fd() as u32,
+                self.thumb[current_slot].fd() as u32,
+                self.smear[current_slot].fd() as u32,
             )?
         };
+        if let Some(layout) = layout {
+            registers.set(
+                vepu510_regs::H264_SYNT_REFM0_LTRF_FLG,
+                u32::from(layout.current_long_term_index.is_some()),
+            )?;
+        }
         registers.apply_roi_regions(rois)?;
         registers.apply_slice_split(split_mode, split_arg, split_out)?;
-        let output = self.run_job_with_status(nv12, &registers, &header, split_out)?;
+        let mut prefix = header;
+        if let Some(layout) = layout {
+            prefix.extend(h264e::svc_prefix_nal(
+                true,
+                if layout.non_reference { 0 } else { 3 },
+                layout.temporal_id,
+            ));
+        }
+        let output = self.run_job_with_status(nv12, &registers, &prefix, split_out)?;
         Ok(EncodedFrame {
             stream: output.stream,
             packet_lengths: output.packet_lengths,
@@ -533,8 +610,34 @@ impl Vepu510H264 {
         prefix: &[u8],
         refresh: Option<GdrMode>,
     ) -> Result<EncodedFrame, String> {
-        let current = (frame_number & 1) as usize;
-        let reference = 1 - current;
+        self.encode_p_with_layout(
+            nv12,
+            frame_number,
+            rois,
+            split_mode,
+            split_arg,
+            split_out,
+            prefix,
+            refresh,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_p_with_layout(
+        &mut self,
+        nv12: &[u8],
+        frame_number: u32,
+        rois: &[encoder::RoiRegion],
+        split_mode: SplitMode,
+        split_arg: u32,
+        split_out: u32,
+        prefix: &[u8],
+        refresh: Option<GdrMode>,
+        layout: Option<PictureLayout>,
+    ) -> Result<EncodedFrame, String> {
+        let current = layout.map_or((frame_number & 1) as usize, |layout| layout.current_slot);
+        let reference = layout.map_or(1 - current, |layout| layout.reference_slot);
         let mut registers = if self.config.profile >= PROFILE_HIGH {
             RegisterFile::captured_fixqp_p_320x240_high(
                 self.input.fd() as u32,
@@ -561,6 +664,29 @@ impl Vepu510H264 {
                 frame_number,
             )?
         };
+        if let Some(layout) = layout {
+            registers.set(vepu510_regs::H264_SYNT_SLI0_FRM_NUM, layout.frame_num)?;
+            registers.set(vepu510_regs::H264_SYNT_SLI1_POC_LSB, layout.poc)?;
+            registers.set(
+                vepu510_regs::H264_SYNT_NAL_NAL_REF_IDC,
+                if layout.non_reference { 0 } else { 2 },
+            )?;
+            registers.set(
+                vepu510_regs::FRAME_ENC_PIC_CUR_FRM_REF,
+                u32::from(!layout.non_reference),
+            )?;
+            apply_reference_reorder(
+                &mut registers,
+                layout.reference_reorder,
+                layout.frame_num,
+                self.config.log2_max_frame_num_minus4,
+            )?;
+            if let Some(long_term_index) = layout.current_long_term_index {
+                registers.set(vepu510_regs::H264_SYNT_REFM0_ARPM_FLG, 1)?;
+                registers.set(vepu510_regs::H264_SYNT_REFM0_MMCO_TYPE0, 6)?;
+                registers.set(vepu510_regs::H264_SYNT_REFM0_MMCO_PARM0, long_term_index)?;
+            }
+        }
         registers.apply_roi_regions(rois)?;
         registers.apply_slice_split(split_mode, split_arg, split_out)?;
         registers.set(
@@ -570,7 +696,15 @@ impl Vepu510H264 {
         if let Some(mode) = refresh {
             registers.apply_gdr_refresh(mode)?;
         }
-        let output = self.run_job_with_status(nv12, &registers, prefix, split_out)?;
+        let mut slice_prefix = prefix.to_vec();
+        if let Some(layout) = layout {
+            slice_prefix.extend(h264e::svc_prefix_nal(
+                false,
+                if layout.non_reference { 0 } else { 2 },
+                layout.temporal_id,
+            ));
+        }
+        let output = self.run_job_with_status(nv12, &registers, &slice_prefix, split_out)?;
         Ok(EncodedFrame {
             stream: output.stream,
             packet_lengths: output.packet_lengths,
@@ -763,6 +897,45 @@ impl Vepu510H264 {
     }
 }
 
+fn apply_reference_reorder(
+    registers: &mut RegisterFile,
+    reorder: Option<crate::encoder::ReferenceReorder>,
+    frame_num: u32,
+    log2_max_frame_num_minus4: u8,
+) -> Result<(), String> {
+    registers.set(vepu510_regs::H264_SYNT_SLI2_REF_LIST0_RODR, 0)?;
+    registers.set(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_IDX, 0)?;
+    registers.set(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_NUM, 0)?;
+    let Some(reorder) = reorder else {
+        return Ok(());
+    };
+    registers.set(vepu510_regs::H264_SYNT_SLI2_REF_LIST0_RODR, 1)?;
+    match reorder {
+        crate::encoder::ReferenceReorder::LongTerm { long_term_pic_num } => {
+            registers.set(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_IDX, 2)?;
+            registers.set(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_NUM, long_term_pic_num)?;
+        }
+        crate::encoder::ReferenceReorder::ShortTerm(order) => {
+            let max_pic_num = 1u32 << (u32::from(log2_max_frame_num_minus4) + 4);
+            let forward = frame_num
+                .wrapping_add(max_pic_num)
+                .wrapping_sub(order.reference_frame_num())
+                % max_pic_num;
+            let (direction, distance) = if forward <= max_pic_num / 2 {
+                (0, forward)
+            } else {
+                (1, max_pic_num - forward)
+            };
+            if distance == 0 {
+                return Err("VEPU510 reference reorder resolves to the current frame".into());
+            }
+            registers.set(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_IDX, direction)?;
+            registers.set(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_NUM, distance - 1)?;
+        }
+    }
+    Ok(())
+}
+
 fn zero_buffer(buffer: &mut DmaBuf) -> Result<(), String> {
     buffer
         .sync_write_begin()
@@ -790,5 +963,71 @@ fn measured_from_status(status: &[u32]) -> rc_model::Measured {
         madi: 0,
         madp: 0,
         iblk4_prop: (p4 + p8 + p16) * 256 / mbs,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoder::{ReferenceReorder, ShortTermReorder};
+
+    fn p_registers() -> RegisterFile {
+        RegisterFile::captured_fixqp_p_320x240(9, 10, 16, 13, 17, 14, 18, 15, 2).unwrap()
+    }
+
+    #[test]
+    fn long_term_reorder_sets_the_vendor_register_fields() {
+        let mut registers = p_registers();
+        apply_reference_reorder(
+            &mut registers,
+            Some(ReferenceReorder::LongTerm {
+                long_term_pic_num: 3,
+            }),
+            4,
+            12,
+        )
+        .unwrap();
+        assert_eq!(
+            registers
+                .get(vepu510_regs::H264_SYNT_SLI2_REF_LIST0_RODR)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            registers
+                .get(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_IDX)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            registers
+                .get(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_NUM)
+                .unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn short_term_reorder_uses_direction_and_pic_num_delta() {
+        let mut registers = p_registers();
+        apply_reference_reorder(
+            &mut registers,
+            Some(ReferenceReorder::ShortTerm(ShortTermReorder::new(2, 0))),
+            2,
+            12,
+        )
+        .unwrap();
+        assert_eq!(
+            registers
+                .get(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_IDX)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            registers
+                .get(vepu510_regs::H264_SYNT_SLI2_RODR_PIC_NUM)
+                .unwrap(),
+            1
+        );
     }
 }

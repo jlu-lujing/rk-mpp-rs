@@ -297,11 +297,16 @@ standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 28 NAL 一致，YUV 为 `7794eb88…488f8e2`；TSVC4 的 long-term 替换和 MMCO
 路径也达到 28 NAL 一致，YUV 为 `33923dd2…d1186a`。跨 `gop=60` 的
 64 帧双 IGOP 测试再达到 136 NAL 一致，YUV 为 `a3ad1bc6…35a0593`。
-VEPU510 多帧层级映射、其余高级编码控制仍待继续补齐。
+lf1 VEPU510 的 TSVC2 12 帧也已达到 26 NAL 和 YUV
+`77a92442…fe35ab` 逐字节一致。VEPU510 TSVC3 的 C 端前 7 帧漏发 type-14
+prefix，但两路解码 YUV 完全相同；TSVC4 的 C packet assembly 冷启动不稳定，
+5 次中 3 次与 Rust 的 26 NAL/YUV 完全一致，其余两次漏 prefix，其中一次
+重建也不同。板级回归会重试 C 直到取得稳定 oracle。其余高级编码控制仍待
+继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的
-`mpi_enc_test` 中跑通。H.264 单帧、默认 6 帧、t6 TSVC2 6/12 帧以及
-TSVC3/TSVC4 12 帧的
+`mpi_enc_test` 中跑通。H.264 单帧、默认 6 帧、t6 TSVC2/TSVC3/TSVC4
+12 帧以及 lf1 TSVC2 12 帧的
 SPS/PPS、rc-SEI、type-14 prefix、VCL NAL 和解码重建一致，仅 version-SEI
 的构建身份文本长度不同；H.265 单帧和 6 帧、MJPEG 均 stream 逐字节一致。
 RK3576 High-profile 的 CABAC/8x8 模板、
