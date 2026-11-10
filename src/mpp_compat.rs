@@ -180,6 +180,13 @@ impl ReferenceSchedule {
         }
     }
 
+    fn force_idr(&mut self) {
+        self.next_sequence = 0;
+        self.frame_num = 0;
+        self.last_non_reference = false;
+        self.active.clear();
+    }
+
     fn prepare(&self) -> Result<PendingReferenceFrame, String> {
         let sequence = self.next_sequence;
         if sequence == 0 {
@@ -705,6 +712,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             context.encoder_ref_pattern =
                 standalone::encoder_cfg_ref_pattern(param).unwrap_or_default();
             let encoder_ref_long_term = standalone::encoder_cfg_long_term_config(param);
+            let has_ref_cfg = standalone::encoder_cfg_has_ref_cfg(param);
             context.encoder_ref_schedule = None;
             let mut config = match unsafe { cfg::encoder_config(param) } {
                 Ok(config) => config,
@@ -716,6 +724,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             match context.encoder_ref_pattern.len() {
                 // mpp_enc_ref_cfg_check publishes the short-term CPB depth
                 // into h264e_sps_init.
+                0 if !has_ref_cfg => config = config.with_num_ref_frames(1),
                 0 => {}
                 2 => config = config.with_num_ref_frames(1),
                 _ => config = config.with_num_ref_frames(2),
@@ -740,18 +749,20 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                             if encoder.force_reference_slot(None).is_err() {
                                 return MPP_NOK;
                             }
-                        } else if matches!(config.profile(), 0 | 66) {
+                        } else if has_ref_cfg && matches!(config.profile(), 0 | 66) {
                             if encoder.force_reference_slot(Some(0)).is_err() {
                                 eprintln!(
                                     "rk-mpp-rs mpp: default MPP H.264 reference schedule is unavailable"
                                 );
                                 return MPP_NOK;
                             }
-                        } else if config.profile() != 100 {
+                        } else if !matches!(config.profile(), 0 | 66 | 100) {
                             eprintln!(
                                 "rk-mpp-rs mpp: H.264 profile {} is not supported",
                                 config.profile()
                             );
+                            return MPP_NOK;
+                        } else if encoder.force_reference_slot(None).is_err() {
                             return MPP_NOK;
                         }
                     }
@@ -771,13 +782,59 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                 }
             }
         }
-        MPP_ENC_GET_CFG
-        | MPP_ENC_SET_IDR_FRAME
-        | MPP_ENC_SET_SEI_CFG
-        | MPP_ENC_SET_HEADER_MODE
-        | MPP_ENC_SET_OSD_PLT_CFG
-        | MPP_ENC_SET_RC_API
-        | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
+        MPP_ENC_GET_CFG | MPP_ENC_SET_OSD_PLT_CFG | MPP_ENC_SET_RC_API | MPP_SET_OUTPUT_TIMEOUT => {
+            MPP_OK
+        }
+        MPP_ENC_SET_IDR_FRAME => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            let Some(encoder) = context.encoder.as_mut() else {
+                return MPP_ERR_VALUE;
+            };
+            if encoder.force_idr().is_err() {
+                return MPP_NOK;
+            }
+            if let Some(schedule) = context.encoder_ref_schedule.as_mut() {
+                schedule.force_idr();
+            }
+            MPP_OK
+        }
+        MPP_ENC_SET_SEI_CFG => {
+            if context.ctx_type != MPP_CTX_ENC || param.is_null() {
+                return MPP_ERR_VALUE;
+            }
+            let mode = unsafe { *param.cast::<u32>() };
+            if mode > 2 {
+                return MPP_NOK;
+            }
+            let Some(encoder) = context.encoder.as_mut() else {
+                return MPP_ERR_VALUE;
+            };
+            if encoder.set_sei_enabled(mode != 0).is_err() && context.coding == MPP_VIDEO_CODING_AVC
+            {
+                return MPP_NOK;
+            }
+            MPP_OK
+        }
+        MPP_ENC_SET_HEADER_MODE => {
+            if context.ctx_type != MPP_CTX_ENC || param.is_null() {
+                return MPP_ERR_VALUE;
+            }
+            let mode = unsafe { *param.cast::<u32>() };
+            if mode > 1 {
+                return MPP_NOK;
+            }
+            let Some(encoder) = context.encoder.as_mut() else {
+                return MPP_ERR_VALUE;
+            };
+            if encoder.set_headers_each_idr(mode == 1).is_err()
+                && context.coding == MPP_VIDEO_CODING_AVC
+            {
+                return MPP_NOK;
+            }
+            MPP_OK
+        }
         MPP_ENC_SET_REF_CFG => {
             if context.ctx_type != MPP_CTX_ENC || param.is_null() {
                 return MPP_ERR_VALUE;
@@ -1109,6 +1166,29 @@ mod tests {
         assert_eq!(idr.current_slot, 0);
         assert!(!idr.non_reference);
         assert_eq!(idr.current_long_term_index, None);
+    }
+
+    #[test]
+    fn forced_idr_resets_the_reference_schedule_mid_gop() {
+        let mut schedule = ReferenceSchedule::new(
+            vec![
+                step(true, 1, REF_TO_PREV_REF_FRM),
+                step(false, 0, REF_TO_PREV_REF_FRM),
+            ],
+            None,
+            60,
+        );
+        for _ in 0..4 {
+            let frame = schedule.prepare().unwrap();
+            schedule.commit(frame);
+        }
+        schedule.force_idr();
+        let idr = schedule.prepare().unwrap();
+        assert_eq!(idr.current_slot, 0);
+        assert_eq!(idr.reference_slot, 0);
+        assert_eq!(idr.frame_num, 0);
+        assert_eq!(idr.poc, 0);
+        assert!(!idr.non_reference);
     }
 }
 

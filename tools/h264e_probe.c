@@ -23,6 +23,7 @@
  *               [dblk disable alpha beta] [roi x y w h fi qpmode qpval]...
  *               [gop n] [hier d0:d1:d2:d3:n0:n1:n2:n3]
  *               [gdr mode num] [split mode arg] [splitout value] [seioff]
+ *               [forceidr frame[,frame...]] [headereach]
  *
  *   mode 0 = fixed QP, 1 = CBR, 2 = VBR, 3 = AVBR.
  *   `gop` overrides the hard-coded intra GOP of 60.
@@ -35,6 +36,9 @@
  *   `hier` enables hierarchical QP with four layer deltas and frame counts.
  *   `seioff` sends MPP_ENC_SEI_MODE_DISABLE for streams intended to compare
  *   only the SPS/PPS prefix.
+ *   `forceidr` sends MPP_ENC_SET_IDR_FRAME immediately before each listed
+ *   zero-based input frame.
+ *   `headereach` requests MPP_ENC_HEADER_MODE_EACH_IDR.
  *   qp: the value written to the initial-quality field; pass -1 under a rate
  *       control to say "the caller left it unset" (written as -1 so the model
  *       takes its derivation branch), ignored beyond that.
@@ -112,6 +116,25 @@ static MPP_RET set_deblock(MppEncCfg cfg, int disable, int alpha, int beta)
     return ret;
 }
 
+static int force_idr_contains(const char *spec, int frame)
+{
+    const char *cursor = spec;
+
+    while (cursor && *cursor) {
+        char *end = NULL;
+        long value = strtol(cursor, &end, 10);
+
+        if (end == cursor)
+            break;
+        if (value == frame)
+            return 1;
+        if (*end != ',')
+            break;
+        cursor = end + 1;
+    }
+    return 0;
+}
+
 typedef struct PacketReaderCtx_t {
     MppCtx ctx;
     MppApi *mpi;
@@ -180,6 +203,8 @@ int main(int argc, char **argv)
     int have_split = 0, split_mode = 0, split_arg = 0, split_out = 0;
     int have_hier = 0;
     int sei_off = 0;
+    int header_each = 0;
+    const char *force_idr = NULL;
     int hier_qp_delta[4] = { 0, 0, 0, 0 };
     int hier_frame_num[4] = { 0, 0, 0, 0 };
     int hor_stride = (width + 15) & ~15;
@@ -303,6 +328,14 @@ int main(int argc, char **argv)
             have_hier = 1;
         } else if (!strcmp(argv[arg], "seioff")) {
             sei_off = 1;
+        } else if (!strcmp(argv[arg], "forceidr")) {
+            if (arg + 1 >= argc) {
+                fprintf(stderr, "forceidr wants a frame list\n");
+                return 2;
+            }
+            force_idr = argv[++arg];
+        } else if (!strcmp(argv[arg], "headereach")) {
+            header_each = 1;
         }
     }
 
@@ -400,6 +433,11 @@ int main(int argc, char **argv)
 
         CHECK(mpi->control(ctx, MPP_ENC_SET_SEI_CFG, &sei_mode));
     }
+    if (header_each) {
+        MppEncHeaderMode header_mode = MPP_ENC_HEADER_MODE_EACH_IDR;
+
+        CHECK(mpi->control(ctx, MPP_ENC_SET_HEADER_MODE, &header_mode));
+    }
 
     /* The ROI regions are re-read from the tail of the command line here, the
      * same way mpi_enc_test builds them per frame: the same regions every
@@ -493,6 +531,9 @@ int main(int argc, char **argv)
             }
             reader_started = 1;
         }
+
+        if (force_idr_contains(force_idr, i))
+            CHECK(mpi->control(ctx, MPP_ENC_SET_IDR_FRAME, NULL));
 
         put_ret = mpi->encode_put_frame(ctx, frame);
         mpp_frame_deinit(&frame);

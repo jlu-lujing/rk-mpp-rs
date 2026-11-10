@@ -73,9 +73,12 @@ pub struct Vepu510H264 {
     smear: [DmaBuf; 3],
     md_info: DmaBuf,
     idr_done: bool,
+    idr_pic_id: u32,
     frame_number: u32,
     input_fd_override: Option<i32>,
     next_layout: Option<PictureLayout>,
+    force_next_idr: bool,
+    headers_each_idr: bool,
 }
 
 impl Vepu510H264 {
@@ -137,9 +140,12 @@ impl Vepu510H264 {
             smear,
             md_info,
             idr_done: false,
+            idr_pic_id: 0,
             frame_number: 0,
             input_fd_override: None,
             next_layout: None,
+            force_next_idr: false,
+            headers_each_idr: false,
         })
     }
 
@@ -171,6 +177,16 @@ impl Vepu510H264 {
         Ok(())
     }
 
+    pub(crate) fn force_idr(&mut self) {
+        self.force_next_idr = true;
+    }
+
+    pub(crate) fn set_headers_each_idr(&mut self, each_idr: bool) {
+        self.headers_each_idr = each_idr;
+    }
+
+    pub(crate) fn set_sei_enabled(&mut self, _enabled: bool) {}
+
     /// Streaming variant of the captured fixed-QP path: one IDR followed by P
     /// pictures for a 320x240 QP26 Baseline sequence.
     pub fn encode_fixed_qp_next_320x240(
@@ -178,6 +194,7 @@ impl Vepu510H264 {
         nv12: &[u8],
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
         let layout = self.next_layout.take();
+        let force_idr = std::mem::take(&mut self.force_next_idr);
         let direct_input = self.input_fd_override.is_some();
         if !direct_input && nv12.len() < INPUT_SIZE {
             return Err(format!(
@@ -190,9 +207,20 @@ impl Vepu510H264 {
         } else {
             &nv12[..INPUT_SIZE]
         };
-        if !self.idr_done {
-            let encoded =
-                self.encode_idr_with_layout(input_data, &[], SplitMode::None, 0, 0, layout)?;
+        if !self.idr_done || force_idr {
+            if self.idr_done {
+                self.idr_pic_id = self.idr_pic_id.saturating_add(1);
+            }
+            let include_header = !self.idr_done || self.headers_each_idr;
+            let encoded = self.encode_idr_with_layout(
+                input_data,
+                &[],
+                SplitMode::None,
+                0,
+                0,
+                layout,
+                include_header,
+            )?;
             self.idr_done = true;
             self.frame_number = 0;
             return Ok((encoded.stream, true, 0, 0));
@@ -537,7 +565,16 @@ impl Vepu510H264 {
         split_arg: u32,
         split_out: u32,
     ) -> Result<EncodedFrame, String> {
-        self.encode_idr_with_layout(nv12, rois, split_mode, split_arg, split_out, None)
+        let include_header = !self.idr_done;
+        self.encode_idr_with_layout(
+            nv12,
+            rois,
+            split_mode,
+            split_arg,
+            split_out,
+            None,
+            include_header,
+        )
     }
 
     fn encode_idr_with_layout(
@@ -548,15 +585,21 @@ impl Vepu510H264 {
         split_arg: u32,
         split_out: u32,
         layout: Option<PictureLayout>,
+        include_header: bool,
     ) -> Result<EncodedFrame, String> {
         let config = &self.config;
-        let header = encoder::build_headers(config).map_err(|e| e.to_string())?;
-        if !matches!(header.len(), 36..=38) {
-            return Err(format!(
-                "unexpected no-SEI VEPU510 header length {}",
-                header.len()
-            ));
-        }
+        let mut prefix = if include_header {
+            let header = encoder::build_headers(config).map_err(|e| e.to_string())?;
+            if !matches!(header.len(), 36..=38) {
+                return Err(format!(
+                    "unexpected no-SEI VEPU510 header length {}",
+                    header.len()
+                ));
+            }
+            header
+        } else {
+            Vec::new()
+        };
         let current_slot = layout.map_or(0, |layout| layout.current_slot);
         let mut registers = if config.profile >= PROFILE_HIGH {
             RegisterFile::captured_fixqp_idr_320x240_high(
@@ -576,6 +619,7 @@ impl Vepu510H264 {
                 self.smear[current_slot].fd() as u32,
             )?
         };
+        registers.set(vepu510_regs::H264_SYNT_SLI1_IDR_PID, self.idr_pic_id)?;
         if let Some(layout) = layout {
             registers.set(
                 vepu510_regs::H264_SYNT_REFM0_LTRF_FLG,
@@ -584,7 +628,6 @@ impl Vepu510H264 {
         }
         registers.apply_roi_regions(rois)?;
         registers.apply_slice_split(split_mode, split_arg, split_out)?;
-        let mut prefix = header;
         if let Some(layout) = layout {
             prefix.extend(h264e::svc_prefix_nal(
                 true,

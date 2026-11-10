@@ -710,6 +710,7 @@ pub struct Vepu580H264 {
     next_prefix_temporal_id_override: Option<u8>,
     next_reference_reorder_override: Option<crate::encoder::ReferenceReorder>,
     next_current_long_term_override: Option<u32>,
+    force_next_idr: bool,
     last_non_reference: bool,
     /// The rate-control model, present only in CBR mode.
     rc: Option<rc_model::Model>,
@@ -743,6 +744,8 @@ pub struct Vepu580H264 {
     /// boundary, which is why recovery frames after the opening IDR carry no
     /// prefix in the reference's own steady state.
     hdr_added: bool,
+    headers_each_idr: bool,
+    sei_enabled: bool,
 }
 
 impl Vepu580H264 {
@@ -838,6 +841,8 @@ impl Vepu580H264 {
             },
             last_rate_control: None,
             hdr_added: false,
+            headers_each_idr: false,
+            sei_enabled: true,
             state: FrameState::default(),
             slot: 0,
             next_slot_override: None,
@@ -846,6 +851,7 @@ impl Vepu580H264 {
             next_prefix_temporal_id_override: None,
             next_reference_reorder_override: None,
             next_current_long_term_override: None,
+            force_next_idr: false,
             last_non_reference: false,
             tune: SceneTune::new(false),
             input_fd_override: None,
@@ -871,6 +877,18 @@ impl Vepu580H264 {
         }
         self.forced_reference_slot = slot;
         Ok(())
+    }
+
+    pub fn force_idr(&mut self) {
+        self.force_next_idr = true;
+    }
+
+    pub fn set_headers_each_idr(&mut self, each_idr: bool) {
+        self.headers_each_idr = each_idr;
+    }
+
+    pub fn set_sei_enabled(&mut self, enabled: bool) {
+        self.sei_enabled = enabled;
     }
 
     pub fn force_next_picture_layout(
@@ -961,6 +979,9 @@ impl Vepu580H264 {
     /// The two user-data SEI NALUs `mpp_enc_add_sw_header` emits ahead of every
     /// IDR, independently of whether the SPS/PPS header has already been added.
     fn idr_seis(&self) -> Result<Vec<u8>, String> {
+        if !self.sei_enabled {
+            return Ok(Vec::new());
+        }
         let mut out = Vec::new();
         out.extend(sei::user_data(
             &sei::UUID_VERSION,
@@ -1188,19 +1209,31 @@ impl Vepu580H264 {
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
         let previous_state = self.state;
         let previous_slot = self.slot;
+        let force_idr = std::mem::take(&mut self.force_next_idr);
         let non_reference = self.next_non_reference_override.take().unwrap_or(false);
         let prefix_temporal_id = self.next_prefix_temporal_id_override.take();
         let reference_reorder = self.next_reference_reorder_override.take();
         let current_long_term = self.next_current_long_term_override.take();
         if self.state.index != 0 || self.started {
-            self.state = next_picture_state(
-                self.state,
-                self.config.gop,
-                self.config.gdr_refresh_length(),
-                prefix_temporal_id.is_some(),
-                self.last_non_reference,
-                non_reference,
-            );
+            self.state = if force_idr {
+                FrameState {
+                    index: self.state.index + 1,
+                    is_idr: true,
+                    frame_num: 0,
+                    idr_pic_id: self.state.idr_pic_id + 1,
+                    poc: 0,
+                    ..FrameState::default()
+                }
+            } else {
+                next_picture_state(
+                    self.state,
+                    self.config.gop,
+                    self.config.gdr_refresh_length(),
+                    prefix_temporal_id.is_some(),
+                    self.last_non_reference,
+                    non_reference,
+                )
+            };
             self.state.is_vi = self.config.smart_p_vgop().is_some_and(|vi_len| {
                 !self.state.is_idr
                     && self.state.index % self.config.gop.max(1) as usize == vi_len as usize
@@ -1405,8 +1438,12 @@ impl Vepu580H264 {
         let headers = if disposition != PictureDisposition::Accepted {
             Vec::new()
         } else if state.is_idr {
-            let mut out = self.parameter_sets()?;
-            self.hdr_added = true;
+            let mut out = if !self.hdr_added || self.headers_each_idr {
+                self.hdr_added = true;
+                self.parameter_sets()?
+            } else {
+                Vec::new()
+            };
             out.extend(self.idr_seis()?);
             out
         } else if sweep_open {
@@ -3474,7 +3511,7 @@ fn amend_reference_slice(
     }
     if header.nal_ref_idc != 0 {
         if header.slice_type % 5 == 2 {
-            put_bits(&mut bits, u32::from(header.no_output_of_prior_pics), 1);
+            put_bits(&mut bits, 0, 1); // no_output_of_prior_pics_flag
             put_bits(&mut bits, u32::from(current_long_term_index.is_some()), 1);
         } else {
             if header.adaptive_ref_pic_buffering || !header.mmco.is_empty() {

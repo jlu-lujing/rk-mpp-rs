@@ -434,7 +434,11 @@ A 64-frame run crosses `gop=60`: the second IDR re-emits SPS/PPS and both SEIs,
 the reference schedule clears, and all 136 NAL units match. Its 7,372,800-byte
 YUV output has SHA-256
 `a3ad1bc65ac3ee66c2014ef3e2075722c5dc7aec77b29ec6568155f0f35a0593`.
-The VEPU510 multi-frame hierarchy and advanced encoder controls remain open.
+`MPP_ENC_SET_IDR_FRAME` is now executable rather than a no-op. With forced IDRs
+before input frames 2 and 4, `HEADER_MODE_EACH_IDR` enabled and SEI disabled,
+the official-path probe emits three IDR sections, four pictures each
+(`12` NALs total). t6 and lf1 both match the C stream and decode to the same
+691,200-byte YUV (`05901761…f71159` on t6). Other encoder controls remain open.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older

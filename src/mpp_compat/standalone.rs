@@ -1229,6 +1229,10 @@ pub(super) fn encoder_cfg_ref_pattern(config: *mut c_void) -> Option<Vec<Referen
     reference_frame_pattern(reference)
 }
 
+pub(super) fn encoder_cfg_has_ref_cfg(config: *mut c_void) -> bool {
+    encoder_cfg_reference(config).is_some()
+}
+
 pub(super) fn encoder_cfg_long_term_config(config: *mut c_void) -> Option<LongTermReferenceConfig> {
     let reference = encoder_cfg_reference(config)?;
     reference_long_term_config(reference)

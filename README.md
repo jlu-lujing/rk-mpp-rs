@@ -299,10 +299,14 @@ standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 64 帧双 IGOP 测试再达到 136 NAL 一致，YUV 为 `a3ad1bc6…35a0593`。
 lf1 VEPU510 的 TSVC2 12 帧也已达到 26 NAL 和 YUV
 `77a92442…fe35ab` 逐字节一致。VEPU510 TSVC3 的 C 端前 7 帧漏发 type-14
-prefix，但两路解码 YUV 完全相同；TSVC4 的 C packet assembly 冷启动不稳定，
-5 次中 3 次与 Rust 的 26 NAL/YUV 完全一致，其余两次漏 prefix，其中一次
-重建也不同。板级回归会重试 C 直到取得稳定 oracle。其余高级编码控制仍待
-继续补齐。
+prefix，但两路解码 YUV 完全相同；TSVC2/TSVC4 的 C packet assembly
+冷启动也不稳定，会出现漏发 prefix 的变体。TSVC4 的 5 次中 3 次与 Rust
+的 26 NAL/YUV 完全一致，其余两次漏 prefix，其中一次重建也不同。板级
+回归会重试 C 直到取得稳定 oracle。官方 H.264 对象路径的
+`MPP_ENC_SET_IDR_FRAME`、`MPP_ENC_SET_HEADER_MODE` 和
+`MPP_ENC_SET_SEI_CFG` 也已接通：帧 2/4 强制 IDR 在 t6/lf1 均为 12 NAL
+和 YUV 逐字节一致，强制 IDR 会重发 SPS/PPS，`SEI_MODE_DISABLE` 已生效。
+其余高级编码控制仍待继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的
 `mpi_enc_test` 中跑通。H.264 单帧、默认 6 帧、t6 TSVC2/TSVC3/TSVC4

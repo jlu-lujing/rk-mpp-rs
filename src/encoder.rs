@@ -861,6 +861,54 @@ impl Encoder {
         }
     }
 
+    pub fn force_idr(&mut self) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H264Vepu580(encoder) => {
+                encoder.force_idr();
+                Ok(())
+            }
+            Backend::H264Vepu510(encoder) => {
+                encoder.force_idr();
+                Ok(())
+            }
+            _ => Err(Error::Unsupported(
+                "per-picture forced IDR is currently implemented for H.264".to_string(),
+            )),
+        }
+    }
+
+    pub fn set_headers_each_idr(&mut self, each_idr: bool) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H264Vepu580(encoder) => {
+                encoder.set_headers_each_idr(each_idr);
+                Ok(())
+            }
+            Backend::H264Vepu510(encoder) => {
+                encoder.set_headers_each_idr(each_idr);
+                Ok(())
+            }
+            _ => Err(Error::Unsupported(
+                "per-IDR header mode is currently implemented for H.264".to_string(),
+            )),
+        }
+    }
+
+    pub fn set_sei_enabled(&mut self, enabled: bool) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H264Vepu580(encoder) => {
+                encoder.set_sei_enabled(enabled);
+                Ok(())
+            }
+            Backend::H264Vepu510(encoder) => {
+                encoder.set_sei_enabled(enabled);
+                Ok(())
+            }
+            _ => Err(Error::Unsupported(
+                "per-session SEI mode is currently implemented for H.264".to_string(),
+            )),
+        }
+    }
+
     pub(crate) fn supports_h264_reference_layout(&self) -> bool {
         matches!(
             &self.backend,
