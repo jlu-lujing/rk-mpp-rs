@@ -76,8 +76,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1238 passed / 0 failed / 40 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1242 passed / 0 failed / 40 ignored`，严格 rustdoc
+`1238 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1242 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
@@ -754,8 +754,9 @@ tile 恢复。最后一项用无效 input fd 在 t6 触发真实 `int_sta=0`；�
 `BatchServer` 用 `SET_SESSION_FD` 把最多 8 个真实 session 合成一个提交链。
 内核 6.1 的批量 wait 不填充每条 `mpp_bat_msg.ret`，所以采用“共享提交、
 逐 session poll”的分层回退。t6 的两条独立 VEPU2 JPEG 640x480 session
-同批编码后，输出分别与各自单会话逐字节一致；无 CCU 或命令不支持时自动
-退回顺序单会话。`scripts/board_framework_ccu.sh` 为 3/3。
+同批编码后，输出分别与各自单会话逐字节一致；lf1 的两条独立 VEPU510
+H.264 320x240 fixed-QP IDR 也通过同一批量路径，输出与各自单会话一致。
+两块板各 3/3；无 CCU 或命令不支持时自动退回顺序单会话。
 
 仍缺：内核协议没有 dma-fence；secure/TA 无可用接口或设备。
 VP8 与 H.264/HEVC/AV1/VP9 的池化帧已经真正持有 DPB lease；H.265

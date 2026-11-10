@@ -1,4 +1,5 @@
 use rk_mpp_rs::hal::jpege::{EncoderConfig, Vepu2Jpeg};
+use rk_mpp_rs::hal::vepu510_h264::Vepu510H264;
 use rk_mpp_rs::service::dma_heap::DmaBuf;
 use rk_mpp_rs::service::soc::CcuTopology;
 
@@ -61,4 +62,37 @@ fn two_jpeg_sessions_submit_through_one_ccu_batch() {
     assert_eq!(actual.right.bytes, expected_right);
     assert_eq!(actual.left.packets, vec![0..actual.left.bytes.len()]);
     assert_eq!(actual.right.packets, vec![0..actual.right.bytes.len()]);
+}
+
+#[test]
+#[ignore = "requires RK3576 VEPU510 and /dev/mpp_service"]
+fn two_vepu510_sessions_submit_through_one_ccu_batch() {
+    assert!(
+        CcuTopology::detect().video_encode,
+        "lf1 device tree must advertise the VEPU510 CCU"
+    );
+    let left_frame = nv12_input(320, 240, 29);
+    let right_frame = nv12_input(320, 240, 211);
+    let expected_left = Vepu510H264::open()
+        .unwrap()
+        .encode_fixed_qp_idr_320x240(&left_frame)
+        .unwrap();
+    let expected_right = Vepu510H264::open()
+        .unwrap()
+        .encode_fixed_qp_idr_320x240(&right_frame)
+        .unwrap();
+
+    let mut left = Vepu510H264::open().unwrap();
+    let mut right = Vepu510H264::open().unwrap();
+    let actual = Vepu510H264::encode_fixed_qp_idr_pair_320x240(
+        &mut left,
+        &left_frame,
+        &mut right,
+        &right_frame,
+    )
+    .unwrap();
+
+    assert!(actual.batched, "lf1 must expose SET_SESSION_FD");
+    assert_eq!(actual.left, expected_left);
+    assert_eq!(actual.right, expected_right);
 }

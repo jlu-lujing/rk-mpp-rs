@@ -147,7 +147,9 @@ state machine change.
   the real session's `POLL_HW_FINISH`. `CcuTopology` records the vdec/venc/JPEG
   device-tree nodes, and callers fall back to sequential jobs when neither the
   CCU nor `SET_SESSION_FD` is available. On t6, two independent VEPU2 JPEG
-  sessions submitted together match their standalone streams byte for byte.
+  sessions submitted together match their standalone streams byte for byte;
+  on lf1, two independent VEPU510 H.264 IDRs do the same. Each board passes
+  three repeated runs.
 - **Secure (W5-7)**: `MPP_FLAGS_SECURE_MODE` (0x10000) is exposed as a
   constant for protocol completeness. Every batch submit rejects a request
   carrying that bit with `ErrorKind::Unsupported` before issuing an ioctl.
@@ -207,7 +209,8 @@ Draft — mirrored here for context; the authoritative ledger is `ROADMAP.md`.
 - [x] W5 CCU batching (M10): device-tree CCU detection, one
       `SET_SESSION_FD` submission for up to eight sessions, and
       per-session poll fallback on the 6.1 batch-result limitation.
-      Two independent VEPU2 JPEG sessions match standalone output on t6.
+      Two independent VEPU2 JPEG sessions match standalone output on t6,
+      and two VEPU510 H.264 sessions do the same on lf1, 3/3 each.
 ```
 
 ## 7. Commands for the orchestrator (board)

@@ -26,9 +26,9 @@ t62 back to the RK3588 reference board.
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
 - The current t6 crate `--all-targets` gate is **1238 passed / 0 failed /
-  40 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
+  41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
   `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1242 passed /
-  0 failed / 40 ignored**. `cargo fmt --all --check` and `git diff --check`
+  0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
   packet metadata **1/1**. VEPU510 H.264/H.265 fixed-QP moving and still
@@ -270,7 +270,9 @@ the Rust path therefore polls each real session after the shared submit.
 `tests/framework_ccu_hw.rs` opens two independent VEPU2 JPEG sessions and
 encodes different 640x480 NV12 pictures through one batch. Both JPEG streams
 match standalone references byte for byte. `scripts/board_framework_ccu.sh`
-passes **3/3** repeated runs.
+passes **3/3** repeated runs. The same script selects lf1's VEPU510 path; two
+independent 320x240 fixed-QP IDR sessions also match their standalone streams
+and pass **3/3**.
 
 The previous board disappearance was not thermal: package readings were
 38–39°C. The prior boot log ends with CPU6 soft-lockup and RCU stall while

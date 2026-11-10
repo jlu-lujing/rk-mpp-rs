@@ -341,9 +341,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       与 C 参考相同，旧的“每进程单会话”结论已撤回
 - [x] W5-6 多核 CCU：设备树探测 vdec/venc/jpeg，`BatchServer` 用
       `SET_SESSION_FD` 把最多 8 个 session 合成一个提交批次；t6 两个独立
-      VEPU2 JPEG session 的批量结果与各自单会话逐字节一致。6.1 内核的批量
-      wait 不填 `mpp_bat_msg.ret`，因此提交后回退到每个真实 session 的 poll；
-      无 CCU 或 `SET_SESSION_FD` 不支持时自动走单会话路径。
+      VEPU2 JPEG session 和 lf1 两个独立 VEPU510 H.264 session 的批量结果都
+      与各自单会话逐字节一致，两块板各 3/3。6.1 内核的批量 wait 不填
+      `mpp_bat_msg.ret`，因此提交后回退到每个真实 session 的 poll；无 CCU
+      或 `SET_SESSION_FD` 不支持时自动走单会话路径。
 - [~] W5-7 secure/TA：无 TA 可验；服务层现已在任何 secure batch 下发前
       返回 `Unsupported`，但仍需真实 TA/kernel 提供能力探测接口后才能实现安全路径
 - [x] W5-8 错误恢复：HW timeout 进入 close/reopen recovery，legacy VDPU2

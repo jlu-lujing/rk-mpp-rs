@@ -9,8 +9,9 @@ use crate::codec::h264::encoder::{
 };
 use crate::codec::rc::model as rc_model;
 use crate::encoder::{ExternalRateControl, RateControlFeedback, RateControlReencode};
+use crate::service::batch::{BatchJob, BatchServer};
 use crate::service::dma_heap::DmaBuf;
-use crate::service::soc::{require_video_encode, VideoEncodeHal};
+use crate::service::soc::{require_video_encode, CcuTopology, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
 
 use super::h264e;
@@ -50,6 +51,26 @@ struct JobOutput {
     stream: Vec<u8>,
     status: [u32; STATUS_WORDS],
     packet_lengths: Vec<usize>,
+}
+
+/// Two independent VEPU510 fixed-QP IDR sessions submitted through one CCU
+/// batch. `batched` is false when the board has no encode CCU or the service
+/// does not expose `SET_SESSION_FD`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchEncodedH264 {
+    pub left: Vec<u8>,
+    pub right: Vec<u8>,
+    pub batched: bool,
+}
+
+struct PreparedFixedIdr {
+    registers: RegisterFile,
+    prefix: Vec<u8>,
+    offsets: Vec<RegOffsetInfo>,
+    output_capacity: usize,
+    high_profile: bool,
+    int_state: [u32; 1],
+    status: [u32; STATUS_WORDS],
 }
 
 #[derive(Clone, Copy)]
@@ -561,6 +582,81 @@ impl Vepu510H264 {
         Ok(stream)
     }
 
+    /// Encode one fixed-QP IDR on each of two independent VEPU510 sessions.
+    pub fn encode_fixed_qp_idr_pair_320x240(
+        left: &mut Self,
+        left_nv12: &[u8],
+        right: &mut Self,
+        right_nv12: &[u8],
+    ) -> Result<BatchEncodedH264, String> {
+        if left.idr_done || right.idr_done {
+            return Err("both VEPU510 pair sessions must be fresh".into());
+        }
+        let can_share_batch = CcuTopology::detect().video_encode;
+        let server = if can_share_batch {
+            match BatchServer::open(Client::RkvEnc as u32) {
+                Ok(server) => Some(server),
+                Err(error) if error.kind() == std::io::ErrorKind::Unsupported => None,
+                Err(error) => return Err(format!("open VEPU510 batch server: {error}")),
+            }
+        } else {
+            None
+        };
+        let Some(server) = server else {
+            return Ok(BatchEncodedH264 {
+                left: left.encode_fixed_qp_idr_320x240(left_nv12)?,
+                right: right.encode_fixed_qp_idr_320x240(right_nv12)?,
+                batched: false,
+            });
+        };
+
+        let mut left_job = left.prepare_fixed_idr(left_nv12)?;
+        let mut right_job = right.prepare_fixed_idr(right_nv12)?;
+        let mut left_batch = left_job.batch();
+        let mut right_batch = right_job.batch();
+        let mut jobs = [
+            BatchJob {
+                session: &mut left.svc,
+                batch: &mut left_batch,
+            },
+            BatchJob {
+                session: &mut right.svc,
+                batch: &mut right_batch,
+            },
+        ];
+        let submission = server.submit(&mut jobs);
+        drop(jobs);
+        drop(left_batch);
+        drop(right_batch);
+        let outcomes = match submission {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                let _ = left.svc.restart_after_hardware_error();
+                let _ = right.svc.restart_after_hardware_error();
+                return Err(format!("VEPU510 two-session CCU batch: {error}"));
+            }
+        };
+
+        let left_result = outcomes[0]
+            .as_ref()
+            .map_err(ToString::to_string)
+            .and_then(|_| left.finish_fixed_idr(left_job));
+        let right_result = outcomes[1]
+            .as_ref()
+            .map_err(ToString::to_string)
+            .and_then(|_| right.finish_fixed_idr(right_job));
+        match (left_result, right_result) {
+            (Ok(left), Ok(right)) => Ok(BatchEncodedH264 {
+                left,
+                right,
+                batched: true,
+            }),
+            (left, right) => Err(format!(
+                "VEPU510 CCU pair failed: left={left:?}, right={right:?}"
+            )),
+        }
+    }
+
     pub fn encode_fixed_qp_gop2_320x240(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
         self.encode_fixed_qp_gop_320x240(nv12, 2)
     }
@@ -1040,6 +1136,148 @@ impl Vepu510H264 {
         })
     }
 
+    fn prepare_fixed_idr(&mut self, nv12: &[u8]) -> Result<PreparedFixedIdr, String> {
+        if nv12.len() < INPUT_SIZE {
+            return Err(format!(
+                "VEPU510 pair input is {} bytes, expected {INPUT_SIZE}",
+                nv12.len()
+            ));
+        }
+        self.input
+            .sync_write_begin()
+            .map_err(|e| format!("VEPU510 pair input sync begin: {e}"))?;
+        self.input.as_mut_slice()[..INPUT_SIZE].copy_from_slice(&nv12[..INPUT_SIZE]);
+        self.input
+            .sync_write_end()
+            .map_err(|e| format!("VEPU510 pair input flush: {e}"))?;
+
+        let prefix = encoder::build_headers(&self.config).map_err(|error| error.to_string())?;
+        if !matches!(prefix.len(), 36..=38) {
+            return Err(format!(
+                "unexpected VEPU510 pair header length {}",
+                prefix.len()
+            ));
+        }
+        let high_profile = self.config.profile >= PROFILE_HIGH;
+        let input_fd = self.input.fd();
+        let mut registers = if high_profile {
+            RegisterFile::captured_fixqp_idr_320x240_high(
+                input_fd as u32,
+                self.output.fd() as u32,
+                self.recon[0].fd() as u32,
+                self.thumb[0].fd() as u32,
+                self.smear[0].fd() as u32,
+                self.md_info.fd() as u32,
+            )?
+        } else {
+            RegisterFile::captured_fixqp_idr_320x240(
+                input_fd as u32,
+                self.output.fd() as u32,
+                self.recon[0].fd() as u32,
+                self.thumb[0].fd() as u32,
+                self.smear[0].fd() as u32,
+            )?
+        };
+        registers.set(vepu510_regs::H264_SYNT_SLI1_IDR_PID, self.idr_pic_id)?;
+        for index in 4..=6 {
+            registers.frame[index] = input_fd as u32;
+        }
+        if !high_profile {
+            self.output
+                .sync_write_begin()
+                .map_err(|e| format!("VEPU510 pair output sync begin: {e}"))?;
+            self.output.as_mut_slice()[..prefix.len()].copy_from_slice(&prefix);
+            self.output
+                .sync_write_end()
+                .map_err(|e| format!("VEPU510 pair output prefix flush: {e}"))?;
+        }
+
+        let luma_size = WIDTH * HEIGHT;
+        let output_capacity = if high_profile {
+            self.output.len() - FBC_HEADER_SIZE
+        } else {
+            self.output.len() - 1
+        };
+        let output_start = if high_profile { 0 } else { prefix.len() };
+        let offsets = vec![
+            RegOffsetInfo {
+                reg_idx: 161,
+                offset: luma_size as u32,
+            },
+            RegOffsetInfo {
+                reg_idx: 162,
+                offset: luma_size as u32,
+            },
+            RegOffsetInfo {
+                reg_idx: 172,
+                offset: output_capacity as u32,
+            },
+            RegOffsetInfo {
+                reg_idx: 174,
+                offset: output_start as u32,
+            },
+            RegOffsetInfo {
+                reg_idx: 164,
+                offset: FBC_HEADER_SIZE as u32,
+            },
+            RegOffsetInfo {
+                reg_idx: 166,
+                offset: FBC_HEADER_SIZE as u32,
+            },
+        ];
+        Ok(PreparedFixedIdr {
+            registers,
+            prefix,
+            offsets,
+            output_capacity,
+            high_profile,
+            int_state: [0; 1],
+            status: [0; STATUS_WORDS],
+        })
+    }
+
+    fn finish_fixed_idr(&mut self, prepared: PreparedFixedIdr) -> Result<Vec<u8>, String> {
+        if prepared.int_state[0] & 1 == 0 {
+            let error = status_execution_error(&prepared.status);
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "VEPU510 pair completed without enc_done (int_sta=0x{:08x}, status={error})",
+                prepared.int_state[0]
+            ));
+        }
+        let payload_len = prepared.status[0] as usize;
+        if payload_len == 0 || payload_len > prepared.output_capacity {
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "invalid VEPU510 pair payload length {payload_len} (capacity {})",
+                prepared.output_capacity
+            ));
+        }
+        let expected_len = prepared
+            .prefix
+            .len()
+            .checked_add(payload_len)
+            .ok_or_else(|| "VEPU510 pair stream length overflow".to_string())?;
+        self.output
+            .sync_read_begin()
+            .map_err(|e| format!("VEPU510 pair output invalidate: {e}"))?;
+        let stream = if prepared.high_profile {
+            let mut stream = Vec::with_capacity(expected_len);
+            stream.extend_from_slice(&prepared.prefix);
+            stream.extend_from_slice(&self.output.as_slice()[..payload_len]);
+            stream
+        } else {
+            self.output.as_slice()[..expected_len].to_vec()
+        };
+        self.output
+            .sync_read_end()
+            .map_err(|e| format!("VEPU510 pair output sync end: {e}"))?;
+        self.last_status = Some(prepared.status);
+        self.last_encoded_bits = Some(prepared.status[0] as i32 * 8);
+        self.idr_done = true;
+        Ok(stream)
+    }
+
     fn run_job_with_status(
         &mut self,
         nv12: &[u8],
@@ -1225,6 +1463,22 @@ impl Vepu510H264 {
             status,
             packet_lengths,
         })
+    }
+}
+
+impl PreparedFixedIdr {
+    fn batch(&mut self) -> Batch {
+        let mut batch = Batch::new();
+        batch.reg_write(&self.registers.ctl, CTL_OFFSET);
+        batch.reg_write(&self.registers.frame, FRAME_OFFSET);
+        batch.reg_write(&self.registers.rc, RC_OFFSET);
+        batch.reg_write(&self.registers.param, PARAM_OFFSET);
+        batch.reg_write(&self.registers.sqi, SQI_OFFSET);
+        batch.reg_write(&self.registers.scl, SCL_OFFSET);
+        batch.reg_read(&mut self.int_state, HW_STATUS_OFFSET);
+        batch.reg_read(&mut self.status, STATUS_OFFSET);
+        batch.reg_offsets(&self.offsets);
+        batch
     }
 }
 
