@@ -208,6 +208,13 @@ pub struct Vepu580H265 {
     md_info: DmaBuf,
     tile_line_bufs: Vec<DmaBuf>,
     tile_warmed: bool,
+    /// The service reopen count observed when the tile warm-up state was made.
+    /// A background recovery replaces the fd while this object stays alive, so
+    /// the first tiled picture must be warmed again against the replacement.
+    service_reopens: u64,
+    /// A failed hardware job invalidates the reference epoch. The next frame
+    /// must be an IDR carrying parameter sets.
+    recovery_pending: bool,
     input_fd_override: Option<i32>,
     force_next_idr: bool,
     headers_each_idr: bool,
@@ -323,6 +330,8 @@ impl Vepu580H265 {
                 .map_err(|e| format!("allocate H.265 motion info: {e}"))?,
             tile_line_bufs: Vec::new(),
             tile_warmed: false,
+            service_reopens: 0,
+            recovery_pending: false,
             input_fd_override: None,
             force_next_idr: false,
             headers_each_idr: false,
@@ -348,9 +357,11 @@ impl Vepu580H265 {
     /// slicing this has one packet per completed slice; otherwise it is one
     /// complete access unit.
     pub fn encode_frame_packets(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
+        self.synchronize_service_recovery()?;
+        let recovery_restart = self.recovery_pending;
         let force_idr = std::mem::take(&mut self.force_next_idr);
-        let is_idr = self.frames == 0 || force_idr;
-        if force_idr {
+        let is_idr = self.frames == 0 || force_idr || recovery_restart;
+        if force_idr || recovery_restart {
             self.slot = 0;
         }
         if is_idr {
@@ -372,7 +383,10 @@ impl Vepu580H265 {
             let recovery_prefix =
                 !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
             let (picture, prefix) = if is_idr {
-                (Picture::Idr, self.frames == 0 || self.headers_each_idr)
+                (
+                    Picture::Idr,
+                    self.frames == 0 || self.headers_each_idr || recovery_restart,
+                )
             } else {
                 (
                     Picture::P {
@@ -403,11 +417,15 @@ impl Vepu580H265 {
             }
             self.slot = 1 - self.slot;
             self.frames += 1;
+            self.recovery_pending = false;
             return Ok(encoded);
         }
         let recovery_prefix = !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
         let (picture, prefix) = if is_idr {
-            (Picture::Idr, self.frames == 0 || self.headers_each_idr)
+            (
+                Picture::Idr,
+                self.frames == 0 || self.headers_each_idr || recovery_restart,
+            )
         } else {
             let poc = self.frames.saturating_sub(self.idr_frame);
             (Picture::P { poc_lsb: poc }, false)
@@ -415,6 +433,7 @@ impl Vepu580H265 {
         let encoded = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, None)?;
         self.slot = 1 - self.slot;
         self.frames += 1;
+        self.recovery_pending = false;
         Ok(encoded)
     }
 
@@ -518,6 +537,36 @@ impl Vepu580H265 {
 
     pub fn set_syntax_options(&mut self, syntax: SyntaxOptions) {
         self.syntax = syntax;
+    }
+
+    /// Recovery counters for the underlying `mpp_service` client.
+    pub fn recovery_stats(&self) -> crate::service::RecoveryStats {
+        self.service.recovery_stats()
+    }
+
+    /// A hardware failure closes and reopens the service fd underneath this
+    /// session. The VEPU580's dual-core tile handshake is not reset by that
+    /// replacement, so discard both the warm-up flag and the line-buffer state
+    /// that belonged to the failed fd. The next tiled picture will perform the
+    /// same discarded prepass as a freshly opened session.
+    fn synchronize_service_recovery(&mut self) -> Result<(), String> {
+        let reopens = self.service.recovery_stats().session_reopens;
+        if reopens == self.service_reopens {
+            return Ok(());
+        }
+        self.tile_warmed = false;
+        for (index, buffer) in self.tile_line_bufs.iter_mut().enumerate() {
+            buffer
+                .sync_write_begin()
+                .map_err(|e| format!("H.265 tile line buffer {index} recovery sync: {e}"))?;
+            buffer.as_mut_slice().fill(0);
+            buffer
+                .sync_write_end()
+                .map_err(|e| format!("H.265 tile line buffer {index} recovery flush: {e}"))?;
+        }
+        self.recovery_pending = true;
+        self.service_reopens = reopens;
+        Ok(())
     }
 
     fn poll_picture(
@@ -682,9 +731,11 @@ impl Vepu580H265 {
             &mut dyn FnMut(RateControlFeedback) -> Result<Option<RateControlReencode>, String>,
         >,
     ) -> Result<EncodedFrame, String> {
+        self.synchronize_service_recovery()?;
+        let recovery_restart = self.recovery_pending;
         let force_idr = std::mem::take(&mut self.force_next_idr);
-        let is_idr = self.frames == 0 || force_idr;
-        if force_idr {
+        let is_idr = self.frames == 0 || force_idr || recovery_restart;
+        if force_idr || recovery_restart {
             self.slot = 0;
         }
         if is_idr {
@@ -692,7 +743,10 @@ impl Vepu580H265 {
         }
         let recovery_prefix = !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
         let (mut picture, prefix) = if is_idr {
-            (Picture::Idr, self.frames == 0 || self.headers_each_idr)
+            (
+                Picture::Idr,
+                self.frames == 0 || self.headers_each_idr || recovery_restart,
+            )
         } else {
             (
                 Picture::P {
@@ -741,6 +795,7 @@ impl Vepu580H265 {
                 .transpose()?
                 .flatten();
             if let Some(next) = next {
+                validate_recovery_reencode(recovery_restart, &next)?;
                 if next.is_intra && !next.is_idr {
                     return Err("VEPU580 H.265 reencode cannot switch to non-IDR I".to_string());
                 }
@@ -769,6 +824,7 @@ impl Vepu580H265 {
         }
         self.slot = 1 - self.slot;
         self.frames += 1;
+        self.recovery_pending = false;
         Ok(encoded)
     }
 
@@ -790,8 +846,10 @@ impl Vepu580H265 {
 
     pub fn encode_idr_packets(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
         assert_eq!(self.frames, 0, "encode_idr is the opening picture");
+        self.synchronize_service_recovery()?;
         let encoded = self.encode_picture_packets(nv12, Picture::Idr, true)?;
         self.frames = 1;
+        self.recovery_pending = false;
         Ok(encoded)
     }
 
@@ -1267,6 +1325,17 @@ pub fn uniform_tile_widths(width: usize, columns: usize) -> Vec<(u32, u32)> {
         .collect()
 }
 
+fn validate_recovery_reencode(
+    recovery_restart: bool,
+    next: &RateControlReencode,
+) -> Result<(), String> {
+    if recovery_restart && !next.is_idr {
+        Err("VEPU580 H.265 recovery IDR cannot be reencoded as a non-IDR picture".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1357,5 +1426,27 @@ mod tests {
     #[test]
     fn slice_length_sum_must_match_status() {
         assert!(output_packets(&[], &[0; 9], &[4, 4]).is_err());
+    }
+
+    #[test]
+    fn recovery_idr_cannot_be_downgraded_by_the_reencode_callback() {
+        let next = RateControlReencode {
+            target: ExternalRateControl {
+                bit_target: 1,
+                qp_target: 26,
+                qp_min: 8,
+                qp_max: 48,
+            },
+            is_intra: false,
+            is_idr: false,
+        };
+        assert!(validate_recovery_reencode(true, &next).is_err());
+        assert!(validate_recovery_reencode(false, &next).is_ok());
+
+        let idr = RateControlReencode {
+            is_idr: true,
+            ..next
+        };
+        assert!(validate_recovery_reencode(true, &idr).is_ok());
     }
 }

@@ -26,6 +26,14 @@ ssh -n "$BOARD" '
 ssh -n "$BOARD" '
   export PATH="$HOME/.cargo/bin:$PATH"
   cd "$HOME/rk-mpp-rs"
+  timeout 120 cargo test --test framework_recovery_hw \
+    h265_tile_restarts_with_idr_after_an_error_reopens_the_service \
+    -- --ignored --nocapture --test-threads=1
+'
+
+ssh -n "$BOARD" '
+  export PATH="$HOME/.cargo/bin:$PATH"
+  cd "$HOME/rk-mpp-rs"
   cargo test --test vp_streams \
     vp8_stream_policy_marks_a_damaged_middle_packet \
     -- --ignored --nocapture --test-threads=1

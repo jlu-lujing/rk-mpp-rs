@@ -342,10 +342,12 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W5-6 多核 CCU：分发与回退（若该 SoC 无 CCU，则只做单核路径并记录）
 - [~] W5-7 secure/TA：无 TA 可验；服务层现已在任何 secure batch 下发前
       返回 `Unsupported`，但仍需真实 TA/kernel 提供能力探测接口后才能实现安全路径
-- [~] W5-8 错误恢复：HW timeout 进入 close/reopen recovery，legacy VDPU2
-      IRQ 错误可恢复，session replacement/fd 生命周期板级 3/3；RESET_SESSION
-      仅保留显式破坏性诊断。仍需真实 STATUS 异常注入和 H.265 首 tile 与
-      recovery 组合门。
+- [x] W5-8 错误恢复：HW timeout 进入 close/reopen recovery，legacy VDPU2
+      IRQ 错误可恢复，session replacement/fd 生命周期、真实 VP8 STATUS 错误和
+      H.265 tile recovery 板级 4/4；invalid input fd 在 t6 触发真实
+      `int_sta=0`，重开后清空 tile line buffer、重新执行丢弃预跑，并把下一帧
+      强制成带参数集的 IDR，输出与全新会话逐字节一致。RESET_SESSION 仅保留
+      显式破坏性诊断。
 - [x] W5-9 统计与追踪：`TaskTiming` 记录排队、执行和端到端耗时；
       `TaskMetrics` 累计 submitted/done/failed/cancelled、总耗时和
       max queued/running；现有 bounded event channel 同步携带每任务 timing。

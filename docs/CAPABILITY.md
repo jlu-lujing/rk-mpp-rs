@@ -48,6 +48,7 @@
 | VDPP（client 29） | 不存在 | RK3588 无该硬件；10-bit↔8-bit/HDR 随之不可验证 |
 | legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行 |
 | 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264/HEVC/AV1/VP9 DPB surface 均持有 lease；t6 async demo、H.264/HEVC/AV1/VP9 池化边界测试全过 |
+| 硬件错误恢复 | 完成（W5-8） | submit/poll 故障全部走 close-before-open 会话替换，不调用会污染 t6 的 `RESET_SESSION`。`board_framework_recovery.sh` 4/4：16 次替换、H.264 重开后逐字节复用、VP8 截断 packet 的真实 STATUS 错误，以及 H.265 tile 恢复。H.265 项用无效 input fd 触发真实 `int_sta=0`，重开后清空 tile line buffer、重新执行丢弃预跑，并强制下一帧为带参数集 IDR；恢复码流与全新会话逐字节一致，RC reencode callback 不能把该 IDR 降回 P |
 | 对外解码 SDK | H.264/H.265/VP9/AV1/MJPEG V1.3 完成 | `include/rk_mpp_rs.h` 与 `rk_mpp_rs::sdk`；共享/静态库、C/C++ 链接、分块或 packet 输入、flush/reset/recover/status/EOS、显式 frame release。lf1 与 t6 上 H.264/MJPEG NV12/I420、H.265/VP9 8-bit NV12/I420 及 10-bit I420P10、AV1 8-bit 与 VDPU383 10-bit 均与对应 oracle 逐字节；t6 AV1 10-bit 按已登记 film-grain C bug 与 Rust/libaom 对齐。新 V1 暂不含 RGB888，旧 `rk_jpeg_*` 保留 |
 | VP8 解码公共接口 | V1.7 完成 | 同一 decoder handle、一 packet 一 coded picture、NV12/I420、EOS/reset/release；t6 12 帧 alt-ref 输出与 C 逐字节。RK3576 无 VP8 decoder，lf1 明确 SKIP |
 | MPEG-2 / MPEG-4 / H.263 公共接口 | V1.8 完成 | 同一 decoder handle、任意分块 elementary stream、NV12/I420、EOS/reset/release；受现有完整 stream decoder 限制，在 EOS/flush 统一产出。t6 10/12/12 帧与旧 C oracle 逐字节；lf1 无 VDPU2，明确 SKIP |
@@ -150,7 +151,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
-当前 ROADMAP：**106 完成 / 6 未完成**（含缩进子项为 144 / 10）。未完成项里 5 项属于上表的
+当前 ROADMAP：**107 完成 / 6 未完成**（含缩进子项为 145 / 10）。未完成项里 5 项属于上表的
 平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 103 个 slice（含真实 2×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、

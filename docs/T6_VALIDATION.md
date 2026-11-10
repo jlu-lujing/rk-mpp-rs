@@ -25,8 +25,11 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 workspace gate is **1235 passed / 0 failed / 38 ignored**;
-  `cargo fmt --all -- --check` and `git diff --check` are clean.
+- The current t6 crate `--all-targets` gate is **1236 passed / 0 failed /
+  39 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1240 passed /
+  0 failed / 39 ignored**. `cargo fmt --all --check` and `git diff --check`
+  are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
   packet metadata **1/1**. VEPU510 H.264/H.265 fixed-QP moving and still
   matrices are both **2/2** per codec. Built-in CBR/VBR/AVBR are also connected:
@@ -245,6 +248,17 @@ and health-checks a fresh session. The reset-only diagnostic passes 32
 open/reset/query/drop cycles, but it is now an explicitly destructive example
 rather than part of the ignored-test suite. The close-before-open decode gate
 passes on the current t6 boot.
+
+W5-8 gained the missing real-STATUS combination on 2026-11-11. A positive but
+unmapped input fd drives an H.265 320x240 auto-tile session through the real
+submit path; t6 completes the job without `enc_done` (`int_sta=0x00000000`),
+so the service closes and reopens the client fd. The encoder then zeroes the
+tile line buffers, invalidates the warm-up marker, and makes the next picture
+a parameter-set IDR instead of a P frame against an unknown reference epoch.
+That recovered IDR is byte-identical to a newly opened encoder. The complete
+`scripts/board_framework_recovery.sh` gate is **4/4**: two session replacement
+checks, the H.265 tile recovery case, and the real VP8 damaged-packet STATUS
+case.
 
 The previous board disappearance was not thermal: package readings were
 38–39°C. The prior boot log ends with CPU6 soft-lockup and RCU stall while
@@ -727,7 +741,7 @@ Re-run against the committed tree:
 | t6 `cargo test --release --all-targets -- --ignored --test-threads=1` | all 31 board-only tests executed, 0 failed |
 | `scripts/board_regress.sh` | H.264 7/7 byte-exact |
 | `scripts/board_regress_hevc.sh` | 13 PASS, 1 SKIP (`/tmp/t720.hevc` C reference output absent on this boot) |
-| `scripts/board_framework_recovery.sh` | 3/3 (two close-before-open replacements, one VDPU2 damaged-packet gate) |
+| `scripts/board_framework_recovery.sh` | 4/4 (two close-before-open replacements, H.265 tile recovery after real `int_sta=0`, one VDPU2 damaged-packet gate) |
 | `scripts/board_framework_async_vs_sync.sh` | ALL PASS: 6/6 jobs identical, `submitted=6 done=6 failed=0 cancelled=0`, avg wait 2.134 ms, avg run 4.937 ms, 9 pool allocations under a cap of 10 |
 | `scripts/board_iep_modes_vs_probe.sh` | 9 PASS, 0 FAIL |
 | `scripts/board_mpp_packet_meta.sh` | t6 VEPU580 H.264/H.265 fixed-QP/CBR still+moving 8/8; lf1 VEPU510 fixed-QP/CBR/VBR/AVBR 2-frame matrix plus 6-frame RC stream/YUV; JPEG 2/2; H.265 motion-info hashes exact |
