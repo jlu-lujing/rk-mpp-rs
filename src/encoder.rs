@@ -946,6 +946,19 @@ impl Encoder {
         }
     }
 
+    pub(crate) fn set_h265_mpi_compat(&mut self) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H265Vepu510(encoder) => {
+                encoder.set_mpi_compat(true);
+                Ok(())
+            }
+            Backend::H265Vepu580(_) => Ok(()),
+            _ => Err(Error::Unsupported(
+                "MPI-compatible H.265 headers require an H.265 encoder".to_string(),
+            )),
+        }
+    }
+
     pub(crate) fn supports_h264_reference_layout(&self) -> bool {
         matches!(
             &self.backend,
@@ -1537,7 +1550,7 @@ fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265
 
 fn open_h265_vepu510(
     config: EncoderConfig,
-    mpi_compat: bool,
+    _mpi_compat: bool,
 ) -> Result<vepu510_h265::Vepu510H265, Error> {
     if config.roi.is_some() || config.gdr.is_some() || config.slice_split.is_some() {
         return Err(Error::Unsupported(
@@ -1566,12 +1579,7 @@ fn open_h265_vepu510(
                 .to_string(),
         ));
     }
-    if mpi_compat {
-        vepu510_h265::Vepu510H265::open_mpi_compat()
-            .map_err(|error| Error::Hardware(error.to_string()))
-    } else {
-        vepu510_h265::Vepu510H265::open().map_err(|error| Error::Hardware(error.to_string()))
-    }
+    vepu510_h265::Vepu510H265::open().map_err(|error| Error::Hardware(error.to_string()))
 }
 
 fn open_jpeg() -> Result<jpege720::JpegEncoder, Error> {

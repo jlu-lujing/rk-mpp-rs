@@ -135,6 +135,7 @@ struct CompatContext {
     encoder_ref_pattern: Vec<standalone::ReferenceFrameStep>,
     encoder_ref_schedule: Option<ReferenceSchedule>,
     rc_api: rc_api::Selection,
+    header_sync_requested: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -754,6 +755,12 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             }
             match encoder::Encoder::new_mpi_compat(config) {
                 Ok(mut encoder) => {
+                    if context.coding == MPP_VIDEO_CODING_HEVC && context.header_sync_requested {
+                        if let Err(error) = encoder.set_h265_mpi_compat() {
+                            eprintln!("rk-mpp-rs mpp: H.265 header mode rejected: {error}");
+                            return MPP_NOK;
+                        }
+                    }
                     if context.coding == MPP_VIDEO_CODING_HEVC && !has_ref_cfg {
                         if let Err(error) = encoder.set_h265_long_term_reference(false) {
                             eprintln!("rk-mpp-rs mpp: H.265 reference mode rejected: {error}");
@@ -916,6 +923,15 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             if context.ctx_type != MPP_CTX_ENC {
                 return MPP_ERR_VALUE;
             }
+            context.header_sync_requested = true;
+            if context.coding == MPP_VIDEO_CODING_HEVC {
+                if let Some(encoder) = context.encoder.as_mut() {
+                    if let Err(error) = encoder.set_h265_mpi_compat() {
+                        eprintln!("rk-mpp-rs mpp: H.265 header mode rejected: {error}");
+                        return MPP_NOK;
+                    }
+                }
+            }
             MPP_OK
         }
         _ => {
@@ -969,6 +985,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             encoder_ref_pattern: Vec::new(),
             encoder_ref_schedule: None,
             rc_api: rc_api::Selection::new(),
+            header_sync_requested: false,
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();

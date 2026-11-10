@@ -813,6 +813,10 @@ impl Vepu510H265 {
         self.sei_enabled = enabled;
     }
 
+    pub fn set_mpi_compat(&mut self, mpi_compat: bool) {
+        self.mpi_compat = mpi_compat;
+    }
+
     pub fn read_motion_info(&mut self) -> Result<Vec<u8>, String> {
         self.md_info
             .sync_read_begin()

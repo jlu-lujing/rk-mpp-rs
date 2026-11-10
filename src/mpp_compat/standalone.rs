@@ -338,32 +338,25 @@ pub unsafe extern "C" fn mpp_sgln_base_deinit(base: *mut SglnBase) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_get(
-    def: *mut *mut c_void,
-    _private_size: i32,
-    name: *const c_char,
-    _flags: u32,
-) -> i32 {
+pub unsafe extern "C" fn kmpp_objdef_get(def: *mut *mut c_void, _name: *const c_char) -> i32 {
     if def.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let name = match obj_def_name(name) {
-        Ok(name) => name,
-        Err(error) => return error,
-    };
-    unsafe { def.write(find_or_create_obj_def(name)) };
-    MPP_OK
+    unsafe { def.write(ptr::null_mut()) };
+    MPP_NOK
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn kmpp_objdef_register(
     def: *mut *mut c_void,
-    _private_size: i32,
     _size: i32,
-    name: *const c_char,
-    _flags: u32,
+    _name: *const c_char,
 ) -> i32 {
-    unsafe { kmpp_objdef_get(def, 0, name, 0) }
+    if def.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    unsafe { def.write(ptr::null_mut()) };
+    MPP_NOK
 }
 
 #[no_mangle]
@@ -1049,19 +1042,6 @@ fn trie_mut(trie: *mut c_void) -> Option<&'static mut TrieStub> {
 
 fn obj_def_name(name: *const c_char) -> Result<CString, c_int> {
     Ok(c_name(name)?.to_owned())
-}
-
-fn find_or_create_obj_def(name: CString) -> *mut c_void {
-    let mut defs = obj_defs().lock().unwrap();
-    for pointer in defs.iter().copied() {
-        let def = unsafe { &*(pointer as *const ObjDefStub) };
-        if def.name == name {
-            return pointer as *mut c_void;
-        }
-    }
-    let pointer = Box::into_raw(Box::new(ObjDefStub { name, next_node: 1 })) as usize;
-    defs.push(pointer);
-    pointer as *mut c_void
 }
 
 fn obj_def_mut(def: *mut c_void) -> Option<&'static mut ObjDefStub> {

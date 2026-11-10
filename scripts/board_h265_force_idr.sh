@@ -22,7 +22,6 @@ probe=/tmp/rk_mpp_h265_force_idr_probe
 raw=/tmp/rk_mpp_h265_force_idr_6.nv12
 vendor=/tmp/rk_mpp_h265_force_idr_vendor.265
 ours=/tmp/rk_mpp_h265_force_idr_ours.265
-direct=/tmp/rk_mpp_h265_force_idr_direct.265
 overlay=$(mktemp -d /tmp/rk_mpp_h265_force_idr.XXXXXX)
 trap 'rm -rf "$overlay"' EXIT
 
@@ -51,29 +50,38 @@ run_probe() {
 run_probe "$lib" "$vendor"
 run_probe "$overlay" "$ours"
 
-if grep -qi rk3588 /proc/device-tree/compatible 2>/dev/null; then
-    python3 "$repo/scripts/compare_streams.py" "$vendor" "$ours"
-    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$vendor" "$vendor.yuv" \
-        > /dev/null
-    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$ours" "$ours.yuv" \
-        > /dev/null
-    cmp "$vendor.yuv" "$ours.yuv"
-    printf 'PASS h265 forced IDR at frames 2,4 (%s)\n' \
-        "$(sha256sum "$ours.yuv" | cut -d' ' -f1)"
-else
-    # The vendor MPP object path and the VEPU510 direct template have
-    # independently stable streams on lf1. Compare object controls by NAL
-    # sequence, then prove the full control payload through the direct path.
-    python3 "$repo/scripts/compare_streams.py" --sequence-only "$vendor" "$ours"
-    sudo -n rm -f "$direct" "$direct.yuv"
-    sudo -n "$repo/target/release/rk-mpp-rs" h265e510-control \
-        "$raw" "$direct" 2,4 off > /dev/null
-    python3 "$repo/scripts/compare_streams.py" "$vendor" "$direct"
-    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$vendor" "$vendor.yuv" \
-        > /dev/null
-    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$direct" "$direct.yuv" \
-        > /dev/null
-    cmp "$vendor.yuv" "$direct.yuv"
-    printf 'PASS h265 VEPU510 object NAL sequence and direct forced-IDR stream (%s)\n' \
-        "$(sha256sum "$direct.yuv" | cut -d' ' -f1)"
+python3 "$repo/scripts/compare_streams.py" "$vendor" "$ours"
+sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$vendor" "$vendor.yuv" \
+    > /dev/null
+sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$ours" "$ours.yuv" \
+    > /dev/null
+cmp "$vendor.yuv" "$ours.yuv"
+printf 'PASS h265 forced IDR at frames 2,4 (%s)\n' \
+    "$(sha256sum "$ours.yuv" | cut -d' ' -f1)"
+
+if ! grep -qi rk3588 /proc/device-tree/compatible 2>/dev/null; then
+    enc_test="${ENC_TEST:-/usr/local/bin/mpi_enc_test}"
+    if [ ! -x "$enc_test" ]; then
+        printf 'missing vendor mpi_enc_test for template-mode check\n' >&2
+        exit 2
+    fi
+    for frames in 1 6; do
+        enc_vendor="/tmp/rk_mpp_h265_template_vendor_${frames}.265"
+        enc_ours="/tmp/rk_mpp_h265_template_ours_${frames}.265"
+        sudo -n rm -f "$enc_vendor" "$enc_ours"
+        sudo -n env LD_LIBRARY_PATH="$lib" timeout 60 \
+            "$enc_test" -i "$raw" -o "$enc_vendor" \
+            -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g 0:60 \
+            -t 16777220 -qc 26 \
+            < /dev/null > "$enc_vendor.log" 2>&1
+        sudo -n env LD_PRELOAD="$repo/target/release/librk_mpp_rs.so" \
+            LD_LIBRARY_PATH="$lib" timeout 60 \
+            "$enc_test" -i "$raw" -o "$enc_ours" \
+            -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g 0:60 \
+            -t 16777220 -qc 26 \
+            < /dev/null > "$enc_ours.log" 2>&1
+        cmp "$enc_vendor" "$enc_ours"
+        printf 'PASS h265 mpi_enc_test %s-frame template mode (%s)\n' \
+            "$frames" "$(sha256sum "$enc_ours" | cut -d' ' -f1)"
+    done
 fi

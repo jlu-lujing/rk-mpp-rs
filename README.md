@@ -309,9 +309,11 @@ assembly 冷启动都不稳定，会出现漏发 type-14 prefix 的变体；TSVC
 和 YUV 逐字节一致，强制 IDR 会重发 SPS/PPS，`SEI_MODE_DISABLE` 已生效。
 H.265 VEPU580 的同一控制也已接通：三次 IDR 段共 15 NAL 逐字节一致，
 YUV 为 `b2765277…3c56607`，每次 IDR 后的 POC 都重新从 1 开始。
-VEPU510 也已接通同一组控制：lf1 的 MPP object 路径得到同样的 15 个
-NAL 类型，direct 路径再与 C 的完整 15 NAL 码流和 YUV 逐字节一致
-（`7f3d4664…841231`）。`KEY_MOTION_INFO` 现按调用方实际容量回传，
+VEPU510 也已接通同一组控制：lf1 的 MPP object 路径与 C 的完整
+15 NAL 码流和 YUV 逐字节一致（`7f3d4664…841231`）。这同时闭合了
+`MPP_ENC_GET_HDR_SYNC` 对 direct/mpi template 的选择：未请求 header
+sync 的 probe 和请求它的 `mpi_enc_test` 现在都走正确模板。
+`KEY_MOTION_INFO` 也改为按调用方实际容量回传，
 兼容 lf1 probe 的 640-byte 与 `mpi_enc_test` 的 1280-byte buffer。
 `MPP_ENC_GET_RC_API_ALL`、`GET_RC_API_BY_TYPE`、`SET_RC_API_CFG`、
 `GET/SET_RC_API_CURRENT` 也已接通：t6/lf1 的 6 个内置策略、编码类型过滤、

@@ -443,12 +443,14 @@ same schedule and matches 15 NALs; its YUV SHA-256 is
 `b2765277b355c52eae77bae10997ec4284c03b20d76f2b1cadfeacf0f3c56607`.
 POC restarts at 1 after each forced IDR. Other encoder controls remain open.
 
-On lf1, VEPU510 now executes the same controls. The MPP object path and
-vendor both emit the expected 15-NAL type sequence; the probe's direct
-VEPU510 template then matches all 15 NAL bytes and the 691,200-byte decoded
-YUV (`7f3d4664…841231`). The board gate also covers both caller motion-info
-capacities: 640 bytes for the probe and 1280 bytes for unchanged
-`mpi_enc_test`.
+On lf1, VEPU510 now executes the same controls. The MPP object path matches
+the vendor's complete 15-NAL stream and 691,200-byte decoded YUV
+(`7f3d4664…841231`). `MPP_ENC_GET_HDR_SYNC` now selects the direct
+`h265e_probe` template or the `mpi_enc_test` template exactly as the caller
+expects. The board gate also covers both caller motion-info capacities: 640
+bytes for the probe and 1280 bytes for unchanged `mpi_enc_test`, and the
+corrected `kmpp_objdef_get/register` ABI lets the preload path initialize
+without a segfault.
 
 The RC API control-plane probe matches vendor output on t6 and lf1. Both list
 the same six built-in strategies (`default` for AVC/HEVC/MJPEG/VP8 and `smart`
