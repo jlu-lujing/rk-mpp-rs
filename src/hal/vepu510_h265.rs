@@ -604,6 +604,9 @@ pub struct Vepu510H265 {
     idr_done: bool,
     frame_number: u32,
     input_fd_override: Option<i32>,
+    force_next_idr: bool,
+    headers_each_idr: bool,
+    sei_enabled: bool,
 }
 
 impl Vepu510H265 {
@@ -679,6 +682,9 @@ impl Vepu510H265 {
             idr_done: false,
             frame_number: 0,
             input_fd_override: None,
+            force_next_idr: false,
+            headers_each_idr: false,
+            sei_enabled: true,
         })
     }
 
@@ -704,13 +710,20 @@ impl Vepu510H265 {
                 nv12.len()
             ));
         }
+        let force_idr = std::mem::take(&mut self.force_next_idr);
+        let is_idr = !self.idr_done || force_idr;
         let mut config = lf1_h265_config()?;
-        let prefix = if self.mpi_compat {
+        if self.mpi_compat {
             config.video_format = Some(5);
             config.video_full_range = true;
-            encoder::build_headers(&config).map_err(|e| e.to_string())?
-        } else {
+        }
+        let with_headers = is_idr && (!self.idr_done || force_idr || self.headers_each_idr);
+        let prefix = if !with_headers {
+            Vec::new()
+        } else if self.sei_enabled {
             lf1_fixed_qp_prefix(&config, QP, GOP)?
+        } else {
+            encoder::build_headers(&config).map_err(|e| e.to_string())?
         };
         let input_fd = self.input_fd_override.unwrap_or_else(|| self.input.fd());
         let input_data = if direct_input {
@@ -718,7 +731,7 @@ impl Vepu510H265 {
         } else {
             &nv12[..INPUT_SIZE]
         };
-        if !self.idr_done {
+        if is_idr {
             let registers = if self.mpi_compat {
                 RegisterFile::captured_mpi_fixqp_idr_320x240(
                     input_fd as u32,
@@ -786,6 +799,18 @@ impl Vepu510H265 {
             self.frame_number,
             self.frame_number as i32 * 2,
         ))
+    }
+
+    pub fn force_idr(&mut self) {
+        self.force_next_idr = true;
+    }
+
+    pub fn set_headers_each_idr(&mut self, each_idr: bool) {
+        self.headers_each_idr = each_idr;
+    }
+
+    pub fn set_sei_enabled(&mut self, enabled: bool) {
+        self.sei_enabled = enabled;
     }
 
     pub fn read_motion_info(&mut self) -> Result<Vec<u8>, String> {

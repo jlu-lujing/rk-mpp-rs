@@ -875,6 +875,10 @@ impl Encoder {
                 encoder.force_idr();
                 Ok(())
             }
+            Backend::H265Vepu510(encoder) => {
+                encoder.force_idr();
+                Ok(())
+            }
             _ => Err(Error::Unsupported(
                 "per-picture forced IDR is unavailable for this encoder backend".to_string(),
             )),
@@ -895,7 +899,10 @@ impl Encoder {
                 encoder.set_headers_each_idr(each_idr);
                 Ok(())
             }
-            Backend::H265Vepu510(_) => Ok(()),
+            Backend::H265Vepu510(encoder) => {
+                encoder.set_headers_each_idr(each_idr);
+                Ok(())
+            }
             _ => Err(Error::Unsupported(
                 "per-IDR header mode is unavailable for this encoder backend".to_string(),
             )),
@@ -916,7 +923,10 @@ impl Encoder {
                 encoder.set_sei_enabled(enabled);
                 Ok(())
             }
-            Backend::H265Vepu510(_) => Ok(()),
+            Backend::H265Vepu510(encoder) => {
+                encoder.set_sei_enabled(enabled);
+                Ok(())
+            }
             _ => Err(Error::Unsupported(
                 "per-session SEI mode is unavailable for this encoder backend".to_string(),
             )),

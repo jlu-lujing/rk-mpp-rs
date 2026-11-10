@@ -609,10 +609,13 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
                 schedule.commit(frame);
             }
             if !motion_info.is_null() {
-                if let Some(data) = encoder.take_motion_info() {
+                if let Some(mut data) = encoder.take_motion_info() {
+                    if let Some(capacity) = unsafe { objects::buffer_capacity(motion_info) } {
+                        data.truncate(capacity);
+                    }
                     if !unsafe { objects::buffer_replace(motion_info, &data) } {
                         eprintln!(
-                            "rk-mpp-rs mpp: KEY_MOTION_INFO buffer is smaller than the encoder output"
+                            "rk-mpp-rs mpp: failed to write the caller's KEY_MOTION_INFO buffer"
                         );
                         return MPP_NOK;
                     }

@@ -1674,6 +1674,84 @@ fn main() {
         return;
     }
 
+    if args.len() > 1 && args[1] == "h265e510-control" {
+        if args.len() != 6 {
+            eprintln!(
+                "usage: rk-mpp-rs h265e510-control <in.Nx320x240.nv12> <out.265> \
+                 <force:frame[,frame...]|-> <sei:on|off>"
+            );
+            std::process::exit(2);
+        }
+        let source = match std::fs::read(&args[2]) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("read {}: {error}", args[2]);
+                std::process::exit(1);
+            }
+        };
+        let frame_size = 320 * 240 * 3 / 2;
+        let frames = source.len() / frame_size;
+        if frames == 0 || source.len() != frames * frame_size {
+            eprintln!(
+                "h265e510-control input is {} bytes, expected whole 320x240 NV12 pictures",
+                source.len()
+            );
+            std::process::exit(2);
+        }
+        let forced: Vec<usize> = if args[4] == "-" {
+            Vec::new()
+        } else {
+            let mut forced = Vec::new();
+            for value in args[4].split(',') {
+                match value.parse::<usize>() {
+                    Ok(picture) if picture < frames => forced.push(picture),
+                    _ => {
+                        eprintln!("invalid forced-IDR picture {value:?}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            forced
+        };
+        let sei_enabled = match args[5].as_str() {
+            "on" => true,
+            "off" => false,
+            other => {
+                eprintln!("invalid SEI mode {other:?}; expected on or off");
+                std::process::exit(2);
+            }
+        };
+        let mut encoder = match vepu510_h265::Vepu510H265::open() {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        };
+        encoder.set_headers_each_idr(true);
+        encoder.set_sei_enabled(sei_enabled);
+        let mut stream = Vec::new();
+        for picture in 0..frames {
+            if forced.contains(&picture) {
+                encoder.force_idr();
+            }
+            let input = &source[picture * frame_size..(picture + 1) * frame_size];
+            match encoder.encode_fixed_qp_next_320x240(input) {
+                Ok((bytes, _, _, _)) => stream.extend_from_slice(&bytes),
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        if let Err(error) = std::fs::write(&args[3], &stream) {
+            eprintln!("write {}: {error}", args[3]);
+            std::process::exit(1);
+        }
+        println!("h265e510-control: {} bytes", stream.len());
+        return;
+    }
+
     if args.len() > 1 && args[1] == "h265e510-cbr6" {
         if args.len() != 4 {
             eprintln!("usage: rk-mpp-rs h265e510-cbr6 <in.6x320x240.nv12> <out.265>");

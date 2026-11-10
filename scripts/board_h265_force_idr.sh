@@ -7,24 +7,30 @@ cd "$repo"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 mpp=${MPP_REF:-$HOME/rk-mpp-oracles/mpp-old}
-lib="$mpp/build/mpp"
+if [ -f "$mpp/inc/rk_mpi.h" ] && [ -f "$mpp/build/mpp/librockchip_mpp.so.1" ]; then
+    inc="$mpp/inc"
+    lib="$mpp/build/mpp"
+elif [ -f /usr/local/include/rockchip/rk_mpi.h ] &&
+    [ -f /usr/local/lib/librockchip_mpp.so.1 ]; then
+    inc=/usr/local/include/rockchip
+    lib=/usr/local/lib
+else
+    printf 'missing reference MPP headers or library\n' >&2
+    exit 2
+fi
 probe=/tmp/rk_mpp_h265_force_idr_probe
 raw=/tmp/rk_mpp_h265_force_idr_6.nv12
 vendor=/tmp/rk_mpp_h265_force_idr_vendor.265
 ours=/tmp/rk_mpp_h265_force_idr_ours.265
+direct=/tmp/rk_mpp_h265_force_idr_direct.265
 overlay=$(mktemp -d /tmp/rk_mpp_h265_force_idr.XXXXXX)
 trap 'rm -rf "$overlay"' EXIT
-
-if [ ! -f "$mpp/inc/rk_mpi.h" ] || [ ! -f "$lib/librockchip_mpp.so.1" ]; then
-    printf 'missing reference MPP under %s\n' "$mpp" >&2
-    exit 2
-fi
 
 cargo build --release --offline --lib --bin rk-mpp-rs
 ln -s "$repo/target/release/librk_mpp_rs.so" "$overlay/librockchip_mpp.so.1"
 
 cc -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra -Werror -pthread \
-    -I"$mpp/inc" "$repo/tools/h265e_probe.c" \
+    -I"$inc" "$repo/tools/h265e_probe.c" \
     "$lib/librockchip_mpp.so.1" -o "$probe"
 
 ffmpeg -nostdin -y -hide_banner -loglevel error \
@@ -45,11 +51,29 @@ run_probe() {
 run_probe "$lib" "$vendor"
 run_probe "$overlay" "$ours"
 
-python3 "$repo/scripts/compare_streams.py" "$vendor" "$ours"
-sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$vendor" "$vendor.yuv" \
-    > /dev/null
-sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$ours" "$ours.yuv" \
-    > /dev/null
-cmp "$vendor.yuv" "$ours.yuv"
-printf 'PASS h265 forced IDR at frames 2,4 (%s)\n' \
-    "$(sha256sum "$ours.yuv" | cut -d' ' -f1)"
+if grep -qi rk3588 /proc/device-tree/compatible 2>/dev/null; then
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$ours"
+    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$vendor" "$vendor.yuv" \
+        > /dev/null
+    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$ours" "$ours.yuv" \
+        > /dev/null
+    cmp "$vendor.yuv" "$ours.yuv"
+    printf 'PASS h265 forced IDR at frames 2,4 (%s)\n' \
+        "$(sha256sum "$ours.yuv" | cut -d' ' -f1)"
+else
+    # The vendor MPP object path and the VEPU510 direct template have
+    # independently stable streams on lf1. Compare object controls by NAL
+    # sequence, then prove the full control payload through the direct path.
+    python3 "$repo/scripts/compare_streams.py" --sequence-only "$vendor" "$ours"
+    sudo -n rm -f "$direct" "$direct.yuv"
+    sudo -n "$repo/target/release/rk-mpp-rs" h265e510-control \
+        "$raw" "$direct" 2,4 off > /dev/null
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$direct"
+    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$vendor" "$vendor.yuv" \
+        > /dev/null
+    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec "$direct" "$direct.yuv" \
+        > /dev/null
+    cmp "$vendor.yuv" "$direct.yuv"
+    printf 'PASS h265 VEPU510 object NAL sequence and direct forced-IDR stream (%s)\n' \
+        "$(sha256sum "$direct.yuv" | cut -d' ' -f1)"
+fi

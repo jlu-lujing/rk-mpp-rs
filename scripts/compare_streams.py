@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Compare two Annex-B encoder outputs NAL unit by NAL unit.
+"""Compare two Annex-B encoder outputs.
 
-    compare_streams.py <c_stream> <our_stream>
+    compare_streams.py [--sequence-only] <c_stream> <our_stream>
+
+`--sequence-only` compares NAL types without requiring equal payload bytes.
 
 The SEI NALUs are part of the comparison, not filtered out: step 17 of
 `mpp_enc_impl.cpp` puts a `uuid_version` and then a `uuid_rc_cfg` unregistered
@@ -60,10 +62,21 @@ def kinds(units):
 
 
 def main() -> int:
-    c, ours = nals(sys.argv[1]), nals(sys.argv[2])
+    arguments = sys.argv[1:]
+    sequence_only = arguments[:1] == ["--sequence-only"]
+    if sequence_only:
+        arguments = arguments[1:]
+    if len(arguments) != 2:
+        print("usage: compare_streams.py [--sequence-only] <c_stream> <our_stream>",
+              file=sys.stderr)
+        return 2
+    c, ours = nals(arguments[0]), nals(arguments[1])
     if kinds(c) != kinds(ours):
         print(f"    NAL sequence differs: C {kinds(c)} vs ours {kinds(ours)}")
         return 1
+    if sequence_only:
+        print(f"    {len(c)} NAL types identical")
+        return 0
     for a, b in zip(c, ours):
         if is_version_sei(a):
             # Framing, not text: NAL header, payload type, the size in 0xff

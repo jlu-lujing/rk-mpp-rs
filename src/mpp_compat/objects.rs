@@ -637,6 +637,12 @@ pub(super) unsafe fn buffer_replace(buffer: MppBuffer, data: &[u8]) -> bool {
     true
 }
 
+pub(super) unsafe fn buffer_capacity(buffer: MppBuffer) -> Option<usize> {
+    // SAFETY: the caller passes a live MppBuffer attached to the frame meta.
+    let buffer = unsafe { buffer_ref(buffer) }?;
+    Some(buffer_len(buffer))
+}
+
 pub(super) unsafe fn packet_from_bytes(bytes: Vec<u8>, pts: i64, dts: i64) -> MppPacket {
     let owned = bytes.into_boxed_slice();
     let data = owned.as_ptr() as *mut u8;
