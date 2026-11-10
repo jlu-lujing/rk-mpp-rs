@@ -326,8 +326,10 @@ VBR、AVBR 共 8/8 组两帧码流和 YUV 均与 vendor 逐字节一致；完整
 `init/check_drop/frame_start/hal_start/hal_end/check_reenc/frame_end`
 字段序列、`bit_real/quality_real` 和真实 I/P 帧模式也逐行一致。lf1 使用
 1.0.11 的 `RcCfg=260 / EncRcTaskInfo=136 / EncRcTask=336` ABI，t6
-保留 2024 的 `256 / 112 / 312` 投影。当前矩阵的 `check_reenc` 不请求
-重编；callback 主动要求 hardware reencode 时仍明确返回 unsupported。
+保留 2024 的 `256 / 112 / 312` 投影。两板另各通过 H.264/H.265 一次
+同帧型 callback 驱动 hardware reencode：首轮输出被丢弃，RC 目标改为
+QP30 后重跑同一输入/参考槽，最终 stream、YUV 和 callback trace 均一致。
+同时改变 I/P/B 帧型或组合 drop/PSKIP 的重编仍未实现。
 `MPP_ENC_SET/GET_OSD_PLT_CFG` 和 frame `KEY_OSD_DATA` 也已接入 VEPU580：
 H.264 与 H.265 两帧 OSD stream/YUV 均与 vendor 逐字节一致。H.265 的关键
 修复是保留 OSD 的 7 个地址偏移，避免后续 FBC/output offset 构造覆盖它们。
@@ -484,7 +486,7 @@ BOARD=luck2 ./scripts/board_rk3576_h265_corrupt_vs_mpp.sh # H.265 损坏矩阵�
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
 BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR/VBR/AVBR/ROI/split/GDR：13/13
 BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：15/15
-./scripts/board_mpp_custom_rc.sh # t6/lf1 自定义 RC：H.264/H.265 × fixed/CBR/VBR/AVBR 8/8
+./scripts/board_mpp_custom_rc.sh # t6/lf1 自定义 RC 8/8 + H.264/H.265 reencode 2/2
 ./scripts/board_mpp_osd.sh # t6 OSD palette/data；H.264/H.265 stream+YUV 严格
 ./scripts/board_mpp_packet_meta.sh # t6 H.264/H.265 fixed/CBR × 静止/运动；lf1 VEPU510 fixed + JPEG
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_key.sh # VDPU383 AV1 首 keyframe：C == Rust

@@ -20,6 +20,7 @@ use std::io::Read;
 use crate::codec::h264::encoder::{self, EncoderConfig, GdrMode, RcMode, SplitMode};
 use crate::codec::h264::sei;
 use crate::codec::rc::model as rc_model;
+use crate::encoder::{ExternalRateControl, RateControlFeedback};
 use crate::reference::cabac::Context;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
@@ -1242,11 +1243,51 @@ impl Vepu580H264 {
     }
 
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
+        self.encode_frame_with_policy(nv12, None)
+    }
+
+    pub(crate) fn encode_frame_with_rc_reencode(
+        &mut self,
+        nv12: &[u8],
+        initial: ExternalRateControl,
+        reencode: &mut dyn FnMut(
+            RateControlFeedback,
+        ) -> Result<Option<ExternalRateControl>, String>,
+    ) -> Result<EncodedFrame, String> {
+        self.next_rate_control_override = Some(RateControl {
+            bit_target: initial.bit_target,
+            qp_target: initial.qp_target,
+            qp_min: initial.qp_min,
+            qp_max: initial.qp_max,
+            qp_delta_row: 2,
+            qp_delta_row_i: 2,
+        });
+        self.encode_frame_with_policy(nv12, Some(reencode))
+    }
+
+    pub(crate) fn encode_frame_with_fixed_qp_reencode(
+        &mut self,
+        nv12: &[u8],
+        reencode: &mut dyn FnMut(
+            RateControlFeedback,
+        ) -> Result<Option<ExternalRateControl>, String>,
+    ) -> Result<EncodedFrame, String> {
+        self.next_rate_control_override = None;
+        self.encode_frame_with_policy(nv12, Some(reencode))
+    }
+
+    fn encode_frame_with_policy(
+        &mut self,
+        nv12: &[u8],
+        mut reencode: Option<
+            &mut dyn FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+        >,
+    ) -> Result<EncodedFrame, String> {
         self.active_osd = self.next_osd.take();
         let previous_state = self.state;
         let previous_slot = self.slot;
         let force_idr = std::mem::take(&mut self.force_next_idr);
-        let external_rate_control = self.next_rate_control_override.take();
+        let mut external_rate_control = self.next_rate_control_override.take();
         let non_reference = self.next_non_reference_override.take().unwrap_or(false);
         let prefix_temporal_id = self.next_prefix_temporal_id_override.take();
         let reference_reorder = self.next_reference_reorder_override.take();
@@ -1359,6 +1400,8 @@ impl Vepu580H264 {
         } else {
             false
         };
+        let original_fixed_qp = self.config.qp_init;
+        let mut fixed_qp_override = None;
         let (bit_target, mut quality_target) = external_rate_control.map_or_else(
             || match self.rc.as_mut() {
                 Some(model) => model.start(frame),
@@ -1377,7 +1420,12 @@ impl Vepu580H264 {
                     qp_delta_row_i: 2,
                 })
             });
-            let (payload, slice_lengths, statistics) = self.run_hardware_job(
+            if self.rc.is_none() {
+                if let Some(qp) = fixed_qp_override {
+                    self.config.qp_init = qp as u8;
+                }
+            }
+            let hardware_result = self.run_hardware_job(
                 state,
                 rc,
                 self.slot,
@@ -1389,7 +1437,9 @@ impl Vepu580H264 {
                 reference_reorder,
                 current_long_term,
                 input_fd,
-            )?;
+            );
+            self.config.qp_init = original_fixed_qp;
+            let (payload, slice_lengths, statistics) = hardware_result?;
             let mbs = ((self.config.coded_width() / 16) * (self.config.coded_height() / 16)) as u32;
             let measured = rc_model::Measured {
                 bits: statistics.bitstream_bytes as i32 * 8,
@@ -1406,6 +1456,32 @@ impl Vepu580H264 {
                 },
                 iblk4_prop: statistics.iblk4_prop(mbs),
             };
+            if let Some(next) = reencode
+                .as_deref_mut()
+                .map(|callback| {
+                    callback(RateControlFeedback {
+                        bit_real: measured.bits,
+                        quality_real: measured.quality,
+                    })
+                })
+                .transpose()?
+                .flatten()
+            {
+                if external_rate_control.is_some() {
+                    external_rate_control = Some(RateControl {
+                        bit_target: next.bit_target,
+                        qp_target: next.qp_target,
+                        qp_min: next.qp_min,
+                        qp_max: next.qp_max,
+                        qp_delta_row: 2,
+                        qp_delta_row_i: 2,
+                    });
+                } else {
+                    fixed_qp_override = Some(next.qp_target);
+                }
+                quality_target = next.qp_target as i32;
+                continue;
+            }
             if external_rate_control.is_none() && self.rc.is_some() {
                 let model = self.rc.as_mut().unwrap();
                 if model.drops_super_frame(frame, measured) || model.requests_drop(frame, measured)

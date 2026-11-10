@@ -15,6 +15,7 @@
 use crate::codec::h265::encoder::{SliceSplit, SyntaxOptions, MPP_ENC_SPLIT_OUT_LOWDELAY};
 use crate::codec::h265::roi::{build_tables as build_roi_tables, RoiRegion};
 use crate::codec::rc::model as rc_model;
+use crate::encoder::{ExternalRateControl, RateControlFeedback};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
@@ -190,6 +191,7 @@ pub struct Vepu580H265 {
     width: usize,
     height: usize,
     qp: u32,
+    fixed_qp_header_override: Option<u32>,
     /// Emit the GOP SPS variant (long-term reference entry) and let `encode_frame`
     /// produce P pictures.
     long_term: bool,
@@ -295,6 +297,7 @@ impl Vepu580H265 {
             width,
             height,
             qp,
+            fixed_qp_header_override: None,
             long_term,
             rc_sei: None,
             rc_mode: RcMode::Cbr,
@@ -638,6 +641,47 @@ impl Vepu580H265 {
         qp_min: u32,
         qp_max: u32,
     ) -> Result<EncodedFrame, String> {
+        self.encode_frame_with_rc_policy(
+            nv12,
+            Some(ExternalRateControl {
+                bit_target,
+                qp_target,
+                qp_min,
+                qp_max,
+            }),
+            None,
+        )
+    }
+
+    pub(crate) fn encode_frame_with_rc_reencode(
+        &mut self,
+        nv12: &[u8],
+        initial: ExternalRateControl,
+        reencode: &mut dyn FnMut(
+            RateControlFeedback,
+        ) -> Result<Option<ExternalRateControl>, String>,
+    ) -> Result<EncodedFrame, String> {
+        self.encode_frame_with_rc_policy(nv12, Some(initial), Some(reencode))
+    }
+
+    pub(crate) fn encode_frame_with_fixed_qp_reencode(
+        &mut self,
+        nv12: &[u8],
+        reencode: &mut dyn FnMut(
+            RateControlFeedback,
+        ) -> Result<Option<ExternalRateControl>, String>,
+    ) -> Result<EncodedFrame, String> {
+        self.encode_frame_with_rc_policy(nv12, None, Some(reencode))
+    }
+
+    fn encode_frame_with_rc_policy(
+        &mut self,
+        nv12: &[u8],
+        mut target: Option<ExternalRateControl>,
+        mut reencode: Option<
+            &mut dyn FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+        >,
+    ) -> Result<EncodedFrame, String> {
         let force_idr = std::mem::take(&mut self.force_next_idr);
         let is_idr = self.frames == 0 || force_idr;
         if force_idr {
@@ -657,15 +701,55 @@ impl Vepu580H265 {
                 false,
             )
         };
-        let rc = RateControl {
-            bit_target,
-            qp_target,
-            qp_min,
-            qp_max,
-            qp_delta_row: 2,
-            qp_delta_row_i: 2,
+        let saved_osd = self.next_osd.clone();
+        let original_fixed_qp = self.qp;
+        let previous_header_qp = self.fixed_qp_header_override;
+        let mut fixed_qp_override = None;
+        let encoded = loop {
+            let rc = target.map(|target| RateControl {
+                bit_target: target.bit_target,
+                qp_target: target.qp_target,
+                qp_min: target.qp_min,
+                qp_max: target.qp_max,
+                qp_delta_row: 2,
+                qp_delta_row_i: 2,
+            });
+            if target.is_none() {
+                if let Some(qp) = fixed_qp_override {
+                    self.qp = qp;
+                }
+            }
+            self.next_osd = saved_osd.clone();
+            self.fixed_qp_header_override = if target.is_none() {
+                Some(original_fixed_qp)
+            } else {
+                previous_header_qp
+            };
+            let hardware_result =
+                self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, rc);
+            self.qp = original_fixed_qp;
+            self.fixed_qp_header_override = previous_header_qp;
+            let encoded = hardware_result?;
+            let next = reencode
+                .as_deref_mut()
+                .map(|callback| {
+                    callback(RateControlFeedback {
+                        bit_real: encoded.statistics.bitstream_bytes as i32 * 8,
+                        quality_real: encoded.statistics.quality_real(self.width, self.height),
+                    })
+                })
+                .transpose()?
+                .flatten();
+            if let Some(next) = next {
+                if target.is_some() {
+                    target = Some(next);
+                } else {
+                    fixed_qp_override = Some(next.qp_target);
+                }
+                continue;
+            }
+            break encoded;
         };
-        let encoded = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, Some(rc))?;
         self.slot = 1 - self.slot;
         self.frames += 1;
         Ok(encoded)
@@ -1024,7 +1108,7 @@ impl Vepu580H265 {
             let line = crate::codec::h265::sei::RcCfgLine {
                 model_name: &self.rc_model_name,
                 ..crate::codec::h265::sei::RcCfgLine::fixed_qp(
-                    self.qp,
+                    self.fixed_qp_header_override.unwrap_or(self.qp),
                     self.gop,
                     crate::codec::h265::sei::default_bps_target(config.width, config.height, 30),
                 )

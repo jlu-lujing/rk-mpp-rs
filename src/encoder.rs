@@ -953,12 +953,18 @@ enum Backend {
     },
 }
 
-#[derive(Clone, Copy)]
-struct ExternalRateControl {
-    bit_target: i32,
-    qp_target: u32,
-    qp_min: u32,
-    qp_max: u32,
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ExternalRateControl {
+    pub(crate) bit_target: i32,
+    pub(crate) qp_target: u32,
+    pub(crate) qp_min: u32,
+    pub(crate) qp_max: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RateControlFeedback {
+    pub(crate) bit_real: i32,
+    pub(crate) quality_real: i32,
 }
 
 /// Persistent encoder session. Frames are encoded synchronously into an owned
@@ -971,7 +977,6 @@ pub struct Encoder {
     mpi_compat: bool,
     last_motion_info: Option<Vec<u8>>,
     next_rate_control: Option<ExternalRateControl>,
-    last_frame_bits: i32,
 }
 
 impl Encoder {
@@ -1032,7 +1037,6 @@ impl Encoder {
             mpi_compat,
             last_motion_info: None,
             next_rate_control: None,
-            last_frame_bits: 0,
         })
     }
 
@@ -1204,14 +1208,6 @@ impl Encoder {
         });
     }
 
-    pub(crate) fn take_last_frame_bits(&mut self) -> i32 {
-        std::mem::take(&mut self.last_frame_bits)
-    }
-
-    pub(crate) fn last_packet_meta(&self) -> Option<&PacketMeta> {
-        self.packets.back().map(Packet::meta)
-    }
-
     pub fn force_next_picture_layout(
         &mut self,
         current_slot: usize,
@@ -1265,7 +1261,6 @@ impl Encoder {
             .config
             .rate_control
             .is_some_and(|rate_control| rate_control.mode() != RateControlMode::FixedQp);
-        let mut hardware_bits = None;
         let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
                 encoder.set_next_osd(osd.clone());
@@ -1283,7 +1278,6 @@ impl Encoder {
                 let encoded = encoder
                     .encode_frame(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
-                hardware_bits = Some(encoded.statistics.bitstream_bytes as i32 * 8);
                 let count = encoded.packets.len();
                 let coded_width = self.config.width().div_ceil(16) * 16;
                 let coded_height = self.config.height().div_ceil(16) * 16;
@@ -1354,7 +1348,6 @@ impl Encoder {
                         .encode_frame_packets(&input)
                         .map_err(|error| Error::Hardware(error.to_string()))?
                 };
-                hardware_bits = Some(encoded.statistics.bitstream_bytes as i32 * 8);
                 let count = encoded.packets.len();
                 let meta =
                     PacketMeta::from_h265(&encoded, self.config.width(), self.config.height());
@@ -1447,19 +1440,151 @@ impl Encoder {
             }
         };
         let count = submitted?;
-        let packet_bits = self
-            .packets
-            .iter()
-            .rev()
-            .take(count)
-            .map(|packet| packet.data.len() as i32 * 8)
-            .sum();
-        let fallback_bits = match &self.backend {
-            Backend::H264Vepu510(encoder) => encoder.last_encoded_bits().unwrap_or(packet_bits),
-            Backend::H265Vepu510(encoder) => encoder.last_encoded_bits().unwrap_or(packet_bits),
-            _ => packet_bits,
+        self.last_motion_info = match &mut self.backend {
+            Backend::H264Vepu580(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Backend::H264Vepu510(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Backend::H265Vepu580(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Backend::H265Vepu510(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            _ => None,
         };
-        self.last_frame_bits = hardware_bits.unwrap_or(fallback_bits);
+        Ok(count)
+    }
+
+    pub(crate) fn submit_frame_with_rate_control_reencode<F>(
+        &mut self,
+        frame: InputFrame<'_>,
+        mut reencode: F,
+    ) -> Result<usize, Error>
+    where
+        F: FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+    {
+        if self.eos {
+            return Err(Error::State("frame submitted after encoder EOS"));
+        }
+        let Some(initial) = self.next_rate_control.take() else {
+            return Err(Error::State(
+                "rate-control reencode requires an initial RC target",
+            ));
+        };
+        if frame.osd.is_some() {
+            return Err(Error::Unsupported(
+                "rate-control reencode is not available with OSD".to_string(),
+            ));
+        }
+        let use_rate_control_registers = self
+            .config
+            .rate_control
+            .is_some_and(|rate_control| rate_control.mode() != RateControlMode::FixedQp);
+        let submitted = match &mut self.backend {
+            Backend::H264Vepu580(encoder) => {
+                let input = format_nv12_input(self.config, frame.data)?;
+                let encoded = if use_rate_control_registers {
+                    encoder.encode_frame_with_rc_reencode(&input, initial, &mut reencode)
+                } else {
+                    encoder.encode_frame_with_fixed_qp_reencode(&input, &mut reencode)
+                }
+                .map_err(Error::Hardware)?;
+                let count = encoded.packets.len();
+                let coded_width = self.config.width().div_ceil(16) * 16;
+                let coded_height = self.config.height().div_ceil(16) * 16;
+                let macroblocks = ((coded_width / 16) * (coded_height / 16)) as u32;
+                let meta = PacketMeta::from_h264(&encoded, macroblocks);
+                for data in encoded.packets {
+                    self.packets.push_back(Packet {
+                        data,
+                        pts: frame.pts,
+                        dts: frame.dts,
+                        keyframe: encoded.is_idr,
+                        frame_num: encoded.frame_num,
+                        poc: encoded.poc,
+                        meta: meta.clone(),
+                    });
+                }
+                Ok(count)
+            }
+            Backend::H264Vepu510(encoder) => {
+                let input = format_nv12_input(self.config, frame.data)?;
+                let (data, keyframe, frame_num, poc) = encoder
+                    .encode_next_with_rate_reencode_320x240(&input, initial, &mut reencode)
+                    .map_err(Error::Hardware)?;
+                let meta = encoder
+                    .last_packet_meta(keyframe)
+                    .unwrap_or_else(|| PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)));
+                self.packets.push_back(Packet {
+                    data,
+                    pts: frame.pts,
+                    dts: frame.dts,
+                    keyframe,
+                    frame_num,
+                    poc,
+                    meta,
+                });
+                Ok(1)
+            }
+            Backend::H265Vepu580(encoder) => {
+                let input = format_nv12_input(self.config, frame.data)?;
+                let encoded = if use_rate_control_registers {
+                    encoder.encode_frame_with_rc_reencode(&input, initial, &mut reencode)
+                } else {
+                    encoder.encode_frame_with_fixed_qp_reencode(&input, &mut reencode)
+                }
+                .map_err(Error::Hardware)?;
+                let count = encoded.packets.len();
+                let meta =
+                    PacketMeta::from_h265(&encoded, self.config.width(), self.config.height());
+                for data in encoded.packets {
+                    self.packets.push_back(Packet {
+                        data,
+                        pts: frame.pts,
+                        dts: frame.dts,
+                        keyframe: encoded.is_idr,
+                        frame_num: encoded.frame_num,
+                        poc: encoded.frame_num as i32 * 2,
+                        meta: meta.clone(),
+                    });
+                }
+                Ok(count)
+            }
+            Backend::H265Vepu510(encoder) => {
+                let input = format_nv12_input(self.config, frame.data)?;
+                let (data, keyframe, frame_num, poc) = encoder
+                    .encode_next_with_rate_reencode_320x240(&input, initial, &mut reencode)
+                    .map_err(Error::Hardware)?;
+                let meta = encoder
+                    .last_packet_meta(keyframe)
+                    .unwrap_or_else(|| PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)));
+                self.packets.push_back(Packet {
+                    data,
+                    pts: frame.pts,
+                    dts: frame.dts,
+                    keyframe,
+                    frame_num,
+                    poc,
+                    meta,
+                });
+                Ok(1)
+            }
+            _ => Err(Error::Unsupported(
+                "rate-control reencode is not implemented for this backend".to_string(),
+            )),
+        };
+        let count = submitted?;
         self.last_motion_info = match &mut self.backend {
             Backend::H264Vepu580(encoder) => Some(
                 encoder
@@ -1497,7 +1622,6 @@ impl Encoder {
             .config
             .rate_control
             .is_some_and(|rate_control| rate_control.mode() != RateControlMode::FixedQp);
-        let mut hardware_bits = None;
         let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
                 if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
@@ -1513,7 +1637,6 @@ impl Encoder {
                 let encoded = encoder
                     .encode_frame_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
-                hardware_bits = Some(encoded.statistics.bitstream_bytes as i32 * 8);
                 let count = encoded.packets.len();
                 let coded_width = self.config.width().div_ceil(16) * 16;
                 let coded_height = self.config.height().div_ceil(16) * 16;
@@ -1569,7 +1692,6 @@ impl Encoder {
                 let encoded = encoder
                     .encode_frame_packets_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
-                hardware_bits = Some(encoded.statistics.bitstream_bytes as i32 * 8);
                 let count = encoded.packets.len();
                 let meta =
                     PacketMeta::from_h265(&encoded, self.config.width(), self.config.height());
@@ -1650,19 +1772,6 @@ impl Encoder {
             }
         };
         let count = submitted?;
-        let packet_bits = self
-            .packets
-            .iter()
-            .rev()
-            .take(count)
-            .map(|packet| packet.data.len() as i32 * 8)
-            .sum();
-        let fallback_bits = match &self.backend {
-            Backend::H264Vepu510(encoder) => encoder.last_encoded_bits().unwrap_or(packet_bits),
-            Backend::H265Vepu510(encoder) => encoder.last_encoded_bits().unwrap_or(packet_bits),
-            _ => packet_bits,
-        };
-        self.last_frame_bits = hardware_bits.unwrap_or(fallback_bits);
         self.last_motion_info = match &mut self.backend {
             Backend::H264Vepu580(encoder) => Some(
                 encoder
@@ -1711,7 +1820,6 @@ impl Encoder {
         self.eos = false;
         self.last_motion_info = None;
         self.next_rate_control = None;
-        self.last_frame_bits = 0;
         self.backend = match self.config.codec {
             Codec::H264 => open_h264_backend(self.config)?,
             Codec::H265 => open_h265_backend_with_mode(self.config, self.mpi_compat)?,

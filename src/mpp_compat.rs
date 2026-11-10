@@ -144,6 +144,7 @@ struct CompatContext {
     header_sync_requested: bool,
     custom_rc: Option<rc_api::Session>,
     custom_rc_pending: Option<rc_api::EncRcTask>,
+    custom_rc_max_reencodes: i32,
     custom_rc_sequence: u32,
     custom_force_idr: bool,
     osd_palette: osd::PaletteState,
@@ -229,41 +230,61 @@ impl CompatContext {
         Ok(CustomRcAction::Encode)
     }
 
+    fn submit_custom_rc_frame(
+        &mut self,
+        input: encoder::InputFrame<'_>,
+    ) -> Result<usize, sdk::Error> {
+        let Some(mut session) = self.custom_rc.take() else {
+            return Err(sdk::Error::State("custom rate-control session is missing"));
+        };
+        let Some(mut task) = self.custom_rc_pending.take() else {
+            self.custom_rc = Some(session);
+            return Err(sdk::Error::State("custom rate-control task is missing"));
+        };
+        let Some(mut encoder) = self.encoder.take() else {
+            self.custom_rc = Some(session);
+            self.custom_rc_pending = Some(task);
+            return Err(sdk::Error::State("custom rate-control encoder is missing"));
+        };
+        let reencode_limit = self.custom_rc_max_reencodes.max(0);
+        let mut reencodes = 0;
+        let result = encoder.submit_frame_with_rate_control_reencode(input, |feedback| {
+            let reencode = session.finish_attempt(&mut task, |task| {
+                task.info.bit_real = feedback.bit_real;
+                task.info.quality_real = feedback.quality_real;
+            })?;
+            if !reencode || reencodes >= reencode_limit {
+                return Ok(None);
+            }
+            reencodes += 1;
+            task.info.clear_measurements();
+            session.hal_start(&mut task)?;
+            let (bit_target, qp_target, qp_min, qp_max) = task.rc_target();
+            Ok(Some(encoder::ExternalRateControl {
+                bit_target,
+                qp_target: qp_target as u32,
+                qp_min: qp_min as u32,
+                qp_max: qp_max as u32,
+            }))
+        });
+        self.encoder = Some(encoder);
+        self.custom_rc = Some(session);
+        self.custom_rc_pending = Some(task);
+        result
+    }
+
     fn finish_custom_rc(&mut self) -> Result<(), c_int> {
         let Some(mut task) = self.custom_rc_pending.take() else {
             return Ok(());
         };
-        let measured_qp = self
-            .encoder
-            .as_ref()
-            .and_then(encoder::Encoder::last_packet_meta)
-            .and_then(|meta| meta.average_qp);
-        let bit_real = self
-            .encoder
-            .as_mut()
-            .map_or(0, encoder::Encoder::take_last_frame_bits);
-        let quality_real = if task.force.force_flag & 1 != 0 {
-            task.force.force_qp
-        } else {
-            measured_qp.unwrap_or(task.info.quality_target)
-        };
         let Some(session) = self.custom_rc.as_mut() else {
             return Err(MPP_NOK);
         };
-        match session.finish_frame(&mut task, |task| {
-            task.info.bit_real = bit_real;
-            task.info.quality_real = quality_real;
-        }) {
-            Ok(true) => {}
-            Ok(false) => {
-                eprintln!("rk-mpp-rs mpp: user RC requested an unsupported hardware reencode");
-                return Err(MPP_NOK);
-            }
-            Err(error) => {
-                eprintln!("rk-mpp-rs mpp: RC frame completion failed: {error}");
-                return Err(MPP_NOK);
-            }
+        if let Err(error) = session.frame_end(&mut task) {
+            eprintln!("rk-mpp-rs mpp: RC frame completion failed: {error}");
+            return Err(MPP_NOK);
         }
+        task.frm.set_reencode(false);
         self.custom_rc_sequence = self.custom_rc_sequence.saturating_add(1);
         Ok(())
     }
@@ -707,11 +728,14 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         Ok(CustomRcAction::Skip) => return MPP_OK,
         Err(error) => return error,
     }
-    let submitted = match context.encoder.as_mut() {
-        Some(encoder) => encoder.submit_frame(input),
-        None => {
-            context.custom_rc_pending = None;
-            return MPP_ERR_VALUE;
+    let submitted = if context.custom_rc_pending.is_some() {
+        context.submit_custom_rc_frame(input)
+    } else {
+        match context.encoder.as_mut() {
+            Some(encoder) => encoder.submit_frame(input),
+            None => {
+                return MPP_ERR_VALUE;
+            }
         }
     };
     match submitted {
@@ -832,6 +856,7 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.encoder_ref_schedule = None;
     context.custom_rc = None;
     context.custom_rc_pending = None;
+    context.custom_rc_max_reencodes = 0;
     context.custom_rc_sequence = 0;
     context.custom_force_idr = false;
     MPP_OK
@@ -968,11 +993,13 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                         };
                         context.custom_rc = Some(session);
                         context.custom_rc_pending = None;
+                        context.custom_rc_max_reencodes = rc_cfg.max_reencode_times.max(0);
                         context.custom_rc_sequence = 0;
                         context.custom_force_idr = false;
                     } else {
                         context.custom_rc = None;
                         context.custom_rc_pending = None;
+                        context.custom_rc_max_reencodes = 0;
                         context.custom_rc_sequence = 0;
                         context.custom_force_idr = false;
                     }
@@ -1175,6 +1202,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             header_sync_requested: false,
             custom_rc: None,
             custom_rc_pending: None,
+            custom_rc_max_reencodes: 0,
             custom_rc_sequence: 0,
             custom_force_idr: false,
             osd_palette: osd::PaletteState::new(),

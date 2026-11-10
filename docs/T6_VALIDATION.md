@@ -499,15 +499,21 @@ are compared in a separate process and match vendor output as well.
 
 `board_mpp_custom_rc.sh` registers a C-defined strategy and runs the complete
 callback lifecycle through both encoders. The matrix covers H.264/H.265 x
-fixed-QP/CBR/VBR/AVBR on t6 VEPU580 and lf1 VEPU510, 8/8 on each board.
+fixed-QP/CBR/VBR/AVBR on t6 VEPU580 and lf1 VEPU510, 8/8 on each board,
+plus one callback-driven hardware reencode per codec.
 On t6, H.264 fixed is YUV `6d1e7dc9…b90cd3`; H.265 fixed is
 `53bf281b…ad9789e`. Their CBR/VBR/AVBR outputs are respectively
 `3f34100a…f7023e` and `cad3894e…a2384e`. On lf1, the corresponding hashes
 are H.264 `955dc593…f49a71` / `54d0d202…bda0` and H.265
 `c27657d4…e67e` / `39c1fc34…fe8b`. Streams, decoded YUV, init configuration,
 full callback field lines and hardware `bit_real/quality_real` all match the
-ABI-compatible vendor library. The matrix does not request a callback-driven
-hardware reencode; that case remains explicitly unsupported.
+ABI-compatible vendor library. The same-frame-type reencode case requests a
+second attempt at QP30 from `check_reenc`: t6 outputs H.264 YUV `60fe9815…8ad0` and H.265
+`f618041a…1246f`; lf1 outputs H.264 `771a0735…fee70` and H.265
+`9fd432ba…8171`. The first hardware packet is discarded, while the same
+input/reference surfaces are rerun before `frame_end`.
+A reencode that also changes I/P/B frame type, or combines it with drop/PSKIP,
+remains outside this verified matrix.
 
 `board_mpp_osd.sh` uses unchanged `mpi_enc_test` with `osd_enable=1`, a custom
 256-color palette and eight index regions. H.264 matches the vendor stream and

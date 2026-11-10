@@ -7,6 +7,7 @@ use crate::codec::h264::encoder::RoiRegion;
 use crate::codec::h265::encoder::{self, EncoderConfig};
 use crate::codec::h265::sei;
 use crate::codec::rc::model as rc_model;
+use crate::encoder::{ExternalRateControl, RateControlFeedback};
 use crate::hal::h265e_session::RcMode;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
@@ -911,8 +912,39 @@ impl Vepu510H265 {
         qp_min: u32,
         qp_max: u32,
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
-        let direct_input = self.input_fd_override.is_some();
-        if !direct_input && nv12.len() < INPUT_SIZE {
+        self.encode_next_with_rate_policy_320x240(
+            nv12,
+            ExternalRateControl {
+                bit_target,
+                qp_target,
+                qp_min,
+                qp_max,
+            },
+            None,
+        )
+    }
+
+    pub(crate) fn encode_next_with_rate_reencode_320x240(
+        &mut self,
+        nv12: &[u8],
+        initial: ExternalRateControl,
+        reencode: &mut dyn FnMut(
+            RateControlFeedback,
+        ) -> Result<Option<ExternalRateControl>, String>,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        self.encode_next_with_rate_policy_320x240(nv12, initial, Some(reencode))
+    }
+
+    fn encode_next_with_rate_policy_320x240(
+        &mut self,
+        nv12: &[u8],
+        mut target: ExternalRateControl,
+        mut reencode: Option<
+            &mut dyn FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+        >,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        let direct_input = self.input_fd_override.take();
+        if direct_input.is_none() && nv12.len() < INPUT_SIZE {
             return Err(format!(
                 "VEPU510 H.265 external rate-control input is {} bytes, expected at least {INPUT_SIZE}",
                 nv12.len()
@@ -937,12 +969,12 @@ impl Vepu510H265 {
                     &self.rc_model_name,
                     gop,
                     mode,
-                    bit_target,
-                    bit_target,
-                    bit_target,
-                    qp_target as i32,
-                    qp_min,
-                    qp_max,
+                    target.bit_target,
+                    target.bit_target,
+                    target.bit_target,
+                    target.qp_target as i32,
+                    target.qp_min,
+                    target.qp_max,
                 )?
             } else {
                 encoder::build_headers(&self.config).map_err(|error| error.to_string())?
@@ -950,7 +982,7 @@ impl Vepu510H265 {
         } else {
             Vec::new()
         };
-        let input_fd = self.input_fd_override.unwrap_or_else(|| self.input.fd());
+        let input_fd = direct_input.unwrap_or_else(|| self.input.fd());
         let registers = if is_idr {
             RegisterFile::captured_fixqp_idr_320x240(
                 input_fd as u32,
@@ -979,25 +1011,44 @@ impl Vepu510H265 {
                 frame_number,
             )?
         };
-        let mut registers = registers;
-        registers.apply_rate_control(
-            &RateControlPlan {
-                bit_target,
-                qp_target,
-                qp_min,
-                qp_max,
-                qp_delta: 2,
-            },
-            is_idr,
-        )?;
-        let input_data = if direct_input {
+        let input_data = if direct_input.is_some() {
             &[]
         } else {
             &nv12[..INPUT_SIZE]
         };
-        let (stream, status, _) = self.run_job_with_status(input_data, &registers, &prefix, 0)?;
+        let (stream, status) = loop {
+            let mut registers = registers.clone();
+            registers.apply_rate_control(
+                &RateControlPlan {
+                    bit_target: target.bit_target,
+                    qp_target: target.qp_target,
+                    qp_min: target.qp_min,
+                    qp_max: target.qp_max,
+                    qp_delta: 2,
+                },
+                is_idr,
+            )?;
+            let (stream, status, _) =
+                self.run_job_with_status(input_data, &registers, &prefix, 0)?;
+            let measured = measured_from_status(&status);
+            let next = reencode
+                .as_deref_mut()
+                .map(|callback| {
+                    callback(RateControlFeedback {
+                        bit_real: measured.bits,
+                        quality_real: measured.quality,
+                    })
+                })
+                .transpose()?
+                .flatten();
+            if let Some(next) = next {
+                target = next;
+                continue;
+            }
+            break (stream, status);
+        };
         self.last_status = Some(status);
-        self.last_quality_target = Some(qp_target as i32);
+        self.last_quality_target = Some(target.qp_target as i32);
         self.last_rt_bits = Some(0);
         self.idr_done = true;
         self.frame_number = frame_number;

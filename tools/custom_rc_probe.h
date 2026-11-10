@@ -14,6 +14,7 @@ typedef struct CustomRcCtx_t {
     int fps;
     int frame_bits;
     unsigned frame;
+    unsigned reencoded;
 } CustomRcCtx;
 
 static MPP_RET custom_rc_init(void *opaque, RcCfg *cfg)
@@ -48,20 +49,22 @@ static MPP_RET custom_rc_task(void *opaque, EncRcTask *task, const char *stage)
     fprintf(ctx->log,
             "%s seq=%d intra=%u idr=%u bit=%d bit_fix=%d "
             "qp=%d qp_min=%d qp_max=%d "
-            "real_bits=%d real_qp=%d\n",
+            "reenc=%u reenc_times=%u real_bits=%d real_qp=%d\n",
             stage, task->cpb.seq_idx, task->frm.is_intra, task->frm.is_idr,
             task->info.bit_target, task->info.bit_target_fix,
             task->info.quality_target,
             task->info.quality_min, task->info.quality_max,
+            task->frm.reencode, task->frm.reencode_times,
             task->info.bit_real, task->info.quality_real);
 #else
     fprintf(ctx->log,
             "%s seq=%d intra=%u idr=%u bit=%d "
             "qp=%d qp_min=%d qp_max=%d "
-            "real_bits=%d real_qp=%d\n",
+            "reenc=%u reenc_times=%u real_bits=%d real_qp=%d\n",
             stage, task->cpb.seq_idx, task->frm.is_intra, task->frm.is_idr,
             task->info.bit_target, task->info.quality_target,
             task->info.quality_min, task->info.quality_max,
+            task->frm.reencode, task->frm.reencode_times,
             task->info.bit_real, task->info.quality_real);
 #endif
     return MPP_OK;
@@ -74,7 +77,22 @@ static MPP_RET custom_rc_check_drop(void *opaque, EncRcTask *task)
 
 static MPP_RET custom_rc_check_reenc(void *opaque, EncRcTask *task)
 {
-    return custom_rc_task(opaque, task, "reenc");
+    CustomRcCtx *ctx = (CustomRcCtx *)opaque;
+    MPP_RET ret = custom_rc_task(opaque, task, "reenc");
+
+    const char *reencode = getenv("CUSTOM_RC_REENCODE");
+
+    if (reencode && atoi(reencode) && !ctx->reencoded &&
+        task->frm.is_intra) {
+        task->frm.reencode = 1;
+        task->info.quality_target = 30;
+        task->info.quality_min = 30;
+        task->info.quality_max = 30;
+        ctx->reencoded = 1;
+    } else {
+        task->frm.reencode = 0;
+    }
+    return ret;
 }
 
 static MPP_RET custom_rc_frame_start(void *opaque, EncRcTask *task)

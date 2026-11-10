@@ -88,6 +88,7 @@ run_probe() {
         rate="1000000:800000:1200000"
     fi
     sudo -n env CUSTOM_RC=1 CUSTOM_RC_LOG="$log" FRAMES=2 GOP=60 \
+        CUSTOM_RC_REENCODE="${CUSTOM_RC_REENCODE:-0}" \
         CUSTOM_RC_QP_MIN="${CUSTOM_RC_QP_MIN:-26}" \
         CUSTOM_RC_QP_MAX="${CUSTOM_RC_QP_MAX:-26}" \
         LD_LIBRARY_PATH="$library" timeout 60 \
@@ -119,7 +120,7 @@ compare_callback_trace() {
         "$ours_log")
     test -n "$vendor_trace"
     test "$vendor_trace" = "$ours_trace" || {
-        printf 'FAIL %s callback order differs\nvendor:\n%s\nours:\n%s\n' \
+        printf 'FAIL %s callback trace differs\nvendor:\n%s\nours:\n%s\n' \
             "$label" "$vendor_trace" "$ours_trace"
         return 1
     }
@@ -155,6 +156,7 @@ run_h264_probe() {
     fi
     sudo -n rm -f "$output" "$log" "$output.yuv"
     sudo -n env CUSTOM_RC=1 CUSTOM_RC_LOG="$log" \
+        CUSTOM_RC_REENCODE="${CUSTOM_RC_REENCODE:-0}" \
         CUSTOM_RC_QP_MIN="${CUSTOM_RC_QP_MIN:-26}" \
         CUSTOM_RC_QP_MAX="${CUSTOM_RC_QP_MAX:-26}" \
         LD_LIBRARY_PATH="$library" timeout 60 \
@@ -175,6 +177,52 @@ for stage in "init " "frame-start " "hal-start " "hal-end " "reenc " "frame-end 
     grep -q "^$stage" "$h264_vendor_log"
     grep -q "^$stage" "$h264_ours_log"
 done
+
+h265_reencode_vendor=/tmp/rk_mpp_custom_rc_h265_reencode_vendor.265
+h265_reencode_ours=/tmp/rk_mpp_custom_rc_h265_reencode_ours.265
+h265_reencode_vendor_log=/tmp/rk_mpp_custom_rc_h265_reencode_vendor.log
+h265_reencode_ours_log=/tmp/rk_mpp_custom_rc_h265_reencode_ours.log
+CUSTOM_RC_REENCODE=1 run_probe "$lib" "$h265_reencode_vendor" \
+    "$h265_reencode_vendor_log"
+CUSTOM_RC_REENCODE=1 run_probe "$overlay" "$h265_reencode_ours" \
+    "$h265_reencode_ours_log"
+python3 "$repo/scripts/compare_streams.py" \
+    "$h265_reencode_vendor" "$h265_reencode_ours"
+sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+    "$h265_reencode_vendor" "$h265_reencode_vendor.yuv" > /dev/null
+sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+    "$h265_reencode_ours" "$h265_reencode_ours.yuv" > /dev/null
+cmp "$h265_reencode_vendor.yuv" "$h265_reencode_ours.yuv"
+compare_callback_trace "$h265_reencode_vendor_log" \
+    "$h265_reencode_ours_log" "H.265 reencode"
+test "$(grep -c '^hal-start ' "$h265_reencode_ours_log")" -eq 3
+test "$(grep -c '^hal-end ' "$h265_reencode_ours_log")" -eq 3
+test "$(grep -c '^frame-end ' "$h265_reencode_ours_log")" -eq 2
+printf 'PASS custom RC H.265 reencode (%s)\n' \
+    "$(sha256sum "$h265_reencode_ours.yuv" | cut -d' ' -f1)"
+
+h264_reencode_vendor=/tmp/rk_mpp_custom_rc_h264_reencode_vendor.264
+h264_reencode_ours=/tmp/rk_mpp_custom_rc_h264_reencode_ours.264
+h264_reencode_vendor_log=/tmp/rk_mpp_custom_rc_h264_reencode_vendor.log
+h264_reencode_ours_log=/tmp/rk_mpp_custom_rc_h264_reencode_ours.log
+CUSTOM_RC_REENCODE=1 run_h264_probe "$lib" "$h264_reencode_vendor" \
+    "$h264_reencode_vendor_log"
+CUSTOM_RC_REENCODE=1 run_h264_probe "$overlay" "$h264_reencode_ours" \
+    "$h264_reencode_ours_log"
+python3 "$repo/scripts/compare_streams.py" \
+    "$h264_reencode_vendor" "$h264_reencode_ours"
+sudo -n "$repo/target/release/rk-mpp-rs" h264dec \
+    "$h264_reencode_vendor" "$h264_reencode_vendor.yuv" > /dev/null
+sudo -n "$repo/target/release/rk-mpp-rs" h264dec \
+    "$h264_reencode_ours" "$h264_reencode_ours.yuv" > /dev/null
+cmp "$h264_reencode_vendor.yuv" "$h264_reencode_ours.yuv"
+compare_callback_trace "$h264_reencode_vendor_log" \
+    "$h264_reencode_ours_log" "H.264 reencode"
+test "$(grep -c '^hal-start ' "$h264_reencode_ours_log")" -eq 3
+test "$(grep -c '^hal-end ' "$h264_reencode_ours_log")" -eq 3
+test "$(grep -c '^frame-end ' "$h264_reencode_ours_log")" -eq 2
+printf 'PASS custom RC H.264 reencode (%s)\n' \
+    "$(sha256sum "$h264_reencode_ours.yuv" | cut -d' ' -f1)"
 test "$(grep -c '^frame-start ' "$h264_ours_log")" -eq 2
 test "$(grep -c '^frame-end ' "$h264_ours_log")" -eq 2
 compare_callback_trace "$h264_vendor_log" "$h264_ours_log" H.264

@@ -239,8 +239,11 @@ VEPU510 的内置 CBR/VBR/AVBR 已接通，用户自定义 streaming RC callback
 fixed/CBR/VBR/AVBR 共 8/8 两帧码流和 YUV 均与 vendor 逐字节一致；
 callback 字段、init 配置和 `bit_real/quality_real` 也逐行一致。
 lf1 使用 1.0.11 的 `RcCfg=260 / EncRcTaskInfo=136 / EncRcTask=336`
-布局，t6 使用 `256 / 112 / 312` 的 2024 ABI 投影。当前 8/8 矩阵的
-`check_reenc` 不请求重编；callback 主动要求 hardware reencode 时仍显式拒绝。
+布局，t6 使用 `256 / 112 / 312` 的 2024 ABI 投影。`check_reenc` 主动
+请求一次同帧型重编也已接通：H.264/H.265 在两板共 4/4，首轮 packet 被替换，
+第二轮使用 callback 更新的 QP30 重跑同一输入/参考槽，最终 stream/YUV
+和完整 callback trace 一致。同时改变 I/P/B 帧型或组合 drop/PSKIP 的重编
+仍未实现。
 OSD palette 与 `KEY_OSD_DATA` 已接通 VEPU580：H.264/H.265 的 OSD
 stream/YUV 均逐字节。H.265 原先在 OSD offsets 后重新赋值 FBC/output
 offset 列表，导致 `reg3093..3099` 的 7 个 multi-offset 丢失；改为追加后，

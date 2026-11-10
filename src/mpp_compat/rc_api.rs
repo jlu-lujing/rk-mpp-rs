@@ -206,6 +206,7 @@ impl RcCfg {
             fqp_min_p: min_quality,
             fqp_max_i: max_quality,
             fqp_max_p: max_quality,
+            max_reencode_times: 1,
             ..Self::default()
         }
     }
@@ -240,6 +241,10 @@ impl EncFrmStatus {
 
     pub(super) fn is_reencode(self) -> bool {
         self.val & (1u64 << 34) != 0
+    }
+
+    pub(super) fn set_reencode(&mut self, enabled: bool) {
+        self.set_bit(34, enabled);
     }
 }
 
@@ -287,6 +292,26 @@ pub(super) struct EncRcTaskInfo {
     pub madi_b16: i32,
     pub madp_ctu: i32,
     pub reserve: [i32; 6],
+}
+
+impl EncRcTaskInfo {
+    pub(super) fn clear_measurements(&mut self) {
+        let frame_type = self.frame_type;
+        let bit_target = self.bit_target;
+        let bit_max = self.bit_max;
+        let bit_min = self.bit_min;
+        let quality_target = self.quality_target;
+        let quality_max = self.quality_max;
+        let quality_min = self.quality_min;
+        *self = Self::default();
+        self.frame_type = frame_type;
+        self.bit_target = bit_target;
+        self.bit_max = bit_max;
+        self.bit_min = bit_min;
+        self.quality_target = quality_target;
+        self.quality_max = quality_max;
+        self.quality_min = quality_min;
+    }
 }
 
 #[repr(C)]
@@ -930,11 +955,11 @@ impl Session {
         self.call(self.callbacks.hal_start, task)
     }
 
-    fn frame_end(&mut self, task: &mut EncRcTask) -> Result<(), String> {
-        self.call(self.callbacks.frame_end, task)
+    pub(super) fn hal_start(&mut self, task: &mut EncRcTask) -> Result<(), String> {
+        self.call(self.callbacks.hal_start, task)
     }
 
-    pub(super) fn finish_frame(
+    pub(super) fn finish_attempt(
         &mut self,
         task: &mut EncRcTask,
         fill_metrics: impl FnOnce(&mut EncRcTask),
@@ -942,7 +967,20 @@ impl Session {
         self.call(self.callbacks.hal_end, task)?;
         fill_metrics(task);
         self.check_reencode(task)?;
-        if task.frm.is_reencode() {
+        Ok(task.frm.is_reencode())
+    }
+
+    pub(super) fn frame_end(&mut self, task: &mut EncRcTask) -> Result<(), String> {
+        self.call(self.callbacks.frame_end, task)
+    }
+
+    #[cfg(test)]
+    pub(super) fn finish_frame(
+        &mut self,
+        task: &mut EncRcTask,
+        fill_metrics: impl FnOnce(&mut EncRcTask),
+    ) -> Result<bool, String> {
+        if self.finish_attempt(task, fill_metrics)? {
             return Ok(false);
         }
         self.frame_end(task)?;
