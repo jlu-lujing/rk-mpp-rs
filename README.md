@@ -79,7 +79,7 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；新增 strided NV12 直缩，直接从 CPU/DMA Frame 读取 Y/UV 并在缩放中转换 RGB，不再生成整帧中间副本。1080p→640 在 t6/lf1 为 4.93/5.95 ms，对应旧“NV12→RGB + scale”为 20.32/24.36 ms。IEP2 的 **PD/DECT 逆 telecine** 两遍路径（反向下拉 + 场序状态机）已接入：3:2 telecine 与逐行素材 **2/2 与 C probe 逐字节一致**，逐帧 `pd_flag/pd_types/dil_order/frm_mode/ratio` 也逐行相同，322x242/722x482/1366x768 等非 16 对齐尺寸同样逐字节；IEP2 I5O2/I5O1T/I5O1B/I2O2/I1O1T/I1O1B 及 DISABLE/BYPASS 共 **9/9 原始 dst slot 逐字节**，含 TFF/BFF 与 1280×720。420/422 × SP/Planar × UV/VU 格式矩阵 **6/6**。client 28 参数块只有 deinterlace，legacy `/dev/iep` scale 节点在 t6 不存在，VDPP 也不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件、排队/执行/端到端耗时与成功/失败/取消累计统计）、引用计数 dma-heap 缓冲池；pooled JPEG 保证先关闭 MPP service 再归还共享 dma-buf，t6 连续 3000 jobs 压测通过；VP8 与 H.264/HEVC/AV1/VP9 的 DPB surface 已持有 RAII lease，四类解码边界回归在 t6 通过；fence/多核/secure 未做（调研见 docs/framework-m10.md） |
 
-整体约完成 89%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
+整体约完成 90%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 105 项完成、6 项未完成（含缩进子项为 143 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
@@ -320,9 +320,9 @@ sync 的 probe 和请求它的 `mpi_enc_test` 现在都走正确模板。
 用户策略注册/替换和当前选择输出均与 vendor 逐行一致；同一声明也导出
 `rc_api_add`、`rc_brief_get_all` 和 `rc_brief_get_by_type`。自定义 `RcImplApi`
 的逐帧 `init/frame/hal/end` 回调现已在 t6 VEPU580 的 H.264/H.265 中真实
-驱动硬件：fixed-QP 两帧码流与 C 逐字节一致，CBR 配置下也进入 RC 寄存器
-路径并保持 NAL 结构一致。RK3576 VEPU510 的 streaming custom RC 仍明确
-返回 unsupported。
+驱动硬件：fixed-QP 与 CBR 两条路径的两帧码流和 YUV 都与 C 逐字节一致，
+CBR 的 RC SEI 默认值和策略名也完全匹配。RK3576 VEPU510 的 streaming
+custom RC 仍明确返回 unsupported。
 其余高级编码控制仍待继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的

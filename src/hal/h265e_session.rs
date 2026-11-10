@@ -106,6 +106,9 @@ pub struct RcSei {
     pub init_quality: i32,
     pub qp_min: u32,
     pub qp_max: u32,
+    pub qp_min_i: u32,
+    pub qp_max_i: u32,
+    pub i_quality_delta: i32,
 }
 
 pub struct Vepu580H265 {
@@ -203,6 +206,9 @@ impl Vepu580H265 {
             init_quality: init_qp,
             qp_min,
             qp_max,
+            qp_min_i: 15,
+            qp_max_i: 51,
+            i_quality_delta: 4,
         });
         Ok(session)
     }
@@ -922,9 +928,9 @@ impl Vepu580H265 {
                 init_quality: sei.init_quality,
                 min_quality: sei.qp_min as i32,
                 max_quality: sei.qp_max as i32,
-                min_i_quality: sei.qp_min as i32,
-                max_i_quality: sei.qp_max as i32,
-                i_quality_delta: 2,
+                min_i_quality: sei.qp_min_i as i32,
+                max_i_quality: sei.qp_max_i as i32,
+                i_quality_delta: sei.i_quality_delta,
             };
             crate::codec::h265::encoder::build_prefix_line(&config, &line)
                 .map_err(|e| format!("H.265 prefix: {e:?}"))?

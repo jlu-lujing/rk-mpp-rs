@@ -464,9 +464,10 @@ are compared in a separate process and match vendor output as well.
 `board_mpp_custom_rc.sh` registers a C-defined strategy and runs the complete
 callback lifecycle through the encoder. On VEPU580, fixed-QP H.264 is
 byte-identical at 6 NALs/YUV `6d1e7dc9…b90cd3`; H.265 is byte-identical at
-7 NALs/YUV `53bf281b…ad9789e`. The CBR-configured branch also executes
-`frame_start`/`hal_start`/`hal_end`/`frame_end` and retains the vendor NAL
-structure. VEPU510 streaming custom RC is reported as SKIP/unsupported.
+7 NALs/YUV `53bf281b…ad9789e`. The CBR-configured branch is also byte-exact:
+H.264 is 6 NALs/YUV `3f34100a…f7023e` and H.265 is 7 NALs/YUV
+`cad3894e…a2384e`, including the RC SEI strategy name and default quality
+bands. VEPU510 streaming custom RC is reported as SKIP/unsupported.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older

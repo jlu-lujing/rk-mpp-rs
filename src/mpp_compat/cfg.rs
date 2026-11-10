@@ -116,11 +116,22 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
             let min = unsafe { cfg.get_or("rc:bps_min", target as i32 / 2) }.max(1) as i64;
             let max =
                 unsafe { cfg.get_or("rc:bps_max", target as i32 * 3 / 2) }.max(min as i32) as i64;
-            let qp_min = unsafe { cfg.get_or("rc:qp_min", 10) }.clamp(0, 51) as u8;
-            let qp_max = unsafe { cfg.get_or("rc:qp_max", 51) }.clamp(qp_min as i32, 51) as u8;
+            let default_qp_min = if codec == Codec::H264 { 8 } else { 10 };
+            let default_qp_max = if codec == Codec::H264 { 48 } else { 51 };
+            let qp_min = unsafe { cfg.get("rc:qp_min") }
+                .filter(|value| *value > 0)
+                .unwrap_or(default_qp_min)
+                .clamp(0, 51) as u8;
+            let qp_max = unsafe { cfg.get("rc:qp_max") }
+                .filter(|value| *value > 0)
+                .unwrap_or(default_qp_max)
+                .clamp(qp_min as i32, default_qp_max) as u8;
+            let qp_init = unsafe { cfg.get("rc:qp_init") }
+                .filter(|value| *value != 0)
+                .unwrap_or(26);
             result = result.with_rate_control(
                 RateControlConfig::new(mode, target, min, max)
-                    .with_initial_qp(qp.clamp(qp_min, qp_max))
+                    .with_initial_qp(qp_init.clamp(qp_min as i32, qp_max as i32) as u8)
                     .with_qp_range(qp_min, qp_max),
             );
         }

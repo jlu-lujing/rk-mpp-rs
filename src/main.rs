@@ -2950,6 +2950,9 @@ fn main() {
                             .unwrap_or(steps[0].0 as i32),
                         qp_min: min_qp,
                         qp_max: max_qp,
+                        qp_min_i: min_qp,
+                        qp_max_i: max_qp,
+                        i_quality_delta: 2,
                     });
                 }
                 let mut out = Vec::new();

@@ -134,22 +134,26 @@ CUSTOM_RC_MODE=1 CUSTOM_RC_QP_MIN=10 CUSTOM_RC_QP_MAX=51 \
     run_probe "$lib" "$h265_range_vendor" /tmp/rk_mpp_custom_rc_h265_range_vendor.log
 CUSTOM_RC_MODE=1 CUSTOM_RC_QP_MIN=10 CUSTOM_RC_QP_MAX=51 \
     run_probe "$overlay" "$h265_range_ours" /tmp/rk_mpp_custom_rc_h265_range_ours.log
-python3 "$repo/scripts/compare_streams.py" --sequence-only \
+python3 "$repo/scripts/compare_streams.py" \
     "$h265_range_vendor" "$h265_range_ours"
 sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
     "$h265_range_vendor" "$h265_range_vendor.yuv" > /dev/null
 sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
     "$h265_range_ours" "$h265_range_ours.yuv" > /dev/null
-printf 'PASS custom RC callback drives the H.265 RC register path (sequence)\n'
+cmp "$h265_range_vendor.yuv" "$h265_range_ours.yuv"
+printf 'PASS custom RC callback drives the H.265 RC register path (%s)\n' \
+    "$(sha256sum "$h265_range_ours.yuv" | cut -d' ' -f1)"
 
 CUSTOM_RC_MODE=1 CUSTOM_RC_QP_MIN=10 CUSTOM_RC_QP_MAX=51 \
     run_h264_probe "$lib" "$h264_range_vendor" /tmp/rk_mpp_custom_rc_h264_range_vendor.log
 CUSTOM_RC_MODE=1 CUSTOM_RC_QP_MIN=10 CUSTOM_RC_QP_MAX=51 \
     run_h264_probe "$overlay" "$h264_range_ours" /tmp/rk_mpp_custom_rc_h264_range_ours.log
-python3 "$repo/scripts/compare_streams.py" --sequence-only \
+python3 "$repo/scripts/compare_streams.py" \
     "$h264_range_vendor" "$h264_range_ours"
 sudo -n "$repo/target/release/rk-mpp-rs" h264dec \
     "$h264_range_vendor" "$h264_range_vendor.yuv" > /dev/null
 sudo -n "$repo/target/release/rk-mpp-rs" h264dec \
     "$h264_range_ours" "$h264_range_ours.yuv" > /dev/null
-printf 'PASS custom RC callback drives the H.264 RC register path (sequence)\n'
+cmp "$h264_range_vendor.yuv" "$h264_range_ours.yuv"
+printf 'PASS custom RC callback drives the H.264 RC register path (%s)\n' \
+    "$(sha256sum "$h264_range_ours.yuv" | cut -d' ' -f1)"

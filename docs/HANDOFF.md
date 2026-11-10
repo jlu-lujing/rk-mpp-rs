@@ -229,7 +229,8 @@ oracle。相关项均已登记在 `docs/DIVERGENCES.md`。
 按编码类型过滤和当前策略选择已在 t6/lf1 与原厂逐行一致，并导出
 `rc_api_add`/`rc_brief_get_all`/`rc_brief_get_by_type`；自定义策略的
 逐帧回调已在 t6 VEPU580 H.264/H.265 中真实驱动硬件：fixed-QP 两帧
-stream/YUV 逐字节，CBR 配置进入 RC 寄存器路径并保持 NAL 结构。
+stream/YUV 逐字节；CBR 的 callbacks、RC 寄存器、RC SEI 和两帧
+stream/YUV 也全部逐字节。
 VEPU510 streaming custom RC 仍未接入并明确拒绝。
 其余高级编码控制仍待接入。
 
