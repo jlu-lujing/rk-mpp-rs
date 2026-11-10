@@ -473,7 +473,9 @@ bands. VEPU510 streaming custom RC is reported as SKIP/unsupported.
 256-color palette and eight index regions. H.264 matches the vendor stream and
 decoded YUV byte-for-byte (`1055ca00…3b22a`). H.265 has the same 7-NAL
 structure and every register word matches apart from dma-buf fds, but payload
-and reconstruction remain different; the divergence is recorded explicitly.
+and reconstruction remain different. A 6,144-byte dump confirms all eight
+index regions contain the expected `0..7` bytes, so the divergence is recorded
+at the H.265 OSD hardware/address-state layer rather than palette translation.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older
