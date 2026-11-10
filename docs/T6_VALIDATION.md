@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 workspace gate is **1232 passed / 0 failed / 38 ignored**;
+- The current t6 workspace gate is **1235 passed / 0 failed / 38 ignored**;
   `cargo fmt --all -- --check` and `git diff --check` are clean.
-- The lf1 reduced gate is **1087 library tests passed / 0 failed** plus JPEG
+- The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
   packet metadata **1/1**. VEPU510 H.264/H.265 fixed-QP moving and still
   matrices are both **2/2** per codec. Built-in CBR/VBR/AVBR are also connected:
   both codecs pass 2-frame metadata and 6-frame stream/YUV/rt_bits matrices.
@@ -304,9 +304,8 @@ and lf1; on t6 the unchanged native `mpp_meta_test` also passes with two
 threads and ten loops. A returned frame-identity mismatch is a hard test
 failure. This is a real official decoder-tool gate. The VEPU580
 H.264/H.265 encoder packet kernel metadata was subsequently closed on
-2026-11-10 for VEPU580 and VEPU510. VEPU510 built-in CBR/VBR/AVBR now use the
-same per-frame session; only user-defined streaming RC callbacks remain outside
-that supported boundary.
+2026-11-10 for VEPU580 and VEPU510. VEPU510 built-in CBR/VBR/AVBR and
+user-defined streaming RC callbacks both use the same per-frame session.
 
 `scripts/board_mpp_official_enc_test.sh` now exercises the same bridge for the
 vendor encoder tool. It reads `MppEncCfg` from the vendor helper object, submits
@@ -493,18 +492,22 @@ The RC API control-plane probe matches vendor output on t6 and lf1. Both list
 the same six built-in strategies (`default` for AVC/HEVC/MJPEG/VP8 and `smart`
 for AVC/HEVC), filter AVC to two entries, report the initial
 `default,type=0` selection, append a registered `test_h264e_rc`, select and
-restore it by `GET/SET_RC_API_CURRENT`. The callbacks of a user-defined
-strategy do not drive frames yet; that state is rejected before encoding.
+restore it by `GET/SET_RC_API_CURRENT`. A user-defined strategy can now drive
+H.264/H.265 frames through the complete callback lifecycle.
 The direct `rc_api_add`, `rc_brief_get_all` and `rc_brief_get_by_type` exports
 are compared in a separate process and match vendor output as well.
 
 `board_mpp_custom_rc.sh` registers a C-defined strategy and runs the complete
-callback lifecycle through the encoder. On VEPU580, fixed-QP H.264 is
-byte-identical at 6 NALs/YUV `6d1e7dc9…b90cd3`; H.265 is byte-identical at
-7 NALs/YUV `53bf281b…ad9789e`. The CBR-configured branch is also byte-exact:
-H.264 is 6 NALs/YUV `3f34100a…f7023e` and H.265 is 7 NALs/YUV
-`cad3894e…a2384e`, including the RC SEI strategy name and default quality
-bands. VEPU510 streaming custom RC is reported as SKIP/unsupported.
+callback lifecycle through both encoders. The matrix covers H.264/H.265 x
+fixed-QP/CBR/VBR/AVBR on t6 VEPU580 and lf1 VEPU510, 8/8 on each board.
+On t6, H.264 fixed is YUV `6d1e7dc9…b90cd3`; H.265 fixed is
+`53bf281b…ad9789e`. Their CBR/VBR/AVBR outputs are respectively
+`3f34100a…f7023e` and `cad3894e…a2384e`. On lf1, the corresponding hashes
+are H.264 `955dc593…f49a71` / `54d0d202…bda0` and H.265
+`c27657d4…e67e` / `39c1fc34…fe8b`. Streams, decoded YUV, init configuration,
+full callback field lines and hardware `bit_real/quality_real` all match the
+ABI-compatible vendor library. The matrix does not request a callback-driven
+hardware reencode; that case remains explicitly unsupported.
 
 `board_mpp_osd.sh` uses unchanged `mpi_enc_test` with `osd_enable=1`, a custom
 256-color palette and eight index regions. H.264 matches the vendor stream and

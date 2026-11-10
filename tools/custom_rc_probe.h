@@ -5,6 +5,10 @@
 #define CUSTOM_RC_CODING MPP_VIDEO_CodingHEVC
 #endif
 
+#ifndef CUSTOM_RC_HAS_BIT_TARGET_FIX
+#define CUSTOM_RC_HAS_BIT_TARGET_FIX 1
+#endif
+
 typedef struct CustomRcCtx_t {
     FILE *log;
     int fps;
@@ -17,7 +21,8 @@ static MPP_RET custom_rc_init(void *opaque, RcCfg *cfg)
     CustomRcCtx *ctx = (CustomRcCtx *)opaque;
     const char *path = getenv("CUSTOM_RC_LOG");
 
-    ctx->log = path ? fopen(path, "w") : stderr;
+    if (!ctx->log)
+        ctx->log = path ? fopen(path, "w") : stderr;
     ctx->fps = cfg->fps.fps_out_num / cfg->fps.fps_out_denom;
     ctx->frame_bits = cfg->bps_target / ctx->fps;
     fprintf(ctx->log, "init size=%dx%d mode=%d fps=%d bits=%d\n",
@@ -39,13 +44,26 @@ static MPP_RET custom_rc_task(void *opaque, EncRcTask *task, const char *stage)
 {
     CustomRcCtx *ctx = (CustomRcCtx *)opaque;
 
+#if CUSTOM_RC_HAS_BIT_TARGET_FIX
     fprintf(ctx->log,
-            "%s seq=%d intra=%u idr=%u bit=%d qp=%d qp_min=%d qp_max=%d "
+            "%s seq=%d intra=%u idr=%u bit=%d bit_fix=%d "
+            "qp=%d qp_min=%d qp_max=%d "
+            "real_bits=%d real_qp=%d\n",
+            stage, task->cpb.seq_idx, task->frm.is_intra, task->frm.is_idr,
+            task->info.bit_target, task->info.bit_target_fix,
+            task->info.quality_target,
+            task->info.quality_min, task->info.quality_max,
+            task->info.bit_real, task->info.quality_real);
+#else
+    fprintf(ctx->log,
+            "%s seq=%d intra=%u idr=%u bit=%d "
+            "qp=%d qp_min=%d qp_max=%d "
             "real_bits=%d real_qp=%d\n",
             stage, task->cpb.seq_idx, task->frm.is_intra, task->frm.is_idr,
             task->info.bit_target, task->info.quality_target,
             task->info.quality_min, task->info.quality_max,
             task->info.bit_real, task->info.quality_real);
+#endif
     return MPP_OK;
 }
 

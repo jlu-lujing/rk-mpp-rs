@@ -81,7 +81,7 @@
 
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-105 项完成、6 项未完成（含缩进子项为 143 / 10）；未完成项里有硬件不存在、无 conformance
+106 项完成、6 项未完成（含缩进子项为 144 / 10）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
 AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
@@ -321,9 +321,13 @@ sync 的 probe 和请求它的 `mpi_enc_test` 现在都走正确模板。
 用户策略注册/替换和当前选择输出均与 vendor 逐行一致；同一声明也导出
 `rc_api_add`、`rc_brief_get_all` 和 `rc_brief_get_by_type`。自定义 `RcImplApi`
 的逐帧 `init/frame/hal/end` 回调现已在 t6 VEPU580 的 H.264/H.265 中真实
-驱动硬件：fixed-QP 与 CBR 两条路径的两帧码流和 YUV 都与 C 逐字节一致，
-CBR 的 RC SEI 默认值和策略名也完全匹配。RK3576 VEPU510 的 streaming
-custom RC 仍明确返回 unsupported。
+驱动硬件。t6 VEPU580 与 lf1 VEPU510 的 H.264/H.265 fixed-QP、CBR、
+VBR、AVBR 共 8/8 组两帧码流和 YUV 均与 vendor 逐字节一致；完整
+`init/check_drop/frame_start/hal_start/hal_end/check_reenc/frame_end`
+字段序列、`bit_real/quality_real` 和真实 I/P 帧模式也逐行一致。lf1 使用
+1.0.11 的 `RcCfg=260 / EncRcTaskInfo=136 / EncRcTask=336` ABI，t6
+保留 2024 的 `256 / 112 / 312` 投影。当前矩阵的 `check_reenc` 不请求
+重编；callback 主动要求 hardware reencode 时仍明确返回 unsupported。
 `MPP_ENC_SET/GET_OSD_PLT_CFG` 和 frame `KEY_OSD_DATA` 也已接入 VEPU580：
 H.264 与 H.265 两帧 OSD stream/YUV 均与 vendor 逐字节一致。H.265 的关键
 修复是保留 OSD 的 7 个地址偏移，避免后续 FBC/output offset 构造覆盖它们。
@@ -480,7 +484,7 @@ BOARD=luck2 ./scripts/board_rk3576_h265_corrupt_vs_mpp.sh # H.265 损坏矩阵�
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
 BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR/VBR/AVBR/ROI/split/GDR：13/13
 BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：15/15
-./scripts/board_mpp_custom_rc.sh # t6 自定义 RC callbacks：H.264/H.265
+./scripts/board_mpp_custom_rc.sh # t6/lf1 自定义 RC：H.264/H.265 × fixed/CBR/VBR/AVBR 8/8
 ./scripts/board_mpp_osd.sh # t6 OSD palette/data；H.264/H.265 stream+YUV 严格
 ./scripts/board_mpp_packet_meta.sh # t6 H.264/H.265 fixed/CBR × 静止/运动；lf1 VEPU510 fixed + JPEG
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_key.sh # VDPU383 AV1 首 keyframe：C == Rust

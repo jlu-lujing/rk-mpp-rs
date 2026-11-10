@@ -73,10 +73,11 @@ V1.9 的编码配置保持向后兼容：原 `rk_mpp_encoder_config_t` 仍是 68
 `rk_mpp_encoder_create_advanced()`，暴露 CBR/VBR/AVBR、码率范围和 QP 范围。
 t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同；用 V1.8
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
-CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 仍明确拒绝。
+CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
+H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1232 passed / 0 failed / 38 ignored`；lf1 使用简化门
-`1087 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
+`1235 passed / 0 failed / 38 ignored`；lf1 使用简化门
+`1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
 V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice，
@@ -234,7 +235,12 @@ oracle。相关项均已登记在 `docs/DIVERGENCES.md`。
 stream/YUV 逐字节；CBR 的 callbacks、RC 寄存器、RC SEI 和两帧
 stream/YUV 也全部逐字节。
 VEPU510 的内置 CBR/VBR/AVBR 已接通，用户自定义 streaming RC callback
-仍未接入并明确拒绝。
+也已在 H.264/H.265 上接通。t6 VEPU580 与 lf1 VEPU510 的
+fixed/CBR/VBR/AVBR 共 8/8 两帧码流和 YUV 均与 vendor 逐字节一致；
+callback 字段、init 配置和 `bit_real/quality_real` 也逐行一致。
+lf1 使用 1.0.11 的 `RcCfg=260 / EncRcTaskInfo=136 / EncRcTask=336`
+布局，t6 使用 `256 / 112 / 312` 的 2024 ABI 投影。当前 8/8 矩阵的
+`check_reenc` 不请求重编；callback 主动要求 hardware reencode 时仍显式拒绝。
 OSD palette 与 `KEY_OSD_DATA` 已接通 VEPU580：H.264/H.265 的 OSD
 stream/YUV 均逐字节。H.265 原先在 OSD offsets 后重新赋值 FBC/output
 offset 列表，导致 `reg3093..3099` 的 7 个 multi-offset 丢失；改为追加后，
@@ -439,7 +445,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 105 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 106 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。

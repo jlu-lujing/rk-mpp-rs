@@ -83,6 +83,7 @@ pub struct Vepu510H264 {
     rate_model: Option<rc_model::Model>,
     last_quality_target: Option<i32>,
     last_rt_bits: Option<i32>,
+    last_encoded_bits: Option<i32>,
 }
 
 impl Vepu510H264 {
@@ -159,6 +160,7 @@ impl Vepu510H264 {
             rate_model,
             last_quality_target: None,
             last_rt_bits: None,
+            last_encoded_bits: None,
         })
     }
 
@@ -268,6 +270,89 @@ impl Vepu510H264 {
         } else {
             self.encode_fixed_qp_next_320x240(nv12)
         }
+    }
+
+    pub fn encode_next_with_rate_320x240(
+        &mut self,
+        nv12: &[u8],
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        let force_idr = std::mem::take(&mut self.force_next_idr);
+        let direct_input = self.input_fd_override.is_some();
+        if !direct_input && nv12.len() < INPUT_SIZE {
+            return Err(format!(
+                "VEPU510 external rate-control input is {} bytes, expected at least {INPUT_SIZE}",
+                nv12.len()
+            ));
+        }
+        let is_idr = !self.idr_done || force_idr;
+        if force_idr && self.idr_done {
+            self.idr_pic_id = self.idr_pic_id.saturating_add(1);
+        }
+        let frame_number = if is_idr {
+            0
+        } else {
+            self.frame_number.saturating_add(1)
+        };
+        let prefix = if is_idr && (!self.idr_done || self.headers_each_idr) {
+            encoder::build_headers(&self.config).map_err(|error| error.to_string())?
+        } else {
+            Vec::new()
+        };
+        let mut registers = if is_idr {
+            RegisterFile::captured_fixqp_idr_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[0].fd() as u32,
+                self.thumb[0].fd() as u32,
+                self.smear[0].fd() as u32,
+            )?
+        } else {
+            let current = (frame_number & 1) as usize;
+            let reference = 1 - current;
+            RegisterFile::captured_fixqp_p_320x240(
+                self.input.fd() as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                frame_number,
+            )?
+        };
+        registers.apply_cbr_rate_control(bit_target, qp_target, qp_min, qp_max, is_idr)?;
+        registers.apply_roi_regions(&self.config.rois)?;
+        let input_data = if direct_input {
+            &[]
+        } else {
+            &nv12[..INPUT_SIZE]
+        };
+        let output = self.run_job_with_status(input_data, &registers, &prefix, 0)?;
+        self.last_quality_target = Some(qp_target as i32);
+        self.last_rt_bits = Some(0);
+        self.idr_done = true;
+        self.frame_number = frame_number;
+        Ok((output.stream, is_idr, frame_number, frame_number as i32 * 2))
+    }
+
+    pub fn encode_next_with_rate_320x240_fd(
+        &mut self,
+        input_fd: i32,
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        if input_fd < 0 {
+            return Err("VEPU510 H.264 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_next_with_rate_320x240(&[], bit_target, qp_target, qp_min, qp_max)
     }
 
     fn encode_rate_next_320x240(
@@ -393,6 +478,10 @@ impl Vepu510H264 {
         );
         meta.rt_bits = self.last_rt_bits;
         Some(meta)
+    }
+
+    pub fn last_encoded_bits(&self) -> Option<i32> {
+        self.last_encoded_bits
     }
 
     pub fn encode_fixed_qp_next_320x240_fd(
@@ -1073,6 +1162,7 @@ impl Vepu510H264 {
             .sync_read_end()
             .map_err(|e| format!("VEPU510 output sync end: {e}"))?;
         self.last_status = Some(status);
+        self.last_encoded_bits = Some(status[0] as i32 * 8);
         Ok(JobOutput {
             stream,
             status,

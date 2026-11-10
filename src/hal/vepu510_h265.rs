@@ -624,6 +624,8 @@ pub struct Vepu510H265 {
     rate_control: Option<StreamingRateControl>,
     last_quality_target: Option<i32>,
     last_rt_bits: Option<i32>,
+    last_encoded_bits: Option<i32>,
+    rc_model_name: String,
 }
 
 impl Vepu510H265 {
@@ -770,6 +772,8 @@ impl Vepu510H265 {
             rate_control,
             last_quality_target: None,
             last_rt_bits: None,
+            last_encoded_bits: None,
+            rc_model_name: "default".to_string(),
         })
     }
 
@@ -899,6 +903,122 @@ impl Vepu510H265 {
         }
     }
 
+    pub fn encode_next_with_rate_320x240(
+        &mut self,
+        nv12: &[u8],
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        let direct_input = self.input_fd_override.is_some();
+        if !direct_input && nv12.len() < INPUT_SIZE {
+            return Err(format!(
+                "VEPU510 H.265 external rate-control input is {} bytes, expected at least {INPUT_SIZE}",
+                nv12.len()
+            ));
+        }
+        let force_idr = std::mem::take(&mut self.force_next_idr);
+        let is_idr = !self.idr_done || force_idr;
+        let frame_number = if is_idr {
+            0
+        } else {
+            self.frame_number.saturating_add(1)
+        };
+        let mode = self
+            .rate_control
+            .as_ref()
+            .map_or(RcMode::Cbr, |rate| rate.mode);
+        let gop = self.rate_control.as_ref().map_or(GOP, |rate| rate.gop);
+        let prefix = if is_idr {
+            if self.sei_enabled {
+                lf1_rate_prefix_values(
+                    &self.config,
+                    &self.rc_model_name,
+                    gop,
+                    mode,
+                    bit_target,
+                    bit_target,
+                    bit_target,
+                    qp_target as i32,
+                    qp_min,
+                    qp_max,
+                )?
+            } else {
+                encoder::build_headers(&self.config).map_err(|error| error.to_string())?
+            }
+        } else {
+            Vec::new()
+        };
+        let input_fd = self.input_fd_override.unwrap_or_else(|| self.input.fd());
+        let registers = if is_idr {
+            RegisterFile::captured_fixqp_idr_320x240(
+                input_fd as u32,
+                self.output.fd() as u32,
+                self.recon[0].fd() as u32,
+                self.colmv[0].fd() as u32,
+                self.thumb[0].fd() as u32,
+                self.smear[0].fd() as u32,
+                self.md_info.fd() as u32,
+            )?
+        } else {
+            let current = (frame_number & 1) as usize;
+            let reference = 1 - current;
+            RegisterFile::captured_fixqp_p_320x240(
+                input_fd as u32,
+                self.output.fd() as u32,
+                self.recon[current].fd() as u32,
+                self.recon[reference].fd() as u32,
+                self.colmv[current].fd() as u32,
+                self.colmv[reference].fd() as u32,
+                self.thumb[current].fd() as u32,
+                self.thumb[reference].fd() as u32,
+                self.smear[current].fd() as u32,
+                self.smear[reference].fd() as u32,
+                self.md_info.fd() as u32,
+                frame_number,
+            )?
+        };
+        let mut registers = registers;
+        registers.apply_rate_control(
+            &RateControlPlan {
+                bit_target,
+                qp_target,
+                qp_min,
+                qp_max,
+                qp_delta: 2,
+            },
+            is_idr,
+        )?;
+        let input_data = if direct_input {
+            &[]
+        } else {
+            &nv12[..INPUT_SIZE]
+        };
+        let (stream, status, _) = self.run_job_with_status(input_data, &registers, &prefix, 0)?;
+        self.last_status = Some(status);
+        self.last_quality_target = Some(qp_target as i32);
+        self.last_rt_bits = Some(0);
+        self.idr_done = true;
+        self.frame_number = frame_number;
+        Ok((stream, is_idr, frame_number, frame_number as i32 * 2))
+    }
+
+    pub fn encode_next_with_rate_320x240_fd(
+        &mut self,
+        input_fd: i32,
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<(Vec<u8>, bool, u32, i32), String> {
+        if input_fd < 0 {
+            return Err("VEPU510 H.265 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_next_with_rate_320x240(&[], bit_target, qp_target, qp_min, qp_max)
+    }
+
     fn encode_rate_next_320x240(
         &mut self,
         nv12: &[u8],
@@ -948,6 +1068,7 @@ impl Vepu510H265 {
             if self.sei_enabled {
                 lf1_rate_prefix_values(
                     &self.config,
+                    &self.rc_model_name,
                     gop,
                     mode,
                     target,
@@ -1076,6 +1197,10 @@ impl Vepu510H265 {
         self.sei_enabled = enabled;
     }
 
+    pub fn set_rate_control_name(&mut self, name: String) {
+        self.rc_model_name = name;
+    }
+
     pub fn set_mpi_compat(&mut self, mpi_compat: bool) {
         self.mpi_compat = mpi_compat;
     }
@@ -1108,6 +1233,10 @@ impl Vepu510H265 {
             crate::encoder::PacketMeta::from_vepu510_status(status, is_intra, start_qp, average_qp);
         meta.rt_bits = self.last_rt_bits;
         Some(meta)
+    }
+
+    pub fn last_encoded_bits(&self) -> Option<i32> {
+        self.last_encoded_bits
     }
 
     pub fn encode_fixed_qp_next_320x240_fd(
@@ -1596,6 +1725,7 @@ impl Vepu510H265 {
             .sync_read_end()
             .map_err(|e| format!("VEPU510 H.265 output sync end: {e}"))?;
         self.last_status = Some(status);
+        self.last_encoded_bits = Some(status[0] as i32 * 8);
         Ok((stream, status, packet_lengths))
     }
 }
@@ -1620,13 +1750,14 @@ fn lf1_fixed_qp_prefix(config: &EncoderConfig, qp: u32, gop: u32) -> Result<Vec<
 
 fn lf1_rate_prefix(config: &EncoderConfig, gop: u32, mode: RcMode) -> Result<Vec<u8>, String> {
     lf1_rate_prefix_values(
-        config, gop, mode, CBR_TARGET, CBR_MIN, CBR_MAX, QP as i32, 10, 51,
+        config, "default", gop, mode, CBR_TARGET, CBR_MIN, CBR_MAX, QP as i32, 10, 51,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn lf1_rate_prefix_values(
     config: &EncoderConfig,
+    model_name: &str,
     gop: u32,
     mode: RcMode,
     target: i32,
@@ -1637,7 +1768,7 @@ fn lf1_rate_prefix_values(
     qp_max: u32,
 ) -> Result<Vec<u8>, String> {
     let line = sei::RcCfgLine {
-        model_name: "default",
+        model_name,
         mode_name: match mode {
             RcMode::Cbr => "cbr",
             RcMode::Vbr => "vbr",

@@ -195,22 +195,17 @@ impl CompatContext {
         let sequence = self.custom_rc_sequence;
         let forced_idr = self.custom_force_idr;
         let intra = sequence == 0 || forced_idr;
-        let mut task = rc_api::EncRcTask::new(sequence, intra, intra);
+        let mut task = rc_api::EncRcTask::default();
         if let Err(error) = session.check_drop(&mut task) {
             eprintln!("rk-mpp-rs mpp: RC drop decision failed: {error}");
             return Err(MPP_NOK);
         }
         if task.frm.is_drop() {
-            task.info.bit_real = 0;
-            task.info.quality_real = task.info.quality_target;
-            if let Err(error) = session.frame_end(&mut task) {
-                eprintln!("rk-mpp-rs mpp: RC dropped-frame completion failed: {error}");
-                return Err(MPP_NOK);
-            }
             self.custom_rc_sequence = sequence.saturating_add(1);
             self.custom_force_idr = false;
             return Ok(CustomRcAction::Skip);
         }
+        task.set_frame(sequence, intra, intra);
         if let Err(error) = session.frame_start(&mut task) {
             eprintln!("rk-mpp-rs mpp: RC frame start failed: {error}");
             return Err(MPP_NOK);
@@ -238,29 +233,36 @@ impl CompatContext {
         let Some(mut task) = self.custom_rc_pending.take() else {
             return Ok(());
         };
-        task.info.bit_real = self
+        let measured_qp = self
+            .encoder
+            .as_ref()
+            .and_then(encoder::Encoder::last_packet_meta)
+            .and_then(|meta| meta.average_qp);
+        let bit_real = self
             .encoder
             .as_mut()
             .map_or(0, encoder::Encoder::take_last_frame_bits);
-        task.info.quality_real = if task.force.force_flag & 1 != 0 {
+        let quality_real = if task.force.force_flag & 1 != 0 {
             task.force.force_qp
         } else {
-            task.info.quality_target
+            measured_qp.unwrap_or(task.info.quality_target)
         };
         let Some(session) = self.custom_rc.as_mut() else {
             return Err(MPP_NOK);
         };
-        if let Err(error) = session.check_reencode(&mut task) {
-            eprintln!("rk-mpp-rs mpp: RC reencode decision failed: {error}");
-            return Err(MPP_NOK);
-        }
-        if task.frm.is_reencode() {
-            eprintln!("rk-mpp-rs mpp: user RC requested an unsupported hardware reencode");
-            return Err(MPP_NOK);
-        }
-        if let Err(error) = session.frame_end(&mut task) {
-            eprintln!("rk-mpp-rs mpp: RC frame completion failed: {error}");
-            return Err(MPP_NOK);
+        match session.finish_frame(&mut task, |task| {
+            task.info.bit_real = bit_real;
+            task.info.quality_real = quality_real;
+        }) {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!("rk-mpp-rs mpp: user RC requested an unsupported hardware reencode");
+                return Err(MPP_NOK);
+            }
+            Err(error) => {
+                eprintln!("rk-mpp-rs mpp: RC frame completion failed: {error}");
+                return Err(MPP_NOK);
+            }
         }
         self.custom_rc_sequence = self.custom_rc_sequence.saturating_add(1);
         Ok(())

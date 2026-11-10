@@ -4,15 +4,66 @@ use std::ptr;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::encoder::{EncoderConfig, RateControlMode};
+use crate::service::soc::{SocProfile, VideoEncodeHal};
 
 use super::{
     MPP_ERR_NULL_PTR, MPP_NOK, MPP_OK, MPP_VIDEO_CODING_AVC, MPP_VIDEO_CODING_HEVC,
     MPP_VIDEO_CODING_MJPEG, MPP_VIDEO_CODING_VP8,
 };
 
-type RcInitFn = unsafe extern "C" fn(*mut c_void, *mut RcCfg) -> c_int;
+type RcInitFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int;
 type RcDeinitFn = unsafe extern "C" fn(*mut c_void) -> c_int;
-type RcTaskFn = unsafe extern "C" fn(*mut c_void, *mut EncRcTask) -> c_int;
+type RcTaskFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RcAbi {
+    Legacy,
+    Current,
+}
+
+impl RcAbi {
+    fn detect() -> Self {
+        match std::env::var("RK_MPP_RC_ABI").ok().as_deref() {
+            Some("legacy") => return Self::Legacy,
+            Some("current") => return Self::Current,
+            _ => {}
+        }
+        if SocProfile::detect().is_ok_and(|profile| profile.video_encode == VideoEncodeHal::Vepu510)
+        {
+            Self::Current
+        } else {
+            Self::Legacy
+        }
+    }
+
+    const fn rc_cfg_size(self) -> usize {
+        match self {
+            Self::Legacy => 256,
+            Self::Current => 260,
+        }
+    }
+
+    const fn task_size(self) -> usize {
+        match self {
+            Self::Legacy => 312,
+            Self::Current => 336,
+        }
+    }
+
+    const fn force_offset(self) -> usize {
+        match self {
+            Self::Legacy => 272,
+            Self::Current => 296,
+        }
+    }
+
+    const fn frame_offset(self) -> usize {
+        match self {
+            Self::Legacy => 304,
+            Self::Current => 328,
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -109,6 +160,7 @@ pub(super) struct RcCfg {
     pub refresh_len: u32,
     pub scene_mode: i32,
     pub fps_chg_prop: u32,
+    pub rc_container: i32,
 }
 
 impl RcCfg {
@@ -201,11 +253,11 @@ pub(super) struct EncCpbStatus {
     pub final_: [EncFrmStatus; 8],
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct EncRcTaskInfo {
     pub frame_type: i32,
     pub bit_target: i32,
+    pub bit_target_fix: i32,
     pub bit_max: i32,
     pub bit_min: i32,
     pub quality_target: i32,
@@ -215,6 +267,7 @@ pub(super) struct EncRcTaskInfo {
     pub quality_real: i32,
     pub madi: i32,
     pub madp: i32,
+    pub dsp_y_avg: u32,
     pub iblk4_prop: u32,
     pub sse: i64,
     pub lvl64_inter_num: u32,
@@ -225,7 +278,15 @@ pub(super) struct EncRcTaskInfo {
     pub lvl16_intra_num: u32,
     pub lvl8_intra_num: u32,
     pub lvl4_intra_num: u32,
-    pub reserve: [i32; 5],
+    pub motion_level: u32,
+    pub complex_level: u32,
+    pub complex_scene: i32,
+    pub scene_mode: i32,
+    pub last_scene_mode: i32,
+    pub rt_bits: i32,
+    pub madi_b16: i32,
+    pub madp_ctu: i32,
+    pub reserve: [i32; 6],
 }
 
 #[repr(C)]
@@ -236,7 +297,6 @@ pub(super) struct EncRcForceCfg {
     pub reserve: [u32; 6],
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct EncRcTask {
     pub cpb: EncCpbStatus,
@@ -247,16 +307,23 @@ pub(super) struct EncRcTask {
 }
 
 impl EncRcTask {
+    #[cfg(test)]
     pub(super) fn new(sequence: u32, intra: bool, idr: bool) -> Self {
         let mut task = Self::default();
-        task.cpb.seq_idx = sequence as i32;
-        task.frm.set_bit(0, true);
-        task.frm.set_bit(4, intra);
-        task.frm.set_bit(5, idr);
-        task.frm.val |= (sequence as u64 & 0xffff) << 48;
-        task.cpb.curr = task.frm;
-        task.info.frame_type = if intra { 2 } else { 0 };
+        task.set_frame(sequence, intra, idr);
         task
+    }
+
+    pub(super) fn set_frame(&mut self, sequence: u32, intra: bool, idr: bool) {
+        self.frm = EncFrmStatus::default();
+        self.cpb.curr = EncFrmStatus::default();
+        self.info = EncRcTaskInfo::default();
+        self.frm.set_bit(0, true);
+        self.frm.set_bit(4, intra);
+        self.frm.set_bit(5, idr);
+        self.frm.val |= (sequence as u64 & 0xffff) << 48;
+        self.cpb.curr = self.frm;
+        self.info.frame_type = if intra { 2 } else { 0 };
     }
 
     pub(super) fn rc_target(&self) -> (i32, i32, i32, i32) {
@@ -579,7 +646,223 @@ fn resolve(name: &CStr, coding: c_int) -> Option<RcCallbacks> {
         .filter(|callbacks| callbacks.frame_start.is_some())
 }
 
+unsafe fn write_task_info(abi: RcAbi, base: *mut u8, info: &EncRcTaskInfo) {
+    unsafe {
+        let write_i32 = |offset: usize, value: i32| {
+            ptr::write_unaligned(base.add(offset).cast::<i32>(), value);
+        };
+        let write_i64 = |offset: usize, value: i64| {
+            ptr::write_unaligned(base.add(offset).cast::<i64>(), value);
+        };
+
+        write_i32(0, info.frame_type);
+        write_i32(4, info.bit_target);
+        match abi {
+            RcAbi::Legacy => {
+                write_i32(8, info.bit_max);
+                write_i32(12, info.bit_min);
+                write_i32(16, info.quality_target);
+                write_i32(20, info.quality_max);
+                write_i32(24, info.quality_min);
+                write_i32(28, info.bit_real);
+                write_i32(32, info.quality_real);
+                write_i32(36, info.madi);
+                write_i32(40, info.madp);
+                write_i32(44, info.iblk4_prop as i32);
+                write_i64(48, info.sse);
+                for (index, value) in [
+                    info.lvl64_inter_num,
+                    info.lvl32_inter_num,
+                    info.lvl16_inter_num,
+                    info.lvl8_inter_num,
+                    info.lvl32_intra_num,
+                    info.lvl16_intra_num,
+                    info.lvl8_intra_num,
+                    info.lvl4_intra_num,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    write_i32(56 + index * 4, value as i32);
+                }
+                for (index, value) in info.reserve[..5].iter().copied().enumerate() {
+                    write_i32(88 + index * 4, value);
+                }
+            }
+            RcAbi::Current => {
+                write_i32(8, info.bit_target_fix);
+                write_i32(12, info.bit_max);
+                write_i32(16, info.bit_min);
+                write_i32(20, info.quality_target);
+                write_i32(24, info.quality_max);
+                write_i32(28, info.quality_min);
+                write_i32(32, info.bit_real);
+                write_i32(36, info.quality_real);
+                write_i32(40, info.madi);
+                write_i32(44, info.madp);
+                write_i32(48, info.dsp_y_avg as i32);
+                write_i32(52, info.iblk4_prop as i32);
+                write_i64(56, info.sse);
+                for (index, value) in [
+                    info.lvl64_inter_num,
+                    info.lvl32_inter_num,
+                    info.lvl16_inter_num,
+                    info.lvl8_inter_num,
+                    info.lvl32_intra_num,
+                    info.lvl16_intra_num,
+                    info.lvl8_intra_num,
+                    info.lvl4_intra_num,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    write_i32(64 + index * 4, value as i32);
+                }
+                write_i32(96, info.motion_level as i32);
+                write_i32(100, info.complex_level as i32);
+                write_i32(104, info.complex_scene);
+                write_i32(108, info.scene_mode);
+                write_i32(112, info.last_scene_mode);
+                write_i32(116, info.rt_bits);
+                write_i32(120, info.madi_b16);
+                write_i32(124, info.madp_ctu);
+                write_i32(128, info.reserve[0]);
+                write_i32(132, info.reserve[1]);
+            }
+        }
+    }
+}
+
+unsafe fn read_task_info(abi: RcAbi, base: *const u8, info: &mut EncRcTaskInfo) {
+    unsafe {
+        let read_i32 = |offset: usize| ptr::read_unaligned(base.add(offset).cast::<i32>());
+        let read_i64 = |offset: usize| ptr::read_unaligned(base.add(offset).cast::<i64>());
+
+        info.frame_type = read_i32(0);
+        info.bit_target = read_i32(4);
+        match abi {
+            RcAbi::Legacy => {
+                info.bit_target_fix = 0;
+                info.bit_max = read_i32(8);
+                info.bit_min = read_i32(12);
+                info.quality_target = read_i32(16);
+                info.quality_max = read_i32(20);
+                info.quality_min = read_i32(24);
+                info.bit_real = read_i32(28);
+                info.quality_real = read_i32(32);
+                info.madi = read_i32(36);
+                info.madp = read_i32(40);
+                info.dsp_y_avg = 0;
+                info.iblk4_prop = read_i32(44) as u32;
+                info.sse = read_i64(48);
+                for (index, target) in [
+                    &mut info.lvl64_inter_num,
+                    &mut info.lvl32_inter_num,
+                    &mut info.lvl16_inter_num,
+                    &mut info.lvl8_inter_num,
+                    &mut info.lvl32_intra_num,
+                    &mut info.lvl16_intra_num,
+                    &mut info.lvl8_intra_num,
+                    &mut info.lvl4_intra_num,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    *target = read_i32(56 + index * 4) as u32;
+                }
+                for (index, target) in info.reserve[..5].iter_mut().enumerate() {
+                    *target = read_i32(88 + index * 4);
+                }
+            }
+            RcAbi::Current => {
+                info.bit_target_fix = read_i32(8);
+                info.bit_max = read_i32(12);
+                info.bit_min = read_i32(16);
+                info.quality_target = read_i32(20);
+                info.quality_max = read_i32(24);
+                info.quality_min = read_i32(28);
+                info.bit_real = read_i32(32);
+                info.quality_real = read_i32(36);
+                info.madi = read_i32(40);
+                info.madp = read_i32(44);
+                info.dsp_y_avg = read_i32(48) as u32;
+                info.iblk4_prop = read_i32(52) as u32;
+                info.sse = read_i64(56);
+                for (index, target) in [
+                    &mut info.lvl64_inter_num,
+                    &mut info.lvl32_inter_num,
+                    &mut info.lvl16_inter_num,
+                    &mut info.lvl8_inter_num,
+                    &mut info.lvl32_intra_num,
+                    &mut info.lvl16_intra_num,
+                    &mut info.lvl8_intra_num,
+                    &mut info.lvl4_intra_num,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    *target = read_i32(64 + index * 4) as u32;
+                }
+                info.motion_level = read_i32(96) as u32;
+                info.complex_level = read_i32(100) as u32;
+                info.complex_scene = read_i32(104);
+                info.scene_mode = read_i32(108);
+                info.last_scene_mode = read_i32(112);
+                info.rt_bits = read_i32(116);
+                info.madi_b16 = read_i32(120);
+                info.madp_ctu = read_i32(124);
+                info.reserve[0] = read_i32(128);
+                info.reserve[1] = read_i32(132);
+            }
+        }
+    }
+}
+
+unsafe fn write_task(abi: RcAbi, raw: &mut [u8], task: &EncRcTask) {
+    let base = raw.as_mut_ptr();
+    unsafe {
+        ptr::copy_nonoverlapping(
+            (&task.cpb as *const EncCpbStatus).cast::<u8>(),
+            base,
+            size_of::<EncCpbStatus>(),
+        );
+        ptr::write_unaligned(base.add(152).cast::<u64>(), task.frm.val);
+        write_task_info(abi, base.add(160), &task.info);
+        let force = abi.force_offset();
+        ptr::write_unaligned(base.add(force).cast::<u32>(), task.force.force_flag);
+        ptr::write_unaligned(base.add(force + 4).cast::<i32>(), task.force.force_qp);
+        for (index, value) in task.force.reserve.into_iter().enumerate() {
+            ptr::write_unaligned(base.add(force + 8 + index * 4).cast::<u32>(), value);
+        }
+        ptr::write_unaligned(
+            base.add(abi.frame_offset()).cast::<*mut c_void>(),
+            task.frame,
+        );
+    }
+}
+
+unsafe fn read_task(abi: RcAbi, raw: &[u8], task: &mut EncRcTask) {
+    let base = raw.as_ptr();
+    unsafe {
+        ptr::copy_nonoverlapping(
+            base,
+            (&mut task.cpb as *mut EncCpbStatus).cast::<u8>(),
+            size_of::<EncCpbStatus>(),
+        );
+        task.frm.val = ptr::read_unaligned(base.add(152).cast::<u64>());
+        read_task_info(abi, base.add(160), &mut task.info);
+        let force = abi.force_offset();
+        task.force.force_flag = ptr::read_unaligned(base.add(force).cast::<u32>());
+        task.force.force_qp = ptr::read_unaligned(base.add(force + 4).cast::<i32>());
+        for (index, value) in task.force.reserve.iter_mut().enumerate() {
+            *value = ptr::read_unaligned(base.add(force + 8 + index * 4).cast::<u32>());
+        }
+        task.frame = ptr::read_unaligned(base.add(abi.frame_offset()).cast::<*mut c_void>());
+    }
+}
+
 pub(super) struct Session {
+    abi: RcAbi,
     callbacks: RcCallbacks,
     context: Box<[u8]>,
 }
@@ -589,25 +872,47 @@ impl Session {
         let callbacks = resolve(name, coding).ok_or_else(|| {
             format!("RC strategy {name:?} has no executable frame_start callback")
         })?;
+        let abi = RcAbi::detect();
         let mut context = vec![0u8; callbacks.ctx_size as usize].into_boxed_slice();
         if let Some(init) = callbacks.init {
-            let result = unsafe { init(context.as_mut_ptr().cast(), config) };
+            let size = abi.rc_cfg_size();
+            let mut raw = vec![0u8; size];
+            let copy = size_of::<RcCfg>().min(size);
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    (config as *const RcCfg).cast::<u8>(),
+                    raw.as_mut_ptr(),
+                    copy,
+                );
+            }
+            let result = unsafe { init(context.as_mut_ptr().cast(), raw.as_mut_ptr().cast()) };
             if result != MPP_OK {
                 if let Some(deinit) = callbacks.deinit {
                     let _ = unsafe { deinit(context.as_mut_ptr().cast()) };
                 }
                 return Err(format!("RC strategy {name:?} init failed with {result}"));
             }
+            unsafe {
+                ptr::copy_nonoverlapping(raw.as_ptr(), (config as *mut RcCfg).cast::<u8>(), copy);
+            }
         }
-        Ok(Self { callbacks, context })
+        Ok(Self {
+            abi,
+            callbacks,
+            context,
+        })
     }
 
     fn call(&mut self, callback: Option<RcTaskFn>, task: &mut EncRcTask) -> Result<(), String> {
         if let Some(callback) = callback {
-            let result = unsafe { callback(self.context.as_mut_ptr().cast(), task) };
+            let mut raw = vec![0u8; self.abi.task_size()];
+            unsafe { write_task(self.abi, &mut raw[..], task) };
+            let result =
+                unsafe { callback(self.context.as_mut_ptr().cast(), raw.as_mut_ptr().cast()) };
             if result != MPP_OK {
                 return Err(format!("RC callback failed with {result}"));
             }
+            unsafe { read_task(self.abi, &raw, task) };
         }
         Ok(())
     }
@@ -616,7 +921,7 @@ impl Session {
         self.call(self.callbacks.check_drop, task)
     }
 
-    pub(super) fn check_reencode(&mut self, task: &mut EncRcTask) -> Result<(), String> {
+    fn check_reencode(&mut self, task: &mut EncRcTask) -> Result<(), String> {
         self.call(self.callbacks.check_reenc, task)
     }
 
@@ -625,9 +930,23 @@ impl Session {
         self.call(self.callbacks.hal_start, task)
     }
 
-    pub(super) fn frame_end(&mut self, task: &mut EncRcTask) -> Result<(), String> {
-        self.call(self.callbacks.hal_end, task)?;
+    fn frame_end(&mut self, task: &mut EncRcTask) -> Result<(), String> {
         self.call(self.callbacks.frame_end, task)
+    }
+
+    pub(super) fn finish_frame(
+        &mut self,
+        task: &mut EncRcTask,
+        fill_metrics: impl FnOnce(&mut EncRcTask),
+    ) -> Result<bool, String> {
+        self.call(self.callbacks.hal_end, task)?;
+        fill_metrics(task);
+        self.check_reencode(task)?;
+        if task.frm.is_reencode() {
+            return Ok(false);
+        }
+        self.frame_end(task)?;
+        Ok(true)
     }
 }
 
@@ -644,17 +963,176 @@ const _: () = {
     assert!(size_of::<RcApiQueryAll>() == 16);
     assert!(size_of::<RcApiQueryType>() == 24);
     assert!(size_of::<RcImplApi>() == 80);
-    assert!(size_of::<RcCfg>() == 256);
+    assert!(size_of::<RcCfg>() == 260);
     assert!(size_of::<EncFrmStatus>() == 8);
     assert!(size_of::<EncCpbStatus>() == 152);
-    assert!(size_of::<EncRcTaskInfo>() == 112);
-    assert!(size_of::<EncRcForceCfg>() == 32);
-    assert!(size_of::<EncRcTask>() == 312);
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static CALLBACK_STAGES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+    unsafe extern "C" fn record_frame_start(_: *mut c_void, _: *mut c_void) -> c_int {
+        CALLBACK_STAGES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push("frame-start");
+        MPP_OK
+    }
+
+    unsafe extern "C" fn record_hal_end(_: *mut c_void, _: *mut c_void) -> c_int {
+        CALLBACK_STAGES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push("hal-end");
+        MPP_OK
+    }
+
+    unsafe extern "C" fn record_check_reenc(_: *mut c_void, _: *mut c_void) -> c_int {
+        CALLBACK_STAGES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push("reenc");
+        MPP_OK
+    }
+
+    unsafe extern "C" fn record_frame_end(_: *mut c_void, _: *mut c_void) -> c_int {
+        CALLBACK_STAGES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push("frame-end");
+        MPP_OK
+    }
+
+    #[test]
+    fn both_rc_task_abis_round_trip_the_callback_fields() {
+        for abi in [RcAbi::Legacy, RcAbi::Current] {
+            let mut source = EncRcTask::new(3, true, true);
+            source.info.frame_type = 2;
+            source.info.bit_target = 33_333;
+            source.info.bit_target_fix = 31_111;
+            source.info.bit_max = 40_000;
+            source.info.bit_min = 20_000;
+            source.info.quality_target = 26;
+            source.info.quality_max = 51;
+            source.info.quality_min = 10;
+            source.info.bit_real = 29_208;
+            source.info.quality_real = 27;
+            source.info.dsp_y_avg = 42;
+            source.info.iblk4_prop = 128;
+            source.info.sse = 0x1234_5678;
+            source.info.motion_level = 100;
+            source.info.complex_level = 2;
+            source.info.complex_scene = 3;
+            source.info.scene_mode = 4;
+            source.info.last_scene_mode = 5;
+            source.info.rt_bits = 28_000;
+            source.info.madi_b16 = 19;
+            source.info.madp_ctu = 23;
+            source.force.force_flag = 1;
+            source.force.force_qp = 24;
+            source.frame = 0x1234usize as *mut c_void;
+
+            let mut raw = vec![0u8; abi.task_size()];
+            unsafe { write_task(abi, &mut raw, &source) };
+            let raw_bit_fix =
+                unsafe { ptr::read_unaligned(raw.as_ptr().add(160 + 8).cast::<i32>()) };
+            let mut decoded = EncRcTask::default();
+            unsafe { read_task(abi, &raw, &mut decoded) };
+
+            assert_eq!(decoded.cpb.seq_idx, source.cpb.seq_idx);
+            assert_eq!(decoded.frm.val, source.frm.val);
+            assert_eq!(decoded.info.frame_type, source.info.frame_type);
+            assert_eq!(decoded.info.bit_target, source.info.bit_target);
+            if abi == RcAbi::Current {
+                assert_eq!(decoded.info.bit_target_fix, source.info.bit_target_fix);
+                assert_eq!(raw_bit_fix, source.info.bit_target_fix);
+            } else {
+                assert_eq!(decoded.info.bit_target_fix, 0);
+                assert_eq!(raw_bit_fix, source.info.bit_max);
+            }
+            assert_eq!(decoded.info.bit_max, source.info.bit_max);
+            assert_eq!(decoded.info.bit_min, source.info.bit_min);
+            assert_eq!(decoded.info.quality_target, source.info.quality_target);
+            assert_eq!(decoded.info.quality_max, source.info.quality_max);
+            assert_eq!(decoded.info.quality_min, source.info.quality_min);
+            assert_eq!(decoded.info.bit_real, source.info.bit_real);
+            assert_eq!(decoded.info.quality_real, source.info.quality_real);
+            assert_eq!(decoded.info.iblk4_prop, source.info.iblk4_prop);
+            assert_eq!(decoded.info.sse, source.info.sse);
+            if abi == RcAbi::Current {
+                assert_eq!(decoded.info.dsp_y_avg, source.info.dsp_y_avg);
+                assert_eq!(decoded.info.motion_level, source.info.motion_level);
+                assert_eq!(decoded.info.complex_level, source.info.complex_level);
+                assert_eq!(decoded.info.complex_scene, source.info.complex_scene);
+                assert_eq!(decoded.info.scene_mode, source.info.scene_mode);
+                assert_eq!(decoded.info.last_scene_mode, source.info.last_scene_mode);
+                assert_eq!(decoded.info.rt_bits, source.info.rt_bits);
+                assert_eq!(decoded.info.madi_b16, source.info.madi_b16);
+                assert_eq!(decoded.info.madp_ctu, source.info.madp_ctu);
+            } else {
+                assert_eq!(decoded.info.dsp_y_avg, 0);
+            }
+            assert_eq!(decoded.force.force_flag, source.force.force_flag);
+            assert_eq!(decoded.force.force_qp, source.force.force_qp);
+            assert_eq!(decoded.frame, source.frame);
+        }
+    }
+
+    #[test]
+    fn cpb_sequence_stays_unloaded_while_frame_sequence_is_available() {
+        let task = EncRcTask::new(7, false, false);
+        assert_eq!(task.cpb.seq_idx, 0);
+        assert_eq!((task.frm.val >> 48) & 0xffff, 7);
+    }
+
+    #[test]
+    fn finish_frame_uses_the_vendor_hal_reenc_frame_order() {
+        let api = RcImplApi {
+            name: c"codex_callback_order_test".as_ptr(),
+            coding: MPP_VIDEO_CODING_AVC,
+            ctx_size: 1,
+            init: None,
+            deinit: None,
+            check_drop: None,
+            check_reenc: Some(record_check_reenc),
+            frame_start: Some(record_frame_start),
+            frame_end: Some(record_frame_end),
+            hal_start: None,
+            hal_end: Some(record_hal_end),
+        };
+        assert_eq!(unsafe { add(&api) }, MPP_OK);
+        CALLBACK_STAGES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+
+        let mut config = RcCfg::default();
+        let mut session = Session::new(
+            c"codex_callback_order_test",
+            MPP_VIDEO_CODING_AVC,
+            &mut config,
+        )
+        .unwrap();
+        let mut task = EncRcTask::new(0, true, true);
+        assert!(session
+            .finish_frame(&mut task, |_| {
+                CALLBACK_STAGES
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push("metrics");
+            })
+            .unwrap());
+
+        assert_eq!(
+            *CALLBACK_STAGES
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            ["hal-end", "metrics", "reenc", "frame-end"]
+        );
+    }
 
     #[test]
     fn registry_matches_the_vendor_query_and_replacement_rules() {
