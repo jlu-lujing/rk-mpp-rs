@@ -16,7 +16,10 @@ compound、inter-intra、OBMC、local warp、单参考/compound global warped mo
 MV fields，以及 inter segmentation 的 segment map、temporal prediction 与 segment
 features；`delta_lf_multi` 的四路 CDF 路径已由真实彩色 keyframe 三平面与单色 Y 平面像素门
 闭合，单色门同时修正 UV 语法门控和 deblock 单平面网格；混合 intra/inter selected tx
-context 也已闭合完整 `av1_lr` key+P 流。
+context 也已闭合完整 `av1_lr` key+P 流。第 104 slice 又补上
+`SavedFilmGrain[refFrame]`：刷新参考槽时保存完整 grain 参数，`update_grain=0`
+时按 `film_grain_params_ref_idx` 继承 scaling points 和 AR coefficients，仅替换
+seed。当前语料没有该组合，已保留带明确 ignore 原因的真实 fixture 扫描门。
 仍未闭合的前沿是 WPP、B 帧与多参考调度。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
@@ -76,8 +79,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1238 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1242 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1239 passed / 0 failed / 42 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1243 passed / 0 failed / 42 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。

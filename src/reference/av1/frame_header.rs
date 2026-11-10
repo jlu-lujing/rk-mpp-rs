@@ -199,6 +199,8 @@ pub struct FrameHeaderState {
     pub saved_lf_mode_deltas: [[i32; 2]; NUM_REF_FRAMES],
     /// `SavedSegmentation[refFrame]`.
     pub saved_segmentation: [SegmentationState; NUM_REF_FRAMES],
+    /// `SavedFilmGrain[refFrame]`.
+    pub saved_film_grain: [FilmGrainParams; NUM_REF_FRAMES],
     /// `PrevGmParams[ref][idx]`; the past-independence default is
     /// `1 << WARPEDMODEL_PREC_BITS` for `idx % 3 == 2` and zero elsewhere.
     pub prev_gm_params: [[i32; 6]; REFS_PER_FRAME],
@@ -243,6 +245,7 @@ impl Default for FrameHeaderState {
             saved_lf_ref_deltas: [DEFAULT_LF_REF_DELTAS; NUM_REF_FRAMES],
             saved_lf_mode_deltas: [DEFAULT_LF_MODE_DELTAS; NUM_REF_FRAMES],
             saved_segmentation: [SegmentationState::default(); NUM_REF_FRAMES],
+            saved_film_grain: std::array::from_fn(|_| FilmGrainParams::default()),
             prev_gm_params,
             prev_lf_ref_deltas: DEFAULT_LF_REF_DELTAS,
             prev_lf_mode_deltas: DEFAULT_LF_MODE_DELTAS,
@@ -286,6 +289,7 @@ impl FrameHeaderState {
             self.saved_lf_ref_deltas[slot] = header.loop_filter_ref_deltas;
             self.saved_lf_mode_deltas[slot] = header.loop_filter_mode_deltas;
             self.saved_segmentation[slot] = SegmentationState::from_header(header);
+            self.saved_film_grain[slot] = header.film_grain.clone();
         }
         self.prev_frame_id = header.current_frame_id;
         self.prev_gm_params = header.gm_params;
@@ -1485,14 +1489,33 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn film_grain_params(&mut self) -> Result<(), FrameHeaderError> {
         let frame_type = self.frame_type();
-        self.h.film_grain = read_film_grain(
+        let parsed = read_film_grain(
             &mut self.r,
             self.seq,
             frame_type,
             self.h.show_frame,
             self.h.showable_frame,
         )?;
+        self.h.film_grain = resolve_film_grain_reference(parsed, &self.state);
         Ok(())
+    }
+}
+
+fn resolve_film_grain_reference(
+    parsed: FilmGrainParams,
+    state: &FrameHeaderState,
+) -> FilmGrainParams {
+    if !parsed.apply_grain || parsed.update_grain {
+        return parsed;
+    }
+    let slot = usize::from(parsed.film_grain_params_ref_idx);
+    let Some(saved) = state.saved_film_grain.get(slot) else {
+        return parsed;
+    };
+    let seed = parsed.grain_seed;
+    FilmGrainParams {
+        grain_seed: seed,
+        ..saved.clone()
     }
 }
 
@@ -2107,6 +2130,84 @@ mod tests {
         assert_eq!(g.cr_offset, 54);
         assert!(!g.overlap_flag);
         assert!(g.clip_to_restricted_range);
+    }
+
+    #[test]
+    fn inheritance_without_update_copies_saved_grain_and_replaces_seed() {
+        let mut state = FrameHeaderState::default();
+        let saved = FilmGrainParams {
+            apply_grain: true,
+            grain_seed: 0x1111,
+            update_grain: true,
+            num_y_points: 2,
+            point_y_value: [16, 240, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            point_y_scaling: [3, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ar_coeff_lag: 1,
+            ..FilmGrainParams::default()
+        };
+        state.apply_frame(&FrameHeader {
+            refresh_frame_flags: 1 << 3,
+            film_grain: saved.clone(),
+            ..FrameHeader::default()
+        });
+        assert_eq!(state.saved_film_grain[3], saved);
+        let parsed = FilmGrainParams {
+            apply_grain: true,
+            grain_seed: 0xabcd,
+            update_grain: false,
+            film_grain_params_ref_idx: 3,
+            ..FilmGrainParams::default()
+        };
+        let resolved = resolve_film_grain_reference(parsed, &state);
+        assert!(resolved.apply_grain);
+        assert_eq!(resolved.grain_seed, 0xabcd);
+        assert_eq!(resolved.num_y_points, 2);
+        assert_eq!(resolved.point_y_value[1], 240);
+        assert_eq!(resolved.ar_coeff_lag, 1);
+    }
+
+    #[test]
+    #[ignore = "current AV1 corpus has no update_grain=0 fixture"]
+    fn real_film_grain_stream_resolves_reference_parameter_sets() {
+        use crate::reference::av1::obu::parse_ivf;
+        use crate::reference::av1::stream::{ReferenceStream, StreamEvent};
+
+        let mut inherited = None;
+        let mut directories = vec![std::path::PathBuf::from("tests/data")];
+        if let Some(extra) = std::env::var_os("GRAIN_PROBE_DIR") {
+            directories.push(extra.into());
+        }
+        'directories: for directory in directories {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().and_then(|extension| extension.to_str()) != Some("ivf") {
+                    continue;
+                }
+                let data = std::fs::read(&path).unwrap();
+                let Ok(ivf) = parse_ivf(&data) else {
+                    continue;
+                };
+                let Ok(events) = ReferenceStream::new().parse_ivf(&ivf) else {
+                    continue;
+                };
+                if let Some(grain) = events.iter().flatten().find_map(|event| match event {
+                    StreamEvent::CodedFrame(frame)
+                        if frame.header.film_grain.apply_grain
+                            && !frame.header.film_grain.update_grain =>
+                    {
+                        Some(frame.header.film_grain.clone())
+                    }
+                    _ => None,
+                }) {
+                    inherited = Some(grain);
+                    break 'directories;
+                }
+            }
+        }
+        let inherited =
+            inherited.expect("AV1 corpus must contain an inherited film-grain parameter set");
+        assert!(inherited.num_y_points > 0);
+        assert!(inherited.num_cb_points > 0 || inherited.chroma_scaling_from_luma);
     }
 
     #[test]

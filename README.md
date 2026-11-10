@@ -82,8 +82,10 @@
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 108 项完成、6 项未完成（含缩进子项为 146 / 9）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 103 个
-AV1 slice。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 104 个
+AV1 slice。第 104 slice 增加 `SavedFilmGrain` 参考槽持久化：`update_grain=0` 时复制
+引用槽的 scaling points/AR coefficients，只替换 `grain_seed`；当前真实语料没有该组合，
+因此合成状态门通过、真实 fixture 门以明确原因保留为 ignored。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
 帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
 的 intra-cell 清除、base-invalid 时仍执行 extension probes、order-hint sign bias、
 overlapping half-res block 清理和 4:2:0 difference-weighted mask 的 luma 域取样。
