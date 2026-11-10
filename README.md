@@ -269,7 +269,7 @@ RKMPP_DECODE_DMABUF=1 rk-mpp-rs h264dec input.264 /dev/null
 `decode_get_frame` 数据面。本地 `MppMeta` 已覆盖 s32/s64/ptr、
 frame/packet/buffer、用户数据深拷贝、duplicate/ref/lifetime，并接入 frame 和
 packet 的惰性持有以及 advanced decode 的 `KEY_OUTPUT_FRAME`/
-`KEY_INPUT_PACKET`；H.264/H.265 VEPU580 的 encoder packet meta 也已接通，
+`KEY_INPUT_PACKET`；H.264/H.265 VEPU580/VEPU510 的 encoder packet meta 也已接通，
 advanced buffer import 与 standalone 对象层已接入。internal `MppBuffer`
 已使用真实 dma-heap fd，
 external `MppBuffer` 现可通过
@@ -329,11 +329,13 @@ H.264 两帧 OSD stream/YUV 与 vendor 逐字节一致；H.265 的 OSD 寄存器
 除 dma-buf fd 外逐字一致，产生正确的 OSD NAL 结构，但 payload 差异已登记。
 编码输出 packet 的 kernel meta 现已按 `set_enc_info_to_packet()` 回填：
 H.264/H.265 的 8 类 inter/intra block count、SSE、PSKIP、帧内标志、
-start/average QP 以及 H.265 `KEY_MOTION_INFO` 均与 t6 vendor 一致。
+start/average QP 以及 H.265 `KEY_MOTION_INFO` 均与对应板上的 vendor 一致。
 JPEG 的 start/average quality 也已按 vendor 回填为 q-factor；VEPU2 保持
 vendor 的“无 intra 标志”，VPU720 则回填 `KEY_OUTPUT_INTRA=0`。
 固定 QP 和 CBR 在静止、持续运动各两帧上为 2/2 逐 packet 一致；CBR
 还暴露并修正了 H.265 I-QP delta 与 rate-controlled PPS 的两个旧偏差。
+RK3576 VEPU510 的 fixed-QP 静止/运动矩阵同样为 H.264/H.265 各 2/2；
+VEPU510 的 streaming CBR metadata 仍随 RC 边界明确跳过。
 其余高级编码控制仍待继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的
@@ -480,7 +482,7 @@ BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR
 BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：15/15
 ./scripts/board_mpp_custom_rc.sh # t6 自定义 RC callbacks：H.264/H.265
 ./scripts/board_mpp_osd.sh # t6 OSD palette/data；H.264 严格，H.265 序列/寄存器
-./scripts/board_mpp_packet_meta.sh # t6 H.264/H.265 fixed/CBR × 静止/运动 + JPEG；lf1 JPEG
+./scripts/board_mpp_packet_meta.sh # t6 H.264/H.265 fixed/CBR × 静止/运动；lf1 VEPU510 fixed + JPEG
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_key.sh # VDPU383 AV1 首 keyframe：C == Rust
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_sequence.sh # VDPU383 AV1 10 帧序列：C == Rust
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_10bit.sh # VDPU383 AV1 10-bit skip-grain：C == Rust

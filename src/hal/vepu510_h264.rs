@@ -79,6 +79,7 @@ pub struct Vepu510H264 {
     next_layout: Option<PictureLayout>,
     force_next_idr: bool,
     headers_each_idr: bool,
+    last_status: Option<[u32; STATUS_WORDS]>,
 }
 
 impl Vepu510H264 {
@@ -146,6 +147,7 @@ impl Vepu510H264 {
             next_layout: None,
             force_next_idr: false,
             headers_each_idr: false,
+            last_status: None,
         })
     }
 
@@ -253,6 +255,22 @@ impl Vepu510H264 {
             .sync_read_end()
             .map_err(|e| format!("VEPU510 motion info sync end: {e}"))?;
         Ok(data)
+    }
+
+    pub fn last_packet_meta(&self, is_intra: bool) -> Option<crate::encoder::PacketMeta> {
+        let status = self.last_status.as_ref()?;
+        let macroblocks = (WIDTH * HEIGHT / 256) as u32;
+        let average_qp = if macroblocks == 0 {
+            0
+        } else {
+            (status[3] / macroblocks) as i32
+        };
+        Some(crate::encoder::PacketMeta::from_vepu510_status(
+            status,
+            is_intra,
+            i32::from(self.config.qp_init),
+            average_qp,
+        ))
     }
 
     pub fn encode_fixed_qp_next_320x240_fd(
@@ -932,6 +950,7 @@ impl Vepu510H264 {
         self.output
             .sync_read_end()
             .map_err(|e| format!("VEPU510 output sync end: {e}"))?;
+        self.last_status = Some(status);
         Ok(JobOutput {
             stream,
             status,

@@ -607,6 +607,7 @@ pub struct Vepu510H265 {
     force_next_idr: bool,
     headers_each_idr: bool,
     sei_enabled: bool,
+    last_status: Option<[u32; regs::STATUS_WORDS]>,
 }
 
 impl Vepu510H265 {
@@ -685,6 +686,7 @@ impl Vepu510H265 {
             force_next_idr: false,
             headers_each_idr: false,
             sei_enabled: true,
+            last_status: None,
         })
     }
 
@@ -826,6 +828,16 @@ impl Vepu510H265 {
             .sync_read_end()
             .map_err(|e| format!("VEPU510 H.265 motion info sync end: {e}"))?;
         Ok(data)
+    }
+
+    pub fn last_packet_meta(&self, is_intra: bool) -> Option<crate::encoder::PacketMeta> {
+        let status = self.last_status.as_ref()?;
+        // MPP 1.0.11 reports the fixed-QP target as quality_real even though the
+        // STATUS qp_sum divides to 24 for this 320x240 QP26 capture.
+        let average_qp = QP as i32;
+        Some(crate::encoder::PacketMeta::from_vepu510_status(
+            status, is_intra, QP as i32, average_qp,
+        ))
     }
 
     pub fn encode_fixed_qp_next_320x240_fd(
@@ -1313,6 +1325,7 @@ impl Vepu510H265 {
         self.output
             .sync_read_end()
             .map_err(|e| format!("VEPU510 H.265 output sync end: {e}"))?;
+        self.last_status = Some(status);
         Ok((stream, status, packet_lengths))
     }
 }

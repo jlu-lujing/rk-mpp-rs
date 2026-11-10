@@ -231,6 +231,9 @@ static void dump_packet_meta(MppPacket packet, int frame, unsigned part)
     else
         fprintf(stderr, " sse=-");
     dump_meta_s32(meta, KEY_OUTPUT_PSKIP, "pskip");
+#ifdef H264E_DUMP_RT_BITS
+    dump_meta_s32(meta, KEY_ENC_BPS_RT, "rt_bits");
+#endif
     dump_meta_s32(meta, KEY_ENC_USE_LTR, "use_ltr");
     dump_meta_s32(meta, KEY_OUTPUT_INTRA, "intra");
     dump_meta_s32(meta, KEY_ENC_START_QP, "start_qp");

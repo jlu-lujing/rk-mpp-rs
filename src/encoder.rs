@@ -892,6 +892,37 @@ impl PacketMeta {
         }
     }
 
+    pub(crate) fn from_vepu510_status(
+        status: &[u32],
+        is_intra: bool,
+        start_qp: i32,
+        average_qp: i32,
+    ) -> Self {
+        let word = |index: usize| status.get(index).copied().unwrap_or(0);
+        let blocks = BlockStatistics {
+            inter64: word(32) & 0x1ffff,
+            inter32: word(33) & 0x7ffff,
+            inter16: word(34) & 0x1f_ffff,
+            inter8: word(35) & 0x7f_ffff,
+            intra32: word(36) & 0x7ffff,
+            intra16: word(37) & 0x1f_ffff,
+            intra8: word(38) & 0x7f_ffff,
+            intra4: word(39) & 0x7f_ffff,
+        };
+        Self {
+            block_statistics: Some(blocks),
+            sse: Some((u64::from(word(2)) << 16) | u64::from((word(1) >> 16) & 0xffff)),
+            output_pskip: Some(blocks.is_all_zero()),
+            rt_bits: None,
+            madi_b16: None,
+            madp_ctu: None,
+            use_ltr: None,
+            output_intra: Some(is_intra),
+            start_qp: Some(start_qp),
+            average_qp: Some(average_qp),
+        }
+    }
+
     fn fixed_qp(is_intra: bool, qp: i32) -> Self {
         Self {
             output_intra: Some(is_intra),
@@ -1272,6 +1303,9 @@ impl Encoder {
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
+                let meta = encoder
+                    .last_packet_meta(keyframe)
+                    .unwrap_or_else(|| PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)));
                 self.packets.push_back(Packet {
                     data,
                     pts: frame.pts,
@@ -1279,7 +1313,7 @@ impl Encoder {
                     keyframe,
                     frame_num,
                     poc,
-                    meta: PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)),
+                    meta,
                 });
                 Ok(1)
             }
@@ -1332,6 +1366,9 @@ impl Encoder {
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
+                let meta = encoder
+                    .last_packet_meta(keyframe)
+                    .unwrap_or_else(|| PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)));
                 self.packets.push_back(Packet {
                     data,
                     pts: frame.pts,
@@ -1339,7 +1376,7 @@ impl Encoder {
                     keyframe,
                     frame_num,
                     poc,
-                    meta: PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)),
+                    meta,
                 });
                 Ok(1)
             }
@@ -1471,6 +1508,9 @@ impl Encoder {
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
+                let meta = encoder
+                    .last_packet_meta(keyframe)
+                    .unwrap_or_else(|| PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)));
                 self.packets.push_back(Packet {
                     data,
                     pts: frame.pts,
@@ -1478,7 +1518,7 @@ impl Encoder {
                     keyframe,
                     frame_num,
                     poc,
-                    meta: PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)),
+                    meta,
                 });
                 Ok(1)
             }
@@ -1516,6 +1556,9 @@ impl Encoder {
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
+                let meta = encoder
+                    .last_packet_meta(keyframe)
+                    .unwrap_or_else(|| PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)));
                 self.packets.push_back(Packet {
                     data,
                     pts: frame.pts,
@@ -1523,7 +1566,7 @@ impl Encoder {
                     keyframe,
                     frame_num,
                     poc,
-                    meta: PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)),
+                    meta,
                 });
                 Ok(1)
             }
@@ -2091,10 +2134,49 @@ fn format_nv12_padded(
 #[cfg(test)]
 mod tests {
     use super::{
-        Codec, EncoderConfig, GdrConfig, GdrMode, PixelFormat, RateControlConfig, RateControlMode,
-        RoiConfig, RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
+        BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode, PacketMeta, PixelFormat,
+        RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
+        SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
+
+    #[test]
+    fn vepu510_packet_meta_uses_the_status_histogram_and_sse_layout() {
+        let mut status = [0u32; 148];
+        status[1] = 0x2222_1111;
+        status[2] = 0x3333_4444;
+        status[32] = 1;
+        status[33] = 2;
+        status[34] = 3;
+        status[35] = 4;
+        status[36] = 5;
+        status[37] = 6;
+        status[38] = 7;
+        status[39] = 8;
+
+        let meta = PacketMeta::from_vepu510_status(&status, true, 26, 24);
+        assert_eq!(meta.sse, Some((0x3333_4444_u64 << 16) | 0x2222));
+        assert_eq!(
+            meta.block_statistics,
+            Some(BlockStatistics {
+                inter64: 1,
+                inter32: 2,
+                inter16: 3,
+                inter8: 4,
+                intra32: 5,
+                intra16: 6,
+                intra8: 7,
+                intra4: 8,
+            })
+        );
+        assert_eq!(meta.output_pskip, Some(false));
+        assert_eq!(meta.output_intra, Some(true));
+        assert_eq!((meta.start_qp, meta.average_qp), (Some(26), Some(24)));
+        assert_eq!(meta.rt_bits, None);
+
+        let empty = PacketMeta::from_vepu510_status(&[0; 148], false, 26, 26);
+        assert_eq!(empty.output_pskip, Some(true));
+    }
 
     #[test]
     fn encoder_builder_keeps_public_configuration() {

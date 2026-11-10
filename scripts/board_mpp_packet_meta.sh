@@ -102,30 +102,57 @@ run_jpeg() {
     grep ' meta:' "$prefix.log" > "$prefix.meta"
 }
 
+modes=(0)
 if [ "$rk3576" -eq 0 ]; then
-    for mode in 0 1; do
-        vendor_h264="/tmp/rk_mpp_packet_meta_vendor_h264_m${mode}"
-        ours_h264="/tmp/rk_mpp_packet_meta_ours_h264_m${mode}"
-        run_h264 "$lib" "$vendor_h264" "$mode"
-        run_h264 "$overlay" "$ours_h264" "$mode"
-        cmp "$vendor_h264.meta" "$ours_h264.meta"
-        cmp "$vendor_h264.264" "$ours_h264.264"
-        printf 'PASS H.264 packet meta mode %d: 2/2 pictures\n' "$mode"
+    modes=(0 1)
+fi
+for mode in "${modes[@]}"; do
+    vendor_h264="/tmp/rk_mpp_packet_meta_vendor_h264_m${mode}"
+    ours_h264="/tmp/rk_mpp_packet_meta_ours_h264_m${mode}"
+    run_h264 "$lib" "$vendor_h264" "$mode"
+    run_h264 "$overlay" "$ours_h264" "$mode"
+    cmp "$vendor_h264.meta" "$ours_h264.meta"
+    cmp "$vendor_h264.264" "$ours_h264.264"
+    printf 'PASS H.264 packet meta mode %d: 2/2 pictures\n' "$mode"
 
-        vendor_h265="/tmp/rk_mpp_packet_meta_vendor_h265_m${mode}"
-        ours_h265="/tmp/rk_mpp_packet_meta_ours_h265_m${mode}"
-        run_h265 "$lib" "$vendor_h265" "$mode"
-        run_h265 "$overlay" "$ours_h265" "$mode"
-        cmp "$vendor_h265.meta" "$ours_h265.meta"
-        cmp "$vendor_h265.265" "$ours_h265.265"
-        sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
-            "$vendor_h265.265" "$vendor_h265.265.yuv" > /dev/null
-        sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
-            "$ours_h265.265" "$ours_h265.265.yuv" > /dev/null
-        cmp "$vendor_h265.265.yuv" "$ours_h265.265.yuv"
-        printf 'PASS H.265 packet meta mode %d: 2/2 pictures\n' "$mode"
-    done
+    vendor_h265="/tmp/rk_mpp_packet_meta_vendor_h265_m${mode}"
+    ours_h265="/tmp/rk_mpp_packet_meta_ours_h265_m${mode}"
+    run_h265 "$lib" "$vendor_h265" "$mode"
+    run_h265 "$overlay" "$ours_h265" "$mode"
+    cmp "$vendor_h265.meta" "$ours_h265.meta"
+    cmp "$vendor_h265.265" "$ours_h265.265"
+    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+        "$vendor_h265.265" "$vendor_h265.265.yuv" > /dev/null
+    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+        "$ours_h265.265" "$ours_h265.265.yuv" > /dev/null
+    cmp "$vendor_h265.265.yuv" "$ours_h265.265.yuv"
+    printf 'PASS H.265 packet meta mode %d: 2/2 pictures\n' "$mode"
+done
 
+if [ "$rk3576" -eq 1 ]; then
+    vendor_h264=/tmp/rk_mpp_packet_meta_vendor_h264_still
+    ours_h264=/tmp/rk_mpp_packet_meta_ours_h264_still
+    run_h264 "$lib" "$vendor_h264" 0 "$still"
+    run_h264 "$overlay" "$ours_h264" 0 "$still"
+    cmp "$vendor_h264.meta" "$ours_h264.meta"
+    cmp "$vendor_h264.264" "$ours_h264.264"
+    printf 'PASS VEPU510 H.264 fixed-QP still packet meta: 2/2 pictures\n'
+
+    vendor_h265=/tmp/rk_mpp_packet_meta_vendor_h265_still
+    ours_h265=/tmp/rk_mpp_packet_meta_ours_h265_still
+    run_h265 "$lib" "$vendor_h265" 0 "$still"
+    run_h265 "$overlay" "$ours_h265" 0 "$still"
+    cmp "$vendor_h265.meta" "$ours_h265.meta"
+    cmp "$vendor_h265.265" "$ours_h265.265"
+    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+        "$vendor_h265.265" "$vendor_h265.265.yuv" > /dev/null
+    sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+        "$ours_h265.265" "$ours_h265.265.yuv" > /dev/null
+    cmp "$vendor_h265.265.yuv" "$ours_h265.265.yuv"
+    printf 'PASS VEPU510 H.265 fixed-QP still packet meta: 2/2 pictures\n'
+fi
+
+if [ "$rk3576" -eq 0 ]; then
     for codec in h264 h265; do
         vendor="/tmp/rk_mpp_packet_meta_vendor_${codec}_cbr_motion"
         ours="/tmp/rk_mpp_packet_meta_ours_${codec}_cbr_motion"
@@ -157,5 +184,5 @@ cmp "$vendor_jpeg.meta" "$ours_jpeg.meta"
 cmp "$vendor_jpeg.jpg" "$ours_jpeg.jpg"
 printf 'PASS JPEG packet meta: 1/1 picture\n'
 if [ "$rk3576" -eq 1 ]; then
-    printf 'SKIP H.264/H.265 packet feedback on RK3576: VEPU510 mapping is not wired yet\n'
+    printf 'SKIP VEPU510 CBR packet feedback on RK3576: streaming RC is unsupported\n'
 fi
