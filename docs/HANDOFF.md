@@ -235,8 +235,10 @@ stream/YUV 逐字节；CBR 的 callbacks、RC 寄存器、RC SEI 和两帧
 stream/YUV 也全部逐字节。
 VEPU510 的内置 CBR/VBR/AVBR 已接通，用户自定义 streaming RC callback
 仍未接入并明确拒绝。
-OSD palette 与 `KEY_OSD_DATA` 已接通 VEPU580：H.264 OSD stream/YUV
-逐字节；H.265 的寄存器镜像除 dma-buf fd 外一致，payload 差异单独登记。
+OSD palette 与 `KEY_OSD_DATA` 已接通 VEPU580：H.264/H.265 的 OSD
+stream/YUV 均逐字节。H.265 原先在 OSD offsets 后重新赋值 FBC/output
+offset 列表，导致 `reg3093..3099` 的 7 个 multi-offset 丢失；改为追加后，
+stream SHA `625d464e…efc838` 与 YUV `6f44da15…3cbd310` 均与 vendor 相同。
 encoder 输出 packet 的 kernel meta 已接通 VEPU580/VEPU510 H.264/H.265。
 `scripts/board_mpp_packet_meta.sh` 在不改 vendor probe 的前提下对比
 `set_enc_info_to_packet()` 的全部 board-visible 字段：8 类 block count、

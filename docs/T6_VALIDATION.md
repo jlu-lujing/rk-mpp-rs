@@ -508,11 +508,12 @@ bands. VEPU510 streaming custom RC is reported as SKIP/unsupported.
 
 `board_mpp_osd.sh` uses unchanged `mpi_enc_test` with `osd_enable=1`, a custom
 256-color palette and eight index regions. H.264 matches the vendor stream and
-decoded YUV byte-for-byte (`1055ca00…3b22a`). H.265 has the same 7-NAL
-structure and every register word matches apart from dma-buf fds, but payload
-and reconstruction remain different. A 6,144-byte dump confirms all eight
-index regions contain the expected `0..7` bytes, so the divergence is recorded
-at the H.265 OSD hardware/address-state layer rather than palette translation.
+decoded YUV byte-for-byte (`1055ca00…3b22a`). H.265 now does the same:
+stream SHA `625d464e…efc838` and YUV `6f44da15…3cbd310` match exactly. The
+root cause was not palette or buffer content, but H.265 replacing its offset
+list after OSD setup and dropping `reg3093..3099`; appending preserves all
+seven OSD offsets. A 6,144-byte buffer dump still confirms the eight expected
+`0..7` index regions.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older

@@ -62,14 +62,8 @@ for case in "h264 7 h264dec" "h265 16777220 hevcdec"; do
     run_encoder "$lib" "" "$vendor" "$type" "$decoder"
     run_encoder "$overlay" "$overlay/librockchip_mpp.so.1" \
         "$ours" "$type" "$decoder"
-    if [ "$name" = h264 ]; then
-        python3 "$repo/scripts/compare_streams.py" "$vendor" "$ours"
-        cmp "$vendor.yuv" "$ours.yuv"
-        printf 'PASS %s OSD stream/reconstruction (%s)\n' \
-            "$name" "$(sha256sum "$ours.yuv" | cut -d' ' -f1)"
-    else
-        python3 "$repo/scripts/compare_streams.py" --sequence-only "$vendor" "$ours"
-        printf 'PASS %s OSD register/sequence path (payload divergence registered)\n' \
-            "$name"
-    fi
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$ours"
+    cmp "$vendor.yuv" "$ours.yuv"
+    printf 'PASS %s OSD stream/reconstruction (%s)\n' \
+        "$name" "$(sha256sum "$ours.yuv" | cut -d' ' -f1)"
 done

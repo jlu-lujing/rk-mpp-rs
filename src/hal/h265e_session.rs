@@ -884,7 +884,7 @@ impl Vepu580H265 {
             } else {
                 (stream_len + self.output.len() / tile_widths.len()).min(self.output.len()) as u32
             };
-            registers.offsets = vec![
+            registers.offsets.extend([
                 RegOffsetInfo {
                     reg_idx: 161,
                     offset: luma,
@@ -909,7 +909,7 @@ impl Vepu580H265 {
                     reg_idx: 172,
                     offset: output_limit,
                 },
-            ];
+            ]);
 
             let mut status = vec![0u32; STATUS_WORDS];
             let mut hw_status = [0u32; 1];
