@@ -100,6 +100,7 @@ pub(super) struct FrameInputView {
     pub dts: i64,
     pub eos: bool,
     pub motion_info: MppBuffer,
+    pub osd_data: *mut c_void,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -522,6 +523,14 @@ unsafe fn meta_peek_object(meta: MppMeta, key: c_int) -> Option<*mut c_void> {
     }
 }
 
+unsafe fn meta_peek_ptr(meta: MppMeta, key: c_int) -> Option<*mut c_void> {
+    let object = unsafe { meta_ref(meta) }?;
+    match object.entries.get(&key) {
+        Some(MetaValue::Ptr(value)) => Some(*value),
+        _ => None,
+    }
+}
+
 pub(super) unsafe fn packet_bytes(packet: MppPacket) -> Option<&'static [u8]> {
     let packet = unsafe { packet_ref(packet) }?;
     if packet.length == 0 {
@@ -559,6 +568,8 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
     let frame = unsafe { frame_ref(frame) }?;
     let motion_info =
         unsafe { meta_peek_object(frame.meta, KEY_MOTION_INFO) }.unwrap_or(std::ptr::null_mut());
+    let osd_data =
+        unsafe { meta_peek_ptr(frame.meta, KEY_OSD_DATA) }.unwrap_or(std::ptr::null_mut());
     let buffer = unsafe { buffer_mut(frame.buffer) }?;
     let data = buffer_ptr(buffer);
     let len = buffer_len(buffer);
@@ -574,6 +585,7 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
         dts: frame.dts,
         eos: frame.eos != 0,
         motion_info,
+        osd_data,
     })
 }
 
@@ -641,6 +653,23 @@ pub(super) unsafe fn buffer_capacity(buffer: MppBuffer) -> Option<usize> {
     // SAFETY: the caller passes a live MppBuffer attached to the frame meta.
     let buffer = unsafe { buffer_ref(buffer) }?;
     Some(buffer_len(buffer))
+}
+
+pub(super) unsafe fn buffer_fd(buffer: MppBuffer) -> Option<c_int> {
+    // SAFETY: the caller passes a live MppBuffer.
+    let buffer = unsafe { buffer_ref(buffer) }?;
+    (buffer.fd >= 0).then_some(buffer.fd)
+}
+
+pub(super) unsafe fn buffer_sync_write_end(buffer: MppBuffer) -> bool {
+    // SAFETY: the caller passes a live MppBuffer whose CPU mapping is complete.
+    let Some(buffer) = (unsafe { buffer_ref(buffer) }) else {
+        return false;
+    };
+    buffer
+        .dma
+        .as_ref()
+        .is_none_or(|dma| dma.sync_write_end().is_ok())
 }
 
 pub(super) unsafe fn packet_from_bytes(bytes: Vec<u8>, pts: i64, dts: i64) -> MppPacket {

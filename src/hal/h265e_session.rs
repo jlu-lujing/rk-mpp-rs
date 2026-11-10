@@ -155,6 +155,8 @@ pub struct Vepu580H265 {
     headers_each_idr: bool,
     sei_enabled: bool,
     rc_model_name: String,
+    next_osd: Option<crate::hal::osd::Config>,
+    active_osd: Option<crate::hal::osd::Config>,
 }
 
 impl Vepu580H265 {
@@ -265,6 +267,8 @@ impl Vepu580H265 {
             headers_each_idr: false,
             sei_enabled: true,
             rc_model_name: "default".to_string(),
+            next_osd: None,
+            active_osd: None,
         })
     }
 
@@ -427,6 +431,10 @@ impl Vepu580H265 {
 
     pub fn set_rate_control_name(&mut self, name: String) {
         self.rc_model_name = name;
+    }
+
+    pub fn set_next_osd(&mut self, osd: Option<crate::hal::osd::Config>) {
+        self.next_osd = osd;
     }
 
     /// Set `MppEncSliceSplit` before the opening picture. Low-delay output uses
@@ -624,6 +632,7 @@ impl Vepu580H265 {
         recovery_prefix: bool,
         rc: Option<RateControl>,
     ) -> Result<EncodedFrame, String> {
+        self.active_osd = self.next_osd.take();
         let input_fd = if let Some(input_fd) = self.input_fd_override.take() {
             input_fd
         } else {
@@ -755,6 +764,10 @@ impl Vepu580H265 {
                 reference_thumb_fd: reference_dsp,
             };
             let mut registers = build_registers(&job)?;
+            if let Some(osd) = self.active_osd.as_ref() {
+                osd.apply(&mut registers.osd)?;
+                registers.offsets.extend(osd.offsets());
+            }
 
             // `vepu580_h265_set_hw_address`: input/output, FBC bodies, thumbs and
             // motion info are shared by every tile. The tile line buffers alternate
@@ -950,6 +963,7 @@ impl Vepu580H265 {
         let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
         annex_b.extend_from_slice(&headers);
         annex_b.extend_from_slice(&payload);
+        self.active_osd = None;
         Ok(EncodedFrame {
             annex_b,
             packets,

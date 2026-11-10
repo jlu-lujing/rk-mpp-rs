@@ -469,6 +469,12 @@ H.264 is 6 NALs/YUV `3f34100a…f7023e` and H.265 is 7 NALs/YUV
 `cad3894e…a2384e`, including the RC SEI strategy name and default quality
 bands. VEPU510 streaming custom RC is reported as SKIP/unsupported.
 
+`board_mpp_osd.sh` uses unchanged `mpi_enc_test` with `osd_enable=1`, a custom
+256-color palette and eight index regions. H.264 matches the vendor stream and
+decoded YUV byte-for-byte (`1055ca00…3b22a`). H.265 has the same 7-NAL
+structure and every register word matches apart from dma-buf fds, but payload
+and reconstruction remain different; the divergence is recorded explicitly.
+
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older
 uncapped-profile peaks are retained only as historical observations.

@@ -75,7 +75,7 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的逐帧
 streaming RC 尚未接入，接口明确返回 unsupported。
 t6/lf1 的 workspace 最终全量门均为
-`1227 passed / 0 failed / 38 ignored`，
+`1229 passed / 0 failed / 38 ignored`，
 rustfmt 与严格 workspace rustdoc 同时通过。
 
 V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice，
@@ -232,6 +232,8 @@ oracle。相关项均已登记在 `docs/DIVERGENCES.md`。
 stream/YUV 逐字节；CBR 的 callbacks、RC 寄存器、RC SEI 和两帧
 stream/YUV 也全部逐字节。
 VEPU510 streaming custom RC 仍未接入并明确拒绝。
+OSD palette 与 `KEY_OSD_DATA` 已接通 VEPU580：H.264 OSD stream/YUV
+逐字节；H.265 的寄存器镜像除 dma-buf fd 外一致，payload 差异单独登记。
 其余高级编码控制仍待接入。
 
 ```bash

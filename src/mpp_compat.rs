@@ -7,6 +7,7 @@ use crate::{encoder, sdk};
 
 mod cfg;
 mod objects;
+mod osd;
 mod rc_api;
 mod standalone;
 
@@ -49,6 +50,8 @@ const MPP_ENC_GET_HDR_SYNC: c_int = 3_276_813;
 const MPP_ENC_SET_SEI_CFG: c_int = 3_276_815;
 const MPP_ENC_SET_HEADER_MODE: c_int = 3_309_569;
 const MPP_ENC_SET_OSD_PLT_CFG: c_int = 3_310_593;
+const MPP_ENC_GET_OSD_PLT_CFG: c_int = 3_310_594;
+const MPP_ENC_SET_OSD_DATA_CFG: c_int = 3_310_595;
 const MPP_ENC_GET_RC_API_ALL: c_int = 3_277_313;
 const MPP_ENC_GET_RC_API_BY_TYPE: c_int = 3_277_314;
 const MPP_ENC_SET_RC_API_CFG: c_int = 3_277_315;
@@ -140,6 +143,7 @@ struct CompatContext {
     custom_rc_pending: Option<rc_api::EncRcTask>,
     custom_rc_sequence: u32,
     custom_force_idr: bool,
+    osd_palette: osd::PaletteState,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -664,9 +668,17 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             return ret;
         }
     };
+    let osd = match unsafe { osd::frame_config(frame.osd_data, &context.osd_palette) } {
+        Ok(osd) => osd,
+        Err(error) => {
+            eprintln!("rk-mpp-rs mpp: OSD rejected: {error}");
+            return MPP_NOK;
+        }
+    };
     let input = encoder::InputFrame::new(&input)
         .with_pts(frame.pts)
-        .with_dts(frame.dts);
+        .with_dts(frame.dts)
+        .with_osd(osd);
     if let Some(frame) = picture_layout.as_ref() {
         let Some(encoder) = context.encoder.as_mut() else {
             return MPP_ERR_VALUE;
@@ -952,7 +964,25 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                 }
             }
         }
-        MPP_ENC_GET_CFG | MPP_ENC_SET_OSD_PLT_CFG | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
+        MPP_ENC_GET_CFG | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
+        MPP_ENC_SET_OSD_PLT_CFG => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            context.osd_palette.set(param.cast())
+        }
+        MPP_ENC_GET_OSD_PLT_CFG => {
+            if context.ctx_type != MPP_CTX_ENC {
+                return MPP_ERR_VALUE;
+            }
+            context.osd_palette.get(param.cast())
+        }
+        MPP_ENC_SET_OSD_DATA_CFG => {
+            if context.ctx_type != MPP_CTX_ENC || param.is_null() {
+                return MPP_ERR_VALUE;
+            }
+            MPP_OK
+        }
         MPP_ENC_GET_RC_API_ALL => {
             if context.ctx_type != MPP_CTX_ENC {
                 return MPP_ERR_VALUE;
@@ -1125,6 +1155,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             custom_rc_pending: None,
             custom_rc_sequence: 0,
             custom_force_idr: false,
+            osd_palette: osd::PaletteState::new(),
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();

@@ -748,6 +748,8 @@ pub struct Vepu580H264 {
     headers_each_idr: bool,
     sei_enabled: bool,
     rc_model_name: String,
+    next_osd: Option<crate::hal::osd::Config>,
+    active_osd: Option<crate::hal::osd::Config>,
 }
 
 impl Vepu580H264 {
@@ -847,6 +849,8 @@ impl Vepu580H264 {
             headers_each_idr: false,
             sei_enabled: true,
             rc_model_name: "default".to_string(),
+            next_osd: None,
+            active_osd: None,
             state: FrameState::default(),
             slot: 0,
             next_slot_override: None,
@@ -901,6 +905,10 @@ impl Vepu580H264 {
 
     pub fn set_rate_control_name(&mut self, name: String) {
         self.rc_model_name = name;
+    }
+
+    pub fn set_next_osd(&mut self, osd: Option<crate::hal::osd::Config>) {
+        self.next_osd = osd;
     }
 
     pub fn force_next_picture_layout(
@@ -1106,7 +1114,13 @@ impl Vepu580H264 {
                 .sync_write_end()
                 .map_err(|e| format!("GDR table flush: {e}"))?;
         }
-        let registers = build_registers(&job)?;
+        let mut registers = build_registers(&job)?;
+        if !save_pass1 {
+            if let Some(osd) = self.active_osd.as_ref() {
+                osd.apply(&mut registers.osd)?;
+                registers.offsets.extend(osd.offsets());
+            }
+        }
         dump_job_registers(&job, &registers);
 
         let mut status = vec![0u32; STATUS_WORDS];
@@ -1223,6 +1237,7 @@ impl Vepu580H264 {
     }
 
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
+        self.active_osd = self.next_osd.take();
         let previous_state = self.state;
         let previous_slot = self.slot;
         let force_idr = std::mem::take(&mut self.force_next_idr);
@@ -1541,6 +1556,7 @@ impl Vepu580H264 {
         if disposition != PictureDisposition::Dropped {
             self.last_non_reference = non_reference;
         }
+        self.active_osd = None;
         Ok(EncodedFrame {
             annex_b,
             packets,

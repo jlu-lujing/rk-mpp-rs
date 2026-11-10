@@ -17,7 +17,7 @@ use crate::codec::h265::encoder::{
 };
 use crate::codec::h265::roi::RoiRegion as H265RoiRegion;
 use crate::hal::h265e::RefreshMode as H265RefreshMode;
-use crate::hal::{h264e, h265e_session, jpege, jpege720, vepu510_h264, vepu510_h265};
+use crate::hal::{h264e, h265e_session, jpege, jpege720, osd, vepu510_h264, vepu510_h265};
 use crate::sdk::{Codec, Error, PixelFormat};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{SocProfile, VideoEncodeHal};
@@ -655,11 +655,12 @@ impl EncoderConfig {
 }
 
 /// One copied frame submission. Pointer data is fully consumed before return.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct InputFrame<'a> {
     pub data: &'a [u8],
     pub pts: i64,
     pub dts: i64,
+    pub(crate) osd: Option<osd::Config>,
 }
 
 impl<'a> InputFrame<'a> {
@@ -668,6 +669,7 @@ impl<'a> InputFrame<'a> {
             data,
             pts: 0,
             dts: 0,
+            osd: None,
         }
     }
 
@@ -678,6 +680,11 @@ impl<'a> InputFrame<'a> {
 
     pub const fn with_dts(mut self, dts: i64) -> Self {
         self.dts = dts;
+        self
+    }
+
+    pub(crate) fn with_osd(mut self, osd: Option<osd::Config>) -> Self {
+        self.osd = osd;
         self
     }
 }
@@ -1068,12 +1075,14 @@ impl Encoder {
             return Err(Error::State("frame submitted after encoder EOS"));
         }
         let external_rc = self.next_rate_control.take();
+        let osd = frame.osd.clone();
         let use_rate_control_registers = self
             .config
             .rate_control
             .is_some_and(|rate_control| rate_control.mode() != RateControlMode::FixedQp);
         let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
+                encoder.set_next_osd(osd.clone());
                 if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
                     encoder.force_next_rate_control(h264e::RateControl {
                         bit_target: rc.bit_target,
@@ -1102,6 +1111,11 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H264Vepu510(encoder) => {
+                if osd.is_some() {
+                    return Err(Error::Unsupported(
+                        "RK3576 H.264 OSD is not available".to_string(),
+                    ));
+                }
                 if external_rc.is_some() {
                     return Err(Error::Unsupported(
                         "RK3576 H.264 streaming custom RC is not available".to_string(),
@@ -1122,6 +1136,7 @@ impl Encoder {
                 Ok(1)
             }
             Backend::H265Vepu580(encoder) => {
+                encoder.set_next_osd(osd.clone());
                 let input = format_nv12_input(self.config, frame.data)?;
                 let encoded = if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
                     encoder
@@ -1152,6 +1167,11 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H265Vepu510(encoder) => {
+                if osd.is_some() {
+                    return Err(Error::Unsupported(
+                        "RK3576 H.265 OSD is not available".to_string(),
+                    ));
+                }
                 if external_rc.is_some() {
                     return Err(Error::Unsupported(
                         "RK3576 H.265 streaming custom RC is not available".to_string(),
@@ -1175,6 +1195,11 @@ impl Encoder {
                 encoder,
                 frame_number,
             } => {
+                if osd.is_some() {
+                    return Err(Error::Unsupported(
+                        "JPEG encoder OSD is not available".to_string(),
+                    ));
+                }
                 if external_rc.is_some() {
                     return Err(Error::Unsupported(
                         "JPEG custom RC is not available".to_string(),
