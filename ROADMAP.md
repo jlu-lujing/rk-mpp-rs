@@ -1771,10 +1771,12 @@ in what order the evidence gets produced.
       `update_grain=0` resolves its 3-bit `film_grain_params_ref_idx`, copies
       the saved scaling points and AR coefficients, and replaces only
       `grain_seed` as section 5.9.30 specifies. The synthetic state gate covers
-      slot persistence, inheritance and seed replacement. A corpus-scanning
-      integration gate is present but ignored because every current AV1 IVF
-      uses either `apply_grain=0`, `update_grain=1`, or a non-inter frame; the
-      missing fixture is recorded rather than weakening the assertion.
+      slot persistence, inheritance and seed replacement. The real integration
+      gate rewrites one inter frame header from the existing film-grain IVF
+      into an `OBU_FRAME_HEADER` whose grain syntax takes the
+      `update_grain=0 + ref_idx=0` branch. It proves the parser consumes only
+      the 21-bit inheritance prefix while preserving the seed and copying the
+      full saved parameter set.
 
 - [x] MPEG-2 syntax (`src/codec/m2v/parser.rs`): `00 00 01` split, sequence
       header (with optional quant matrices), sequence extension, sequence

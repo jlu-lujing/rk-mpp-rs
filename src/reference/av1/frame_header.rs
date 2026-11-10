@@ -2167,47 +2167,155 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "current AV1 corpus has no update_grain=0 fixture"]
     fn real_film_grain_stream_resolves_reference_parameter_sets() {
-        use crate::reference::av1::obu::parse_ivf;
-        use crate::reference::av1::stream::{ReferenceStream, StreamEvent};
+        use crate::reference::av1::obu::{parse_ivf, parse_obus, ObuType};
+        use crate::reference::av1::stream::ReferenceStream;
 
-        let mut inherited = None;
-        let mut directories = vec![std::path::PathBuf::from("tests/data")];
-        if let Some(extra) = std::env::var_os("GRAIN_PROBE_DIR") {
-            directories.push(extra.into());
-        }
-        'directories: for directory in directories {
-            for entry in std::fs::read_dir(directory).unwrap() {
-                let path = entry.unwrap().path();
-                if path.extension().and_then(|extension| extension.to_str()) != Some("ivf") {
-                    continue;
-                }
-                let data = std::fs::read(&path).unwrap();
-                let Ok(ivf) = parse_ivf(&data) else {
-                    continue;
-                };
-                let Ok(events) = ReferenceStream::new().parse_ivf(&ivf) else {
-                    continue;
-                };
-                if let Some(grain) = events.iter().flatten().find_map(|event| match event {
-                    StreamEvent::CodedFrame(frame)
-                        if frame.header.film_grain.apply_grain
-                            && !frame.header.film_grain.update_grain =>
-                    {
-                        Some(frame.header.film_grain.clone())
-                    }
-                    _ => None,
-                }) {
-                    inherited = Some(grain);
-                    break 'directories;
-                }
+        fn push_bits(bits: &mut Vec<u8>, value: u32, count: usize) {
+            for shift in (0..count).rev() {
+                bits.push(((value >> shift) & 1) as u8);
             }
         }
-        let inherited =
-            inherited.expect("AV1 corpus must contain an inherited film-grain parameter set");
-        assert!(inherited.num_y_points > 0);
-        assert!(inherited.num_cb_points > 0 || inherited.chroma_scaling_from_luma);
+
+        fn grain_parameter_prefix(seq: &SequenceHeader, grain: &FilmGrainParams) -> Vec<u8> {
+            let mut bits = Vec::new();
+            push_bits(&mut bits, 1, 1);
+            push_bits(&mut bits, u32::from(grain.grain_seed), 16);
+            push_bits(&mut bits, u32::from(grain.update_grain), 1);
+            push_bits(&mut bits, grain.num_y_points as u32, 4);
+            for index in 0..grain.num_y_points {
+                push_bits(&mut bits, u32::from(grain.point_y_value[index]), 8);
+                push_bits(&mut bits, u32::from(grain.point_y_scaling[index]), 8);
+            }
+            if !seq.color.mono_chrome {
+                push_bits(&mut bits, u32::from(grain.chroma_scaling_from_luma), 1);
+            }
+            let subsampled_420 = seq.color.subsampling_x && seq.color.subsampling_y;
+            let chroma_disabled = seq.color.mono_chrome
+                || grain.chroma_scaling_from_luma
+                || (subsampled_420 && grain.num_y_points == 0);
+            if !chroma_disabled {
+                push_bits(&mut bits, grain.num_cb_points as u32, 4);
+                for index in 0..grain.num_cb_points {
+                    push_bits(&mut bits, u32::from(grain.point_cb_value[index]), 8);
+                    push_bits(&mut bits, u32::from(grain.point_cb_scaling[index]), 8);
+                }
+                push_bits(&mut bits, grain.num_cr_points as u32, 4);
+                for index in 0..grain.num_cr_points {
+                    push_bits(&mut bits, u32::from(grain.point_cr_value[index]), 8);
+                    push_bits(&mut bits, u32::from(grain.point_cr_scaling[index]), 8);
+                }
+            }
+            bits
+        }
+
+        fn bit(payload: &[u8], index: usize) -> u8 {
+            (payload[index / 8] >> (7 - index % 8)) & 1
+        }
+
+        fn wrap_frame_header(payload: &[u8]) -> Vec<u8> {
+            let mut out = vec![ObuType::FrameHeader.raw() << 3 | 2];
+            let mut size = payload.len();
+            loop {
+                let mut byte = (size & 0x7f) as u8;
+                size >>= 7;
+                if size != 0 {
+                    byte |= 0x80;
+                }
+                out.push(byte);
+                if size == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(payload);
+            out
+        }
+
+        let ivf = parse_ivf(fixture("grain8")).unwrap();
+        let mut stream = ReferenceStream::new();
+        let mut target = None;
+        for packet in &ivf.frames {
+            let state_before = stream.state().clone();
+            let events = stream.parse_packet(packet.payload).unwrap();
+            let header = events.iter().find_map(|event| match event {
+                crate::reference::av1::stream::StreamEvent::CodedFrame(frame)
+                    if !frame.header.frame_is_intra
+                        && frame.header.film_grain.apply_grain
+                        && frame.header.film_grain.update_grain =>
+                {
+                    Some(frame.header.clone())
+                }
+                _ => None,
+            });
+            if let Some(header) = header {
+                let mut candidate_state = state_before.clone();
+                let mut matched = None;
+                for obu in parse_obus(packet.payload).unwrap() {
+                    if obu.header.obu_type != ObuType::Frame {
+                        continue;
+                    }
+                    let parts =
+                        parse_frame_obu(&obu, &stream.sequence().unwrap(), &candidate_state)
+                            .unwrap();
+                    if parts.header == header {
+                        matched = Some((obu.payload.to_vec(), candidate_state.clone()));
+                        break;
+                    }
+                    candidate_state.apply_frame(&parts.header);
+                }
+                let (payload, state) =
+                    matched.expect("matching coded packet must carry the selected OBU_FRAME");
+                target = Some((payload, header, state));
+                break;
+            }
+        }
+        let sequence = stream.sequence().unwrap().clone();
+        let (payload, original, state_before) =
+            target.expect("fixture must contain an inter film-grain header");
+        let prefix = grain_parameter_prefix(&sequence, &original.film_grain);
+        let starts = (0..=original.bits_consumed - prefix.len())
+            .filter(|start| {
+                (0..prefix.len()).all(|index| bit(&payload, start + index) == prefix[index])
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            starts.len(),
+            1,
+            "the finite-grain parameter prefix must identify one payload offset"
+        );
+        let start = starts[0];
+        let value_bits = start + 17;
+        let mut bits = (0..value_bits)
+            .map(|index| bit(&payload, index))
+            .collect::<Vec<_>>();
+        bits.push(0); // update_grain
+        bits.extend_from_slice(&[0, 0, 0]); // film_grain_params_ref_idx = 0
+        bits.push(1); // trailing one
+        while bits.len() % 8 != 0 {
+            bits.push(0);
+        }
+        let modified = bits
+            .chunks(8)
+            .map(|chunk| chunk.iter().fold(0u8, |byte, value| (byte << 1) | value))
+            .collect::<Vec<_>>();
+        assert_eq!(bit(&modified, start), 1);
+        assert!((0..value_bits).all(|index| bit(&modified, index) == bit(&payload, index)));
+        let packet = wrap_frame_header(&modified);
+        let obus = parse_obus(&packet).unwrap();
+        let inherited = parse_frame_header_obu(&obus[0], &sequence, &state_before).unwrap();
+        assert_eq!(inherited.bits_consumed, start + 21);
+        assert_eq!(
+            inherited.film_grain.grain_seed,
+            original.film_grain.grain_seed
+        );
+        assert_eq!(
+            inherited.film_grain.num_y_points,
+            original.film_grain.num_y_points
+        );
+        assert_eq!(
+            inherited.film_grain.ar_coeffs_y,
+            original.film_grain.ar_coeffs_y
+        );
     }
 
     #[test]

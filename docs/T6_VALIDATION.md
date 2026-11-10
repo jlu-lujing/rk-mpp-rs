@@ -25,10 +25,10 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1239 passed / 0 failed /
-  42 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1243 passed /
-  0 failed / 42 ignored**. `cargo fmt --all --check` and `git diff --check`
+- The current t6 crate `--all-targets` gate is **1240 passed / 0 failed /
+  41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1244 passed /
+  0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
   packet metadata **1/1**. VEPU510 H.264/H.265 fixed-QP moving and still
