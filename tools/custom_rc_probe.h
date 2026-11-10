@@ -81,9 +81,21 @@ static MPP_RET custom_rc_check_reenc(void *opaque, EncRcTask *task)
     MPP_RET ret = custom_rc_task(opaque, task, "reenc");
 
     const char *reencode = getenv("CUSTOM_RC_REENCODE");
+    const char *frame_type = getenv("CUSTOM_RC_REENCODE_FRAME_TYPE");
+    int request = 0;
 
     if (reencode && atoi(reencode) && !ctx->reencoded &&
         task->frm.is_intra) {
+        request = 1;
+    } else if (frame_type && atoi(frame_type) && !ctx->reencoded &&
+               ctx->frame == 2 && !task->frm.is_intra) {
+        task->frm.is_intra = 1;
+        task->frm.is_idr = 1;
+        task->info.frame_type = INTRA_FRAME;
+        request = 1;
+    }
+
+    if (request) {
         task->frm.reencode = 1;
         task->info.quality_target = 30;
         task->info.quality_min = 30;

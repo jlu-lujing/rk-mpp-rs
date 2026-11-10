@@ -8,7 +8,7 @@ use crate::codec::h264::encoder::{
     self, EncoderConfig, GdrMode, RcMode, SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY, PROFILE_HIGH,
 };
 use crate::codec::rc::model as rc_model;
-use crate::encoder::{ExternalRateControl, RateControlFeedback};
+use crate::encoder::{ExternalRateControl, RateControlFeedback, RateControlReencode};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
@@ -299,7 +299,7 @@ impl Vepu510H264 {
         initial: ExternalRateControl,
         reencode: &mut dyn FnMut(
             RateControlFeedback,
-        ) -> Result<Option<ExternalRateControl>, String>,
+        ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
         self.encode_next_with_rate_policy_320x240(nv12, initial, Some(reencode))
     }
@@ -309,7 +309,7 @@ impl Vepu510H264 {
         nv12: &[u8],
         mut target: ExternalRateControl,
         mut reencode: Option<
-            &mut dyn FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+            &mut dyn FnMut(RateControlFeedback) -> Result<Option<RateControlReencode>, String>,
         >,
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
         let force_idr = std::mem::take(&mut self.force_next_idr);
@@ -334,36 +334,36 @@ impl Vepu510H264 {
         } else {
             Vec::new()
         };
-        let registers = if is_idr {
-            RegisterFile::captured_fixqp_idr_320x240(
-                direct_input.unwrap_or_else(|| self.input.fd()) as u32,
-                self.output.fd() as u32,
-                self.recon[0].fd() as u32,
-                self.thumb[0].fd() as u32,
-                self.smear[0].fd() as u32,
-            )?
-        } else {
-            let current = (frame_number & 1) as usize;
-            let reference = 1 - current;
-            RegisterFile::captured_fixqp_p_320x240(
-                direct_input.unwrap_or_else(|| self.input.fd()) as u32,
-                self.output.fd() as u32,
-                self.recon[current].fd() as u32,
-                self.recon[reference].fd() as u32,
-                self.thumb[current].fd() as u32,
-                self.thumb[reference].fd() as u32,
-                self.smear[current].fd() as u32,
-                self.smear[reference].fd() as u32,
-                frame_number,
-            )?
-        };
         let input_data = if direct_input.is_some() {
             &[]
         } else {
             &nv12[..INPUT_SIZE]
         };
         let output = loop {
-            let mut registers = registers.clone();
+            let input_fd = direct_input.unwrap_or_else(|| self.input.fd()) as u32;
+            let mut registers = if is_idr {
+                RegisterFile::captured_fixqp_idr_320x240(
+                    input_fd,
+                    self.output.fd() as u32,
+                    self.recon[0].fd() as u32,
+                    self.thumb[0].fd() as u32,
+                    self.smear[0].fd() as u32,
+                )?
+            } else {
+                let current = (frame_number & 1) as usize;
+                let reference = 1 - current;
+                RegisterFile::captured_fixqp_p_320x240(
+                    input_fd,
+                    self.output.fd() as u32,
+                    self.recon[current].fd() as u32,
+                    self.recon[reference].fd() as u32,
+                    self.thumb[current].fd() as u32,
+                    self.thumb[reference].fd() as u32,
+                    self.smear[current].fd() as u32,
+                    self.smear[reference].fd() as u32,
+                    frame_number,
+                )?
+            };
             registers.apply_cbr_rate_control(
                 target.bit_target,
                 target.qp_target,
@@ -385,7 +385,7 @@ impl Vepu510H264 {
                 .transpose()?
                 .flatten();
             if let Some(next) = next {
-                target = next;
+                target = next.target;
                 continue;
             }
             break output;

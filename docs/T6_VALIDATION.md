@@ -500,7 +500,7 @@ are compared in a separate process and match vendor output as well.
 `board_mpp_custom_rc.sh` registers a C-defined strategy and runs the complete
 callback lifecycle through both encoders. The matrix covers H.264/H.265 x
 fixed-QP/CBR/VBR/AVBR on t6 VEPU580 and lf1 VEPU510, 8/8 on each board,
-plus one callback-driven hardware reencode per codec.
+plus same-frame-type and frame-type-changing reencode, 12/12 total.
 On t6, H.264 fixed is YUV `6d1e7dc9…b90cd3`; H.265 fixed is
 `53bf281b…ad9789e`. Their CBR/VBR/AVBR outputs are respectively
 `3f34100a…f7023e` and `cad3894e…a2384e`. On lf1, the corresponding hashes
@@ -512,7 +512,14 @@ second attempt at QP30 from `check_reenc`: t6 outputs H.264 YUV `60fe9815…8ad0
 `f618041a…1246f`; lf1 outputs H.264 `771a0735…fee70` and H.265
 `9fd432ba…8171`. The first hardware packet is discarded, while the same
 input/reference surfaces are rerun before `frame_end`.
-A reencode that also changes I/P/B frame type, or combines it with drop/PSKIP,
+The frame-type-changing case starts from a P picture and requests a non-IDR
+intra/IDR update. H.265 matches the vendor's hybrid P-syntax/INTRA-config/IDR-NAL
+template, but that stream is a C-BUG: FFmpeg emits the first two frames
+(t6 YUV `fffd339a…009d`, lf1 `ba4b21e9…5343`) and then stops with
+`Could not find ref with POC 1`; the full three-frame stream remains
+byte-identical to vendor. H.264 preserves the vendor's actual P slice while
+the callback state reports the requested type and decodes all three frames:
+t6 YUV `d2b11845…d4ac`, lf1 `0191b6b5…dc56`. Combining reencode with drop/PSKIP
 remains outside this verified matrix.
 
 `board_mpp_osd.sh` uses unchanged `mpi_enc_test` with `osd_enable=1`, a custom

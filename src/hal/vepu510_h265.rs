@@ -7,7 +7,7 @@ use crate::codec::h264::encoder::RoiRegion;
 use crate::codec::h265::encoder::{self, EncoderConfig};
 use crate::codec::h265::sei;
 use crate::codec::rc::model as rc_model;
-use crate::encoder::{ExternalRateControl, RateControlFeedback};
+use crate::encoder::{ExternalRateControl, RateControlFeedback, RateControlReencode};
 use crate::hal::h265e_session::RcMode;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
@@ -226,6 +226,52 @@ impl RegisterFile {
             frame_number,
             false,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn captured_forced_idr_from_p_320x240(
+        input_fd: u32,
+        output_fd: u32,
+        recon_write_fd: u32,
+        recon_read_fd: u32,
+        colmv_write_fd: u32,
+        colmv_read_fd: u32,
+        thumb_write_fd: u32,
+        thumb_read_fd: u32,
+        smear_write_fd: u32,
+        smear_read_fd: u32,
+        md_info_fd: u32,
+        frame_number: u32,
+    ) -> Result<Self, String> {
+        let mut regs = Self::captured_fixqp_p_320x240(
+            input_fd,
+            output_fd,
+            recon_write_fd,
+            recon_read_fd,
+            colmv_write_fd,
+            colmv_read_fd,
+            thumb_write_fd,
+            thumb_read_fd,
+            smear_write_fd,
+            smear_read_fd,
+            md_info_fd,
+            frame_number,
+        )?;
+        let idr = Self::captured_fixqp_idr_320x240(
+            input_fd,
+            output_fd,
+            recon_write_fd,
+            colmv_write_fd,
+            thumb_write_fd,
+            smear_write_fd,
+            md_info_fd,
+        )?;
+        regs.param.copy_from_slice(&idr.param);
+        regs.sqi.copy_from_slice(&idr.sqi);
+        regs.set(regs::H265_SYNT_NAL_NAL_UNIT_TYPE, 19)?;
+        regs.set(regs::FRAME_ME_CACH_COLMV_LOAD_HEVC, 0)?;
+        regs.set(regs::FRAME_ME_CACH_COLMV_STOR_HEVC, 0)?;
+        Ok(regs)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -930,7 +976,7 @@ impl Vepu510H265 {
         initial: ExternalRateControl,
         reencode: &mut dyn FnMut(
             RateControlFeedback,
-        ) -> Result<Option<ExternalRateControl>, String>,
+        ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
         self.encode_next_with_rate_policy_320x240(nv12, initial, Some(reencode))
     }
@@ -940,7 +986,7 @@ impl Vepu510H265 {
         nv12: &[u8],
         mut target: ExternalRateControl,
         mut reencode: Option<
-            &mut dyn FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+            &mut dyn FnMut(RateControlFeedback) -> Result<Option<RateControlReencode>, String>,
         >,
     ) -> Result<(Vec<u8>, bool, u32, i32), String> {
         let direct_input = self.input_fd_override.take();
@@ -951,7 +997,8 @@ impl Vepu510H265 {
             ));
         }
         let force_idr = std::mem::take(&mut self.force_next_idr);
-        let is_idr = !self.idr_done || force_idr;
+        let mut is_idr = !self.idr_done || force_idr;
+        let forced_from_p = !is_idr;
         let frame_number = if is_idr {
             0
         } else {
@@ -983,41 +1030,57 @@ impl Vepu510H265 {
             Vec::new()
         };
         let input_fd = direct_input.unwrap_or_else(|| self.input.fd());
-        let registers = if is_idr {
-            RegisterFile::captured_fixqp_idr_320x240(
-                input_fd as u32,
-                self.output.fd() as u32,
-                self.recon[0].fd() as u32,
-                self.colmv[0].fd() as u32,
-                self.thumb[0].fd() as u32,
-                self.smear[0].fd() as u32,
-                self.md_info.fd() as u32,
-            )?
-        } else {
-            let current = (frame_number & 1) as usize;
-            let reference = 1 - current;
-            RegisterFile::captured_fixqp_p_320x240(
-                input_fd as u32,
-                self.output.fd() as u32,
-                self.recon[current].fd() as u32,
-                self.recon[reference].fd() as u32,
-                self.colmv[current].fd() as u32,
-                self.colmv[reference].fd() as u32,
-                self.thumb[current].fd() as u32,
-                self.thumb[reference].fd() as u32,
-                self.smear[current].fd() as u32,
-                self.smear[reference].fd() as u32,
-                self.md_info.fd() as u32,
-                frame_number,
-            )?
-        };
         let input_data = if direct_input.is_some() {
             &[]
         } else {
             &nv12[..INPUT_SIZE]
         };
         let (stream, status) = loop {
-            let mut registers = registers.clone();
+            let mut registers = if is_idr {
+                if forced_from_p {
+                    RegisterFile::captured_forced_idr_from_p_320x240(
+                        input_fd as u32,
+                        self.output.fd() as u32,
+                        self.recon[1].fd() as u32,
+                        self.recon[0].fd() as u32,
+                        self.colmv[1].fd() as u32,
+                        self.colmv[0].fd() as u32,
+                        self.thumb[1].fd() as u32,
+                        self.thumb[0].fd() as u32,
+                        self.smear[1].fd() as u32,
+                        self.smear[0].fd() as u32,
+                        self.md_info.fd() as u32,
+                        frame_number,
+                    )?
+                } else {
+                    RegisterFile::captured_fixqp_idr_320x240(
+                        input_fd as u32,
+                        self.output.fd() as u32,
+                        self.recon[0].fd() as u32,
+                        self.colmv[0].fd() as u32,
+                        self.thumb[0].fd() as u32,
+                        self.smear[0].fd() as u32,
+                        self.md_info.fd() as u32,
+                    )?
+                }
+            } else {
+                let current = (frame_number & 1) as usize;
+                let reference = 1 - current;
+                RegisterFile::captured_fixqp_p_320x240(
+                    input_fd as u32,
+                    self.output.fd() as u32,
+                    self.recon[current].fd() as u32,
+                    self.recon[reference].fd() as u32,
+                    self.colmv[current].fd() as u32,
+                    self.colmv[reference].fd() as u32,
+                    self.thumb[current].fd() as u32,
+                    self.thumb[reference].fd() as u32,
+                    self.smear[current].fd() as u32,
+                    self.smear[reference].fd() as u32,
+                    self.md_info.fd() as u32,
+                    frame_number,
+                )?
+            };
             registers.apply_rate_control(
                 &RateControlPlan {
                     bit_target: target.bit_target,
@@ -1042,7 +1105,11 @@ impl Vepu510H265 {
                 .transpose()?
                 .flatten();
             if let Some(next) = next {
-                target = next;
+                if next.is_intra && !next.is_idr {
+                    return Err("VEPU510 H.265 reencode cannot switch to non-IDR I".to_string());
+                }
+                is_idr = next.is_idr;
+                target = next.target;
                 continue;
             }
             break (stream, status);

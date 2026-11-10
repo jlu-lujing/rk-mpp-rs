@@ -242,8 +242,11 @@ lf1 使用 1.0.11 的 `RcCfg=260 / EncRcTaskInfo=136 / EncRcTask=336`
 布局，t6 使用 `256 / 112 / 312` 的 2024 ABI 投影。`check_reenc` 主动
 请求一次同帧型重编也已接通：H.264/H.265 在两板共 4/4，首轮 packet 被替换，
 第二轮使用 callback 更新的 QP30 重跑同一输入/参考槽，最终 stream/YUV
-和完整 callback trace 一致。同时改变 I/P/B 帧型或组合 drop/PSKIP 的重编
-仍未实现。
+和完整 callback trace 一致。第二帧 P→IDR 的帧型变更同样为 4/4；
+H.265 精确复刻 vendor 的 P syntax + INTRA global config + IDR NAL
+混合模板，H.264 则保持 vendor 实际输出的 P slice。H.265 该请求登记为
+C-BUG：FFmpeg 只输出前两帧，第三帧因 POC 参考缺失终止；Rust stream
+与 vendor 逐字节一致。重编与 drop/PSKIP 的组合仍未实现。
 OSD palette 与 `KEY_OSD_DATA` 已接通 VEPU580：H.264/H.265 的 OSD
 stream/YUV 均逐字节。H.265 原先在 OSD offsets 后重新赋值 FBC/output
 offset 列表，导致 `reg3093..3099` 的 7 个 multi-offset 丢失；改为追加后，

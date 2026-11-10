@@ -329,7 +329,12 @@ VBR、AVBR 共 8/8 组两帧码流和 YUV 均与 vendor 逐字节一致；完整
 保留 2024 的 `256 / 112 / 312` 投影。两板另各通过 H.264/H.265 一次
 同帧型 callback 驱动 hardware reencode：首轮输出被丢弃，RC 目标改为
 QP30 后重跑同一输入/参考槽，最终 stream、YUV 和 callback trace 均一致。
-同时改变 I/P/B 帧型或组合 drop/PSKIP 的重编仍未实现。
+第二帧 P→IDR 的帧型变更也为 4/4：H.265 使用 vendor 的“P syntax +
+INTRA hardware config + IDR NAL”混合模板；H.264 保持原 P slice，
+仅 callback 状态显示帧型变化。该 H.265 请求在 vendor 本身就是 C-BUG：
+三帧流只生成一个可完整播放的前两帧序列，FFmpeg 在第三帧报
+`Could not find ref with POC 1`；Rust 对该 hybrid stream 达到逐字节一致。
+重编与 drop/PSKIP 的组合仍未实现。
 `MPP_ENC_SET/GET_OSD_PLT_CFG` 和 frame `KEY_OSD_DATA` 也已接入 VEPU580：
 H.264 与 H.265 两帧 OSD stream/YUV 均与 vendor 逐字节一致。H.265 的关键
 修复是保留 OSD 的 7 个地址偏移，避免后续 FBC/output offset 构造覆盖它们。
@@ -486,7 +491,7 @@ BOARD=luck2 ./scripts/board_rk3576_h265_corrupt_vs_mpp.sh # H.265 损坏矩阵�
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
 BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR/VBR/AVBR/ROI/split/GDR：13/13
 BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：15/15
-./scripts/board_mpp_custom_rc.sh # t6/lf1 自定义 RC 8/8 + H.264/H.265 reencode 2/2
+./scripts/board_mpp_custom_rc.sh # t6/lf1 自定义 RC 8/8 + 同帧型/帧型变更 reencode 4/4
 ./scripts/board_mpp_osd.sh # t6 OSD palette/data；H.264/H.265 stream+YUV 严格
 ./scripts/board_mpp_packet_meta.sh # t6 H.264/H.265 fixed/CBR × 静止/运动；lf1 VEPU510 fixed + JPEG
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_key.sh # VDPU383 AV1 首 keyframe：C == Rust

@@ -15,7 +15,7 @@
 use crate::codec::h265::encoder::{SliceSplit, SyntaxOptions, MPP_ENC_SPLIT_OUT_LOWDELAY};
 use crate::codec::h265::roi::{build_tables as build_roi_tables, RoiRegion};
 use crate::codec::rc::model as rc_model;
-use crate::encoder::{ExternalRateControl, RateControlFeedback};
+use crate::encoder::{ExternalRateControl, RateControlFeedback, RateControlReencode};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
@@ -659,7 +659,7 @@ impl Vepu580H265 {
         initial: ExternalRateControl,
         reencode: &mut dyn FnMut(
             RateControlFeedback,
-        ) -> Result<Option<ExternalRateControl>, String>,
+        ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<EncodedFrame, String> {
         self.encode_frame_with_rc_policy(nv12, Some(initial), Some(reencode))
     }
@@ -669,7 +669,7 @@ impl Vepu580H265 {
         nv12: &[u8],
         reencode: &mut dyn FnMut(
             RateControlFeedback,
-        ) -> Result<Option<ExternalRateControl>, String>,
+        ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<EncodedFrame, String> {
         self.encode_frame_with_rc_policy(nv12, None, Some(reencode))
     }
@@ -679,7 +679,7 @@ impl Vepu580H265 {
         nv12: &[u8],
         mut target: Option<ExternalRateControl>,
         mut reencode: Option<
-            &mut dyn FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+            &mut dyn FnMut(RateControlFeedback) -> Result<Option<RateControlReencode>, String>,
         >,
     ) -> Result<EncodedFrame, String> {
         let force_idr = std::mem::take(&mut self.force_next_idr);
@@ -691,7 +691,7 @@ impl Vepu580H265 {
             self.idr_frame = self.frames;
         }
         let recovery_prefix = !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
-        let (picture, prefix) = if is_idr {
+        let (mut picture, prefix) = if is_idr {
             (Picture::Idr, self.frames == 0 || self.headers_each_idr)
         } else {
             (
@@ -741,15 +741,32 @@ impl Vepu580H265 {
                 .transpose()?
                 .flatten();
             if let Some(next) = next {
+                if next.is_intra && !next.is_idr {
+                    return Err("VEPU580 H.265 reencode cannot switch to non-IDR I".to_string());
+                }
+                if next.is_idr {
+                    if !matches!(picture, Picture::Idr) {
+                        picture = Picture::ForcedIdrFromP {
+                            poc_lsb: self.frames.saturating_sub(self.idr_frame),
+                        };
+                    }
+                } else if matches!(picture, Picture::Idr | Picture::ForcedIdrFromP { .. }) {
+                    picture = Picture::P {
+                        poc_lsb: self.frames.saturating_sub(self.idr_frame),
+                    };
+                }
                 if target.is_some() {
-                    target = Some(next);
+                    target = Some(next.target);
                 } else {
-                    fixed_qp_override = Some(next.qp_target);
+                    fixed_qp_override = Some(next.target.qp_target);
                 }
                 continue;
             }
             break encoded;
         };
+        if matches!(picture, Picture::Idr) {
+            self.idr_frame = self.frames;
+        }
         self.slot = 1 - self.slot;
         self.frames += 1;
         Ok(encoded)
@@ -1126,7 +1143,7 @@ impl Vepu580H265 {
             packets,
             payload,
             headers,
-            is_idr: matches!(picture, Picture::Idr),
+            is_idr: matches!(picture, Picture::Idr | Picture::ForcedIdrFromP { .. }),
             frame_num: self.frames,
             quality_target: rc.map_or(self.qp as i32, |rc| rc.qp_target as i32),
             rt_bits: 0,

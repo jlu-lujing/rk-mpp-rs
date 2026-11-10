@@ -20,7 +20,7 @@ use std::io::Read;
 use crate::codec::h264::encoder::{self, EncoderConfig, GdrMode, RcMode, SplitMode};
 use crate::codec::h264::sei;
 use crate::codec::rc::model as rc_model;
-use crate::encoder::{ExternalRateControl, RateControlFeedback};
+use crate::encoder::{ExternalRateControl, RateControlFeedback, RateControlReencode};
 use crate::reference::cabac::Context;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
@@ -1252,7 +1252,7 @@ impl Vepu580H264 {
         initial: ExternalRateControl,
         reencode: &mut dyn FnMut(
             RateControlFeedback,
-        ) -> Result<Option<ExternalRateControl>, String>,
+        ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<EncodedFrame, String> {
         self.next_rate_control_override = Some(RateControl {
             bit_target: initial.bit_target,
@@ -1270,7 +1270,7 @@ impl Vepu580H264 {
         nv12: &[u8],
         reencode: &mut dyn FnMut(
             RateControlFeedback,
-        ) -> Result<Option<ExternalRateControl>, String>,
+        ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<EncodedFrame, String> {
         self.next_rate_control_override = None;
         self.encode_frame_with_policy(nv12, Some(reencode))
@@ -1280,7 +1280,7 @@ impl Vepu580H264 {
         &mut self,
         nv12: &[u8],
         mut reencode: Option<
-            &mut dyn FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+            &mut dyn FnMut(RateControlFeedback) -> Result<Option<RateControlReencode>, String>,
         >,
     ) -> Result<EncodedFrame, String> {
         self.active_osd = self.next_osd.take();
@@ -1328,7 +1328,8 @@ impl Vepu580H264 {
         } else {
             self.started = true;
         }
-        let state = self.state;
+        let initial_state = self.state;
+        let state = initial_state;
         let expected = input_size(&self.config)?;
         let input_fd = if let Some(input_fd) = self.input_fd_override.take() {
             if input_fd < 0 {
@@ -1467,19 +1468,20 @@ impl Vepu580H264 {
                 .transpose()?
                 .flatten()
             {
+                let next_target = next.target;
                 if external_rate_control.is_some() {
                     external_rate_control = Some(RateControl {
-                        bit_target: next.bit_target,
-                        qp_target: next.qp_target,
-                        qp_min: next.qp_min,
-                        qp_max: next.qp_max,
+                        bit_target: next_target.bit_target,
+                        qp_target: next_target.qp_target,
+                        qp_min: next_target.qp_min,
+                        qp_max: next_target.qp_max,
                         qp_delta_row: 2,
                         qp_delta_row_i: 2,
                     });
                 } else {
-                    fixed_qp_override = Some(next.qp_target);
+                    fixed_qp_override = Some(next_target.qp_target);
                 }
-                quality_target = next.qp_target as i32;
+                quality_target = next_target.qp_target as i32;
                 continue;
             }
             if external_rate_control.is_none() && self.rc.is_some() {
@@ -1540,6 +1542,7 @@ impl Vepu580H264 {
                 PictureDisposition::Accepted,
             );
         };
+        self.state = state;
 
         // SPS and PPS precede an IDR only; a P picture rides on the parameters it
         // already established, which is what `mpi_enc_test` streams too.
@@ -1552,11 +1555,11 @@ impl Vepu580H264 {
         // is what this driver did until that cell said otherwise.
         let sweep_open = self.config.gdr
             && self.config.gdr_refresh_length() > 0
-            && state.index > 0
-            && state.index % self.config.gop as usize == 0;
+            && initial_state.index > 0
+            && initial_state.index % self.config.gop as usize == 0;
         let headers = if disposition != PictureDisposition::Accepted {
             Vec::new()
-        } else if state.is_idr {
+        } else if initial_state.is_idr {
             let mut out = if !self.hdr_added || self.headers_each_idr {
                 self.hdr_added = true;
                 self.parameter_sets()?
@@ -1581,8 +1584,8 @@ impl Vepu580H264 {
         let slice_prefix = prefix_temporal_id
             .map(|temporal_id| {
                 svc_prefix_nal(
-                    state.is_idr,
-                    if state.is_idr {
+                    initial_state.is_idr,
+                    if initial_state.is_idr {
                         3
                     } else if non_reference {
                         0

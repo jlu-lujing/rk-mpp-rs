@@ -74,7 +74,7 @@ cc -D_GNU_SOURCE -DCUSTOM_RC_HAS_BIT_TARGET_FIX="$rc_has_bit_target_fix" \
     "$lib/librockchip_mpp.so.1" -o "$h264_probe"
 
 ffmpeg -nostdin -y -hide_banner -loglevel error \
-    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 2 \
+    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 3 \
     -pix_fmt nv12 -f rawvideo "$raw"
 
 run_probe() {
@@ -87,8 +87,10 @@ run_probe() {
     if [ "${CUSTOM_RC_MODE:-0}" != 0 ]; then
         rate="1000000:800000:1200000"
     fi
-    sudo -n env CUSTOM_RC=1 CUSTOM_RC_LOG="$log" FRAMES=2 GOP=60 \
+    sudo -n env CUSTOM_RC=1 CUSTOM_RC_LOG="$log" \
+        FRAMES="${CUSTOM_RC_FRAMES:-2}" GOP=60 \
         CUSTOM_RC_REENCODE="${CUSTOM_RC_REENCODE:-0}" \
+        CUSTOM_RC_REENCODE_FRAME_TYPE="${CUSTOM_RC_REENCODE_FRAME_TYPE:-0}" \
         CUSTOM_RC_QP_MIN="${CUSTOM_RC_QP_MIN:-26}" \
         CUSTOM_RC_QP_MAX="${CUSTOM_RC_QP_MAX:-26}" \
         LD_LIBRARY_PATH="$library" timeout 60 \
@@ -126,6 +128,22 @@ compare_callback_trace() {
     }
 }
 
+decode_partial_h265() {
+    local input="$1"
+    local output="$2"
+    local log="$3"
+    local rc
+
+    sudo -n rm -f "$output" "$log"
+    set +e
+    sudo -n ffmpeg -nostdin -y -hide_banner -loglevel error \
+        -i "$input" -f rawvideo "$output" 2>"$log"
+    rc=$?
+    set -e
+    : "$rc"
+    test "$(sudo -n stat -c %s "$output")" -eq 230400
+}
+
 run_probe "$lib" "$vendor" "$vendor_log"
 run_probe "$overlay" "$ours" "$ours_log"
 
@@ -157,10 +175,12 @@ run_h264_probe() {
     sudo -n rm -f "$output" "$log" "$output.yuv"
     sudo -n env CUSTOM_RC=1 CUSTOM_RC_LOG="$log" \
         CUSTOM_RC_REENCODE="${CUSTOM_RC_REENCODE:-0}" \
+        CUSTOM_RC_REENCODE_FRAME_TYPE="${CUSTOM_RC_REENCODE_FRAME_TYPE:-0}" \
         CUSTOM_RC_QP_MIN="${CUSTOM_RC_QP_MIN:-26}" \
         CUSTOM_RC_QP_MAX="${CUSTOM_RC_QP_MAX:-26}" \
         LD_LIBRARY_PATH="$library" timeout 60 \
-        "$h264_probe" "$raw" "$output" 320 240 2 "${CUSTOM_RC_MODE:-0}" 26 \
+        "$h264_probe" "$raw" "$output" 320 240 "${CUSTOM_RC_FRAMES:-2}" \
+        "${CUSTOM_RC_MODE:-0}" 26 \
         "$rate" "${sei_off[@]}" \
         < /dev/null > "$output.stdout" 2>&1
 }
@@ -223,6 +243,57 @@ test "$(grep -c '^hal-end ' "$h264_reencode_ours_log")" -eq 3
 test "$(grep -c '^frame-end ' "$h264_reencode_ours_log")" -eq 2
 printf 'PASS custom RC H.264 reencode (%s)\n' \
     "$(sha256sum "$h264_reencode_ours.yuv" | cut -d' ' -f1)"
+
+h265_type_vendor=/tmp/rk_mpp_custom_rc_h265_type_vendor.265
+h265_type_ours=/tmp/rk_mpp_custom_rc_h265_type_ours.265
+h265_type_vendor_log=/tmp/rk_mpp_custom_rc_h265_type_vendor.log
+h265_type_ours_log=/tmp/rk_mpp_custom_rc_h265_type_ours.log
+CUSTOM_RC_FRAMES=3 CUSTOM_RC_REENCODE_FRAME_TYPE=1 run_probe \
+    "$lib" "$h265_type_vendor" \
+    "$h265_type_vendor_log"
+CUSTOM_RC_FRAMES=3 CUSTOM_RC_REENCODE_FRAME_TYPE=1 run_probe \
+    "$overlay" "$h265_type_ours" \
+    "$h265_type_ours_log"
+python3 "$repo/scripts/compare_streams.py" "$h265_type_vendor" "$h265_type_ours"
+decode_partial_h265 "$h265_type_vendor" "$h265_type_vendor.ff.yuv" \
+    "$h265_type_vendor.ff.log"
+decode_partial_h265 "$h265_type_ours" "$h265_type_ours.ff.yuv" \
+    "$h265_type_ours.ff.log"
+cmp "$h265_type_vendor.ff.yuv" "$h265_type_ours.ff.yuv"
+sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+    "$h265_type_vendor" "$h265_type_vendor.yuv" > /dev/null
+sudo -n "$repo/target/release/rk-mpp-rs" hevcdec \
+    "$h265_type_ours" "$h265_type_ours.yuv" > /dev/null
+cmp "$h265_type_vendor.yuv" "$h265_type_ours.yuv"
+compare_callback_trace "$h265_type_vendor_log" "$h265_type_ours_log" \
+    "H.265 frame-type reencode"
+test "$(grep -c '^hal-start .*intra=1' "$h265_type_ours_log")" -eq 2
+test "$(grep -c '^frame-end ' "$h265_type_ours_log")" -eq 3
+printf 'PASS custom RC H.265 frame-type reencode (%s)\n' \
+    "$(sha256sum "$h265_type_ours.ff.yuv" | cut -d' ' -f1)"
+
+h264_type_vendor=/tmp/rk_mpp_custom_rc_h264_type_vendor.264
+h264_type_ours=/tmp/rk_mpp_custom_rc_h264_type_ours.264
+h264_type_vendor_log=/tmp/rk_mpp_custom_rc_h264_type_vendor.log
+h264_type_ours_log=/tmp/rk_mpp_custom_rc_h264_type_ours.log
+CUSTOM_RC_FRAMES=3 CUSTOM_RC_REENCODE_FRAME_TYPE=1 run_h264_probe \
+    "$lib" "$h264_type_vendor" \
+    "$h264_type_vendor_log"
+CUSTOM_RC_FRAMES=3 CUSTOM_RC_REENCODE_FRAME_TYPE=1 run_h264_probe \
+    "$overlay" "$h264_type_ours" \
+    "$h264_type_ours_log"
+python3 "$repo/scripts/compare_streams.py" "$h264_type_vendor" "$h264_type_ours"
+sudo -n "$repo/target/release/rk-mpp-rs" h264dec \
+    "$h264_type_vendor" "$h264_type_vendor.yuv" > /dev/null
+sudo -n "$repo/target/release/rk-mpp-rs" h264dec \
+    "$h264_type_ours" "$h264_type_ours.yuv" > /dev/null
+cmp "$h264_type_vendor.yuv" "$h264_type_ours.yuv"
+compare_callback_trace "$h264_type_vendor_log" "$h264_type_ours_log" \
+    "H.264 frame-type reencode"
+test "$(grep -c '^hal-start .*intra=1' "$h264_type_ours_log")" -eq 2
+test "$(grep -c '^frame-end ' "$h264_type_ours_log")" -eq 3
+printf 'PASS custom RC H.264 frame-type reencode (%s)\n' \
+    "$(sha256sum "$h264_type_ours.yuv" | cut -d' ' -f1)"
 test "$(grep -c '^frame-start ' "$h264_ours_log")" -eq 2
 test "$(grep -c '^frame-end ' "$h264_ours_log")" -eq 2
 compare_callback_trace "$h264_vendor_log" "$h264_ours_log" H.264

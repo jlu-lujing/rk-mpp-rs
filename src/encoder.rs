@@ -967,6 +967,13 @@ pub(crate) struct RateControlFeedback {
     pub(crate) quality_real: i32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RateControlReencode {
+    pub(crate) target: ExternalRateControl,
+    pub(crate) is_intra: bool,
+    pub(crate) is_idr: bool,
+}
+
 /// Persistent encoder session. Frames are encoded synchronously into an owned
 /// packet queue, so input storage can be reused as soon as submit returns.
 pub struct Encoder {
@@ -1472,7 +1479,7 @@ impl Encoder {
         mut reencode: F,
     ) -> Result<usize, Error>
     where
-        F: FnMut(RateControlFeedback) -> Result<Option<ExternalRateControl>, String>,
+        F: FnMut(RateControlFeedback) -> Result<Option<RateControlReencode>, String>,
     {
         if self.eos {
             return Err(Error::State("frame submitted after encoder EOS"));

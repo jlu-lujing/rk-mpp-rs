@@ -55,6 +55,10 @@ pub const REFERENCE_HEIGHT: usize = 240;
 pub enum Picture {
     /// `NAL_IDR_W_RADL`, `sli_type` 2 (I), POC 0, no reference markings.
     Idr,
+    /// A P syntax template re-run with `EncFrmStatus.is_intra=is_idr=1`.
+    /// The HAL keeps the P slice/POC/reference fields but selects INTRA global
+    /// configuration and writes an IDR NAL type.
+    ForcedIdrFromP { poc_lsb: u32 },
     /// `NAL_TRAIL_R`, `sli_type` 1 (P), one short-term reference rebuilt as an LT
     /// entry the way `h265e_set_ref_regs` does for this vintage.
     P { poc_lsb: u32 },
@@ -409,7 +413,7 @@ impl RegisterFile {
         self.set(&regs::BASE_RC_CFG_RC_CTU_NUM, mb_w as u32)?;
         self.set(
             &regs::BASE_RC_QP_RC_QP_RANGE,
-            if matches!(job.picture, Picture::Idr) {
+            if matches!(job.picture, Picture::Idr | Picture::ForcedIdrFromP { .. }) {
                 rc.qp_delta_row_i
             } else {
                 rc.qp_delta_row
@@ -754,11 +758,20 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     // The traced P job settles every one of these bits: `sli_type` 1, NAL 1
     // (TRAIL_R), POC 1, the reference rebuilt as an LT entry with
     // `used_by_lt_flg0`, and the inter lambda table in `iprd_wgt_qp_hevc_0_51`.
-    if let Picture::P { poc_lsb } = job.picture {
-        file.set(&regs::CTL_DTRNS_CFG_DSPR_OTSD, 1)?;
+    if let Picture::P { poc_lsb } | Picture::ForcedIdrFromP { poc_lsb } = job.picture {
+        if matches!(job.picture, Picture::P { .. }) {
+            file.set(&regs::CTL_DTRNS_CFG_DSPR_OTSD, 1)?;
+        }
         // `tot_poc_num` is 1 for every traced P picture, not the running count.
         file.set(&regs::H265_REG0192_ENC_PIC_NUM_PIC_TOT_CUR, 1)?;
-        file.set(&regs::H265_REG0236_SYNT_NAL_NAL_UNIT_TYPE, 1)?;
+        file.set(
+            &regs::H265_REG0236_SYNT_NAL_NAL_UNIT_TYPE,
+            if matches!(job.picture, Picture::ForcedIdrFromP { .. }) {
+                NAL_IDR_W_RADL
+            } else {
+                1
+            },
+        )?;
         file.set(&regs::H265_REG0239_SYNT_SLI0_NUM_REFIDX_ACT_OVRD, 0)?;
         file.set(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE, 1)?;
         file.set(&regs::H265_REG0241_SYNT_SLI2_SLI_POC_LSB, poc_lsb)?;
@@ -780,8 +793,10 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
             file.set(&regs::H265_REG0240_SYNT_SLI1_LST_ENTRY_L0, 1)?;
             file.set(&regs::H265_REG0243_SYNT_REFM1_NUM_NEGATIVE_PICS, 1)?;
         }
-        let start = IPRD_WGT_QP_WORD - 1472;
-        file.wgt[start..start + MODB_LAMBDA.len()].copy_from_slice(&MODB_LAMBDA);
+        if matches!(job.picture, Picture::P { .. }) {
+            let start = IPRD_WGT_QP_WORD - 1472;
+            file.wgt[start..start + MODB_LAMBDA.len()].copy_from_slice(&MODB_LAMBDA);
+        }
     }
 
     // No MD surface is implemented here, so `enc_pic.mei_stor` stays 0 and the

@@ -260,11 +260,15 @@ impl CompatContext {
             task.info.clear_measurements();
             session.hal_start(&mut task)?;
             let (bit_target, qp_target, qp_min, qp_max) = task.rc_target();
-            Ok(Some(encoder::ExternalRateControl {
-                bit_target,
-                qp_target: qp_target as u32,
-                qp_min: qp_min as u32,
-                qp_max: qp_max as u32,
+            Ok(Some(encoder::RateControlReencode {
+                target: encoder::ExternalRateControl {
+                    bit_target,
+                    qp_target: qp_target as u32,
+                    qp_min: qp_min as u32,
+                    qp_max: qp_max as u32,
+                },
+                is_intra: task.frm.is_intra(),
+                is_idr: task.frm.is_idr(),
             }))
         });
         self.encoder = Some(encoder);
