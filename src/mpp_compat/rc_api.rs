@@ -235,6 +235,36 @@ pub(super) unsafe fn query_by_type(query: *mut RcApiQueryType) -> c_int {
     }
 }
 
+/// Register or replace a user-defined RC strategy.
+///
+/// # Safety
+/// `api` must point to a valid official `RcImplApi` whose `name` is a
+/// NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn rc_api_add(api: *const RcImplApi) -> c_int {
+    unsafe { add(api) }
+}
+
+/// Query every registered RC strategy.
+///
+/// # Safety
+/// `query` must point to a valid `RcApiQueryAll`; `brief` must address
+/// `max_count` writable entries.
+#[no_mangle]
+pub unsafe extern "C" fn rc_brief_get_all(query: *mut RcApiQueryAll) -> c_int {
+    unsafe { query_all(query) }
+}
+
+/// Query registered RC strategies for one coding type.
+///
+/// # Safety
+/// `query` must point to a valid `RcApiQueryType`; `brief` must address
+/// `max_count` writable entries.
+#[no_mangle]
+pub unsafe extern "C" fn rc_brief_get_by_type(query: *mut RcApiQueryType) -> c_int {
+    unsafe { query_by_type(query) }
+}
+
 pub(super) struct Selection {
     name: Option<CString>,
     coding: c_int,

@@ -449,6 +449,8 @@ for AVC/HEVC), filter AVC to two entries, report the initial
 `default,type=0` selection, append a registered `test_h264e_rc`, select and
 restore it by `GET/SET_RC_API_CURRENT`. The callbacks of a user-defined
 strategy do not drive frames yet; that state is rejected before encoding.
+The direct `rc_api_add`, `rc_brief_get_all` and `rc_brief_get_by_type` exports
+are compared in a separate process and match vendor output as well.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older

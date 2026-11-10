@@ -222,7 +222,8 @@ oracle。相关项均已登记在 `docs/DIVERGENCES.md`。
 逐字节一致；`HEADER_MODE_EACH_IDR` 重发 SPS/PPS，`SEI_MODE_DISABLE`
 不再静默吞掉。H.265 VEPU580 也已接通同一组控制：15 NAL 和 YUV 为
 `b2765277…3c56607`，IDR 后的 POC 重置正确。RC API 的查询、注册/替换、
-按编码类型过滤和当前策略选择已在 t6/lf1 与原厂逐行一致；自定义策略的
+按编码类型过滤和当前策略选择已在 t6/lf1 与原厂逐行一致，并导出
+`rc_api_add`/`rc_brief_get_all`/`rc_brief_get_by_type`；自定义策略的
 逐帧回调尚未接入，选择后会明确拒绝编码，避免静默使用默认 RC。
 其中 `smart` 也属于尚未接入的非默认策略。
 其余高级编码控制仍待接入。

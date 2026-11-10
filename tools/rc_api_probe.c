@@ -27,6 +27,20 @@ static const RcImplApi test_h264_api = {
     NULL,
 };
 
+static const RcImplApi direct_h264_api = {
+    "direct_h264e_rc",
+    MPP_VIDEO_CodingAVC,
+    0,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+};
+
 static void show_briefs(const char *tag, const RcApiBrief *briefs, RK_S32 count)
 {
     RK_S32 i;
@@ -70,13 +84,52 @@ static int query_type(MppApi *mpi, MppCtx ctx, const char *tag, MppCodingType ty
     return ret;
 }
 
-int main(void)
+static int run_direct(void)
+{
+    RcApiBrief briefs[MAX_BRIEFS];
+    RcApiQueryAll all;
+    RcApiQueryType typed;
+    MPP_RET ret;
+
+    memset(briefs, 0, sizeof(briefs));
+    all.brief = briefs;
+    all.max_count = MAX_BRIEFS;
+    all.count = -1;
+    ret = rc_brief_get_all(&all);
+    printf("direct-all ret=%d\n", ret);
+    show_briefs("direct-all", briefs, all.count);
+
+    ret = rc_api_add(&direct_h264_api);
+    printf("direct-register ret=%d\n", ret);
+    ret = rc_api_add(&direct_h264_api);
+    printf("direct-replace ret=%d\n", ret);
+    memset(briefs, 0, sizeof(briefs));
+    all.count = -1;
+    ret = rc_brief_get_all(&all);
+    printf("direct-replaced ret=%d\n", ret);
+    show_briefs("direct-replaced", briefs, all.count);
+
+    memset(briefs, 0, sizeof(briefs));
+    typed.brief = briefs;
+    typed.max_count = MAX_BRIEFS;
+    typed.type = MPP_VIDEO_CodingAVC;
+    typed.count = -1;
+    ret = rc_brief_get_by_type(&typed);
+    printf("direct-avc ret=%d\n", ret);
+    show_briefs("direct-avc", briefs, typed.count);
+    return ret ? 4 : 0;
+}
+
+int main(int argc, char **argv)
 {
     MppCtx ctx = NULL;
     MppApi *mpi = NULL;
     RcApiBrief current;
     RcApiBrief selected;
     MPP_RET ret;
+
+    if (argc == 2 && !strcmp(argv[1], "direct"))
+        return run_direct();
 
     ret = mpp_create(&ctx, &mpi);
     printf("mpp_create ret=%d\n", ret);
