@@ -871,8 +871,12 @@ impl Encoder {
                 encoder.force_idr();
                 Ok(())
             }
+            Backend::H265Vepu580(encoder) => {
+                encoder.force_idr();
+                Ok(())
+            }
             _ => Err(Error::Unsupported(
-                "per-picture forced IDR is currently implemented for H.264".to_string(),
+                "per-picture forced IDR is unavailable for this encoder backend".to_string(),
             )),
         }
     }
@@ -887,8 +891,13 @@ impl Encoder {
                 encoder.set_headers_each_idr(each_idr);
                 Ok(())
             }
+            Backend::H265Vepu580(encoder) => {
+                encoder.set_headers_each_idr(each_idr);
+                Ok(())
+            }
+            Backend::H265Vepu510(_) => Ok(()),
             _ => Err(Error::Unsupported(
-                "per-IDR header mode is currently implemented for H.264".to_string(),
+                "per-IDR header mode is unavailable for this encoder backend".to_string(),
             )),
         }
     }
@@ -903,8 +912,26 @@ impl Encoder {
                 encoder.set_sei_enabled(enabled);
                 Ok(())
             }
+            Backend::H265Vepu580(encoder) => {
+                encoder.set_sei_enabled(enabled);
+                Ok(())
+            }
+            Backend::H265Vepu510(_) => Ok(()),
             _ => Err(Error::Unsupported(
-                "per-session SEI mode is currently implemented for H.264".to_string(),
+                "per-session SEI mode is unavailable for this encoder backend".to_string(),
+            )),
+        }
+    }
+
+    pub fn set_h265_long_term_reference(&mut self, long_term: bool) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H265Vepu580(encoder) => {
+                encoder.set_long_term(long_term);
+                Ok(())
+            }
+            Backend::H265Vepu510(_) => Ok(()),
+            _ => Err(Error::Unsupported(
+                "H.265 long-term SPS mode requires an H.265 encoder".to_string(),
             )),
         }
     }

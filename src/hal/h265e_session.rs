@@ -142,10 +142,15 @@ pub struct Vepu580H265 {
     slot: usize,
     /// Pictures this session has encoded; 0 means the next one is the IDR.
     frames: u32,
+    /// Global frame index of the most recent IDR, used to reset POC.
+    idr_frame: u32,
     md_info: DmaBuf,
     tile_line_bufs: Vec<DmaBuf>,
     tile_warmed: bool,
     input_fd_override: Option<i32>,
+    force_next_idr: bool,
+    headers_each_idr: bool,
+    sei_enabled: bool,
 }
 
 impl Vepu580H265 {
@@ -243,17 +248,21 @@ impl Vepu580H265 {
             surfaces: [Surface::alloc(sizes)?, Surface::alloc(sizes)?],
             slot: 0,
             frames: 0,
+            idr_frame: 0,
             md_info: DmaBuf::alloc("system", md_info_size(width, height), false)
                 .map_err(|e| format!("allocate H.265 motion info: {e}"))?,
             tile_line_bufs: Vec::new(),
             tile_warmed: false,
             input_fd_override: None,
+            force_next_idr: false,
+            headers_each_idr: false,
+            sei_enabled: true,
         })
     }
 
-    /// Encode the next picture: the first call is an IDR, every later call a P.
-    /// Only the opening IDR carries the VPS/SPS/PPS and the two SEIs, which is what
-    /// `MppEncHeaderStatus` makes the C do once per sequence.
+    /// Encode the next picture. The first call is an IDR and later calls are P
+    /// pictures unless the caller requested another IDR. Parameter sets and SEIs
+    /// are emitted on the opening IDR, or on every IDR in per-IDR header mode.
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<Vec<u8>, String> {
         Ok(self.encode_frame_packets(nv12)?.annex_b)
     }
@@ -266,8 +275,16 @@ impl Vepu580H265 {
     /// slicing this has one packet per completed slice; otherwise it is one
     /// complete access unit.
     pub fn encode_frame_packets(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
+        let force_idr = std::mem::take(&mut self.force_next_idr);
+        let is_idr = self.frames == 0 || force_idr;
+        if force_idr {
+            self.slot = 0;
+        }
+        if is_idr {
+            self.idr_frame = self.frames;
+        }
         if self.rc.is_some() {
-            let frame = if self.frames == 0 {
+            let frame = if is_idr {
                 rc_model::FrameType::Intra
             } else {
                 rc_model::FrameType::InterP
@@ -280,13 +297,13 @@ impl Vepu580H265 {
                 );
             }
             let recovery_prefix =
-                self.frames > 0 && self.refresh_length != 0 && self.frames % self.gop == 0;
-            let (picture, prefix) = if self.frames == 0 {
-                (Picture::Idr, true)
+                !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
+            let (picture, prefix) = if is_idr {
+                (Picture::Idr, self.frames == 0 || self.headers_each_idr)
             } else {
                 (
                     Picture::P {
-                        poc_lsb: self.frames,
+                        poc_lsb: self.frames.saturating_sub(self.idr_frame),
                     },
                     false,
                 )
@@ -314,12 +331,11 @@ impl Vepu580H265 {
             self.frames += 1;
             return Ok(encoded);
         }
-        let recovery_prefix =
-            self.frames > 0 && self.refresh_length != 0 && self.frames % self.gop == 0;
-        let (picture, prefix) = if self.frames == 0 {
-            (Picture::Idr, true)
+        let recovery_prefix = !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
+        let (picture, prefix) = if is_idr {
+            (Picture::Idr, self.frames == 0 || self.headers_each_idr)
         } else {
-            let poc = self.frames;
+            let poc = self.frames.saturating_sub(self.idr_frame);
             (Picture::P { poc_lsb: poc }, false)
         };
         let encoded = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, None)?;
@@ -383,6 +399,22 @@ impl Vepu580H265 {
             self.refresh_length = lines.div_ceil(refresh_num).min(self.gop);
         }
         Ok(())
+    }
+
+    pub fn force_idr(&mut self) {
+        self.force_next_idr = true;
+    }
+
+    pub fn set_long_term(&mut self, long_term: bool) {
+        self.long_term = long_term;
+    }
+
+    pub fn set_headers_each_idr(&mut self, each_idr: bool) {
+        self.headers_each_idr = each_idr;
+    }
+
+    pub fn set_sei_enabled(&mut self, enabled: bool) {
+        self.sei_enabled = enabled;
     }
 
     /// Set `MppEncSliceSplit` before the opening picture. Low-delay output uses
@@ -527,14 +559,21 @@ impl Vepu580H265 {
         qp_min: u32,
         qp_max: u32,
     ) -> Result<EncodedFrame, String> {
-        let recovery_prefix =
-            self.frames > 0 && self.refresh_length != 0 && self.frames % self.gop == 0;
-        let (picture, prefix) = if self.frames == 0 {
-            (Picture::Idr, true)
+        let force_idr = std::mem::take(&mut self.force_next_idr);
+        let is_idr = self.frames == 0 || force_idr;
+        if force_idr {
+            self.slot = 0;
+        }
+        if is_idr {
+            self.idr_frame = self.frames;
+        }
+        let recovery_prefix = !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
+        let (picture, prefix) = if is_idr {
+            (Picture::Idr, self.frames == 0 || self.headers_each_idr)
         } else {
             (
                 Picture::P {
-                    poc_lsb: self.frames,
+                    poc_lsb: self.frames.saturating_sub(self.idr_frame),
                 },
                 false,
             )
@@ -844,9 +883,9 @@ impl Vepu580H265 {
         // macroblock count the H.264 path divides by.
         self.last_measured = Some(measured_from_status(self.width, self.height, &status));
 
-        // The hardware writes the slice NAL; the parameter sets and the two SEIs are
-        // software output, exactly as `mpp_enc_impl.cpp` prepends them - once, ahead
-        // of the opening IDR.
+        // The hardware writes the slice NAL; the parameter sets and the two SEIs
+        // are software output, exactly as `mpp_enc_impl.cpp` prepends them ahead
+        // of the opening IDR or every IDR in per-IDR header mode.
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.long_term_refs = self.long_term;
         config.apply_syntax_options(self.syntax);
@@ -859,6 +898,9 @@ impl Vepu580H265 {
             out
         } else if !with_prefix {
             Vec::new()
+        } else if !self.sei_enabled {
+            crate::codec::h265::encoder::build_headers(&config)
+                .map_err(|e| format!("H.265 headers: {e:?}"))?
         } else if let Some(sei) = self.rc_sei.as_ref() {
             config.rc_mode = match self.rc_mode {
                 RcMode::Cbr => crate::codec::h265::encoder::RateControl::Cbr,

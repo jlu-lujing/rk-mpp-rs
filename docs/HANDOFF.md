@@ -75,7 +75,7 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的逐帧
 streaming RC 尚未接入，接口明确返回 unsupported。
 t6/lf1 的 workspace 最终全量门均为
-`1205 passed / 0 failed / 38 ignored`（root SDK 1201 + sys crate 4），
+`1224 passed / 0 failed / 38 ignored`，
 rustfmt 与严格 workspace rustdoc 同时通过。
 
 V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice，
@@ -212,15 +212,16 @@ layer 回指和 short-term reorder 也已闭合，12 帧 YUV 为
 `33923dd2…d1186a`；64 帧跨 `gop=60` 的 136 NAL 也一致，包含第二个
 SPS/PPS/SEI IDR 前缀和参考状态重置，YUV 为 `a3ad1bc6…35a0593`。
 lf1 VEPU510 的 TSVC2 12 帧也达到 26 NAL 和 YUV
-`77a92442…fe35ab` 一致。VEPU510 TSVC3 的 C 输出前 7 帧漏发 type-14
-prefix，但两路重建仍完全相同。VEPU510 TSVC2/TSVC4 的 C packet assembly
-冷启动不稳定：TSVC2 曾整段漏 prefix；TSVC4 的 5 次中 3 次与 Rust 的
-26 NAL/YUV 完全一致，另外两次漏 prefix，其中一次重建也不同。板级门会
-重试 C 直到取得稳定 oracle。相关项均已登记在 `docs/DIVERGENCES.md`。
+`77a92442…fe35ab` 一致。VEPU510 TSVC2/TSVC3/TSVC4 的 C packet assembly
+冷启动不稳定：TSVC2 曾整段漏 prefix；TSVC3 的一次 18-NAL 冷启动没有
+任何解码画面；TSVC4 的 5 次中 3 次与 Rust 的 26 NAL/YUV 完全一致，
+另外两次漏 prefix，其中一次重建也不同。板级门会重试 C 直到取得稳定
+oracle。相关项均已登记在 `docs/DIVERGENCES.md`。
 官方 H.264 对象路径的 `MPP_ENC_SET_IDR_FRAME`、`HEADER_MODE` 和
 `SEI_CFG` 已接通。帧 2/4 强制 IDR 在 t6/lf1 均为 12 NAL 和 YUV
 逐字节一致；`HEADER_MODE_EACH_IDR` 重发 SPS/PPS，`SEI_MODE_DISABLE`
-不再静默吞掉。其余高级编码控制仍待接入。
+不再静默吞掉。H.265 VEPU580 也已接通同一组控制：15 NAL 和 YUV 为
+`b2765277…3c56607`，IDR 后的 POC 重置正确。其余高级编码控制仍待接入。
 
 ```bash
 # t6: focused C consumer + unchanged vendor mpp_meta_test

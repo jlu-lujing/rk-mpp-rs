@@ -18,6 +18,9 @@
  *   `split 1|2 arg` is MPP_ENC_SPLIT_BY_BYTE with a byte cap or
  *   MPP_ENC_SPLIT_BY_CTU with 64x64 CTUs per slice. `splitout 1` enables
  *   MPP_ENC_SPLIT_OUT_LOWDELAY; packets are then drained through EOI.
+ *   `forceidr frame[,frame...]` sends MPP_ENC_SET_IDR_FRAME immediately before
+ *   each listed zero-based input frame. `headereach` requests
+ *   MPP_ENC_HEADER_MODE_EACH_IDR and `seioff` requests SEI disable.
  *   Build with -DH265E_ROI and link mpp_enc_roi_utils.c to enable the ROI
  *   arguments using the reference helper's VEPU580 H.265 table generation.
  *
@@ -65,6 +68,25 @@ typedef struct PacketReaderCtx_t {
     MPP_RET ret;
     unsigned packets;
 } PacketReaderCtx;
+
+static int force_idr_contains(const char *spec, int frame)
+{
+    const char *cursor = spec;
+
+    while (cursor && *cursor) {
+        char *end = NULL;
+        long value = strtol(cursor, &end, 10);
+
+        if (end == cursor)
+            break;
+        if (value == frame)
+            return 1;
+        if (*end != ',')
+            break;
+        cursor = end + 1;
+    }
+    return 0;
+}
 
 static void *read_packets(void *opaque)
 {
@@ -125,6 +147,9 @@ int main(int argc, char **argv)
     int ver_stride = (height + 15) & ~15;
     size_t frame_size =
         (size_t)hor_stride * ver_stride * 3 / 2 * (bit_depth > 8 ? 2 : 1);
+    const char *force_idr = NULL;
+    int header_each = 0;
+    int sei_off = 0;
 
     MppCtx ctx = NULL;
     MppApi *mpi = NULL;
@@ -174,6 +199,16 @@ int main(int argc, char **argv)
                 return 2;
             }
             split_out = atoi(argv[++arg]);
+        } else if (!strcmp(argv[arg], "forceidr")) {
+            if (arg + 1 >= argc) {
+                fprintf(stderr, "forceidr wants a frame list\n");
+                return 2;
+            }
+            force_idr = argv[++arg];
+        } else if (!strcmp(argv[arg], "headereach")) {
+            header_each = 1;
+        } else if (!strcmp(argv[arg], "seioff")) {
+            sei_off = 1;
 #ifdef H265E_ROI
         } else if (!strcmp(argv[arg], "roi")) {
             roi_regions++;
@@ -322,6 +357,17 @@ int main(int argc, char **argv)
      * must come from the same defaults. */
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));
 
+    if (sei_off) {
+        MppEncSeiMode sei_mode = MPP_ENC_SEI_MODE_DISABLE;
+
+        CHECK(mpi->control(ctx, MPP_ENC_SET_SEI_CFG, &sei_mode));
+    }
+    if (header_each) {
+        MppEncHeaderMode header_mode = MPP_ENC_HEADER_MODE_EACH_IDR;
+
+        CHECK(mpi->control(ctx, MPP_ENC_SET_HEADER_MODE, &header_mode));
+    }
+
     if (getenv("REF_CFG")) {
         MppEncRefStFrmCfg st_ref;
         memset(&st_ref, 0, sizeof(st_ref));
@@ -421,6 +467,9 @@ int main(int argc, char **argv)
             }
             reader_started = 1;
         }
+
+        if (force_idr_contains(force_idr, picture))
+            CHECK(mpi->control(ctx, MPP_ENC_SET_IDR_FRAME, NULL));
 
         put_ret = mpi->encode_put_frame(ctx, frame);
         mpp_frame_deinit(&frame);

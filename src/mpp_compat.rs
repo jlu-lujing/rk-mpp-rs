@@ -731,6 +731,12 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             }
             match encoder::Encoder::new_mpi_compat(config) {
                 Ok(mut encoder) => {
+                    if context.coding == MPP_VIDEO_CODING_HEVC && !has_ref_cfg {
+                        if let Err(error) = encoder.set_h265_long_term_reference(false) {
+                            eprintln!("rk-mpp-rs mpp: H.265 reference mode rejected: {error}");
+                            return MPP_NOK;
+                        }
+                    }
                     if !encoder.supports_h264_reference_layout()
                         && !context.encoder_ref_pattern.is_empty()
                     {

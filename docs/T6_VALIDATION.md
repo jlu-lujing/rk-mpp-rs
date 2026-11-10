@@ -438,7 +438,10 @@ YUV output has SHA-256
 before input frames 2 and 4, `HEADER_MODE_EACH_IDR` enabled and SEI disabled,
 the official-path probe emits three IDR sections, four pictures each
 (`12` NALs total). t6 and lf1 both match the C stream and decode to the same
-691,200-byte YUV (`05901761…f71159` on t6). Other encoder controls remain open.
+691,200-byte YUV (`05901761…f71159` on t6). The H.265 VEPU580 probe runs the
+same schedule and matches 15 NALs; its YUV SHA-256 is
+`b2765277b355c52eae77bae10997ec4284c03b20d76f2b1cadfeacf0f3c56607`.
+POC restarts at 1 after each forced IDR. Other encoder controls remain open.
 
 These are the current 80% OPP medians from 11 interleaved samples, so they are
 directly comparable to the current functional and stress results. The older
