@@ -468,7 +468,10 @@ pub fn build_prefix(config: &EncoderConfig, qp: u32, igop: u32) -> Result<Vec<u8
 /// The prefix with a caller-chosen rate-control line and PPS variant. `config`'s
 /// `rc_mode` picks the PPS bytes (`cu_qp_delta_enabled` follows it), `line` is the
 /// `uuid_rc_cfg` text.
-pub fn build_prefix_line(config: &EncoderConfig, line: &sei::RcCfgLine) -> Result<Vec<u8>, Error> {
+pub fn build_prefix_line(
+    config: &EncoderConfig,
+    line: &sei::RcCfgLine<'_>,
+) -> Result<Vec<u8>, Error> {
     let mut out = build_headers(config)?;
     out.extend(sei::user_data_unregistered(
         &sei::VERSION_UUID,

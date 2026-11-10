@@ -3,12 +3,16 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use crate::encoder::{EncoderConfig, RateControlMode};
+
 use super::{
     MPP_ERR_NULL_PTR, MPP_NOK, MPP_OK, MPP_VIDEO_CODING_AVC, MPP_VIDEO_CODING_HEVC,
     MPP_VIDEO_CODING_MJPEG, MPP_VIDEO_CODING_VP8,
 };
 
-type RcCallback = unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int;
+type RcInitFn = unsafe extern "C" fn(*mut c_void, *mut RcCfg) -> c_int;
+type RcDeinitFn = unsafe extern "C" fn(*mut c_void) -> c_int;
+type RcTaskFn = unsafe extern "C" fn(*mut c_void, *mut EncRcTask) -> c_int;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -16,14 +20,258 @@ pub(super) struct RcImplApi {
     pub name: *const c_char,
     pub coding: c_int,
     pub ctx_size: u32,
-    pub init: Option<RcCallback>,
-    pub deinit: Option<RcCallback>,
-    pub check_drop: Option<RcCallback>,
-    pub check_reenc: Option<RcCallback>,
-    pub frame_start: Option<RcCallback>,
-    pub frame_end: Option<RcCallback>,
-    pub hal_start: Option<RcCallback>,
-    pub hal_end: Option<RcCallback>,
+    pub init: Option<RcInitFn>,
+    pub deinit: Option<RcDeinitFn>,
+    pub check_drop: Option<RcTaskFn>,
+    pub check_reenc: Option<RcTaskFn>,
+    pub frame_start: Option<RcTaskFn>,
+    pub frame_end: Option<RcTaskFn>,
+    pub hal_start: Option<RcTaskFn>,
+    pub hal_end: Option<RcTaskFn>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RcFpsCfg {
+    pub fps_in_flex: i32,
+    pub fps_in_num: i32,
+    pub fps_in_denom: i32,
+    pub fps_out_flex: i32,
+    pub fps_out_num: i32,
+    pub fps_out_denom: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RcSuperframeCfg {
+    pub super_mode: i32,
+    pub super_i_thd: u32,
+    pub super_p_thd: u32,
+    pub rc_priority: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RcDebreathCfg {
+    pub enable: u32,
+    pub strength: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RcHierQpCfg {
+    pub hier_qp_en: i32,
+    pub hier_qp_delta: [i32; 4],
+    pub hier_frame_num: [i32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct RcCfg {
+    pub width: i32,
+    pub height: i32,
+    pub mode: i32,
+    pub fps: RcFpsCfg,
+    pub gop_mode: i32,
+    pub igop: i32,
+    pub vgop: i32,
+    pub bps_min: i32,
+    pub bps_target: i32,
+    pub bps_max: i32,
+    pub stats_time: i32,
+    pub max_i_bit_prop: i32,
+    pub min_i_bit_prop: i32,
+    pub init_ip_ratio: i32,
+    pub layer_bit_prop: [i32; 4],
+    pub init_quality: i32,
+    pub max_quality: i32,
+    pub min_quality: i32,
+    pub max_i_quality: i32,
+    pub min_i_quality: i32,
+    pub i_quality_delta: i32,
+    pub vi_quality_delta: i32,
+    pub fqp_min_i: i32,
+    pub fqp_min_p: i32,
+    pub fqp_max_i: i32,
+    pub fqp_max_p: i32,
+    pub layer_quality_delta: [i32; 4],
+    pub max_reencode_times: i32,
+    pub min_still_prop: i32,
+    pub max_still_quality: i32,
+    pub vbr_hi_prop: i32,
+    pub vbr_lo_prop: i32,
+    pub drop_mode: i32,
+    pub drop_thd: u32,
+    pub drop_gap: u32,
+    pub super_cfg: RcSuperframeCfg,
+    pub debreath_cfg: RcDebreathCfg,
+    pub hier_qp_cfg: RcHierQpCfg,
+    pub refresh_len: u32,
+    pub scene_mode: i32,
+    pub fps_chg_prop: u32,
+}
+
+impl RcCfg {
+    pub(super) fn from_encoder(config: EncoderConfig) -> Self {
+        let (fps_num, fps_den) = config.fps();
+        let rate_control = config.rate_control();
+        let mode = rate_control.map_or(2, |rate| match rate.mode() {
+            RateControlMode::Vbr => 0,
+            RateControlMode::Cbr => 1,
+            RateControlMode::FixedQp => 2,
+            RateControlMode::Avbr => 3,
+        });
+        let default_target =
+            (config.width() * config.height() / 8 * fps_num as usize / fps_den as usize) as i32;
+        let bps_target = rate_control.map_or(default_target, |rate| rate.bps_target() as i32);
+        let bps_min = rate_control.map_or(0, |rate| rate.bps_min() as i32);
+        let bps_max = rate_control.map_or(0, |rate| rate.bps_max() as i32);
+        let init_quality = rate_control.map_or(config.qp() as i32, |rate| rate.initial_qp() as i32);
+        let min_quality = rate_control.map_or(config.qp() as i32, |rate| rate.min_qp() as i32);
+        let max_quality = rate_control.map_or(config.qp() as i32, |rate| rate.max_qp() as i32);
+        Self {
+            width: config.width() as i32,
+            height: config.height() as i32,
+            mode,
+            fps: RcFpsCfg {
+                fps_in_num: fps_num as i32,
+                fps_in_denom: fps_den as i32,
+                fps_out_num: fps_num as i32,
+                fps_out_denom: fps_den as i32,
+                ..RcFpsCfg::default()
+            },
+            igop: config.gop() as i32,
+            bps_min,
+            bps_target,
+            bps_max,
+            stats_time: 1,
+            init_quality,
+            max_quality,
+            min_quality,
+            max_i_quality: max_quality,
+            min_i_quality: min_quality,
+            fqp_min_i: min_quality,
+            fqp_min_p: min_quality,
+            fqp_max_i: max_quality,
+            fqp_max_p: max_quality,
+            ..Self::default()
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EncFrmStatus {
+    pub val: u64,
+}
+
+impl EncFrmStatus {
+    fn set_bit(&mut self, bit: u32, enabled: bool) {
+        if enabled {
+            self.val |= 1u64 << bit;
+        } else {
+            self.val &= !(1u64 << bit);
+        }
+    }
+
+    pub(super) fn is_intra(self) -> bool {
+        self.val & (1 << 4) != 0
+    }
+
+    pub(super) fn is_idr(self) -> bool {
+        self.val & (1 << 5) != 0
+    }
+
+    pub(super) fn is_drop(self) -> bool {
+        self.val & (1u64 << 32) != 0
+    }
+
+    pub(super) fn is_reencode(self) -> bool {
+        self.val & (1u64 << 34) != 0
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EncCpbStatus {
+    pub seq_idx: i32,
+    pub curr: EncFrmStatus,
+    pub refr: EncFrmStatus,
+    pub init: [EncFrmStatus; 8],
+    pub final_: [EncFrmStatus; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EncRcTaskInfo {
+    pub frame_type: i32,
+    pub bit_target: i32,
+    pub bit_max: i32,
+    pub bit_min: i32,
+    pub quality_target: i32,
+    pub quality_max: i32,
+    pub quality_min: i32,
+    pub bit_real: i32,
+    pub quality_real: i32,
+    pub madi: i32,
+    pub madp: i32,
+    pub iblk4_prop: u32,
+    pub sse: i64,
+    pub lvl64_inter_num: u32,
+    pub lvl32_inter_num: u32,
+    pub lvl16_inter_num: u32,
+    pub lvl8_inter_num: u32,
+    pub lvl32_intra_num: u32,
+    pub lvl16_intra_num: u32,
+    pub lvl8_intra_num: u32,
+    pub lvl4_intra_num: u32,
+    pub reserve: [i32; 5],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EncRcForceCfg {
+    pub force_flag: u32,
+    pub force_qp: i32,
+    pub reserve: [u32; 6],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EncRcTask {
+    pub cpb: EncCpbStatus,
+    pub frm: EncFrmStatus,
+    pub info: EncRcTaskInfo,
+    pub force: EncRcForceCfg,
+    pub frame: *mut c_void,
+}
+
+impl EncRcTask {
+    pub(super) fn new(sequence: u32, intra: bool, idr: bool) -> Self {
+        let mut task = Self::default();
+        task.cpb.seq_idx = sequence as i32;
+        task.frm.set_bit(0, true);
+        task.frm.set_bit(4, intra);
+        task.frm.set_bit(5, idr);
+        task.frm.val |= (sequence as u64 & 0xffff) << 48;
+        task.cpb.curr = task.frm;
+        task.info.frame_type = if intra { 2 } else { 0 };
+        task
+    }
+
+    pub(super) fn rc_target(&self) -> (i32, i32, i32, i32) {
+        if self.force.force_flag & 1 != 0 {
+            let qp = self.force.force_qp.clamp(0, 51);
+            (self.info.bit_target.max(0), qp, qp, qp)
+        } else {
+            (
+                self.info.bit_target.max(0),
+                self.info.quality_target.clamp(0, 51),
+                self.info.quality_min.clamp(0, 51),
+                self.info.quality_max.clamp(0, 51),
+            )
+        }
+    }
 }
 
 #[repr(C)]
@@ -51,21 +299,20 @@ pub(super) struct RcApiQueryType {
 struct Registration {
     name: CString,
     coding: c_int,
-    #[allow(dead_code)] // Retained for the per-frame callback bridge.
     callbacks: RcCallbacks,
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // Retained until custom strategy execution is wired.
 struct RcCallbacks {
-    init: Option<RcCallback>,
-    deinit: Option<RcCallback>,
-    check_drop: Option<RcCallback>,
-    check_reenc: Option<RcCallback>,
-    frame_start: Option<RcCallback>,
-    frame_end: Option<RcCallback>,
-    hal_start: Option<RcCallback>,
-    hal_end: Option<RcCallback>,
+    ctx_size: u32,
+    init: Option<RcInitFn>,
+    deinit: Option<RcDeinitFn>,
+    check_drop: Option<RcTaskFn>,
+    check_reenc: Option<RcTaskFn>,
+    frame_start: Option<RcTaskFn>,
+    frame_end: Option<RcTaskFn>,
+    hal_start: Option<RcTaskFn>,
+    hal_end: Option<RcTaskFn>,
 }
 
 static REGISTRY: OnceLock<Mutex<Vec<Registration>>> = OnceLock::new();
@@ -100,6 +347,7 @@ fn builtins() -> Vec<Registration> {
 fn new_registration(name: CString, coding: c_int, api: Option<&RcImplApi>) -> Registration {
     let callbacks = api.map_or(
         RcCallbacks {
+            ctx_size: 0,
             init: None,
             deinit: None,
             check_drop: None,
@@ -110,6 +358,7 @@ fn new_registration(name: CString, coding: c_int, api: Option<&RcImplApi>) -> Re
             hal_end: None,
         },
         |api| RcCallbacks {
+            ctx_size: api.ctx_size,
             init: api.init,
             deinit: api.deinit,
             check_drop: api.check_drop,
@@ -322,11 +571,85 @@ impl Selection {
     }
 }
 
+fn resolve(name: &CStr, coding: c_int) -> Option<RcCallbacks> {
+    lock_registry()
+        .iter()
+        .find(|registration| registration.coding == coding && same_name(&registration.name, name))
+        .map(|registration| registration.callbacks)
+        .filter(|callbacks| callbacks.frame_start.is_some())
+}
+
+pub(super) struct Session {
+    callbacks: RcCallbacks,
+    context: Box<[u8]>,
+}
+
+impl Session {
+    pub(super) fn new(name: &CStr, coding: c_int, config: &mut RcCfg) -> Result<Self, String> {
+        let callbacks = resolve(name, coding).ok_or_else(|| {
+            format!("RC strategy {name:?} has no executable frame_start callback")
+        })?;
+        let mut context = vec![0u8; callbacks.ctx_size as usize].into_boxed_slice();
+        if let Some(init) = callbacks.init {
+            let result = unsafe { init(context.as_mut_ptr().cast(), config) };
+            if result != MPP_OK {
+                if let Some(deinit) = callbacks.deinit {
+                    let _ = unsafe { deinit(context.as_mut_ptr().cast()) };
+                }
+                return Err(format!("RC strategy {name:?} init failed with {result}"));
+            }
+        }
+        Ok(Self { callbacks, context })
+    }
+
+    fn call(&mut self, callback: Option<RcTaskFn>, task: &mut EncRcTask) -> Result<(), String> {
+        if let Some(callback) = callback {
+            let result = unsafe { callback(self.context.as_mut_ptr().cast(), task) };
+            if result != MPP_OK {
+                return Err(format!("RC callback failed with {result}"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_drop(&mut self, task: &mut EncRcTask) -> Result<(), String> {
+        self.call(self.callbacks.check_drop, task)
+    }
+
+    pub(super) fn check_reencode(&mut self, task: &mut EncRcTask) -> Result<(), String> {
+        self.call(self.callbacks.check_reenc, task)
+    }
+
+    pub(super) fn frame_start(&mut self, task: &mut EncRcTask) -> Result<(), String> {
+        self.call(self.callbacks.frame_start, task)?;
+        self.call(self.callbacks.hal_start, task)
+    }
+
+    pub(super) fn frame_end(&mut self, task: &mut EncRcTask) -> Result<(), String> {
+        self.call(self.callbacks.hal_end, task)?;
+        self.call(self.callbacks.frame_end, task)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some(deinit) = self.callbacks.deinit {
+            let _ = unsafe { deinit(self.context.as_mut_ptr().cast()) };
+        }
+    }
+}
+
 const _: () = {
     assert!(size_of::<RcApiBrief>() == 16);
     assert!(size_of::<RcApiQueryAll>() == 16);
     assert!(size_of::<RcApiQueryType>() == 24);
     assert!(size_of::<RcImplApi>() == 80);
+    assert!(size_of::<RcCfg>() == 256);
+    assert!(size_of::<EncFrmStatus>() == 8);
+    assert!(size_of::<EncCpbStatus>() == 152);
+    assert!(size_of::<EncRcTaskInfo>() == 112);
+    assert!(size_of::<EncRcForceCfg>() == 32);
+    assert!(size_of::<EncRcTask>() == 312);
 };
 
 #[cfg(test)]

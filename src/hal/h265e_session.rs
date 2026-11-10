@@ -151,6 +151,7 @@ pub struct Vepu580H265 {
     force_next_idr: bool,
     headers_each_idr: bool,
     sei_enabled: bool,
+    rc_model_name: String,
 }
 
 impl Vepu580H265 {
@@ -257,6 +258,7 @@ impl Vepu580H265 {
             force_next_idr: false,
             headers_each_idr: false,
             sei_enabled: true,
+            rc_model_name: "default".to_string(),
         })
     }
 
@@ -415,6 +417,10 @@ impl Vepu580H265 {
 
     pub fn set_sei_enabled(&mut self, enabled: bool) {
         self.sei_enabled = enabled;
+    }
+
+    pub fn set_rate_control_name(&mut self, name: String) {
+        self.rc_model_name = name;
     }
 
     /// Set `MppEncSliceSplit` before the opening picture. Low-delay output uses
@@ -907,7 +913,7 @@ impl Vepu580H265 {
                 RcMode::Vbr | RcMode::Avbr => crate::codec::h265::encoder::RateControl::Vbr,
             };
             let line = crate::codec::h265::sei::RcCfgLine {
-                model_name: "default",
+                model_name: &self.rc_model_name,
                 mode_name: self.rc_mode.name(),
                 bps_target: sei.target,
                 bps_min: sei.min,
@@ -923,7 +929,15 @@ impl Vepu580H265 {
             crate::codec::h265::encoder::build_prefix_line(&config, &line)
                 .map_err(|e| format!("H.265 prefix: {e:?}"))?
         } else {
-            crate::codec::h265::encoder::build_prefix(&config, self.qp, self.gop)
+            let line = crate::codec::h265::sei::RcCfgLine {
+                model_name: &self.rc_model_name,
+                ..crate::codec::h265::sei::RcCfgLine::fixed_qp(
+                    self.qp,
+                    self.gop,
+                    crate::codec::h265::sei::default_bps_target(config.width, config.height, 30),
+                )
+            };
+            crate::codec::h265::encoder::build_prefix_line(&config, &line)
                 .map_err(|e| format!("H.265 prefix: {e:?}"))?
         };
         let packets = output_packets(&headers, &payload, &slice_lengths)?;

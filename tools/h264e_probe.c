@@ -59,8 +59,12 @@
 #include "mpp_err.h"
 #include "mpp_frame.h"
 #include "mpp_packet.h"
+#include "mpp_rc_api.h"
 #include "rk_mpi.h"
 #include "rk_venc_cfg.h"
+
+#define CUSTOM_RC_CODING MPP_VIDEO_CodingAVC
+#include "custom_rc_probe.h"
 
 #ifndef H264E_PROBE_NO_ROI
 #include "mpp_enc_roi_utils.h"
@@ -358,6 +362,16 @@ int main(int argc, char **argv)
 
     CHECK(mpp_create(&ctx, &mpi));
     CHECK(mpp_init(ctx, MPP_CTX_ENC, MPP_VIDEO_CodingAVC));
+    if (getenv("CUSTOM_RC")) {
+        RcApiBrief brief = {
+            .name = "custom_probe",
+            .type = MPP_VIDEO_CodingAVC,
+        };
+
+        CHECK(mpi->control(ctx, MPP_ENC_SET_RC_API_CFG,
+                           (void *)&custom_rc_api));
+        CHECK(mpi->control(ctx, MPP_ENC_SET_RC_API_CURRENT, &brief));
+    }
     CHECK(mpp_enc_cfg_init(&cfg));
     CHECK(mpi->control(ctx, MPP_ENC_GET_CFG, cfg));
 

@@ -1357,7 +1357,7 @@ fn lf1_rate_prefix(config: &EncoderConfig, gop: u32, mode: RcMode) -> Result<Vec
     lf1_prefix(config, &line)
 }
 
-fn lf1_prefix(config: &EncoderConfig, line: &sei::RcCfgLine) -> Result<Vec<u8>, String> {
+fn lf1_prefix(config: &EncoderConfig, line: &sei::RcCfgLine<'_>) -> Result<Vec<u8>, String> {
     let mut out = encoder::build_headers(config).map_err(|e| e.to_string())?;
     out.extend(sei::user_data_unregistered(
         &sei::VERSION_UUID,

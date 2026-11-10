@@ -136,6 +136,10 @@ struct CompatContext {
     encoder_ref_schedule: Option<ReferenceSchedule>,
     rc_api: rc_api::Selection,
     header_sync_requested: bool,
+    custom_rc: Option<rc_api::Session>,
+    custom_rc_pending: Option<rc_api::EncRcTask>,
+    custom_rc_sequence: u32,
+    custom_force_idr: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -168,6 +172,92 @@ struct PendingReferenceFrame {
     reference_reorder: Option<encoder::ReferenceReorder>,
     current_long_term_index: Option<u32>,
     commit: Option<ActiveReference>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CustomRcAction {
+    Encode,
+    Skip,
+}
+
+impl CompatContext {
+    fn prepare_custom_rc(&mut self) -> Result<CustomRcAction, c_int> {
+        let Some(session) = self.custom_rc.as_mut() else {
+            return Ok(CustomRcAction::Encode);
+        };
+        let sequence = self.custom_rc_sequence;
+        let forced_idr = self.custom_force_idr;
+        let intra = sequence == 0 || forced_idr;
+        let mut task = rc_api::EncRcTask::new(sequence, intra, intra);
+        if let Err(error) = session.check_drop(&mut task) {
+            eprintln!("rk-mpp-rs mpp: RC drop decision failed: {error}");
+            return Err(MPP_NOK);
+        }
+        if task.frm.is_drop() {
+            task.info.bit_real = 0;
+            task.info.quality_real = task.info.quality_target;
+            if let Err(error) = session.frame_end(&mut task) {
+                eprintln!("rk-mpp-rs mpp: RC dropped-frame completion failed: {error}");
+                return Err(MPP_NOK);
+            }
+            self.custom_rc_sequence = sequence.saturating_add(1);
+            self.custom_force_idr = false;
+            return Ok(CustomRcAction::Skip);
+        }
+        if let Err(error) = session.frame_start(&mut task) {
+            eprintln!("rk-mpp-rs mpp: RC frame start failed: {error}");
+            return Err(MPP_NOK);
+        }
+        let (bit_target, qp_target, qp_min, qp_max) = task.rc_target();
+        let qp_max = qp_max.clamp(0, 51);
+        let qp_min = qp_min.clamp(0, qp_max);
+        let qp_target = qp_target.clamp(qp_min, qp_max);
+        let Some(encoder) = self.encoder.as_mut() else {
+            return Err(MPP_NOK);
+        };
+        encoder.force_next_rate_control(bit_target, qp_target as u32, qp_min as u32, qp_max as u32);
+        if task.frm.is_intra() || task.frm.is_idr() {
+            if let Err(error) = encoder.force_idr() {
+                eprintln!("rk-mpp-rs mpp: user RC forced-IDR request failed: {error}");
+                return Err(MPP_NOK);
+            }
+        }
+        self.custom_rc_pending = Some(task);
+        self.custom_force_idr = false;
+        Ok(CustomRcAction::Encode)
+    }
+
+    fn finish_custom_rc(&mut self) -> Result<(), c_int> {
+        let Some(mut task) = self.custom_rc_pending.take() else {
+            return Ok(());
+        };
+        task.info.bit_real = self
+            .encoder
+            .as_mut()
+            .map_or(0, encoder::Encoder::take_last_frame_bits);
+        task.info.quality_real = if task.force.force_flag & 1 != 0 {
+            task.force.force_qp
+        } else {
+            task.info.quality_target
+        };
+        let Some(session) = self.custom_rc.as_mut() else {
+            return Err(MPP_NOK);
+        };
+        if let Err(error) = session.check_reencode(&mut task) {
+            eprintln!("rk-mpp-rs mpp: RC reencode decision failed: {error}");
+            return Err(MPP_NOK);
+        }
+        if task.frm.is_reencode() {
+            eprintln!("rk-mpp-rs mpp: user RC requested an unsupported hardware reencode");
+            return Err(MPP_NOK);
+        }
+        if let Err(error) = session.frame_end(&mut task) {
+            eprintln!("rk-mpp-rs mpp: RC frame completion failed: {error}");
+            return Err(MPP_NOK);
+        }
+        self.custom_rc_sequence = self.custom_rc_sequence.saturating_add(1);
+        Ok(())
+    }
 }
 
 impl ReferenceSchedule {
@@ -542,13 +632,6 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     if context.ctx_type != MPP_CTX_ENC {
         return MPP_ERR_VALUE;
     }
-    if !context.rc_api.is_native_default() {
-        eprintln!(
-            "rk-mpp-rs mpp: selected RC API {:?} cannot execute yet",
-            context.rc_api.name()
-        );
-        return MPP_NOK;
-    }
     let picture_layout = match context.encoder_ref_schedule.as_ref() {
         Some(schedule) => match schedule.prepare() {
             Ok(frame) => Some(frame),
@@ -558,9 +641,6 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             }
         },
         None => None,
-    };
-    let Some(encoder) = context.encoder.as_mut() else {
-        return MPP_ERR_VALUE;
     };
     let Some(frame) = (unsafe { objects::frame_input_view(frame) }) else {
         eprintln!("rk-mpp-rs mpp: encode frame has no readable buffer");
@@ -588,6 +668,9 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         .with_pts(frame.pts)
         .with_dts(frame.dts);
     if let Some(frame) = picture_layout.as_ref() {
+        let Some(encoder) = context.encoder.as_mut() else {
+            return MPP_ERR_VALUE;
+        };
         if let Err(error) = encoder.force_next_picture_layout(
             frame.current_slot,
             frame.reference_slot,
@@ -602,14 +685,32 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             return MPP_NOK;
         }
     }
-    match encoder.submit_frame(input) {
+    match context.prepare_custom_rc() {
+        Ok(CustomRcAction::Encode) => {}
+        Ok(CustomRcAction::Skip) => return MPP_OK,
+        Err(error) => return error,
+    }
+    let submitted = match context.encoder.as_mut() {
+        Some(encoder) => encoder.submit_frame(input),
+        None => {
+            context.custom_rc_pending = None;
+            return MPP_ERR_VALUE;
+        }
+    };
+    match submitted {
         Ok(_) => {
+            if let Err(error) = context.finish_custom_rc() {
+                return error;
+            }
             if let (Some(schedule), Some(frame)) =
                 (context.encoder_ref_schedule.as_mut(), picture_layout)
             {
                 schedule.commit(frame);
             }
             if !motion_info.is_null() {
+                let Some(encoder) = context.encoder.as_mut() else {
+                    return MPP_NOK;
+                };
                 if let Some(mut data) = encoder.take_motion_info() {
                     if let Some(capacity) = unsafe { objects::buffer_capacity(motion_info) } {
                         data.truncate(capacity);
@@ -625,6 +726,7 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             MPP_OK
         }
         Err(error) => {
+            context.custom_rc_pending = None;
             eprintln!("rk-mpp-rs mpp: encode frame failed: {error}");
             MPP_NOK
         }
@@ -695,6 +797,10 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.pending_input_packet = std::ptr::null_mut();
     context.encoder_ref_pattern.clear();
     context.encoder_ref_schedule = None;
+    context.custom_rc = None;
+    context.custom_rc_pending = None;
+    context.custom_rc_sequence = 0;
+    context.custom_force_idr = false;
     MPP_OK
 }
 
@@ -725,13 +831,6 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
         MPP_ENC_SET_CFG => {
             if context.ctx_type != MPP_CTX_ENC || param.is_null() {
                 return MPP_ERR_VALUE;
-            }
-            if !context.rc_api.is_native_default() {
-                eprintln!(
-                    "rk-mpp-rs mpp: selected RC API {:?} cannot drive the encoder yet",
-                    context.rc_api.name()
-                );
-                return MPP_NOK;
             }
             context.encoder_ref_pattern =
                 standalone::encoder_cfg_ref_pattern(param).unwrap_or_default();
@@ -809,6 +908,41 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                             config.gop() as usize,
                         ));
                     }
+                    if !context.rc_api.is_native_default() {
+                        let Some(name) = context.rc_api.name() else {
+                            return MPP_NOK;
+                        };
+                        if !encoder.supports_external_rate_control() {
+                            eprintln!(
+                                "rk-mpp-rs mpp: selected RC API {name:?} is unavailable on this encoder"
+                            );
+                            return MPP_NOK;
+                        }
+                        if let Err(error) =
+                            encoder.set_rate_control_name(name.to_string_lossy().into_owned())
+                        {
+                            eprintln!("rk-mpp-rs mpp: RC strategy name rejected: {error}");
+                            return MPP_NOK;
+                        }
+                        let mut rc_cfg = rc_api::RcCfg::from_encoder(config);
+                        let session = match rc_api::Session::new(name, context.coding, &mut rc_cfg)
+                        {
+                            Ok(session) => session,
+                            Err(error) => {
+                                eprintln!("rk-mpp-rs mpp: RC strategy rejected: {error}");
+                                return MPP_NOK;
+                            }
+                        };
+                        context.custom_rc = Some(session);
+                        context.custom_rc_pending = None;
+                        context.custom_rc_sequence = 0;
+                        context.custom_force_idr = false;
+                    } else {
+                        context.custom_rc = None;
+                        context.custom_rc_pending = None;
+                        context.custom_rc_sequence = 0;
+                        context.custom_force_idr = false;
+                    }
                     context.encoder = Some(encoder);
                     MPP_OK
                 }
@@ -859,6 +993,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             if encoder.force_idr().is_err() {
                 return MPP_NOK;
             }
+            context.custom_force_idr = true;
             if let Some(schedule) = context.encoder_ref_schedule.as_mut() {
                 schedule.force_idr();
             }
@@ -986,6 +1121,10 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             encoder_ref_schedule: None,
             rc_api: rc_api::Selection::new(),
             header_sync_requested: false,
+            custom_rc: None,
+            custom_rc_pending: None,
+            custom_rc_sequence: 0,
+            custom_force_idr: false,
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();

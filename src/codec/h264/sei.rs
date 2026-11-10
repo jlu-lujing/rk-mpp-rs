@@ -188,7 +188,7 @@ impl BitVec {
 /// `uuid_rc_cfg` SEI: the RC model's name, then the mode, bit rate target and
 /// bounds, the intra GOP, and the QP bounds. Under fixed QP the model collapses
 /// every bound onto `init_quality`, which is what `mpi_enc_test -rc 2` shows.
-pub fn rc_cfg_line(rc: &RcCfgLine) -> String {
+pub fn rc_cfg_line(rc: &RcCfgLine<'_>) -> String {
     let mut out = String::with_capacity(96);
     let _ = write!(
         out,
@@ -212,9 +212,9 @@ pub fn rc_cfg_line(rc: &RcCfgLine) -> String {
 /// The values `update_rc_cfg_log` prints. They are plain configuration rather
 /// than anything the hardware computes, so a caller that configures the same
 /// numbers gets the same SEI byte for byte.
-pub struct RcCfgLine {
+pub struct RcCfgLine<'a> {
     /// `brief->name` from the RC model, `default` for the built-in one.
-    pub model_name: &'static str,
+    pub model_name: &'a str,
     /// `name_of_rc_mode[mode]`; `fixqp` for fixed QP.
     pub mode_name: &'static str,
     pub bps_target: i64,
@@ -230,7 +230,7 @@ pub struct RcCfgLine {
     pub i_quality_delta: i32,
 }
 
-impl RcCfgLine {
+impl RcCfgLine<'static> {
     /// The CBR rendering `mpi_enc_test -rc 1 -bps a:b:c` produces: the mode name,
     /// the library's medium quality and its 8..48 band, with the I delta the H.264
     /// API defaults to. None of these numbers come from the harness - it sets only

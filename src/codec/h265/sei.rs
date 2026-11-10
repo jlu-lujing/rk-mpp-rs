@@ -87,8 +87,8 @@ pub fn recovery_point(recovery_frame_cnt: i32) -> Vec<u8> {
 }
 
 /// The values `update_rc_cfg_log` prints, in the same order as the H.264 SEI.
-pub struct RcCfgLine {
-    pub model_name: &'static str,
+pub struct RcCfgLine<'a> {
+    pub model_name: &'a str,
     pub mode_name: &'static str,
     pub bps_target: i64,
     pub bps_min: i64,
@@ -102,7 +102,7 @@ pub struct RcCfgLine {
     pub i_quality_delta: i32,
 }
 
-impl RcCfgLine {
+impl RcCfgLine<'static> {
     /// The fixed-QP rendering of `mpi_enc_test`'s defaults: the bit-rate fields
     /// stay at the harness values because fixed QP does not use them, and the
     /// quality band collapses onto the picture QP.
@@ -132,7 +132,7 @@ pub fn default_bps_target(width: usize, height: usize, fps: u32) -> i64 {
 }
 
 /// `update_rc_cfg_log`'s one line, newline included.
-pub fn rc_cfg_line(rc: &RcCfgLine) -> String {
+pub fn rc_cfg_line(rc: &RcCfgLine<'_>) -> String {
     let mut out = String::with_capacity(96);
     let _ = write!(
         out,

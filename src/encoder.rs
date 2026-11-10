@@ -773,6 +773,14 @@ enum Backend {
     },
 }
 
+#[derive(Clone, Copy)]
+struct ExternalRateControl {
+    bit_target: i32,
+    qp_target: u32,
+    qp_min: u32,
+    qp_max: u32,
+}
+
 /// Persistent encoder session. Frames are encoded synchronously into an owned
 /// packet queue, so input storage can be reused as soon as submit returns.
 pub struct Encoder {
@@ -782,6 +790,8 @@ pub struct Encoder {
     eos: bool,
     mpi_compat: bool,
     last_motion_info: Option<Vec<u8>>,
+    next_rate_control: Option<ExternalRateControl>,
+    last_frame_bits: i32,
 }
 
 impl Encoder {
@@ -841,6 +851,8 @@ impl Encoder {
             eos: false,
             mpi_compat,
             last_motion_info: None,
+            next_rate_control: None,
+            last_frame_bits: 0,
         })
     }
 
@@ -959,11 +971,53 @@ impl Encoder {
         }
     }
 
+    pub(crate) fn set_rate_control_name(&mut self, name: String) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H264Vepu580(encoder) => {
+                encoder.set_rate_control_name(name);
+                Ok(())
+            }
+            Backend::H265Vepu580(encoder) => {
+                encoder.set_rate_control_name(name);
+                Ok(())
+            }
+            _ => Err(Error::Unsupported(
+                "custom rate-control names require a VEPU580 encoder".to_string(),
+            )),
+        }
+    }
+
     pub(crate) fn supports_h264_reference_layout(&self) -> bool {
         matches!(
             &self.backend,
             Backend::H264Vepu580(_) | Backend::H264Vepu510(_)
         )
+    }
+
+    pub(crate) fn supports_external_rate_control(&self) -> bool {
+        matches!(
+            &self.backend,
+            Backend::H264Vepu580(_) | Backend::H265Vepu580(_)
+        )
+    }
+
+    pub(crate) fn force_next_rate_control(
+        &mut self,
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) {
+        self.next_rate_control = Some(ExternalRateControl {
+            bit_target,
+            qp_target,
+            qp_min,
+            qp_max,
+        });
+    }
+
+    pub(crate) fn take_last_frame_bits(&mut self) -> i32 {
+        std::mem::take(&mut self.last_frame_bits)
     }
 
     pub fn force_next_picture_layout(
@@ -1013,8 +1067,23 @@ impl Encoder {
         if self.eos {
             return Err(Error::State("frame submitted after encoder EOS"));
         }
+        let external_rc = self.next_rate_control.take();
+        let use_rate_control_registers = self
+            .config
+            .rate_control
+            .is_some_and(|rate_control| rate_control.mode() != RateControlMode::FixedQp);
         let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
+                if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
+                    encoder.force_next_rate_control(h264e::RateControl {
+                        bit_target: rc.bit_target,
+                        qp_target: rc.qp_target,
+                        qp_min: rc.qp_min,
+                        qp_max: rc.qp_max,
+                        qp_delta_row: 2,
+                        qp_delta_row_i: 2,
+                    });
+                }
                 let input = format_nv12_input(self.config, frame.data)?;
                 let encoded = encoder
                     .encode_frame(&input)
@@ -1033,6 +1102,11 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H264Vepu510(encoder) => {
+                if external_rc.is_some() {
+                    return Err(Error::Unsupported(
+                        "RK3576 H.264 streaming custom RC is not available".to_string(),
+                    ));
+                }
                 let input = format_nv12_input(self.config, frame.data)?;
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240(&input)
@@ -1049,9 +1123,21 @@ impl Encoder {
             }
             Backend::H265Vepu580(encoder) => {
                 let input = format_nv12_input(self.config, frame.data)?;
-                let encoded = encoder
-                    .encode_frame_packets(&input)
-                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                let encoded = if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
+                    encoder
+                        .encode_frame_with_rc_packets(
+                            &input,
+                            rc.bit_target,
+                            rc.qp_target,
+                            rc.qp_min,
+                            rc.qp_max,
+                        )
+                        .map_err(|error| Error::Hardware(error))?
+                } else {
+                    encoder
+                        .encode_frame_packets(&input)
+                        .map_err(|error| Error::Hardware(error.to_string()))?
+                };
                 let count = encoded.packets.len();
                 for data in encoded.packets {
                     self.packets.push_back(Packet {
@@ -1066,6 +1152,11 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H265Vepu510(encoder) => {
+                if external_rc.is_some() {
+                    return Err(Error::Unsupported(
+                        "RK3576 H.265 streaming custom RC is not available".to_string(),
+                    ));
+                }
                 let input = format_nv12_input(self.config, frame.data)?;
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240(&input)
@@ -1084,6 +1175,11 @@ impl Encoder {
                 encoder,
                 frame_number,
             } => {
+                if external_rc.is_some() {
+                    return Err(Error::Unsupported(
+                        "JPEG custom RC is not available".to_string(),
+                    ));
+                }
                 let input = format_nv12_padded(self.config, frame.data, 8, 2)?;
                 let jpeg = jpeg_config(self.config)?;
                 let encoded = encoder
@@ -1105,6 +1201,13 @@ impl Encoder {
             }
         };
         let count = submitted?;
+        self.last_frame_bits = self
+            .packets
+            .iter()
+            .rev()
+            .take(count)
+            .map(|packet| packet.data.len() as i32 * 8)
+            .sum();
         self.last_motion_info = match &mut self.backend {
             Backend::H264Vepu510(encoder) => Some(
                 encoder
@@ -1127,8 +1230,23 @@ impl Encoder {
         }
         validate_dmabuf_input(self.config, &frame)?;
         let input_fd = frame.buffer.fd();
+        let external_rc = self.next_rate_control.take();
+        let use_rate_control_registers = self
+            .config
+            .rate_control
+            .is_some_and(|rate_control| rate_control.mode() != RateControlMode::FixedQp);
         let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
+                if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
+                    encoder.force_next_rate_control(h264e::RateControl {
+                        bit_target: rc.bit_target,
+                        qp_target: rc.qp_target,
+                        qp_min: rc.qp_min,
+                        qp_max: rc.qp_max,
+                        qp_delta_row: 2,
+                        qp_delta_row_i: 2,
+                    });
+                }
                 let encoded = encoder
                     .encode_frame_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
@@ -1146,6 +1264,11 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H264Vepu510(encoder) => {
+                if external_rc.is_some() {
+                    return Err(Error::Unsupported(
+                        "RK3576 H.264 streaming custom RC is not available".to_string(),
+                    ));
+                }
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
@@ -1160,6 +1283,11 @@ impl Encoder {
                 Ok(1)
             }
             Backend::H265Vepu580(encoder) => {
+                if use_rate_control_registers && external_rc.is_some() {
+                    return Err(Error::Unsupported(
+                        "H.265 DMA-BUF custom RC is not available".to_string(),
+                    ));
+                }
                 let encoded = encoder
                     .encode_frame_packets_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
@@ -1177,6 +1305,11 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H265Vepu510(encoder) => {
+                if external_rc.is_some() {
+                    return Err(Error::Unsupported(
+                        "RK3576 H.265 streaming custom RC is not available".to_string(),
+                    ));
+                }
                 let (data, keyframe, frame_num, poc) = encoder
                     .encode_fixed_qp_next_320x240_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
@@ -1194,6 +1327,11 @@ impl Encoder {
                 encoder,
                 frame_number,
             } => {
+                if external_rc.is_some() {
+                    return Err(Error::Unsupported(
+                        "JPEG custom RC is not available".to_string(),
+                    ));
+                }
                 let jpeg = jpeg_config(self.config)?;
                 let encoded = encoder
                     .encode_fd_packets(input_fd, jpeg)
@@ -1214,6 +1352,13 @@ impl Encoder {
             }
         };
         let count = submitted?;
+        self.last_frame_bits = self
+            .packets
+            .iter()
+            .rev()
+            .take(count)
+            .map(|packet| packet.data.len() as i32 * 8)
+            .sum();
         self.last_motion_info = match &mut self.backend {
             Backend::H264Vepu510(encoder) => Some(
                 encoder
@@ -1251,6 +1396,8 @@ impl Encoder {
         self.packets.clear();
         self.eos = false;
         self.last_motion_info = None;
+        self.next_rate_control = None;
+        self.last_frame_bits = 0;
         self.backend = match self.config.codec {
             Codec::H264 => open_h264_backend(self.config)?,
             Codec::H265 => open_h265_backend_with_mode(self.config, self.mpi_compat)?,

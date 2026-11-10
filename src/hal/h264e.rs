@@ -737,6 +737,7 @@ pub struct Vepu580H264 {
     /// `rc_info_prev`: the accepted picture's RC request, reused by the next
     /// pass1 job before the normal intra RC start runs.
     last_rate_control: Option<RateControl>,
+    next_rate_control_override: Option<RateControl>,
     /// The `MppEncHeaderStatus` added-bits mirror: once the parameter sets and
     /// SEIs have been emitted, `mpp_enc_impl.cpp` refuses to add them again
     /// until a forced IDR or a header-affecting reconfiguration clears the bits
@@ -746,6 +747,7 @@ pub struct Vepu580H264 {
     hdr_added: bool,
     headers_each_idr: bool,
     sei_enabled: bool,
+    rc_model_name: String,
 }
 
 impl Vepu580H264 {
@@ -840,9 +842,11 @@ impl Vepu580H264 {
                 None
             },
             last_rate_control: None,
+            next_rate_control_override: None,
             hdr_added: false,
             headers_each_idr: false,
             sei_enabled: true,
+            rc_model_name: "default".to_string(),
             state: FrameState::default(),
             slot: 0,
             next_slot_override: None,
@@ -883,12 +887,20 @@ impl Vepu580H264 {
         self.force_next_idr = true;
     }
 
+    pub fn force_next_rate_control(&mut self, rate_control: RateControl) {
+        self.next_rate_control_override = Some(rate_control);
+    }
+
     pub fn set_headers_each_idr(&mut self, each_idr: bool) {
         self.headers_each_idr = each_idr;
     }
 
     pub fn set_sei_enabled(&mut self, enabled: bool) {
         self.sei_enabled = enabled;
+    }
+
+    pub fn set_rate_control_name(&mut self, name: String) {
+        self.rc_model_name = name;
     }
 
     pub fn force_next_picture_layout(
@@ -1017,6 +1029,10 @@ impl Vepu580H264 {
         if self.config.quality_auto {
             line.init_quality = -1;
         }
+        let line = sei::RcCfgLine {
+            model_name: &self.rc_model_name,
+            ..line
+        };
         out.extend(sei::user_data(
             &sei::UUID_RC_CFG,
             sei::rc_cfg_line(&line).as_bytes(),
@@ -1210,6 +1226,7 @@ impl Vepu580H264 {
         let previous_state = self.state;
         let previous_slot = self.slot;
         let force_idr = std::mem::take(&mut self.force_next_idr);
+        let external_rate_control = self.next_rate_control_override.take();
         let non_reference = self.next_non_reference_override.take().unwrap_or(false);
         let prefix_temporal_id = self.next_prefix_temporal_id_override.take();
         let reference_reorder = self.next_reference_reorder_override.take();
@@ -1322,18 +1339,23 @@ impl Vepu580H264 {
         } else {
             false
         };
-        let (bit_target, mut quality_target) = match self.rc.as_mut() {
-            Some(model) => model.start(frame),
-            None => (0, i32::from(self.config.qp_init)),
-        };
+        let (bit_target, mut quality_target) = external_rate_control.map_or_else(
+            || match self.rc.as_mut() {
+                Some(model) => model.start(frame),
+                None => (0, i32::from(self.config.qp_init)),
+            },
+            |rc| (rc.bit_target, rc.qp_target as i32),
+        );
         let (payload, slice_lengths, statistics, measured, disposition) = loop {
-            let rc = self.rc.as_ref().map(|_| RateControl {
-                bit_target,
-                qp_target: quality_target as u32,
-                qp_min: self.config.rc_qp_min,
-                qp_max: self.config.rc_qp_max,
-                qp_delta_row: 2,
-                qp_delta_row_i: 2,
+            let rc = external_rate_control.or_else(|| {
+                self.rc.as_ref().map(|_| RateControl {
+                    bit_target,
+                    qp_target: quality_target as u32,
+                    qp_min: self.config.rc_qp_min,
+                    qp_max: self.config.rc_qp_max,
+                    qp_delta_row: 2,
+                    qp_delta_row_i: 2,
+                })
             });
             let (payload, slice_lengths, statistics) = self.run_hardware_job(
                 state,
@@ -1364,7 +1386,8 @@ impl Vepu580H264 {
                 },
                 iblk4_prop: statistics.iblk4_prop(mbs),
             };
-            if let Some(model) = self.rc.as_mut() {
+            if external_rate_control.is_none() && self.rc.is_some() {
+                let model = self.rc.as_mut().unwrap();
                 if model.drops_super_frame(frame, measured) || model.requests_drop(frame, measured)
                 {
                     let mut dropped_measurement = measured;
@@ -1479,15 +1502,18 @@ impl Vepu580H264 {
         annex_b.extend_from_slice(&headers);
         annex_b.extend_from_slice(&prefixed_payload);
         let packets = output_packets(&headers, &slice_prefix, &payload, &slice_lengths)?;
-        self.last_rate_control = self.rc.as_ref().map(|_| RateControl {
-            bit_target,
-            qp_target: quality_target as u32,
-            qp_min: self.config.rc_qp_min,
-            qp_max: self.config.rc_qp_max,
-            qp_delta_row: 2,
-            qp_delta_row_i: 2,
+        self.last_rate_control = external_rate_control.or_else(|| {
+            self.rc.as_ref().map(|_| RateControl {
+                bit_target,
+                qp_target: quality_target as u32,
+                qp_min: self.config.rc_qp_min,
+                qp_max: self.config.rc_qp_max,
+                qp_delta_row: 2,
+                qp_delta_row_i: 2,
+            })
         });
-        if let Some(model) = self.rc.as_mut() {
+        if external_rate_control.is_none() && self.rc.is_some() {
+            let model = self.rc.as_mut().unwrap();
             model.end_with(frame, bit_target, measured);
             if disposition != PictureDisposition::Accepted {
                 // The reference's drop and software-PSKIP paths reach

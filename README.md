@@ -319,8 +319,10 @@ sync 的 probe 和请求它的 `mpi_enc_test` 现在都走正确模板。
 `GET/SET_RC_API_CURRENT` 也已接通：t6/lf1 的 6 个内置策略、编码类型过滤、
 用户策略注册/替换和当前选择输出均与 vendor 逐行一致；同一声明也导出
 `rc_api_add`、`rc_brief_get_all` 和 `rc_brief_get_by_type`。自定义 `RcImplApi`
-的逐帧回调尚未驱动硬件；选择非 `default` 策略（包括 `smart`）后编码会
-明确返回 `MPP_NOK`。
+的逐帧 `init/frame/hal/end` 回调现已在 t6 VEPU580 的 H.264/H.265 中真实
+驱动硬件：fixed-QP 两帧码流与 C 逐字节一致，CBR 配置下也进入 RC 寄存器
+路径并保持 NAL 结构一致。RK3576 VEPU510 的 streaming custom RC 仍明确
+返回 unsupported。
 其余高级编码控制仍待继续补齐。
 同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
 `encode_get_packet`：t6/lf1 的 H.264、H.265 和 MJPEG 都已在未修改的
@@ -465,6 +467,7 @@ BOARD=luck2 ./scripts/board_rk3576_h265_corrupt_vs_mpp.sh # H.265 损坏矩阵�
 BOARD=luck2 ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
 BOARD=luck2 ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR/VBR/AVBR/ROI/split/GDR：13/13
 BOARD=luck2 ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：15/15
+./scripts/board_mpp_custom_rc.sh # t6 自定义 RC callbacks：H.264/H.265
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_key.sh # VDPU383 AV1 首 keyframe：C == Rust
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_sequence.sh # VDPU383 AV1 10 帧序列：C == Rust
 BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_10bit.sh # VDPU383 AV1 10-bit skip-grain：C == Rust
