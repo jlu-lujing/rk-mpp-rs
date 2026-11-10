@@ -21,6 +21,8 @@
  *   `forceidr frame[,frame...]` sends MPP_ENC_SET_IDR_FRAME immediately before
  *   each listed zero-based input frame. `headereach` requests
  *   MPP_ENC_HEADER_MODE_EACH_IDR and `seioff` requests SEI disable.
+ *   DUMP_META=1 prints every packet's encoder metadata and the FNV-1a hash of
+ *   the caller-provided KEY_MOTION_INFO buffer.
  *   Build with -DH265E_ROI and link mpp_enc_roi_utils.c to enable the ROI
  *   arguments using the reference helper's VEPU580 H.265 table generation.
  *
@@ -39,6 +41,7 @@
 #include "mpp_buffer.h"
 #include "mpp_err.h"
 #include "mpp_frame.h"
+#include "mpp_meta.h"
 #include "mpp_packet.h"
 #include "mpp_rc_api.h"
 #include "rk_mpi.h"
@@ -69,6 +72,93 @@ typedef struct PacketReaderCtx_t {
     MPP_RET ret;
     unsigned packets;
 } PacketReaderCtx;
+
+static void dump_meta_s32(MppMeta meta, MppMetaKey key, const char *name)
+{
+    RK_S32 value = 0;
+
+    if (mpp_meta_get_s32(meta, key, &value) == MPP_OK)
+        fprintf(stderr, " %s=%d", name, value);
+    else
+        fprintf(stderr, " %s=-", name);
+}
+
+static void dump_motion_meta(MppMeta meta)
+{
+    MppBuffer buffer = NULL;
+    unsigned char bytes[256];
+    uint64_t hash = UINT64_C(1469598103934665603);
+    size_t offset = 0;
+    size_t size;
+
+    if (mpp_meta_get_buffer(meta, KEY_MOTION_INFO, &buffer) != MPP_OK) {
+        fprintf(stderr, " motion=-");
+        return;
+    }
+    if (!buffer) {
+        fprintf(stderr, " motion=null");
+        return;
+    }
+    size = mpp_buffer_get_size(buffer);
+    if (mpp_buffer_sync_begin(buffer) != MPP_OK) {
+        fprintf(stderr, " motion=sync-error");
+        return;
+    }
+    while (offset < size) {
+        size_t chunk = size - offset < sizeof(bytes) ? size - offset : sizeof(bytes);
+        size_t index;
+
+        if (mpp_buffer_read(buffer, offset, bytes, chunk) != MPP_OK) {
+            mpp_buffer_sync_end(buffer);
+            fprintf(stderr, " motion=read-error");
+            return;
+        }
+        for (index = 0; index < chunk; index++) {
+            hash ^= bytes[index];
+            hash *= UINT64_C(1099511628211);
+        }
+        offset += chunk;
+    }
+    mpp_buffer_sync_end(buffer);
+    fprintf(stderr, " motion=%zu:%016llx", size, (unsigned long long)hash);
+}
+
+static void dump_packet_meta(MppPacket packet, int frame, unsigned part)
+{
+    MppMeta meta;
+    RK_S64 sse = 0;
+
+    if (!getenv("DUMP_META"))
+        return;
+
+    meta = mpp_packet_get_meta(packet);
+    if (!meta) {
+        fprintf(stderr, "picture %d packet %u meta: unavailable\n",
+                frame, part);
+        return;
+    }
+
+    fprintf(stderr, "picture %d packet %u meta:", frame, part);
+    dump_meta_s32(meta, KEY_LVL64_INTER_NUM, "l64p");
+    dump_meta_s32(meta, KEY_LVL32_INTER_NUM, "l32p");
+    dump_meta_s32(meta, KEY_LVL16_INTER_NUM, "l16p");
+    dump_meta_s32(meta, KEY_LVL8_INTER_NUM, "l8p");
+    dump_meta_s32(meta, KEY_LVL32_INTRA_NUM, "l32i");
+    dump_meta_s32(meta, KEY_LVL16_INTRA_NUM, "l16i");
+    dump_meta_s32(meta, KEY_LVL8_INTRA_NUM, "l8i");
+    dump_meta_s32(meta, KEY_LVL4_INTRA_NUM, "l4i");
+    if (mpp_meta_get_s64(meta, KEY_ENC_SSE, &sse) == MPP_OK)
+        fprintf(stderr, " sse=%lld", (long long)sse);
+    else
+        fprintf(stderr, " sse=-");
+    dump_meta_s32(meta, KEY_OUTPUT_PSKIP, "pskip");
+    dump_meta_s32(meta, KEY_ENC_USE_LTR, "use_ltr");
+    dump_meta_s32(meta, KEY_OUTPUT_INTRA, "intra");
+    dump_meta_s32(meta, KEY_ENC_START_QP, "start_qp");
+    dump_meta_s32(meta, KEY_ENC_AVERAGE_QP, "avg_qp");
+    dump_motion_meta(meta);
+    fprintf(stderr, "\n");
+}
 
 #include "custom_rc_probe.h"
 
@@ -122,6 +212,7 @@ static void *read_packets(void *opaque)
         eoi = mpp_packet_is_eoi(packet);
         fprintf(stderr, "picture %d packet %u: %zu bytes eoi=%u\n",
                 reader->frame, reader->packets, len, eoi);
+        dump_packet_meta(packet, reader->frame, reader->packets);
         if (data && len)
             fwrite(data, 1, len, reader->output);
 

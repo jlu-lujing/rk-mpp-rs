@@ -684,6 +684,65 @@ pub(super) unsafe fn packet_from_bytes(bytes: Vec<u8>, pts: i64, dts: i64) -> Mp
     packet
 }
 
+pub(super) unsafe fn packet_attach_encode_meta(
+    packet: MppPacket,
+    values: &crate::encoder::PacketMeta,
+    motion_info: MppBuffer,
+) -> bool {
+    let meta = unsafe { mpp_packet_get_meta(packet) };
+    if meta.is_null() {
+        return false;
+    }
+    let mut ok = true;
+    if let Some(blocks) = values.block_statistics {
+        ok &=
+            unsafe { mpp_meta_set_s32(meta, KEY_LVL64_INTER_NUM, blocks.inter64 as i32) } == MPP_OK;
+        ok &=
+            unsafe { mpp_meta_set_s32(meta, KEY_LVL32_INTER_NUM, blocks.inter32 as i32) } == MPP_OK;
+        ok &=
+            unsafe { mpp_meta_set_s32(meta, KEY_LVL16_INTER_NUM, blocks.inter16 as i32) } == MPP_OK;
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_LVL8_INTER_NUM, blocks.inter8 as i32) } == MPP_OK;
+        ok &=
+            unsafe { mpp_meta_set_s32(meta, KEY_LVL32_INTRA_NUM, blocks.intra32 as i32) } == MPP_OK;
+        ok &=
+            unsafe { mpp_meta_set_s32(meta, KEY_LVL16_INTRA_NUM, blocks.intra16 as i32) } == MPP_OK;
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_LVL8_INTRA_NUM, blocks.intra8 as i32) } == MPP_OK;
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_LVL4_INTRA_NUM, blocks.intra4 as i32) } == MPP_OK;
+    }
+    if let Some(sse) = values.sse {
+        ok &= unsafe { mpp_meta_set_s64(meta, KEY_ENC_SSE, sse.min(i64::MAX as u64) as i64) }
+            == MPP_OK;
+    }
+    if let Some(value) = values.output_pskip {
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_OUTPUT_PSKIP, i32::from(value)) } == MPP_OK;
+    }
+    if let Some(value) = values.rt_bits {
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_ENC_BPS_RT, value) } == MPP_OK;
+    }
+    if let Some(value) = values.madi_b16 {
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_ENC_MADI_B16, value) } == MPP_OK;
+    }
+    if let Some(value) = values.madp_ctu {
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_ENC_MADP_CTU, value) } == MPP_OK;
+    }
+    if let Some(value) = values.use_ltr {
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_ENC_USE_LTR, value) } == MPP_OK;
+    }
+    if let Some(value) = values.output_intra {
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_OUTPUT_INTRA, i32::from(value)) } == MPP_OK;
+    }
+    if let Some(value) = values.start_qp {
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_ENC_START_QP, value) } == MPP_OK;
+    }
+    if let Some(value) = values.average_qp {
+        ok &= unsafe { mpp_meta_set_s32(meta, KEY_ENC_AVERAGE_QP, value) } == MPP_OK;
+    }
+    if !motion_info.is_null() {
+        ok &= unsafe { mpp_meta_set_buffer(meta, KEY_MOTION_INFO, motion_info) } == MPP_OK;
+    }
+    ok
+}
+
 pub(super) unsafe fn packet_consume(packet: MppPacket) -> bool {
     let Some(packet) = (unsafe { packet_mut(packet) }) else {
         return false;

@@ -1,5 +1,6 @@
 //! Incremental drop-in compatibility surface for the official Rockchip MPI.
 
+use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
 use std::mem::size_of;
 
@@ -14,6 +15,7 @@ mod standalone;
 type MppCtx = *mut c_void;
 type MppFrame = *mut c_void;
 type MppPacket = *mut c_void;
+type MppBuffer = *mut c_void;
 type MppTask = *mut c_void;
 type MppParam = *mut c_void;
 
@@ -135,6 +137,7 @@ struct CompatContext {
     eos_delivered: bool,
     pending_output_frame: MppFrame,
     pending_input_packet: MppPacket,
+    pending_packet_motion_info: VecDeque<MppBuffer>,
     encoder_ref_pattern: Vec<standalone::ReferenceFrameStep>,
     encoder_ref_schedule: Option<ReferenceSchedule>,
     rc_api: rc_api::Selection,
@@ -710,7 +713,7 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         }
     };
     match submitted {
-        Ok(_) => {
+        Ok(count) => {
             if let Err(error) = context.finish_custom_rc() {
                 return error;
             }
@@ -734,6 +737,9 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
                         return MPP_NOK;
                     }
                 }
+            }
+            for _ in 0..count {
+                context.pending_packet_motion_info.push_back(motion_info);
             }
             MPP_OK
         }
@@ -762,9 +768,21 @@ unsafe extern "C" fn compat_encode_get_packet(ctx: MppCtx, packet: *mut MppPacke
     if let Some(encoded) = encoder.receive_packet() {
         let pts = encoded.pts();
         let dts = encoded.dts();
-        unsafe {
-            *packet = objects::packet_from_bytes(encoded.into_data(), pts, dts);
+        let meta = encoded.meta().clone();
+        let data = encoded.into_data();
+        let motion_info = context
+            .pending_packet_motion_info
+            .pop_front()
+            .unwrap_or(std::ptr::null_mut());
+        let output = unsafe { objects::packet_from_bytes(data, pts, dts) };
+        if !unsafe { objects::packet_attach_encode_meta(output, &meta, motion_info) } {
+            let mut packet = output;
+            unsafe {
+                let _ = objects::mpp_packet_deinit(&mut packet);
+            }
+            return MPP_NOK;
         }
+        unsafe { *packet = output };
     }
     MPP_OK
 }
@@ -807,6 +825,7 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
+    context.pending_packet_motion_info.clear();
     context.encoder_ref_pattern.clear();
     context.encoder_ref_schedule = None;
     context.custom_rc = None;
@@ -1147,6 +1166,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             eos_delivered: false,
             pending_output_frame: std::ptr::null_mut(),
             pending_input_packet: std::ptr::null_mut(),
+            pending_packet_motion_info: VecDeque::new(),
             encoder_ref_pattern: Vec::new(),
             encoder_ref_schedule: None,
             rc_api: rc_api::Selection::new(),
@@ -1203,6 +1223,7 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
+    context.pending_packet_motion_info.clear();
     context.encoder_ref_pattern.clear();
     context.encoder_ref_schedule = None;
     MPP_OK

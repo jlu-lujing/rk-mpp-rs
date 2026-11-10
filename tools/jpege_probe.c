@@ -51,6 +51,34 @@ typedef struct PacketReaderCtx_t {
     unsigned packets;
 } PacketReaderCtx;
 
+static void dump_meta_s32(MppMeta meta, MppMetaKey key, const char *name)
+{
+    RK_S32 value = 0;
+
+    if (mpp_meta_get_s32(meta, key, &value) == MPP_OK)
+        fprintf(stderr, " %s=%d", name, value);
+    else
+        fprintf(stderr, " %s=-", name);
+}
+
+static void dump_packet_meta(MppPacket packet, unsigned part)
+{
+    MppMeta meta;
+
+    if (!getenv("DUMP_META"))
+        return;
+    meta = mpp_packet_get_meta(packet);
+    if (!meta) {
+        fprintf(stderr, "picture 0 packet %u meta: unavailable\n", part);
+        return;
+    }
+    fprintf(stderr, "picture 0 packet %u meta:", part);
+    dump_meta_s32(meta, KEY_OUTPUT_INTRA, "intra");
+    dump_meta_s32(meta, KEY_ENC_START_QP, "start_qp");
+    dump_meta_s32(meta, KEY_ENC_AVERAGE_QP, "avg_qp");
+    fprintf(stderr, "\n");
+}
+
 static int input_frame_factor(MppFrameFormat format, unsigned *numerator,
                               unsigned *denominator)
 {
@@ -119,6 +147,7 @@ static void *read_packets(void *opaque)
         eoi = mpp_packet_is_eoi(packet);
         fprintf(stderr, "picture 0 packet %u: %zu bytes eoi=%u\n",
                 reader->packets, len, eoi);
+        dump_packet_meta(packet, reader->packets);
         if (data && len)
             fwrite(data, 1, len, reader->output);
 

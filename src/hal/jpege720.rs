@@ -60,6 +60,13 @@ impl JpegEncoder {
             .map(|encoded| encoded.bytes)
     }
 
+    pub fn packet_output_intra(&self) -> Option<bool> {
+        match self {
+            Self::Vepu2(_) => None,
+            Self::Vpu720(_) => Some(false),
+        }
+    }
+
     pub fn encode_nv12(&mut self, input: &[u8], config: EncoderConfig) -> Result<Vec<u8>, String> {
         match self {
             Self::Vepu2(encoder) => encoder.encode_nv12(input, config),

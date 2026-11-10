@@ -75,7 +75,7 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的逐帧
 streaming RC 尚未接入，接口明确返回 unsupported。
 t6/lf1 的 workspace 最终全量门均为
-`1229 passed / 0 failed / 38 ignored`，
+`1230 passed / 0 failed / 38 ignored`，
 rustfmt 与严格 workspace rustdoc 同时通过。
 
 V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice，
@@ -121,7 +121,8 @@ duplicate/ref/lifetime，以及 frame/packet 的惰性 meta 持有均已接入�
 `scripts/board_mpp_compat_meta.sh` 在 t6/lf1 通过；t6 还用未修改的原生
 `mpp_meta_test` 跑了 2 线程 10 轮，返回值为 0。advanced decode 现在同时
 处理 packet 的 `KEY_OUTPUT_FRAME` 和输出 frame 的 `KEY_INPUT_PACKET`。
-kernel meta、advanced zero-copy frame 仍未完整实现。
+advanced zero-copy frame 在后续 slice 已闭合；encoder packet kernel meta
+也已在 2026-11-10 接通 VEPU580 H.264/H.265，详见下文。
 
 第五个 slice 已补上外部 `MppBuffer` 所有权入口：
 `mpp_buffer_import_with_tag` 接受 caller pointer 或 dma-buf fd，
@@ -234,6 +235,17 @@ stream/YUV 也全部逐字节。
 VEPU510 streaming custom RC 仍未接入并明确拒绝。
 OSD palette 与 `KEY_OSD_DATA` 已接通 VEPU580：H.264 OSD stream/YUV
 逐字节；H.265 的寄存器镜像除 dma-buf fd 外一致，payload 差异单独登记。
+encoder 输出 packet 的 kernel meta 也已接通 VEPU580 H.264/H.265。
+`scripts/board_mpp_packet_meta.sh` 在不改 vendor probe 的前提下对比
+`set_enc_info_to_packet()` 的全部 board-visible 字段：8 类 block count、
+SSE、PSKIP、intra、start/average QP 和 `KEY_MOTION_INFO`。t6 的 fixed-QP、
+CBR 以及静止/持续运动两帧矩阵均逐 packet 一致；H.265 motion-info 的
+640-byte caller view 也按 FNV-1a 哈希逐帧一致。该门禁同时抓出两个旧偏差：
+模型把 H.265 I-QP delta 当成了 H.264 的 2，实际为 4；以及 SEI disable
+分支没有把 rate-control 模式传入 PPS，导致 `cu_qp_delta_enabled=0`。两者
+修正后 CBR stream/YUV 恢复逐字节。JPEG 的 start/average quality 都是
+q-factor；VEPU2 不写 `KEY_OUTPUT_INTRA`，VPU720 写 `intra=0`，Rust 现按
+实际 HAL 分支输出。
 其余高级编码控制仍待接入。
 
 ```bash

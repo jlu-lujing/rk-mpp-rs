@@ -728,6 +728,46 @@ impl DmaBufInput {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockStatistics {
+    pub inter64: u32,
+    pub inter32: u32,
+    pub inter16: u32,
+    pub inter8: u32,
+    pub intra32: u32,
+    pub intra16: u32,
+    pub intra8: u32,
+    pub intra4: u32,
+}
+
+impl BlockStatistics {
+    fn is_all_zero(self) -> bool {
+        self.inter64 == 0
+            && self.inter32 == 0
+            && self.inter16 == 0
+            && self.inter8 == 0
+            && self.intra32 == 0
+            && self.intra16 == 0
+            && self.intra8 == 0
+            && self.intra4 == 0
+    }
+}
+
+/// The encoder statistics MPP exposes through packet metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PacketMeta {
+    pub block_statistics: Option<BlockStatistics>,
+    pub sse: Option<u64>,
+    pub output_pskip: Option<bool>,
+    pub rt_bits: Option<i32>,
+    pub madi_b16: Option<i32>,
+    pub madp_ctu: Option<i32>,
+    pub use_ltr: Option<i32>,
+    pub output_intra: Option<bool>,
+    pub start_qp: Option<i32>,
+    pub average_qp: Option<i32>,
+}
+
 /// One encoded packet in emission order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Packet {
@@ -737,6 +777,7 @@ pub struct Packet {
     keyframe: bool,
     frame_num: u32,
     poc: i32,
+    meta: PacketMeta,
 }
 
 impl Packet {
@@ -766,6 +807,107 @@ impl Packet {
 
     pub const fn poc(&self) -> i32 {
         self.poc
+    }
+
+    pub const fn meta(&self) -> &PacketMeta {
+        &self.meta
+    }
+}
+
+impl PacketMeta {
+    fn from_h264(frame: &h264e::EncodedFrame, macroblocks: u32) -> Self {
+        let statistics = &frame.statistics;
+        let blocks = BlockStatistics {
+            inter64: statistics.pnum_p64,
+            inter32: statistics.pnum_p32,
+            inter16: statistics.pnum_p16,
+            inter8: statistics.pnum_p8,
+            intra32: statistics.pnum_i32,
+            intra16: statistics.pnum_i16,
+            intra8: statistics.pnum_i8,
+            intra4: statistics.pnum_i4,
+        };
+        let madi = if statistics.num_b16 == 0 {
+            0
+        } else {
+            (statistics.madi / statistics.num_b16) as i32
+        };
+        let madp = if statistics.num_ctu == 0 {
+            0
+        } else {
+            (statistics.madp / statistics.num_ctu) as i32
+        };
+        let quality_real = if macroblocks == 0 {
+            0
+        } else {
+            (statistics.qp_sum / macroblocks) as i32
+        };
+        Self {
+            block_statistics: Some(blocks),
+            sse: Some(statistics.sse),
+            output_pskip: Some(frame.is_pskip || blocks.is_all_zero()),
+            rt_bits: Some(frame.rt_bits),
+            madi_b16: Some(madi),
+            madp_ctu: Some(madp),
+            use_ltr: frame.use_ltr.map(|index| index as i32),
+            output_intra: Some(frame.is_intra),
+            start_qp: Some(frame.quality_target),
+            average_qp: Some(quality_real),
+        }
+    }
+
+    fn from_h265(frame: &h265e_session::EncodedFrame, width: usize, height: usize) -> Self {
+        let statistics = &frame.statistics;
+        let blocks = BlockStatistics {
+            inter64: statistics.pnum_p64,
+            inter32: statistics.pnum_p32,
+            inter16: statistics.pnum_p16,
+            inter8: statistics.pnum_p8,
+            intra32: statistics.pnum_i32,
+            intra16: statistics.pnum_i16,
+            intra8: statistics.pnum_i8,
+            intra4: statistics.pnum_i4,
+        };
+        let madi = if statistics.num_b16 == 0 {
+            0
+        } else {
+            (statistics.madi_sum / statistics.num_b16) as i32
+        };
+        let madp = if statistics.num_ctu == 0 {
+            0
+        } else {
+            (statistics.madp_sum / statistics.num_ctu) as i32
+        };
+        Self {
+            block_statistics: Some(blocks),
+            sse: Some(statistics.sse),
+            output_pskip: Some(blocks.is_all_zero()),
+            rt_bits: Some(frame.rt_bits),
+            madi_b16: Some(madi),
+            madp_ctu: Some(madp),
+            use_ltr: None,
+            output_intra: Some(frame.is_idr),
+            start_qp: Some(frame.quality_target),
+            average_qp: Some(statistics.quality_real(width, height)),
+        }
+    }
+
+    fn fixed_qp(is_intra: bool, qp: i32) -> Self {
+        Self {
+            output_intra: Some(is_intra),
+            start_qp: Some(qp),
+            average_qp: Some(qp),
+            ..Self::default()
+        }
+    }
+
+    fn jpeg(qfactor: u32, output_intra: Option<bool>) -> Self {
+        Self {
+            output_intra,
+            start_qp: Some(qfactor.min(i32::MAX as u32) as i32),
+            average_qp: Some(qfactor.min(i32::MAX as u32) as i32),
+            ..Self::default()
+        }
     }
 }
 
@@ -1098,6 +1240,10 @@ impl Encoder {
                     .encode_frame(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
+                let coded_width = self.config.width().div_ceil(16) * 16;
+                let coded_height = self.config.height().div_ceil(16) * 16;
+                let macroblocks = ((coded_width / 16) * (coded_height / 16)) as u32;
+                let meta = PacketMeta::from_h264(&encoded, macroblocks);
                 for data in encoded.packets {
                     self.packets.push_back(Packet {
                         data,
@@ -1106,6 +1252,7 @@ impl Encoder {
                         keyframe: encoded.is_idr,
                         frame_num: encoded.frame_num,
                         poc: encoded.poc,
+                        meta: meta.clone(),
                     });
                 }
                 Ok(count)
@@ -1132,6 +1279,7 @@ impl Encoder {
                     keyframe,
                     frame_num,
                     poc,
+                    meta: PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)),
                 });
                 Ok(1)
             }
@@ -1154,6 +1302,8 @@ impl Encoder {
                         .map_err(|error| Error::Hardware(error.to_string()))?
                 };
                 let count = encoded.packets.len();
+                let meta =
+                    PacketMeta::from_h265(&encoded, self.config.width(), self.config.height());
                 for data in encoded.packets {
                     self.packets.push_back(Packet {
                         data,
@@ -1162,6 +1312,7 @@ impl Encoder {
                         keyframe: encoded.is_idr,
                         frame_num: encoded.frame_num,
                         poc: encoded.frame_num as i32 * 2,
+                        meta: meta.clone(),
                     });
                 }
                 Ok(count)
@@ -1188,6 +1339,7 @@ impl Encoder {
                     keyframe,
                     frame_num,
                     poc,
+                    meta: PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)),
                 });
                 Ok(1)
             }
@@ -1211,6 +1363,12 @@ impl Encoder {
                     .encode_packets(&input, jpeg)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
+                let meta = PacketMeta::jpeg(
+                    self.config
+                        .jpeg_qfactor()
+                        .unwrap_or(self.config.jpeg_quality()),
+                    encoder.packet_output_intra(),
+                );
                 for range in encoded.packets {
                     self.packets.push_back(Packet {
                         data: encoded.bytes[range].to_vec(),
@@ -1219,6 +1377,7 @@ impl Encoder {
                         keyframe: true,
                         frame_num: *frame_number,
                         poc: *frame_number as i32,
+                        meta: meta.clone(),
                     });
                 }
                 *frame_number = frame_number.saturating_add(1);
@@ -1234,7 +1393,17 @@ impl Encoder {
             .map(|packet| packet.data.len() as i32 * 8)
             .sum();
         self.last_motion_info = match &mut self.backend {
+            Backend::H264Vepu580(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
             Backend::H264Vepu510(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Backend::H265Vepu580(encoder) => Some(
                 encoder
                     .read_motion_info()
                     .map_err(|error| Error::Hardware(error.to_string()))?,
@@ -1276,6 +1445,10 @@ impl Encoder {
                     .encode_frame_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
+                let coded_width = self.config.width().div_ceil(16) * 16;
+                let coded_height = self.config.height().div_ceil(16) * 16;
+                let macroblocks = ((coded_width / 16) * (coded_height / 16)) as u32;
+                let meta = PacketMeta::from_h264(&encoded, macroblocks);
                 for data in encoded.packets {
                     self.packets.push_back(Packet {
                         data,
@@ -1284,6 +1457,7 @@ impl Encoder {
                         keyframe: encoded.is_idr,
                         frame_num: encoded.frame_num,
                         poc: encoded.poc,
+                        meta: meta.clone(),
                     });
                 }
                 Ok(count)
@@ -1304,6 +1478,7 @@ impl Encoder {
                     keyframe,
                     frame_num,
                     poc,
+                    meta: PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)),
                 });
                 Ok(1)
             }
@@ -1317,6 +1492,8 @@ impl Encoder {
                     .encode_frame_packets_fd(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
+                let meta =
+                    PacketMeta::from_h265(&encoded, self.config.width(), self.config.height());
                 for data in encoded.packets {
                     self.packets.push_back(Packet {
                         data,
@@ -1325,6 +1502,7 @@ impl Encoder {
                         keyframe: encoded.is_idr,
                         frame_num: encoded.frame_num,
                         poc: encoded.frame_num as i32 * 2,
+                        meta: meta.clone(),
                     });
                 }
                 Ok(count)
@@ -1345,6 +1523,7 @@ impl Encoder {
                     keyframe,
                     frame_num,
                     poc,
+                    meta: PacketMeta::fixed_qp(keyframe, i32::from(self.config.qp)),
                 });
                 Ok(1)
             }
@@ -1362,6 +1541,12 @@ impl Encoder {
                     .encode_fd_packets(input_fd, jpeg)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
+                let meta = PacketMeta::jpeg(
+                    self.config
+                        .jpeg_qfactor()
+                        .unwrap_or(self.config.jpeg_quality()),
+                    encoder.packet_output_intra(),
+                );
                 for range in encoded.packets {
                     self.packets.push_back(Packet {
                         data: encoded.bytes[range].to_vec(),
@@ -1370,6 +1555,7 @@ impl Encoder {
                         keyframe: true,
                         frame_num: *frame_number,
                         poc: *frame_number as i32,
+                        meta: meta.clone(),
                     });
                 }
                 *frame_number = frame_number.saturating_add(1);
@@ -1385,7 +1571,17 @@ impl Encoder {
             .map(|packet| packet.data.len() as i32 * 8)
             .sum();
         self.last_motion_info = match &mut self.backend {
+            Backend::H264Vepu580(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
             Backend::H264Vepu510(encoder) => Some(
+                encoder
+                    .read_motion_info()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            ),
+            Backend::H265Vepu580(encoder) => Some(
                 encoder
                     .read_motion_info()
                     .map_err(|error| Error::Hardware(error.to_string()))?,

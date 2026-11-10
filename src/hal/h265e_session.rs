@@ -50,6 +50,62 @@ pub struct EncodedFrame {
     pub headers: Vec<u8>,
     pub is_idr: bool,
     pub frame_num: u32,
+    pub quality_target: i32,
+    pub rt_bits: i32,
+    pub statistics: Statistics,
+}
+
+/// The VEPU580 H.265 STATUS fields copied into `EncRcTaskInfo` by
+/// `vepu580_h265_set_feedback`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Statistics {
+    pub bitstream_bytes: u32,
+    pub qp_sum: u32,
+    pub madi_sum: u32,
+    pub madp_sum: u32,
+    pub num_b16: u32,
+    pub num_ctu: u32,
+    pub sse: u64,
+    pub pnum_p64: u32,
+    pub pnum_p32: u32,
+    pub pnum_p16: u32,
+    pub pnum_p8: u32,
+    pub pnum_i32: u32,
+    pub pnum_i16: u32,
+    pub pnum_i8: u32,
+    pub pnum_i4: u32,
+}
+
+impl Statistics {
+    fn from_words(words: &[u32]) -> Self {
+        let at = |word: usize| words.get(word - 4096).copied().unwrap_or(0);
+        Self {
+            bitstream_bytes: at(4096),
+            qp_sum: at(4099),
+            madi_sum: at(4170),
+            madp_sum: at(4168),
+            num_b16: at(4171) & 0x7f_ffff,
+            num_ctu: at(4169) & 0x1f_ffff,
+            sse: (u64::from(at(4098)) << 16) | u64::from((at(4097) >> 16) & 0xffff),
+            pnum_p64: at(4160) & 0x1ffff,
+            pnum_p32: at(4161) & 0x7ffff,
+            pnum_p16: at(4162) & 0x1f_ffff,
+            pnum_p8: at(4163) & 0x7f_ffff,
+            pnum_i32: at(4164) & 0x7ffff,
+            pnum_i16: at(4165) & 0x1f_ffff,
+            pnum_i8: at(4166) & 0x7f_ffff,
+            pnum_i4: at(4167) & 0x7f_ffff,
+        }
+    }
+
+    pub fn quality_real(&self, width: usize, height: usize) -> i32 {
+        let mb64 = ((width + 63) / 64) * ((height + 63) / 64);
+        if mb64 == 0 {
+            0
+        } else {
+            (self.qp_sum / ((mb64 << 6) as u32)) as i32
+        }
+    }
 }
 
 /// The three buffers of one DPB slot: the FBC pixel surface (header + body), the
@@ -195,7 +251,9 @@ impl Vepu580H265 {
         config.quality_init = init_qp;
         config.quality_min = qp_min as i32;
         config.quality_max = qp_max as i32;
-        config.i_quality_delta = 2;
+        // `h265e_init`'s rate-control default. The next P picture therefore rises
+        // four QPs above the IDR target, matching the strategy SEI's I delta.
+        config.i_quality_delta = 4;
         config.total_mb = (mb64 << 6) as i32;
         config.mode = mode.model();
         session.rc_mode = mode;
@@ -328,7 +386,7 @@ impl Vepu580H265 {
                 qp_delta_row: 2,
                 qp_delta_row_i: 2,
             };
-            let encoded =
+            let mut encoded =
                 self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, Some(rc))?;
             if let Some(measured) = self.last_measured.take() {
                 if std::env::var_os("H265_RC_DEBUG").is_some() {
@@ -338,6 +396,7 @@ impl Vepu580H265 {
                     .as_mut()
                     .unwrap()
                     .end_with(frame, bit_target, measured);
+                encoded.rt_bits = self.rc.as_ref().unwrap().ins_bps();
             }
             self.slot = 1 - self.slot;
             self.frames += 1;
@@ -617,6 +676,17 @@ impl Vepu580H265 {
         Ok(self.encode_idr_packets(nv12)?.annex_b)
     }
 
+    pub fn read_motion_info(&mut self) -> Result<Vec<u8>, String> {
+        self.md_info
+            .sync_read_begin()
+            .map_err(|e| format!("VEPU580 H.265 motion info invalidate: {e}"))?;
+        let data = self.md_info.as_slice()[..md_info_size(self.width, self.height)].to_vec();
+        self.md_info
+            .sync_read_end()
+            .map_err(|e| format!("VEPU580 H.265 motion info sync end: {e}"))?;
+        Ok(data)
+    }
+
     pub fn encode_idr_packets(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
         assert_eq!(self.frames, 0, "encode_idr is the opening picture");
         let encoded = self.encode_picture_packets(nv12, Picture::Idr, true)?;
@@ -731,6 +801,7 @@ impl Vepu580H265 {
         let mut payload = Vec::new();
         let mut slice_lengths = Vec::new();
         let mut aggregate_status = vec![0u32; STATUS_WORDS];
+        let mut sse_sum = 0u64;
         let mut stream_len = 0usize;
 
         for (tile_index, &(tile_start, tile_width)) in tile_widths.iter().enumerate() {
@@ -881,14 +952,11 @@ impl Vepu580H265 {
                     self.output.len()
                 ));
             }
-            for word in [
-                0usize,
-                3,
-                4168 - 4096,
-                4169 - 4096,
-                4170 - 4096,
-                4171 - 4096,
-            ] {
+            sse_sum += (u64::from(status[2]) << 16) | u64::from((status[1] >> 16) & 0xffff);
+            for word in std::iter::once(0)
+                .chain(3..=3)
+                .chain(4160 - 4096..=4171 - 4096)
+            {
                 aggregate_status[word] = aggregate_status[word].wrapping_add(status[word]);
             }
             stream_len += length;
@@ -902,7 +970,10 @@ impl Vepu580H265 {
                 .sync_read_end()
                 .map_err(|e| format!("H.265 output sync end: {e}"))?;
         }
-        let status = aggregate_status;
+        let mut status = aggregate_status;
+        status[1] = (sse_sum & 0xffff) as u32;
+        status[2] = (sse_sum >> 16) as u32;
+        let statistics = Statistics::from_words(&status);
         // STATUS measurement, `vepu580_h265_set_feedback`: madp/num_ctu, madi/num_b16
         // and quality over the 8x8 block count (`mb64_num << 6`), not the 16x16
         // macroblock count the H.264 path divides by.
@@ -914,6 +985,12 @@ impl Vepu580H265 {
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.long_term_refs = self.long_term;
         config.apply_syntax_options(self.syntax);
+        if self.rc_sei.is_some() {
+            config.rc_mode = match self.rc_mode {
+                RcMode::Cbr => crate::codec::h265::encoder::RateControl::Cbr,
+                RcMode::Vbr | RcMode::Avbr => crate::codec::h265::encoder::RateControl::Vbr,
+            };
+        }
         let headers = if recovery_prefix {
             let mut out = crate::codec::h265::encoder::build_headers(&config)
                 .map_err(|e| format!("H.265 recovery headers: {e:?}"))?;
@@ -927,10 +1004,6 @@ impl Vepu580H265 {
             crate::codec::h265::encoder::build_headers(&config)
                 .map_err(|e| format!("H.265 headers: {e:?}"))?
         } else if let Some(sei) = self.rc_sei.as_ref() {
-            config.rc_mode = match self.rc_mode {
-                RcMode::Cbr => crate::codec::h265::encoder::RateControl::Cbr,
-                RcMode::Vbr | RcMode::Avbr => crate::codec::h265::encoder::RateControl::Vbr,
-            };
             let line = crate::codec::h265::sei::RcCfgLine {
                 model_name: &self.rc_model_name,
                 mode_name: self.rc_mode.name(),
@@ -971,6 +1044,9 @@ impl Vepu580H265 {
             headers,
             is_idr: matches!(picture, Picture::Idr),
             frame_num: self.frames,
+            quality_target: rc.map_or(self.qp as i32, |rc| rc.qp_target as i32),
+            rt_bits: 0,
+            statistics,
         })
     }
 }
@@ -1023,32 +1099,24 @@ fn output_packets(
 /// is the 8x8 block count (`mb64_num << 6`), not the 16x16 macroblock count the
 /// H.264 HAL uses; `bits` counts only the hardware slice, not the software prefix.
 fn measured_from_status(width: usize, height: usize, status: &[u32]) -> rc_model::Measured {
-    let at = |word: usize| status.get(word - 4096).copied().unwrap_or(0);
-    let mb64 = ((width + 63) / 64) * ((height + 63) / 64);
-    let quality = if mb64 > 0 {
-        (at(4099) / ((mb64 << 6) as u32)) as i32
-    } else {
-        0
-    };
+    let statistics = Statistics::from_words(status);
     let madi = {
-        let count = at(4171) & 0x7f_ffff;
-        if count > 0 {
-            (at(4170) / count) as i32
+        if statistics.num_b16 > 0 {
+            (statistics.madi_sum / statistics.num_b16) as i32
         } else {
             0
         }
     };
     let madp = {
-        let count = at(4169) & 0x1f_ffff;
-        if count > 0 {
-            (at(4168) / count) as i32
+        if statistics.num_ctu > 0 {
+            (statistics.madp_sum / statistics.num_ctu) as i32
         } else {
             0
         }
     };
     rc_model::Measured {
-        bits: at(4096) as i32 * 8,
-        quality,
+        bits: statistics.bitstream_bytes as i32 * 8,
+        quality: statistics.quality_real(width, height),
         madi,
         madp,
         iblk4_prop: 0,
@@ -1117,11 +1185,36 @@ mod tests {
         let mut status = vec![0u32; 180];
         let mut put = |word: usize, value: u32| status[word - 4096] = value;
         put(4096, 847); // slice bytes
+        put(4097, 0x2222_1111); // sse low + ignored reserve
+        put(4098, 0x3333_4444); // sse high
         put(4099, 19 * 1280); // qp_sum over 5x4 CTUs -> 1280 8x8 blocks
+        put(4160, 1);
+        put(4161, 2);
+        put(4162, 3);
+        put(4163, 4);
+        put(4164, 5);
+        put(4165, 6);
+        put(4166, 7);
+        put(4167, 8);
         put(4168, 7 * 3); // madp sum, num_ctu
         put(4169, 3);
         put(4170, 2 * 10); // madi sum, num_b16
         put(4171, 10);
+        let statistics = Statistics::from_words(&status);
+        assert_eq!(statistics.sse, (0x3333_4444_u64 << 16) | 0x2222);
+        assert_eq!(
+            [
+                statistics.pnum_p64,
+                statistics.pnum_p32,
+                statistics.pnum_p16,
+                statistics.pnum_p8,
+                statistics.pnum_i32,
+                statistics.pnum_i16,
+                statistics.pnum_i8,
+                statistics.pnum_i4,
+            ],
+            [1, 2, 3, 4, 5, 6, 7, 8]
+        );
         let measured = measured_from_status(320, 240, &status);
         assert_eq!(measured.bits, 847 * 8);
         assert_eq!(measured.quality, 19);

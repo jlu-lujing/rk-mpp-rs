@@ -96,6 +96,11 @@ pub struct EncodedFrame {
     pub is_idr: bool,
     pub frame_num: u32,
     pub poc: i32,
+    pub quality_target: i32,
+    pub rt_bits: i32,
+    pub is_intra: bool,
+    pub is_pskip: bool,
+    pub use_ltr: Option<u32>,
     /// What the hardware reported about this picture.
     pub statistics: Statistics,
 }
@@ -1557,6 +1562,7 @@ impl Vepu580H264 {
             self.last_non_reference = non_reference;
         }
         self.active_osd = None;
+        let rt_bits = self.rc.as_ref().map_or(0, rc_model::Model::ins_bps);
         Ok(EncodedFrame {
             annex_b,
             packets,
@@ -1565,6 +1571,11 @@ impl Vepu580H264 {
             is_idr: state.is_idr,
             frame_num: state.frame_num,
             poc: state.poc,
+            quality_target,
+            rt_bits,
+            is_intra: state.is_idr || state.is_i_refresh,
+            is_pskip: disposition == PictureDisposition::Pskip,
+            use_ltr: state.is_vi.then_some(current_long_term).flatten(),
             statistics,
         })
     }
@@ -1577,6 +1588,23 @@ impl Vepu580H264 {
             payload: frame.payload,
             headers: frame.headers,
         })
+    }
+
+    pub fn read_motion_info(&mut self) -> Result<Vec<u8>, String> {
+        let size = mdinfo_size(&self.config)?;
+        self.md_info
+            .sync_read_begin()
+            .map_err(|e| format!("VEPU580 H.264 motion info invalidate: {e}"))?;
+        let data = self
+            .md_info
+            .as_slice()
+            .get(..size)
+            .ok_or_else(|| "VEPU580 H.264 motion info buffer is too small".to_string())?
+            .to_vec();
+        self.md_info
+            .sync_read_end()
+            .map_err(|e| format!("VEPU580 H.264 motion info sync end: {e}"))?;
+        Ok(data)
     }
 }
 
@@ -2116,6 +2144,8 @@ impl SceneTune {
 pub struct Statistics {
     /// `bs_lgth_l32`: bytes the hardware wrote for this picture.
     pub bitstream_bytes: u32,
+    /// `sse_h32:sse_l16`, the reference's 48-bit hardware SSE accumulator.
+    pub sse: u64,
     /// `st_bnum_b16.num_b16`, reg4171 - the 16x16 block count the statistics below
     /// are averages over.
     pub num_b16: u32,
@@ -2130,6 +2160,13 @@ pub struct Statistics {
     pub md_sad_b16num: [u32; 4],
     /// `madi_b16num0..3`, reg4177..4180.
     pub madi_b16num: [u32; 4],
+    /// `st_pnum_p64/p32/p16/p8`, the inter block-size histogram.
+    pub pnum_p64: u32,
+    pub pnum_p32: u32,
+    pub pnum_p16: u32,
+    pub pnum_p8: u32,
+    /// `st_pnum_i32/i16/i8/i4`, the intra block-size histogram.
+    pub pnum_i32: u32,
     /// `qp_sum`, reg4099 - the QP sum rate control divides by the CTU count.
     pub qp_sum: u32,
     /// reg4165..reg4167, the I16/I8/I4 block counts used by debreath.
@@ -2148,12 +2185,18 @@ impl Statistics {
         };
         Self {
             bitstream_bytes: at(4096),
+            sse: (u64::from(at(4098)) << 16) | u64::from((at(4097) >> 16) & 0xffff),
             num_b16: at(4171) & 0x7f_ffff,
             madi: at(4170),
             madp: at(4168),
             num_ctu: at(4169) & 0x1f_ffff,
             md_sad_b16num: [at(4173), at(4174), at(4175), at(4176)],
             madi_b16num: [at(4177), at(4178), at(4179), at(4180)],
+            pnum_p64: at(4160) & 0x1ffff,
+            pnum_p32: at(4161) & 0x7ffff,
+            pnum_p16: at(4162) & 0x1f_ffff,
+            pnum_p8: at(4163) & 0x7f_ffff,
+            pnum_i32: at(4164) & 0x7ffff,
             qp_sum: at(4099),
             pnum_i16: at(4165) & 0x1f_ffff,
             pnum_i8: at(4166) & 0x7f_ffff,
@@ -4940,6 +4983,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn packet_meta_status_fields_follow_the_vepu580_layout() {
+        let mut words = [0u32; STATUS_WORDS];
+        words[4097 - 4096] = 0x2222_1111;
+        words[4098 - 4096] = 0x3333_4444;
+        words[4160 - 4096] = 1;
+        words[4161 - 4096] = 2;
+        words[4162 - 4096] = 3;
+        words[4163 - 4096] = 4;
+        words[4164 - 4096] = 5;
+        words[4165 - 4096] = 6;
+        words[4166 - 4096] = 7;
+        words[4167 - 4096] = 8;
+
+        let statistics = Statistics::from_words(&words);
+        assert_eq!(statistics.sse, (0x3333_4444_u64 << 16) | 0x2222);
+        assert_eq!(
+            [
+                statistics.pnum_p64,
+                statistics.pnum_p32,
+                statistics.pnum_p16,
+                statistics.pnum_p8,
+                statistics.pnum_i32,
+                statistics.pnum_i16,
+                statistics.pnum_i8,
+                statistics.pnum_i4,
+            ],
+            [1, 2, 3, 4, 5, 6, 7, 8]
+        );
+    }
+
     /// The C's own STATUS fixture - a still sequence, IDR then a repeated P -
     /// keeps the detector exactly where the port pinned it before it existed:
     /// no motion level above still, no scene flag, and the next picture's
@@ -5026,6 +5100,7 @@ mod tests {
             pnum_i16: 0,
             pnum_i8: 0,
             pnum_i4: 0,
+            ..Statistics::default()
         };
 
         let mut tune = SceneTune::new(false);
