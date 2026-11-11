@@ -45,8 +45,11 @@ distance compound 和 reference-frame MVs 组合，20 个最终显示 YUV 仍逐
 第 111 slice 把同一参考调度 frontier 推到 10-bit：12 帧 B-pyramid 的 coded frame
 全部 showable，order-hint history 最多包含 7 个非零 slot，预测仍为单参考并连续验证
 10-bit 运动补偿、残差与参考槽轮换。12 个显示帧的完整 I420P10 共 2,764,800 bytes
-与 stock `aomdec` 逐样本一致，不存在差异字节。当前剩余前沿主要是双参考调度 shape
-与更宽 conformance。
+与 stock `aomdec` 逐样本一致，不存在差异字节。
+第 112 slice 把同一高级组合推进到 10-bit，同时保留 hidden showable、
+`show_existing_frame`、双参考预测和 20 帧参考重排。20 个显示 I420P10 帧共
+4,608,000 bytes，全部与 stock `aomdec` 逐样本一致，不存在差异字节。当前剩余前沿
+主要是未覆盖的调度 shape 与更宽 conformance。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -105,8 +108,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1255 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1259 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1256 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1260 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
