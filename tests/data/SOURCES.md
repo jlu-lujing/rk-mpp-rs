@@ -63,6 +63,18 @@ cargo test --test fixture_manifest
   `5ecdd4e85a11baa3`, `0081737e88b1b835`, `8ba93c350fc005b3`,
   `61e6437d62ec397b`, `97af5e8173850436`, `a6db4ee1e6415384`,
   `9c371c0c38428734` and `f7c9b5c25d528b7a`.
+- `av1_b_pyramid_10bit_postfilter_320x240_20.ivf` uses the same 20-frame
+  10-bit advanced B schedule with the deblocker and CDEF left at their encoder
+  defaults. Every coded inter frame has a non-zero loop-filter level and the
+  sequence enables CDEF; loop restoration remains disabled. All 20 displayed
+  Y/U/V frames match stock `aomdec` sample-exactly; their FNV-1a hashes are
+  `deed5d2dd4d0dd56`, `551f4e6f751397c1`, `776af9571a7ed772`,
+  `2fbe30f4cfb4b4f6`, `333bda7367abfd64`, `0e7c0e0886e9d2c6`,
+  `3c955626f9026cf1`, `5dc3ae58dd43f150`, `af18cb8f548e1d09`,
+  `4266a95968c863d8`, `b6dc682b26ee9fab`, `1886bffac43f2f98`,
+  `01b593edae5d4048`, `64ade44681e95639`, `c92f0190fc82a687`,
+  `3e7128c543279b42`, `6158908403f110a9`, `c0f4d5512b2986d7`,
+  `0a195b7dcb09fc0b` and `cfb7535f8ed14278`.
 - `av1_intrabc_palette_320x320.ivf` is the three-frame 320x320 `testsrc2`
   input encoded by libaom 3.6.0 with the default screen-content tools retained.
   The stream enables IntraBC and palette and contains 20 IntraBC blocks across
