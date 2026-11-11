@@ -18,6 +18,7 @@ pub struct DeblockMap {
     pub chroma_non_zero: [Vec<Vec<u8>>; 2],
     /// Per-4x4 quarter-pixel MVs for P slices.
     pub motion_vectors: Option<Vec<[[i32; 2]; 16]>>,
+    pub reference_indices: Option<Vec<[u8; 16]>>,
 }
 
 #[derive(Clone, Copy)]
@@ -77,11 +78,15 @@ pub fn i_boundary_strength(
 pub fn p_boundary_strength(
     p_has_coefficients: bool,
     q_has_coefficients: bool,
+    p_reference: u8,
+    q_reference: u8,
     p_motion: [i32; 2],
     q_motion: [i32; 2],
 ) -> u8 {
     if p_has_coefficients || q_has_coefficients {
         3
+    } else if p_reference != q_reference {
+        2
     } else if (p_motion[0] - q_motion[0]).abs() >= 4 || (p_motion[1] - q_motion[1]).abs() >= 4 {
         2
     } else if p_motion != q_motion {
@@ -126,8 +131,8 @@ pub fn deblock_p_picture(
     beta_offset_div2: i32,
     chroma_qp_offset: [i32; 2],
 ) -> Result<(), &'static str> {
-    if map.motion_vectors.is_none() {
-        return Err("P deblocking requires motion vectors");
+    if map.motion_vectors.is_none() || map.reference_indices.is_none() {
+        return Err("P deblocking requires motion vectors and references");
     }
     deblock_picture(
         luma,
@@ -343,9 +348,15 @@ fn deblock_luma_macroblock(
                         .motion_vectors
                         .as_ref()
                         .expect("P deblock map validated");
+                    let references = map
+                        .reference_indices
+                        .as_ref()
+                        .expect("P deblock map validated");
                     p_boundary_strength(
                         p_has,
                         q_has,
+                        references[p_index][block_row * 4 + p_col],
+                        references[q_index][block_row * 4 + q_col],
                         motion[p_index][block_row * 4 + p_col],
                         motion[q_index][block_row * 4 + q_col],
                     )
@@ -395,9 +406,15 @@ fn deblock_luma_macroblock(
                         .motion_vectors
                         .as_ref()
                         .expect("P deblock map validated");
+                    let references = map
+                        .reference_indices
+                        .as_ref()
+                        .expect("P deblock map validated");
                     p_boundary_strength(
                         p_has,
                         q_has,
+                        references[p_index][p_row * 4 + block_column],
+                        references[q_index][q_row * 4 + block_column],
                         motion[p_index][p_row * 4 + block_column],
                         motion[q_index][q_row * 4 + block_column],
                     )
@@ -510,9 +527,15 @@ fn deblock_chroma_macroblock(
                         .motion_vectors
                         .as_ref()
                         .expect("P deblock map validated");
+                    let references = map
+                        .reference_indices
+                        .as_ref()
+                        .expect("P deblock map validated");
                     p_boundary_strength(
                         p_has,
                         q_has,
+                        references[left][block_row * 8 + 3],
+                        references[index][block_row * 8],
                         motion[left][block_row * 8 + 3],
                         motion[index][block_row * 8],
                     )
@@ -544,9 +567,15 @@ fn deblock_chroma_macroblock(
                     .motion_vectors
                     .as_ref()
                     .expect("P deblock map validated");
+                let references = map
+                    .reference_indices
+                    .as_ref()
+                    .expect("P deblock map validated");
                 p_boundary_strength(
                     p_has,
                     q_has,
+                    references[index][block_row * 8 + 1],
+                    references[index][block_row * 8 + 2],
                     motion[index][block_row * 8 + 1],
                     motion[index][block_row * 8 + 2],
                 )
@@ -598,12 +627,18 @@ fn deblock_chroma_macroblock(
                         .motion_vectors
                         .as_ref()
                         .expect("P deblock map validated");
+                    let references = map
+                        .reference_indices
+                        .as_ref()
+                        .expect("P deblock map validated");
                     let p_block_row = if mb_edge { 3 } else { edge * 2 - 1 };
                     let q_block_row = if mb_edge { 0 } else { edge * 2 };
                     let block_column = block_column * 2;
                     p_boundary_strength(
                         p_has,
                         q_has,
+                        references[p_index][p_block_row * 4 + block_column],
+                        references[index][q_block_row * 4 + block_column],
                         motion[p_index][p_block_row * 4 + block_column],
                         motion[index][q_block_row * 4 + block_column],
                     )
@@ -804,10 +839,11 @@ mod tests {
 
     #[test]
     fn p_boundary_strength_uses_coefficients_and_motion_delta() {
-        assert_eq!(p_boundary_strength(true, false, [0, 0], [0, 0]), 3);
-        assert_eq!(p_boundary_strength(false, false, [0, 0], [4, 0]), 2);
-        assert_eq!(p_boundary_strength(false, false, [0, 0], [1, -1]), 1);
-        assert_eq!(p_boundary_strength(false, false, [2, -3], [2, -3]), 0);
+        assert_eq!(p_boundary_strength(true, false, 0, 0, [0, 0], [0, 0]), 3);
+        assert_eq!(p_boundary_strength(false, false, 0, 1, [0, 0], [0, 0]), 2);
+        assert_eq!(p_boundary_strength(false, false, 0, 0, [0, 0], [4, 0]), 2);
+        assert_eq!(p_boundary_strength(false, false, 0, 0, [0, 0], [1, -1]), 1);
+        assert_eq!(p_boundary_strength(false, false, 0, 0, [2, -3], [2, -3]), 0);
     }
 
     #[test]
@@ -850,6 +886,7 @@ mod tests {
             luma_non_zero: vec![nonzero],
             chroma_non_zero: [Vec::new(), Vec::new()],
             motion_vectors: None,
+            reference_indices: None,
         };
         let mut plane = PlaneMut {
             data: &mut data,

@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1276 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1278 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1280 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1282 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -343,6 +343,30 @@ t62 back to the RK3588 reference board.
   0 failed / 41 ignored**, and release-library tests are **1122 passed /
   0 failed / 0 ignored**. Fixture manifest, rustfmt and strict workspace
   rustdoc pass.
+- Weighted P_Skip and B-slice CABAC remain open.
+
+## 2026-11-12 H.264 CABAC two-reference P16
+
+- A three-frame 48x32 Main-profile stream activates two L0 references. The
+  final P picture deliberately mixes the recent P and older IDR and selects
+  per-macroblock references `1,0,0,0,1,0`. Stream SHA-256 is
+  `091920b51cc69c454fc4fc0f27a4422281bdddd36f7df91242e7b809f63599af`,
+  decoded YUV is
+  `06c942f2c21525ac0415f67165dbb61651b4fb85d30154e37f6eb58469d3d53b`.
+- The multi-reference decoder accepts an arbitrary active L0 list and carries
+  reference indices in the 4x4 motion cache. It consumes CABAC ref_idx unary
+  trees with left/top neighbor contexts, applies reference-specific
+  luma/chroma motion compensation and selects the matching weighted table.
+- Reference-aware MVP reproduces the x264 fallback rule: if B and C are
+  unavailable, A supplies the predictor even when it points at a different
+  reference. This was the missing rule behind the first 1,847-sample
+  divergence; after the fix the complete 4,608-byte P frame is exact.
+- The H.264 CABAC integration suite is **10/10**, CABAC unit tests are
+  **10/10**, deblock unit tests are **8/8**, the crate `--all-targets` gate is
+  **1278 passed / 0 failed / 41 ignored**, `scripts/board_workspace_gate.sh`
+  is **1282 passed / 0 failed / 41 ignored**, and release-library tests are
+  **1123 passed / 0 failed / 0 ignored**. Fixture manifest, rustfmt and strict
+  workspace rustdoc pass.
 - Weighted P_Skip and B-slice CABAC remain open.
 
 ## 2026-11-08 W5-4 pool closeout

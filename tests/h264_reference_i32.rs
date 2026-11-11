@@ -1,7 +1,7 @@
 use rk_mpp_rs::codec::h264::parser::{parse_pps, parse_slice_header, parse_sps, split_annex_b};
 use rk_mpp_rs::reference::h264_cabac::{
-    decode_cabac_i_picture_slices, decode_cabac_p_skip_slice, decode_cabac_p_slice,
-    DecodedMotionPartition,
+    decode_cabac_i_picture_slices, decode_cabac_p_multi_ref_slice, decode_cabac_p_skip_slice,
+    decode_cabac_p_slice, CabacReferenceFrame, DecodedMotionPartition,
 };
 use rk_mpp_rs::reference::h264_deblock::{deblock_i_picture, deblock_p_picture};
 use rk_mpp_rs::reference::h264_recon::PlaneMut;
@@ -256,6 +256,15 @@ fn cabac_p16_deblocking_matches_ffmpeg_yuv420p() {
         PartitionLayout::Uniform(16, 16),
         None,
         true,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p16_multiple_references_match_ffmpeg_yuv420p() {
+    compare_cabac_p16_multiref_fixture(
+        include_bytes!("../tests/data/h264_cabac_p16_multiref_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p16_multiref_48x32.yuv"),
     )
     .unwrap();
 }
@@ -918,6 +927,123 @@ fn compare_cabac_p16_motion_fixture(
             p.motion_partitions
         )
     })
+}
+
+fn compare_cabac_p16_multiref_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {
+    let nals = split_annex_b(stream);
+    let sps = parse_sps(
+        &nals
+            .iter()
+            .find(|nal| nal.unit_type == 7)
+            .ok_or("missing SPS")?
+            .rbsp,
+    )
+    .map_err(|error| error.to_string())?;
+    let pps = parse_pps(
+        &nals
+            .iter()
+            .find(|nal| nal.unit_type == 8)
+            .ok_or("missing PPS")?
+            .rbsp,
+    )
+    .map_err(|error| error.to_string())?;
+    let slice_nals: Vec<_> = nals.iter().filter(|nal| nal.is_vcl()).collect();
+    if slice_nals.len() != 3 {
+        return Err(format!("expected IDR+P+P, got {} slices", slice_nals.len()));
+    }
+    let headers: Vec<_> = slice_nals
+        .iter()
+        .map(|nal| {
+            parse_slice_header(&nal.rbsp, &sps, &pps, nal.unit_type, nal.ref_idc)
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    if !headers[0].is_i() || !headers[1].is_p() || !headers[2].is_p() {
+        return Err("expected IDR+P+P slice types".into());
+    }
+    if headers[2].ref_idx_l0_active != 2 {
+        return Err(format!(
+            "expected two active references, got {}",
+            headers[2].ref_idx_l0_active
+        ));
+    }
+
+    let width = sps.coded_width as usize;
+    let height = sps.coded_height as usize;
+    let cw = width / 2;
+    let ch = height / 2;
+    let y_len = width * height;
+    let chroma_len = cw * ch;
+    let frame_len = y_len + 2 * chroma_len;
+    if expected.len() != frame_len * 3 {
+        return Err(format!(
+            "expected {frame_len} bytes per frame, got {} total",
+            expected.len()
+        ));
+    }
+    let plane_u16 = |frame: &[u8], start: usize, len: usize| -> Vec<u16> {
+        frame[start..start + len]
+            .iter()
+            .map(|&sample| u16::from(sample))
+            .collect()
+    };
+    let frame0 = &expected[..frame_len];
+    let frame1 = &expected[frame_len..2 * frame_len];
+    let frame2 = &expected[2 * frame_len..];
+    let reference0_y = plane_u16(frame1, 0, y_len);
+    let reference0_u = plane_u16(frame1, y_len, chroma_len);
+    let reference0_v = plane_u16(frame1, y_len + chroma_len, chroma_len);
+    let reference1_y = plane_u16(frame0, 0, y_len);
+    let reference1_u = plane_u16(frame0, y_len, chroma_len);
+    let reference1_v = plane_u16(frame0, y_len + chroma_len, chroma_len);
+    let references = [
+        CabacReferenceFrame {
+            luma: &reference0_y,
+            chroma_cb: &reference0_u,
+            chroma_cr: &reference0_v,
+        },
+        CabacReferenceFrame {
+            luma: &reference1_y,
+            chroma_cb: &reference1_u,
+            chroma_cr: &reference1_v,
+        },
+    ];
+    let mut p_y = vec![0u16; y_len];
+    let mut p_u = vec![0u16; chroma_len];
+    let mut p_v = vec![0u16; chroma_len];
+    let decoded = decode_cabac_p_multi_ref_slice(
+        &slice_nals[2].rbsp,
+        &headers[2],
+        &sps,
+        &pps,
+        &references,
+        &mut p_y,
+        &mut p_u,
+        &mut p_v,
+    )
+    .map_err(|error| error.to_string())?;
+    if decoded.macroblocks != (width / 16) * (height / 16) {
+        return Err(format!(
+            "P slice decoded {} macroblocks",
+            decoded.macroblocks
+        ));
+    }
+    let reference_pattern: Vec<u8> = decoded
+        .motion_partitions
+        .iter()
+        .map(|partition| partition.reference_index)
+        .collect();
+    if reference_pattern != [1, 0, 0, 0, 1, 0] {
+        return Err(format!(
+            "unexpected P reference pattern {reference_pattern:?}"
+        ));
+    }
+
+    let mut actual = Vec::with_capacity(frame_len);
+    for plane in [&p_y, &p_u, &p_v] {
+        actual.extend(plane.iter().map(|&sample| sample as u8));
+    }
+    compare_samples(&actual, frame2, &[y_len, chroma_len, chroma_len])
 }
 
 fn compare_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {

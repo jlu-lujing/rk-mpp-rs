@@ -289,6 +289,7 @@ pub fn decode_i_slice(
             luma_non_zero: luma_counts,
             chroma_non_zero: chroma_counts,
             motion_vectors: None,
+            reference_indices: None,
         },
     })
 }

@@ -61,6 +61,14 @@ pub struct DecodedMotionPartition {
     pub motion_vector: [i32; 2],
     /// Signed quarter-pixel motion-vector delta as coded in the slice.
     pub motion_vector_delta: [i32; 2],
+    pub reference_index: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CabacReferenceFrame<'a> {
+    pub luma: &'a [u16],
+    pub chroma_cb: &'a [u16],
+    pub chroma_cr: &'a [u16],
 }
 
 /// Reconstruct a CABAC P slice whose macroblocks all use `P_Skip`.
@@ -114,7 +122,8 @@ pub fn decode_cabac_p_skip_slice(
     if context.chroma_format_idc != 1 {
         return Err(H264CabacError::Unsupported("P_Skip requires 4:2:0 chroma"));
     }
-    let weighted_prediction = weighted_prediction(slice, context)?;
+    let weighted_prediction =
+        weighted_prediction(slice, context)?.and_then(|predictions| predictions.first().copied());
     let mb_width = usize::try_from(sps.coded_width / 16)
         .map_err(|_| H264CabacError::Malformed("macroblock width"))?;
     let mb_height = usize::try_from(sps.coded_height / 16)
@@ -232,6 +241,7 @@ pub fn decode_cabac_p_skip_slice(
             luma_non_zero: vec![[0; 16]; total_mbs],
             chroma_non_zero: [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]],
             motion_vectors: Some(vec![[[0, 0]; 16]; total_mbs]),
+            reference_indices: Some(vec![[0; 16]; total_mbs]),
         },
         motion_partitions: Vec::new(),
     })
@@ -254,6 +264,33 @@ pub fn decode_cabac_p_slice(
     reference_luma: &[u16],
     reference_chroma_cb: &[u16],
     reference_chroma_cr: &[u16],
+    luma: &mut [u16],
+    chroma_cb: &mut [u16],
+    chroma_cr: &mut [u16],
+) -> Result<DecodedCabacSlice, H264CabacError> {
+    decode_cabac_p_multi_ref_slice(
+        rbsp,
+        slice,
+        sps,
+        pps,
+        &[CabacReferenceFrame {
+            luma: reference_luma,
+            chroma_cb: reference_chroma_cb,
+            chroma_cr: reference_chroma_cr,
+        }],
+        luma,
+        chroma_cb,
+        chroma_cr,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decode_cabac_p_multi_ref_slice(
+    rbsp: &[u8],
+    slice: &SliceHeader,
+    sps: &Sps,
+    pps: &Pps,
+    references: &[CabacReferenceFrame<'_>],
     luma: &mut [u16],
     chroma_cb: &mut [u16],
     chroma_cr: &mut [u16],
@@ -290,9 +327,9 @@ pub fn decode_cabac_p_slice(
             "P partition reference reordering",
         ));
     }
-    if slice.ref_idx_l0_active != 1 {
+    if references.len() < slice.ref_idx_l0_active as usize {
         return Err(H264CabacError::Unsupported(
-            "P partition multiple references",
+            "P partition active reference count",
         ));
     }
 
@@ -308,6 +345,14 @@ pub fn decode_cabac_p_slice(
     } else {
         None
     };
+    if weighted_prediction
+        .as_ref()
+        .is_some_and(|predictions| predictions.len() < slice.ref_idx_l0_active as usize)
+    {
+        return Err(H264CabacError::Malformed(
+            "P weighted-prediction reference count",
+        ));
+    }
     let mb_width = usize::try_from(sps.coded_width / 16)
         .map_err(|_| H264CabacError::Malformed("macroblock width"))?;
     let mb_height = usize::try_from(sps.coded_height / 16)
@@ -325,12 +370,14 @@ pub fn decode_cabac_p_slice(
     let minimum_chroma = chroma_width
         .checked_mul(chroma_height)
         .ok_or(H264CabacError::Malformed("chroma plane size"))?;
-    if reference_luma.len() < minimum_luma
-        || luma.len() < minimum_luma
-        || reference_chroma_cb.len() < minimum_chroma
-        || reference_chroma_cr.len() < minimum_chroma
+    if luma.len() < minimum_luma
         || chroma_cb.len() < minimum_chroma
         || chroma_cr.len() < minimum_chroma
+        || references.iter().any(|reference| {
+            reference.luma.len() < minimum_luma
+                || reference.chroma_cb.len() < minimum_chroma
+                || reference.chroma_cr.len() < minimum_chroma
+        })
     {
         return Err(H264CabacError::Malformed("P partition plane geometry"));
     }
@@ -360,6 +407,7 @@ pub fn decode_cabac_p_slice(
     let mut motion_valid = vec![[false; 16]; total_mbs];
     let mut motion_vectors = vec![[[0i32; 2]; 16]; total_mbs];
     let mut motion_vector_deltas = vec![[[0i32; 2]; 16]; total_mbs];
+    let mut reference_indices = vec![[0u8; 16]; total_mbs];
     let mut motion_partitions = Vec::new();
     let mut luma_plane = PlaneMut {
         data: luma,
@@ -423,9 +471,11 @@ pub fn decode_cabac_p_slice(
             &mut last_qscale_diff,
             mb_index,
             mb_width,
+            slice.ref_idx_l0_active as u8,
             &mut motion_valid,
             &mut motion_vectors,
             &mut motion_vector_deltas,
+            &mut reference_indices,
         )?;
         qp = add_cabac_qp(qp, decoded_mb.qp_delta, max_qp)?;
         let options = super::h264_residual::ResidualPlaneOptions {
@@ -446,10 +496,17 @@ pub fn decode_cabac_p_slice(
         let mb_x = (mb_index % mb_width) * 16;
         let mb_y = (mb_index / mb_width) * 16;
         for partition in &decoded_mb.partitions {
+            let reference = references
+                .get(partition.reference_index as usize)
+                .ok_or(H264CabacError::Malformed("P reference index"))?;
+            let partition_weight = weighted_prediction
+                .as_ref()
+                .and_then(|predictions| predictions.get(partition.reference_index as usize))
+                .copied();
             motion_compensate_partition(
-                reference_luma,
-                reference_chroma_cb,
-                reference_chroma_cr,
+                reference.luma,
+                reference.chroma_cb,
+                reference.chroma_cr,
                 &mut luma_plane,
                 &mut cb_plane,
                 &mut cr_plane,
@@ -459,7 +516,7 @@ pub fn decode_cabac_p_slice(
                 partition.height,
                 partition.motion_vector,
                 context.bit_depth_luma.min(context.bit_depth_chroma),
-                weighted_prediction,
+                partition_weight,
             )?;
         }
         reconstruct_inter_macroblock(
@@ -495,7 +552,7 @@ pub fn decode_cabac_p_slice(
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
-        deblock: state.deblock_map(Some(motion_vectors)),
+        deblock: state.deblock_map(Some(motion_vectors), Some(reference_indices)),
         motion_partitions,
     })
 }
@@ -506,7 +563,8 @@ fn motion_at(
     y: i32,
     motion_valid: &[[bool; 16]],
     motion_vectors: &[[[i32; 2]; 16]],
-) -> Option<[i32; 2]> {
+    reference_indices: &[[u8; 16]],
+) -> Option<(u8, [i32; 2])> {
     if x < 0 || y < 0 {
         return None;
     }
@@ -522,7 +580,35 @@ fn motion_at(
     motion_valid
         .get(mb_index)
         .filter(|valid| valid[block])
-        .map(|_| motion_vectors[mb_index][block])
+        .map(|_| {
+            (
+                reference_indices[mb_index][block],
+                motion_vectors[mb_index][block],
+            )
+        })
+}
+
+fn reference_at(
+    mb_width: usize,
+    x: i32,
+    y: i32,
+    motion_valid: &[[bool; 16]],
+    reference_indices: &[[u8; 16]],
+) -> Option<u8> {
+    if x < 0 || y < 0 {
+        return None;
+    }
+    let block_x = usize::try_from(x).ok()? / 4;
+    let block_y = usize::try_from(y).ok()? / 4;
+    if block_x >= mb_width * 4 {
+        return None;
+    }
+    let mb_index = (block_y / 4) * mb_width + block_x / 4;
+    let block = (block_y % 4) * 4 + block_x % 4;
+    motion_valid
+        .get(mb_index)
+        .filter(|valid| valid[block])
+        .map(|_| reference_indices[mb_index][block])
 }
 
 fn partition_motion_predictor(
@@ -532,8 +618,10 @@ fn partition_motion_predictor(
     partition_y: usize,
     partition_width: usize,
     partition_height: usize,
+    reference_index: u8,
     motion_valid: &[[bool; 16]],
     motion_vectors: &[[[i32; 2]; 16]],
+    reference_indices: &[[u8; 16]],
 ) -> [i32; 2] {
     debug_assert_eq!(partition_x % 4, 0);
     debug_assert_eq!(partition_y % 4, 0);
@@ -543,44 +631,84 @@ fn partition_motion_predictor(
     let macroblock_y = (mb_index / mb_width * 16) as i32;
     let x = macroblock_x + partition_x as i32;
     let y = macroblock_y + partition_y as i32;
-    let left = motion_at(mb_width, x - 1, y, motion_valid, motion_vectors);
-    let top = motion_at(mb_width, x, y - 1, motion_valid, motion_vectors);
+    let left = motion_at(
+        mb_width,
+        x - 1,
+        y,
+        motion_valid,
+        motion_vectors,
+        reference_indices,
+    );
+    let top = motion_at(
+        mb_width,
+        x,
+        y - 1,
+        motion_valid,
+        motion_vectors,
+        reference_indices,
+    );
     let top_right = motion_at(
         mb_width,
         x + partition_width as i32,
         y - 4,
         motion_valid,
         motion_vectors,
+        reference_indices,
     )
-    .or_else(|| motion_at(mb_width, x - 4, y - 4, motion_valid, motion_vectors));
+    .or_else(|| {
+        motion_at(
+            mb_width,
+            x - 4,
+            y - 4,
+            motion_valid,
+            motion_vectors,
+            reference_indices,
+        )
+    });
 
     if partition_width == 16 && partition_height == 8 {
         if partition_y == 0 {
-            if let Some(top) = top {
+            if let Some((reference, top)) =
+                top.filter(|(reference, _)| *reference == reference_index)
+            {
+                let _ = reference;
                 return top;
             }
-        } else if let Some(left) = left {
+        } else if let Some(left) = left
+            .filter(|(reference, _)| *reference == reference_index)
+            .map(|(_, mv)| mv)
+        {
             return left;
         }
     } else if partition_width == 8 && partition_height == 16 {
         if partition_x == 0 {
-            if let Some(left) = left {
+            if let Some(left) = left
+                .filter(|(reference, _)| *reference == reference_index)
+                .map(|(_, mv)| mv)
+            {
                 return left;
             }
-        } else if let Some(top_right) = top_right {
+        } else if let Some(top_right) = top_right
+            .filter(|(reference, _)| *reference == reference_index)
+            .map(|(_, mv)| mv)
+        {
             return top_right;
         }
     }
 
-    let a = left.unwrap_or([0, 0]);
-    let b = top.unwrap_or([0, 0]);
-    let c = top_right.unwrap_or([0, 0]);
-    match left.is_some() as u8 + top.is_some() as u8 + top_right.is_some() as u8 {
+    let a = left.map(|(_, mv)| mv).unwrap_or([0, 0]);
+    let b = top.map(|(_, mv)| mv).unwrap_or([0, 0]);
+    let c = top_right.map(|(_, mv)| mv).unwrap_or([0, 0]);
+    let matching_count = left.is_some_and(|(reference, _)| reference == reference_index) as u8
+        + top.is_some_and(|(reference, _)| reference == reference_index) as u8
+        + top_right.is_some_and(|(reference, _)| reference == reference_index) as u8;
+    match matching_count {
         2..=3 => median_motion_vector(a, b, c),
-        1 if left.is_some() => a,
-        1 if top.is_some() => b,
+        1 if left.is_some_and(|(reference, _)| reference == reference_index) => a,
+        1 if top.is_some_and(|(reference, _)| reference == reference_index) => b,
         1 => c,
-        _ => [0, 0],
+        0 if top.is_none() && top_right.is_none() && left.is_some() => a,
+        _ => median_motion_vector(a, b, c),
     }
 }
 
@@ -630,14 +758,13 @@ fn partition_neighbor_mvd_sum(
 fn weighted_prediction(
     slice: &SliceHeader,
     context: MacroblockContext,
-) -> Result<Option<WeightedPrediction>, H264CabacError> {
+) -> Result<Option<Vec<WeightedPrediction>>, H264CabacError> {
     let Some(weights) = slice.weights.as_ref() else {
         return Ok(None);
     };
-    let entry = weights
-        .l0
-        .first()
-        .ok_or(H264CabacError::Malformed("P weighted-prediction table"))?;
+    if weights.l0.is_empty() {
+        return Err(H264CabacError::Malformed("P weighted-prediction table"));
+    }
     if weights.luma_log2_denom > 7 || weights.chroma_log2_denom > 7 {
         return Err(H264CabacError::Malformed(
             "P weighted-prediction denominator",
@@ -645,54 +772,61 @@ fn weighted_prediction(
     }
     let luma_base = 1i32 << weights.luma_log2_denom;
     let chroma_base = 1i32 << weights.chroma_log2_denom;
-    let luma = if entry.luma_flag {
-        WeightedPredictionPlane {
-            weight: entry.luma_weight,
-            offset: entry.luma_offset * (1 << (context.bit_depth_luma - 8)),
-            log2_denom: weights.luma_log2_denom,
-            bit_depth: context.bit_depth_luma,
-        }
-    } else {
-        WeightedPredictionPlane {
-            weight: luma_base,
-            offset: 0,
-            log2_denom: weights.luma_log2_denom,
-            bit_depth: context.bit_depth_luma,
-        }
-    };
-    let chroma = if entry.chroma_flag {
-        let offset_scale = 1i32 << (context.bit_depth_chroma - 8);
-        [
-            WeightedPredictionPlane {
-                weight: entry.chroma_weight[0],
-                offset: entry.chroma_offset[0] * offset_scale,
-                log2_denom: weights.chroma_log2_denom,
-                bit_depth: context.bit_depth_chroma,
-            },
-            WeightedPredictionPlane {
-                weight: entry.chroma_weight[1],
-                offset: entry.chroma_offset[1] * offset_scale,
-                log2_denom: weights.chroma_log2_denom,
-                bit_depth: context.bit_depth_chroma,
-            },
-        ]
-    } else {
-        [
-            WeightedPredictionPlane {
-                weight: chroma_base,
-                offset: 0,
-                log2_denom: weights.chroma_log2_denom,
-                bit_depth: context.bit_depth_chroma,
-            },
-            WeightedPredictionPlane {
-                weight: chroma_base,
-                offset: 0,
-                log2_denom: weights.chroma_log2_denom,
-                bit_depth: context.bit_depth_chroma,
-            },
-        ]
-    };
-    Ok(Some(WeightedPrediction { luma, chroma }))
+    let predictions = weights
+        .l0
+        .iter()
+        .map(|entry| {
+            let luma = if entry.luma_flag {
+                WeightedPredictionPlane {
+                    weight: entry.luma_weight,
+                    offset: entry.luma_offset * (1 << (context.bit_depth_luma - 8)),
+                    log2_denom: weights.luma_log2_denom,
+                    bit_depth: context.bit_depth_luma,
+                }
+            } else {
+                WeightedPredictionPlane {
+                    weight: luma_base,
+                    offset: 0,
+                    log2_denom: weights.luma_log2_denom,
+                    bit_depth: context.bit_depth_luma,
+                }
+            };
+            let chroma = if entry.chroma_flag {
+                let offset_scale = 1i32 << (context.bit_depth_chroma - 8);
+                [
+                    WeightedPredictionPlane {
+                        weight: entry.chroma_weight[0],
+                        offset: entry.chroma_offset[0] * offset_scale,
+                        log2_denom: weights.chroma_log2_denom,
+                        bit_depth: context.bit_depth_chroma,
+                    },
+                    WeightedPredictionPlane {
+                        weight: entry.chroma_weight[1],
+                        offset: entry.chroma_offset[1] * offset_scale,
+                        log2_denom: weights.chroma_log2_denom,
+                        bit_depth: context.bit_depth_chroma,
+                    },
+                ]
+            } else {
+                [
+                    WeightedPredictionPlane {
+                        weight: chroma_base,
+                        offset: 0,
+                        log2_denom: weights.chroma_log2_denom,
+                        bit_depth: context.bit_depth_chroma,
+                    },
+                    WeightedPredictionPlane {
+                        weight: chroma_base,
+                        offset: 0,
+                        log2_denom: weights.chroma_log2_denom,
+                        bit_depth: context.bit_depth_chroma,
+                    },
+                ]
+            };
+            WeightedPrediction { luma, chroma }
+        })
+        .collect();
+    Ok(Some(predictions))
 }
 
 fn weighted_sample(sample: u16, prediction: WeightedPredictionPlane) -> u16 {
@@ -1113,7 +1247,11 @@ impl CabacPictureState {
         }
     }
 
-    fn deblock_map(&self, motion_vectors: Option<Vec<[[i32; 2]; 16]>>) -> DeblockMap {
+    fn deblock_map(
+        &self,
+        motion_vectors: Option<Vec<[[i32; 2]; 16]>>,
+        reference_indices: Option<Vec<[u8; 16]>>,
+    ) -> DeblockMap {
         DeblockMap {
             mb_width: self.mb_width,
             mb_height: self.mb_height,
@@ -1122,6 +1260,7 @@ impl CabacPictureState {
             luma_non_zero: self.luma_counts.clone(),
             chroma_non_zero: self.chroma_counts.clone(),
             motion_vectors,
+            reference_indices,
         }
     }
 }
@@ -1240,6 +1379,7 @@ pub fn decode_cabac_i_slice(
                         vec![residual.chroma_non_zero[1].clone()],
                     ],
                     motion_vectors: None,
+                    reference_indices: None,
                 },
                 motion_partitions: Vec::new(),
             });
@@ -1495,6 +1635,7 @@ pub fn decode_cabac_i_slice(
             vec![residual.chroma_non_zero[1].clone()],
         ],
         motion_vectors: None,
+        reference_indices: None,
     };
     if !decoder.decode_terminate() {
         return Err(H264CabacError::Malformed("missing end_of_slice_flag"));
@@ -1587,7 +1728,7 @@ pub fn decode_cabac_i_picture_slices(
                 macroblocks,
                 end_bit,
                 final_qp,
-                deblock: state.deblock_map(None),
+                deblock: state.deblock_map(None, None),
                 motion_partitions: Vec::new(),
             });
         }
@@ -1596,7 +1737,7 @@ pub fn decode_cabac_i_picture_slices(
         macroblocks,
         end_bit,
         final_qp,
-        deblock: state.deblock_map(None),
+        deblock: state.deblock_map(None, None),
         motion_partitions: Vec::new(),
     })
 }
@@ -1755,7 +1896,7 @@ fn decode_cabac_i_slice_into_picture(
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
-        deblock: state.deblock_map(None),
+        deblock: state.deblock_map(None, None),
         motion_partitions: Vec::new(),
     })
 }
@@ -1832,9 +1973,11 @@ fn decode_cabac_p_macroblock(
     last_qscale_diff: &mut i32,
     mb_index: usize,
     mb_width: usize,
+    active_refs: u8,
     motion_valid: &mut [[bool; 16]],
     motion_vectors: &mut [[[i32; 2]; 16]],
     motion_vector_deltas: &mut [[[i32; 2]; 16]],
+    reference_indices: &mut [[u8; 16]],
 ) -> Result<DecodedCabacPMacroblock, H264CabacError> {
     if decoder.decode_bin(&mut contexts[14]) != 0 {
         return Err(H264CabacError::Unsupported(
@@ -1842,8 +1985,10 @@ fn decode_cabac_p_macroblock(
         ));
     }
     let mut definitions = Vec::new();
+    let mut is_p8x8 = false;
     if decoder.decode_bin(&mut contexts[15]) == 0 {
         if decoder.decode_bin(&mut contexts[16]) != 0 {
+            is_p8x8 = true;
             let sub_mb_types = [
                 decode_cabac_p_sub_mb_type(decoder, contexts),
                 decode_cabac_p_sub_mb_type(decoder, contexts),
@@ -1859,8 +2004,55 @@ fn decode_cabac_p_macroblock(
     } else {
         definitions.extend([(0, 0, 8, 16), (8, 0, 8, 16)]);
     }
+    if active_refs > 1 && is_p8x8 {
+        for quadrant in 0..4 {
+            let x = (quadrant % 2) * 8;
+            let y = (quadrant / 2) * 8;
+            let reference_index = decode_cabac_p_ref_idx(
+                decoder,
+                contexts,
+                mb_index,
+                mb_width,
+                x,
+                y,
+                active_refs,
+                motion_valid,
+                reference_indices,
+            )?;
+            for block_y in y / 4..(y + 8) / 4 {
+                for block_x in x / 4..(x + 8) / 4 {
+                    reference_indices[mb_index][block_y * 4 + block_x] = reference_index;
+                }
+            }
+        }
+    }
     let mut partitions = Vec::with_capacity(definitions.len());
     for (partition_x, partition_y, partition_width, partition_height) in definitions {
+        let reference_index = if active_refs > 1 {
+            if is_p8x8 {
+                reference_indices[mb_index][(partition_y / 4) * 4 + partition_x / 4]
+            } else {
+                let reference_index = decode_cabac_p_ref_idx(
+                    decoder,
+                    contexts,
+                    mb_index,
+                    mb_width,
+                    partition_x,
+                    partition_y,
+                    active_refs,
+                    motion_valid,
+                    reference_indices,
+                )?;
+                for block_y in partition_y / 4..(partition_y + partition_height) / 4 {
+                    for block_x in partition_x / 4..(partition_x + partition_width) / 4 {
+                        reference_indices[mb_index][block_y * 4 + block_x] = reference_index;
+                    }
+                }
+                reference_index
+            }
+        } else {
+            0
+        };
         let predicted_motion = partition_motion_predictor(
             mb_index,
             mb_width,
@@ -1868,8 +2060,10 @@ fn decode_cabac_p_macroblock(
             partition_y,
             partition_width,
             partition_height,
+            reference_index,
             motion_valid,
             motion_vectors,
+            reference_indices,
         );
         let neighbor_mvd_sum = partition_neighbor_mvd_sum(
             mb_index,
@@ -1894,6 +2088,7 @@ fn decode_cabac_p_macroblock(
                 motion_vectors[mb_index][block] = motion_vector;
                 motion_vector_deltas[mb_index][block] =
                     [motion_vector_delta[0].abs(), motion_vector_delta[1].abs()];
+                reference_indices[mb_index][block] = reference_index;
             }
         }
         partitions.push(DecodedMotionPartition {
@@ -1904,6 +2099,7 @@ fn decode_cabac_p_macroblock(
             height: partition_height,
             motion_vector,
             motion_vector_delta,
+            reference_index,
         });
     }
 
@@ -2011,6 +2207,37 @@ fn decode_cabac_p_sub_mb_type(decoder: &mut CabacDecoder<'_>, contexts: &mut [Co
     } else {
         3
     }
+}
+
+fn decode_cabac_p_ref_idx(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    mb_index: usize,
+    mb_width: usize,
+    partition_x: usize,
+    partition_y: usize,
+    active_refs: u8,
+    motion_valid: &[[bool; 16]],
+    reference_indices: &[[u8; 16]],
+) -> Result<u8, H264CabacError> {
+    if active_refs <= 1 {
+        return Ok(0);
+    }
+    let x = (mb_index % mb_width * 16 + partition_x) as i32;
+    let y = (mb_index / mb_width * 16 + partition_y) as i32;
+    let left = reference_at(mb_width, x - 1, y, motion_valid, reference_indices);
+    let top = reference_at(mb_width, x, y - 1, motion_valid, reference_indices);
+    let mut context = usize::from(left.is_some_and(|reference| reference > 0))
+        + 2 * usize::from(top.is_some_and(|reference| reference > 0));
+    let mut reference_index = 0u8;
+    while decoder.decode_bin(&mut contexts[54 + context]) != 0 {
+        reference_index += 1;
+        if reference_index >= active_refs {
+            return Err(H264CabacError::Malformed("P reference index"));
+        }
+        context = (context >> 2) + 4;
+    }
+    Ok(reference_index)
 }
 
 fn p8x8_partition_definitions(sub_mb_types: [u8; 4]) -> Vec<(usize, usize, usize, usize)> {
@@ -3249,6 +3476,7 @@ mod tests {
         let mb_width = 3;
         let mut valid = vec![[false; 16]; 6];
         let mut vectors = vec![[[0; 2]; 16]; 6];
+        let references = vec![[0u8; 16]; 6];
 
         for block in 0..8 {
             valid[0][block] = true;
@@ -3264,15 +3492,15 @@ mod tests {
         vectors[1][12] = [16, 0];
 
         assert_eq!(
-            partition_motion_predictor(3, mb_width, 0, 8, 16, 8, &valid, &vectors),
+            partition_motion_predictor(3, mb_width, 0, 8, 16, 8, 0, &valid, &vectors, &references),
             [-37, 0]
         );
         assert_eq!(
-            partition_motion_predictor(3, mb_width, 0, 0, 8, 16, &valid, &vectors),
+            partition_motion_predictor(3, mb_width, 0, 0, 8, 16, 0, &valid, &vectors, &references),
             [-14, 1]
         );
         assert_eq!(
-            partition_motion_predictor(3, mb_width, 8, 0, 8, 16, &valid, &vectors),
+            partition_motion_predictor(3, mb_width, 8, 0, 8, 16, 0, &valid, &vectors, &references),
             [16, 0]
         );
     }
@@ -3292,6 +3520,21 @@ mod tests {
                 (8, 12, 4, 4),
                 (12, 12, 4, 4),
             ]
+        );
+    }
+
+    #[test]
+    fn multiref_mvp_uses_a_when_b_and_c_are_unavailable() {
+        let mb_width = 3;
+        let mut valid = vec![[false; 16]; 6];
+        let mut vectors = vec![[[0; 2]; 16]; 6];
+        let mut references = vec![[0u8; 16]; 6];
+        valid[0][3] = true;
+        vectors[0][3] = [19, -10];
+        references[0][3] = 1;
+        assert_eq!(
+            partition_motion_predictor(1, mb_width, 0, 0, 16, 16, 0, &valid, &vectors, &references),
+            [19, -10]
         );
     }
 

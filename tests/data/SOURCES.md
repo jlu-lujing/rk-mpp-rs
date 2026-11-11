@@ -331,6 +331,13 @@ cargo test --test fixture_manifest
   parsing/sign, MVP propagation, integer luma/chroma motion compensation and
   edge extension. The decoder test supplies FFmpeg's first frame as reference
   picture 0 and compares the complete P frame.
+- `h264_cabac_p16_multiref_48x32` is a three-frame IDR+P+P stream with two
+  active L0 references. Its final P picture deliberately mixes the recent P
+  and the older IDR: the six macroblocks select reference indices
+  `1,0,0,0,1,0`. The fixture exercises CABAC ref_idx unary trees and neighbor
+  contexts, per-4x4 reference state, ref-aware MVP availability with the
+  A-fallback rule, reference-specific motion compensation and the final
+  sample-exact 48x32 P plane.
 - `h264_cabac_p16_weighted_48x32` is a two-frame explicit weighted-prediction
   stream with `luma_log2_weight_denom=2`, luma scale/offset `3/8`, and
   `chroma_log2_weight_denom=3` with U/V scale/offset `7/4`. The temporary x264
