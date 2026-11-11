@@ -307,6 +307,15 @@ cargo test --test fixture_manifest
   frame is repeated exactly, so x264 reports the P picture as 100% skip. The
   pair exercises P-slice `cabac_init_idc`, `mb_skip_flag` contexts, CABAC
   termination and reference-picture copy across six macroblocks.
+- `h264_cabac_p16_48x32` is a two-frame 48x32 Main-profile CABAC stream with a
+  constant-gray IDR followed by one-frame random luma noise. It was produced by
+  a temporary local x264 source build whose analysis path was restricted to
+  I16x16 for the IDR and P16x16 for the P picture; `--partitions none` also
+  disables transform-8x8 and sub-partitions. The stream uses
+  `cabac=1:no-deblock=1:weightp=0:bframes=0:refs=1:qp=20`. x264 reports 100%
+  I16 and 100% P16. The fixture exercises P macroblock type, zero MVD, CBP,
+  macroblock QP, inter 4x4 residuals and reconstruction across six
+  macroblocks; all 4,608 decoded bytes match FFmpeg.
 - `h264_i_pcm_cabac` is a 16x16 High-4:4:4-Intra `qp=0` CABAC stream using
   100% I_PCM macroblocks. It locks the raw 4:2:0 sample payload, byte
   realignment and arithmetic-decoder restart behavior.

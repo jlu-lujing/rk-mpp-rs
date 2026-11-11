@@ -559,6 +559,154 @@ pub fn assemble_i_macroblock_residual(
     Ok(planes)
 }
 
+/// Assemble an ordinary inter macroblock's 4x4 luma and chroma residuals.
+///
+/// The caller writes the motion-compensated prediction first; this function
+/// only expands the CABAC-decoded coefficient blocks into signed residual
+/// sample planes.
+pub fn assemble_inter_macroblock_residual(
+    residual: &super::h264_mb::ParsedMacroblockResidual,
+    context: super::h264_mb::MacroblockContext,
+    options: &ResidualPlaneOptions<'_>,
+) -> Result<MacroblockResidualPlanes, H264ResidualError> {
+    if context.chroma_format_idc == 3 {
+        return Err(H264ResidualError::InvalidPlane(
+            "4:4:4 residual assembly is not implemented",
+        ));
+    }
+    validate_plane_options(options)?;
+    let chroma_geometry = match context.chroma_format_idc {
+        0 => None,
+        1 => Some((2usize, 2usize)),
+        2 => Some((2usize, 4usize)),
+        _ => return Err(H264ResidualError::InvalidPlane("chroma_format_idc")),
+    };
+    let mut planes = MacroblockResidualPlanes {
+        luma: [0; 256],
+        chroma: [
+            vec![0; chroma_geometry.map_or(0, |(w, h)| w * 4 * h * 4)],
+            vec![0; chroma_geometry.map_or(0, |(w, h)| w * 4 * h * 4)],
+        ],
+    };
+
+    for block in 0..16 {
+        let Some(syntax) = &residual.luma_4x4[block] else {
+            continue;
+        };
+        let coefficients = if options.transform_bypass {
+            coefficients_4x4_lossless_from_syntax(
+                syntax,
+                16,
+                options.bit_depth_luma,
+                options.scan4,
+            )?
+        } else {
+            coefficients_4x4_from_syntax(
+                syntax,
+                16,
+                options.qp,
+                options.bit_depth_luma,
+                options.luma_4x4_scaling,
+                options.scan4,
+            )?
+        };
+        let samples = if options.transform_bypass {
+            coefficients
+        } else {
+            inverse_4x4(coefficients)
+        };
+        place_4x4(
+            &mut planes.luma,
+            16,
+            (block % 4) * 4,
+            (block / 4) * 4,
+            samples,
+        );
+    }
+
+    if let Some((grid_width, grid_height)) = chroma_geometry {
+        for plane in 0..2 {
+            if residual.chroma_ac[plane].iter().any(Option::is_some)
+                && residual.chroma_dc[plane].is_none()
+            {
+                return Err(H264ResidualError::InvalidPlane("chroma AC without DC"));
+            }
+            let Some(dc) = &residual.chroma_dc[plane] else {
+                continue;
+            };
+            let chroma_qp = chroma_qp(
+                i32::from(options.qp),
+                options.chroma_qp_offset[plane],
+                options.bit_depth_chroma,
+            )
+            .map_err(H264ResidualError::Dequant)?;
+            let block_count = grid_width * grid_height;
+            let dc_values = if options.transform_bypass {
+                chroma_dc_transform_bypass(&dc.scan[..block_count], options.scan8)
+                    .map_err(H264ResidualError::Dequant)?
+            } else {
+                let scale = options.chroma_4x4_scaling[plane].map_or(16, |matrix| matrix[0]);
+                if context.chroma_format_idc == 1 {
+                    dequant_chroma_dc_420(
+                        dc.scan[..4].try_into().unwrap(),
+                        chroma_qp,
+                        options.bit_depth_chroma,
+                        scale,
+                    )
+                    .map_err(H264ResidualError::Dequant)?
+                    .to_vec()
+                } else {
+                    dequant_chroma_dc_422(
+                        dc.scan[..8].try_into().unwrap(),
+                        chroma_qp + 3,
+                        options.bit_depth_chroma,
+                        scale,
+                    )
+                    .map_err(H264ResidualError::Dequant)?
+                    .to_vec()
+                }
+            };
+            for block in 0..block_count {
+                let mut coefficients = if let Some(syntax) = &residual.chroma_ac[plane][block] {
+                    if options.transform_bypass {
+                        coefficients_4x4_lossless_from_syntax(
+                            syntax,
+                            15,
+                            options.bit_depth_chroma,
+                            options.scan4,
+                        )?
+                    } else {
+                        coefficients_4x4_from_syntax(
+                            syntax,
+                            15,
+                            chroma_qp,
+                            options.bit_depth_chroma,
+                            options.chroma_4x4_scaling[plane],
+                            options.scan4,
+                        )?
+                    }
+                } else {
+                    [0; 16]
+                };
+                coefficients[0] = dc_values[block];
+                let samples = if options.transform_bypass {
+                    coefficients
+                } else {
+                    inverse_4x4(coefficients)
+                };
+                place_4x4(
+                    &mut planes.chroma[plane],
+                    8,
+                    (block % grid_width) * 4,
+                    (block / grid_width) * 4,
+                    samples,
+                );
+            }
+        }
+    }
+    Ok(planes)
+}
+
 fn validate_plane_options(options: &ResidualPlaneOptions<'_>) -> Result<(), H264ResidualError> {
     if !(8..=10).contains(&options.bit_depth_luma) || !(8..=10).contains(&options.bit_depth_chroma)
     {

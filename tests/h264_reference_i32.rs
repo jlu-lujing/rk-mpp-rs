@@ -1,5 +1,7 @@
 use rk_mpp_rs::codec::h264::parser::{parse_pps, parse_slice_header, parse_sps, split_annex_b};
-use rk_mpp_rs::reference::h264_cabac::{decode_cabac_i_picture_slices, decode_cabac_p_skip_slice};
+use rk_mpp_rs::reference::h264_cabac::{
+    decode_cabac_i_picture_slices, decode_cabac_p16_zero_mv_slice, decode_cabac_p_skip_slice,
+};
 use rk_mpp_rs::reference::h264_deblock::deblock_i_picture;
 use rk_mpp_rs::reference::h264_recon::PlaneMut;
 use rk_mpp_rs::reference::h264_slice::decode_i_slice;
@@ -153,6 +155,15 @@ fn cabac_p_skip_copies_reference_macroblocks_matches_ffmpeg_yuv420p() {
     compare_cabac_p_skip_fixture(
         include_bytes!("../tests/data/h264_cabac_pskip_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_pskip_48x32.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p16_zero_mv_residuals_match_ffmpeg_yuv420p() {
+    compare_cabac_p16_zero_mv_fixture(
+        include_bytes!("../tests/data/h264_cabac_p16_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p16_48x32.yuv"),
     )
     .unwrap();
 }
@@ -355,6 +366,130 @@ fn compare_cabac_p_skip_fixture(stream: &[u8], expected: &[u8]) -> Result<(), St
     }
     if p_y != reference_y || p_u != reference_u || p_v != reference_v {
         return Err("P_Skip output does not reproduce the reference picture".into());
+    }
+
+    let frame_len = reference_y.len() + reference_u.len() + reference_v.len();
+    if expected.len() != frame_len * 2 {
+        return Err(format!(
+            "expected {frame_len} bytes per frame, got {} total",
+            expected.len()
+        ));
+    }
+    let mut actual = Vec::with_capacity(expected.len());
+    for plane in [&reference_y, &reference_u, &reference_v, &p_y, &p_u, &p_v] {
+        actual.extend(plane.iter().map(|&sample| sample as u8));
+    }
+    compare_samples(
+        &actual,
+        expected,
+        &[
+            reference_y.len(),
+            reference_u.len(),
+            reference_v.len(),
+            p_y.len(),
+            p_u.len(),
+            p_v.len(),
+        ],
+    )
+}
+
+fn compare_cabac_p16_zero_mv_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {
+    let nals = split_annex_b(stream);
+    let sps = parse_sps(
+        &nals
+            .iter()
+            .find(|nal| nal.unit_type == 7)
+            .ok_or("missing SPS")?
+            .rbsp,
+    )
+    .map_err(|error| error.to_string())?;
+    let pps = parse_pps(
+        &nals
+            .iter()
+            .find(|nal| nal.unit_type == 8)
+            .ok_or("missing PPS")?
+            .rbsp,
+    )
+    .map_err(|error| error.to_string())?;
+    let slice_nals: Vec<_> = nals.iter().filter(|nal| nal.is_vcl()).collect();
+    if slice_nals.len() != 2 {
+        return Err(format!("expected IDR+P, got {} slices", slice_nals.len()));
+    }
+    let headers: Vec<_> = slice_nals
+        .iter()
+        .map(|nal| {
+            parse_slice_header(&nal.rbsp, &sps, &pps, nal.unit_type, nal.ref_idc)
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    if !headers[0].is_i() || !headers[1].is_p() {
+        return Err(format!(
+            "expected IDR+P, got slice types {}+{}",
+            headers[0].slice_type, headers[1].slice_type
+        ));
+    }
+    if headers[0].deblocking_disable_idc != 1 || headers[1].deblocking_disable_idc != 1 {
+        return Err("the P16 fixture must disable deblocking".into());
+    }
+    if pps.pic_init_qp + headers[1].qp_delta != 20 || headers[1].cabac_init_idc != Some(0) {
+        return Err(format!(
+            "unexpected P CABAC setup: init_qp={}, slice_delta={}, cabac_init_idc={:?}",
+            pps.pic_init_qp, headers[1].qp_delta, headers[1].cabac_init_idc
+        ));
+    }
+    if headers[1].data_offset_bits != 24 {
+        return Err(format!(
+            "unexpected P CABAC data offset: {} bits",
+            headers[1].data_offset_bits
+        ));
+    }
+
+    let width = sps.coded_width as usize;
+    let height = sps.coded_height as usize;
+    let cw = width / 2;
+    let ch = height / 2;
+    let mut reference_y = vec![0u16; width * height];
+    let mut reference_u = vec![0u16; cw * ch];
+    let mut reference_v = vec![0u16; cw * ch];
+    let idr = decode_i_slice(
+        &slice_nals[0].rbsp,
+        &headers[0],
+        &sps,
+        &pps,
+        &mut reference_y,
+        Some(&mut reference_u),
+        Some(&mut reference_v),
+    )
+    .map_err(|error| error.to_string())?;
+    let macroblocks = (width / 16) * (height / 16);
+    if idr.macroblocks != macroblocks {
+        return Err(format!("IDR decoded {} macroblocks", idr.macroblocks));
+    }
+
+    let ref_y = reference_y.clone();
+    let ref_u = reference_u.clone();
+    let ref_v = reference_v.clone();
+    let mut p_y = vec![0u16; width * height];
+    let mut p_u = vec![0u16; cw * ch];
+    let mut p_v = vec![0u16; cw * ch];
+    let p = decode_cabac_p16_zero_mv_slice(
+        &slice_nals[1].rbsp,
+        &headers[1],
+        &sps,
+        &pps,
+        &ref_y,
+        &ref_u,
+        &ref_v,
+        &mut p_y,
+        &mut p_u,
+        &mut p_v,
+    )
+    .map_err(|error| error.to_string())?;
+    if p.macroblocks != macroblocks {
+        return Err(format!("P slice decoded {} macroblocks", p.macroblocks));
+    }
+    if p_y == reference_y && p_u == reference_u && p_v == reference_v {
+        return Err("P16 fixture did not exercise an inter residual".into());
     }
 
     let frame_len = reference_y.len() + reference_u.len() + reference_v.len();

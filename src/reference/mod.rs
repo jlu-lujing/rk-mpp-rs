@@ -9,6 +9,7 @@ pub mod av1;
 pub mod cabac;
 pub mod h264;
 pub mod h264_cabac;
+pub(crate) mod h264_cabac_pb;
 pub mod h264_cavlc;
 pub mod h264_deblock;
 pub mod h264_mb;

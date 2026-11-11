@@ -72,7 +72,7 @@
 | 部分 | 状态 |
 |---|---|
 | H.264 CAVLC I-slice（预测/变换/DC Hadamard/deblock） | 完成，与原始合成源逐像素 |
-| H.264 CABAC（I16/I4x4/I8x8/I_PCM/mb_qp_delta/混合宏块） | 完成；P-slice `P_Skip` 已与 FFmpeg 逐像素闭合（48×32 IDR+P，P 帧 100% skip，两帧 4,608 bytes 全样本一致）；P_L0/B-slice CABAC 未做 |
+| H.264 CABAC（I16/I4x4/I8x8/I_PCM/mb_qp_delta/混合宏块） | 完成；P-slice `P_Skip` 和零运动 `P_L0_16x16` 已与 FFmpeg 逐像素闭合（48×32 IDR+P，两帧 4,608 bytes 全样本一致）。P16 门覆盖 mb_type、MVD、CBP、QP、inter 4×4 residual 与重建，并修正 inter CBF 不可用邻块规则；非零 MV、其他 P partition、weighted/deblock 和 B-slice CABAC 未做 |
 | HEVC 变换 | 完成 |
 | AV1 符号解码器（规范 §8.2） | 完成：init_symbol/read_symbol/CDF 自适应/read_bool/read_literal/exit_symbol |
 | AV1 默认 CDF 表 | 完成：97 张、19,697 个值，生成器 + FNV 校验（含 3D 表与 `128 * 125` 乘积更正；当前 FNV `0x7e85769cd6cb2bdc`） |
@@ -163,7 +163,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
-当前 ROADMAP：**109 完成 / 6 未完成**（含缩进子项为 147 / 9）。未完成项里 5 项属于上表的
+当前 ROADMAP：**110 完成 / 6 未完成**（含缩进子项为 148 / 9）。未完成项里 5 项属于上表的
 平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 115 个 slice（含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、simple/advanced 20 帧 8-bit B-pyramid、12 帧单参考 10-bit B、20 帧 advanced 10-bit B、deblock/CDEF、10-bit I444P10 和 inter-LR 组合也已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、

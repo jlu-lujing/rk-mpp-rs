@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use super::h264::add_residual_4x4_u16;
 use super::h264_mb::{IntraMacroblockKind, ParsedIMacroblock, I4X4_BLOCK_ORDER};
 use super::h264_pred::{
     predict_16x16, predict_4x4, predict_8x8, predict_chroma, Intra4x4Neighbors, Intra8x8Neighbors,
@@ -70,6 +71,74 @@ pub fn reconstruct_i_macroblock(
     reconstruct_i_macroblock_with_availability(
         macroblock, residual, bit_depth, luma, chroma_cb, chroma_cr, mb_x, mb_y, true, true,
     )
+}
+
+/// Add an inter macroblock's residual to an already motion-compensated plane.
+pub fn reconstruct_inter_macroblock<'a>(
+    residual: &MacroblockResidualPlanes,
+    bit_depth: u8,
+    luma: &mut PlaneMut<'a>,
+    chroma_cb: Option<&mut PlaneMut<'a>>,
+    chroma_cr: Option<&mut PlaneMut<'a>>,
+    mb_x: usize,
+    mb_y: usize,
+) -> Result<(), ReconstructionError> {
+    validate_plane(luma)?;
+    if mb_x + 16 > luma.width || mb_y + 16 > luma.height {
+        return Err(ReconstructionError::MacroblockOutOfBounds);
+    }
+    for block in 0..16 {
+        let samples = block_4x4(&residual.luma, 16, (block % 4) * 4, (block / 4) * 4);
+        add_residual_4x4_u16(
+            luma.data,
+            luma.width,
+            luma.height,
+            luma.stride,
+            mb_x + (block % 4) * 4,
+            mb_y + (block / 4) * 4,
+            &samples,
+            bit_depth,
+        )
+        .map_err(|_| ReconstructionError::PlaneTooSmall)?;
+    }
+
+    let mut chroma = [chroma_cb, chroma_cr].into_iter();
+    for plane in 0..2 {
+        let samples = &residual.chroma[plane];
+        if samples.is_empty() {
+            continue;
+        }
+        let Some(destination) = chroma.next().flatten() else {
+            return Err(ReconstructionError::MissingChroma);
+        };
+        validate_plane(destination)?;
+        if mb_x / 2 + 8 > destination.width || mb_y / 2 + 8 > destination.height {
+            return Err(ReconstructionError::MacroblockOutOfBounds);
+        }
+        for block in 0..4 {
+            let values = block_4x4(samples, 8, (block % 2) * 4, (block / 2) * 4);
+            add_residual_4x4_u16(
+                destination.data,
+                destination.width,
+                destination.height,
+                destination.stride,
+                mb_x / 2 + (block % 2) * 4,
+                mb_y / 2 + (block / 2) * 4,
+                &values,
+                bit_depth,
+            )
+            .map_err(|_| ReconstructionError::PlaneTooSmall)?;
+        }
+    }
+    Ok(())
+}
+
+fn block_4x4(plane: &[i32], stride: usize, x: usize, y: usize) -> [i32; 16] {
+    std::array::from_fn(|index| {
+        let row = index / 4;
+        let column = index % 4;
+        plane[(y + row) * stride + x + column]
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

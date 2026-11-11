@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1263 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1264 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1267 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1268 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -176,6 +176,28 @@ t62 back to the RK3588 reference board.
   deterministic two-macroblock result; the corrected terms decode all six.
 - At the persistent 80% OPP cap, `scripts/board_workspace_gate.sh` reports
   **1267 passed / 0 failed / 41 ignored**, and `cargo test --release --lib
+  --offline` reports **1117 passed / 0 failed / 0 ignored**. Fixture manifest,
+  rustfmt and strict workspace rustdoc pass.
+
+## 2026-11-12 H.264 CABAC zero-motion P16
+
+- A second 48x32 Main-profile stream is locked to a 100% I16 IDR followed by a
+  P picture containing six `P_L0_16x16` macroblocks. The P slice has zero MVD,
+  CBP 15/0, no deblocking, no weighted prediction and `cabac_init_idc=0`.
+- The focused gate
+  `cargo test --test h264_reference_i32
+  cabac_p16_zero_mv_residuals_match_ffmpeg_yuv420p` passes. It consumes
+  P mb_type, MVD, CBP, macroblock QP, every luma 4x4 inter residual, performs
+  zero-motion reference copy plus residual reconstruction and compares both
+  complete 4:2:0 frames. All 4,608 bytes match FFmpeg.
+- A temporary x264 trace exposed the defect: inter CBF neighbours follow the
+  I-slice rule in reverse for unavailable macroblocks. Unavailable inter
+  neighbours contribute zero, while the intra path contributes a non-zero
+  context flag. The first P16 block therefore moved from context 93 to 96 and
+  desynchronised the third macroblock. Separate inter CBF context helpers now
+  preserve both rules.
+- At the persistent 80% OPP cap, `scripts/board_workspace_gate.sh` reports
+  **1268 passed / 0 failed / 41 ignored**, and `cargo test --release --lib
   --offline` reports **1117 passed / 0 failed / 0 ignored**. Fixture manifest,
   rustfmt and strict workspace rustdoc pass.
 
