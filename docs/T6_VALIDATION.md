@@ -1,4 +1,4 @@
-# t6 validation — 2026-11-11
+# t6 validation — 2026-11-12
 
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
@@ -391,6 +391,29 @@ t62 back to the RK3588 reference board.
   workspace rustdoc pass.
 - B_Direct, B_L1, B_BI, B subpartitions, weighted B and B deblocking remain
   open.
+
+## 2026-11-12 H.264 CABAC B_L1 and B_BI 16x16
+
+- Two new IDR+P+B streams force all six B macroblocks to `B_L1_16x16` and
+  `B_BI_16x16`. The list-1 stream SHA-256 is
+  `103ed3ccdf345a4b9c2e43888c44b4c5bc34fe871ff34b1c136c580b525a7ca8`,
+  its decoded YUV is
+  `b0e3c81cf03b889d05869db67563cba3b5e829e8a576219eaf7d4e9a6aa31cd9`,
+  the bi-predicted stream is
+  `e94f08bae6653b0af8a86e4d38981b45286e77c439cba2b25134f6aa868e296f`,
+  and its decoded YUV is
+  `e0927b98b0ae12b2857c5bdb66a8d667f78328ca65274812e03633a1974d0dc9`.
+- The decoder retains independent L0/L1 4x4 motion and reference caches,
+  consumes list-0 then list-1 MVD syntax when both are present, and blends the
+  temporary predictions with `(L0 + L1 + 1) >> 1`. Both complete displayed
+  48x32 B frames match FFmpeg sample-exactly.
+- The B16 focused gate is **3/3**, the complete CABAC integration suite is
+  **27/27**, CABAC unit tests are **10/10**, and deblock unit tests are
+  **8/8**. The crate `--all-targets` gate is **1281 passed / 0 failed /
+  41 ignored**, `scripts/board_workspace_gate.sh` is **1285 passed / 0 failed /
+  41 ignored**, and release-library tests are **1123 passed / 0 failed /
+  0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
+- B_Direct/B_Skip, B 16x8/8x16/8x8, weighted B and B deblocking remain open.
 
 ## 2026-11-08 W5-4 pool closeout
 

@@ -559,9 +559,68 @@ pub fn decode_cabac_p_multi_ref_slice(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn decode_b16_motion(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    mb_index: usize,
+    mb_width: usize,
+    motion_valid: &[[bool; 16]],
+    motion_vectors: &[[[i32; 2]; 16]],
+    motion_vector_deltas: &[[[i32; 2]; 16]],
+    reference_indices: &[[u8; 16]],
+) -> Result<([i32; 2], [i32; 2]), H264CabacError> {
+    let predicted = partition_motion_predictor(
+        mb_index,
+        mb_width,
+        0,
+        0,
+        16,
+        16,
+        0,
+        motion_valid,
+        motion_vectors,
+        reference_indices,
+    );
+    let neighbor_sum =
+        partition_neighbor_mvd_sum(mb_index, mb_width, 0, 0, motion_valid, motion_vector_deltas);
+    let delta = [
+        decode_cabac_mvd(decoder, contexts, 40, neighbor_sum[0])?,
+        decode_cabac_mvd(decoder, contexts, 47, neighbor_sum[1])?,
+    ];
+    Ok(([predicted[0] + delta[0], predicted[1] + delta[1]], delta))
+}
+
 /// Reconstruct a CABAC B slice made entirely of `B_L0_16x16` macroblocks.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_cabac_b_l0_16x16_slice(
+    rbsp: &[u8],
+    slice: &SliceHeader,
+    sps: &Sps,
+    pps: &Pps,
+    references_l0: &[CabacReferenceFrame<'_>],
+    references_l1: &[CabacReferenceFrame<'_>],
+    luma: &mut [u16],
+    chroma_cb: &mut [u16],
+    chroma_cr: &mut [u16],
+) -> Result<DecodedCabacSlice, H264CabacError> {
+    decode_cabac_b16_slice(
+        rbsp,
+        slice,
+        sps,
+        pps,
+        references_l0,
+        references_l1,
+        luma,
+        chroma_cb,
+        chroma_cr,
+    )
+}
+
+/// Reconstruct a CABAC B slice made of 16x16 L0, L1 or bi-predicted
+/// macroblocks.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_cabac_b16_slice(
     rbsp: &[u8],
     slice: &SliceHeader,
     sps: &Sps,
@@ -641,6 +700,9 @@ pub fn decode_cabac_b_l0_16x16_slice(
         || references_l0[0].luma.len() < minimum_luma
         || references_l0[0].chroma_cb.len() < minimum_chroma
         || references_l0[0].chroma_cr.len() < minimum_chroma
+        || references_l1[0].luma.len() < minimum_luma
+        || references_l1[0].chroma_cb.len() < minimum_chroma
+        || references_l1[0].chroma_cr.len() < minimum_chroma
     {
         return Err(H264CabacError::Malformed("B16 plane geometry"));
     }
@@ -670,6 +732,10 @@ pub fn decode_cabac_b_l0_16x16_slice(
     let mut motion_vectors = vec![[[0i32; 2]; 16]; total_mbs];
     let mut motion_vector_deltas = vec![[[0i32; 2]; 16]; total_mbs];
     let mut reference_indices = vec![[0u8; 16]; total_mbs];
+    let mut motion_valid_l1 = vec![[false; 16]; total_mbs];
+    let mut motion_vectors_l1 = vec![[[0i32; 2]; 16]; total_mbs];
+    let mut motion_vector_deltas_l1 = vec![[[0i32; 2]; 16]; total_mbs];
+    let mut reference_indices_l1 = vec![[0u8; 16]; total_mbs];
     let mut motion_partitions = Vec::new();
     let mut luma_plane = PlaneMut {
         data: luma,
@@ -726,51 +792,68 @@ pub fn decode_cabac_b_l0_16x16_slice(
         }
 
         let type_context = 27 + usize::from(left_non_skip) + usize::from(top_non_skip);
-        let type_bins = [
-            decoder.decode_bin(&mut contexts[type_context]),
-            decoder.decode_bin(&mut contexts[30]),
-            decoder.decode_bin(&mut contexts[32]),
-        ];
-        if type_bins != [1, 0, 0] {
+        if decoder.decode_bin(&mut contexts[type_context]) != 1 {
             return Err(H264CabacError::Unsupported(
-                "B slice contains a non-L0 B16 macroblock",
+                "B slice contains a B_Direct macroblock",
             ));
         }
-        let predicted_motion = partition_motion_predictor(
-            mb_index,
-            mb_width,
-            0,
-            0,
-            16,
-            16,
-            0,
-            &motion_valid,
-            &motion_vectors,
-            &reference_indices,
-        );
-        let neighbor_mvd_sum = partition_neighbor_mvd_sum(
-            mb_index,
-            mb_width,
-            0,
-            0,
-            &motion_valid,
-            &motion_vector_deltas,
-        );
-        let motion_vector_delta = [
-            decode_cabac_mvd(&mut decoder, &mut contexts, 40, neighbor_mvd_sum[0])?,
-            decode_cabac_mvd(&mut decoder, &mut contexts, 47, neighbor_mvd_sum[1])?,
-        ];
-        let motion_vector = [
-            predicted_motion[0] + motion_vector_delta[0],
-            predicted_motion[1] + motion_vector_delta[1],
-        ];
-        for block in 0..16 {
-            motion_valid[mb_index][block] = true;
-            motion_vectors[mb_index][block] = motion_vector;
-            motion_vector_deltas[mb_index][block] =
-                [motion_vector_delta[0].abs(), motion_vector_delta[1].abs()];
-            reference_indices[mb_index][block] = 0;
-        }
+        let prediction_list = if decoder.decode_bin(&mut contexts[30]) == 0 {
+            decoder.decode_bin(&mut contexts[32]) as u8
+        } else if decoder.decode_bin(&mut contexts[31]) == 0
+            && decoder.decode_bin(&mut contexts[32]) == 0
+            && decoder.decode_bin(&mut contexts[32]) == 0
+            && decoder.decode_bin(&mut contexts[32]) == 0
+        {
+            2
+        } else {
+            return Err(H264CabacError::Unsupported(
+                "B slice contains an unsupported 16x16 type",
+            ));
+        };
+        let (motion_vector_l0, motion_vector_delta_l0) =
+            if prediction_list == 0 || prediction_list == 2 {
+                let (motion, delta) = decode_b16_motion(
+                    &mut decoder,
+                    &mut contexts,
+                    mb_index,
+                    mb_width,
+                    &motion_valid,
+                    &motion_vectors,
+                    &motion_vector_deltas,
+                    &reference_indices,
+                )?;
+                for block in 0..16 {
+                    motion_valid[mb_index][block] = true;
+                    motion_vectors[mb_index][block] = motion;
+                    motion_vector_deltas[mb_index][block] = [delta[0].abs(), delta[1].abs()];
+                    reference_indices[mb_index][block] = 0;
+                }
+                (Some(motion), Some(delta))
+            } else {
+                (None, None)
+            };
+        let (motion_vector_l1, motion_vector_delta_l1) =
+            if prediction_list == 1 || prediction_list == 2 {
+                let (motion, delta) = decode_b16_motion(
+                    &mut decoder,
+                    &mut contexts,
+                    mb_index,
+                    mb_width,
+                    &motion_valid_l1,
+                    &motion_vectors_l1,
+                    &motion_vector_deltas_l1,
+                    &reference_indices_l1,
+                )?;
+                for block in 0..16 {
+                    motion_valid_l1[mb_index][block] = true;
+                    motion_vectors_l1[mb_index][block] = motion;
+                    motion_vector_deltas_l1[mb_index][block] = [delta[0].abs(), delta[1].abs()];
+                    reference_indices_l1[mb_index][block] = 0;
+                }
+                (Some(motion), Some(delta))
+            } else {
+                (None, None)
+            };
         let (residual, qp_delta, coded_flags) = decode_cabac_inter_residual(
             &mut decoder,
             &mut contexts,
@@ -795,22 +878,74 @@ pub fn decode_cabac_b_l0_16x16_slice(
             .map_err(|_| H264CabacError::Malformed("B16 residual"))?;
         let mb_x = (mb_index % mb_width) * 16;
         let mb_y = (mb_index / mb_width) * 16;
-        let reference = &references_l0[0];
-        motion_compensate_partition(
-            reference.luma,
-            reference.chroma_cb,
-            reference.chroma_cr,
-            &mut luma_plane,
-            &mut cb_plane,
-            &mut cr_plane,
-            mb_x,
-            mb_y,
-            16,
-            16,
-            motion_vector,
-            context.bit_depth_luma.min(context.bit_depth_chroma),
-            None,
-        )?;
+        if prediction_list != 2 {
+            let (reference, motion_vector) = if prediction_list == 0 {
+                (&references_l0[0], motion_vector_l0.unwrap())
+            } else {
+                (&references_l1[0], motion_vector_l1.unwrap())
+            };
+            motion_compensate_partition(
+                reference.luma,
+                reference.chroma_cb,
+                reference.chroma_cr,
+                &mut luma_plane,
+                &mut cb_plane,
+                &mut cr_plane,
+                mb_x,
+                mb_y,
+                16,
+                16,
+                motion_vector,
+                context.bit_depth_luma.min(context.bit_depth_chroma),
+                None,
+            )?;
+        } else {
+            let bit_depth = context.bit_depth_luma.min(context.bit_depth_chroma);
+            let (l0_y, l0_u, l0_v) = predict_16x16_partition(
+                references_l0[0].luma,
+                references_l0[0].chroma_cb,
+                references_l0[0].chroma_cr,
+                width,
+                height,
+                mb_x,
+                mb_y,
+                motion_vector_l0.unwrap(),
+                bit_depth,
+            );
+            let (l1_y, l1_u, l1_v) = predict_16x16_partition(
+                references_l1[0].luma,
+                references_l1[0].chroma_cb,
+                references_l1[0].chroma_cr,
+                width,
+                height,
+                mb_x,
+                mb_y,
+                motion_vector_l1.unwrap(),
+                bit_depth,
+            );
+            for row in 0..16 {
+                for column in 0..16 {
+                    luma_plane.data[(mb_y + row) * luma_plane.stride + mb_x + column] =
+                        ((u32::from(l0_y[row * 16 + column])
+                            + u32::from(l1_y[row * 16 + column])
+                            + 1)
+                            >> 1) as u16;
+                }
+            }
+            for row in 0..8 {
+                for column in 0..8 {
+                    let destination = (mb_y / 2 + row) * cb_plane.stride + mb_x / 2 + column;
+                    cb_plane.data[destination] = ((u32::from(l0_u[row * 8 + column])
+                        + u32::from(l1_u[row * 8 + column])
+                        + 1)
+                        >> 1) as u16;
+                    cr_plane.data[destination] = ((u32::from(l0_v[row * 8 + column])
+                        + u32::from(l1_v[row * 8 + column])
+                        + 1)
+                        >> 1) as u16;
+                }
+            }
+        }
         reconstruct_inter_macroblock(
             &residual_planes,
             context.bit_depth_luma.min(context.bit_depth_chroma),
@@ -833,10 +968,10 @@ pub fn decode_cabac_b_l0_16x16_slice(
             y: mb_y,
             width: 16,
             height: 16,
-            motion_vector,
-            motion_vector_delta,
+            motion_vector: motion_vector_l0.or(motion_vector_l1).unwrap(),
+            motion_vector_delta: motion_vector_delta_l0.or(motion_vector_delta_l1).unwrap(),
             reference_index: 0,
-            prediction_list: 0,
+            prediction_list,
         });
         macroblocks += 1;
         if decoder.decode_terminate() {
@@ -1135,6 +1270,68 @@ fn weighted_sample(sample: u16, prediction: WeightedPredictionPlane) -> u16 {
         (scaled + (1 << (prediction.log2_denom - 1))) >> prediction.log2_denom
     };
     interpolate_sample(scaled + prediction.offset, prediction.bit_depth)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_16x16_partition(
+    reference_luma: &[u16],
+    reference_chroma_cb: &[u16],
+    reference_chroma_cr: &[u16],
+    picture_width: usize,
+    picture_height: usize,
+    mb_x: usize,
+    mb_y: usize,
+    motion_vector: [i32; 2],
+    bit_depth: u8,
+) -> ([u16; 256], [u16; 64], [u16; 64]) {
+    let mut luma = [0u16; 256];
+    let mut cb = [0u16; 64];
+    let mut cr = [0u16; 64];
+    let luma_x = mb_x as i32 + (motion_vector[0] >> 2);
+    let luma_y = mb_y as i32 + (motion_vector[1] >> 2);
+    for row in 0..16 {
+        for column in 0..16 {
+            luma[row * 16 + column] = fractional_luma_prediction(
+                reference_luma,
+                picture_width,
+                picture_height,
+                luma_x + column as i32,
+                luma_y + row as i32,
+                motion_vector[0] & 3,
+                motion_vector[1] & 3,
+                bit_depth,
+            );
+        }
+    }
+    let chroma_x = mb_x as i32 / 2 + (motion_vector[0] >> 3);
+    let chroma_y = mb_y as i32 / 2 + (motion_vector[1] >> 3);
+    let chroma_width = picture_width / 2;
+    let chroma_height = picture_height / 2;
+    for row in 0..8 {
+        for column in 0..8 {
+            cb[row * 8 + column] = fractional_chroma_prediction(
+                reference_chroma_cb,
+                chroma_width,
+                chroma_height,
+                chroma_x + column as i32,
+                chroma_y + row as i32,
+                motion_vector[0] & 7,
+                motion_vector[1] & 7,
+                bit_depth,
+            );
+            cr[row * 8 + column] = fractional_chroma_prediction(
+                reference_chroma_cr,
+                chroma_width,
+                chroma_height,
+                chroma_x + column as i32,
+                chroma_y + row as i32,
+                motion_vector[0] & 7,
+                motion_vector[1] & 7,
+                bit_depth,
+            );
+        }
+    }
+    (luma, cb, cr)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,6 +1,6 @@
 use rk_mpp_rs::codec::h264::parser::{parse_pps, parse_slice_header, parse_sps, split_annex_b};
 use rk_mpp_rs::reference::h264_cabac::{
-    decode_cabac_b_l0_16x16_slice, decode_cabac_i_picture_slices, decode_cabac_p_multi_ref_slice,
+    decode_cabac_b16_slice, decode_cabac_i_picture_slices, decode_cabac_p_multi_ref_slice,
     decode_cabac_p_skip_slice, decode_cabac_p_slice, CabacReferenceFrame, DecodedMotionPartition,
 };
 use rk_mpp_rs::reference::h264_deblock::{deblock_i_picture, deblock_p_picture};
@@ -274,6 +274,27 @@ fn cabac_b_l0_16x16_matches_ffmpeg_yuv420p() {
     compare_cabac_b_l0_16x16_fixture(
         include_bytes!("../tests/data/h264_cabac_b_l0_16x16_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_b_l0_16x16_48x32.yuv"),
+        0,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_b_l1_16x16_matches_ffmpeg_yuv420p() {
+    compare_cabac_b_l0_16x16_fixture(
+        include_bytes!("../tests/data/h264_cabac_b_l1_16x16_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_b_l1_16x16_48x32.yuv"),
+        1,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_b_bi_16x16_matches_ffmpeg_yuv420p() {
+    compare_cabac_b_l0_16x16_fixture(
+        include_bytes!("../tests/data/h264_cabac_b_bi_16x16_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_b_bi_16x16_48x32.yuv"),
+        2,
     )
     .unwrap();
 }
@@ -1055,7 +1076,11 @@ fn compare_cabac_p16_multiref_fixture(stream: &[u8], expected: &[u8]) -> Result<
     compare_samples(&actual, frame2, &[y_len, chroma_len, chroma_len])
 }
 
-fn compare_cabac_b_l0_16x16_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {
+fn compare_cabac_b_l0_16x16_fixture(
+    stream: &[u8],
+    expected: &[u8],
+    expected_prediction_list: u8,
+) -> Result<(), String> {
     let nals = split_annex_b(stream);
     let sps = parse_sps(
         &nals
@@ -1133,7 +1158,7 @@ fn compare_cabac_b_l0_16x16_fixture(stream: &[u8], expected: &[u8]) -> Result<()
     let mut b_y = vec![0u16; y_len];
     let mut b_u = vec![0u16; chroma_len];
     let mut b_v = vec![0u16; chroma_len];
-    let decoded = decode_cabac_b_l0_16x16_slice(
+    let decoded = decode_cabac_b16_slice(
         &slice_nals[b_index].rbsp,
         &headers[b_index],
         &sps,
@@ -1151,12 +1176,12 @@ fn compare_cabac_b_l0_16x16_fixture(stream: &[u8], expected: &[u8]) -> Result<()
             decoded.macroblocks
         ));
     }
-    if decoded
-        .motion_partitions
-        .iter()
-        .any(|partition| partition.prediction_list != 0 || partition.reference_index != 0)
-    {
-        return Err("B fixture contains a non-L0 macroblock".into());
+    if decoded.motion_partitions.iter().any(|partition| {
+        partition.prediction_list != expected_prediction_list || partition.reference_index != 0
+    }) {
+        return Err(format!(
+            "B fixture did not decode as prediction list {expected_prediction_list}"
+        ));
     }
     let mut actual = Vec::with_capacity(frame_len);
     for plane in [&b_y, &b_u, &b_v] {

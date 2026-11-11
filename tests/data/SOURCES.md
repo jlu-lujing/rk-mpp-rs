@@ -314,6 +314,12 @@ cargo test --test fixture_manifest
   contexts, list-0 ref/MVD syntax, forward-only MC against the displayed I
   reference and B residual reconstruction. The complete displayed B frame
   matches FFmpeg sample-exactly.
+- `h264_cabac_b_l1_16x16_48x32` and `h264_cabac_b_bi_16x16_48x32` reuse the
+  same I/B/P source and restrictions, but force every B macroblock to
+  `B_L1_16x16` and `B_BI_16x16` respectively. x264 reports L1 100% and BI
+  100%. The pair exercises independent list-1 MV prediction, dual list-0/list-1
+  MVD order, temporary per-list prediction planes and normative
+  `(L0 + L1 + 1) >> 1` blending. Both displayed B frames match FFmpeg.
 - `h264_cabac_p16_48x32` is a two-frame 48x32 Main-profile CABAC stream with a
   constant-gray IDR followed by one-frame random luma noise. It was produced by
   a temporary local x264 source build whose analysis path was restricted to
