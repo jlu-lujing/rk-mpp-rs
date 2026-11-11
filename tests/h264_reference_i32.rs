@@ -1,6 +1,6 @@
 use rk_mpp_rs::codec::h264::parser::{parse_pps, parse_slice_header, parse_sps, split_annex_b};
 use rk_mpp_rs::reference::h264_cabac::{
-    decode_cabac_i_picture_slices, decode_cabac_p16_zero_mv_slice, decode_cabac_p_skip_slice,
+    decode_cabac_i_picture_slices, decode_cabac_p16_slice, decode_cabac_p_skip_slice,
 };
 use rk_mpp_rs::reference::h264_deblock::deblock_i_picture;
 use rk_mpp_rs::reference::h264_recon::PlaneMut;
@@ -164,6 +164,15 @@ fn cabac_p16_zero_mv_residuals_match_ffmpeg_yuv420p() {
     compare_cabac_p16_zero_mv_fixture(
         include_bytes!("../tests/data/h264_cabac_p16_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p16_48x32.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p16_integer_motion_matches_ffmpeg_yuv420p() {
+    compare_cabac_p16_motion_fixture(
+        include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.yuv"),
     )
     .unwrap();
 }
@@ -472,7 +481,7 @@ fn compare_cabac_p16_zero_mv_fixture(stream: &[u8], expected: &[u8]) -> Result<(
     let mut p_y = vec![0u16; width * height];
     let mut p_u = vec![0u16; cw * ch];
     let mut p_v = vec![0u16; cw * ch];
-    let p = decode_cabac_p16_zero_mv_slice(
+    let p = decode_cabac_p16_slice(
         &slice_nals[1].rbsp,
         &headers[1],
         &sps,
@@ -487,6 +496,9 @@ fn compare_cabac_p16_zero_mv_fixture(stream: &[u8], expected: &[u8]) -> Result<(
     .map_err(|error| error.to_string())?;
     if p.macroblocks != macroblocks {
         return Err(format!("P slice decoded {} macroblocks", p.macroblocks));
+    }
+    if p.motion_vectors.iter().any(|motion| *motion != [0, 0]) {
+        return Err("zero-motion P16 fixture produced a non-zero motion vector".into());
     }
     if p_y == reference_y && p_u == reference_u && p_v == reference_v {
         return Err("P16 fixture did not exercise an inter residual".into());
@@ -514,6 +526,101 @@ fn compare_cabac_p16_zero_mv_fixture(stream: &[u8], expected: &[u8]) -> Result<(
             p_u.len(),
             p_v.len(),
         ],
+    )
+}
+
+fn compare_cabac_p16_motion_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {
+    let nals = split_annex_b(stream);
+    let sps = parse_sps(
+        &nals
+            .iter()
+            .find(|nal| nal.unit_type == 7)
+            .ok_or("missing SPS")?
+            .rbsp,
+    )
+    .map_err(|error| error.to_string())?;
+    let pps = parse_pps(
+        &nals
+            .iter()
+            .find(|nal| nal.unit_type == 8)
+            .ok_or("missing PPS")?
+            .rbsp,
+    )
+    .map_err(|error| error.to_string())?;
+    let slice_nals: Vec<_> = nals.iter().filter(|nal| nal.is_vcl()).collect();
+    if slice_nals.len() != 2 {
+        return Err(format!("expected IDR+P, got {} slices", slice_nals.len()));
+    }
+    let headers: Vec<_> = slice_nals
+        .iter()
+        .map(|nal| {
+            parse_slice_header(&nal.rbsp, &sps, &pps, nal.unit_type, nal.ref_idc)
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    if !headers[0].is_i() || !headers[1].is_p() {
+        return Err("the integer-MV fixture must contain IDR+P".into());
+    }
+    if headers[0].deblocking_disable_idc != 1 || headers[1].deblocking_disable_idc != 1 {
+        return Err("the integer-MV fixture must disable deblocking".into());
+    }
+
+    let width = sps.coded_width as usize;
+    let height = sps.coded_height as usize;
+    let cw = width / 2;
+    let ch = height / 2;
+    let y_len = width * height;
+    let chroma_len = cw * ch;
+    let frame_len = y_len + 2 * chroma_len;
+    if expected.len() != frame_len * 2 {
+        return Err(format!(
+            "expected {frame_len} bytes per frame, got {} total",
+            expected.len()
+        ));
+    }
+    let reference_y: Vec<u16> = expected[..y_len]
+        .iter()
+        .map(|&sample| u16::from(sample))
+        .collect();
+    let reference_u: Vec<u16> = expected[y_len..y_len + chroma_len]
+        .iter()
+        .map(|&sample| u16::from(sample))
+        .collect();
+    let reference_v: Vec<u16> = expected[y_len + chroma_len..frame_len]
+        .iter()
+        .map(|&sample| u16::from(sample))
+        .collect();
+    let mut p_y = vec![0u16; y_len];
+    let mut p_u = vec![0u16; chroma_len];
+    let mut p_v = vec![0u16; chroma_len];
+    let p = decode_cabac_p16_slice(
+        &slice_nals[1].rbsp,
+        &headers[1],
+        &sps,
+        &pps,
+        &reference_y,
+        &reference_u,
+        &reference_v,
+        &mut p_y,
+        &mut p_u,
+        &mut p_v,
+    )
+    .map_err(|error| error.to_string())?;
+    if p.macroblocks != (width / 16) * (height / 16) {
+        return Err(format!("P slice decoded {} macroblocks", p.macroblocks));
+    }
+    if p.motion_vectors.iter().all(|motion| *motion == [0, 0]) {
+        return Err("integer-motion fixture produced only zero vectors".into());
+    }
+
+    let mut actual = Vec::with_capacity(frame_len);
+    for plane in [&p_y, &p_u, &p_v] {
+        actual.extend(plane.iter().map(|&sample| sample as u8));
+    }
+    compare_samples(
+        &actual,
+        &expected[frame_len..],
+        &[y_len, chroma_len, chroma_len],
     )
 }
 

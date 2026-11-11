@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1264 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1265 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1268 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1269 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -198,6 +198,30 @@ t62 back to the RK3588 reference board.
   preserve both rules.
 - At the persistent 80% OPP cap, `scripts/board_workspace_gate.sh` reports
   **1268 passed / 0 failed / 41 ignored**, and `cargo test --release --lib
+  --offline` reports **1117 passed / 0 failed / 0 ignored**. Fixture manifest,
+  rustfmt and strict workspace rustdoc pass.
+
+## 2026-11-12 H.264 CABAC integer-motion P16
+
+- A random-texture 48x32 source is cropped at x=0 and x=8. A temporary x264
+  trace build disables P-skip and all P sub-partitions/intra modes, then forces
+  each `P_L0_16x16` cache MV to `(+32, 0)` quarter-pel so the encoder computes
+  residuals against that exact vector. The P frame contains six P16
+  macroblocks with final MVs `(+32, 0)`: luma moves +8 pixels and 4:2:0 chroma
+  moves +4 pixels.
+- The focused gate `cabac_p16_integer_motion_matches_ffmpeg_yuv420p` passes. It
+  covers non-zero MVD syntax and sign, P16 MVP neighbour selection, integer
+  luma/chroma motion compensation, reference-edge extension and residual
+  reconstruction. The test supplies FFmpeg's IDR frame as reference picture 0;
+  the 2,304-byte P frame matches FFmpeg sample-exactly.
+- The first 8-pixel attempt exposed a reversed MVD bypass sign: x264 declared
+  `[-4,-8]` while Rust decoded `[+4,+8]`. The zero-MV gate could not observe
+  this. After fixing the sign, forced `+32` vectors decode consistently and all
+  six prediction offsets are non-zero.
+- Fractional luma/chroma vectors, P_16x8/P_8x16/P_8x8, weighted prediction,
+  deblocking and B-slice CABAC remain open.
+- At the persistent 80% OPP cap, `scripts/board_workspace_gate.sh` reports
+  **1269 passed / 0 failed / 41 ignored**, and `cargo test --release --lib
   --offline` reports **1117 passed / 0 failed / 0 ignored**. Fixture manifest,
   rustfmt and strict workspace rustdoc pass.
 

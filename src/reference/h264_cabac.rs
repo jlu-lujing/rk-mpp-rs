@@ -1,8 +1,8 @@
 //! H.264 CABAC intra and P-slice reconstruction.
 //!
 //! The current gates cover I16x16, I4x4, I8x8 and I_PCM syntax, multi-macroblock
-//! intra propagation, `P_Skip`, and zero-motion `P_L0_16x16` with CABAC
-//! residuals.
+//! intra propagation, `P_Skip`, and zero/integer-motion `P_L0_16x16` with
+//! CABAC residuals. Fractional motion remains explicit unsupported input.
 
 use std::fmt;
 
@@ -45,6 +45,8 @@ pub struct DecodedCabacSlice {
     pub end_bit: usize,
     pub final_qp: u8,
     pub deblock: DeblockMap,
+    /// Quarter-pixel motion vectors in macroblock raster order for P pictures.
+    pub motion_vectors: Vec<[i32; 2]>,
 }
 
 /// Reconstruct a CABAC P slice whose macroblocks all use `P_Skip`.
@@ -202,18 +204,18 @@ pub fn decode_cabac_p_skip_slice(
             luma_non_zero: vec![[0; 16]; total_mbs],
             chroma_non_zero: [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]],
         },
+        motion_vectors: Vec::new(),
     })
 }
 
-/// Reconstruct a CABAC P slice made entirely of zero-motion
-/// `P_L0_16x16` macroblocks.
+/// Reconstruct a CABAC P slice made entirely of `P_L0_16x16` macroblocks.
 ///
 /// This gate consumes the full P macroblock syntax, including MVD, coded-block
 /// pattern, QP delta and inter residuals, while rejecting every other P
-/// partition and non-zero motion. The zero motion predictor lets the picture
-/// be built by copying reference picture 0 before adding residual samples.
+/// partition. Motion compensation currently accepts integer-sample vectors;
+/// fractional vectors fail explicitly.
 #[allow(clippy::too_many_arguments)]
-pub fn decode_cabac_p16_zero_mv_slice(
+pub fn decode_cabac_p16_slice(
     rbsp: &[u8],
     slice: &SliceHeader,
     sps: &Sps,
@@ -311,6 +313,8 @@ pub fn decode_cabac_p16_zero_mv_slice(
     let mut qp = slice_qp;
     let mut last_qscale_diff = 0;
     let mut macroblocks = 0usize;
+    let mut motion_vectors = vec![[0i32; 2]; total_mbs];
+    let mut motion_vector_deltas = vec![[0i32; 2]; total_mbs];
     let mut luma_plane = PlaneMut {
         data: luma,
         width,
@@ -365,18 +369,22 @@ pub fn decode_cabac_p16_zero_mv_slice(
             ));
         }
 
+        let predicted_motion =
+            p16_motion_predictor(mb_index, mb_width, &state.decoded, &motion_vectors);
+        let neighbor_mvd_sum =
+            p16_neighbor_mvd_sum(mb_index, mb_width, &state.decoded, &motion_vector_deltas);
         let decoded_mb = decode_cabac_p16_macroblock(
             &mut decoder,
             &mut contexts,
             context,
             neighbors,
+            neighbor_mvd_sum,
             &mut last_qscale_diff,
         )?;
-        if decoded_mb.motion_vector_delta != [0, 0] {
-            return Err(H264CabacError::Unsupported(
-                "P16 with a non-zero motion vector",
-            ));
-        }
+        let motion_vector = [
+            predicted_motion[0] + decoded_mb.motion_vector_delta[0],
+            predicted_motion[1] + decoded_mb.motion_vector_delta[1],
+        ];
         qp = add_cabac_qp(qp, decoded_mb.qp_delta, max_qp)?;
         let options = super::h264_residual::ResidualPlaneOptions {
             qp: qp as u8,
@@ -395,7 +403,7 @@ pub fn decode_cabac_p16_zero_mv_slice(
                 .map_err(|_| H264CabacError::Malformed("P16 residual"))?;
         let mb_x = (mb_index % mb_width) * 16;
         let mb_y = (mb_index / mb_width) * 16;
-        copy_zero_motion_macroblock(
+        copy_integer_motion_macroblock(
             reference_luma,
             reference_chroma_cb,
             reference_chroma_cr,
@@ -404,6 +412,7 @@ pub fn decode_cabac_p16_zero_mv_slice(
             &mut cr_plane,
             mb_x,
             mb_y,
+            motion_vector,
         )?;
         reconstruct_inter_macroblock(
             &residual_planes,
@@ -422,6 +431,8 @@ pub fn decode_cabac_p16_zero_mv_slice(
         state.chroma_counts[1][mb_index].copy_from_slice(&decoded_mb.residual.chroma_non_zero[1]);
         state.coded_flags[mb_index] = decoded_mb.coded_flags;
         state.qp[mb_index] = qp as u8;
+        motion_vectors[mb_index] = motion_vector;
+        motion_vector_deltas[mb_index] = decoded_mb.motion_vector_delta;
         macroblocks += 1;
 
         let end_of_slice = decoder.decode_terminate();
@@ -438,11 +449,69 @@ pub fn decode_cabac_p16_zero_mv_slice(
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
         deblock: state.deblock_map(),
+        motion_vectors,
     })
 }
 
+fn p16_motion_predictor(
+    index: usize,
+    width: usize,
+    decoded: &[bool],
+    motion_vectors: &[[i32; 2]],
+) -> [i32; 2] {
+    let column = index % width;
+    let left = index
+        .checked_sub(1)
+        .filter(|_| column != 0)
+        .filter(|&left| decoded[left]);
+    let top = index.checked_sub(width).filter(|&top| decoded[top]);
+    let top_right = (column + 1 < width)
+        .then(|| index.checked_sub(width - 1))
+        .flatten()
+        .filter(|&top_right| decoded[top_right]);
+    let diagonal = top_right.or_else(|| {
+        (column != 0)
+            .then(|| index.checked_sub(width + 1))
+            .flatten()
+            .filter(|&top_left| decoded[top_left])
+    });
+    let a = left.map_or([0, 0], |left| motion_vectors[left]);
+    let b = top.map_or([0, 0], |top| motion_vectors[top]);
+    let c = diagonal.map_or([0, 0], |diagonal| motion_vectors[diagonal]);
+    match left.is_some() as u8 + top.is_some() as u8 + diagonal.is_some() as u8 {
+        2..=3 => median_motion_vector(a, b, c),
+        1 if left.is_some() => a,
+        1 if top.is_some() => b,
+        1 => c,
+        _ => [0, 0],
+    }
+}
+
+fn median_motion_vector(a: [i32; 2], b: [i32; 2], c: [i32; 2]) -> [i32; 2] {
+    let median = |a: i32, b: i32, c: i32| a + b + c - a.min(b).min(c) - a.max(b).max(c);
+    [median(a[0], b[0], c[0]), median(a[1], b[1], c[1])]
+}
+
+fn p16_neighbor_mvd_sum(
+    index: usize,
+    width: usize,
+    decoded: &[bool],
+    motion_vector_deltas: &[[i32; 2]],
+) -> [i32; 2] {
+    let left = index
+        .checked_sub(1)
+        .filter(|_| index % width != 0)
+        .filter(|&left| decoded[left])
+        .map_or([0, 0], |left| motion_vector_deltas[left]);
+    let top = index
+        .checked_sub(width)
+        .filter(|&top| decoded[top])
+        .map_or([0, 0], |top| motion_vector_deltas[top]);
+    [left[0] + top[0], left[1] + top[1]]
+}
+
 #[allow(clippy::too_many_arguments)]
-fn copy_zero_motion_macroblock(
+fn copy_integer_motion_macroblock(
     reference_luma: &[u16],
     reference_chroma_cb: &[u16],
     reference_chroma_cr: &[u16],
@@ -451,6 +520,7 @@ fn copy_zero_motion_macroblock(
     chroma_cr: &mut PlaneMut<'_>,
     mb_x: usize,
     mb_y: usize,
+    motion_vector: [i32; 2],
 ) -> Result<(), H264CabacError> {
     if mb_x + 16 > luma.width
         || mb_y + 16 > luma.height
@@ -461,19 +531,42 @@ fn copy_zero_motion_macroblock(
     {
         return Err(H264CabacError::Malformed("P16 prediction geometry"));
     }
+    if motion_vector[0] % 4 != 0 || motion_vector[1] % 4 != 0 {
+        return Err(H264CabacError::Unsupported("fractional P16 luma motion"));
+    }
+    if motion_vector[0] % 8 != 0 || motion_vector[1] % 8 != 0 {
+        return Err(H264CabacError::Unsupported("fractional P16 chroma motion"));
+    }
+    let luma_x = mb_x as i32 + motion_vector[0] / 4;
+    let luma_y = mb_y as i32 + motion_vector[1] / 4;
+    let chroma_x = mb_x as i32 / 2 + motion_vector[0] / 8;
+    let chroma_y = mb_y as i32 / 2 + motion_vector[1] / 8;
+    let max_luma_x = luma.width.saturating_sub(1) as i32;
+    let max_luma_y = luma.height.saturating_sub(1) as i32;
+    let max_cb_x = chroma_cb.width.saturating_sub(1) as i32;
+    let max_cb_y = chroma_cb.height.saturating_sub(1) as i32;
+    let max_cr_x = chroma_cr.width.saturating_sub(1) as i32;
+    let max_cr_y = chroma_cr.height.saturating_sub(1) as i32;
     for row in 0..16 {
-        let source = (mb_y + row) * luma.width + mb_x;
         let destination = (mb_y + row) * luma.stride + mb_x;
-        luma.data[destination..destination + 16]
-            .copy_from_slice(&reference_luma[source..source + 16]);
+        let source_y = (luma_y + row as i32).clamp(0, max_luma_y) as usize;
+        for column in 0..16 {
+            let source_x = (luma_x + column as i32).clamp(0, max_luma_x) as usize;
+            luma.data[destination + column] = reference_luma[source_y * luma.width + source_x];
+        }
     }
     for row in 0..8 {
-        let source = (mb_y / 2 + row) * chroma_cb.width + mb_x / 2;
         let destination = (mb_y / 2 + row) * chroma_cb.stride + mb_x / 2;
-        chroma_cb.data[destination..destination + 8]
-            .copy_from_slice(&reference_chroma_cb[source..source + 8]);
-        chroma_cr.data[destination..destination + 8]
-            .copy_from_slice(&reference_chroma_cr[source..source + 8]);
+        let cb_y = (chroma_y + row as i32).clamp(0, max_cb_y) as usize;
+        let cr_y = (chroma_y + row as i32).clamp(0, max_cr_y) as usize;
+        for column in 0..8 {
+            let cb_x = (chroma_x + column as i32).clamp(0, max_cb_x) as usize;
+            let cr_x = (chroma_x + column as i32).clamp(0, max_cr_x) as usize;
+            chroma_cb.data[destination + column] =
+                reference_chroma_cb[cb_y * chroma_cb.width + cb_x];
+            chroma_cr.data[destination + column] =
+                reference_chroma_cr[cr_y * chroma_cr.width + cr_x];
+        }
     }
     Ok(())
 }
@@ -747,6 +840,7 @@ pub fn decode_cabac_i_slice(
                         vec![residual.chroma_non_zero[1].clone()],
                     ],
                 },
+                motion_vectors: Vec::new(),
             });
         }
         let mut type_index = 1usize;
@@ -1008,6 +1102,7 @@ pub fn decode_cabac_i_slice(
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
         deblock,
+        motion_vectors: Vec::new(),
     })
 }
 
@@ -1091,6 +1186,7 @@ pub fn decode_cabac_i_picture_slices(
                 end_bit,
                 final_qp,
                 deblock: state.deblock_map(),
+                motion_vectors: Vec::new(),
             });
         }
     }
@@ -1099,6 +1195,7 @@ pub fn decode_cabac_i_picture_slices(
         end_bit,
         final_qp,
         deblock: state.deblock_map(),
+        motion_vectors: Vec::new(),
     })
 }
 
@@ -1257,6 +1354,7 @@ fn decode_cabac_i_slice_into_picture(
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
         deblock: state.deblock_map(),
+        motion_vectors: Vec::new(),
     })
 }
 
@@ -1329,6 +1427,7 @@ fn decode_cabac_p16_macroblock(
     contexts: &mut [Context],
     context: MacroblockContext,
     neighbors: CabacMbNeighbors,
+    neighbor_mvd_sum: [i32; 2],
     last_qscale_diff: &mut i32,
 ) -> Result<DecodedCabacPMacroblock, H264CabacError> {
     if decoder.decode_bin(&mut contexts[14]) != 0 {
@@ -1345,8 +1444,8 @@ fn decode_cabac_p16_macroblock(
         return Err(H264CabacError::Unsupported("P slice contains P_8x8"));
     }
 
-    let mvd_x = decode_cabac_mvd(decoder, contexts, 40, 0)?;
-    let mvd_y = decode_cabac_mvd(decoder, contexts, 47, 0)?;
+    let mvd_x = decode_cabac_mvd(decoder, contexts, 40, neighbor_mvd_sum[0])?;
+    let mvd_y = decode_cabac_mvd(decoder, contexts, 47, neighbor_mvd_sum[1])?;
     let cbp = decode_cabac_cbp(decoder, contexts, neighbors);
     let qp_delta = if cbp != 0 {
         decode_cabac_qp_delta(decoder, contexts, last_qscale_diff)?
@@ -1474,7 +1573,7 @@ fn decode_cabac_mvd(
             magnitude += (decoder.decode_bypass() as i32) << shift;
         }
     }
-    Ok(if decoder.decode_bypass() == 0 {
+    Ok(if decoder.decode_bypass() != 0 {
         -magnitude
     } else {
         magnitude

@@ -316,6 +316,15 @@ cargo test --test fixture_manifest
   I16 and 100% P16. The fixture exercises P macroblock type, zero MVD, CBP,
   macroblock QP, inter 4x4 residuals and reconstruction across six
   macroblocks; all 4,608 decoded bytes match FFmpeg.
+- `h264_cabac_p16_mv_48x32` uses the same 48x32 Main-profile setup with a
+  random-noise source frame cropped at x=0 and x=8. A temporary x264 trace build
+  disables P-skip and all P sub-partitions/intra modes and forces every
+  `P_L0_16x16` motion vector to `(+32, 0)` quarter-pel samples (luma +8 pixels,
+  4:2:0 chroma +4 pixels). The encoder recomputes residuals against that motion
+  vector; FFmpeg verifies the resulting stream. The gate covers non-zero MVD
+  parsing/sign, MVP propagation, integer luma/chroma motion compensation and
+  edge extension. The decoder test supplies FFmpeg's first frame as reference
+  picture 0 and compares the complete P frame.
 - `h264_i_pcm_cabac` is a 16x16 High-4:4:4-Intra `qp=0` CABAC stream using
   100% I_PCM macroblocks. It locks the raw 4:2:0 sample payload, byte
   realignment and arithmetic-decoder restart behavior.
