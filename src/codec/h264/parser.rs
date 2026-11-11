@@ -599,11 +599,11 @@ pub struct Weights {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WeightEntry {
     pub luma_flag: bool,
-    pub delta_luma_weight: i32,
+    pub luma_weight: i32,
     pub luma_offset: i32,
     pub chroma_flag: bool,
-    pub delta_chroma_weight: [i32; 2],
-    pub delta_chroma_offset: [i32; 2],
+    pub chroma_weight: [i32; 2],
+    pub chroma_offset: [i32; 2],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -819,9 +819,9 @@ pub fn parse_slice_header(
             sh.deblocking_beta = r.read_se()?;
         }
     }
-    // CABAC 9-bit alignment before the slice data.
+    // CABAC alignment before the slice data.
     if pps.entropy_coding && !r.is_aligned_byte() {
-        sh.data_offset_bits = (r.bit_pos() + 9) & !7;
+        sh.data_offset_bits = (r.bit_pos() + 7) & !7;
     } else {
         sh.data_offset_bits = r.bit_pos();
     }
@@ -838,15 +838,15 @@ fn read_weight_entries(
         let mut e = WeightEntry::default();
         e.luma_flag = r.read_bit()? == 1;
         if e.luma_flag {
-            e.delta_luma_weight = r.read_se()?;
+            e.luma_weight = r.read_se()?;
             e.luma_offset = r.read_se()?;
         }
         if chroma {
             e.chroma_flag = r.read_bit()? == 1;
             if e.chroma_flag {
                 for c in 0..2 {
-                    e.delta_chroma_weight[c] = r.read_se()?;
-                    e.delta_chroma_offset[c] = r.read_se()?;
+                    e.chroma_weight[c] = r.read_se()?;
+                    e.chroma_offset[c] = r.read_se()?;
                 }
             }
         }
@@ -1229,7 +1229,7 @@ mod real_bitstream_tests {
         let w = sh.weights.as_ref().unwrap();
         assert_eq!(w.l0.len(), 4);
         assert!(w.l0[1].luma_flag);
-        assert_eq!(w.l0[1].delta_luma_weight, 1);
+        assert_eq!(w.l0[1].luma_weight, 1);
         assert_eq!(w.l0[1].luma_offset, -1);
         assert_eq!(sh.mmco, vec![Mmco::UnmarkShort(3)]);
         assert_eq!(sh.cabac_init_idc, Some(0));

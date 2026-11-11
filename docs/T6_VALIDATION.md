@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1272 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1274 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1276 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1278 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -296,6 +296,31 @@ t62 back to the RK3588 reference board.
   / 41 ignored**, and release-library tests are **1120 passed / 0 failed /
   0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
 - Weighted/deblock P pictures and B-slice CABAC remain open.
+
+## 2026-11-12 H.264 CABAC explicit weighted P_L0_16x16
+
+- A new two-frame 48x32 Main-profile stream forces explicit weighted
+  prediction with luma scale/offset `3/8` at denominator 2 and U/V `7/4` at
+  denominator 3. x264 reports weighted P frames for Y and UV at 100%; P-skip,
+  P subpartitions, intra P and transform-8x8 stay disabled. Stream SHA-256 is
+  `2f15b4d68909169af744847e567077587abf42c6841211afb08b9b1641404eb9`,
+  decoded YUV is
+  `346c0689eaa1a4a01fc6cded3b80c5631b206ff24aab4e1d1c8dad9e75ab3502`.
+- The slice header ends at bit 71, exposing an existing alignment bug: the
+  parser's `+9` CABAC rounding skipped one extra byte and started slice data
+  at bit 80. It now rounds to the next byte boundary at bit 72, matching x264
+  and FFmpeg.
+- Explicit weights are applied after luma/chroma interpolation with the
+  normative rounded scale, bit-depth-scaled offset and clipping, before the
+  shared residual is added. The fixture exercises all three planes. All 4,608
+  decoded bytes match FFmpeg. Weighted P_Skip uses the same sample transform
+  but still needs a dedicated fixture.
+- The H.264 CABAC integration suite is **8/8**, the focused CABAC unit suite is
+  **9/9**, the crate `--all-targets` gate is **1274 passed / 0 failed /
+  41 ignored**, `scripts/board_workspace_gate.sh` is **1278 passed / 0 failed
+  / 41 ignored**, and release-library tests are **1121 passed / 0 failed /
+  0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
+- Weighted P_Skip, P-frame deblocking and B-slice CABAC remain open.
 
 ## 2026-11-08 W5-4 pool closeout
 

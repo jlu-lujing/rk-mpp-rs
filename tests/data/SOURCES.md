@@ -325,6 +325,14 @@ cargo test --test fixture_manifest
   parsing/sign, MVP propagation, integer luma/chroma motion compensation and
   edge extension. The decoder test supplies FFmpeg's first frame as reference
   picture 0 and compares the complete P frame.
+- `h264_cabac_p16_weighted_48x32` is a two-frame explicit weighted-prediction
+  stream with `luma_log2_weight_denom=2`, luma scale/offset `3/8`, and
+  `chroma_log2_weight_denom=3` with U/V scale/offset `7/4`. The temporary x264
+  build forces the table while P-skip, P subpartitions and P intra modes stay
+  disabled. The fixture exercises the pred_weight_table syntax, CABAC slice
+  alignment at a non-byte-boundary header end, weighted luma and both chroma
+  planes, rounded scaling, clipping and residual reconstruction. The complete
+  FFmpeg P frame matches sample-exactly.
 - `h264_cabac_p16_fractional_mv_48x32` repeats the random-texture crop pair
   with the temporary x264 build's normal subpel motion search (`subme=2`) while
   still forbidding P-skip, sub-partitions and intra modes. The six final P16

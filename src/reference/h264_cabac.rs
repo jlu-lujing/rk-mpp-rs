@@ -95,9 +95,6 @@ pub fn decode_cabac_p_skip_slice(
     if pps.num_slice_groups != 1 {
         return Err(H264CabacError::Unsupported("P_Skip slice groups"));
     }
-    if pps.weighted_pred {
-        return Err(H264CabacError::Unsupported("weighted P_Skip"));
-    }
     if !pps.deblocking_filter_control || slice.deblocking_disable_idc != 1 {
         return Err(H264CabacError::Unsupported("P_Skip deblocking"));
     }
@@ -114,6 +111,7 @@ pub fn decode_cabac_p_skip_slice(
     if context.chroma_format_idc != 1 {
         return Err(H264CabacError::Unsupported("P_Skip requires 4:2:0 chroma"));
     }
+    let weighted_prediction = weighted_prediction(slice, context)?;
     let mb_width = usize::try_from(sps.coded_width / 16)
         .map_err(|_| H264CabacError::Malformed("macroblock width"))?;
     let mb_height = usize::try_from(sps.coded_height / 16)
@@ -186,12 +184,25 @@ pub fn decode_cabac_p_skip_slice(
         let chroma_y = mb_y / 2;
         for row in 0..16 {
             let start = (mb_y + row) * width + mb_x;
-            luma[start..start + 16].copy_from_slice(&reference_luma[start..start + 16]);
+            for column in 0..16 {
+                let sample = reference_luma[start + column];
+                luma[start + column] = weighted_prediction
+                    .map(|prediction| weighted_sample(sample, prediction.luma))
+                    .unwrap_or(sample);
+            }
         }
         for row in 0..8 {
             let start = (chroma_y + row) * chroma_width + chroma_x;
-            chroma_cb[start..start + 8].copy_from_slice(&reference_chroma_cb[start..start + 8]);
-            chroma_cr[start..start + 8].copy_from_slice(&reference_chroma_cr[start..start + 8]);
+            for column in 0..8 {
+                let cb = reference_chroma_cb[start + column];
+                let cr = reference_chroma_cr[start + column];
+                chroma_cb[start + column] = weighted_prediction
+                    .map(|prediction| weighted_sample(cb, prediction.chroma[0]))
+                    .unwrap_or(cb);
+                chroma_cr[start + column] = weighted_prediction
+                    .map(|prediction| weighted_sample(cr, prediction.chroma[1]))
+                    .unwrap_or(cr);
+            }
         }
 
         decoded[mb_index] = true;
@@ -255,9 +266,6 @@ pub fn decode_cabac_p_slice(
     if pps.num_slice_groups != 1 {
         return Err(H264CabacError::Unsupported("P partition slice groups"));
     }
-    if pps.weighted_pred {
-        return Err(H264CabacError::Unsupported("weighted P partitions"));
-    }
     if pps.transform_8x8 {
         return Err(H264CabacError::Unsupported("P partition transform8x8"));
     }
@@ -286,6 +294,11 @@ pub fn decode_cabac_p_slice(
             "P partitions require 4:2:0 chroma",
         ));
     }
+    let weighted_prediction = if pps.weighted_pred {
+        weighted_prediction(slice, context)?
+    } else {
+        None
+    };
     let mb_width = usize::try_from(sps.coded_width / 16)
         .map_err(|_| H264CabacError::Malformed("macroblock width"))?;
     let mb_height = usize::try_from(sps.coded_height / 16)
@@ -437,6 +450,7 @@ pub fn decode_cabac_p_slice(
                 partition.height,
                 partition.motion_vector,
                 context.bit_depth_luma.min(context.bit_depth_chroma),
+                weighted_prediction,
             )?;
         }
         reconstruct_inter_macroblock(
@@ -604,6 +618,84 @@ fn partition_neighbor_mvd_sum(
     [left[0] + top[0], left[1] + top[1]]
 }
 
+fn weighted_prediction(
+    slice: &SliceHeader,
+    context: MacroblockContext,
+) -> Result<Option<WeightedPrediction>, H264CabacError> {
+    let Some(weights) = slice.weights.as_ref() else {
+        return Ok(None);
+    };
+    let entry = weights
+        .l0
+        .first()
+        .ok_or(H264CabacError::Malformed("P weighted-prediction table"))?;
+    if weights.luma_log2_denom > 7 || weights.chroma_log2_denom > 7 {
+        return Err(H264CabacError::Malformed(
+            "P weighted-prediction denominator",
+        ));
+    }
+    let luma_base = 1i32 << weights.luma_log2_denom;
+    let chroma_base = 1i32 << weights.chroma_log2_denom;
+    let luma = if entry.luma_flag {
+        WeightedPredictionPlane {
+            weight: entry.luma_weight,
+            offset: entry.luma_offset * (1 << (context.bit_depth_luma - 8)),
+            log2_denom: weights.luma_log2_denom,
+            bit_depth: context.bit_depth_luma,
+        }
+    } else {
+        WeightedPredictionPlane {
+            weight: luma_base,
+            offset: 0,
+            log2_denom: weights.luma_log2_denom,
+            bit_depth: context.bit_depth_luma,
+        }
+    };
+    let chroma = if entry.chroma_flag {
+        let offset_scale = 1i32 << (context.bit_depth_chroma - 8);
+        [
+            WeightedPredictionPlane {
+                weight: entry.chroma_weight[0],
+                offset: entry.chroma_offset[0] * offset_scale,
+                log2_denom: weights.chroma_log2_denom,
+                bit_depth: context.bit_depth_chroma,
+            },
+            WeightedPredictionPlane {
+                weight: entry.chroma_weight[1],
+                offset: entry.chroma_offset[1] * offset_scale,
+                log2_denom: weights.chroma_log2_denom,
+                bit_depth: context.bit_depth_chroma,
+            },
+        ]
+    } else {
+        [
+            WeightedPredictionPlane {
+                weight: chroma_base,
+                offset: 0,
+                log2_denom: weights.chroma_log2_denom,
+                bit_depth: context.bit_depth_chroma,
+            },
+            WeightedPredictionPlane {
+                weight: chroma_base,
+                offset: 0,
+                log2_denom: weights.chroma_log2_denom,
+                bit_depth: context.bit_depth_chroma,
+            },
+        ]
+    };
+    Ok(Some(WeightedPrediction { luma, chroma }))
+}
+
+fn weighted_sample(sample: u16, prediction: WeightedPredictionPlane) -> u16 {
+    let scaled = i32::from(sample) * prediction.weight;
+    let scaled = if prediction.log2_denom == 0 {
+        scaled
+    } else {
+        (scaled + (1 << (prediction.log2_denom - 1))) >> prediction.log2_denom
+    };
+    interpolate_sample(scaled + prediction.offset, prediction.bit_depth)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn motion_compensate_partition(
     reference_luma: &[u16],
@@ -618,6 +710,7 @@ fn motion_compensate_partition(
     partition_height: usize,
     motion_vector: [i32; 2],
     bit_depth: u8,
+    weighted_prediction: Option<WeightedPrediction>,
 ) -> Result<(), H264CabacError> {
     if partition_width % 4 != 0
         || partition_height % 4 != 0
@@ -637,7 +730,7 @@ fn motion_compensate_partition(
     for row in 0..partition_height {
         let destination = (partition_y + row) * luma.stride + partition_x;
         for column in 0..partition_width {
-            luma.data[destination + column] = fractional_luma_prediction(
+            let sample = fractional_luma_prediction(
                 reference_luma,
                 luma.width,
                 luma.height,
@@ -647,6 +740,9 @@ fn motion_compensate_partition(
                 luma_fraction_y,
                 bit_depth,
             );
+            luma.data[destination + column] = weighted_prediction
+                .map(|prediction| weighted_sample(sample, prediction.luma))
+                .unwrap_or(sample);
         }
     }
 
@@ -657,7 +753,7 @@ fn motion_compensate_partition(
     for row in 0..partition_height / 2 {
         let destination = (partition_y / 2 + row) * chroma_cb.stride + partition_x / 2;
         for column in 0..partition_width / 2 {
-            chroma_cb.data[destination + column] = fractional_chroma_prediction(
+            let cb = fractional_chroma_prediction(
                 reference_chroma_cb,
                 chroma_cb.width,
                 chroma_cb.height,
@@ -667,7 +763,7 @@ fn motion_compensate_partition(
                 chroma_y_fraction,
                 bit_depth,
             );
-            chroma_cr.data[destination + column] = fractional_chroma_prediction(
+            let cr = fractional_chroma_prediction(
                 reference_chroma_cr,
                 chroma_cr.width,
                 chroma_cr.height,
@@ -677,6 +773,12 @@ fn motion_compensate_partition(
                 chroma_y_fraction,
                 bit_depth,
             );
+            chroma_cb.data[destination + column] = weighted_prediction
+                .map(|prediction| weighted_sample(cb, prediction.chroma[0]))
+                .unwrap_or(cb);
+            chroma_cr.data[destination + column] = weighted_prediction
+                .map(|prediction| weighted_sample(cr, prediction.chroma[1]))
+                .unwrap_or(cr);
         }
     }
     Ok(())
@@ -881,6 +983,20 @@ struct DecodedCabacPMacroblock {
     qp_delta: i32,
     partitions: Vec<DecodedMotionPartition>,
     coded_flags: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WeightedPredictionPlane {
+    weight: i32,
+    offset: i32,
+    log2_denom: u32,
+    bit_depth: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WeightedPrediction {
+    luma: WeightedPredictionPlane,
+    chroma: [WeightedPredictionPlane; 2],
 }
 
 fn decode_i_pcm_macroblock(
@@ -3164,6 +3280,34 @@ mod tests {
                 (8, 12, 4, 4),
                 (12, 12, 4, 4),
             ]
+        );
+    }
+
+    #[test]
+    fn explicit_weighted_prediction_rounds_and_clips() {
+        assert_eq!(
+            weighted_sample(
+                100,
+                WeightedPredictionPlane {
+                    weight: 3,
+                    offset: 8,
+                    log2_denom: 2,
+                    bit_depth: 8,
+                }
+            ),
+            83
+        );
+        assert_eq!(
+            weighted_sample(
+                200,
+                WeightedPredictionPlane {
+                    weight: 1,
+                    offset: 100,
+                    log2_denom: 0,
+                    bit_depth: 8,
+                }
+            ),
+            255
         );
     }
 }

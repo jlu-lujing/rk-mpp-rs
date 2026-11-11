@@ -176,6 +176,7 @@ fn cabac_p16_integer_motion_matches_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.yuv"),
         false,
         PartitionLayout::Uniform(16, 16),
+        None,
     )
     .unwrap();
 }
@@ -187,6 +188,7 @@ fn cabac_p16_fractional_motion_matches_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p16_fractional_mv_48x32.yuv"),
         true,
         PartitionLayout::Uniform(16, 16),
+        None,
     )
     .unwrap();
 }
@@ -198,6 +200,7 @@ fn cabac_p16x8_two_motion_vectors_match_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p16x8_48x32.yuv"),
         false,
         PartitionLayout::Uniform(16, 8),
+        None,
     )
     .unwrap();
 }
@@ -209,6 +212,7 @@ fn cabac_p8x16_two_motion_vectors_match_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p8x16_48x32.yuv"),
         false,
         PartitionLayout::Uniform(8, 16),
+        None,
     )
     .unwrap();
 }
@@ -220,6 +224,19 @@ fn cabac_p8x8_mixed_subpartitions_match_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p8x8_48x32.yuv"),
         false,
         PartitionLayout::P8x8,
+        None,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p16_explicit_weighted_prediction_matches_ffmpeg_yuv420p() {
+    compare_cabac_p16_motion_fixture(
+        include_bytes!("../tests/data/h264_cabac_p16_weighted_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p16_weighted_48x32.yuv"),
+        false,
+        PartitionLayout::Uniform(16, 16),
+        Some((true, true)),
     )
     .unwrap();
 }
@@ -666,6 +683,7 @@ fn compare_cabac_p16_motion_fixture(
     expected: &[u8],
     requires_fractional_motion: bool,
     layout: PartitionLayout,
+    expected_weights: Option<(bool, bool)>,
 ) -> Result<(), String> {
     let nals = split_annex_b(stream);
     let sps = parse_sps(
@@ -700,6 +718,28 @@ fn compare_cabac_p16_motion_fixture(
     }
     if headers[0].deblocking_disable_idc != 1 || headers[1].deblocking_disable_idc != 1 {
         return Err("the integer-MV fixture must disable deblocking".into());
+    }
+    if let Some((expected_luma, expected_chroma)) = expected_weights {
+        let weights = headers[1]
+            .weights
+            .as_ref()
+            .ok_or("weighted P fixture has no pred_weight_table")?;
+        let entry = weights
+            .l0
+            .first()
+            .ok_or("weighted P fixture has no L0 entry")?;
+        if headers[1].data_offset_bits != 72 {
+            return Err(format!(
+                "weighted P CABAC starts at {} bits, expected 72",
+                headers[1].data_offset_bits
+            ));
+        }
+        if entry.luma_flag != expected_luma || entry.chroma_flag != expected_chroma {
+            return Err(format!(
+                "unexpected weighted flags luma={} chroma={}",
+                entry.luma_flag, entry.chroma_flag
+            ));
+        }
     }
 
     let width = sps.coded_width as usize;
