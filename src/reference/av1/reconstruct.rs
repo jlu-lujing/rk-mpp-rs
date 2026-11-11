@@ -718,6 +718,7 @@ mod tests {
             palette: PaletteModeInfo::default(),
             palette_tokens: PaletteTokens { y: None, uv: None },
             tx: TxSize::Tx4x4,
+            intrabc_dv: None,
             transforms: vec![IntraSyntaxTx {
                 plane: 0,
                 x: 0,
@@ -790,6 +791,7 @@ mod tests {
                 uv: None,
             },
             tx: TxSize::Tx4x4,
+            intrabc_dv: None,
             transforms: vec![IntraSyntaxTx {
                 plane: 0,
                 x: 0,
@@ -854,6 +856,7 @@ mod tests {
             palette: PaletteModeInfo::default(),
             palette_tokens: PaletteTokens { y: None, uv: None },
             tx: TxSize::Tx4x4,
+            intrabc_dv: None,
             transforms: vec![IntraSyntaxTx {
                 plane: 0,
                 x: 0,
@@ -919,6 +922,7 @@ mod tests {
             palette: PaletteModeInfo::default(),
             palette_tokens: PaletteTokens { y: None, uv: None },
             tx: TxSize::Tx4x4,
+            intrabc_dv: None,
             transforms: vec![IntraSyntaxTx {
                 plane: 1,
                 x: 0,

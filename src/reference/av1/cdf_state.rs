@@ -150,6 +150,7 @@ impl MvCdfs {
 pub struct CdfState {
     tables: Vec<Vec<u16>>,
     pub mv: MvCdfs,
+    pub dv: MvCdfs,
 }
 
 impl Default for CdfState {
@@ -163,6 +164,7 @@ impl CdfState {
         Self {
             tables: TABLES.iter().map(|table| table.values.to_vec()).collect(),
             mv: MvCdfs::default(),
+            dv: MvCdfs::default(),
         }
     }
 
@@ -242,6 +244,7 @@ impl CdfState {
             }
         }
         self.mv.reset_symbol_counters();
+        self.dv.reset_symbol_counters();
     }
 
     /// AV1 keeps one active coefficient-CDF q-context per frame. When a tile

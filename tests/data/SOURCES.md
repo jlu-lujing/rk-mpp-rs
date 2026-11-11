@@ -22,6 +22,15 @@ cargo test --test fixture_manifest
   inter-intra, interintra/masked/warped/OBMC candidates and nearby
   `NEWMV` context. Its three displayed frames match stock `aomdec` with FNV-1a
   `3a3ac8702504f818`, `feb795c9af578d86` and `3fa247cf03083531`.
+- `av1_intrabc_palette_320x320.ivf` is the three-frame 320x320 `testsrc2`
+  input encoded by libaom 3.6.0 with the default screen-content tools retained.
+  The stream enables IntraBC and palette and contains 20 IntraBC blocks across
+  its key and inter frames, plus luma/chroma palette blocks. Every coded frame
+  uses the same one-column/two-row tile layout. Its three displayed Y/U/V
+  frames match stock `aomdec` with FNV-1a hashes
+  `996b85d532070894/6259ac5235216584/2f1b2f8d4387861c`,
+  `beee2dc6561fce58/1770358636fc0196/f3a48d8c4bfcab5c` and
+  `3942d84cd4654ccf/770a06024e21a8e3/73bebeea68714a5d`.
 - `av1_tile_rows_320x320.ivf` is three frames of 320x320 `testsrc2` encoded
   on t6 by libaom 3.6.0 `aomenc` at CQ 32 with
   `--tile-columns=0 --tile-rows=1 --row-mt=0 --lag-in-frames=0`,

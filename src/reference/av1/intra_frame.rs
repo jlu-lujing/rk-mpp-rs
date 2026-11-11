@@ -9,12 +9,15 @@ use crate::reference::av1::deblock::{
     DeblockCell, DeblockEdgeInfo, DeblockGrid, DeblockPlane, SEG_LVL_ALT_LF_Y_V,
 };
 use crate::reference::av1::frame_header::FrameHeader;
+use crate::reference::av1::inter::MotionVector;
 use crate::reference::av1::intra::{IntraMode, UvMode};
 use crate::reference::av1::intra_sink::IntraSyntaxBlock;
 use crate::reference::av1::intra_sink::{IntraTileBlockSink, IntraTileConfig};
 use crate::reference::av1::lr_frame::{apply_loop_restoration, LrFrameParams, LrPlaneGeometry};
+use crate::reference::av1::quant::{ac_q, dc_q};
 use crate::reference::av1::reconstruct::{
-    reconstruct_intra_block_plane_with_grid, DecodedPlane, PlaneQDelta, ReconstructedLuma,
+    quant_to_plane_order, reconstruct_block, reconstruct_intra_block_plane_with_grid, DecodedPlane,
+    PlaneQDelta, ReconstructedLuma,
 };
 use crate::reference::av1::residual::plane_tx_size;
 use crate::reference::av1::segment::{SegmentCarry, SegmentMap};
@@ -170,6 +173,163 @@ pub(crate) fn chroma_neighbor_modes(
     (at(above_row, above_col), at(left_row, left_col))
 }
 
+fn copy_intrabc_plane(
+    plane: &mut PlaneBuffer,
+    block_col: usize,
+    block_row: usize,
+    block_width: usize,
+    block_height: usize,
+    dv: MotionVector,
+    sub_x: u32,
+    sub_y: u32,
+) -> Result<(), &'static str> {
+    let dst_x = (block_col * 4) >> sub_x;
+    let dst_y = (block_row * 4) >> sub_y;
+    let width = (block_width >> sub_x).min(plane.width.saturating_sub(dst_x));
+    let height = (block_height >> sub_y).min(plane.height.saturating_sub(dst_y));
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let src_x = dst_x as isize + (dv.col >> (3 + sub_x)) as isize;
+    let src_y = dst_y as isize + (dv.row >> (3 + sub_y)) as isize;
+    if src_x < 0
+        || src_y < 0
+        || src_x + width as isize > plane.width as isize
+        || src_y + height as isize > plane.height as isize
+    {
+        return Err("IntraBC source is outside the plane");
+    }
+
+    let mut samples = vec![0u16; width * height];
+    for row in 0..height {
+        let start = (src_y as usize + row) * plane.stride + src_x as usize;
+        samples[row * width..(row + 1) * width].copy_from_slice(&plane.data[start..start + width]);
+    }
+    for row in 0..height {
+        let start = (dst_y + row) * plane.stride + dst_x;
+        plane.data[start..start + width].copy_from_slice(&samples[row * width..(row + 1) * width]);
+    }
+    Ok(())
+}
+
+fn apply_intrabc_residuals(
+    plane: &mut PlaneBuffer,
+    plane_index: usize,
+    block: &IntraSyntaxBlock,
+    q_delta: PlaneQDelta,
+    bit_depth: u32,
+) -> Result<(), &'static str> {
+    let qindex = (i32::from(block.qindex) + q_delta.dc).clamp(0, 255);
+    let dc_quant = dc_q(bit_depth, qindex);
+    let ac_quant = ac_q(bit_depth, qindex + q_delta.ac - q_delta.dc);
+    for tx in block
+        .transforms
+        .iter()
+        .filter(|entry| entry.plane == plane_index)
+    {
+        let width = tx.tx.width() as usize;
+        let height = tx.tx.height() as usize;
+        if tx.x + width > plane.width || tx.y + height > plane.height {
+            return Err("IntraBC residual exceeds its plane");
+        }
+        let mut prediction = vec![0u16; width * height];
+        for row in 0..height {
+            let start = (tx.y + row) * plane.stride + tx.x;
+            prediction[row * width..(row + 1) * width]
+                .copy_from_slice(&plane.data[start..start + width]);
+        }
+        let coeffs = quant_to_plane_order(&tx.quant, tx.tx);
+        let output = reconstruct_block(
+            &coeffs,
+            width,
+            height,
+            tx.tx,
+            tx.tx_type.row_kind(),
+            tx.tx_type.col_kind(),
+            dc_quant,
+            ac_quant,
+            &prediction,
+            bit_depth,
+            block.lossless,
+        );
+        for row in 0..height {
+            let start = (tx.y + row) * plane.stride + tx.x;
+            plane.data[start..start + width]
+                .copy_from_slice(&output[row * width..(row + 1) * width]);
+        }
+    }
+    Ok(())
+}
+
+fn reconstruct_intrabc_block(
+    frame: &mut IntraFrame,
+    block: &IntraSyntaxBlock,
+    dv: MotionVector,
+    sub_x: u32,
+    sub_y: u32,
+    y_decoded: &mut DecodedPlane,
+    u_decoded: &mut DecodedPlane,
+    v_decoded: &mut DecodedPlane,
+    y_delta: PlaneQDelta,
+    u_delta: PlaneQDelta,
+    v_delta: PlaneQDelta,
+    bit_depth: u32,
+) -> Result<(), &'static str> {
+    let width = block.block.size.width as usize;
+    let height = block.block.size.height as usize;
+    copy_intrabc_plane(
+        &mut frame.y,
+        block.block.col,
+        block.block.row,
+        width,
+        height,
+        dv,
+        0,
+        0,
+    )?;
+    apply_intrabc_residuals(&mut frame.y, 0, block, y_delta, bit_depth)?;
+    y_decoded.mark(block.block.col * 4, block.block.row * 4, width, height);
+    if let Some(u) = frame.u.as_mut() {
+        copy_intrabc_plane(
+            u,
+            block.block.col,
+            block.block.row,
+            width,
+            height,
+            dv,
+            sub_x,
+            sub_y,
+        )?;
+        apply_intrabc_residuals(u, 1, block, u_delta, bit_depth)?;
+        u_decoded.mark(
+            (block.block.col * 4) >> sub_x,
+            (block.block.row * 4) >> sub_y,
+            width >> sub_x,
+            height >> sub_y,
+        );
+    }
+    if let Some(v) = frame.v.as_mut() {
+        copy_intrabc_plane(
+            v,
+            block.block.col,
+            block.block.row,
+            width,
+            height,
+            dv,
+            sub_x,
+            sub_y,
+        )?;
+        apply_intrabc_residuals(v, 2, block, v_delta, bit_depth)?;
+        v_decoded.mark(
+            (block.block.col * 4) >> sub_x,
+            (block.block.row * 4) >> sub_y,
+            width >> sub_x,
+            height >> sub_y,
+        );
+    }
+    Ok(())
+}
+
 /// Reconstruct an intra frame from the syntax blocks in tile order. Loop
 /// filters and CDEF/restoration run after this stage.
 pub fn reconstruct_intra_frame(
@@ -225,6 +385,23 @@ pub fn reconstruct_intra_frame(
     };
 
     for block in blocks {
+        if let Some(dv) = block.intrabc_dv {
+            reconstruct_intrabc_block(
+                &mut frame,
+                block,
+                dv,
+                sub_x,
+                sub_y,
+                &mut y_decoded,
+                &mut u_decoded,
+                &mut v_decoded,
+                y_delta,
+                u_delta,
+                v_delta,
+                bit_depth,
+            )?;
+            continue;
+        }
         let block_tile = tile_of(header, block.block.row, block.block.col);
         let (y_above, y_left) = neighbor_modes(&y_modes, header.mi_cols, block, block_tile);
         reconstruct_intra_block_plane_with_grid(
@@ -842,11 +1019,12 @@ pub fn decode_intra_tile_group(
     let mut segment_map: Option<SegmentMap> = None;
     for range in &layout.tiles {
         let bounds = tile_bounds(header, range.tile)?;
-        let sink = IntraTileBlockSink::new(
-            config
-                .clone()
-                .with_tile_origin(bounds.mi_row_start, bounds.mi_col_start),
-        );
+        let sink = IntraTileBlockSink::new(config.clone().with_tile_bounds(
+            bounds.mi_row_start,
+            bounds.mi_row_end,
+            bounds.mi_col_start,
+            bounds.mi_col_end,
+        ));
         let sink = match segments.take() {
             Some(carry) => sink.with_segment_carry(carry),
             None => sink,

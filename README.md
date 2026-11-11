@@ -82,8 +82,13 @@
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 108 项完成、6 项未完成（含缩进子项为 146 / 9）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 107 个
-AV1 slice。第 107 slice 补齐单列双行 AV1 tile layout：320×320 key+P+P 的每一帧都走
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 108 个
+AV1 slice。第 108 slice 完成 screen-content IntraBC：解析独立 `ndvc` CDF 的
+`use_intrabc` 与整数 DV、按 tile 边界校验源块、复用 inter variable-transform tree
+（含 `TXFM_SPLIT`、inter tx type 和 IntraBC 残差），再从当前帧已解码区域复制 Y/U/V。
+默认 aomenc 320×320 key+P+P 流中的 20 个 IntraBC block、4/4 色 Y/UV palette 和三帧
+最终 YUV 均与 `aomdec` 逐样本一致；该门还修复了 palette block 被错误 IntraBC 目标坐标
+覆盖的问题。第 107 slice 补齐单列双行 AV1 tile layout：320×320 key+P+P 的每一帧都走
 `tile_cols_log2=0 / tile_rows_log2=1`，两个独立全宽 row tile 的 CDF 均在 tile 起点
 回到 frame context；三帧 Y/U/V 与 `aomdec` 逐样本一致。该验证也明确 AV1 没有 HEVC
 式 WPP entry-point/context 链，之前的“WPP”缺口实际是这一 tile-row shape 未被锁定。

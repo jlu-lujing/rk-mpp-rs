@@ -971,6 +971,7 @@ impl InterTileBlockSink {
             palette,
             palette_tokens,
             tx,
+            intrabc_dv: None,
             transforms,
         })
     }

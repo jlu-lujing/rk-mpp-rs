@@ -2937,6 +2937,43 @@ mod tests {
     }
 
     #[test]
+    fn real_intrabc_and_palette_stream_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_intrabc_palette_320x320.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let frames = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(frames.len(), 3);
+        assert!(frames[0].header.allow_intrabc);
+
+        let (pictures, _) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 3);
+        let expected: [(u64, u64, u64); 3] = [
+            (0x996b85d532070894, 0x6259ac5235216584, 0x2f1b2f8d4387861c),
+            (0xbeee2dc6561fce58, 0x1770358636fc0196, 0xf3a48d8c4bfcab5c),
+            (0x3942d84cd4654ccf, 0x770a06024e21a8e3, 0x73bebeea68714a5d),
+        ];
+        for (index, (picture, want)) in pictures.iter().zip(expected).enumerate() {
+            assert_eq!(
+                (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap()),
+                ),
+                want,
+                "frame {index} diverges from aomdec",
+            );
+        }
+    }
+
+    #[test]
     fn real_integer_inter_frame_matches_libaom_and_locks_the_block_modes() {
         let data = include_bytes!("../../../tests/data/av1_inter_box_320x240.ivf");
         let (pictures, inter_blocks) = decode_two_picture_stream(data);
