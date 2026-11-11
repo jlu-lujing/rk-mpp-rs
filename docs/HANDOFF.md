@@ -85,8 +85,10 @@ Rust 现在实现 P16 MVP 中值与可用性规则、非零 MVD 符号、luma +8
 缓存改为绝对幅值，避免后续宏块 MVD context 漂移。随后两组强制分区流把
 `P_L0_L0_16x8` 和 `P_L0_L0_8x16` 的 mb_type 三 bin、两个 MVD、partition
 scan-order A/B/C MVP/MVD context、独立上下/左右 MC 与共享 residual 接通；两帧
-均与 FFmpeg 逐样本一致，并补齐 quarter-pel `(2,2)` 二维插值。当前仍缺
-P_8x8、多参考、weighted/deblock 和 B-slice。
+均与 FFmpeg 逐样本一致，并补齐 quarter-pel `(2,2)` 二维插值。P_8x8 混合门随后
+在同一个 P 帧中覆盖 16x16、8x16 和 P_8x8 宏块，四种 `sub_mb_type`
+（`8x8/8x4/4x8/4x4`）、4x4 MVD cache/context、逐子分区 luma/chroma MC 与共享
+residual 均与 FFmpeg 逐样本一致。当前仍缺多参考、weighted/deblock 和 B-slice。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -145,8 +147,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1270 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1274 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1272 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1276 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
@@ -522,7 +524,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 111 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 112 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。

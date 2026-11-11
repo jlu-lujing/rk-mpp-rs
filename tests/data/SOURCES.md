@@ -345,6 +345,13 @@ cargo test --test fixture_manifest
   `(16,0)`, `(-2,17)` and `(-32,0)`. The gate covers left/right partition MVP
   propagation, two MVD contexts, independent motion compensation and shared
   residual reconstruction, with the complete FFmpeg P frame byte-exact.
+- `h264_cabac_p8x8_48x32` enables P_8x8 and sub-8x8 analysis on the random
+  source. The P picture mixes 16x16, 8x16 and P_8x8 macroblocks; across the
+  P_8x8 quadrants it covers all four sub_mb_type modes (`8x8`, `8x4`, `4x8`
+  and `4x4`). The gate therefore exercises the P_8x8 mb_type suffix, all four
+  CABAC subpartition trees, 4x4 MVD contexts and caches, independent
+  subpartition luma/chroma interpolation and one shared macroblock residual.
+  The complete FFmpeg P frame is sample-exact.
 - `h264_i_pcm_cabac` is a 16x16 High-4:4:4-Intra `qp=0` CABAC stream using
   100% I_PCM macroblocks. It locks the raw 4:2:0 sample payload, byte
   realignment and arithmetic-decoder restart behavior.

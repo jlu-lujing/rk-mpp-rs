@@ -222,8 +222,8 @@ pub fn decode_cabac_p_skip_slice(
     })
 }
 
-/// Reconstruct a CABAC P slice made of 16x16, 16x8 or 8x16 `P_L0`
-/// macroblocks.
+/// Reconstruct a CABAC P slice made of supported `P_L0` macroblock and
+/// sub-macroblock partitions.
 ///
 /// This gate consumes the full P macroblock syntax, including MVD, coded-block
 /// pattern, QP delta and inter residuals, while rejecting P_8x8 and intra
@@ -231,7 +231,7 @@ pub fn decode_cabac_p_skip_slice(
 /// interpolation and eighth-sample 4:2:0 chroma interpolation for every
 /// supported partition.
 #[allow(clippy::too_many_arguments)]
-pub fn decode_cabac_p16_slice(
+pub fn decode_cabac_p_slice(
     rbsp: &[u8],
     slice: &SliceHeader,
     sps: &Sps,
@@ -522,52 +522,14 @@ fn partition_motion_predictor(
     let y = macroblock_y + partition_y as i32;
     let left = motion_at(mb_width, x - 1, y, motion_valid, motion_vectors);
     let top = motion_at(mb_width, x, y - 1, motion_valid, motion_vectors);
-    let (candidate_x, candidate_y, fallback_x, fallback_y) =
-        if partition_width == 16 && partition_height == 8 && partition_y == 8 {
-            (
-                macroblock_x + 16,
-                macroblock_y + 8,
-                macroblock_x - 1,
-                macroblock_y + 4,
-            )
-        } else if partition_width == 8 && partition_height == 16 && partition_x == 0 {
-            (
-                macroblock_x + 8,
-                macroblock_y - 1,
-                macroblock_x - 1,
-                macroblock_y - 1,
-            )
-        } else if partition_width == 8 && partition_height == 16 {
-            (
-                macroblock_x + 16,
-                macroblock_y - 1,
-                macroblock_x + 4,
-                macroblock_y - 1,
-            )
-        } else {
-            (
-                macroblock_x + 16,
-                macroblock_y - 1,
-                macroblock_x - 1,
-                macroblock_y - 1,
-            )
-        };
     let top_right = motion_at(
         mb_width,
-        candidate_x,
-        candidate_y,
+        x + partition_width as i32,
+        y - 4,
         motion_valid,
         motion_vectors,
     )
-    .or_else(|| {
-        motion_at(
-            mb_width,
-            fallback_x,
-            fallback_y,
-            motion_valid,
-            motion_vectors,
-        )
-    });
+    .or_else(|| motion_at(mb_width, x - 4, y - 4, motion_valid, motion_vectors));
 
     if partition_width == 16 && partition_height == 8 {
         if partition_y == 0 {
@@ -657,8 +619,8 @@ fn motion_compensate_partition(
     motion_vector: [i32; 2],
     bit_depth: u8,
 ) -> Result<(), H264CabacError> {
-    if partition_width % 8 != 0
-        || partition_height % 8 != 0
+    if partition_width % 4 != 0
+        || partition_height % 4 != 0
         || partition_x + partition_width > luma.width
         || partition_y + partition_height > luma.height
         || partition_x / 2 + partition_width / 2 > chroma_cb.width
@@ -1751,20 +1713,26 @@ fn decode_cabac_p_macroblock(
             "P slice contains an intra macroblock",
         ));
     }
-    let definitions: &[(usize, usize, usize, usize)] = if decoder.decode_bin(&mut contexts[15]) == 0
-    {
+    let mut definitions = Vec::new();
+    if decoder.decode_bin(&mut contexts[15]) == 0 {
         if decoder.decode_bin(&mut contexts[16]) != 0 {
-            return Err(H264CabacError::Unsupported("P slice contains P_8x8"));
+            let sub_mb_types = [
+                decode_cabac_p_sub_mb_type(decoder, contexts),
+                decode_cabac_p_sub_mb_type(decoder, contexts),
+                decode_cabac_p_sub_mb_type(decoder, contexts),
+                decode_cabac_p_sub_mb_type(decoder, contexts),
+            ];
+            definitions.extend(p8x8_partition_definitions(sub_mb_types));
+        } else {
+            definitions.push((0, 0, 16, 16));
         }
-        &[(0, 0, 16, 16)]
     } else if decoder.decode_bin(&mut contexts[17]) != 0 {
-        &[(0, 0, 16, 8), (0, 8, 16, 8)]
+        definitions.extend([(0, 0, 16, 8), (0, 8, 16, 8)]);
     } else {
-        &[(0, 0, 8, 16), (8, 0, 8, 16)]
-    };
-
+        definitions.extend([(0, 0, 8, 16), (8, 0, 8, 16)]);
+    }
     let mut partitions = Vec::with_capacity(definitions.len());
-    for &(partition_x, partition_y, partition_width, partition_height) in definitions {
+    for (partition_x, partition_y, partition_width, partition_height) in definitions {
         let predicted_motion = partition_motion_predictor(
             mb_index,
             mb_width,
@@ -1901,6 +1869,47 @@ fn decode_cabac_p_macroblock(
         partitions,
         coded_flags,
     })
+}
+
+fn decode_cabac_p_sub_mb_type(decoder: &mut CabacDecoder<'_>, contexts: &mut [Context]) -> u8 {
+    if decoder.decode_bin(&mut contexts[21]) != 0 {
+        return 0;
+    }
+    if decoder.decode_bin(&mut contexts[22]) == 0 {
+        return 1;
+    }
+    if decoder.decode_bin(&mut contexts[23]) != 0 {
+        2
+    } else {
+        3
+    }
+}
+
+fn p8x8_partition_definitions(sub_mb_types: [u8; 4]) -> Vec<(usize, usize, usize, usize)> {
+    let mut definitions = Vec::new();
+    for (quadrant, sub_mb_type) in sub_mb_types.into_iter().enumerate() {
+        let x = (quadrant % 2) * 8;
+        let y = (quadrant / 2) * 8;
+        match sub_mb_type {
+            0 => definitions.push((x, y, 8, 8)),
+            1 => {
+                definitions.push((x, y, 8, 4));
+                definitions.push((x, y + 4, 8, 4));
+            }
+            2 => {
+                definitions.push((x, y, 4, 8));
+                definitions.push((x + 4, y, 4, 8));
+            }
+            3 => {
+                definitions.push((x, y, 4, 4));
+                definitions.push((x + 4, y, 4, 4));
+                definitions.push((x, y + 4, 4, 4));
+                definitions.push((x + 4, y + 4, 4, 4));
+            }
+            _ => unreachable!(),
+        }
+    }
+    definitions
 }
 
 fn decode_cabac_mvd(
@@ -3137,6 +3146,24 @@ mod tests {
         assert_eq!(
             partition_motion_predictor(3, mb_width, 8, 0, 8, 16, &valid, &vectors),
             [16, 0]
+        );
+    }
+
+    #[test]
+    fn expands_all_p8x8_subpartition_types_in_scan_order() {
+        assert_eq!(
+            p8x8_partition_definitions([0, 1, 2, 3]),
+            vec![
+                (0, 0, 8, 8),
+                (8, 0, 8, 4),
+                (8, 4, 8, 4),
+                (0, 8, 4, 8),
+                (4, 8, 4, 8),
+                (8, 8, 4, 4),
+                (12, 8, 4, 4),
+                (8, 12, 4, 4),
+                (12, 12, 4, 4),
+            ]
         );
     }
 }

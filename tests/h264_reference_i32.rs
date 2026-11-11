@@ -1,6 +1,7 @@
 use rk_mpp_rs::codec::h264::parser::{parse_pps, parse_slice_header, parse_sps, split_annex_b};
 use rk_mpp_rs::reference::h264_cabac::{
-    decode_cabac_i_picture_slices, decode_cabac_p16_slice, decode_cabac_p_skip_slice,
+    decode_cabac_i_picture_slices, decode_cabac_p_skip_slice, decode_cabac_p_slice,
+    DecodedMotionPartition,
 };
 use rk_mpp_rs::reference::h264_deblock::deblock_i_picture;
 use rk_mpp_rs::reference::h264_recon::PlaneMut;
@@ -174,7 +175,7 @@ fn cabac_p16_integer_motion_matches_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.yuv"),
         false,
-        (16, 16),
+        PartitionLayout::Uniform(16, 16),
     )
     .unwrap();
 }
@@ -185,7 +186,7 @@ fn cabac_p16_fractional_motion_matches_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p16_fractional_mv_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p16_fractional_mv_48x32.yuv"),
         true,
-        (16, 16),
+        PartitionLayout::Uniform(16, 16),
     )
     .unwrap();
 }
@@ -196,7 +197,7 @@ fn cabac_p16x8_two_motion_vectors_match_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p16x8_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p16x8_48x32.yuv"),
         false,
-        (16, 8),
+        PartitionLayout::Uniform(16, 8),
     )
     .unwrap();
 }
@@ -207,7 +208,18 @@ fn cabac_p8x16_two_motion_vectors_match_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p8x16_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p8x16_48x32.yuv"),
         false,
-        (8, 16),
+        PartitionLayout::Uniform(8, 16),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p8x8_mixed_subpartitions_match_ffmpeg_yuv420p() {
+    compare_cabac_p16_motion_fixture(
+        include_bytes!("../tests/data/h264_cabac_p8x8_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p8x8_48x32.yuv"),
+        false,
+        PartitionLayout::P8x8,
     )
     .unwrap();
 }
@@ -516,7 +528,7 @@ fn compare_cabac_p16_zero_mv_fixture(stream: &[u8], expected: &[u8]) -> Result<(
     let mut p_y = vec![0u16; width * height];
     let mut p_u = vec![0u16; cw * ch];
     let mut p_v = vec![0u16; cw * ch];
-    let p = decode_cabac_p16_slice(
+    let p = decode_cabac_p_slice(
         &slice_nals[1].rbsp,
         &headers[1],
         &sps,
@@ -573,11 +585,87 @@ fn compare_cabac_p16_zero_mv_fixture(stream: &[u8], expected: &[u8]) -> Result<(
     )
 }
 
+#[derive(Clone, Copy)]
+enum PartitionLayout {
+    Uniform(usize, usize),
+    P8x8,
+}
+
+fn local_partition_layout(layout: PartitionLayout) -> Option<Vec<(usize, usize, usize, usize)>> {
+    match layout {
+        PartitionLayout::Uniform(width, height) => Some(
+            (0..16 / height)
+                .flat_map(|row| {
+                    (0..16 / width).map(move |column| (column * width, row * height, width, height))
+                })
+                .collect(),
+        ),
+        PartitionLayout::P8x8 => None,
+    }
+}
+
+fn validate_mixed_p_partitions(
+    partitions: &[DecodedMotionPartition],
+    macroblocks: usize,
+    mb_width: usize,
+) -> Result<(), String> {
+    let mut index = 0;
+    let mut types_seen = [false; 4];
+    for macroblock in 0..macroblocks {
+        let mut coverage = [false; 16];
+        while index < partitions.len() && partitions[index].macroblock == macroblock {
+            let partition = partitions[index];
+            let local_x = partition.x - (macroblock % mb_width) * 16;
+            let local_y = partition.y - (macroblock / mb_width) * 16;
+            let type_index = match (partition.width, partition.height) {
+                (16, 16) | (16, 8) | (8, 16) => None,
+                (8, 8) => Some(0),
+                (8, 4) => Some(1),
+                (4, 8) => Some(2),
+                (4, 4) => Some(3),
+                _ => {
+                    return Err(format!(
+                        "unexpected P partition {}x{}",
+                        partition.width, partition.height
+                    ));
+                }
+            };
+            if let Some(type_index) = type_index {
+                types_seen[type_index] = true;
+            }
+            for block_y in local_y / 4..(local_y + partition.height) / 4 {
+                for block_x in local_x / 4..(local_x + partition.width) / 4 {
+                    let block = block_y * 4 + block_x;
+                    if coverage[block] {
+                        return Err(format!("P macroblock {macroblock} overlaps block {block}"));
+                    }
+                    coverage[block] = true;
+                }
+            }
+            index += 1;
+        }
+        if coverage.iter().any(|covered| !covered) {
+            return Err(format!(
+                "P macroblock {macroblock} does not cover 16 blocks"
+            ));
+        }
+    }
+    if index != partitions.len() {
+        return Err("P partitions out of macroblock order".into());
+    }
+    if types_seen.iter().any(|seen| !seen) {
+        return Err(format!(
+            "P_8x8 fixture covered only sub-types {types_seen:?}"
+        ));
+    }
+    Ok(())
+}
+
 fn compare_cabac_p16_motion_fixture(
     stream: &[u8],
     expected: &[u8],
     requires_fractional_motion: bool,
-    partition_size: (usize, usize),
+    layout: PartitionLayout,
 ) -> Result<(), String> {
     let nals = split_annex_b(stream);
     let sps = parse_sps(
@@ -642,7 +730,7 @@ fn compare_cabac_p16_motion_fixture(
     let mut p_y = vec![0u16; y_len];
     let mut p_u = vec![0u16; chroma_len];
     let mut p_v = vec![0u16; chroma_len];
-    let p = decode_cabac_p16_slice(
+    let p = decode_cabac_p_slice(
         &slice_nals[1].rbsp,
         &headers[1],
         &sps,
@@ -658,42 +746,42 @@ fn compare_cabac_p16_motion_fixture(
     if p.macroblocks != (width / 16) * (height / 16) {
         return Err(format!("P slice decoded {} macroblocks", p.macroblocks));
     }
-    let (partition_width, partition_height) = partition_size;
-    if partition_width == 0
-        || partition_height == 0
-        || 16 % partition_width != 0
-        || 16 % partition_height != 0
-    {
-        return Err("invalid expected partition size".into());
-    }
-    let partitions_per_macroblock = (16 / partition_width) * (16 / partition_height);
-    let expected_partition_count = p.macroblocks * partitions_per_macroblock;
-    if p.motion_partitions.len() != expected_partition_count {
-        return Err(format!(
-            "P slice decoded {} partitions for {} macroblocks, expected {expected_partition_count}",
-            p.motion_partitions.len(),
-            p.macroblocks
-        ));
-    }
     let mb_width = width / 16;
-    for (index, partition) in p.motion_partitions.iter().enumerate() {
-        let macroblock = index / partitions_per_macroblock;
-        let within = index % partitions_per_macroblock;
-        let expected_x =
-            (macroblock % mb_width) * 16 + (within % (16 / partition_width)) * partition_width;
-        let expected_y =
-            (macroblock / mb_width) * 16 + (within / (16 / partition_width)) * partition_height;
-        if partition.macroblock != macroblock
-            || partition.x != expected_x
-            || partition.y != expected_y
-            || partition.width != partition_width
-            || partition.height != partition_height
-        {
+    if let Some(local_partitions) = local_partition_layout(layout) {
+        let partitions_per_macroblock = local_partitions.len();
+        let expected_partition_count = p.macroblocks * partitions_per_macroblock;
+        if p.motion_partitions.len() != expected_partition_count {
             return Err(format!(
-                "unexpected partition {index}: mb={} x={} y={} {}x{}",
-                partition.macroblock, partition.x, partition.y, partition.width, partition.height
+                "P slice decoded {} partitions for {} macroblocks, expected {expected_partition_count}",
+                p.motion_partitions.len(),
+                p.macroblocks
             ));
         }
+        for (index, partition) in p.motion_partitions.iter().enumerate() {
+            let macroblock = index / partitions_per_macroblock;
+            let within = index % partitions_per_macroblock;
+            let (local_x, local_y, partition_width, partition_height) = local_partitions[within];
+            let expected_x = (macroblock % mb_width) * 16 + local_x;
+            let expected_y = (macroblock / mb_width) * 16 + local_y;
+            if partition.macroblock != macroblock
+                || partition.x != expected_x
+                || partition.y != expected_y
+                || partition.width != partition_width
+                || partition.height != partition_height
+            {
+                return Err(format!(
+                    "unexpected partition {index}: mb={} x={} y={} {}x{}",
+                    partition.macroblock,
+                    partition.x,
+                    partition.y,
+                    partition.width,
+                    partition.height
+                ));
+            }
+        }
+    } else {
+        validate_mixed_p_partitions(&p.motion_partitions, p.macroblocks, mb_width)
+            .map_err(|error| format!("{error}; partitions={:?}", p.motion_partitions))?;
     }
     if p.motion_partitions
         .iter()

@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1270 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1272 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1274 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1276 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -275,6 +275,27 @@ t62 back to the RK3588 reference board.
   / 41 ignored**, and release-library tests are **1119 passed / 0 failed /
   0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
 - `P_8x8`, weighted prediction, deblocking and B-slice CABAC remain open.
+
+## 2026-11-12 H.264 CABAC P_8x8 sub-macroblock partitions
+
+- A new mixed 48x32 Main-profile stream enables P_8x8 and sub-8x8 analysis.
+  The P picture contains 16x16, 8x16 and P_8x8 macroblocks; across its P_8x8
+  quadrants all four `sub_mb_type` modes are present (`8x8`, `8x4`, `4x8`,
+  `4x4`). Stream SHA-256 is
+  `5e61cfc82df0f3c4452603bca054bc48d364b32077ff684bd9a9b6bfa296292a`,
+  decoded YUV is
+  `0d5542e83935c20dfd52efb9075eb4a02cb0d3a2e88a5a3cc1bbb6af973d833f`.
+- The decoder consumes the P_8x8 mb_type suffix and each one-/two-/three-bin
+  subpartition tree, expands every quadrant into its normative 8x8/8x4/4x8/4x4
+  scan order, maintains MVD context and motion vectors in the 4x4 grid, then
+  runs independent luma/chroma motion compensation and one shared macroblock
+  residual reconstruction. All 4,608 decoded bytes match FFmpeg exactly.
+- The H.264 CABAC integration suite is **7/7**, the focused CABAC unit suite is
+  **8/8**, the crate `--all-targets` gate is **1272 passed / 0 failed /
+  41 ignored**, `scripts/board_workspace_gate.sh` is **1276 passed / 0 failed
+  / 41 ignored**, and release-library tests are **1120 passed / 0 failed /
+  0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
+- Weighted/deblock P pictures and B-slice CABAC remain open.
 
 ## 2026-11-08 W5-4 pool closeout
 
