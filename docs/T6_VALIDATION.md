@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1274 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1276 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1278 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1280 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -321,6 +321,29 @@ t62 back to the RK3588 reference board.
   / 41 ignored**, and release-library tests are **1121 passed / 0 failed /
   0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
 - Weighted P_Skip, P-frame deblocking and B-slice CABAC remain open.
+
+## 2026-11-12 H.264 CABAC P-frame deblocking
+
+- A third 48x32 P16 fixture enables loop filtering with slice
+  `alpha/beta=2/1`. It combines coded chroma edges with uncoded luma edges
+  whose boundary strength is selected from neighboring 4x4 quarter-pel MVs.
+  Stream SHA-256 is
+  `985990b8b2578ebaa6665d971b11d447259fd5fde41f61cc722655d51dd2fa99`,
+  decoded YUV is
+  `f26b6364970c12acdac5fd92fe348d11092e4588305fcf1c7b94412eebeeec07`.
+- `DeblockMap` now carries P-slice 4x4 MVs. P boundary strength is 3 when
+  either side has coefficients, 2 for a component delta of at least four
+  quarter-pels, 1 for any smaller non-zero MV delta and 0 for equal motion.
+  Luma and chroma traverse vertical before horizontal edges, average QP at
+  each boundary and use the existing normative filters.
+- The complete deblocked P frame matches FFmpeg sample-exactly. The H.264
+  CABAC integration suite is **9/9**, CABAC unit tests are **9/9**, deblock
+  unit tests are **8/8**, the crate `--all-targets` gate is **1276 passed / 0
+  failed / 41 ignored**, `scripts/board_workspace_gate.sh` is **1280 passed /
+  0 failed / 41 ignored**, and release-library tests are **1122 passed /
+  0 failed / 0 ignored**. Fixture manifest, rustfmt and strict workspace
+  rustdoc pass.
+- Weighted P_Skip and B-slice CABAC remain open.
 
 ## 2026-11-08 W5-4 pool closeout
 

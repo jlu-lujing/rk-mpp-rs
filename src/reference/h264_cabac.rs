@@ -95,8 +95,11 @@ pub fn decode_cabac_p_skip_slice(
     if pps.num_slice_groups != 1 {
         return Err(H264CabacError::Unsupported("P_Skip slice groups"));
     }
-    if !pps.deblocking_filter_control || slice.deblocking_disable_idc != 1 {
+    if !pps.deblocking_filter_control {
         return Err(H264CabacError::Unsupported("P_Skip deblocking"));
+    }
+    if slice.deblocking_disable_idc > 1 {
+        return Err(H264CabacError::Unsupported("P_Skip slice-edge deblocking"));
     }
     if slice
         .mod_l0
@@ -228,6 +231,7 @@ pub fn decode_cabac_p_skip_slice(
             qp: vec![slice_qp as u8; total_mbs],
             luma_non_zero: vec![[0; 16]; total_mbs],
             chroma_non_zero: [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]],
+            motion_vectors: Some(vec![[[0, 0]; 16]; total_mbs]),
         },
         motion_partitions: Vec::new(),
     })
@@ -269,8 +273,13 @@ pub fn decode_cabac_p_slice(
     if pps.transform_8x8 {
         return Err(H264CabacError::Unsupported("P partition transform8x8"));
     }
-    if !pps.deblocking_filter_control || slice.deblocking_disable_idc != 1 {
+    if !pps.deblocking_filter_control {
         return Err(H264CabacError::Unsupported("P partition deblocking"));
+    }
+    if slice.deblocking_disable_idc > 1 {
+        return Err(H264CabacError::Unsupported(
+            "P partition slice-edge deblocking",
+        ));
     }
     if slice
         .mod_l0
@@ -486,7 +495,7 @@ pub fn decode_cabac_p_slice(
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
-        deblock: state.deblock_map(),
+        deblock: state.deblock_map(Some(motion_vectors)),
         motion_partitions,
     })
 }
@@ -1104,7 +1113,7 @@ impl CabacPictureState {
         }
     }
 
-    fn deblock_map(&self) -> DeblockMap {
+    fn deblock_map(&self, motion_vectors: Option<Vec<[[i32; 2]; 16]>>) -> DeblockMap {
         DeblockMap {
             mb_width: self.mb_width,
             mb_height: self.mb_height,
@@ -1112,6 +1121,7 @@ impl CabacPictureState {
             qp: self.qp.clone(),
             luma_non_zero: self.luma_counts.clone(),
             chroma_non_zero: self.chroma_counts.clone(),
+            motion_vectors,
         }
     }
 }
@@ -1229,6 +1239,7 @@ pub fn decode_cabac_i_slice(
                         vec![residual.chroma_non_zero[0].clone()],
                         vec![residual.chroma_non_zero[1].clone()],
                     ],
+                    motion_vectors: None,
                 },
                 motion_partitions: Vec::new(),
             });
@@ -1483,6 +1494,7 @@ pub fn decode_cabac_i_slice(
             vec![residual.chroma_non_zero[0].clone()],
             vec![residual.chroma_non_zero[1].clone()],
         ],
+        motion_vectors: None,
     };
     if !decoder.decode_terminate() {
         return Err(H264CabacError::Malformed("missing end_of_slice_flag"));
@@ -1575,7 +1587,7 @@ pub fn decode_cabac_i_picture_slices(
                 macroblocks,
                 end_bit,
                 final_qp,
-                deblock: state.deblock_map(),
+                deblock: state.deblock_map(None),
                 motion_partitions: Vec::new(),
             });
         }
@@ -1584,7 +1596,7 @@ pub fn decode_cabac_i_picture_slices(
         macroblocks,
         end_bit,
         final_qp,
-        deblock: state.deblock_map(),
+        deblock: state.deblock_map(None),
         motion_partitions: Vec::new(),
     })
 }
@@ -1743,7 +1755,7 @@ fn decode_cabac_i_slice_into_picture(
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
-        deblock: state.deblock_map(),
+        deblock: state.deblock_map(None),
         motion_partitions: Vec::new(),
     })
 }

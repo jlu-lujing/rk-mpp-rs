@@ -16,6 +16,14 @@ pub struct DeblockMap {
     pub luma_non_zero: Vec<[u8; 16]>,
     /// Cb/Cr each store 4 or 8 block counts per macroblock.
     pub chroma_non_zero: [Vec<Vec<u8>>; 2],
+    /// Per-4x4 quarter-pixel MVs for P slices.
+    pub motion_vectors: Option<Vec<[[i32; 2]; 16]>>,
+}
+
+#[derive(Clone, Copy)]
+enum SliceDeblockKind {
+    I,
+    P,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +74,23 @@ pub fn i_boundary_strength(
     }
 }
 
+pub fn p_boundary_strength(
+    p_has_coefficients: bool,
+    q_has_coefficients: bool,
+    p_motion: [i32; 2],
+    q_motion: [i32; 2],
+) -> u8 {
+    if p_has_coefficients || q_has_coefficients {
+        3
+    } else if (p_motion[0] - q_motion[0]).abs() >= 4 || (p_motion[1] - q_motion[1]).abs() >= 4 {
+        2
+    } else if p_motion != q_motion {
+        1
+    } else {
+        0
+    }
+}
+
 /// Apply the I-slice deblocking pass to tightly related picture planes.
 pub fn deblock_i_picture(
     luma: &mut PlaneMut<'_>,
@@ -76,6 +101,58 @@ pub fn deblock_i_picture(
     alpha_offset_div2: i32,
     beta_offset_div2: i32,
     chroma_qp_offset: [i32; 2],
+) -> Result<(), &'static str> {
+    deblock_picture(
+        luma,
+        chroma_cb,
+        chroma_cr,
+        map,
+        bit_depth,
+        alpha_offset_div2,
+        beta_offset_div2,
+        chroma_qp_offset,
+        SliceDeblockKind::I,
+    )
+}
+
+/// Apply the P-slice deblocking pass using coded-block and 4x4 MV strength.
+pub fn deblock_p_picture(
+    luma: &mut PlaneMut<'_>,
+    chroma_cb: Option<&mut PlaneMut<'_>>,
+    chroma_cr: Option<&mut PlaneMut<'_>>,
+    map: &DeblockMap,
+    bit_depth: u8,
+    alpha_offset_div2: i32,
+    beta_offset_div2: i32,
+    chroma_qp_offset: [i32; 2],
+) -> Result<(), &'static str> {
+    if map.motion_vectors.is_none() {
+        return Err("P deblocking requires motion vectors");
+    }
+    deblock_picture(
+        luma,
+        chroma_cb,
+        chroma_cr,
+        map,
+        bit_depth,
+        alpha_offset_div2,
+        beta_offset_div2,
+        chroma_qp_offset,
+        SliceDeblockKind::P,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn deblock_picture(
+    luma: &mut PlaneMut<'_>,
+    chroma_cb: Option<&mut PlaneMut<'_>>,
+    chroma_cr: Option<&mut PlaneMut<'_>>,
+    map: &DeblockMap,
+    bit_depth: u8,
+    alpha_offset_div2: i32,
+    beta_offset_div2: i32,
+    chroma_qp_offset: [i32; 2],
+    kind: SliceDeblockKind,
 ) -> Result<(), &'static str> {
     let mut chroma_cb = chroma_cb;
     let mut chroma_cr = chroma_cr;
@@ -96,6 +173,7 @@ pub fn deblock_i_picture(
                 bit_depth,
                 alpha_offset_div2,
                 beta_offset_div2,
+                kind,
             );
             if let Some(chroma) = chroma_cb.as_deref_mut() {
                 deblock_chroma_macroblock(
@@ -109,6 +187,7 @@ pub fn deblock_i_picture(
                     alpha_offset_div2,
                     beta_offset_div2,
                     chroma_qp_offset[0],
+                    kind,
                 )?;
             }
             if let Some(chroma) = chroma_cr.as_deref_mut() {
@@ -123,6 +202,7 @@ pub fn deblock_i_picture(
                     alpha_offset_div2,
                     beta_offset_div2,
                     chroma_qp_offset[1],
+                    kind,
                 )?;
             }
         }
@@ -238,6 +318,7 @@ fn deblock_luma_macroblock(
     bit_depth: u8,
     alpha_offset: i32,
     beta_offset: i32,
+    kind: SliceDeblockKind,
 ) {
     for edge in [0usize, 4, 8, 12] {
         let (p_index, q_index, p_col, q_col, mb_edge) = if edge == 0 {
@@ -255,7 +336,21 @@ fn deblock_luma_macroblock(
         for block_row in 0..4 {
             let p_has = map.luma_non_zero[p_index][block_row * 4 + p_col] != 0;
             let q_has = map.luma_non_zero[q_index][block_row * 4 + q_col] != 0;
-            let bs = i_boundary_strength(mb_edge, p_has, q_has);
+            let bs = match kind {
+                SliceDeblockKind::I => i_boundary_strength(mb_edge, p_has, q_has),
+                SliceDeblockKind::P => {
+                    let motion = map
+                        .motion_vectors
+                        .as_ref()
+                        .expect("P deblock map validated");
+                    p_boundary_strength(
+                        p_has,
+                        q_has,
+                        motion[p_index][block_row * 4 + p_col],
+                        motion[q_index][block_row * 4 + q_col],
+                    )
+                }
+            };
             if bs == 0 {
                 continue;
             }
@@ -293,7 +388,21 @@ fn deblock_luma_macroblock(
         for block_column in 0..4 {
             let p_has = map.luma_non_zero[p_index][p_row * 4 + block_column] != 0;
             let q_has = map.luma_non_zero[q_index][q_row * 4 + block_column] != 0;
-            let bs = i_boundary_strength(mb_edge, p_has, q_has);
+            let bs = match kind {
+                SliceDeblockKind::I => i_boundary_strength(mb_edge, p_has, q_has),
+                SliceDeblockKind::P => {
+                    let motion = map
+                        .motion_vectors
+                        .as_ref()
+                        .expect("P deblock map validated");
+                    p_boundary_strength(
+                        p_has,
+                        q_has,
+                        motion[p_index][p_row * 4 + block_column],
+                        motion[q_index][q_row * 4 + block_column],
+                    )
+                }
+            };
             if bs == 0 {
                 continue;
             }
@@ -384,6 +493,7 @@ fn deblock_chroma_macroblock(
     alpha_offset: i32,
     beta_offset: i32,
     qp_offset: i32,
+    kind: SliceDeblockKind,
 ) -> Result<(), &'static str> {
     let block_count = map.chroma_non_zero[plane_index][index].len();
     let width = 2usize;
@@ -391,11 +501,23 @@ fn deblock_chroma_macroblock(
     if x > 0 && map.decoded[index - 1] {
         let left = index - 1;
         for block_row in 0..height {
-            let bs = i_boundary_strength(
-                true,
-                map.chroma_non_zero[plane_index][left][block_row * width + 1] != 0,
-                map.chroma_non_zero[plane_index][index][block_row * width] != 0,
-            );
+            let p_has = map.chroma_non_zero[plane_index][left][block_row * width + 1] != 0;
+            let q_has = map.chroma_non_zero[plane_index][index][block_row * width] != 0;
+            let bs = match kind {
+                SliceDeblockKind::I => i_boundary_strength(true, p_has, q_has),
+                SliceDeblockKind::P => {
+                    let motion = map
+                        .motion_vectors
+                        .as_ref()
+                        .expect("P deblock map validated");
+                    p_boundary_strength(
+                        p_has,
+                        q_has,
+                        motion[left][block_row * 8 + 3],
+                        motion[index][block_row * 8],
+                    )
+                }
+            };
             if bs != 0 {
                 let qp = chroma_qp_average(map.qp[left], map.qp[index], qp_offset, bit_depth)?;
                 let params = parameters(qp, alpha_offset, beta_offset, bit_depth)?;
@@ -413,11 +535,23 @@ fn deblock_chroma_macroblock(
         }
     }
     for block_row in 0..height {
-        let bs = i_boundary_strength(
-            false,
-            map.chroma_non_zero[plane_index][index][block_row * width] != 0,
-            map.chroma_non_zero[plane_index][index][block_row * width + 1] != 0,
-        );
+        let p_has = map.chroma_non_zero[plane_index][index][block_row * width] != 0;
+        let q_has = map.chroma_non_zero[plane_index][index][block_row * width + 1] != 0;
+        let bs = match kind {
+            SliceDeblockKind::I => i_boundary_strength(false, p_has, q_has),
+            SliceDeblockKind::P => {
+                let motion = map
+                    .motion_vectors
+                    .as_ref()
+                    .expect("P deblock map validated");
+                p_boundary_strength(
+                    p_has,
+                    q_has,
+                    motion[index][block_row * 8 + 1],
+                    motion[index][block_row * 8 + 2],
+                )
+            }
+        };
         if bs != 0 {
             let params = parameters(
                 chroma_qp_average(map.qp[index], map.qp[index], qp_offset, bit_depth)?,
@@ -454,11 +588,27 @@ fn deblock_chroma_macroblock(
                 (index, edge - 1, false)
             };
             let q_row = edge;
-            let bs = i_boundary_strength(
-                mb_edge,
-                map.chroma_non_zero[plane_index][p_index][p_row * width + block_column] != 0,
-                map.chroma_non_zero[plane_index][index][q_row * width + block_column] != 0,
-            );
+            let p_has =
+                map.chroma_non_zero[plane_index][p_index][p_row * width + block_column] != 0;
+            let q_has = map.chroma_non_zero[plane_index][index][q_row * width + block_column] != 0;
+            let bs = match kind {
+                SliceDeblockKind::I => i_boundary_strength(mb_edge, p_has, q_has),
+                SliceDeblockKind::P => {
+                    let motion = map
+                        .motion_vectors
+                        .as_ref()
+                        .expect("P deblock map validated");
+                    let p_block_row = if mb_edge { 3 } else { edge * 2 - 1 };
+                    let q_block_row = if mb_edge { 0 } else { edge * 2 };
+                    let block_column = block_column * 2;
+                    p_boundary_strength(
+                        p_has,
+                        q_has,
+                        motion[p_index][p_block_row * 4 + block_column],
+                        motion[index][q_block_row * 4 + block_column],
+                    )
+                }
+            };
             if bs == 0 {
                 continue;
             }
@@ -653,6 +803,14 @@ mod tests {
     }
 
     #[test]
+    fn p_boundary_strength_uses_coefficients_and_motion_delta() {
+        assert_eq!(p_boundary_strength(true, false, [0, 0], [0, 0]), 3);
+        assert_eq!(p_boundary_strength(false, false, [0, 0], [4, 0]), 2);
+        assert_eq!(p_boundary_strength(false, false, [0, 0], [1, -1]), 1);
+        assert_eq!(p_boundary_strength(false, false, [2, -3], [2, -3]), 0);
+    }
+
+    #[test]
     fn parameter_tables_respect_qp_offsets_and_bit_depth_scaling() {
         let p = parameters(26, 0, 0, 8).unwrap();
         assert_eq!(p.alpha, 15);
@@ -691,6 +849,7 @@ mod tests {
             qp: vec![26],
             luma_non_zero: vec![nonzero],
             chroma_non_zero: [Vec::new(), Vec::new()],
+            motion_vectors: None,
         };
         let mut plane = PlaneMut {
             data: &mut data,

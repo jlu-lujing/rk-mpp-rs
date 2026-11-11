@@ -3,7 +3,7 @@ use rk_mpp_rs::reference::h264_cabac::{
     decode_cabac_i_picture_slices, decode_cabac_p_skip_slice, decode_cabac_p_slice,
     DecodedMotionPartition,
 };
-use rk_mpp_rs::reference::h264_deblock::deblock_i_picture;
+use rk_mpp_rs::reference::h264_deblock::{deblock_i_picture, deblock_p_picture};
 use rk_mpp_rs::reference::h264_recon::PlaneMut;
 use rk_mpp_rs::reference::h264_slice::decode_i_slice;
 
@@ -177,6 +177,7 @@ fn cabac_p16_integer_motion_matches_ffmpeg_yuv420p() {
         false,
         PartitionLayout::Uniform(16, 16),
         None,
+        false,
     )
     .unwrap();
 }
@@ -189,6 +190,7 @@ fn cabac_p16_fractional_motion_matches_ffmpeg_yuv420p() {
         true,
         PartitionLayout::Uniform(16, 16),
         None,
+        false,
     )
     .unwrap();
 }
@@ -201,6 +203,7 @@ fn cabac_p16x8_two_motion_vectors_match_ffmpeg_yuv420p() {
         false,
         PartitionLayout::Uniform(16, 8),
         None,
+        false,
     )
     .unwrap();
 }
@@ -213,6 +216,7 @@ fn cabac_p8x16_two_motion_vectors_match_ffmpeg_yuv420p() {
         false,
         PartitionLayout::Uniform(8, 16),
         None,
+        false,
     )
     .unwrap();
 }
@@ -225,6 +229,7 @@ fn cabac_p8x8_mixed_subpartitions_match_ffmpeg_yuv420p() {
         false,
         PartitionLayout::P8x8,
         None,
+        false,
     )
     .unwrap();
 }
@@ -237,6 +242,20 @@ fn cabac_p16_explicit_weighted_prediction_matches_ffmpeg_yuv420p() {
         false,
         PartitionLayout::Uniform(16, 16),
         Some((true, true)),
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p16_deblocking_matches_ffmpeg_yuv420p() {
+    compare_cabac_p16_motion_fixture(
+        include_bytes!("../tests/data/h264_cabac_p16_deblock_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p16_deblock_48x32.yuv"),
+        false,
+        PartitionLayout::Uniform(16, 16),
+        None,
+        true,
     )
     .unwrap();
 }
@@ -684,6 +703,7 @@ fn compare_cabac_p16_motion_fixture(
     requires_fractional_motion: bool,
     layout: PartitionLayout,
     expected_weights: Option<(bool, bool)>,
+    deblock_enabled: bool,
 ) -> Result<(), String> {
     let nals = split_annex_b(stream);
     let sps = parse_sps(
@@ -716,8 +736,14 @@ fn compare_cabac_p16_motion_fixture(
     if !headers[0].is_i() || !headers[1].is_p() {
         return Err("the integer-MV fixture must contain IDR+P".into());
     }
-    if headers[0].deblocking_disable_idc != 1 || headers[1].deblocking_disable_idc != 1 {
-        return Err("the integer-MV fixture must disable deblocking".into());
+    let expected_deblock_idc = if deblock_enabled { 0 } else { 1 };
+    if headers[0].deblocking_disable_idc != expected_deblock_idc
+        || headers[1].deblocking_disable_idc != expected_deblock_idc
+    {
+        return Err(format!(
+            "unexpected deblocking idc {}, {}",
+            headers[0].deblocking_disable_idc, headers[1].deblocking_disable_idc
+        ));
     }
     if let Some((expected_luma, expected_chroma)) = expected_weights {
         let weights = headers[1]
@@ -835,6 +861,37 @@ fn compare_cabac_p16_motion_fixture(
         })
     {
         return Err("fractional-motion fixture produced only integer luma vectors".into());
+    }
+    if deblock_enabled {
+        let mut luma_plane = PlaneMut {
+            data: &mut p_y,
+            width,
+            height,
+            stride: width,
+        };
+        let mut cb_plane = PlaneMut {
+            data: &mut p_u,
+            width: cw,
+            height: ch,
+            stride: cw,
+        };
+        let mut cr_plane = PlaneMut {
+            data: &mut p_v,
+            width: cw,
+            height: ch,
+            stride: cw,
+        };
+        deblock_p_picture(
+            &mut luma_plane,
+            Some(&mut cb_plane),
+            Some(&mut cr_plane),
+            &p.deblock,
+            sps.bit_depth_luma as u8,
+            headers[1].deblocking_alpha * 2,
+            headers[1].deblocking_beta * 2,
+            [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
+        )
+        .map_err(|error| error.to_string())?;
     }
 
     let mut actual = Vec::with_capacity(frame_len);

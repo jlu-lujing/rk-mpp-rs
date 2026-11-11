@@ -316,6 +316,12 @@ cargo test --test fixture_manifest
   I16 and 100% P16. The fixture exercises P macroblock type, zero MVD, CBP,
   macroblock QP, inter 4x4 residuals and reconstruction across six
   macroblocks; all 4,608 decoded bytes match FFmpeg.
+- `h264_cabac_p16_deblock_48x32` keeps the same forced P16 structure but
+  enables the loop filter with slice `alpha/beta` offsets `2/1`. The P picture
+  contains both coded chroma edges and zero-luma-CBP edges whose boundary
+  strength comes from neighboring quarter-pel MVs. The fixture validates
+  luma/chroma vertical-before-horizontal filtering, macroblock/internal edges
+  and QP averaging; all 4,608 decoded bytes match FFmpeg.
 - `h264_cabac_p16_mv_48x32` uses the same 48x32 Main-profile setup with a
   random-noise source frame cropped at x=0 and x=8. A temporary x264 trace build
   disables P-skip and all P sub-partitions/intra modes and forces every
