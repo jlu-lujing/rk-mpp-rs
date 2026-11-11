@@ -45,6 +45,164 @@ pub struct DecodedCabacSlice {
     pub deblock: DeblockMap,
 }
 
+/// Reconstruct a CABAC P slice whose macroblocks all use `P_Skip`.
+///
+/// P_Skip derives a zero motion vector when every prior macroblock in the
+/// slice is also skipped, so this first P-slice gate can copy the corresponding
+/// macroblock from reference picture 0 without introducing a partial
+/// motion-vector implementation. Any non-skip macroblock is rejected so a
+/// later P_L0 path cannot accidentally be treated as complete.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_cabac_p_skip_slice(
+    rbsp: &[u8],
+    slice: &SliceHeader,
+    sps: &Sps,
+    pps: &Pps,
+    reference_luma: &[u16],
+    reference_chroma_cb: &[u16],
+    reference_chroma_cr: &[u16],
+    luma: &mut [u16],
+    chroma_cb: &mut [u16],
+    chroma_cr: &mut [u16],
+) -> Result<DecodedCabacSlice, H264CabacError> {
+    if !slice.is_p() || !pps.entropy_coding {
+        return Err(H264CabacError::Unsupported("non-CABAC-P slice"));
+    }
+    if slice.data_offset_bits % 8 != 0 {
+        return Err(H264CabacError::Malformed("CABAC byte alignment"));
+    }
+    if !sps.frame_mbs_only || slice.field_pic {
+        return Err(H264CabacError::Unsupported("interlaced P_Skip"));
+    }
+    if pps.num_slice_groups != 1 {
+        return Err(H264CabacError::Unsupported("P_Skip slice groups"));
+    }
+    if pps.weighted_pred {
+        return Err(H264CabacError::Unsupported("weighted P_Skip"));
+    }
+    if !pps.deblocking_filter_control || slice.deblocking_disable_idc != 1 {
+        return Err(H264CabacError::Unsupported("P_Skip deblocking"));
+    }
+    if slice
+        .mod_l0
+        .iter()
+        .any(|entry| *entry != crate::codec::h264::parser::RefMod::End)
+    {
+        return Err(H264CabacError::Unsupported("P_Skip reference reordering"));
+    }
+
+    let context =
+        MacroblockContext::from_sps_pps(sps, pps).map_err(|_| H264CabacError::Malformed("SPS"))?;
+    if context.chroma_format_idc != 1 {
+        return Err(H264CabacError::Unsupported("P_Skip requires 4:2:0 chroma"));
+    }
+    let mb_width = usize::try_from(sps.coded_width / 16)
+        .map_err(|_| H264CabacError::Malformed("macroblock width"))?;
+    let mb_height = usize::try_from(sps.coded_height / 16)
+        .map_err(|_| H264CabacError::Malformed("macroblock height"))?;
+    if mb_width == 0 || mb_height == 0 || sps.coded_width % 16 != 0 || sps.coded_height % 16 != 0 {
+        return Err(H264CabacError::Malformed("macroblock geometry"));
+    }
+    let width = sps.coded_width as usize;
+    let height = sps.coded_height as usize;
+    let chroma_width = width / 2;
+    let chroma_height = height / 2;
+    let minimum_luma = width
+        .checked_mul(height)
+        .ok_or(H264CabacError::Malformed("luma plane size"))?;
+    let minimum_chroma = chroma_width
+        .checked_mul(chroma_height)
+        .ok_or(H264CabacError::Malformed("chroma plane size"))?;
+    if reference_luma.len() < minimum_luma
+        || luma.len() < minimum_luma
+        || reference_chroma_cb.len() < minimum_chroma
+        || reference_chroma_cr.len() < minimum_chroma
+        || chroma_cb.len() < minimum_chroma
+        || chroma_cr.len() < minimum_chroma
+    {
+        return Err(H264CabacError::Malformed("P_Skip plane geometry"));
+    }
+
+    let total_mbs = mb_width * mb_height;
+    let first_mb =
+        usize::try_from(slice.first_mb).map_err(|_| H264CabacError::Malformed("first_mb"))?;
+    if first_mb != 0 {
+        return Err(H264CabacError::Unsupported("P_Skip after first_mb 0"));
+    }
+
+    let data = rbsp
+        .get(slice.data_offset_bits / 8..)
+        .ok_or(H264CabacError::Malformed("CABAC data offset"))?;
+    let mut decoder = CabacDecoder::new_h264(data);
+    let slice_qp = pps.pic_init_qp + slice.qp_delta;
+    let max_qp = 51 + 6 * i32::from(context.bit_depth_luma - 8);
+    if !(0..=max_qp).contains(&slice_qp) {
+        return Err(H264CabacError::Malformed("slice QP"));
+    }
+    let cabac_init_idc = slice
+        .cabac_init_idc
+        .ok_or(H264CabacError::Malformed("P-slice cabac_init_idc"))?;
+    let mut contexts = init_p_contexts(cabac_init_idc, slice_qp, context.bit_depth_luma)?;
+
+    let mut decoded = vec![false; total_mbs];
+    let mut skipped = vec![false; total_mbs];
+    let mut macroblocks = 0usize;
+    for mb_index in first_mb..total_mbs {
+        let left_non_skip = mb_index
+            .checked_sub(1)
+            .filter(|_| mb_index % mb_width != 0)
+            .is_some_and(|left| decoded[left] && !skipped[left]);
+        let top_non_skip = mb_index
+            .checked_sub(mb_width)
+            .is_some_and(|top| decoded[top] && !skipped[top]);
+        let skip_context = 11 + usize::from(left_non_skip) + usize::from(top_non_skip);
+        if decoder.decode_bin(&mut contexts[skip_context]) == 0 {
+            return Err(H264CabacError::Unsupported(
+                "P slice contains a non-P_Skip macroblock",
+            ));
+        }
+
+        let mb_x = (mb_index % mb_width) * 16;
+        let mb_y = (mb_index / mb_width) * 16;
+        let chroma_x = mb_x / 2;
+        let chroma_y = mb_y / 2;
+        for row in 0..16 {
+            let start = (mb_y + row) * width + mb_x;
+            luma[start..start + 16].copy_from_slice(&reference_luma[start..start + 16]);
+        }
+        for row in 0..8 {
+            let start = (chroma_y + row) * chroma_width + chroma_x;
+            chroma_cb[start..start + 8].copy_from_slice(&reference_chroma_cb[start..start + 8]);
+            chroma_cr[start..start + 8].copy_from_slice(&reference_chroma_cr[start..start + 8]);
+        }
+
+        decoded[mb_index] = true;
+        skipped[mb_index] = true;
+        macroblocks += 1;
+        let end_of_slice = decoder.decode_terminate();
+        if end_of_slice {
+            break;
+        }
+        if mb_index + 1 == total_mbs {
+            return Err(H264CabacError::Malformed("missing end_of_slice_flag"));
+        }
+    }
+
+    Ok(DecodedCabacSlice {
+        macroblocks,
+        end_bit: slice.data_offset_bits + decoder.bit_pos(),
+        final_qp: slice_qp as u8,
+        deblock: DeblockMap {
+            mb_width,
+            mb_height,
+            decoded,
+            qp: vec![slice_qp as u8; total_mbs],
+            luma_non_zero: vec![[0; 16]; total_mbs],
+            chroma_non_zero: [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]],
+        },
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CabacMbNeighbors {
     left_decoded: bool,
@@ -1219,6 +1377,30 @@ fn add_cabac_qp(qp: i32, delta: i32, max_qp: i32) -> Result<i32, H264CabacError>
     Ok(value)
 }
 
+fn init_p_contexts(
+    cabac_init_idc: u32,
+    slice_qp: i32,
+    bit_depth_luma: u8,
+) -> Result<[Context; 1024], H264CabacError> {
+    const SKIP: [[i8; 2]; 3] = [[23, 33], [22, 25], [29, 16]];
+    let [m, n] = *SKIP
+        .get(cabac_init_idc as usize)
+        .ok_or(H264CabacError::Malformed("cabac_init_idc"))?;
+    let init_qp = (slice_qp - 6 * (i32::from(bit_depth_luma) - 8)).clamp(0, 51);
+    let mut contexts = [Context::new(0, 0); 1024];
+    contexts[11] = init_context(m, n, init_qp);
+    Ok(contexts)
+}
+
+fn init_context(m: i8, n: i8, slice_qp: i32) -> Context {
+    let mut pre = 2 * (((i32::from(m) * slice_qp) >> 4) + i32::from(n)) - 127;
+    pre ^= pre >> 31;
+    if pre > 124 {
+        pre = 124 + (pre & 1);
+    }
+    Context::new((pre >> 1) as u8, (pre & 1) as u8)
+}
+
 fn init_i_contexts(slice_qp: i32) -> [Context; 1024] {
     const HEAD: [[i8; 2]; 11] = [
         [20, -15],
@@ -1507,12 +1689,7 @@ fn init_i_contexts(slice_qp: i32) -> [Context; 1024] {
     init[417..426].copy_from_slice(&I8X8_LAST);
     std::array::from_fn(|index| {
         let [m, n] = init[index];
-        let mut pre = 2 * (((i32::from(m) * slice_qp) >> 4) + i32::from(n)) - 127;
-        pre ^= pre >> 31;
-        if pre > 124 {
-            pre = 124 + (pre & 1);
-        }
-        Context::new((pre >> 1) as u8, (pre & 1) as u8)
+        init_context(m, n, slice_qp)
     })
 }
 
@@ -1947,6 +2124,25 @@ mod tests {
         assert_eq!(
             add_cabac_qp(52, 0, 51),
             Err(H264CabacError::Malformed("slice QP"))
+        );
+    }
+
+    #[test]
+    fn initializes_p_skip_contexts_from_table_9_12() {
+        assert_eq!(init_p_contexts(0, 26, 8).unwrap()[11], Context::new(6, 1));
+        assert_eq!(init_p_contexts(1, 26, 8).unwrap()[11], Context::new(3, 0));
+        assert_eq!(init_p_contexts(2, 26, 8).unwrap()[11], Context::new(0, 0));
+        assert_eq!(
+            init_p_contexts(3, 26, 8),
+            Err(H264CabacError::Malformed("cabac_init_idc"))
+        );
+    }
+
+    #[test]
+    fn p_skip_initialization_normalizes_high_bit_depth_qp() {
+        assert_eq!(
+            init_p_contexts(0, 32, 10).unwrap()[11],
+            init_p_contexts(0, 20, 8).unwrap()[11]
         );
     }
 }

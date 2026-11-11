@@ -60,6 +60,14 @@ restoration，本轮不把 LR 计入证据。
 出现 `ExitSymbol/PaddingNotZero`。修复后 20 个显示帧共 4,608,000 bytes 全部与
 stock `aomdec` 逐样本一致。当前剩余前沿主要是更多 LR/post-filter shape、
 未覆盖的调度组合与更宽 conformance。
+同日 M11 也开始闭合 H.264 P-slice CABAC。首个严格门是 48×32 Main-profile
+IDR+P：P 帧六个宏块全部为 `P_Skip`，验证 P 的 `cabac_init_idc` 上下文、
+left/top“已解码且非 skip”条件都为 0 时选择 ctxIdx 11、逐宏块终止位和
+reference picture 0 复制。fixture 固定 `weightp=0:no-deblock=1`，两帧
+4,608 bytes 与 FFmpeg 逐样本一致。
+当前实现只接受全 skip 且 `first_mb_in_slice=0` 的单个 4:2:0 slice；P_L0、
+weighted P_Skip、带 deblocking 的 P 帧和 B-slice CABAC 必须继续实现，不能把
+这个门当成 P/B 完成。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -118,8 +126,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1262 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1264 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1263 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1267 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
@@ -495,7 +503,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 108 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 109 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。

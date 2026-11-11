@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1262 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1263 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1264 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1267 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -156,6 +156,28 @@ t62 back to the RK3588 reference board.
   projection. After the fix, all 20 displayed Y/U/V frames match stock `aomdec`
   sample-exactly: 4,608,000 bytes with no differing byte. The complete AV1
   software-reference suite is now **365/365**.
+
+## 2026-11-11 H.264 CABAC P-slice P_Skip
+
+- A new 48x32 Main-profile stream decodes one CABAC IDR followed by a P picture
+  whose six macroblocks are all skip, as confirmed by x264's `mb P ... skip:
+  100.0%` report. The P slice uses `cabac_init_idc=0` and
+  `first_mb_in_slice=0`; deblocking and weighted prediction are disabled to
+  isolate CABAC P syntax.
+- The focused integration gate
+  `cargo test --release --test h264_reference_i32
+  cabac_p_skip_copies_reference_macroblocks_matches_ffmpeg_yuv420p` passes. The
+  test reconstructs the IDR first, decodes every `mb_skip_flag` in the P slice,
+  copies reference picture 0 and compares both complete 4:2:0 frames. All
+  4,608 bytes match FFmpeg.
+- The first implementation used `decoded` instead of `decoded && !skip` for the
+  skip-neighbour context terms, which moved from ctxIdx 11 to 12/13 and ended
+  the slice after two macroblocks. The real fixture reduced that failure to a
+  deterministic two-macroblock result; the corrected terms decode all six.
+- At the persistent 80% OPP cap, `scripts/board_workspace_gate.sh` reports
+  **1267 passed / 0 failed / 41 ignored**, and `cargo test --release --lib
+  --offline` reports **1117 passed / 0 failed / 0 ignored**. Fixture manifest,
+  rustfmt and strict workspace rustdoc pass.
 
 ## 2026-11-08 W5-4 pool closeout
 
