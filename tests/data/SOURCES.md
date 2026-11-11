@@ -29,6 +29,12 @@ cargo test --test fixture_manifest
   loop restoration, loop filtering and advanced inter tools are disabled so the
   fixture isolates the B-pyramid/reference scheduling path. All 20 displayed
   Y/U/V frames match stock `aomdec` sample-exactly.
+- `av1_b_pyramid_advanced_320x240_20.ivf` uses the same 20-frame B-pyramid
+  schedule but retains global motion, warped motion, OBMC, inter-intra,
+  masked/distance-weighted compound and reference-frame MVs. Intra-only
+  optional tools and post-filters remain disabled to isolate the combined
+  advanced-inter/reordering path. All 20 displayed Y/U/V frames match stock
+  `aomdec` sample-exactly.
 - `av1_intrabc_palette_320x320.ivf` is the three-frame 320x320 `testsrc2`
   input encoded by libaom 3.6.0 with the default screen-content tools retained.
   The stream enables IntraBC and palette and contains 20 IntraBC blocks across
