@@ -2809,6 +2809,83 @@ mod tests {
     }
 
     #[test]
+    fn real_96x96_inter_stream_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_96x96_10.ivf");
+        let (pictures, _) = decode_picture_stream(data);
+
+        assert_eq!(
+            pictures.iter().map(visible_frame_hash).collect::<Vec<_>>(),
+            [
+                0x63de3f982309679b,
+                0x3a1a282fa21e27da,
+                0x2f6c7e3ed716c511,
+                0x0c8e36a6e931ac52,
+                0xf0bb5e474f4b183b,
+                0x11f8dd95f5ee0be3,
+                0xd241569402e3bede,
+                0x0b1399e78addc217,
+                0x626809202a51421a,
+                0xf35d91c347ed6bd1,
+            ]
+        );
+    }
+
+    #[test]
+    fn real_128x128_inter_stream_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_128x128_10.ivf");
+        let (pictures, _) = decode_picture_stream(data);
+
+        assert_eq!(
+            pictures.iter().map(visible_frame_hash).collect::<Vec<_>>(),
+            [
+                0x8ddad484f4e84da3,
+                0xa1414cbe4ea9453f,
+                0x0686738f6aeca0c8,
+                0xfc2659638f077c66,
+                0x8c452dd0f4fa8f47,
+                0xb8fcbe236a33e0fe,
+                0x7e7f07d81301fb18,
+                0x099af4bd069c1767,
+                0xa724024718ecc7da,
+                0x368c37e6089d4282,
+            ]
+        );
+    }
+
+    #[test]
+    fn real_192x192_inter_stream_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_192x192_10.ivf");
+        let (pictures, _) = decode_picture_stream(data);
+
+        assert_eq!(
+            pictures.iter().map(visible_frame_hash).collect::<Vec<_>>(),
+            [
+                0x79605eecc0b57d16,
+                0xd96c3b89dcfc7a97,
+                0xb77c8a16f23d21ef,
+                0x9fd5aca5c85b9a46,
+                0xe23fb8684a0ef20c,
+                0x20293ba7bf7e80a9,
+                0x8835e5d9152f7838,
+                0x19558c729f4e265a,
+                0x0ea18aba26154a8c,
+                0x4afa509decc5ddec,
+            ]
+        );
+    }
+
+    #[test]
+    fn real_444_inter_stream_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_inter_444_320x240.ivf");
+        let (pictures, _) = decode_picture_stream(data);
+
+        assert_eq!(
+            pictures.iter().map(visible_frame_hash).collect::<Vec<_>>(),
+            [0x3a3ac8702504f818, 0xfeb795c9af578d86, 0x3fa247cf03083531]
+        );
+    }
+
+    #[test]
     fn real_integer_inter_frame_matches_libaom_and_locks_the_block_modes() {
         let data = include_bytes!("../../../tests/data/av1_inter_box_320x240.ivf");
         let (pictures, inter_blocks) = decode_two_picture_stream(data);

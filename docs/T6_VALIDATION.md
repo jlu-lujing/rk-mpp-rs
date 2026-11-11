@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1243 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1250 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1247 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1254 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -52,8 +52,21 @@ t62 back to the RK3588 reference board.
   pre-grain frames** and **10/10 grain-applied frames**; all thirty frame
   projections are sample-exact after accounting for aomdec's 16-bit container
   alignment.
-- The complete AV1 software-reference suite passes **348/348** on t6 at the
+- The complete AV1 software-reference suite passes **355/355** on t6 at the
   persistent 80 % OPP cap.
+
+## 2026-11-11 AV1 multi-size and 4:4:4 inter conformance
+
+- Existing 96x96, 128x128 and 192x192 ten-frame inter fixtures now have locked
+  libaom pixel hashes; each stream is **10/10** sample-exact.
+- A new 320x240 profile-1 I444 key+P+P fixture matches stock `aomdec` on all
+  three displayed YUV444 frames. It combines one-sided compound, inter-intra,
+  OBMC, warped motion and nearby NEWMV candidates.
+- The I444 stream exposed and fixed two context bugs: inter-intra admitted
+  `BLOCK_8X32`/`BLOCK_32X8` when the normative range ends at `BLOCK_32X32`, and
+  single-reference MV-stack scanning ignored NEWMV components in matching
+  compound neighbours, producing mode context 67 instead of the reference 66.
+- The complete AV1 software-reference suite is now **355/355**.
 
 ## 2026-11-08 W5-4 pool closeout
 
@@ -222,8 +235,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1225 tests**. The
-regular suite passes **1188 / 0 failed / 37 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1291 tests**. The
+regular suite passes **1250 / 0 failed / 41 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.

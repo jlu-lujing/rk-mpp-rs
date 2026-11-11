@@ -143,16 +143,12 @@ impl<'a> SymbolDecoder<'a> {
             let count = cdf[n];
             let rate =
                 3 + u32::from(count > 15) + u32::from(count > 31) + floor_log2(n as u32).min(2);
-            let mut tmp = 0u32;
             for (i, entry) in cdf.iter_mut().take(n).enumerate() {
-                if i == symbol {
-                    tmp = CDF_SCALE;
-                }
                 let current = u32::from(*entry);
-                let updated = if tmp < current {
-                    current - ((current - tmp) >> rate)
+                let updated = if i < symbol {
+                    current - (current >> rate)
                 } else {
-                    current + ((tmp - current) >> rate)
+                    current + ((CDF_SCALE - current) >> rate)
                 };
                 *entry = updated as u16;
             }
@@ -250,6 +246,15 @@ mod tests {
         // rate = 3 + 0 + 0 + min(2, floorLog2(3)) = 4;
         // cdf[0] = 0x4000 + ((0x8000 - 0x4000) >> 4) = 0x4400.
         assert_eq!(cdf, [0x4400, 0x8000, 1]);
+    }
+
+    #[test]
+    fn middle_symbol_lowers_prior_and_raises_following_cdf_entries() {
+        let mut decoder = SymbolDecoder::init(&[0x80, 0x00]).unwrap();
+        let mut cdf = [10923, 21845, 32768, 0];
+
+        assert_eq!(decoder.read_symbol(&mut cdf).unwrap(), 1);
+        assert_eq!(cdf, [10241, 22527, 32768, 1]);
     }
 
     /// Four 4-bit literals per buffer, computed by running the specification's

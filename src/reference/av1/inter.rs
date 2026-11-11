@@ -275,6 +275,10 @@ fn check_backward(frame: i8) -> bool {
     (BWDREF_FRAME..=ALTREF_FRAME).contains(&frame)
 }
 
+fn candidate_has_new_mv(mode: InterMode, compound: Option<CompoundMode>) -> bool {
+    compound.map_or(mode == InterMode::New, CompoundMode::has_new_mv)
+}
+
 fn comparison_context(left: usize, right: usize) -> usize {
     match left.cmp(&right) {
         std::cmp::Ordering::Less => 0,
@@ -912,7 +916,7 @@ impl StackBuilder<'_> {
                 self.grid.mvs[index][list]
             };
             mv.lower_precision(self.allow_high_precision_mv, self.force_integer_mv);
-            if matches!(mode, InterMode::New) {
+            if candidate_has_new_mv(mode, self.grid.compound_modes[index]) {
                 self.new_mv_count += 1;
             }
             self.found = true;
@@ -1619,11 +1623,10 @@ pub(crate) fn wedge_compound_allowed(size: BlockSize) -> bool {
 }
 
 pub fn interintra_allowed(size: BlockSize, ref_frames: [i8; 2]) -> bool {
-    size.width >= 8
-        && size.height >= 8
-        && size.width <= 32
-        && size.height <= 32
-        && ref_frames[0] > INTRA_FRAME
+    matches!(
+        (size.width, size.height),
+        (8, 8) | (8, 16) | (16, 8) | (16, 16) | (16, 32) | (32, 16) | (32, 32)
+    ) && ref_frames[0] > INTRA_FRAME
         && ref_frames[1] <= INTRA_FRAME
 }
 
@@ -1996,6 +1999,53 @@ pub fn read_motion_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interintra_bsize_range_excludes_eight_by_thirty_two_blocks() {
+        let named = |name| {
+            *BLOCK_SIZES
+                .iter()
+                .find(|size| size.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+        for name in [
+            "BLOCK_8X8",
+            "BLOCK_8X16",
+            "BLOCK_16X8",
+            "BLOCK_16X16",
+            "BLOCK_16X32",
+            "BLOCK_32X16",
+            "BLOCK_32X32",
+        ] {
+            assert!(
+                interintra_allowed(named(name), [LAST_FRAME, NONE_FRAME]),
+                "{name}"
+            );
+        }
+        for name in ["BLOCK_8X32", "BLOCK_32X8"] {
+            assert!(
+                !interintra_allowed(named(name), [LAST_FRAME, NONE_FRAME]),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_reference_scan_counts_new_motion_from_a_compound_candidate() {
+        assert!(candidate_has_new_mv(
+            InterMode::Nearest,
+            Some(CompoundMode::NearestNew)
+        ));
+        assert!(candidate_has_new_mv(
+            InterMode::Nearest,
+            Some(CompoundMode::NewNear)
+        ));
+        assert!(!candidate_has_new_mv(
+            InterMode::Nearest,
+            Some(CompoundMode::NearestNearest)
+        ));
+        assert!(candidate_has_new_mv(InterMode::New, None));
+    }
 
     #[test]
     fn motion_mode_allowed_matches_overlap_global_and_warp_preconditions() {

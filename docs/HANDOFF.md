@@ -26,6 +26,11 @@ overlap、Y/Cb/Cr scaling LUT、restricted-range clipping 与高位深加噪路�
 参考槽保留 post-filter/pre-grain 像素和对应参数，普通显示与
 `show_existing_frame` 只在输出副本上施加 grain。真实的 8-bit grain-applied 10 帧、
 10-bit clean 10 帧和 10-bit grain-applied 10 帧全部与 stock `aomdec` 逐样本一致。
+第 106 slice 把 M11 的真实 inter conformance 扩到 96×96、128×128、192×192 各 10 帧，
+并加入 320×240 4:4:4 key+P+P。I444 门定位到两个状态错误：inter-intra 的尺寸门
+误收 `8×32/32×8`；单参考 MV stack 扫描 compound 邻块时漏计其中的 NEWMV，使
+`newmv_count`/`mode_context` 少一档并最终偏移 MV 和系数语法。两处均已用单测锁定，
+四条新流全部与 libaom 逐样本一致。
 仍未闭合的前沿是 WPP、B 帧与多参考调度。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
@@ -85,8 +90,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1243 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1247 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1250 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1254 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。

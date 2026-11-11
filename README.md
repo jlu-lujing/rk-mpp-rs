@@ -82,8 +82,14 @@
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 108 项完成、6 项未完成（含缩进子项为 146 / 9）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 105 个
-AV1 slice。第 105 slice 完成软件参考解码器的 film grain synthesis：移植 libaom 的
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 106 个
+AV1 slice。第 106 slice 扩大真实像素 conformance：新增 96×96、128×128、192×192
+各 10 帧 inter 流，以及 320×240 4:4:4 key+P+P 流，全部与 libaom 逐样本一致。4:4:4
+门同时抓到并修复两个状态错误：inter-intra 的 block-size 范围误把 `8×32/32×8` 算入；
+单参考 MV stack 扫描 compound 邻块时没有辨认其中的 NEWMV，导致 `newmv_count` 和
+`mode_context` 少一档。现在 one-sided compound、inter-intra、OBMC/warped/NEWMV
+候选混合的 4:4:4 流可从首帧连续解码到末帧。第 105 slice 完成软件参考解码器的
+film grain synthesis：移植 libaom 的
 64×64 luma / 32×32 chroma AR grain 模板、每 32×32 subblock 的 seed-derived 偏移、
 2/1 像素 overlap、luma/chroma scaling LUT、restricted-range clipping 与 8/10/12-bit
 整数路径。参考槽和 `show_existing_frame` 始终保存 post-filter、pre-grain 画面，只在
