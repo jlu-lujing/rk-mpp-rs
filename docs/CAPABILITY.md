@@ -96,6 +96,7 @@
 | AV1 screen-content IntraBC | 完成：`CdfState` 为 intra-block DV 保留独立 `ndvc`；解析 `use_intrabc`、整数 DV、tile 内源矩形校验、inter variable-transform tree/`TXFM_SPLIT`、inter tx type 和 IntraBC 残差，并从当前帧已解码区域复制 Y/U/V。默认 320×320 key+P+P 流的 20 个 IntraBC block、4/4 色 Y/UV palette 和三帧最终 YUV 与 `aomdec` 逐样本一致 |
 | AV1 B-pyramid / reference reorder | 完成：20 帧 320×240 `lag-in-frames=19` 流包含多组隐藏 showable frame、显式 slot refresh、order-hint 重排和重复 `show_existing_frame`；八槽 reference store 同步轮换 pixel、SavedCdf 与 temporal motion state。20 个最终显示 YUV 与 `aomdec` 逐样本一致 |
 | AV1 advanced B-pyramid | 完成：同一 20 帧重排序列保留 global/warped motion、OBMC、inter-intra、masked/distance-weighted compound 和 reference-frame MVs，多个帧使用至少三个非零 order-hint reference。20 个最终显示 YUV 与 `aomdec` 逐样本一致 |
+| AV1 10-bit B-pyramid | 完成：320×240、12 帧 10-bit B 流的 coded frame 全部 showable，order-hint history 最多包含 7 个非零 slot，预测仍为单参考，覆盖 10-bit 运动补偿、残差与八槽参考轮换。12 个显示 I420P10 帧共 2,764,800 bytes，Y/U/V 所有 16-bit 样本与 stock `aomdec` 一致 |
 | AV1 fractional inter / transform tree / 后处理 | 完成：16-phase 8-tap normative fractional MV 双阶段插值，≤4 样本维度使用 four-tap regular filter；支持 inter 残差、all-zero、inter transform type、`TX_MODE_SELECT` 的递归 transform tree、switchable interpolation filter、inter frame 内 intra block 的完整 mode/palette/filter-intra/CFL/residual、coefficient CDF q-context 跨帧 collapse。修复 skip 块 above/left level/DC-sign context 清零、NEARMV DRL 终值、NEWMV `RefMvIdx` 选择、sub-8x8 chroma 四象限 MV 预测和 FLIPADST 的空间翻转语义。真实 high-QP 320×240 key+P 流 327 个 P block 与 libaom trace 一致；LF+CDEF 与 restoration-enabled key+P fixture 的 P frame（242 个分区叶块）三平面均逐字节一致。`UseWienerCdf` / `UseSgrprojCdf` / `RestorationTypeCdf` 现在随 SavedCdf 跨帧继承，inter LR 已完成 |
 | AV1 average / distance- / difference-weighted / wedge / inter-intra prediction | 完成：compound CDF 行宽按 `8 symbols + terminal + counter` 的 9 个 u16 读取，参考对、mode、DRL 和双 MV 全部接入空间 stack。average 复刻 libaom 两阶段 16-bit 路径（`round_0=3`、`round_1=7`、floor average、round offset 4096+2048、4-bit 最终舍入）。distance 路径按 order hint 选 `quant_dist_weight`、分配 `fwd_offset`/`bck_offset`，使用截断 4-bit 加权后再减 round offset 并按 4-bit 舍入。masked 路径读取 `comp_group_idx` 的 above/left 上下文、compound type、mask type 或 wedge index/sign；difference mask 来自 luma 高精度差值，wedge 使用六张 64×64 master mask、9 种 block codebook 和 sign flip，二者都按色度采样规则下采样后执行同一 16-bit blend。inter-intra 在单参考 MV 后读取 DC/V/H/Smooth 模式与可选 wedge index，按邻域 intra 预测、16-line smooth mask 和固定 sign-0 wedge mask 与 inter 预测混合。average/distance/difference/wedge 及 smooth/wedge inter-intra fixture 的全部可见 Y/U/V 均逐字节一致 |
 | AV1 switchable interpolation filters | 完成：regular/smooth/sharp/bilinear 全部 16-phase kernel 接入二维插值；宽高 ≤4 时按规范切换 regular/smooth 四抽头版本，sharp 回退 regular 四抽头，bilinear 保持八抽头零填充核 |
@@ -159,7 +160,7 @@ BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
 当前 ROADMAP：**108 完成 / 6 未完成**（含缩进子项为 146 / 9）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 110 个 slice（含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC 和 simple/advanced 20 帧 B-pyramid conformance 也已落地）：符号解码、默认
+平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 111 个 slice（含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、simple/advanced 20 帧 8-bit B-pyramid 和 12 帧 10-bit B-pyramid conformance 也已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
@@ -188,6 +189,6 @@ stack 合并，128 个 inter block 的三平面与 libaom 逐字节一致。segm
 key/inter `ALT_Q`、temporal segment-map prediction 与 1050 个非零 segment block，三帧
 Y/U/V 也与 libaom 逐字节一致。完整 `av1_lr` key+P 流还覆盖非 skip inter 邻居的 selected
 tx-size context，458 个 footprint block 与两帧 Y/U/V 均逐字节一致。
-t6 `cargo test --release --all-targets` 为 **1295 个测试枚举 / 1254 常规通过 / 0 失败 / 41 个板级 ignored**；
-t6 `cargo test --release --lib` 为 **1068 passed / 0 failed / 41 ignored**。41 个板级 ignored 测试已有逐项通过记录，
+t6 `cargo test --release --all-targets` 为 **1296 个测试枚举 / 1255 常规通过 / 0 失败 / 41 个板级 ignored**；
+t6 `cargo test --release --lib` 为 **1069 passed / 0 failed / 41 ignored**。41 个板级 ignored 测试已有逐项通过记录，
 完整 t6 回归与性能闸门见 `docs/T6_VALIDATION.md`。

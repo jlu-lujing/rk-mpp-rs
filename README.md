@@ -82,10 +82,13 @@
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 108 项完成、6 项未完成（含缩进子项为 146 / 9）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 110 个
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 111 个
 AV1 slice。第 110 slice 把 20 帧 B-pyramid 与高级 inter 工具组合起来：保留 global/warped
 motion、OBMC、inter-intra、masked/distance-weighted compound 和 reference-frame MVs，
-20 个显示帧仍全部与 `aomdec` 逐样本一致。第 109 slice 锁定 20 帧
+20 个显示帧仍全部与 `aomdec` 逐样本一致。第 111 slice 将参考调度扩到 10-bit：
+320×240、12 帧 B-pyramid 的 coded frame 全部 showable，order-hint history
+最多包含 7 个非零 slot，预测仍为单参考并连续验证 10-bit 运动补偿、残差和参考槽轮换；
+12 个显示帧的 Y/U/V 共 2,764,800 bytes 与 stock `aomdec` 逐样本一致。第 109 slice 锁定 20 帧
 B-pyramid/reference schedule：`lag-in-frames=19`
 产生多组隐藏 showable frame、order-hint 重排和 `show_existing_frame`，涉及多个参考槽与
 逐槽 CDF/pixel 轮换；20 个最终显示 YUV 全部与 `aomdec` 逐样本一致。第 108 slice

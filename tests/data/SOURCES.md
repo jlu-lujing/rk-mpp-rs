@@ -35,6 +35,19 @@ cargo test --test fixture_manifest
   optional tools and post-filters remain disabled to isolate the combined
   advanced-inter/reordering path. All 20 displayed Y/U/V frames match stock
   `aomdec` sample-exactly.
+- `av1_b_pyramid_10bit_320x240_12.ivf` is 12 frames of 10-bit 320x240
+  `testsrc2` encoded on t6 by libaom 3.6.0 `aomenc` with
+  `--lag-in-frames=11 --auto-alt-ref=1`. All 12 coded frames are showable, and
+  the order-hint history reaches seven non-zero slots while prediction remains
+  single-reference. It combines that multi-slot schedule with the 10-bit
+  prediction, residual and reference-slot paths. Intra-only optional tools,
+  advanced inter tools, CDEF, loop restoration and loop filtering are disabled
+  so the fixture isolates that combined path. All 12 displayed Y/U/V frames match stock
+  `aomdec` sample-exactly; their FNV-1a hashes are
+  `8ba70f4f40f0b596`, `06ae7e7870e4ff00`, `26c756d4b3267738`,
+  `1174442a703ff716`, `cba566d33caee8cb`, `39f860af62962cf9`,
+  `0606d5627ca3ede6`, `1abd2b921beef8b6`, `9de73f8cac3ec0cd`,
+  `1833f502f09341b9`, `d03d07b88ab0699e` and `27f49b4d058db9d0`.
 - `av1_intrabc_palette_320x320.ivf` is the three-frame 320x320 `testsrc2`
   input encoded by libaom 3.6.0 with the default screen-content tools retained.
   The stream enables IntraBC and palette and contains 20 IntraBC blocks across

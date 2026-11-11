@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1254 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1255 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1258 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1259 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -106,6 +106,17 @@ t62 back to the RK3588 reference board.
   slots.
 - All 20 displayed Y/U/V frames match stock `aomdec` sample-exactly. The
   complete AV1 software-reference suite is **359/359**.
+
+## 2026-11-11 AV1 ten-bit B-pyramid
+
+- A 12-frame 320x240 10-bit `testsrc2` B-pyramid is encoded with
+  `--lag-in-frames=11 --auto-alt-ref=1`. All 12 coded frames are showable, the
+  order-hint history reaches seven non-zero slots while every coded frame uses
+  single-reference prediction. The stream combines 10-bit inter prediction,
+  residual reconstruction and reference-slot rotation.
+- The Rust dump is sample-exact to stock `aomdec` for all 12 displayed Y/U/V
+  frames: 2,764,800 bytes with no differing byte. The complete AV1
+  software-reference suite is now **360/360**.
 
 ## 2026-11-08 W5-4 pool closeout
 
