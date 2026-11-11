@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1266 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1270 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1270 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1274 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -247,6 +247,34 @@ t62 back to the RK3588 reference board.
   **1270 passed / 0 failed / 41 ignored**, and `cargo test --release --lib
   --offline` reports **1117 passed / 0 failed / 0 ignored**. Fixture manifest,
   rustfmt and strict workspace rustdoc pass.
+
+## 2026-11-12 H.264 CABAC partitioned-motion P16x8 / P8x16
+
+- Two new 48x32 Main-profile fixtures force every P macroblock to
+  `P_L0_L0_16x8` or `P_L0_L0_8x16`. x264 reports 100% of the selected
+  partition and no skip; the temporary trace build exposes no intra
+  macroblocks. The 16x8 stream SHA-256 is
+  `4645e307b3858f9550b6cfe9d605c535d68462dca03c485295f9295f897b4c25`,
+  YUV `ba4c46a50445a9a8f28c49b9cbdacd2cfd01922d7d7fb96cbcc71fc5a99f99e3`;
+  the 8x16 stream is
+  `0dc9850b597f1ebeb797603f0d30be9d067d69345ddd73573a42ca95ebd0cb58`,
+  YUV `805cafd67d7e20345f2af1fe0e676ff24644b149c4ea499c3b2cd966cf79a47f`.
+- The decoder consumes both partition MVDs and implements the normative
+  A/B/C MVP and MVD context positions from partition scan order. 16x8 vectors
+  include `(-32,0)`, `(16,0)`, `(32,0)`, `(-37,0)` and `(6,2)`; 8x16 vectors
+  include `(-28,0)`, `(16,0)`, `(-2,17)`, `(-32,0)` and `(28,0)`. Each
+  partition gets independent luma/chroma motion compensation, followed by one
+  shared macroblock residual reconstruction.
+- The pixel gate exposed a missing quarter-pel `(2,2)` branch in the luma
+  interpolation dispatch, which fell back to the integer sample. Adding the
+  normative two-dimensional half-sample path makes both complete P frames
+  match FFmpeg sample-exactly.
+- The H.264 CABAC integration suite is **6/6**, the focused CABAC unit suite
+  is **7/7**, the crate `--all-targets` gate is **1270 passed / 0 failed /
+  41 ignored**, `scripts/board_workspace_gate.sh` is **1274 passed / 0 failed
+  / 41 ignored**, and release-library tests are **1119 passed / 0 failed /
+  0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
+- `P_8x8`, weighted prediction, deblocking and B-slice CABAC remain open.
 
 ## 2026-11-08 W5-4 pool closeout
 

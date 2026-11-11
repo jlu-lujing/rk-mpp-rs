@@ -2,7 +2,7 @@
 //!
 //! The current gates cover I16x16, I4x4, I8x8 and I_PCM syntax, multi-macroblock
 //! intra propagation, `P_Skip`, and zero/integer/fractional-motion
-//! `P_L0_16x16` with CABAC residuals.
+//! `P_L0_16x16`, `P_L0_L0_16x8` and `P_L0_L0_8x16` with CABAC residuals.
 
 use std::fmt;
 
@@ -45,8 +45,22 @@ pub struct DecodedCabacSlice {
     pub end_bit: usize,
     pub final_qp: u8,
     pub deblock: DeblockMap,
-    /// Quarter-pixel motion vectors in macroblock raster order for P pictures.
-    pub motion_vectors: Vec<[i32; 2]>,
+    /// Decoded P motion partitions in bitstream order.
+    pub motion_partitions: Vec<DecodedMotionPartition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodedMotionPartition {
+    pub macroblock: usize,
+    /// Top-left luma sample of the partition in picture coordinates.
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    /// Quarter-pixel luma motion vector.
+    pub motion_vector: [i32; 2],
+    /// Signed quarter-pixel motion-vector delta as coded in the slice.
+    pub motion_vector_delta: [i32; 2],
 }
 
 /// Reconstruct a CABAC P slice whose macroblocks all use `P_Skip`.
@@ -204,16 +218,18 @@ pub fn decode_cabac_p_skip_slice(
             luma_non_zero: vec![[0; 16]; total_mbs],
             chroma_non_zero: [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]],
         },
-        motion_vectors: Vec::new(),
+        motion_partitions: Vec::new(),
     })
 }
 
-/// Reconstruct a CABAC P slice made entirely of `P_L0_16x16` macroblocks.
+/// Reconstruct a CABAC P slice made of 16x16, 16x8 or 8x16 `P_L0`
+/// macroblocks.
 ///
 /// This gate consumes the full P macroblock syntax, including MVD, coded-block
-/// pattern, QP delta and inter residuals, while rejecting every other P
-/// partition. Motion compensation covers the normative quarter-pel luma
-/// interpolation and eighth-sample 4:2:0 chroma interpolation.
+/// pattern, QP delta and inter residuals, while rejecting P_8x8 and intra
+/// macroblocks. Motion compensation covers the normative quarter-pel luma
+/// interpolation and eighth-sample 4:2:0 chroma interpolation for every
+/// supported partition.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_cabac_p16_slice(
     rbsp: &[u8],
@@ -234,35 +250,41 @@ pub fn decode_cabac_p16_slice(
         return Err(H264CabacError::Malformed("CABAC byte alignment"));
     }
     if !sps.frame_mbs_only || slice.field_pic {
-        return Err(H264CabacError::Unsupported("interlaced P16"));
+        return Err(H264CabacError::Unsupported("interlaced P partitions"));
     }
     if pps.num_slice_groups != 1 {
-        return Err(H264CabacError::Unsupported("P16 slice groups"));
+        return Err(H264CabacError::Unsupported("P partition slice groups"));
     }
     if pps.weighted_pred {
-        return Err(H264CabacError::Unsupported("weighted P16"));
+        return Err(H264CabacError::Unsupported("weighted P partitions"));
     }
     if pps.transform_8x8 {
-        return Err(H264CabacError::Unsupported("P16 transform8x8"));
+        return Err(H264CabacError::Unsupported("P partition transform8x8"));
     }
     if !pps.deblocking_filter_control || slice.deblocking_disable_idc != 1 {
-        return Err(H264CabacError::Unsupported("P16 deblocking"));
+        return Err(H264CabacError::Unsupported("P partition deblocking"));
     }
     if slice
         .mod_l0
         .iter()
         .any(|entry| *entry != crate::codec::h264::parser::RefMod::End)
     {
-        return Err(H264CabacError::Unsupported("P16 reference reordering"));
+        return Err(H264CabacError::Unsupported(
+            "P partition reference reordering",
+        ));
     }
     if slice.ref_idx_l0_active != 1 {
-        return Err(H264CabacError::Unsupported("P16 multiple references"));
+        return Err(H264CabacError::Unsupported(
+            "P partition multiple references",
+        ));
     }
 
     let context =
         MacroblockContext::from_sps_pps(sps, pps).map_err(|_| H264CabacError::Malformed("SPS"))?;
     if context.chroma_format_idc != 1 {
-        return Err(H264CabacError::Unsupported("P16 requires 4:2:0 chroma"));
+        return Err(H264CabacError::Unsupported(
+            "P partitions require 4:2:0 chroma",
+        ));
     }
     let mb_width = usize::try_from(sps.coded_width / 16)
         .map_err(|_| H264CabacError::Malformed("macroblock width"))?;
@@ -288,10 +310,10 @@ pub fn decode_cabac_p16_slice(
         || chroma_cb.len() < minimum_chroma
         || chroma_cr.len() < minimum_chroma
     {
-        return Err(H264CabacError::Malformed("P16 plane geometry"));
+        return Err(H264CabacError::Malformed("P partition plane geometry"));
     }
     if slice.first_mb != 0 {
-        return Err(H264CabacError::Unsupported("P16 after first_mb 0"));
+        return Err(H264CabacError::Unsupported("P partitions after first_mb 0"));
     }
 
     let data = rbsp
@@ -313,8 +335,10 @@ pub fn decode_cabac_p16_slice(
     let mut qp = slice_qp;
     let mut last_qscale_diff = 0;
     let mut macroblocks = 0usize;
-    let mut motion_vectors = vec![[0i32; 2]; total_mbs];
-    let mut motion_vector_deltas = vec![[0i32; 2]; total_mbs];
+    let mut motion_valid = vec![[false; 16]; total_mbs];
+    let mut motion_vectors = vec![[[0i32; 2]; 16]; total_mbs];
+    let mut motion_vector_deltas = vec![[[0i32; 2]; 16]; total_mbs];
+    let mut motion_partitions = Vec::new();
     let mut luma_plane = PlaneMut {
         data: luma,
         width,
@@ -369,22 +393,18 @@ pub fn decode_cabac_p16_slice(
             ));
         }
 
-        let predicted_motion =
-            p16_motion_predictor(mb_index, mb_width, &state.decoded, &motion_vectors);
-        let neighbor_mvd_sum =
-            p16_neighbor_mvd_sum(mb_index, mb_width, &state.decoded, &motion_vector_deltas);
-        let decoded_mb = decode_cabac_p16_macroblock(
+        let decoded_mb = decode_cabac_p_macroblock(
             &mut decoder,
             &mut contexts,
             context,
             neighbors,
-            neighbor_mvd_sum,
             &mut last_qscale_diff,
+            mb_index,
+            mb_width,
+            &mut motion_valid,
+            &mut motion_vectors,
+            &mut motion_vector_deltas,
         )?;
-        let motion_vector = [
-            predicted_motion[0] + decoded_mb.motion_vector_delta[0],
-            predicted_motion[1] + decoded_mb.motion_vector_delta[1],
-        ];
         qp = add_cabac_qp(qp, decoded_mb.qp_delta, max_qp)?;
         let options = super::h264_residual::ResidualPlaneOptions {
             qp: qp as u8,
@@ -400,21 +420,25 @@ pub fn decode_cabac_p16_slice(
         };
         let residual_planes =
             assemble_inter_macroblock_residual(&decoded_mb.residual, context, &options)
-                .map_err(|_| H264CabacError::Malformed("P16 residual"))?;
+                .map_err(|_| H264CabacError::Malformed("P partition residual"))?;
         let mb_x = (mb_index % mb_width) * 16;
         let mb_y = (mb_index / mb_width) * 16;
-        motion_compensate_macroblock(
-            reference_luma,
-            reference_chroma_cb,
-            reference_chroma_cr,
-            &mut luma_plane,
-            &mut cb_plane,
-            &mut cr_plane,
-            mb_x,
-            mb_y,
-            motion_vector,
-            context.bit_depth_luma.min(context.bit_depth_chroma),
-        )?;
+        for partition in &decoded_mb.partitions {
+            motion_compensate_partition(
+                reference_luma,
+                reference_chroma_cb,
+                reference_chroma_cr,
+                &mut luma_plane,
+                &mut cb_plane,
+                &mut cr_plane,
+                partition.x,
+                partition.y,
+                partition.width,
+                partition.height,
+                partition.motion_vector,
+                context.bit_depth_luma.min(context.bit_depth_chroma),
+            )?;
+        }
         reconstruct_inter_macroblock(
             &residual_planes,
             context.bit_depth_luma.min(context.bit_depth_chroma),
@@ -424,7 +448,7 @@ pub fn decode_cabac_p16_slice(
             mb_x,
             mb_y,
         )
-        .map_err(|_| H264CabacError::Malformed("P16 reconstruction"))?;
+        .map_err(|_| H264CabacError::Malformed("P partition reconstruction"))?;
 
         state.decoded[mb_index] = true;
         state.luma_counts[mb_index] = decoded_mb.residual.luma_non_zero;
@@ -432,11 +456,7 @@ pub fn decode_cabac_p16_slice(
         state.chroma_counts[1][mb_index].copy_from_slice(&decoded_mb.residual.chroma_non_zero[1]);
         state.coded_flags[mb_index] = decoded_mb.coded_flags;
         state.qp[mb_index] = qp as u8;
-        motion_vectors[mb_index] = motion_vector;
-        motion_vector_deltas[mb_index] = [
-            decoded_mb.motion_vector_delta[0].abs(),
-            decoded_mb.motion_vector_delta[1].abs(),
-        ];
+        motion_partitions.extend(decoded_mb.partitions);
         macroblocks += 1;
 
         let end_of_slice = decoder.decode_terminate();
@@ -453,36 +473,124 @@ pub fn decode_cabac_p16_slice(
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
         deblock: state.deblock_map(),
-        motion_vectors,
+        motion_partitions,
     })
 }
 
-fn p16_motion_predictor(
-    index: usize,
-    width: usize,
-    decoded: &[bool],
-    motion_vectors: &[[i32; 2]],
+fn motion_at(
+    mb_width: usize,
+    x: i32,
+    y: i32,
+    motion_valid: &[[bool; 16]],
+    motion_vectors: &[[[i32; 2]; 16]],
+) -> Option<[i32; 2]> {
+    if x < 0 || y < 0 {
+        return None;
+    }
+    let block_x = usize::try_from(x).ok()? / 4;
+    let block_y = usize::try_from(y).ok()? / 4;
+    if block_x >= mb_width * 4 {
+        return None;
+    }
+    let mb_x = block_x / 4;
+    let mb_y = block_y / 4;
+    let mb_index = mb_y * mb_width + mb_x;
+    let block = (block_y % 4) * 4 + block_x % 4;
+    motion_valid
+        .get(mb_index)
+        .filter(|valid| valid[block])
+        .map(|_| motion_vectors[mb_index][block])
+}
+
+fn partition_motion_predictor(
+    mb_index: usize,
+    mb_width: usize,
+    partition_x: usize,
+    partition_y: usize,
+    partition_width: usize,
+    partition_height: usize,
+    motion_valid: &[[bool; 16]],
+    motion_vectors: &[[[i32; 2]; 16]],
 ) -> [i32; 2] {
-    let column = index % width;
-    let left = index
-        .checked_sub(1)
-        .filter(|_| column != 0)
-        .filter(|&left| decoded[left]);
-    let top = index.checked_sub(width).filter(|&top| decoded[top]);
-    let top_right = (column + 1 < width)
-        .then(|| index.checked_sub(width - 1))
-        .flatten()
-        .filter(|&top_right| decoded[top_right]);
-    let diagonal = top_right.or_else(|| {
-        (column != 0)
-            .then(|| index.checked_sub(width + 1))
-            .flatten()
-            .filter(|&top_left| decoded[top_left])
+    debug_assert_eq!(partition_x % 4, 0);
+    debug_assert_eq!(partition_y % 4, 0);
+    debug_assert_eq!(partition_width % 4, 0);
+    debug_assert_eq!(partition_height % 4, 0);
+    let macroblock_x = (mb_index % mb_width * 16) as i32;
+    let macroblock_y = (mb_index / mb_width * 16) as i32;
+    let x = macroblock_x + partition_x as i32;
+    let y = macroblock_y + partition_y as i32;
+    let left = motion_at(mb_width, x - 1, y, motion_valid, motion_vectors);
+    let top = motion_at(mb_width, x, y - 1, motion_valid, motion_vectors);
+    let (candidate_x, candidate_y, fallback_x, fallback_y) =
+        if partition_width == 16 && partition_height == 8 && partition_y == 8 {
+            (
+                macroblock_x + 16,
+                macroblock_y + 8,
+                macroblock_x - 1,
+                macroblock_y + 4,
+            )
+        } else if partition_width == 8 && partition_height == 16 && partition_x == 0 {
+            (
+                macroblock_x + 8,
+                macroblock_y - 1,
+                macroblock_x - 1,
+                macroblock_y - 1,
+            )
+        } else if partition_width == 8 && partition_height == 16 {
+            (
+                macroblock_x + 16,
+                macroblock_y - 1,
+                macroblock_x + 4,
+                macroblock_y - 1,
+            )
+        } else {
+            (
+                macroblock_x + 16,
+                macroblock_y - 1,
+                macroblock_x - 1,
+                macroblock_y - 1,
+            )
+        };
+    let top_right = motion_at(
+        mb_width,
+        candidate_x,
+        candidate_y,
+        motion_valid,
+        motion_vectors,
+    )
+    .or_else(|| {
+        motion_at(
+            mb_width,
+            fallback_x,
+            fallback_y,
+            motion_valid,
+            motion_vectors,
+        )
     });
-    let a = left.map_or([0, 0], |left| motion_vectors[left]);
-    let b = top.map_or([0, 0], |top| motion_vectors[top]);
-    let c = diagonal.map_or([0, 0], |diagonal| motion_vectors[diagonal]);
-    match left.is_some() as u8 + top.is_some() as u8 + diagonal.is_some() as u8 {
+
+    if partition_width == 16 && partition_height == 8 {
+        if partition_y == 0 {
+            if let Some(top) = top {
+                return top;
+            }
+        } else if let Some(left) = left {
+            return left;
+        }
+    } else if partition_width == 8 && partition_height == 16 {
+        if partition_x == 0 {
+            if let Some(left) = left {
+                return left;
+            }
+        } else if let Some(top_right) = top_right {
+            return top_right;
+        }
+    }
+
+    let a = left.unwrap_or([0, 0]);
+    let b = top.unwrap_or([0, 0]);
+    let c = top_right.unwrap_or([0, 0]);
+    match left.is_some() as u8 + top.is_some() as u8 + top_right.is_some() as u8 {
         2..=3 => median_motion_vector(a, b, c),
         1 if left.is_some() => a,
         1 if top.is_some() => b,
@@ -496,53 +604,77 @@ fn median_motion_vector(a: [i32; 2], b: [i32; 2], c: [i32; 2]) -> [i32; 2] {
     [median(a[0], b[0], c[0]), median(a[1], b[1], c[1])]
 }
 
-fn p16_neighbor_mvd_sum(
-    index: usize,
-    width: usize,
-    decoded: &[bool],
-    motion_vector_deltas: &[[i32; 2]],
+fn partition_neighbor_mvd_sum(
+    mb_index: usize,
+    mb_width: usize,
+    partition_x: usize,
+    partition_y: usize,
+    motion_valid: &[[bool; 16]],
+    motion_vector_deltas: &[[[i32; 2]; 16]],
 ) -> [i32; 2] {
-    let left = index
-        .checked_sub(1)
-        .filter(|_| index % width != 0)
-        .filter(|&left| decoded[left])
-        .map_or([0, 0], |left| motion_vector_deltas[left]);
-    let top = index
-        .checked_sub(width)
-        .filter(|&top| decoded[top])
-        .map_or([0, 0], |top| motion_vector_deltas[top]);
+    fn mvd_at(
+        mb_width: usize,
+        x: i32,
+        y: i32,
+        motion_valid: &[[bool; 16]],
+        motion_vector_deltas: &[[[i32; 2]; 16]],
+    ) -> Option<[i32; 2]> {
+        if x < 0 || y < 0 {
+            return None;
+        }
+        let block_x = usize::try_from(x).ok()? / 4;
+        let block_y = usize::try_from(y).ok()? / 4;
+        if block_x >= mb_width * 4 {
+            return None;
+        }
+        let mb_index = (block_y / 4) * mb_width + block_x / 4;
+        let block = (block_y % 4) * 4 + block_x % 4;
+        motion_valid
+            .get(mb_index)
+            .filter(|valid| valid[block])
+            .map(|_| motion_vector_deltas[mb_index][block])
+    }
+
+    let x = (mb_index % mb_width * 16 + partition_x) as i32;
+    let y = (mb_index / mb_width * 16 + partition_y) as i32;
+    let left = mvd_at(mb_width, x - 1, y, motion_valid, motion_vector_deltas).unwrap_or([0, 0]);
+    let top = mvd_at(mb_width, x, y - 1, motion_valid, motion_vector_deltas).unwrap_or([0, 0]);
     [left[0] + top[0], left[1] + top[1]]
 }
 
 #[allow(clippy::too_many_arguments)]
-fn motion_compensate_macroblock(
+fn motion_compensate_partition(
     reference_luma: &[u16],
     reference_chroma_cb: &[u16],
     reference_chroma_cr: &[u16],
     luma: &mut PlaneMut<'_>,
     chroma_cb: &mut PlaneMut<'_>,
     chroma_cr: &mut PlaneMut<'_>,
-    mb_x: usize,
-    mb_y: usize,
+    partition_x: usize,
+    partition_y: usize,
+    partition_width: usize,
+    partition_height: usize,
     motion_vector: [i32; 2],
     bit_depth: u8,
 ) -> Result<(), H264CabacError> {
-    if mb_x + 16 > luma.width
-        || mb_y + 16 > luma.height
-        || mb_x / 2 + 8 > chroma_cb.width
-        || mb_y / 2 + 8 > chroma_cb.height
-        || mb_x / 2 + 8 > chroma_cr.width
-        || mb_y / 2 + 8 > chroma_cr.height
+    if partition_width % 8 != 0
+        || partition_height % 8 != 0
+        || partition_x + partition_width > luma.width
+        || partition_y + partition_height > luma.height
+        || partition_x / 2 + partition_width / 2 > chroma_cb.width
+        || partition_y / 2 + partition_height / 2 > chroma_cb.height
+        || partition_x / 2 + partition_width / 2 > chroma_cr.width
+        || partition_y / 2 + partition_height / 2 > chroma_cr.height
     {
-        return Err(H264CabacError::Malformed("P16 prediction geometry"));
+        return Err(H264CabacError::Malformed("P partition prediction geometry"));
     }
-    let luma_x = mb_x as i32 + (motion_vector[0] >> 2);
-    let luma_y = mb_y as i32 + (motion_vector[1] >> 2);
+    let luma_x = partition_x as i32 + (motion_vector[0] >> 2);
+    let luma_y = partition_y as i32 + (motion_vector[1] >> 2);
     let luma_fraction_x = motion_vector[0] & 3;
     let luma_fraction_y = motion_vector[1] & 3;
-    for row in 0..16 {
-        let destination = (mb_y + row) * luma.stride + mb_x;
-        for column in 0..16 {
+    for row in 0..partition_height {
+        let destination = (partition_y + row) * luma.stride + partition_x;
+        for column in 0..partition_width {
             luma.data[destination + column] = fractional_luma_prediction(
                 reference_luma,
                 luma.width,
@@ -558,11 +690,11 @@ fn motion_compensate_macroblock(
 
     let chroma_x_fraction = motion_vector[0] & 7;
     let chroma_y_fraction = motion_vector[1] & 7;
-    let chroma_x = mb_x as i32 / 2 + (motion_vector[0] >> 3);
-    let chroma_y = mb_y as i32 / 2 + (motion_vector[1] >> 3);
-    for row in 0..8 {
-        let destination = (mb_y / 2 + row) * chroma_cb.stride + mb_x / 2;
-        for column in 0..8 {
+    let chroma_x = partition_x as i32 / 2 + (motion_vector[0] >> 3);
+    let chroma_y = partition_y as i32 / 2 + (motion_vector[1] >> 3);
+    for row in 0..partition_height / 2 {
+        let destination = (partition_y / 2 + row) * chroma_cb.stride + partition_x / 2;
+        for column in 0..partition_width / 2 {
             chroma_cb.data[destination + column] = fractional_chroma_prediction(
                 reference_chroma_cb,
                 chroma_cb.width,
@@ -695,6 +827,7 @@ fn fractional_luma_prediction(
             center(),
             luma_half_horizontal(plane, width, height, x, y + 1, bit_depth),
         ),
+        (2, 2) => center(),
         (1, 2) => average_predictions(half_v(), center()),
         (3, 2) => average_predictions(
             center(),
@@ -784,7 +917,7 @@ struct DecodedCabacMacroblock {
 struct DecodedCabacPMacroblock {
     residual: ParsedMacroblockResidual,
     qp_delta: i32,
-    motion_vector_delta: [i32; 2],
+    partitions: Vec<DecodedMotionPartition>,
     coded_flags: u16,
 }
 
@@ -1019,7 +1152,7 @@ pub fn decode_cabac_i_slice(
                         vec![residual.chroma_non_zero[1].clone()],
                     ],
                 },
-                motion_vectors: Vec::new(),
+                motion_partitions: Vec::new(),
             });
         }
         let mut type_index = 1usize;
@@ -1281,7 +1414,7 @@ pub fn decode_cabac_i_slice(
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
         deblock,
-        motion_vectors: Vec::new(),
+        motion_partitions: Vec::new(),
     })
 }
 
@@ -1365,7 +1498,7 @@ pub fn decode_cabac_i_picture_slices(
                 end_bit,
                 final_qp,
                 deblock: state.deblock_map(),
-                motion_vectors: Vec::new(),
+                motion_partitions: Vec::new(),
             });
         }
     }
@@ -1374,7 +1507,7 @@ pub fn decode_cabac_i_picture_slices(
         end_bit,
         final_qp,
         deblock: state.deblock_map(),
-        motion_vectors: Vec::new(),
+        motion_partitions: Vec::new(),
     })
 }
 
@@ -1533,7 +1666,7 @@ fn decode_cabac_i_slice_into_picture(
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
         deblock: state.deblock_map(),
-        motion_vectors: Vec::new(),
+        motion_partitions: Vec::new(),
     })
 }
 
@@ -1601,30 +1734,83 @@ fn collect_cabac_neighbors(
     neighbors
 }
 
-fn decode_cabac_p16_macroblock(
+fn decode_cabac_p_macroblock(
     decoder: &mut CabacDecoder<'_>,
     contexts: &mut [Context],
     context: MacroblockContext,
     neighbors: CabacMbNeighbors,
-    neighbor_mvd_sum: [i32; 2],
     last_qscale_diff: &mut i32,
+    mb_index: usize,
+    mb_width: usize,
+    motion_valid: &mut [[bool; 16]],
+    motion_vectors: &mut [[[i32; 2]; 16]],
+    motion_vector_deltas: &mut [[[i32; 2]; 16]],
 ) -> Result<DecodedCabacPMacroblock, H264CabacError> {
     if decoder.decode_bin(&mut contexts[14]) != 0 {
         return Err(H264CabacError::Unsupported(
             "P slice contains an intra macroblock",
         ));
     }
-    if decoder.decode_bin(&mut contexts[15]) != 0 {
-        return Err(H264CabacError::Unsupported(
-            "P slice contains P_16x8/P_8x16",
-        ));
-    }
-    if decoder.decode_bin(&mut contexts[16]) != 0 {
-        return Err(H264CabacError::Unsupported("P slice contains P_8x8"));
+    let definitions: &[(usize, usize, usize, usize)] = if decoder.decode_bin(&mut contexts[15]) == 0
+    {
+        if decoder.decode_bin(&mut contexts[16]) != 0 {
+            return Err(H264CabacError::Unsupported("P slice contains P_8x8"));
+        }
+        &[(0, 0, 16, 16)]
+    } else if decoder.decode_bin(&mut contexts[17]) != 0 {
+        &[(0, 0, 16, 8), (0, 8, 16, 8)]
+    } else {
+        &[(0, 0, 8, 16), (8, 0, 8, 16)]
+    };
+
+    let mut partitions = Vec::with_capacity(definitions.len());
+    for &(partition_x, partition_y, partition_width, partition_height) in definitions {
+        let predicted_motion = partition_motion_predictor(
+            mb_index,
+            mb_width,
+            partition_x,
+            partition_y,
+            partition_width,
+            partition_height,
+            motion_valid,
+            motion_vectors,
+        );
+        let neighbor_mvd_sum = partition_neighbor_mvd_sum(
+            mb_index,
+            mb_width,
+            partition_x,
+            partition_y,
+            motion_valid,
+            motion_vector_deltas,
+        );
+        let motion_vector_delta = [
+            decode_cabac_mvd(decoder, contexts, 40, neighbor_mvd_sum[0])?,
+            decode_cabac_mvd(decoder, contexts, 47, neighbor_mvd_sum[1])?,
+        ];
+        let motion_vector = [
+            predicted_motion[0] + motion_vector_delta[0],
+            predicted_motion[1] + motion_vector_delta[1],
+        ];
+        for block_y in partition_y / 4..(partition_y + partition_height) / 4 {
+            for block_x in partition_x / 4..(partition_x + partition_width) / 4 {
+                let block = block_y * 4 + block_x;
+                motion_valid[mb_index][block] = true;
+                motion_vectors[mb_index][block] = motion_vector;
+                motion_vector_deltas[mb_index][block] =
+                    [motion_vector_delta[0].abs(), motion_vector_delta[1].abs()];
+            }
+        }
+        partitions.push(DecodedMotionPartition {
+            macroblock: mb_index,
+            x: (mb_index % mb_width) * 16 + partition_x,
+            y: (mb_index / mb_width) * 16 + partition_y,
+            width: partition_width,
+            height: partition_height,
+            motion_vector,
+            motion_vector_delta,
+        });
     }
 
-    let mvd_x = decode_cabac_mvd(decoder, contexts, 40, neighbor_mvd_sum[0])?;
-    let mvd_y = decode_cabac_mvd(decoder, contexts, 47, neighbor_mvd_sum[1])?;
     let cbp = decode_cabac_cbp(decoder, contexts, neighbors);
     let qp_delta = if cbp != 0 {
         decode_cabac_qp_delta(decoder, contexts, last_qscale_diff)?
@@ -1712,7 +1898,7 @@ fn decode_cabac_p16_macroblock(
     Ok(DecodedCabacPMacroblock {
         residual,
         qp_delta,
-        motion_vector_delta: [mvd_x, mvd_y],
+        partitions,
         coded_flags,
     })
 }
@@ -2907,6 +3093,50 @@ mod tests {
         assert_eq!(
             init_p_contexts(0, 32, 10).unwrap()[11],
             init_p_contexts(0, 20, 8).unwrap()[11]
+        );
+    }
+
+    #[test]
+    fn half_half_luma_prediction_uses_the_two_dimensional_filter() {
+        let plane: Vec<u16> = (0..12 * 12)
+            .map(|index| ((index * 37 + index / 5 * 11) & 0xff) as u16)
+            .collect();
+        assert_eq!(
+            fractional_luma_prediction(&plane, 12, 12, 5, 5, 2, 2, 8),
+            luma_half_center(&plane, 12, 12, 5, 5, 8)
+        );
+    }
+
+    #[test]
+    fn partition_predictors_follow_16x8_and_8x16_candidate_positions() {
+        let mb_width = 3;
+        let mut valid = vec![[false; 16]; 6];
+        let mut vectors = vec![[[0; 2]; 16]; 6];
+
+        for block in 0..8 {
+            valid[0][block] = true;
+            vectors[0][block] = [-28, 1];
+            valid[3][block] = true;
+            vectors[3][block] = [-37, 0];
+        }
+        for block in 8..16 {
+            valid[0][block] = true;
+            vectors[0][block] = [-14, 1];
+        }
+        valid[1][12] = true;
+        vectors[1][12] = [16, 0];
+
+        assert_eq!(
+            partition_motion_predictor(3, mb_width, 0, 8, 16, 8, &valid, &vectors),
+            [-37, 0]
+        );
+        assert_eq!(
+            partition_motion_predictor(3, mb_width, 0, 0, 8, 16, &valid, &vectors),
+            [-14, 1]
+        );
+        assert_eq!(
+            partition_motion_predictor(3, mb_width, 8, 0, 8, 16, &valid, &vectors),
+            [16, 0]
         );
     }
 }

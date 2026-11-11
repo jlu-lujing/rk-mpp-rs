@@ -332,6 +332,19 @@ cargo test --test fixture_manifest
   fractional quarter-pel luma and eighth-sample 4:2:0 chroma positions. The
   decoder test supplies the FFmpeg IDR frame as reference picture 0 and compares
   the complete 2,304-byte P frame.
+- `h264_cabac_p16x8_48x32` uses the same random-texture crop fixture and
+  encoder restrictions, with a temporary x264 runtime switch forcing every P
+  macroblock to `P_L0_L0_16x8`. x264 report is 100% 16x8 and no skip; the top
+  partition vectors begin at `(-32,0)`, `(16,0)` and `(32,0)`. The gate
+  exercises the three CABAC mb_type bins, two partition MVDs, partition-level
+  MVP/MVD contexts, independent top/bottom motion compensation and one shared
+  macroblock residual. The complete FFmpeg P frame matches sample-exactly.
+- `h264_cabac_p8x16_48x32` forces every P macroblock to `P_L0_L0_8x16` on a
+  source whose left/right 8x16 regions have different translations. x264
+  reports 100% 8x16 and no skip; partition vectors include `(-28,0)`,
+  `(16,0)`, `(-2,17)` and `(-32,0)`. The gate covers left/right partition MVP
+  propagation, two MVD contexts, independent motion compensation and shared
+  residual reconstruction, with the complete FFmpeg P frame byte-exact.
 - `h264_i_pcm_cabac` is a 16x16 High-4:4:4-Intra `qp=0` CABAC stream using
   100% I_PCM macroblocks. It locks the raw 4:2:0 sample payload, byte
   realignment and arithmetic-decoder restart behavior.

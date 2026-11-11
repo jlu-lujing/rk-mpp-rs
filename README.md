@@ -81,7 +81,7 @@
 
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-110 项完成、6 项未完成（含缩进子项为 150 / 9）；未完成项里有硬件不存在、无 conformance
+111 项完成、6 项未完成（含缩进子项为 151 / 9）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 115 个
 AV1 slice。第 110 slice 把 20 帧 B-pyramid 与高级 inter 工具组合起来：保留 global/warped
 motion、OBMC、inter-intra、masked/distance-weighted compound 和 reference-frame MVs，
@@ -101,8 +101,12 @@ partition、weighted/deblock 和 B-slice CABAC 仍开放。随后又加入真实
 MVD bypass 的符号方向；P 帧 2,304 bytes 与 FFmpeg 全样本一致。随后用自然
 subpel 搜索流覆盖 quarter-pel luma 六抽头和 1/8-sample chroma 插值，最终
 MVs 含 `(-6,-9)`、`(8,1)`、`(5,1)`、`(-5,-6)`、`(7,1)`，P 帧仍逐样本一致。
-该门还确认 MVD 邻居缓存必须保存绝对幅值。其他 P partition、weighted/deblock
-和 B-slice 仍未完成。
+该门还确认 MVD 邻居缓存必须保存绝对幅值。随后两组强制分区门把 P 运动补偿扩到
+`P_L0_L0_16x8` 与 `P_L0_L0_8x16`：每宏块解析两个 MVD，按分区 scan-order 推导
+A/B/C MVP 和 MVD context，分别做上下或左右运动补偿后共享宏块 residual。
+两个 48×32 P 帧均与 FFmpeg 逐样本一致；门还补上了此前未覆盖的
+quarter-pel `(2,2)` 二维半像素插值。`P_8x8`、weighted/deblock 和 B-slice
+仍未完成。
 第 114 slice 把高级 B/多参考组合扩到
 10-bit 4:4:4：20 帧 I444P10 共 9,216,000 bytes，Y/U/V 全样本与 `aomdec` 一致。
 第 113 slice 在 10-bit 高级 B/多参考流上

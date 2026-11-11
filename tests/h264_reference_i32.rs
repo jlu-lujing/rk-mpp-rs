@@ -174,6 +174,7 @@ fn cabac_p16_integer_motion_matches_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.yuv"),
         false,
+        (16, 16),
     )
     .unwrap();
 }
@@ -184,6 +185,29 @@ fn cabac_p16_fractional_motion_matches_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_p16_fractional_mv_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p16_fractional_mv_48x32.yuv"),
         true,
+        (16, 16),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p16x8_two_motion_vectors_match_ffmpeg_yuv420p() {
+    compare_cabac_p16_motion_fixture(
+        include_bytes!("../tests/data/h264_cabac_p16x8_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p16x8_48x32.yuv"),
+        false,
+        (16, 8),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p8x16_two_motion_vectors_match_ffmpeg_yuv420p() {
+    compare_cabac_p16_motion_fixture(
+        include_bytes!("../tests/data/h264_cabac_p8x16_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p8x16_48x32.yuv"),
+        false,
+        (8, 16),
     )
     .unwrap();
 }
@@ -508,7 +532,16 @@ fn compare_cabac_p16_zero_mv_fixture(stream: &[u8], expected: &[u8]) -> Result<(
     if p.macroblocks != macroblocks {
         return Err(format!("P slice decoded {} macroblocks", p.macroblocks));
     }
-    if p.motion_vectors.iter().any(|motion| *motion != [0, 0]) {
+    if p.motion_partitions.len() != macroblocks {
+        return Err(format!(
+            "zero-motion P16 slice decoded {} partitions",
+            p.motion_partitions.len()
+        ));
+    }
+    if p.motion_partitions
+        .iter()
+        .any(|partition| partition.motion_vector != [0, 0])
+    {
         return Err("zero-motion P16 fixture produced a non-zero motion vector".into());
     }
     if p_y == reference_y && p_u == reference_u && p_v == reference_v {
@@ -544,6 +577,7 @@ fn compare_cabac_p16_motion_fixture(
     stream: &[u8],
     expected: &[u8],
     requires_fractional_motion: bool,
+    partition_size: (usize, usize),
 ) -> Result<(), String> {
     let nals = split_annex_b(stream);
     let sps = parse_sps(
@@ -624,13 +658,53 @@ fn compare_cabac_p16_motion_fixture(
     if p.macroblocks != (width / 16) * (height / 16) {
         return Err(format!("P slice decoded {} macroblocks", p.macroblocks));
     }
-    if p.motion_vectors.iter().all(|motion| *motion == [0, 0]) {
+    let (partition_width, partition_height) = partition_size;
+    if partition_width == 0
+        || partition_height == 0
+        || 16 % partition_width != 0
+        || 16 % partition_height != 0
+    {
+        return Err("invalid expected partition size".into());
+    }
+    let partitions_per_macroblock = (16 / partition_width) * (16 / partition_height);
+    let expected_partition_count = p.macroblocks * partitions_per_macroblock;
+    if p.motion_partitions.len() != expected_partition_count {
+        return Err(format!(
+            "P slice decoded {} partitions for {} macroblocks, expected {expected_partition_count}",
+            p.motion_partitions.len(),
+            p.macroblocks
+        ));
+    }
+    let mb_width = width / 16;
+    for (index, partition) in p.motion_partitions.iter().enumerate() {
+        let macroblock = index / partitions_per_macroblock;
+        let within = index % partitions_per_macroblock;
+        let expected_x =
+            (macroblock % mb_width) * 16 + (within % (16 / partition_width)) * partition_width;
+        let expected_y =
+            (macroblock / mb_width) * 16 + (within / (16 / partition_width)) * partition_height;
+        if partition.macroblock != macroblock
+            || partition.x != expected_x
+            || partition.y != expected_y
+            || partition.width != partition_width
+            || partition.height != partition_height
+        {
+            return Err(format!(
+                "unexpected partition {index}: mb={} x={} y={} {}x{}",
+                partition.macroblock, partition.x, partition.y, partition.width, partition.height
+            ));
+        }
+    }
+    if p.motion_partitions
+        .iter()
+        .all(|partition| partition.motion_vector == [0, 0])
+    {
         return Err("integer-motion fixture produced only zero vectors".into());
     }
     if requires_fractional_motion
-        && p.motion_vectors
-            .iter()
-            .all(|motion| motion[0] % 4 == 0 && motion[1] % 4 == 0)
+        && p.motion_partitions.iter().all(|partition| {
+            partition.motion_vector[0] % 4 == 0 && partition.motion_vector[1] % 4 == 0
+        })
     {
         return Err("fractional-motion fixture produced only integer luma vectors".into());
     }
@@ -644,6 +718,21 @@ fn compare_cabac_p16_motion_fixture(
         &expected[frame_len..],
         &[y_len, chroma_len, chroma_len],
     )
+    .map_err(|error| {
+        let expected_y = &expected[frame_len..frame_len + y_len];
+        let mut regions = [[0usize; 6]; 4];
+        for row in 0..height {
+            for column in 0..width {
+                if p_y[row * width + column] as u8 != expected_y[row * width + column] {
+                    regions[row / 8][column / 8] += 1;
+                }
+            }
+        }
+        format!(
+            "{error}; 8x8_differences={regions:?}; partitions={:?}",
+            p.motion_partitions
+        )
+    })
 }
 
 fn compare_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {
