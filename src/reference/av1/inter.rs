@@ -1891,6 +1891,14 @@ pub fn assign_mv(
     })
 }
 
+fn compound_new_mv_reference_index(mode: CompoundMode, ref_mv_idx: usize) -> usize {
+    if matches!(mode, CompoundMode::NearNew | CompoundMode::NewNear) {
+        1 + ref_mv_idx
+    } else {
+        ref_mv_idx
+    }
+}
+
 /// Assign both list vectors for a compound mode after the mode syntax.
 #[allow(clippy::too_many_arguments)]
 pub fn assign_compound_mv(
@@ -1905,6 +1913,7 @@ pub fn assign_compound_mv(
     disable_cdf_update: bool,
 ) -> Result<[MotionVector; 2], InterError> {
     let modes = [mode.ref0_mode(), mode.ref1_mode()];
+    let new_ref_mv_idx = compound_new_mv_reference_index(mode, ref_mv_idx);
     let mut result = [MotionVector::default(); 2];
     for list in 0..2 {
         result[list] = match modes[list] {
@@ -1914,7 +1923,11 @@ pub fn assign_compound_mv(
             }
             InterMode::Global => global_mvs[list],
             InterMode::New => {
-                let position = if stack.count <= 1 { 0 } else { ref_mv_idx };
+                let position = if stack.count <= 1 {
+                    0
+                } else {
+                    new_ref_mv_idx.min(stack.count - 1)
+                };
                 read_mv(
                     decoder,
                     cdfs,
@@ -2045,6 +2058,21 @@ mod tests {
             Some(CompoundMode::NearestNearest)
         ));
         assert!(candidate_has_new_mv(InterMode::New, None));
+    }
+
+    #[test]
+    fn new_near_compound_modes_use_the_adjusted_reference_mv_index() {
+        assert_eq!(compound_new_mv_reference_index(CompoundMode::NewNear, 0), 1);
+        assert_eq!(compound_new_mv_reference_index(CompoundMode::NearNew, 2), 3);
+        assert_eq!(compound_new_mv_reference_index(CompoundMode::NewNew, 0), 0);
+        assert_eq!(
+            compound_new_mv_reference_index(CompoundMode::NewNearest, 0),
+            0
+        );
+        assert_eq!(
+            compound_new_mv_reference_index(CompoundMode::NearestNew, 0),
+            0
+        );
     }
 
     #[test]

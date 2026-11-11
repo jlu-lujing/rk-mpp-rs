@@ -90,6 +90,20 @@ cargo test --test fixture_manifest
   `3da0d9669edf80c4`, `4d800e7926c84fa4`, `bd715e300a948ce8`,
   `250fccf4ebb8a568`, `5ed647a905c826d8`, `cac6fc2bf4ca02bd`,
   `6399703171b219a8` and `4b493d1951b0d8e6`.
+- `av1_b_pyramid_10bit_lr_320x240_20.ivf` is 20 frames of 10-bit 320x240
+  `testsrc2` encoded on t6 by libaom 3.6.0 `aomenc` with
+  `--cpu-used=0 --cq-level=20 --sb-size=64 --lag-in-frames=19
+  --auto-alt-ref=1 --enable-restoration=1 --enable-cdef=1`. It combines the
+  advanced B reorder schedule with an inter frame that actually selects
+  SGRPROJ loop restoration. All 20 displayed Y/U/V frames match stock
+  `aomdec` sample-exactly; their FNV-1a hashes are
+  `caabbb6721bcab82`, `afb6c6b7a8ff7937`, `05115e16a75d7a46`,
+  `d6eb215593dc8393`, `29c441b9f27905cc`, `aeb58450f4229a69`,
+  `01ce442c36cdb2b2`, `fd9b48bcf5a4a83e`, `17c38540ef36f877`,
+  `04323f1c87648221`, `51c78afd43ccc20c`, `7849aeac114f90d5`,
+  `a3fe80b3d3733339`, `17b4c28f1ec1b00b`, `2290ea976035623a`,
+  `18bac5ec186699eb`, `db7aa2df16b263ce`, `98c83f336b720c43`,
+  `c717ac5e916a17ce` and `b878342e4addaa68`.
 - `av1_intrabc_palette_320x320.ivf` is the three-frame 320x320 `testsrc2`
   input encoded by libaom 3.6.0 with the default screen-content tools retained.
   The stream enables IntraBC and palette and contains 20 IntraBC blocks across

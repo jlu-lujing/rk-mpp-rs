@@ -3339,6 +3339,64 @@ mod tests {
     }
 
     #[test]
+    fn real_ten_bit_b_pyramid_with_loop_restoration_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_b_pyramid_10bit_lr_320x240_20.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        assert!(sequence.enable_restoration);
+        let coded = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(coded.iter().any(|frame| !frame.header.show_frame));
+        assert!(events
+            .iter()
+            .flatten()
+            .any(|event| matches!(event, StreamEvent::ShowExisting(_))));
+        assert!(coded.iter().any(|frame| frame.header.uses_lr));
+        assert!(coded.iter().any(|frame| frame.header.reference_select));
+
+        let (pictures, _) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 20);
+        assert!(pictures.iter().all(|picture| picture.bit_depth == 10));
+        let expected = [
+            0xcaabbb6721bcab82,
+            0xafb6c6b7a8ff7937,
+            0x05115e16a75d7a46,
+            0xd6eb215593dc8393,
+            0x29c441b9f27905cc,
+            0xaeb58450f4229a69,
+            0x01ce442c36cdb2b2,
+            0xfd9b48bcf5a4a83e,
+            0x17c38540ef36f877,
+            0x04323f1c87648221,
+            0x51c78afd43ccc20c,
+            0x7849aeac114f90d5,
+            0xa3fe80b3d3733339,
+            0x17b4c28f1ec1b00b,
+            0x2290ea976035623a,
+            0x18bac5ec186699eb,
+            0xdb7aa2df16b263ce,
+            0x98c83f336b720c43,
+            0xc717ac5e916a17ce,
+            0xb878342e4addaa68,
+        ];
+        for (index, (picture, want)) in pictures.iter().zip(expected).enumerate() {
+            assert_eq!(
+                visible_frame_hash(picture),
+                want,
+                "LR displayed frame {index} diverges from aomdec",
+            );
+        }
+    }
+
+    #[test]
     fn real_integer_inter_frame_matches_libaom_and_locks_the_block_modes() {
         let data = include_bytes!("../../../tests/data/av1_inter_box_320x240.ivf");
         let (pictures, inter_blocks) = decode_two_picture_stream(data);

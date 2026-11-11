@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1258 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1262 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1262 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1264 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -144,6 +144,18 @@ t62 back to the RK3588 reference board.
 - All 20 displayed Y/U/V frames match stock `aomdec` sample-exactly:
   9,216,000 bytes with no differing byte. The complete AV1 software-reference
   suite is now **363/363**.
+
+## 2026-11-11 AV1 ten-bit B-pyramid with inter loop restoration
+
+- A 20-frame advanced 10-bit B stream encoded with `--sb-size=64
+  --cpu-used=0 --cq-level=20` contains a real inter frame with `uses_lr=true`
+  alongside CDEF and reference reordering.
+- The first run failed at coded frame 5 with `ExitSymbol/PaddingNotZero`.
+  Comparing libaom and Rust narrowed it to `NEW_NEARMV`: the NEW component must
+  use reference index `1 + ref_mv_idx`. The wrong MV had polluted temporal MV
+  projection. After the fix, all 20 displayed Y/U/V frames match stock `aomdec`
+  sample-exactly: 4,608,000 bytes with no differing byte. The complete AV1
+  software-reference suite is now **365/365**.
 
 ## 2026-11-08 W5-4 pool closeout
 
