@@ -75,6 +75,21 @@ cargo test --test fixture_manifest
   `01b593edae5d4048`, `64ade44681e95639`, `c92f0190fc82a687`,
   `3e7128c543279b42`, `6158908403f110a9`, `c0f4d5512b2986d7`,
   `0a195b7dcb09fc0b` and `cfb7535f8ed14278`.
+- `av1_b_pyramid_10bit_444_advanced_320x240_20.ivf` is 20 frames of
+  `testsrc2` converted to `yuv444p10le` and encoded on t6 by libaom 3.6.0
+  `aomenc` profile 1 with `--good --cpu-used=6 --lag-in-frames=19
+  --auto-alt-ref=1 --sb-size=64`. Hidden showable frames,
+  `show_existing_frame`, global/warped motion, OBMC, inter-intra,
+  masked/distance-weighted compound and reference-frame MVs are retained.
+  Intra-only optional tools and post-filters are disabled. All 20 displayed
+  Y/U/V frames match stock `aomdec` sample-exactly; their FNV-1a hashes are
+  `a551e835971ee9f6`, `a0bf674cbc51511f`, `0d2e58af76355f7e`,
+  `b9c7d1ca9368a44f`, `c9db82c34f64a5f3`, `9f1d80df1f8c3bbb`,
+  `832b3b3c77f8724e`, `499ef5e58a5a3ba0`, `5615e4f2f58045be`,
+  `0b126e704a8be233`, `d311ff9f644cd159`, `f30a3c857887116f`,
+  `3da0d9669edf80c4`, `4d800e7926c84fa4`, `bd715e300a948ce8`,
+  `250fccf4ebb8a568`, `5ed647a905c826d8`, `cac6fc2bf4ca02bd`,
+  `6399703171b219a8` and `4b493d1951b0d8e6`.
 - `av1_intrabc_palette_320x320.ivf` is the three-frame 320x320 `testsrc2`
   input encoded by libaom 3.6.0 with the default screen-content tools retained.
   The stream enables IntraBC and palette and contains 20 IntraBC blocks across

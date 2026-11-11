@@ -51,8 +51,10 @@ distance compound 和 reference-frame MVs 组合，20 个最终显示 YUV 仍逐
 4,608,000 bytes，全部与 stock `aomdec` 逐样本一致，不存在差异字节。
 第 113 slice 在同一 20 帧 10-bit 高级 B 流上打开非零 deblock 和 CDEF；每个非 intra
 coded frame 都走 loop filter，20 个显示帧仍全部逐样本一致。该码流未启用 loop
-restoration，本轮不把 LR 计入证据。当前剩余前沿主要是 LR/post-filter 组合、
-未覆盖的调度 shape 与更宽 conformance。
+restoration，本轮不把 LR 计入证据。
+第 114 slice 把高级 B/多参考组合扩到 10-bit 4:4:4。20 个显示 I444P10 帧共
+9,216,000 bytes，Y/U/V 全部与 stock `aomdec` 逐样本一致。当前剩余前沿主要是
+LR/post-filter 组合、未覆盖的调度 shape 与更宽 conformance。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -111,8 +113,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1257 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1261 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1258 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1262 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。

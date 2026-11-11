@@ -3270,6 +3270,75 @@ mod tests {
     }
 
     #[test]
+    fn real_ten_bit_444_advanced_b_pyramid_matches_libaom() {
+        let data =
+            include_bytes!("../../../tests/data/av1_b_pyramid_10bit_444_advanced_320x240_20.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let sequence = stream.sequence().unwrap();
+        assert_eq!(sequence.color.bit_depth, 10);
+        assert!(!sequence.color.mono_chrome);
+        assert!(!sequence.color.subsampling_x);
+        assert!(!sequence.color.subsampling_y);
+        let coded = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(coded.iter().any(|frame| !frame.header.show_frame));
+        assert!(events
+            .iter()
+            .flatten()
+            .any(|event| matches!(event, StreamEvent::ShowExisting(_))));
+        assert!(coded.iter().any(|frame| {
+            frame.header.reference_select
+                && frame
+                    .reference_order_hints
+                    .iter()
+                    .filter(|hint| **hint != 0)
+                    .count()
+                    >= 3
+        }));
+
+        let (pictures, _) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 20);
+        assert!(pictures.iter().all(|picture| picture.bit_depth == 10));
+        let expected = [
+            0xa551e835971ee9f6,
+            0xa0bf674cbc51511f,
+            0x0d2e58af76355f7e,
+            0xb9c7d1ca9368a44f,
+            0xc9db82c34f64a5f3,
+            0x9f1d80df1f8c3bbb,
+            0x832b3b3c77f8724e,
+            0x499ef5e58a5a3ba0,
+            0x5615e4f2f58045be,
+            0x0b126e704a8be233,
+            0xd311ff9f644cd159,
+            0xf30a3c857887116f,
+            0x3da0d9669edf80c4,
+            0x4d800e7926c84fa4,
+            0xbd715e300a948ce8,
+            0x250fccf4ebb8a568,
+            0x5ed647a905c826d8,
+            0xcac6fc2bf4ca02bd,
+            0x6399703171b219a8,
+            0x4b493d1951b0d8e6,
+        ];
+        for (index, (picture, want)) in pictures.iter().zip(expected).enumerate() {
+            assert_eq!(
+                visible_frame_hash(picture),
+                want,
+                "10-bit 4:4:4 displayed frame {index} diverges from aomdec",
+            );
+        }
+    }
+
+    #[test]
     fn real_integer_inter_frame_matches_libaom_and_locks_the_block_modes() {
         let data = include_bytes!("../../../tests/data/av1_inter_box_320x240.ivf");
         let (pictures, inter_blocks) = decode_two_picture_stream(data);
