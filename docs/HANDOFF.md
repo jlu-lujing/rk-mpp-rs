@@ -31,7 +31,10 @@ overlap、Y/Cb/Cr scaling LUT、restricted-range clipping 与高位深加噪路�
 误收 `8×32/32×8`；单参考 MV stack 扫描 compound 邻块时漏计其中的 NEWMV，使
 `newmv_count`/`mode_context` 少一档并最终偏移 MV 和系数语法。两处均已用单测锁定，
 四条新流全部与 libaom 逐样本一致。
-仍未闭合的前沿是 WPP、B 帧与多参考调度。
+第 107 slice 锁定 320×320 `tile_cols_log2=0 / tile_rows_log2=1` 的 key+P+P，
+两个全宽 row tile 都从 frame CDF 重启，三帧与 `aomdec` 逐样本一致。AV1 本身没有
+独立 WPP flag 或 HEVC 式 entry-point context 链，因此 M11 的该项已经关闭。
+仍未闭合的前沿是 B 帧、剩余多参考调度和更宽 conformance。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -90,8 +93,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1250 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1254 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1251 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1255 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。

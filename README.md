@@ -82,8 +82,12 @@
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 108 项完成、6 项未完成（含缩进子项为 146 / 9）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 106 个
-AV1 slice。第 106 slice 扩大真实像素 conformance：新增 96×96、128×128、192×192
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 107 个
+AV1 slice。第 107 slice 补齐单列双行 AV1 tile layout：320×320 key+P+P 的每一帧都走
+`tile_cols_log2=0 / tile_rows_log2=1`，两个独立全宽 row tile 的 CDF 均在 tile 起点
+回到 frame context；三帧 Y/U/V 与 `aomdec` 逐样本一致。该验证也明确 AV1 没有 HEVC
+式 WPP entry-point/context 链，之前的“WPP”缺口实际是这一 tile-row shape 未被锁定。
+第 106 slice 扩大真实像素 conformance：新增 96×96、128×128、192×192
 各 10 帧 inter 流，以及 320×240 4:4:4 key+P+P 流，全部与 libaom 逐样本一致。4:4:4
 门同时抓到并修复两个状态错误：inter-intra 的 block-size 范围误把 `8×32/32×8` 算入；
 单参考 MV stack 扫描 compound 邻块时没有辨认其中的 NEWMV，导致 `newmv_count` 和

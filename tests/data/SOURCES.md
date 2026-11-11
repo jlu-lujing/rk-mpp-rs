@@ -22,6 +22,19 @@ cargo test --test fixture_manifest
   inter-intra, interintra/masked/warped/OBMC candidates and nearby
   `NEWMV` context. Its three displayed frames match stock `aomdec` with FNV-1a
   `3a3ac8702504f818`, `feb795c9af578d86` and `3fa247cf03083531`.
+- `av1_tile_rows_320x320.ivf` is three frames of 320x320 `testsrc2` encoded
+  on t6 by libaom 3.6.0 `aomenc` at CQ 32 with
+  `--tile-columns=0 --tile-rows=1 --row-mt=0 --lag-in-frames=0`,
+  with IntraBC, palette, CDEF, loop restoration and the loop filter disabled
+  to isolate the tile-row entropy and reconstruction path.
+  Every frame has `tile_cols_log2=0` and `tile_rows_log2=1`, so the same tile
+  group carries two independent full-width row tiles;
+  `context_update_tile_id` is 0 for the keyframe and 1 for both inter frames.
+  The keyframe and both inter frames match stock
+  `aomdec`; their Y/U/V FNV-1a hashes are
+  `6eca3ac0d4243aad/14e1c277af328064/4c069b480fd0eb6b`,
+  `ec5884cb134c1dd8/00676cb66148b3f7/cbf13b2bd14a4669` and
+  `5fe57016af73bb4e/57b09062271f10a9/5ac2276fd3fb418c`.
 - `av1_vdpu383_global_key_320x240.bin` is the first 672-byte VDPU383 AV1
   global-header record emitted by the official C HAL after applying
   `scripts/av1_vdpu383_dump.patch` and decoding the first keyframe of

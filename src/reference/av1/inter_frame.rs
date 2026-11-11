@@ -2886,6 +2886,57 @@ mod tests {
     }
 
     #[test]
+    fn real_one_column_two_tile_row_stream_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_tile_rows_320x320.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let frames = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(frames.len(), 3);
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.header.tile_cols, 1);
+            assert_eq!(frame.header.tile_rows, 2);
+            assert_eq!(
+                frame.header.context_update_tile_id,
+                [0, 1, 1][index],
+                "context update tile for frame {index}"
+            );
+            assert_eq!(frame.layout.tiles.len(), 2);
+        }
+
+        let (pictures, inter_frames) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 3);
+        assert_eq!(inter_frames.len(), 2);
+        assert!(!inter_frames[0].is_empty());
+        assert!(!inter_frames[1].is_empty());
+
+        // Locked against stock aomdec at 80% OPP on t6.
+        let expected: [(u64, u64, u64); 3] = [
+            (0x6eca3ac0d4243aad, 0x14e1c277af328064, 0x4c069b480fd0eb6b),
+            (0xec5884cb134c1dd8, 0x00676cb66148b3f7, 0xcbf13b2bd14a4669),
+            (0x5fe57016af73bb4e, 0x57b09062271f10a9, 0x5ac2276fd3fb418c),
+        ];
+        for (index, (picture, want)) in pictures.iter().zip(expected).enumerate() {
+            assert_eq!(
+                (
+                    visible_hash(&picture.y),
+                    visible_hash(picture.u.as_ref().unwrap()),
+                    visible_hash(picture.v.as_ref().unwrap()),
+                ),
+                want,
+                "frame {index} diverges from aomdec",
+            );
+        }
+    }
+
+    #[test]
     fn real_integer_inter_frame_matches_libaom_and_locks_the_block_modes() {
         let data = include_bytes!("../../../tests/data/av1_inter_box_320x240.ivf");
         let (pictures, inter_blocks) = decode_two_picture_stream(data);

@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1250 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1251 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1254 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1255 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -52,7 +52,7 @@ t62 back to the RK3588 reference board.
   pre-grain frames** and **10/10 grain-applied frames**; all thirty frame
   projections are sample-exact after accounting for aomdec's 16-bit container
   alignment.
-- The complete AV1 software-reference suite passes **355/355** on t6 at the
+- The complete AV1 software-reference suite passes **356/356** on t6 at the
   persistent 80 % OPP cap.
 
 ## 2026-11-11 AV1 multi-size and 4:4:4 inter conformance
@@ -66,7 +66,18 @@ t62 back to the RK3588 reference board.
   `BLOCK_8X32`/`BLOCK_32X8` when the normative range ends at `BLOCK_32X32`, and
   single-reference MV-stack scanning ignored NEWMV components in matching
   compound neighbours, producing mode context 67 instead of the reference 66.
-- The complete AV1 software-reference suite is now **355/355**.
+- The complete AV1 software-reference suite is now **356/356**.
+
+## 2026-11-11 AV1 one-column tile rows
+
+- A new 320x320 key+P+P fixture is encoded with
+  `tile_cols_log2=0` and `tile_rows_log2=1`; IntraBC, palette, CDEF, loop
+  restoration and the loop filter are disabled to isolate the row-tile path.
+- Both full-width row tiles restart their entropy state from the frame CDF,
+  while inter-frame neighbour state follows the tile decode order. All three
+  visible Y/U/V frames match stock `aomdec` sample-exactly.
+- AV1 has no separate WPP flag or HEVC-style entry-point context chain. This
+  tile-row shape closes the remaining AV1 item that had been tracked as WPP.
 
 ## 2026-11-08 W5-4 pool closeout
 
@@ -235,8 +246,8 @@ t62 back to the RK3588 reference board.
 
 ## Tests
 
-`cargo test --release --all-targets` currently enumerates **1291 tests**. The
-regular suite passes **1250 / 0 failed / 41 ignored** on t6. The four ignored
+`cargo test --release --all-targets` currently enumerates **1292 tests**. The
+regular suite passes **1251 / 0 failed / 41 ignored** on t6. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.
