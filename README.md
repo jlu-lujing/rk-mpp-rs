@@ -82,8 +82,11 @@
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 108 项完成、6 项未完成（含缩进子项为 146 / 9）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 108 个
-AV1 slice。第 108 slice 完成 screen-content IntraBC：解析独立 `ndvc` CDF 的
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 109 个
+AV1 slice。第 109 slice 锁定 20 帧 B-pyramid/reference schedule：`lag-in-frames=19`
+产生多组隐藏 showable frame、order-hint 重排和 `show_existing_frame`，涉及多个参考槽与
+逐槽 CDF/pixel 轮换；20 个最终显示 YUV 全部与 `aomdec` 逐样本一致。第 108 slice
+完成 screen-content IntraBC：解析独立 `ndvc` CDF 的
 `use_intrabc` 与整数 DV、按 tile 边界校验源块、复用 inter variable-transform tree
 （含 `TXFM_SPLIT`、inter tx type 和 IntraBC 残差），再从当前帧已解码区域复制 Y/U/V。
 默认 aomenc 320×320 key+P+P 流中的 20 个 IntraBC block、4/4 色 Y/UV palette 和三帧

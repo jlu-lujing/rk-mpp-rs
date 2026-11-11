@@ -22,6 +22,13 @@ cargo test --test fixture_manifest
   inter-intra, interintra/masked/warped/OBMC candidates and nearby
   `NEWMV` context. Its three displayed frames match stock `aomdec` with FNV-1a
   `3a3ac8702504f818`, `feb795c9af578d86` and `3fa247cf03083531`.
+- `av1_b_pyramid_320x240_20.ivf` is 20 frames of `testsrc2` encoded on t6 by
+  libaom 3.6.0 `aomenc` with `--lag-in-frames=19 --auto-alt-ref=1`. It contains
+  hidden showable pictures, order-hint reordering and `show_existing_frame`
+  output across multiple reference slots. Intra-only optional tools, CDEF,
+  loop restoration, loop filtering and advanced inter tools are disabled so the
+  fixture isolates the B-pyramid/reference scheduling path. All 20 displayed
+  Y/U/V frames match stock `aomdec` sample-exactly.
 - `av1_intrabc_palette_320x320.ivf` is the three-frame 320x320 `testsrc2`
   input encoded by libaom 3.6.0 with the default screen-content tools retained.
   The stream enables IntraBC and palette and contains 20 IntraBC blocks across

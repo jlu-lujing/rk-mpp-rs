@@ -2974,6 +2974,59 @@ mod tests {
     }
 
     #[test]
+    fn real_b_pyramid_reordered_stream_matches_libaom() {
+        let data = include_bytes!("../../../tests/data/av1_b_pyramid_320x240_20.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut stream = ReferenceStream::new();
+        let events = stream.parse_ivf(&ivf).unwrap();
+        let coded = events
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                StreamEvent::CodedFrame(frame) => Some(frame),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(coded.iter().any(|frame| !frame.header.show_frame));
+        assert!(events
+            .iter()
+            .flatten()
+            .any(|event| matches!(event, StreamEvent::ShowExisting(_))));
+
+        let (pictures, _) = decode_picture_stream(data);
+        assert_eq!(pictures.len(), 20);
+        let expected = [
+            0x1af1341dc4d99ee3,
+            0xb3a63bb9859a3a78,
+            0x5de20c45fd22c8f9,
+            0x8c4f5d082030f577,
+            0x95f82f32d140094b,
+            0x30e53bb6bb8d0d11,
+            0x79b4a8d1a7a6653c,
+            0x4374564e02353309,
+            0xe0eb4740e50acf10,
+            0x206ad386a8c1c130,
+            0xb24992c1b530b679,
+            0xaaeea6a7090a2dba,
+            0x3ce3d9838df98b49,
+            0x8ddd6895dba8415c,
+            0xa54d70aba2b9583a,
+            0x674eac5d10d66f56,
+            0x757dacde17be27eb,
+            0xe2390c614cdbfb9c,
+            0x90f1e78c92765cc3,
+            0x5444a1b825c4a678,
+        ];
+        for (index, (picture, want)) in pictures.iter().zip(expected).enumerate() {
+            assert_eq!(
+                visible_frame_hash(picture),
+                want,
+                "displayed frame {index} diverges from aomdec",
+            );
+        }
+    }
+
+    #[test]
     fn real_integer_inter_frame_matches_libaom_and_locks_the_block_modes() {
         let data = include_bytes!("../../../tests/data/av1_inter_box_320x240.ivf");
         let (pictures, inter_blocks) = decode_two_picture_stream(data);

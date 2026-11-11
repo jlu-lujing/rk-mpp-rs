@@ -37,7 +37,9 @@ overlap、Y/Cb/Cr scaling LUT、restricted-range clipping 与高位深加噪路�
 第 108 slice 完成 screen-content IntraBC：独立 `ndvc`、tile 内 DV 校验、inter
 variable-transform tree、IntraBC 残差和当前帧块复制均已接通。默认 320×320
 key+P+P 的 20 个 IntraBC block、4/4 色 Y/UV palette 和三帧最终 YUV 逐样本一致。
-仍未闭合的前沿是 B 帧、剩余多参考调度和更宽 conformance。
+第 109 slice 锁定 20 帧 B-pyramid：隐藏 showable picture、order-hint 重排、
+参考槽刷新和 `show_existing_frame` 在八槽 pixel/CDF/temporal state 上轮换，
+20 个最终显示 YUV 逐样本一致。剩余前沿收窄为高级 B/多参考组合和更宽 conformance。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -96,8 +98,8 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
 当前 t6 `--all-targets` 全量门为
-`1252 passed / 0 failed / 41 ignored`；标准 workspace gate（含
-`rk-mpp-rs-sys`）为 `1256 passed / 0 failed / 41 ignored`，严格 rustdoc
+`1253 passed / 0 failed / 41 ignored`；标准 workspace gate（含
+`rk-mpp-rs-sys`）为 `1257 passed / 0 failed / 41 ignored`，严格 rustdoc
 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
