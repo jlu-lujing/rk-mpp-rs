@@ -325,6 +325,13 @@ cargo test --test fixture_manifest
   parsing/sign, MVP propagation, integer luma/chroma motion compensation and
   edge extension. The decoder test supplies FFmpeg's first frame as reference
   picture 0 and compares the complete P frame.
+- `h264_cabac_p16_fractional_mv_48x32` repeats the random-texture crop pair
+  with the temporary x264 build's normal subpel motion search (`subme=2`) while
+  still forbidding P-skip, sub-partitions and intra modes. The six final P16
+  vectors include `(-6,-9)`, `(8,1)`, `(5,1)`, `(-5,-6)` and `(7,1)`, covering
+  fractional quarter-pel luma and eighth-sample 4:2:0 chroma positions. The
+  decoder test supplies the FFmpeg IDR frame as reference picture 0 and compares
+  the complete 2,304-byte P frame.
 - `h264_i_pcm_cabac` is a 16x16 High-4:4:4-Intra `qp=0` CABAC stream using
   100% I_PCM macroblocks. It locks the raw 4:2:0 sample payload, byte
   realignment and arithmetic-decoder restart behavior.

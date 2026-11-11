@@ -1,8 +1,8 @@
 //! H.264 CABAC intra and P-slice reconstruction.
 //!
 //! The current gates cover I16x16, I4x4, I8x8 and I_PCM syntax, multi-macroblock
-//! intra propagation, `P_Skip`, and zero/integer-motion `P_L0_16x16` with
-//! CABAC residuals. Fractional motion remains explicit unsupported input.
+//! intra propagation, `P_Skip`, and zero/integer/fractional-motion
+//! `P_L0_16x16` with CABAC residuals.
 
 use std::fmt;
 
@@ -212,8 +212,8 @@ pub fn decode_cabac_p_skip_slice(
 ///
 /// This gate consumes the full P macroblock syntax, including MVD, coded-block
 /// pattern, QP delta and inter residuals, while rejecting every other P
-/// partition. Motion compensation currently accepts integer-sample vectors;
-/// fractional vectors fail explicitly.
+/// partition. Motion compensation covers the normative quarter-pel luma
+/// interpolation and eighth-sample 4:2:0 chroma interpolation.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_cabac_p16_slice(
     rbsp: &[u8],
@@ -403,7 +403,7 @@ pub fn decode_cabac_p16_slice(
                 .map_err(|_| H264CabacError::Malformed("P16 residual"))?;
         let mb_x = (mb_index % mb_width) * 16;
         let mb_y = (mb_index / mb_width) * 16;
-        copy_integer_motion_macroblock(
+        motion_compensate_macroblock(
             reference_luma,
             reference_chroma_cb,
             reference_chroma_cr,
@@ -413,6 +413,7 @@ pub fn decode_cabac_p16_slice(
             mb_x,
             mb_y,
             motion_vector,
+            context.bit_depth_luma.min(context.bit_depth_chroma),
         )?;
         reconstruct_inter_macroblock(
             &residual_planes,
@@ -432,7 +433,10 @@ pub fn decode_cabac_p16_slice(
         state.coded_flags[mb_index] = decoded_mb.coded_flags;
         state.qp[mb_index] = qp as u8;
         motion_vectors[mb_index] = motion_vector;
-        motion_vector_deltas[mb_index] = decoded_mb.motion_vector_delta;
+        motion_vector_deltas[mb_index] = [
+            decoded_mb.motion_vector_delta[0].abs(),
+            decoded_mb.motion_vector_delta[1].abs(),
+        ];
         macroblocks += 1;
 
         let end_of_slice = decoder.decode_terminate();
@@ -511,7 +515,7 @@ fn p16_neighbor_mvd_sum(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn copy_integer_motion_macroblock(
+fn motion_compensate_macroblock(
     reference_luma: &[u16],
     reference_chroma_cb: &[u16],
     reference_chroma_cr: &[u16],
@@ -521,6 +525,7 @@ fn copy_integer_motion_macroblock(
     mb_x: usize,
     mb_y: usize,
     motion_vector: [i32; 2],
+    bit_depth: u8,
 ) -> Result<(), H264CabacError> {
     if mb_x + 16 > luma.width
         || mb_y + 16 > luma.height
@@ -531,44 +536,218 @@ fn copy_integer_motion_macroblock(
     {
         return Err(H264CabacError::Malformed("P16 prediction geometry"));
     }
-    if motion_vector[0] % 4 != 0 || motion_vector[1] % 4 != 0 {
-        return Err(H264CabacError::Unsupported("fractional P16 luma motion"));
-    }
-    if motion_vector[0] % 8 != 0 || motion_vector[1] % 8 != 0 {
-        return Err(H264CabacError::Unsupported("fractional P16 chroma motion"));
-    }
-    let luma_x = mb_x as i32 + motion_vector[0] / 4;
-    let luma_y = mb_y as i32 + motion_vector[1] / 4;
-    let chroma_x = mb_x as i32 / 2 + motion_vector[0] / 8;
-    let chroma_y = mb_y as i32 / 2 + motion_vector[1] / 8;
-    let max_luma_x = luma.width.saturating_sub(1) as i32;
-    let max_luma_y = luma.height.saturating_sub(1) as i32;
-    let max_cb_x = chroma_cb.width.saturating_sub(1) as i32;
-    let max_cb_y = chroma_cb.height.saturating_sub(1) as i32;
-    let max_cr_x = chroma_cr.width.saturating_sub(1) as i32;
-    let max_cr_y = chroma_cr.height.saturating_sub(1) as i32;
+    let luma_x = mb_x as i32 + (motion_vector[0] >> 2);
+    let luma_y = mb_y as i32 + (motion_vector[1] >> 2);
+    let luma_fraction_x = motion_vector[0] & 3;
+    let luma_fraction_y = motion_vector[1] & 3;
     for row in 0..16 {
         let destination = (mb_y + row) * luma.stride + mb_x;
-        let source_y = (luma_y + row as i32).clamp(0, max_luma_y) as usize;
         for column in 0..16 {
-            let source_x = (luma_x + column as i32).clamp(0, max_luma_x) as usize;
-            luma.data[destination + column] = reference_luma[source_y * luma.width + source_x];
+            luma.data[destination + column] = fractional_luma_prediction(
+                reference_luma,
+                luma.width,
+                luma.height,
+                luma_x + column as i32,
+                luma_y + row as i32,
+                luma_fraction_x,
+                luma_fraction_y,
+                bit_depth,
+            );
         }
     }
+
+    let chroma_x_fraction = motion_vector[0] & 7;
+    let chroma_y_fraction = motion_vector[1] & 7;
+    let chroma_x = mb_x as i32 / 2 + (motion_vector[0] >> 3);
+    let chroma_y = mb_y as i32 / 2 + (motion_vector[1] >> 3);
     for row in 0..8 {
         let destination = (mb_y / 2 + row) * chroma_cb.stride + mb_x / 2;
-        let cb_y = (chroma_y + row as i32).clamp(0, max_cb_y) as usize;
-        let cr_y = (chroma_y + row as i32).clamp(0, max_cr_y) as usize;
         for column in 0..8 {
-            let cb_x = (chroma_x + column as i32).clamp(0, max_cb_x) as usize;
-            let cr_x = (chroma_x + column as i32).clamp(0, max_cr_x) as usize;
-            chroma_cb.data[destination + column] =
-                reference_chroma_cb[cb_y * chroma_cb.width + cb_x];
-            chroma_cr.data[destination + column] =
-                reference_chroma_cr[cr_y * chroma_cr.width + cr_x];
+            chroma_cb.data[destination + column] = fractional_chroma_prediction(
+                reference_chroma_cb,
+                chroma_cb.width,
+                chroma_cb.height,
+                chroma_x + column as i32,
+                chroma_y + row as i32,
+                chroma_x_fraction,
+                chroma_y_fraction,
+                bit_depth,
+            );
+            chroma_cr.data[destination + column] = fractional_chroma_prediction(
+                reference_chroma_cr,
+                chroma_cr.width,
+                chroma_cr.height,
+                chroma_x + column as i32,
+                chroma_y + row as i32,
+                chroma_x_fraction,
+                chroma_y_fraction,
+                bit_depth,
+            );
         }
     }
     Ok(())
+}
+
+fn clipped_reference_sample(plane: &[u16], width: usize, height: usize, x: i32, y: i32) -> i32 {
+    let x = x.clamp(0, width.saturating_sub(1) as i32) as usize;
+    let y = y.clamp(0, height.saturating_sub(1) as i32) as usize;
+    i32::from(plane[y * width + x])
+}
+
+fn interpolate_sample(value: i32, bit_depth: u8) -> u16 {
+    value.clamp(0, (1i32 << bit_depth) - 1) as u16
+}
+
+fn luma_half_horizontal(
+    plane: &[u16],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    bit_depth: u8,
+) -> u16 {
+    let mut sum = 0;
+    for (offset, coefficient) in [1, -5, 20, 20, -5, 1].into_iter().enumerate() {
+        sum +=
+            coefficient * clipped_reference_sample(plane, width, height, x + offset as i32 - 2, y);
+    }
+    interpolate_sample((sum + 16) >> 5, bit_depth)
+}
+
+fn luma_half_vertical(
+    plane: &[u16],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    bit_depth: u8,
+) -> u16 {
+    let mut sum = 0;
+    for (offset, coefficient) in [1, -5, 20, 20, -5, 1].into_iter().enumerate() {
+        sum +=
+            coefficient * clipped_reference_sample(plane, width, height, x, y + offset as i32 - 2);
+    }
+    interpolate_sample((sum + 16) >> 5, bit_depth)
+}
+
+fn luma_half_center(
+    plane: &[u16],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    bit_depth: u8,
+) -> u16 {
+    let mut horizontal = [0i32; 6];
+    for (row, value) in horizontal.iter_mut().enumerate() {
+        for (offset, coefficient) in [1, -5, 20, 20, -5, 1].into_iter().enumerate() {
+            *value += coefficient
+                * clipped_reference_sample(
+                    plane,
+                    width,
+                    height,
+                    x + offset as i32 - 2,
+                    y + row as i32 - 2,
+                );
+        }
+    }
+    let mut sum = 0;
+    for (row, coefficient) in [1, -5, 20, 20, -5, 1].into_iter().enumerate() {
+        sum += coefficient * horizontal[row];
+    }
+    interpolate_sample((sum + 512) >> 10, bit_depth)
+}
+
+fn average_predictions(first: u16, second: u16) -> u16 {
+    ((u32::from(first) + u32::from(second) + 1) >> 1) as u16
+}
+
+fn fractional_luma_prediction(
+    plane: &[u16],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    fraction_x: i32,
+    fraction_y: i32,
+    bit_depth: u8,
+) -> u16 {
+    let integer = clipped_reference_sample(plane, width, height, x, y) as u16;
+    let half_h = || luma_half_horizontal(plane, width, height, x, y, bit_depth);
+    let half_v = || luma_half_vertical(plane, width, height, x, y, bit_depth);
+    let center = || luma_half_center(plane, width, height, x, y, bit_depth);
+    match (fraction_x, fraction_y) {
+        (0, 0) => integer,
+        (1, 0) => average_predictions(integer, half_h()),
+        (2, 0) => half_h(),
+        (3, 0) => average_predictions(
+            half_h(),
+            clipped_reference_sample(plane, width, height, x + 1, y) as u16,
+        ),
+        (0, 1) => average_predictions(integer, half_v()),
+        (0, 2) => half_v(),
+        (0, 3) => average_predictions(
+            half_v(),
+            clipped_reference_sample(plane, width, height, x, y + 1) as u16,
+        ),
+        (2, 1) => average_predictions(half_h(), center()),
+        (2, 3) => average_predictions(
+            center(),
+            luma_half_horizontal(plane, width, height, x, y + 1, bit_depth),
+        ),
+        (1, 2) => average_predictions(half_v(), center()),
+        (3, 2) => average_predictions(
+            center(),
+            luma_half_vertical(plane, width, height, x + 1, y, bit_depth),
+        ),
+        (1, 1) => average_predictions(half_h(), half_v()),
+        (3, 1) => average_predictions(
+            half_h(),
+            luma_half_vertical(plane, width, height, x + 1, y, bit_depth),
+        ),
+        (1, 3) => average_predictions(
+            luma_half_horizontal(plane, width, height, x, y + 1, bit_depth),
+            half_v(),
+        ),
+        (3, 3) => average_predictions(
+            luma_half_horizontal(plane, width, height, x, y + 1, bit_depth),
+            luma_half_vertical(plane, width, height, x + 1, y, bit_depth),
+        ),
+        _ => integer,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fractional_chroma_prediction(
+    plane: &[u16],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    fraction_x: i32,
+    fraction_y: i32,
+    bit_depth: u8,
+) -> u16 {
+    let inverse_x = 8 - fraction_x;
+    let inverse_y = 8 - fraction_y;
+    let weights = [
+        inverse_x * inverse_y,
+        fraction_x * inverse_y,
+        inverse_x * fraction_y,
+        fraction_x * fraction_y,
+    ];
+    let samples = [
+        clipped_reference_sample(plane, width, height, x, y),
+        clipped_reference_sample(plane, width, height, x + 1, y),
+        clipped_reference_sample(plane, width, height, x, y + 1),
+        clipped_reference_sample(plane, width, height, x + 1, y + 1),
+    ];
+    let sum = weights
+        .into_iter()
+        .zip(samples)
+        .map(|(weight, sample)| weight * sample)
+        .sum::<i32>();
+    interpolate_sample((sum + 32) >> 6, bit_depth)
 }
 
 #[derive(Debug, Clone, Copy)]

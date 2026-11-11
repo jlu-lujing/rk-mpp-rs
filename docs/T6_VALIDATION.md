@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1265 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1266 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1269 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1270 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -222,6 +222,29 @@ t62 back to the RK3588 reference board.
   deblocking and B-slice CABAC remain open.
 - At the persistent 80% OPP cap, `scripts/board_workspace_gate.sh` reports
   **1269 passed / 0 failed / 41 ignored**, and `cargo test --release --lib
+  --offline` reports **1117 passed / 0 failed / 0 ignored**. Fixture manifest,
+  rustfmt and strict workspace rustdoc pass.
+
+## 2026-11-12 H.264 CABAC fractional-motion P16
+
+- The same 48x32 random-texture crop pair is encoded with normal subpel search.
+  The temporary x264 build still forbids P-skip, intra modes and P
+  sub-partitions, so the P frame remains six P16 macroblocks while their final
+  vectors become `(-6,-9)`, `(8,1)`, `(5,1)`, `(-5,-6)` and `(7,1)`.
+- The decoder implements normative quarter-pel luma interpolation for every
+  horizontal, vertical and diagonal fractional combination, including the
+  clipped six-tap half samples and separate `+512 >> 10` two-dimensional
+  rounding. 4:2:0 chroma uses all 64 bilinear weights for its 1/8-sample
+  positions.
+- The first attempt exposed another H.264 state bug: the previous macroblock's
+  MVD neighbour cache must store absolute magnitudes for context selection while
+  the signed delta remains available for addition to the MVP. Storing only the
+  signed value desynchronised the stream at macroblock 2.
+- The 2,304-byte P frame matches FFmpeg sample-exactly. Fractional P16 vectors
+  no longer fail; P_16x8/P_8x16/P_8x8, weighted prediction, deblocking and
+  B-slice CABAC remain open.
+- At the persistent 80% OPP cap, `scripts/board_workspace_gate.sh` reports
+  **1270 passed / 0 failed / 41 ignored**, and `cargo test --release --lib
   --offline` reports **1117 passed / 0 failed / 0 ignored**. Fixture manifest,
   rustfmt and strict workspace rustdoc pass.
 

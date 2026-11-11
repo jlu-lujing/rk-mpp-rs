@@ -173,6 +173,17 @@ fn cabac_p16_integer_motion_matches_ffmpeg_yuv420p() {
     compare_cabac_p16_motion_fixture(
         include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p16_mv_48x32.yuv"),
+        false,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_p16_fractional_motion_matches_ffmpeg_yuv420p() {
+    compare_cabac_p16_motion_fixture(
+        include_bytes!("../tests/data/h264_cabac_p16_fractional_mv_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p16_fractional_mv_48x32.yuv"),
+        true,
     )
     .unwrap();
 }
@@ -529,7 +540,11 @@ fn compare_cabac_p16_zero_mv_fixture(stream: &[u8], expected: &[u8]) -> Result<(
     )
 }
 
-fn compare_cabac_p16_motion_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {
+fn compare_cabac_p16_motion_fixture(
+    stream: &[u8],
+    expected: &[u8],
+    requires_fractional_motion: bool,
+) -> Result<(), String> {
     let nals = split_annex_b(stream);
     let sps = parse_sps(
         &nals
@@ -611,6 +626,13 @@ fn compare_cabac_p16_motion_fixture(stream: &[u8], expected: &[u8]) -> Result<()
     }
     if p.motion_vectors.iter().all(|motion| *motion == [0, 0]) {
         return Err("integer-motion fixture produced only zero vectors".into());
+    }
+    if requires_fractional_motion
+        && p.motion_vectors
+            .iter()
+            .all(|motion| motion[0] % 4 == 0 && motion[1] % 4 == 0)
+    {
+        return Err("fractional-motion fixture produced only integer luma vectors".into());
     }
 
     let mut actual = Vec::with_capacity(frame_len);
