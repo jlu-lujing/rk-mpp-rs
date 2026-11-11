@@ -1,7 +1,7 @@
 use rk_mpp_rs::codec::h264::parser::{parse_pps, parse_slice_header, parse_sps, split_annex_b};
 use rk_mpp_rs::reference::h264_cabac::{
-    decode_cabac_i_picture_slices, decode_cabac_p_multi_ref_slice, decode_cabac_p_skip_slice,
-    decode_cabac_p_slice, CabacReferenceFrame, DecodedMotionPartition,
+    decode_cabac_b_l0_16x16_slice, decode_cabac_i_picture_slices, decode_cabac_p_multi_ref_slice,
+    decode_cabac_p_skip_slice, decode_cabac_p_slice, CabacReferenceFrame, DecodedMotionPartition,
 };
 use rk_mpp_rs::reference::h264_deblock::{deblock_i_picture, deblock_p_picture};
 use rk_mpp_rs::reference::h264_recon::PlaneMut;
@@ -265,6 +265,15 @@ fn cabac_p16_multiple_references_match_ffmpeg_yuv420p() {
     compare_cabac_p16_multiref_fixture(
         include_bytes!("../tests/data/h264_cabac_p16_multiref_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_p16_multiref_48x32.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_b_l0_16x16_matches_ffmpeg_yuv420p() {
+    compare_cabac_b_l0_16x16_fixture(
+        include_bytes!("../tests/data/h264_cabac_b_l0_16x16_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_b_l0_16x16_48x32.yuv"),
     )
     .unwrap();
 }
@@ -1044,6 +1053,116 @@ fn compare_cabac_p16_multiref_fixture(stream: &[u8], expected: &[u8]) -> Result<
         actual.extend(plane.iter().map(|&sample| sample as u8));
     }
     compare_samples(&actual, frame2, &[y_len, chroma_len, chroma_len])
+}
+
+fn compare_cabac_b_l0_16x16_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {
+    let nals = split_annex_b(stream);
+    let sps = parse_sps(
+        &nals
+            .iter()
+            .find(|nal| nal.unit_type == 7)
+            .ok_or("missing SPS")?
+            .rbsp,
+    )
+    .map_err(|error| error.to_string())?;
+    let pps = parse_pps(
+        &nals
+            .iter()
+            .find(|nal| nal.unit_type == 8)
+            .ok_or("missing PPS")?
+            .rbsp,
+    )
+    .map_err(|error| error.to_string())?;
+    let slice_nals: Vec<_> = nals.iter().filter(|nal| nal.is_vcl()).collect();
+    if slice_nals.len() != 3 {
+        return Err(format!("expected IDR+P+B, got {} slices", slice_nals.len()));
+    }
+    let headers: Vec<_> = slice_nals
+        .iter()
+        .map(|nal| {
+            parse_slice_header(&nal.rbsp, &sps, &pps, nal.unit_type, nal.ref_idc)
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    let b_index = headers
+        .iter()
+        .position(|header| header.is_b())
+        .ok_or("missing B slice")?;
+    if headers.iter().filter(|header| header.is_b()).count() != 1 {
+        return Err("expected exactly one B slice".into());
+    }
+
+    let width = sps.coded_width as usize;
+    let height = sps.coded_height as usize;
+    let cw = width / 2;
+    let ch = height / 2;
+    let y_len = width * height;
+    let chroma_len = cw * ch;
+    let frame_len = y_len + 2 * chroma_len;
+    if expected.len() != frame_len * 3 {
+        return Err(format!(
+            "expected {frame_len} bytes per frame, got {} total",
+            expected.len()
+        ));
+    }
+    let plane_u16 = |frame: &[u8], start: usize, len: usize| -> Vec<u16> {
+        frame[start..start + len]
+            .iter()
+            .map(|&sample| u16::from(sample))
+            .collect()
+    };
+    let frame0 = &expected[..frame_len];
+    let frame1 = &expected[frame_len..2 * frame_len];
+    let frame2 = &expected[2 * frame_len..];
+    let l0_y = plane_u16(frame0, 0, y_len);
+    let l0_u = plane_u16(frame0, y_len, chroma_len);
+    let l0_v = plane_u16(frame0, y_len + chroma_len, chroma_len);
+    let l1_y = plane_u16(frame2, 0, y_len);
+    let l1_u = plane_u16(frame2, y_len, chroma_len);
+    let l1_v = plane_u16(frame2, y_len + chroma_len, chroma_len);
+    let references_l0 = [CabacReferenceFrame {
+        luma: &l0_y,
+        chroma_cb: &l0_u,
+        chroma_cr: &l0_v,
+    }];
+    let references_l1 = [CabacReferenceFrame {
+        luma: &l1_y,
+        chroma_cb: &l1_u,
+        chroma_cr: &l1_v,
+    }];
+    let mut b_y = vec![0u16; y_len];
+    let mut b_u = vec![0u16; chroma_len];
+    let mut b_v = vec![0u16; chroma_len];
+    let decoded = decode_cabac_b_l0_16x16_slice(
+        &slice_nals[b_index].rbsp,
+        &headers[b_index],
+        &sps,
+        &pps,
+        &references_l0,
+        &references_l1,
+        &mut b_y,
+        &mut b_u,
+        &mut b_v,
+    )
+    .map_err(|error| error.to_string())?;
+    if decoded.macroblocks != (width / 16) * (height / 16) {
+        return Err(format!(
+            "B slice decoded {} macroblocks",
+            decoded.macroblocks
+        ));
+    }
+    if decoded
+        .motion_partitions
+        .iter()
+        .any(|partition| partition.prediction_list != 0 || partition.reference_index != 0)
+    {
+        return Err("B fixture contains a non-L0 macroblock".into());
+    }
+    let mut actual = Vec::with_capacity(frame_len);
+    for plane in [&b_y, &b_u, &b_v] {
+        actual.extend(plane.iter().map(|&sample| sample as u8));
+    }
+    compare_samples(&actual, frame1, &[y_len, chroma_len, chroma_len])
 }
 
 fn compare_fixture(stream: &[u8], expected: &[u8]) -> Result<(), String> {

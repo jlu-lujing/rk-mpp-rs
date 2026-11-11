@@ -62,6 +62,8 @@ pub struct DecodedMotionPartition {
     /// Signed quarter-pixel motion-vector delta as coded in the slice.
     pub motion_vector_delta: [i32; 2],
     pub reference_index: u8,
+    /// Prediction list: 0 for L0, 1 for L1, 2 for bi-prediction.
+    pub prediction_list: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -548,6 +550,302 @@ pub fn decode_cabac_p_multi_ref_slice(
         }
     }
 
+    Ok(DecodedCabacSlice {
+        macroblocks,
+        end_bit: slice.data_offset_bits + decoder.bit_pos(),
+        final_qp: qp as u8,
+        deblock: state.deblock_map(Some(motion_vectors), Some(reference_indices)),
+        motion_partitions,
+    })
+}
+
+/// Reconstruct a CABAC B slice made entirely of `B_L0_16x16` macroblocks.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_cabac_b_l0_16x16_slice(
+    rbsp: &[u8],
+    slice: &SliceHeader,
+    sps: &Sps,
+    pps: &Pps,
+    references_l0: &[CabacReferenceFrame<'_>],
+    references_l1: &[CabacReferenceFrame<'_>],
+    luma: &mut [u16],
+    chroma_cb: &mut [u16],
+    chroma_cr: &mut [u16],
+) -> Result<DecodedCabacSlice, H264CabacError> {
+    if !slice.is_b() || !pps.entropy_coding {
+        return Err(H264CabacError::Unsupported("non-CABAC-B slice"));
+    }
+    if slice.data_offset_bits % 8 != 0 {
+        return Err(H264CabacError::Malformed("CABAC byte alignment"));
+    }
+    if !sps.frame_mbs_only || slice.field_pic {
+        return Err(H264CabacError::Unsupported("interlaced B16"));
+    }
+    if pps.num_slice_groups != 1 {
+        return Err(H264CabacError::Unsupported("B16 slice groups"));
+    }
+    if pps.transform_8x8 {
+        return Err(H264CabacError::Unsupported("B16 transform8x8"));
+    }
+    if pps.weighted_bipred_idc != 0 {
+        return Err(H264CabacError::Unsupported("weighted B16"));
+    }
+    if slice.deblocking_disable_idc != 1 {
+        return Err(H264CabacError::Unsupported("B16 deblocking"));
+    }
+    if slice
+        .mod_l0
+        .iter()
+        .any(|entry| *entry != crate::codec::h264::parser::RefMod::End)
+        || slice
+            .mod_l1
+            .iter()
+            .any(|entry| *entry != crate::codec::h264::parser::RefMod::End)
+    {
+        return Err(H264CabacError::Unsupported("B16 reference reordering"));
+    }
+    if slice.ref_idx_l0_active != 1 || slice.ref_idx_l1_active != 1 {
+        return Err(H264CabacError::Unsupported(
+            "B16 multiple active references",
+        ));
+    }
+    if references_l0.is_empty() || references_l1.is_empty() {
+        return Err(H264CabacError::Malformed("B16 reference list"));
+    }
+
+    let context =
+        MacroblockContext::from_sps_pps(sps, pps).map_err(|_| H264CabacError::Malformed("SPS"))?;
+    if context.chroma_format_idc != 1 {
+        return Err(H264CabacError::Unsupported("B16 requires 4:2:0 chroma"));
+    }
+    let mb_width = usize::try_from(sps.coded_width / 16)
+        .map_err(|_| H264CabacError::Malformed("macroblock width"))?;
+    let mb_height = usize::try_from(sps.coded_height / 16)
+        .map_err(|_| H264CabacError::Malformed("macroblock height"))?;
+    if mb_width == 0 || mb_height == 0 || sps.coded_width % 16 != 0 || sps.coded_height % 16 != 0 {
+        return Err(H264CabacError::Malformed("macroblock geometry"));
+    }
+    let width = sps.coded_width as usize;
+    let height = sps.coded_height as usize;
+    let chroma_width = width / 2;
+    let chroma_height = height / 2;
+    let minimum_luma = width
+        .checked_mul(height)
+        .ok_or(H264CabacError::Malformed("luma plane size"))?;
+    let minimum_chroma = chroma_width
+        .checked_mul(chroma_height)
+        .ok_or(H264CabacError::Malformed("chroma plane size"))?;
+    if luma.len() < minimum_luma
+        || chroma_cb.len() < minimum_chroma
+        || chroma_cr.len() < minimum_chroma
+        || references_l0[0].luma.len() < minimum_luma
+        || references_l0[0].chroma_cb.len() < minimum_chroma
+        || references_l0[0].chroma_cr.len() < minimum_chroma
+    {
+        return Err(H264CabacError::Malformed("B16 plane geometry"));
+    }
+    if slice.first_mb != 0 {
+        return Err(H264CabacError::Unsupported("B16 after first_mb 0"));
+    }
+
+    let data = rbsp
+        .get(slice.data_offset_bits / 8..)
+        .ok_or(H264CabacError::Malformed("CABAC data offset"))?;
+    let mut decoder = CabacDecoder::new_h264(data);
+    let slice_qp = pps.pic_init_qp + slice.qp_delta;
+    let max_qp = 51 + 6 * i32::from(context.bit_depth_luma - 8);
+    if !(0..=max_qp).contains(&slice_qp) {
+        return Err(H264CabacError::Malformed("slice QP"));
+    }
+    let cabac_init_idc = slice
+        .cabac_init_idc
+        .ok_or(H264CabacError::Malformed("B-slice cabac_init_idc"))?;
+    let mut contexts = init_p_contexts(cabac_init_idc, slice_qp, context.bit_depth_luma)?;
+    let total_mbs = mb_width * mb_height;
+    let mut state = CabacPictureState::new(mb_width, mb_height);
+    let mut qp = slice_qp;
+    let mut last_qscale_diff = 0;
+    let mut macroblocks = 0usize;
+    let mut motion_valid = vec![[false; 16]; total_mbs];
+    let mut motion_vectors = vec![[[0i32; 2]; 16]; total_mbs];
+    let mut motion_vector_deltas = vec![[[0i32; 2]; 16]; total_mbs];
+    let mut reference_indices = vec![[0u8; 16]; total_mbs];
+    let mut motion_partitions = Vec::new();
+    let mut luma_plane = PlaneMut {
+        data: luma,
+        width,
+        height,
+        stride: width,
+    };
+    let mut cb_plane = PlaneMut {
+        data: chroma_cb,
+        width: chroma_width,
+        height: chroma_height,
+        stride: chroma_width,
+    };
+    let mut cr_plane = PlaneMut {
+        data: chroma_cr,
+        width: chroma_width,
+        height: chroma_height,
+        stride: chroma_width,
+    };
+
+    for mb_index in 0..total_mbs {
+        let mut neighbors = collect_cabac_neighbors(
+            mb_index,
+            mb_width,
+            0,
+            &state.slice_id,
+            &state.decoded,
+            &state.luma_counts,
+            &state.chroma_counts,
+            &state.chroma_modes,
+            &state.luma_modes,
+            &state.transform8,
+            &state.i16_or_pcm,
+            &state.coded_flags,
+        );
+        if !neighbors.left_decoded {
+            neighbors.left_flags = 0x00f;
+        }
+        if !neighbors.top_decoded {
+            neighbors.top_flags = 0x00f;
+        }
+        let left_non_skip = mb_index
+            .checked_sub(1)
+            .filter(|_| mb_index % mb_width != 0)
+            .is_some_and(|left| state.decoded[left]);
+        let top_non_skip = mb_index
+            .checked_sub(mb_width)
+            .is_some_and(|top| state.decoded[top]);
+        let skip_context = 24 + usize::from(left_non_skip) + usize::from(top_non_skip);
+        if decoder.decode_bin(&mut contexts[skip_context]) != 0 {
+            return Err(H264CabacError::Unsupported(
+                "B slice contains a B_Skip/B_Direct macroblock",
+            ));
+        }
+
+        let type_context = 27 + usize::from(left_non_skip) + usize::from(top_non_skip);
+        let type_bins = [
+            decoder.decode_bin(&mut contexts[type_context]),
+            decoder.decode_bin(&mut contexts[30]),
+            decoder.decode_bin(&mut contexts[32]),
+        ];
+        if type_bins != [1, 0, 0] {
+            return Err(H264CabacError::Unsupported(
+                "B slice contains a non-L0 B16 macroblock",
+            ));
+        }
+        let predicted_motion = partition_motion_predictor(
+            mb_index,
+            mb_width,
+            0,
+            0,
+            16,
+            16,
+            0,
+            &motion_valid,
+            &motion_vectors,
+            &reference_indices,
+        );
+        let neighbor_mvd_sum = partition_neighbor_mvd_sum(
+            mb_index,
+            mb_width,
+            0,
+            0,
+            &motion_valid,
+            &motion_vector_deltas,
+        );
+        let motion_vector_delta = [
+            decode_cabac_mvd(&mut decoder, &mut contexts, 40, neighbor_mvd_sum[0])?,
+            decode_cabac_mvd(&mut decoder, &mut contexts, 47, neighbor_mvd_sum[1])?,
+        ];
+        let motion_vector = [
+            predicted_motion[0] + motion_vector_delta[0],
+            predicted_motion[1] + motion_vector_delta[1],
+        ];
+        for block in 0..16 {
+            motion_valid[mb_index][block] = true;
+            motion_vectors[mb_index][block] = motion_vector;
+            motion_vector_deltas[mb_index][block] =
+                [motion_vector_delta[0].abs(), motion_vector_delta[1].abs()];
+            reference_indices[mb_index][block] = 0;
+        }
+        let (residual, qp_delta, coded_flags) = decode_cabac_inter_residual(
+            &mut decoder,
+            &mut contexts,
+            context,
+            neighbors,
+            &mut last_qscale_diff,
+        )?;
+        qp = add_cabac_qp(qp, qp_delta, max_qp)?;
+        let options = super::h264_residual::ResidualPlaneOptions {
+            qp: qp as u8,
+            chroma_qp_offset: [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
+            bit_depth_luma: context.bit_depth_luma,
+            bit_depth_chroma: context.bit_depth_chroma,
+            transform_bypass: false,
+            scan4: super::h264::CavlcScan4x4::Frame,
+            scan8: super::h264::CavlcScan8x8::CabacFrame,
+            luma_4x4_scaling: None,
+            luma_8x8_scaling: None,
+            chroma_4x4_scaling: [None, None],
+        };
+        let residual_planes = assemble_inter_macroblock_residual(&residual, context, &options)
+            .map_err(|_| H264CabacError::Malformed("B16 residual"))?;
+        let mb_x = (mb_index % mb_width) * 16;
+        let mb_y = (mb_index / mb_width) * 16;
+        let reference = &references_l0[0];
+        motion_compensate_partition(
+            reference.luma,
+            reference.chroma_cb,
+            reference.chroma_cr,
+            &mut luma_plane,
+            &mut cb_plane,
+            &mut cr_plane,
+            mb_x,
+            mb_y,
+            16,
+            16,
+            motion_vector,
+            context.bit_depth_luma.min(context.bit_depth_chroma),
+            None,
+        )?;
+        reconstruct_inter_macroblock(
+            &residual_planes,
+            context.bit_depth_luma.min(context.bit_depth_chroma),
+            &mut luma_plane,
+            Some(&mut cb_plane),
+            Some(&mut cr_plane),
+            mb_x,
+            mb_y,
+        )
+        .map_err(|_| H264CabacError::Malformed("B16 reconstruction"))?;
+        state.decoded[mb_index] = true;
+        state.luma_counts[mb_index] = residual.luma_non_zero;
+        state.chroma_counts[0][mb_index].copy_from_slice(&residual.chroma_non_zero[0]);
+        state.chroma_counts[1][mb_index].copy_from_slice(&residual.chroma_non_zero[1]);
+        state.coded_flags[mb_index] = coded_flags;
+        state.qp[mb_index] = qp as u8;
+        motion_partitions.push(DecodedMotionPartition {
+            macroblock: mb_index,
+            x: mb_x,
+            y: mb_y,
+            width: 16,
+            height: 16,
+            motion_vector,
+            motion_vector_delta,
+            reference_index: 0,
+            prediction_list: 0,
+        });
+        macroblocks += 1;
+        if decoder.decode_terminate() {
+            break;
+        }
+        if mb_index + 1 == total_mbs {
+            return Err(H264CabacError::Malformed("missing end_of_slice_flag"));
+        }
+    }
     Ok(DecodedCabacSlice {
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
@@ -2100,9 +2398,27 @@ fn decode_cabac_p_macroblock(
             motion_vector,
             motion_vector_delta,
             reference_index,
+            prediction_list: 0,
         });
     }
 
+    let (residual, qp_delta, coded_flags) =
+        decode_cabac_inter_residual(decoder, contexts, context, neighbors, last_qscale_diff)?;
+    Ok(DecodedCabacPMacroblock {
+        residual,
+        qp_delta,
+        partitions,
+        coded_flags,
+    })
+}
+
+fn decode_cabac_inter_residual(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    context: MacroblockContext,
+    neighbors: CabacMbNeighbors,
+    last_qscale_diff: &mut i32,
+) -> Result<(ParsedMacroblockResidual, i32, u16), H264CabacError> {
     let cbp = decode_cabac_cbp(decoder, contexts, neighbors);
     let qp_delta = if cbp != 0 {
         decode_cabac_qp_delta(decoder, contexts, last_qscale_diff)?
@@ -2121,7 +2437,6 @@ fn decode_cabac_p_macroblock(
         chroma_non_zero: [vec![0; 4], vec![0; 4]],
         end_bit: 0,
     };
-
     for group in 0..4 {
         if cbp & (1 << group) == 0 {
             continue;
@@ -2141,7 +2456,6 @@ fn decode_cabac_p_macroblock(
             }
         }
     }
-
     if cbp & 0x30 != 0 && context.chroma_format_idc == 1 {
         for plane in 0..2 {
             let cbf_context = coded_block_flag_context_inter(97, 0x40u16 << plane, neighbors);
@@ -2177,7 +2491,6 @@ fn decode_cabac_p_macroblock(
         }
     }
     residual.end_bit = decoder.bit_pos();
-
     let mut coded_flags = u16::from(cbp);
     for plane in 0..2 {
         if residual.chroma_dc[plane]
@@ -2187,12 +2500,7 @@ fn decode_cabac_p_macroblock(
             coded_flags |= 0x40u16 << plane;
         }
     }
-    Ok(DecodedCabacPMacroblock {
-        residual,
-        qp_delta,
-        partitions,
-        coded_flags,
-    })
+    Ok((residual, qp_delta, coded_flags))
 }
 
 fn decode_cabac_p_sub_mb_type(decoder: &mut CabacDecoder<'_>, contexts: &mut [Context]) -> u8 {

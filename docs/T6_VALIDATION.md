@@ -25,9 +25,9 @@ t62 back to the RK3588 reference board.
   an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
   built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
   form. Both are fixed; CBR stream and decoded YUV are byte-identical.
-- The current t6 crate `--all-targets` gate is **1278 passed / 0 failed /
+- The current t6 crate `--all-targets` gate is **1279 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
-  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1282 passed /
+  `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1283 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
 - The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
@@ -368,6 +368,29 @@ t62 back to the RK3588 reference board.
   **1123 passed / 0 failed / 0 ignored**. Fixture manifest, rustfmt and strict
   workspace rustdoc pass.
 - Weighted P_Skip and B-slice CABAC remain open.
+
+## 2026-11-12 H.264 CABAC B_L0_16x16
+
+- A new IDR+P+B stream is encoded in coding order with direct mode, B-skip, B
+  subpartitions, weighted bi-prediction and deblocking disabled. A temporary
+  x264 switch forces all six B macroblocks to `B_L0_16x16`; x264 reports B16
+  L0 100%. Stream SHA-256 is
+  `ab378bde3bdddd8b3f89cc583cc7a37c9757c69e74ef82a9f4b46f830daad822`,
+  decoded YUV is
+  `09e707f462e533531272be1c9c8a70cbc680644dc406defc28ccc0452c1521f7`.
+- The decoder consumes B skip bins in contexts 24-26, the B type predicates in
+  contexts 27-30/32, list-0 MVD and the shared inter CBP/residual tree. It
+  reconstructs each macroblock from the displayed I reference through
+  forward-only motion compensation. The complete displayed 48x32 B frame
+  matches FFmpeg sample-exactly.
+- The focused CABAC integration suite is **25/25**, CABAC unit tests are
+  **10/10**, deblock unit tests are **8/8**, the crate `--all-targets` gate is
+  **1279 passed / 0 failed / 41 ignored**, `scripts/board_workspace_gate.sh`
+  is **1283 passed / 0 failed / 41 ignored**, and release-library tests are
+  **1123 passed / 0 failed / 0 ignored**. Fixture manifest, rustfmt and strict
+  workspace rustdoc pass.
+- B_Direct, B_L1, B_BI, B subpartitions, weighted B and B deblocking remain
+  open.
 
 ## 2026-11-08 W5-4 pool closeout
 
