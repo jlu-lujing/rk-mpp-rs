@@ -26,6 +26,13 @@ BOARD="${BOARD:-t6}"
 # cell below differs exactly at a sweep boundary's first byte, that gate is the
 # first thing to re-read in `mpp_enc_impl.cpp`.
 #
+# The stock vendor table builder initialises only the named flag bits. Its
+# base and band records carry uninitialised force_inter/mode/reserved fields,
+# so separate C processes produce different GDR streams. `mpp_roi_table_fix.so`
+# zeroes those undeclared bits at DMA sync and leaves the intended
+# force_intra/qp_adj_en values. The C side below is therefore a deterministic
+# reference for the Rust table, not a false byte-exact claim against C UB.
+#
 # Usage: scripts/board_h264_gdr_vs_mpp.sh
 set -uo pipefail
 
@@ -46,11 +53,23 @@ if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/lib
   exit 0
 fi
 
+if ssh "$BOARD" "grep -q 'bit_target_fix' $mpp_ref/inc/mpp_rc_defs.h"; then
+  rc_has_bit_target_fix=1
+else
+  rc_has_bit_target_fix=0
+fi
+
 scp -q tools/h264e_probe.c "$BOARD":/tmp/ 2>/dev/null
-ssh "$BOARD" "cc -O2 -w -pthread -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
+ssh "$BOARD" "cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
-        cc -O2 -w -pthread -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
+        cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
+
+scp -q tools/mpp_roi_table_fix.c "$BOARD":/tmp/ 2>/dev/null
+if ! ssh "$BOARD" "cc -O2 -Wall -Wextra -Werror -shared -fPIC /tmp/mpp_roi_table_fix.c -ldl -o /tmp/mpp_roi_table_fix.so"; then
+  printf 'FAIL gdr (ROI table normaliser did not build)\n'
+  exit 1
+fi
 
 ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
@@ -61,7 +80,8 @@ run_cell() {
   ssh "$BOARD" "sudo rm -f /tmp/gdr_ours_$name.264 /tmp/gdr_c_$name.264 &&
           cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
             /tmp/gdr_ours_$name.264 $SIZE $ours_args >/dev/null &&
-          sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/h264e_probe $fixture \
+          sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=/tmp/mpp_roi_table_fix.so \
+            MPP_ROI_TABLE_FIX=1 /tmp/h264e_probe $fixture \
             /tmp/gdr_c_$name.264 320 240 $probe_args >/dev/null 2>&1 &&
           sudo chmod 644 /tmp/gdr_ours_$name.264 /tmp/gdr_c_$name.264"
   if ! ssh "$BOARD" "test -s /tmp/gdr_ours_$name.264 && test -s /tmp/gdr_c_$name.264"; then

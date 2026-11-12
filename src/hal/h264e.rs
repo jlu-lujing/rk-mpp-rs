@@ -3374,11 +3374,12 @@ fn roi_tables(config: &EncoderConfig) -> (Vec<u8>, Vec<u8>) {
 ///
 /// `region->quality` and `qp_area_idx` of the C region are dropped along with
 /// the QP table the function never allocates: the refresh path enables
-/// `roi_en`, not `roi_qp_en`, so no QP surface is read and the band records'
-/// `qp_adj_en` bit - left uninitialised by the C's `set_one_roi` local - has
-/// nothing to select. Carrying the base fill's value is the difference between
-/// a defined bit and stack contents, and on this board pair both encode the
-/// force-intra bit the same.
+/// `roi_en`, not `roi_qp_en`, so no QP surface is read. The stock
+/// `vepu580_h264_set_one_roi` initialises neither its local band record nor
+/// `base_cfg`; every field except the assigned flags becomes stack garbage.
+/// Two stock C runs on t6 therefore produce different streams. We use the
+/// deterministic intended record here: zero every undeclared bit, keep
+/// `qp_adj_en` for the base records, and keep only `force_intra` for the band.
 fn gdr_base_table(config: &EncoderConfig, refresh_idx: u32) -> Vec<u8> {
     let mb_w = (config.coded_width() / 16).max(1);
     let mb_h = (config.coded_height() / 16).max(1);
@@ -3386,7 +3387,7 @@ fn gdr_base_table(config: &EncoderConfig, refresh_idx: u32) -> Vec<u8> {
     let stride_v = align(mb_h, 4);
     let _ = stride_v; // the grid is indexed row-strided; padding rows stay at the base fill.
     let base_fill: u64 = 1 << 62; // qp_adj_en, force_intra clear
-    let band: u64 = (1 << 61) | (1 << 62); // force_intra over the band
+    let band: u64 = 1 << 61; // force_intra over the band; no QP adjustment
 
     let n = config.gdr_num as i32;
     let (region_x, region_y, region_w, region_h) = match config.gdr_mode {
@@ -5297,15 +5298,15 @@ mod tests {
             let index = row * 20 + col;
             u64::from_le_bytes(table[index * 8..index * 8 + 8].try_into().unwrap())
         };
-        assert_eq!(record(&first, 0, 0), (1 << 61) | (1 << 62));
-        assert_eq!(record(&first, 1, 19), (1 << 61) | (1 << 62));
+        assert_eq!(record(&first, 0, 0), 1 << 61);
+        assert_eq!(record(&first, 1, 19), 1 << 61);
         assert_eq!(record(&first, 2, 0), 1 << 62, "band 0 covers rows 0..2");
         assert_eq!(record(&first, 4, 10), 1 << 62);
 
         // Band 1: region y = 1*32 - 32 = 0, h = 32 + 32 = 64 -> rows 0..4.
         let second = gdr_base_table(&cfg, 1);
         for row in 0..4 {
-            assert_eq!(record(&second, row, 7), (1 << 61) | (1 << 62), "row {row}");
+            assert_eq!(record(&second, row, 7), 1 << 61, "row {row}");
         }
         assert_eq!(record(&second, 4, 7), 1 << 62, "row 4 is below the band");
 
@@ -5313,8 +5314,8 @@ mod tests {
         // the five-row grid to row 4 alone, the whole width.
         let fourth = gdr_base_table(&cfg, 3);
         assert_eq!(record(&fourth, 3, 15), 1 << 62);
-        assert_eq!(record(&fourth, 4, 0), (1 << 61) | (1 << 62));
-        assert_eq!(record(&fourth, 4, 19), (1 << 61) | (1 << 62));
+        assert_eq!(record(&fourth, 4, 0), 1 << 61);
+        assert_eq!(record(&fourth, 4, 19), 1 << 61);
     }
 
     /// `refresh_num == 1` is the corner where `16 * n - 32` goes negative, and the
@@ -5328,7 +5329,7 @@ mod tests {
             let index = row * 20 + col;
             u64::from_le_bytes(table[index * 8..index * 8 + 8].try_into().unwrap())
         };
-        let band: u64 = (1 << 61) | (1 << 62);
+        let band: u64 = 1 << 61;
         let base: u64 = 1 << 62;
 
         // Band 0: y = 0, h = 16 -> row 0 and nothing below it.
@@ -5374,7 +5375,7 @@ mod tests {
         // x = 1*32 - 32 = 0 -> columns 0..4 across every grid row.
         for row in 0..5 {
             for col in 0..4 {
-                assert_eq!(record(&table, row, col), (1 << 61) | (1 << 62));
+                assert_eq!(record(&table, row, col), 1 << 61);
             }
             assert_eq!(record(&table, row, 4), 1 << 62);
         }
