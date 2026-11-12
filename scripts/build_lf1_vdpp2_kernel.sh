@@ -10,7 +10,10 @@ usage: build_lf1_vdpp2_kernel.sh \
   <kernel-source-or-tarball> <board-config> <current-boot.img> <output-dir>
 
 The build host must be x86_64 Linux with:
-  aarch64-linux-gnu-gcc, make, dtc, dumpimage, mkimage
+  aarch64-linux-gnu-gcc, make, dtc, fdtget, fdtput, dumpimage, mkimage
+
+Set CROSS_COMPILE to use another toolchain prefix, for example:
+  CROSS_COMPILE=aarch64-none-linux-gnu-
 EOF
     exit 2
 }
@@ -21,8 +24,11 @@ source_input=$1
 board_config=$2
 current_boot=$3
 output_dir=$4
+cross_compile=${CROSS_COMPILE:-aarch64-linux-gnu-}
+c_compiler="${cross_compile}gcc"
+nm_tool="${cross_compile}nm"
 
-for tool in make aarch64-linux-gnu-gcc dtc dumpimage mkimage sha256sum; do
+for tool in make "$c_compiler" dtc fdtget fdtput dumpimage mkimage sha256sum; do
     command -v "$tool" >/dev/null || {
         echo "missing required tool: $tool" >&2
         exit 1
@@ -100,21 +106,21 @@ mkdir -p "$output_dir"
 output_dir=$(cd "$output_dir" && pwd)
 build_dir="$work_dir/build"
 mkdir -p "$build_dir"
-cp "$board_config" "$build_dir/.config"
-"$kernel_src/scripts/config" --file "$build_dir/.config" \
-    --enable ROCKCHIP_MPP_VDPP \
-    --disable LOCALVERSION_AUTO \
-    --disable WERROR
+expected_config="$work_dir/expected.config"
+cp "$board_config" "$expected_config"
+"$kernel_src/scripts/config" --file "$expected_config" \
+    --enable ROCKCHIP_MPP_VDPP
+cp "$expected_config" "$build_dir/.config"
 
 make -C "$kernel_src" O="$build_dir" ARCH=arm64 \
-    CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+    CROSS_COMPILE="$cross_compile" olddefconfig
 grep -q '^CONFIG_ROCKCHIP_MPP_VDPP=y$' "$build_dir/.config" || {
     echo "CONFIG_ROCKCHIP_MPP_VDPP was not enabled" >&2
     exit 1
 }
 
 make -C "$kernel_src" O="$build_dir" ARCH=arm64 \
-    CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" Image
+    CROSS_COMPILE="$cross_compile" -j"$(nproc)" Image
 
 kernel_image="$build_dir/arch/arm64/boot/Image"
 vmlinux="$build_dir/vmlinux"
@@ -122,7 +128,7 @@ vmlinux="$build_dir/vmlinux"
     echo "kernel Image was not produced" >&2
     exit 1
 }
-if ! aarch64-linux-gnu-nm "$vmlinux" |
+if ! "$nm_tool" "$vmlinux" |
     grep -E 'vdpp_(probe|remove)|rockchip_vdpp_driver|vdpp2_data' \
         > "$output_dir/mpp_vdpp-symbols.txt"
 then
@@ -136,6 +142,16 @@ grep -q '^CONFIG_ROCKCHIP_MPP_VDPP=y$' "$kernel_config" || {
     echo "rebuilt Image does not embed CONFIG_ROCKCHIP_MPP_VDPP=y" >&2
     exit 1
 }
+awk '/^(CONFIG_|# CONFIG_)/' "$expected_config" \
+    > "$work_dir/expected-config.txt"
+awk '/^(CONFIG_|# CONFIG_)/' "$kernel_config" \
+    > "$work_dir/kernel-config.txt"
+if ! diff -u "$work_dir/expected-config.txt" \
+    "$work_dir/kernel-config.txt" > "$output_dir/kernel-config.diff"; then
+    echo "rebuilt kernel config differs beyond CONFIG_ROCKCHIP_MPP_VDPP" >&2
+    cat "$output_dir/kernel-config.diff" >&2
+    exit 1
+fi
 actual_version=$(sed -n \
     's/^# Linux\/arm64 \([0-9][0-9.]*\) Kernel Configuration$/\1/p' \
     "$kernel_config")
@@ -155,65 +171,79 @@ cp "$fdt" "$output_dir/board.dtb"
 cp "$resource" "$output_dir/resource.bin"
 cp "$kernel_config" "$output_dir/kernel.config"
 
-fit_its="$work_dir/lf1-vdpp2.its"
-cat >"$fit_its" <<EOF
-/dts-v1/;
+fit_data_dir="$work_dir/fit"
+fit_template="$work_dir/current-fit.dtb"
+fit_its="$fit_data_dir/lf1-vdpp2-boot.its"
+mkdir -p "$fit_data_dir"
+cp "$current_boot" "$fit_template"
 
-/ {
-    description = "Luckfox Omni3576 Linux 6.1.75 with VDPP2";
-    #address-cells = <1>;
+mapfile -t fit_images < <(fdtget -l "$current_boot" /images)
+[ "${#fit_images[@]}" -gt 0 ] || {
+    echo "current boot image has no FIT images" >&2
+    exit 1
+}
+for image_name in "${fit_images[@]}"; do
+    image_source=
+    case "$image_name" in
+        fdt) image_source=$fdt ;;
+        kernel) ;;
+        resource) image_source=$resource ;;
+        *)
+            echo "unsupported FIT image node: $image_name" >&2
+            exit 1
+            ;;
+    esac
+    if [ -n "$image_source" ]; then
+        cp "$image_source" "$fit_data_dir/$image_name"
+    fi
+    fdtput -t s "$fit_template" "/images/$image_name" data \
+        "/INCBIN/($image_name)"
+done
+cp "$kernel_image" "$fit_data_dir/kernel"
 
-    images {
-        fdt {
-            data = /incbin/("$output_dir/board.dtb");
-            type = "flat_dt";
-            arch = "arm64";
-            compression = "none";
-            load = <0xffffff00>;
-            hash-1 {
-                algo = "sha256";
-            };
-        };
+# Match Rockchip's scripts/mkimg repack path: preserve the current FIT
+# structure, replace image data, remove generated values, and rebuild it as
+# an externally stored FIT. This keeps the vendor signature declaration and
+# the original configuration node intact.
+dtc -I dtb -O dts "$fit_template" -o "$fit_its" >/dev/null 2>&1
+sed -i \
+    -e 's#data = "/INCBIN/(\(.*\))";#data = /incbin/("\1");#' \
+    -e '/memreserve/d' \
+    -e '/timestamp/d' \
+    -e '/data-size/d' \
+    -e '/data-position/d' \
+    -e '/value/d' \
+    -e '/hashed-strings/d' \
+    -e '/hashed-nodes/d' \
+    -e '/signer-version/d' \
+    -e '/signer-name/d' \
+    "$fit_its"
+cp "$fit_its" "$output_dir/lf1-vdpp2-boot.its"
 
-        kernel {
-            data = /incbin/("$output_dir/Image");
-            type = "kernel";
-            arch = "arm64";
-            os = "linux";
-            compression = "none";
-            entry = <0xffffff01>;
-            load = <0xffffff01>;
-            hash-1 {
-                algo = "sha256";
-            };
-        };
-
-        resource {
-            data = /incbin/("$output_dir/resource.bin");
-            type = "multi";
-            arch = "arm64";
-            compression = "none";
-            hash-1 {
-                algo = "sha256";
-            };
-        };
-    };
-
-    configurations {
-        default = "conf";
-        conf {
-            rollback-index = <0>;
-            fdt = "fdt";
-            kernel = "kernel";
-            multi = "resource";
-        };
-    };
-};
-EOF
-
+mkimage_args=(-E -p 0x800)
+mkimage_help=$(mkimage 2>&1 || true)
+if grep -q '\[-B size\]' <<< "$mkimage_help"; then
+    mkimage_args+=(-B 0x200)
+fi
 boot_output="$output_dir/lf1-vdpp2-boot.img"
-mkimage -f "$fit_its" "$boot_output" >/dev/null
+(
+    cd "$fit_data_dir"
+    mkimage "${mkimage_args[@]}" -f "$fit_its" "$boot_output"
+) > "$output_dir/mkimage.log" 2>&1
 dumpimage -l "$boot_output" > "$output_dir/lf1-vdpp2-boot.manifest.txt"
+
+sign_algo=$(fdtget -t s "$boot_output" \
+    /configurations/conf/signature algo)
+sign_padding=$(fdtget -t s "$boot_output" \
+    /configurations/conf/signature padding)
+[ "$sign_algo" = "sha256,rsa2048" ] || {
+    echo "new FIT does not preserve the vendor signature algorithm" >&2
+    exit 1
+}
+[ "$sign_padding" = "pss" ] || {
+    echo "new FIT does not preserve the vendor signature padding" >&2
+    exit 1
+}
 
 current_size=$(stat -c %s "$current_boot")
 output_size=$(stat -c %s "$boot_output")
@@ -224,7 +254,8 @@ fi
 
 (
     cd "$output_dir"
-    sha256sum Image board.dtb resource.bin lf1-vdpp2-boot.img \
+    sha256sum Image board.dtb resource.bin kernel.config \
+        lf1-vdpp2-boot.its lf1-vdpp2-boot.img mpp_vdpp-symbols.txt \
         > SHA256SUMS
 )
 
