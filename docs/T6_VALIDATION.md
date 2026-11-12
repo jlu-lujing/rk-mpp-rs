@@ -30,54 +30,51 @@ t62 back to the RK3588 reference board.
   luma, truncated-input, legal histogram geometry, hardware-status, default
   DMSR/ES/SHARP golden-trace, ZME configurability, custom tap-bank selection,
   custom parameter-packing and split-output geometry tests. `vdpp-scale` and
-  `vdpp-hist` are ready for hardware validation on an RK3576 boot image that
-  actually binds client 29.
+  `vdpp-hist` have since passed on an RK3576 boot image that binds client 29.
 - The VDPP2 hardware assets also compile on t6: the C probe builds against the
   2024-04 C source/library, the RK3576 overlay compiles to a 267-byte DTBO, and
   the independent packed-histogram checker passes synthetic
-  `4096 local / 256 global / mean=511` data. `board_vdpp2_hw_vs_c.sh` also has
-  separate Y/UV comparisons for split YUV420 and YUV444, and correctly reports
-  SKIP when the target board does not expose client 29.
-- The lf1 DTB has `/vdpp@27961000` status `okay`, but the running kernel has
-  `# CONFIG_ROCKCHIP_MPP_VDPP is not set` and `# CONFIG_OF_OVERLAY is not set`.
-  No platform device or driver binds, `probe_hw_support` bit 29 is clear, and
-  `INIT_CLIENT_TYPE` returns `EINVAL`; the hardware gate therefore reports
-  SKIP rather than claiming pixel or histogram validation. A rebuilt kernel
-  containing `mpp_vdpp` is required.
+  `4096 local / 256 global / mean=511` data. The legacy fake-service matrix is
+  **10 PASS / 1 documented SKIP**: 2024-04 C halves split-YUV420 chroma twice,
+  while the current hardware target uses the newer source's supplied chroma
+  dimensions directly. `board_vdpp2_hw_vs_c.sh` now validates both split420 and
+  split444 against the newer C source on real hardware.
+- lf1 now boots the exact official SDK 250301 6.1.75 kernel with
+  `CONFIG_ROCKCHIP_MPP_VDPP=y`. `/vdpp@27961000` remains `okay`,
+  `mpp_vdpp 27961000.vdpp` probes successfully, `probe_hw_support` bit 29 is
+  set, and client 29 binds. `CONFIG_OF_OVERLAY` remains unset but is no longer
+  needed because the driver is built in.
 
 ### lf1 kernel enablement investigation
 
 - `mpp_vdpp` is a built-in `bool` driver in the Rockchip Kconfig, not a loadable
   module, and it calls non-exported MPP core symbols. A standalone
   `mpp_vdpp.ko` is therefore not a valid delivery path.
-- The current lf1 boot partition (`mmcblk2p3`) was captured read-only as a
-  64 MiB unsigned U-Boot FIT. It contains separate `fdt`, `kernel` and
-  `resource` images; the FDT and resource can be preserved byte-for-byte.
-- The board config identifies Linux **6.1.75**. The stock Rockchip 6.1.75
-  snapshot predates RK3576, and the current Rockchip branch reports 6.1.118.
-  The Armbian-maintained Rockchip `rk-6.1-rkr3` commit
-  `00b325014004cf22a27fc67762fe2ff09163cec3` has the required combination:
-  Linux 6.1.75, RK3576 DTS, and `rockchip,vdpp-rk3576`.
-- `scripts/build_lf1_vdpp2_kernel.sh` now requires an exact 6.1.75/RK3576 source
-  match and rejects both mismatched releases and kernels without VDPP. It built
-  and validated an unsigned replacement FIT without writing to the board:
-  **42,991,057 bytes**, SHA-256
-  `afe90fcc8c5dbc4223321158021ee860e233b770ae8d6da5c37bcb86c548f37a`.
-  The new `Image` is 41,036,288 bytes, only 34,816 bytes larger than the running
-  kernel; its SHA-256 is
-  `ee4141a244ddaa4f7baeda1bc7c760f0acac429e63ae4eed3f98c058d1b48300`.
-  `CONFIG_ROCKCHIP_MPP_VDPP=y` is embedded and vmlinux exports
-  `rockchip_vdpp_driver` with `vdpp_probe`/`vdpp_remove`. The original FDT and
-  resource images are byte-identical, and the FIT preserves `rollback-index=0`.
-- lf1 remains on its original boot image. The failed replacement is retained as
-  `target/lf1-vdpp2/lf1-vdpp2-boot.rejected.img`; it must not be flashed again.
-  Enabling a configfs overlay cannot fix the running kernel because both
-  `CONFIG_ROCKCHIP_MPP_VDPP` and `CONFIG_OF_OVERLAY` are unset.
+- The stock p3 is a 64 MiB externally stored U-Boot FIT with `fdt`, `kernel` and
+  `resource` images. Its configuration declares
+  `sha256,rsa2048:dev` / PSS signing, while the signature value is absent.
+  The replacement builder therefore clones the existing FIT structure instead
+  of synthesising a simpler one, and invokes `mkimage -E -p 0x800 -B 0x200`.
+- The exact vendor source is in the Luckfox Omni3576 SDK 250301 manifest:
+  `rk/kernel-stable`, commit
+  `b16c5d1a69947ec66726165407a8aa75368def53`. It reports Linux 6.1.75,
+  contains `rockchip,vdpp-rk3576`, and matches the board's compiler string exactly:
+  `aarch64-none-linux-gnu-gcc 10.3.1 20210621`.
+- `scripts/build_lf1_vdpp2_kernel.sh` accepts that source and an alternate
+  `CROSS_COMPILE`. It enables only `CONFIG_ROCKCHIP_MPP_VDPP`; the extracted
+  Image config differs from the stock board config by exactly that one line.
+  The original FDT/resource hashes, `rollback-index=0`, load/entry addresses and
+  signature declaration are preserved.
+- The accepted FIT is **43,024,896 bytes**, SHA-256
+  `90649e7d6da5ea889c1c82ed43b135582e1e7d9c59c88e8977bc4938194888df`.
+  Its Image is 41,069,056 bytes, SHA-256
+  `84efdaed44fcea0f799125e94be1071be7b6418d84b32d39b06e5ff08d2f239a`,
+  and vmlinux exports `rockchip_vdpp_driver`, `vdpp_probe` and `vdpp_remove`.
 - `scripts/flash_lf1_vdpp2_boot.sh` defaults to a dry run. Its applied path
   verifies kernel 6.1.75, VDPP DTB status, p3 capacity, the local image hash and
   passwordless sudo; backs up p3; writes with `dd conv=fsync`; reads the exact
-  image span back and verifies SHA-256 before an optional reboot. A dry run
-  against lf1 passes with the staged 42,991,057-byte image.
+  image span back and verifies SHA-256 before an optional reboot. Both dry run
+  and applied readback passed for the accepted image.
 
 ### 2026-11-13 first lf1 VDPP boot attempt
 
@@ -104,6 +101,30 @@ t62 back to the RK3588 reference board.
   boot, so no boot-stage fault log is available. The custom VDPP FIT is retained
   as rejected evidence; another write must not be attempted without an exact
   vendor source tree or serial-console capture.
+
+### 2026-11-13 official SDK second boot and hardware acceptance
+
+- The official Luckfox SDK 250301 `.repo` locks the exact vendor kernel source;
+  the 1.5 GB expanded tree and SDK GCC 10.3.1 were staged through s2 on the same
+  LAN as t6/lf1. The accepted build completed on s2 in about two minutes.
+- The 43,024,896-byte FIT was backed up, written and read back at SHA-256
+  `90649e7d6da5ea889c1c82ed43b135582e1e7d9c59c88e8977bc4938194888df`,
+  then rebooted. lf1 returned as kernel 6.1.75 with a new boot ID.
+- A second ordinary reboot also returned as kernel 6.1.75 with another new boot
+  ID; client 29 and the complete 5/5 hardware gate passed again.
+- Boot log: `mpp_vdpp 27961000.vdpp: probe device`, `probing finish`; sysfs binds
+  the device to `mpp_vdpp`. `vdpp-probe` reports bit 29 present, client init
+  binds, register offsets and poll supported, and `hw_id=536969267`.
+- `board_vdpp2_hw_vs_c.sh` passes **5/5** against the new C source:
+  scale-only and default enhancement are 345,600 bytes each; split YUV420 is
+  230,400 luma + 115,200 chroma bytes; split YUV444 is 230,400 luma + 460,800
+  chroma bytes; histogram is a 10,240-byte packed buffer parsing to 4,096 local
+  and 256 global bins with U10 mean luma 513.
+- Two hardware boundary bugs were found and fixed during this acceptance:
+  split chroma rows are already compact 16-bit rows, so the output compactor must
+  use `2 * dst_c_width_vir` bytes; and dma-heap rounds the histogram allocation,
+  so the public packed histogram slice is truncated to the vendor's exact
+  10,240-byte layout.
 
 ## 2026-11-12 H.264 / JPEG / post-processing closeout
 

@@ -809,36 +809,36 @@ H.264/VEPU580 编码已做到：
 
 - VDPP（client 29）在 RK3588 **不存在**；RK3576 的 VDPP2 common/ZME scale、
   DCI histogram、默认 DMSR/ES/sharp register bank 和可替换的自定义
-  11×17×8 tap8/tap6 bank 已移植，并用 t6 fake-service trace 对 C 做了十一格
-  逐字比较；除默认块外还覆盖自定义 ZME、完整 DMSR/ES/SHARP 输入、coefficient
-  bank 以及 YUV420/YUV444 分离 Y/UV 输出。
+  11×17×8 tap8/tap6 bank 已移植。2024-04 C fake-service 矩阵保留
+  10 PASS + 1 个明确 SKIP：旧 C 在 split-YUV420 内又把 chroma 尺寸减半，
+  新硬件目标直接使用调用方给出的 chroma 尺寸，差异登记在 DIVERGENCES。
+  除默认块外还覆盖自定义 ZME、完整 DMSR/ES/SHARP 输入、coefficient bank
+  以及 YUV444 split；真实 YUV420/YUV444 split 已由新 C 真机 5/5 覆盖。
   10240-byte packed histogram 已能拆成 vendor 的
   4096 local + 256 global bin，`vdpp-hist` 会输出 packed/local/global 三份原始
-  结果和 U10 平均亮度。真实像素/histogram/HDR 依赖一个实际绑定 client 29 的
-  RK3576 启动镜像。lf1 已可通过 `luck2`（`192.0.2.148`）登录，DT 节点 status
-  是 `okay`，但当前内核为 `# CONFIG_ROCKCHIP_MPP_VDPP is not set`，并且
-  `CONFIG_OF_OVERLAY` 未开启；因此平台驱动不存在、client-29 init 返回 `EINVAL`，
-  真机门按设计 SKIP。Rockchip `develop-6.1` 的 `rk3576-evb.dtsi` 只通过
-  `&vdpp { status = "okay"; };` 启用该节点，但内核还必须编入 `mpp_vdpp.c`。
+  结果和 U10 平均亮度。
+  lf1 已通过 `luck2`（`192.0.2.148`）运行官方 Luckfox SDK 250301 的精确
+  6.1.75 内核 `b16c5d1a69947ec66726165407a8aa75368def53`。板 config 只改成
+  `CONFIG_ROCKCHIP_MPP_VDPP=y`，`mpp_vdpp 27961000.vdpp` 已绑定 client 29，
+  `probe_hw_support` bit 29 为真。`CONFIG_OF_OVERLAY` 仍未开启，但 built-in
+  driver 已不需要 overlay。
   `tools/rk3576-vdpp2-overlay.dts` + `board_enable_vdpp2_overlay.sh` 只有在
-  内核同时启用 `CONFIG_OF_OVERLAY` 与 `CONFIG_ROCKCHIP_MPP_VDPP` 后才有意义；
-  `board_vdpp2_hw_vs_c.sh` 在驱动绑定后比较 scale-only、默认 enhancement、
-  packed histogram 与 U10 mean luma。
+  需要动态改 DTB 时才有意义；当前 kernel 的直接路径已经生效。
   `mpp_vdpp` 是 built-in `bool`，不是可加载模块。
   `build_lf1_vdpp2_kernel.sh` 可离线构建替换用 FIT，且会拒绝与板卡 6.1.75
   不一致或缺少 RK3576 VDPP 支持的源码；该脚本默认只生成产物，不写 eMMC。
-  Armbian `rk-6.1-rkr3` commit `00b325014004cf22a27fc67762fe2ff09163cec3`
-  正好是 Linux 6.1.75 + RK3576 VDPP，已生成 42,991,057-byte 替换 FIT
-  （SHA-256 `afe90fcc…c548f37a`）；新 Image 仅比当前内核大 34,816 bytes，
-  原 FDT/resource 逐字节不变。2026-11-13 已获授权写入 lf1 并重启，写后
-  回读 SHA-256 一致；但板卡 180 秒内未恢复 LAN/SSH，全段扫描无地址，也没有
-  出现 USB Loader。首次 boot 判定失败。随后已通过 Loader
-  （`2207:350e`）从原 p3 备份恢复；`PL` 确认 p3 为 LBA `0x8000` /
-  `0x20000` sectors，恢复后前 16 MiB 哈希与备份一致，原 6.1.75 内核和网络
-  已恢复。pstore/journal 没有失败内核的启动日志。原 p3 备份在
-  `target/lf1-vdpp2/lf1-p3-backup-20261113-014828.img`，SHA-256
-  `11ccf48e…17d30`；rkr3 FIT 标记为 rejected，下一次尝试必须有精确
-  vendor 源码或串口启动日志。
+  它现在支持 SDK 自带 `CROSS_COMPILE`，只启用 VDPP 配置，并克隆现有 FIT
+  的 external-data 布局、load/entry、rollback index 和
+  `sha256,rsa2048:dev` 签名声明。
+  正式候选为 43,024,896 bytes，SHA-256
+  `90649e7d6da5ea889c1c82ed43b135582e1e7d9c59c88e8977bc4938194888df`；
+  p3 写后回读一致，第二次启动成功并返回新 boot ID。
+  `board_vdpp2_hw_vs_c.sh` 真机 5/5 逐字节通过：scale-only、默认
+  enhancement、YUV420 split、YUV444 split 和 histogram。split 输出使用
+  `2 * width_vir` 的 byte stride；10,240-byte histogram 已精确截断并解析为
+  4096 local + 256 global bin，mean luma U10 为 513。
+  首次 Armbian rkr3 FIT 仍未启动，已通过 Loader（`2207:350e`）从原 p3
+  恢复；该候选保留为 rejected evidence。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
 - `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1；
