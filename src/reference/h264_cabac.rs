@@ -80,6 +80,8 @@ struct DecodedBPartitionMotion {
     y: usize,
     width: usize,
     height: usize,
+    uses_l0: bool,
+    uses_l1: bool,
     motion_l0: Option<([i32; 2], [i32; 2])>,
     motion_l1: Option<([i32; 2], [i32; 2])>,
 }
@@ -92,6 +94,38 @@ impl B16PartitionShape {
             Self::P8x16 => &[(0, 0, 8, 16), (8, 0, 8, 16)],
             Self::P8x8 => &[(0, 0, 8, 8), (8, 0, 8, 8), (0, 8, 8, 8), (8, 8, 8, 8)],
         }
+    }
+}
+
+fn b8x8_sub_type_info(
+    sub_type: u8,
+) -> Option<(&'static [(usize, usize, usize, usize)], bool, bool)> {
+    match sub_type {
+        1 => Some((&[(0, 0, 8, 8)], true, false)),
+        2 => Some((&[(0, 0, 8, 8)], false, true)),
+        3 => Some((&[(0, 0, 8, 8)], true, true)),
+        4 => Some((&[(0, 0, 8, 4), (0, 4, 8, 4)], true, false)),
+        5 => Some((&[(0, 0, 4, 8), (4, 0, 4, 8)], true, false)),
+        6 => Some((&[(0, 0, 8, 4), (0, 4, 8, 4)], false, true)),
+        7 => Some((&[(0, 0, 4, 8), (4, 0, 4, 8)], false, true)),
+        8 => Some((&[(0, 0, 8, 4), (0, 4, 8, 4)], true, true)),
+        9 => Some((&[(0, 0, 4, 8), (4, 0, 4, 8)], true, true)),
+        10 => Some((
+            &[(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
+            true,
+            false,
+        )),
+        11 => Some((
+            &[(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
+            false,
+            true,
+        )),
+        12 => Some((
+            &[(0, 0, 4, 4), (4, 0, 4, 4), (0, 4, 4, 4), (4, 4, 4, 4)],
+            true,
+            true,
+        )),
+        _ => None,
     }
 }
 
@@ -716,6 +750,8 @@ fn decode_b_l0_partition_motions(
                     y: partition_y,
                     width: partition_width,
                     height: partition_height,
+                    uses_l0: true,
+                    uses_l1: false,
                     motion_l0: Some((motion, delta)),
                     motion_l1: None,
                 })
@@ -941,7 +977,7 @@ pub fn decode_cabac_b16_slice(
         }
         let mut prediction_list = 2;
         let mut partition_shape = B16PartitionShape::P16x16;
-        let mut b8x8_sub_types = Vec::new();
+        let mut b8x8_sub_types: Vec<u8> = Vec::new();
         if !direct {
             if decoder.decode_bin(&mut contexts[30]) == 0 {
                 prediction_list = decoder.decode_bin(&mut contexts[32]) as u8;
@@ -970,24 +1006,23 @@ pub fn decode_cabac_b16_slice(
                                     "B_8x8 direct subpartition",
                                 ));
                             }
-                            if decoder.decode_bin(&mut contexts[37]) == 0 {
-                                b8x8_sub_types.push(1 + decoder.decode_bin(&mut contexts[39]));
+                            let sub_type = (if decoder.decode_bin(&mut contexts[37]) == 0 {
+                                1 + decoder.decode_bin(&mut contexts[39])
+                            } else if decoder.decode_bin(&mut contexts[38]) == 1 {
+                                if decoder.decode_bin(&mut contexts[39]) == 1 {
+                                    11 + decoder.decode_bin(&mut contexts[39])
+                                } else {
+                                    7 + (decoder.decode_bin(&mut contexts[39]) << 1)
+                                        + decoder.decode_bin(&mut contexts[39])
+                                }
                             } else {
-                                if decoder.decode_bin(&mut contexts[38]) != 0 {
-                                    return Err(H264CabacError::Unsupported(
-                                        "B_8x8 8x4/4x8/4x4 subpartition",
-                                    ));
-                                }
-                                let first = decoder.decode_bin(&mut contexts[39]);
-                                let second = decoder.decode_bin(&mut contexts[39]);
-                                let sub_type = 3 + 2 * first + second;
-                                if sub_type != 3 {
-                                    return Err(H264CabacError::Unsupported(
-                                        "B_8x8 non-8x8 subpartition",
-                                    ));
-                                }
-                                b8x8_sub_types.push(sub_type);
+                                3 + (decoder.decode_bin(&mut contexts[39]) << 1)
+                                    + decoder.decode_bin(&mut contexts[39])
+                            }) as u8;
+                            if b8x8_sub_type_info(sub_type).is_none() {
+                                return Err(H264CabacError::Unsupported("B_8x8 subpartition type"));
                             }
+                            b8x8_sub_types.push(sub_type);
                         }
                     }
                     _ => {
@@ -1054,35 +1089,36 @@ pub fn decode_cabac_b16_slice(
                     motion_l1.map(|_| [0, 0]),
                 )
             } else if partition_shape == B16PartitionShape::P8x8 {
-                let definitions = partition_shape.definitions();
-                shaped_motion_partitions = definitions
-                    .iter()
-                    .map(
-                        |&(partition_x, partition_y, partition_width, partition_height)| {
-                            DecodedBPartitionMotion {
-                                x: partition_x,
-                                y: partition_y,
-                                width: partition_width,
-                                height: partition_height,
-                                motion_l0: None,
-                                motion_l1: None,
-                            }
-                        },
-                    )
-                    .collect();
-                for (partition, &(partition_x, partition_y, partition_width, partition_height)) in
-                    shaped_motion_partitions.iter_mut().zip(definitions)
-                {
-                    if matches!(b8x8_sub_types[partition.x / 8 + partition.y / 8 * 2], 1 | 3) {
+                shaped_motion_partitions.clear();
+                for (quadrant, &sub_type) in b8x8_sub_types.iter().enumerate() {
+                    let (definitions, uses_l0, uses_l1) = b8x8_sub_type_info(sub_type)
+                        .ok_or(H264CabacError::Unsupported("B_8x8 subpartition type"))?;
+                    let quadrant_x = (quadrant % 2) * 8;
+                    let quadrant_y = (quadrant / 2) * 8;
+                    for &(partition_x, partition_y, width, height) in definitions {
+                        shaped_motion_partitions.push(DecodedBPartitionMotion {
+                            x: quadrant_x + partition_x,
+                            y: quadrant_y + partition_y,
+                            width,
+                            height,
+                            uses_l0,
+                            uses_l1,
+                            motion_l0: None,
+                            motion_l1: None,
+                        });
+                    }
+                }
+                for partition in &mut shaped_motion_partitions {
+                    if partition.uses_l0 {
                         partition.motion_l0 = Some(decode_b_list_partition_motion(
                             &mut decoder,
                             &mut contexts,
                             mb_index,
                             mb_width,
-                            partition_x,
-                            partition_y,
-                            partition_width,
-                            partition_height,
+                            partition.x,
+                            partition.y,
+                            partition.width,
+                            partition.height,
                             &mut motion_valid,
                             &mut motion_vectors,
                             &mut motion_vector_deltas,
@@ -1090,19 +1126,17 @@ pub fn decode_cabac_b16_slice(
                         )?);
                     }
                 }
-                for (partition, &(partition_x, partition_y, partition_width, partition_height)) in
-                    shaped_motion_partitions.iter_mut().zip(definitions)
-                {
-                    if matches!(b8x8_sub_types[partition.x / 8 + partition.y / 8 * 2], 2 | 3) {
+                for partition in &mut shaped_motion_partitions {
+                    if partition.uses_l1 {
                         partition.motion_l1 = Some(decode_b_list_partition_motion(
                             &mut decoder,
                             &mut contexts,
                             mb_index,
                             mb_width,
-                            partition_x,
-                            partition_y,
-                            partition_width,
-                            partition_height,
+                            partition.x,
+                            partition.y,
+                            partition.width,
+                            partition.height,
                             &mut motion_valid_l1,
                             &mut motion_vectors_l1,
                             &mut motion_vector_deltas_l1,

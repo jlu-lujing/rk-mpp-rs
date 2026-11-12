@@ -529,6 +529,26 @@ t62 back to the RK3588 reference board.
 - Direct 8x8, 8x4/4x8/4x4, col-zero B references, weighted B and B deblocking
   remain open.
 
+## 2026-11-12 H.264 CABAC mixed L0 B_8x8 geometry
+
+- One IDR+P+B stream keeps `B_8x8` and assigns the four quadrants to
+  `B_L0_8x4`, `B_L0_4x8`, `B_L0_4x4` and `B_L0_8x8`. Stream SHA-256 is
+  `9d9cc8b58a686d2065c8c183ba0f73bdb7d2ef7a030a300ec2a18683e436225d`
+  and decoded YUV is
+  `cd45314da12e3987d3bd3f5ddbb1be420cd8fddd20b4f61f9173e2dc2d925a76`.
+- The decoder consumes the complete CABAC sub_mb_type tree and the matching
+  2/2/4/1 MVD sequence in quadrant and sub-partition scan order. Every leaf
+  updates its 4x4 cache cells and receives independent luma/chroma motion
+  compensation before the shared residual tree. The displayed frame matches
+  FFmpeg sample-exactly.
+- The B16 focused gate is **11/11**, the complete CABAC integration suite is
+  **35/35**, the crate `--all-targets` gate is **1289 passed / 0 failed /
+  41 ignored**, `scripts/board_workspace_gate.sh` is **1293 passed / 0 failed /
+  41 ignored**, and release-library tests are **1123 passed / 0 failed /
+  0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
+- Direct 8x8, L1/BI non-8x8 geometry, col-zero B references, weighted B and
+  B deblocking remain open.
+
 ## 2026-11-08 W5-4 pool closeout
 
 - H.265 lease test passed; the HEVC board suite is **13 PASS / 1 SKIP /
