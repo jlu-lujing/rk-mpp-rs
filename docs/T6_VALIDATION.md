@@ -94,6 +94,16 @@ t62 back to the RK3588 reference board.
 - The first 6.1.75 `rk-6.1-rkr3` serve attempt is therefore **not bootable
   enough for hardware validation**. The board needs a physical power cycle
   and/or Loader/MaskROM or serial-console entry before restoring the saved p3.
+- Recovery succeeded on 2026-11-13 through Rockchip Loader (`2207:350e`).
+  `PartitionList` confirmed p3 at LBA `0x00008000` with `0x00020000` sectors.
+  The 64 MiB backup was written with `WriteLBA`, reset with `ResetDevice`, and
+  the board returned immediately on the original 6.1.75 kernel. The first
+  16 MiB readback after restore matched the backup hash
+  `f7f38f9602ed8ee8808d4a6a94c95633794b782c7f832c5cd902e8051453fb03`.
+  `/sys/fs/pstore` was empty and the failed kernel did not create a journal
+  boot, so no boot-stage fault log is available. The custom VDPP FIT is retained
+  as rejected evidence; another write must not be attempted without an exact
+  vendor source tree or serial-console capture.
 
 ## 2026-11-12 H.264 / JPEG / post-processing closeout
 

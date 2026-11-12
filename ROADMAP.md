@@ -3408,9 +3408,11 @@ in what order the evidence gets produced.
       VDPP symbols and SHA-256 `afe90fcc...c548f37a`; the original FDT/resource
       images are unchanged. The first authorized write and readback succeeded,
       but lf1 did not return on LAN/SSH within 180 seconds and exposed no USB
-      Loader. The original p3 backup has SHA-256
-      `11ccf48e...17d30`; physical Power Cycle/Loader/serial recovery is now
-      required before the hardware gate can continue.
+      Loader. The original p3 backup was then restored through Rockchip Loader;
+      p3 is LBA `0x8000` / `0x20000` sectors, the post-restore prefix hash matched,
+      and the stock 6.1.75 kernel/network returned. The rkr3 FIT is rejected
+      evidence; another attempt requires the exact vendor source or a serial
+      boot log.
 - [x] 10-bit ↔ 8-bit software conversion: `Frame::convert_format()` covers
       8-bit NV12/I420 and planar I420P10, including chroma deinterleave and
       reinterleave. The 8→10 expansion and 10→8 contract are exact inverses

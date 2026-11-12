@@ -345,9 +345,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `rk-6.1-rkr3` commit `00b325014004cf22a27fc67762fe2ff09163cec3`
       已生成 42,991,057-byte 替换 FIT（sha256 `afe90fcc…c548f37a`），
       FDT/resource 保持不变。首次受控刷写和回读校验成功，但 lf1 180 秒内
-      未恢复 LAN/SSH，未出现 USB Loader，boot attempt 判定失败。原 p3 备份
-      SHA-256 为 `11ccf48e…17d30`；下一步必须先物理 Power Cycle/Loader/串口
-      恢复，再继续真机像素/直方图验收。
+      未恢复 LAN/SSH，boot attempt 判定失败。随后已通过 Rockchip Loader
+      写回原 p3，前 16 MiB 哈希校验一致，原 6.1.75 内核和网络恢复。
+      pstore/journal 没有失败内核日志；rkr3 FIT 标记 rejected，下一次必须
+      使用精确 vendor 源码或串口启动日志，再继续真机像素/直方图验收。
 
 验收：IEP 路径与 C 输出逐字节（或 PSNR ∞）；性能不低于 C，缩放不低于现有 `scale.rs`
 （若更慢，保留 `scale.rs` 作为推理链路默认）。
