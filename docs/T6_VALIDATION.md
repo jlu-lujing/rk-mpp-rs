@@ -69,10 +69,10 @@ t62 back to the RK3588 reference board.
   `CONFIG_ROCKCHIP_MPP_VDPP=y` is embedded and vmlinux exports
   `rockchip_vdpp_driver` with `vdpp_probe`/`vdpp_remove`. The original FDT and
   resource images are byte-identical, and the FIT preserves `rollback-index=0`.
-- lf1 remains on its original boot image. The replacement is staged locally
-  under `target/lf1-vdpp2/`; booting it requires explicitly approved writes to
-  `mmcblk2p3`. Enabling a configfs overlay cannot fix the running kernel because
-  both `CONFIG_ROCKCHIP_MPP_VDPP` and `CONFIG_OF_OVERLAY` are unset.
+- lf1 remains on its original boot image. The failed replacement is retained as
+  `target/lf1-vdpp2/lf1-vdpp2-boot.rejected.img`; it must not be flashed again.
+  Enabling a configfs overlay cannot fix the running kernel because both
+  `CONFIG_ROCKCHIP_MPP_VDPP` and `CONFIG_OF_OVERLAY` are unset.
 - `scripts/flash_lf1_vdpp2_boot.sh` defaults to a dry run. Its applied path
   verifies kernel 6.1.75, VDPP DTB status, p3 capacity, the local image hash and
   passwordless sudo; backs up p3; writes with `dd conv=fsync`; reads the exact
@@ -91,7 +91,7 @@ t62 back to the RK3588 reference board.
   `192.0.2.0/24` ICMP sweep found no board address, and no Rockchip USB loader
   device appeared on the host. The EasyTier `198.18.0.31` route accepts TCP
   locally but returns no SSH banner, so it cannot be used as a recovery shell.
-- The first 6.1.75 `rk-6.1-rkr3` serve attempt is therefore **not bootable
+- The first 6.1.75 `rk-6.1-rkr3` boot attempt is therefore **not bootable
   enough for hardware validation**. The board needs a physical power cycle
   and/or Loader/MaskROM or serial-console entry before restoring the saved p3.
 - Recovery succeeded on 2026-11-13 through Rockchip Loader (`2207:350e`).
