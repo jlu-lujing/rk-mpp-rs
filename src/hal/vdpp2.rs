@@ -6,7 +6,9 @@
 //! be disabled for scale-only comparisons and debugging.
 
 use super::vdpp2_coeff::{TAP6, TAP8};
-use super::vdpp2_defaults::{DEFAULT_DMSR, DEFAULT_ES, DEFAULT_SHARP};
+use super::vdpp2_defaults::DEFAULT_SHARP;
+use super::vdpp2_enhance::{build_dmsr, build_es};
+pub use super::vdpp2_enhance::{Vdpp2DmsrConfig, Vdpp2EsConfig};
 
 pub const COMMON_WORDS: usize = 28;
 pub const HIST_WORDS: usize = 5;
@@ -186,6 +188,8 @@ pub struct Vdpp2Config {
     /// Use the vendor default DMSR/ES/sharp register banks. Disable this for
     /// a deterministic scale-only path.
     pub enhancement: bool,
+    pub dmsr: Vdpp2DmsrConfig,
+    pub es: Vdpp2EsConfig,
     pub histogram: Vdpp2HistogramConfig,
 }
 
@@ -215,6 +219,8 @@ impl Vdpp2Config {
             dst_c_height_vir: align(dst_height, 2),
             mode: Vdpp2Mode::Vep,
             enhancement: true,
+            dmsr: Vdpp2DmsrConfig::default(),
+            es: Vdpp2EsConfig::default(),
             histogram: Vdpp2HistogramConfig::default(),
         }
     }
@@ -328,7 +334,7 @@ impl Vdpp2Registers {
             | field(u32::from(config.yuv_out_diff), 10, 1)
             | field(config.dst_swap as u32, 12, 2)
             | field(u32::from(config.histogram.enable), 25, 1)
-            | field(u32::from(config.enhancement), 24, 1);
+            | field(u32::from(config.enhancement && config.dmsr.enabled), 24, 1);
         common[2] = config.mode as u32;
         common[4] = 0x0fff;
         common[8] =
@@ -383,7 +389,11 @@ impl Vdpp2Registers {
         // Keep every bank in the submission so scale-only and the vendor default
         // enhancement path exercise the same register-window layout.
         let (dmsr, es, sharp) = if config.enhancement {
-            (DEFAULT_DMSR, DEFAULT_ES, DEFAULT_SHARP)
+            (
+                build_dmsr(&config.dmsr),
+                build_es(&config.es),
+                DEFAULT_SHARP,
+            )
         } else {
             ([0u32; DMSR_WORDS], [0u32; ES_WORDS], [0u32; SHARP_WORDS])
         };
@@ -761,6 +771,24 @@ mod tests {
         assert_eq!(regs.common[24], 7);
         assert_eq!(regs.common[26], 8);
         assert_eq!(regs.common[20] & 0x8000_0000, 0x8000_0000);
+    }
+
+    #[test]
+    fn dmsr_enable_controls_the_common_enhancement_bit() {
+        let mut cfg = Vdpp2Config::nv12_to_nv12(720, 480, 1920, 1080);
+        cfg.dmsr.enabled = false;
+        let regs = Vdpp2Registers::build(
+            &cfg,
+            &Vdpp2Job {
+                src_fd: 7,
+                src_uv_offset: 720 * 480,
+                dst_fd: 8,
+                dst_uv_offset: 1920 * 1080,
+                hist_fd: 9,
+            },
+        )
+        .unwrap();
+        assert_eq!(regs.common[1] & (1 << 24), 0);
     }
 
     #[test]

@@ -17,9 +17,9 @@ static int even_align(int value, int alignment)
 
 int main(int argc, char **argv)
 {
-    if (argc < 7 || argc > 9) {
+    if (argc < 7 || argc > 10) {
         fprintf(stderr,
-                "usage: %s <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420] [hist] [enh]\n",
+                "usage: %s <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420] [hist] [enh] [custom]\n",
                 argv[0]);
         return 2;
     }
@@ -30,10 +30,12 @@ int main(int argc, char **argv)
     int dst_yuv420 = 0;
     int histogram_mode = 0;
     int enhancement = 0;
+    int custom_enhancement = 0;
     for (int arg = 7; arg < argc; ++arg) {
         dst_yuv420 |= !strcmp(argv[arg], "420");
         histogram_mode |= !strcmp(argv[arg], "hist");
         enhancement |= !strcmp(argv[arg], "enh");
+        custom_enhancement |= !strcmp(argv[arg], "custom");
     }
     int src_w_vir = even_align(src_w, 16);
     int src_h_vir = even_align(src_h, 8);
@@ -101,6 +103,65 @@ int main(int argc, char **argv)
     if (vdpp2_control(ctx, VDPP_CMD_SET_COM2_CFG, &params)) {
         fprintf(stderr, "VDPP2 init/config failed\n");
         goto cleanup;
+    }
+    if (custom_enhancement) {
+        memset(&content, 0, sizeof(content));
+        content.dmsr.enable = true;
+        content.dmsr.str_pri_y = 17;
+        content.dmsr.str_sec_y = 9;
+        content.dmsr.dumping_y = 11;
+        content.dmsr.wgt_pri_gain_odd_1 = 7;
+        content.dmsr.wgt_pri_gain_even_1 = 13;
+        content.dmsr.wgt_pri_gain_odd_2 = 21;
+        content.dmsr.wgt_pri_gain_even_2 = 29;
+        content.dmsr.wgt_sec_gain = 11;
+        content.dmsr.blk_flat_th = 123;
+        content.dmsr.contrast_to_conf_map_x0 = 100;
+        content.dmsr.contrast_to_conf_map_x1 = 900;
+        content.dmsr.contrast_to_conf_map_y0 = 7;
+        content.dmsr.contrast_to_conf_map_y1 = 60000;
+        content.dmsr.diff_core_th0 = 3;
+        content.dmsr.diff_core_th1 = 23;
+        content.dmsr.diff_core_wgt0 = 9;
+        content.dmsr.diff_core_wgt1 = 17;
+        content.dmsr.diff_core_wgt2 = 25;
+        for (int index = 0; index < 7; ++index) {
+            content.dmsr.edge_th_low_arr[index] = index + 1;
+            content.dmsr.edge_th_high_arr[index] = index + 3 + index * 9;
+        }
+        params.ptype = VDPP_PARAM_TYPE_DMSR;
+        params.param = content;
+        if (vdpp2_control(ctx, VDPP_CMD_SET_DMSR_CFG, &params)) {
+            fprintf(stderr, "VDPP2 DMSR config failed\n");
+            goto cleanup;
+        }
+
+        memset(&content, 0, sizeof(content));
+        content.es.es_bEnabledES = 1;
+        content.es.es_iAngleDelta = 20;
+        content.es.es_iAngleDeltaExtra = 3;
+        content.es.es_iGradNoDirTh = 41;
+        content.es.es_iGradFlatTh = 99;
+        content.es.es_iWgtGain = 200;
+        content.es.es_iWgtDecay = 77;
+        content.es.es_iLowConfTh = 111;
+        content.es.es_iLowConfRatio = 22;
+        content.es.es_iConfCntTh = 7;
+        content.es.es_iWgtLocalTh = 100;
+        content.es.es_iK1 = 0x2345;
+        content.es.es_iK2 = 0x3456;
+        content.es.es_iDeltaLimit = 0x4567;
+        const RK_U32 custom_x[9] = {0, 500, 1000, 1500, 2000, 3000, 4000, 5000, 60000};
+        const RK_U32 custom_y[9] = {0, 20, 50, 90, 140, 180, 220, 240, 255};
+        memcpy(content.es.es_iDiff2conf_lut_x, custom_x, sizeof(custom_x));
+        memcpy(content.es.es_iDiff2conf_lut_y, custom_y, sizeof(custom_y));
+        content.es.es_bEndpointCheckEnable = 1;
+        params.ptype = VDPP_PARAM_TYPE_ES;
+        params.param = content;
+        if (vdpp2_control(ctx, VDPP_CMD_SET_ES, &params)) {
+            fprintf(stderr, "VDPP2 ES config failed\n");
+            goto cleanup;
+        }
     }
     memset(&src, 0, sizeof(src));
     memset(&dst, 0, sizeof(dst));

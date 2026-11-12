@@ -66,6 +66,7 @@ pub mod osd;
 pub mod vdpp2;
 mod vdpp2_coeff;
 mod vdpp2_defaults;
+mod vdpp2_enhance;
 pub mod vdpu2;
 pub mod vdpu34x_regs;
 pub mod vdpu383_regs;

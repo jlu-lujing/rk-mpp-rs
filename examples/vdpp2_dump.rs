@@ -1,4 +1,55 @@
-use rk_mpp_rs::hal::vdpp2::{Vdpp2Config, Vdpp2Job, Vdpp2Registers};
+use rk_mpp_rs::hal::vdpp2::{
+    Vdpp2Config, Vdpp2DmsrConfig, Vdpp2EsConfig, Vdpp2Job, Vdpp2Registers,
+};
+
+fn custom_dmsr() -> Vdpp2DmsrConfig {
+    Vdpp2DmsrConfig {
+        enabled: true,
+        strength_primary: 17,
+        strength_secondary: 9,
+        dumping: 11,
+        primary_weight_odd_1: 7,
+        primary_weight_even_1: 13,
+        primary_weight_odd_2: 21,
+        primary_weight_even_2: 29,
+        secondary_weight: 11,
+        block_flat_threshold: 123,
+        contrast_confidence_x0: 100,
+        contrast_confidence_x1: 900,
+        contrast_confidence_y0: 7,
+        contrast_confidence_y1: 60_000,
+        diff_core_threshold0: 3,
+        diff_core_threshold1: 23,
+        diff_core_weight0: 9,
+        diff_core_weight1: 17,
+        diff_core_weight2: 25,
+        edge_low_thresholds: [1, 2, 3, 4, 5, 6, 7],
+        edge_high_thresholds: [3, 13, 23, 33, 43, 53, 63],
+    }
+}
+
+fn custom_es() -> Vdpp2EsConfig {
+    Vdpp2EsConfig {
+        enabled: true,
+        angle_delta: 20,
+        angle_delta_extra: 3,
+        gradient_no_direction_threshold: 41,
+        gradient_flat_threshold: 99,
+        weight_gain: 200,
+        weight_decay: 77,
+        low_confidence_threshold: 111,
+        low_confidence_ratio: 22,
+        confidence_count_threshold: 7,
+        weight_local_threshold: 100,
+        diff_gain0: 0x2345,
+        diff_gain1: 0x3456,
+        diff_limit: 0x4567,
+        diff_to_confidence_x: [0, 500, 1000, 1500, 2000, 3000, 4000, 5000, 60_000],
+        diff_to_confidence_y: [0, 20, 50, 90, 140, 180, 220, 240, 255],
+        endpoint_check_enabled: true,
+        memory_gating_enabled: false,
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -30,6 +81,11 @@ fn main() {
     };
     if args.get(6).map(String::as_str) == Some("scale-only") {
         config.enhancement = false;
+    }
+    if args.get(5).map(String::as_str) == Some("custom-enh") {
+        config.enhancement = true;
+        config.dmsr = custom_dmsr();
+        config.es = custom_es();
     }
     let registers = Vdpp2Registers::build(
         &config,
