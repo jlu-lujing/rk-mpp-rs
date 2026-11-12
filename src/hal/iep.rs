@@ -138,6 +138,27 @@ impl Iep2Fmt {
             Iep2Fmt::Yuv420 => width * height * 3 / 2,
         }
     }
+
+    /// Allocation bytes for a picture whose rows are `hor_stride` apart.
+    ///
+    /// The luma plane always occupies `hor_stride * height`. Planar chroma
+    /// uses the same half-width rounding as [`strides`], while semi-planar
+    /// chroma keeps the full luma stride.
+    pub const fn allocation_bytes(
+        self,
+        ver_stride: usize,
+        hor_stride: usize,
+        swap: Iep2YuvSwap,
+    ) -> usize {
+        let luma = hor_stride * ver_stride;
+        let planar_stride = (hor_stride / 2 + 15) / 16 * 16;
+        match (self, swap) {
+            (Iep2Fmt::Yuv422, Iep2YuvSwap::P) => luma + 2 * planar_stride * ver_stride,
+            (Iep2Fmt::Yuv422, _) => luma + hor_stride * ver_stride,
+            (Iep2Fmt::Yuv420, Iep2YuvSwap::P) => luma + 2 * planar_stride * ver_stride.div_ceil(2),
+            (Iep2Fmt::Yuv420, _) => luma + hor_stride * ver_stride.div_ceil(2),
+        }
+    }
 }
 
 /// `enum IEP2_YUV_SWAP`.
@@ -269,6 +290,9 @@ pub struct DeinterlaceJob<'a> {
     pub height: usize,
     /// Horizontal stride in bytes (the C library uses `com.width` as the stride).
     pub hor_stride: usize,
+    /// Vertical stride in rows. Decoder-owned surfaces may allocate more rows
+    /// than the visible height.
+    pub ver_stride: usize,
     pub src_fmt: Iep2Fmt,
     pub src_swap: Iep2YuvSwap,
     pub dst_fmt: Iep2Fmt,
@@ -301,10 +325,8 @@ fn set_img_addr(
     base: usize,
     fd: i32,
     fmt: Iep2Fmt,
-    width: usize,
-    height: usize,
+    y_size: usize,
 ) {
-    let y_size = width * height;
     let chroma = match fmt {
         Iep2Fmt::Yuv422 => y_size / 2,
         Iep2Fmt::Yuv420 => y_size / 4,
@@ -378,40 +400,35 @@ pub fn build_deinterlace(job: &DeinterlaceJob) -> [u32; PARAMS_WORDS] {
         SRC0_Y,
         job.src_fds[0],
         job.src_fmt,
-        job.width,
-        job.height,
+        job.hor_stride * job.ver_stride,
     );
     set_img_addr(
         &mut w,
         SRC1_Y,
         job.src_fds[1],
         job.src_fmt,
-        job.width,
-        job.height,
+        job.hor_stride * job.ver_stride,
     );
     set_img_addr(
         &mut w,
         SRC2_Y,
         job.src_fds[2],
         job.src_fmt,
-        job.width,
-        job.height,
+        job.hor_stride * job.ver_stride,
     );
     set_img_addr(
         &mut w,
         DST0_Y,
         job.dst_fds[0],
         job.dst_fmt,
-        job.width,
-        job.height,
+        job.hor_stride * job.ver_stride,
     );
     set_img_addr(
         &mut w,
         DST1_Y,
         job.dst_fds[1],
         job.dst_fmt,
-        job.width,
-        job.height,
+        job.hor_stride * job.ver_stride,
     );
     w[MV_ADDR] = buf_reg(job.mv_fd, 0);
     w[MD_ADDR] = buf_reg(job.md_fd, 0);
@@ -428,6 +445,7 @@ mod tests {
             width: 720,
             height: 480,
             hor_stride: 720,
+            ver_stride: 480,
             src_fmt: Iep2Fmt::Yuv420,
             src_swap: Iep2YuvSwap::SpUv,
             dst_fmt: Iep2Fmt::Yuv420,
@@ -484,6 +502,34 @@ mod tests {
         assert_eq!(tile_cols(720), 45); // (720+15)/16
         assert_eq!(tile_rows(480), 120); // (480+3)/4
         assert_eq!(osd_pec_thr(720), ((720usize * 26) >> 7) as u32);
+    }
+
+    #[test]
+    fn allocation_and_plane_offsets_use_the_horizontal_stride() {
+        assert_eq!(
+            Iep2Fmt::Yuv420.allocation_bytes(32, 64, Iep2YuvSwap::SpUv),
+            3_072
+        );
+        assert_eq!(
+            Iep2Fmt::Yuv420.allocation_bytes(32, 64, Iep2YuvSwap::P),
+            3_072
+        );
+        assert_eq!(
+            Iep2Fmt::Yuv422.allocation_bytes(32, 64, Iep2YuvSwap::SpUv),
+            4_096
+        );
+        assert_eq!(
+            Iep2Fmt::Yuv420.allocation_bytes(48, 64, Iep2YuvSwap::SpUv),
+            4_608
+        );
+
+        let mut padded = job();
+        padded.hor_stride = 768;
+        padded.ver_stride = 496;
+        let words = build_deinterlace(&padded);
+        assert_eq!(words[SRC0_Y + 1], buf_reg(3, 768 * 496));
+        assert_eq!(words[SRC0_Y + 2], buf_reg(3, 768 * 496 + 768 * 496 / 4));
+        assert_eq!(words[DST0_Y + 1], buf_reg(6, 768 * 496));
     }
 
     #[test]

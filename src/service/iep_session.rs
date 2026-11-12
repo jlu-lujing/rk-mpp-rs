@@ -12,6 +12,7 @@
 //! `scripts/board_iep_dei_vs_mpp.sh`, never in a host unit test.
 
 use std::io;
+use std::os::fd::AsRawFd;
 
 use super::dma_heap::DmaBuf;
 use super::{Batch, Client, MppService};
@@ -30,6 +31,7 @@ pub struct DeinterlaceConfig {
     pub width: usize,
     pub height: usize,
     pub hor_stride: usize,
+    pub ver_stride: usize,
     pub src_fmt: Iep2Fmt,
     pub src_swap: Iep2YuvSwap,
     pub dst_fmt: Iep2Fmt,
@@ -48,6 +50,7 @@ impl Default for DeinterlaceConfig {
             width: 720,
             height: 480,
             hor_stride: 720,
+            ver_stride: 480,
             src_fmt: Iep2Fmt::Yuv420,
             src_swap: Iep2YuvSwap::SpUv,
             dst_fmt: Iep2Fmt::Yuv420,
@@ -118,6 +121,8 @@ pub struct IepDeinterlace {
     field_order: Iep2FieldOrder,
     field_order_state: FieldOrderState,
     pulldown: PulldownState,
+    imported_stride: Option<usize>,
+    imported_ver_stride: Option<usize>,
     /// `pd_mode` written into the next parameter block; never cleared, like
     /// `iep2.c`, so an unconfirmed frame keeps the last confirmed flag.
     pd_mode: u32,
@@ -130,20 +135,33 @@ impl IepDeinterlace {
     /// Announce client 28 and reserve every buffer the deinterlace path needs.
     pub fn open(cfg: DeinterlaceConfig) -> io::Result<Self> {
         let svc = MppService::open(IEP_CLIENT)?;
-        let frame = cfg.src_fmt.frame_bytes(cfg.width, cfg.height);
-        let dst_frame = cfg.dst_fmt.frame_bytes(cfg.width, cfg.height);
         let heap = std::env::var("IEP_HEAP").unwrap_or_else(|_| "system".to_string());
         let alloc = |len: usize| DmaBuf::alloc(&heap, len, false);
+        let compact = cfg.hor_stride == cfg.width && cfg.ver_stride == cfg.height;
+        let src_len = if compact {
+            cfg.src_fmt.frame_bytes(cfg.width, cfg.height)
+        } else {
+            cfg.src_fmt
+                .allocation_bytes(cfg.ver_stride, cfg.hor_stride, cfg.src_swap)
+        };
+        let dst_len = if compact {
+            cfg.dst_fmt.frame_bytes(cfg.width, cfg.height)
+        } else {
+            cfg.dst_fmt
+                .allocation_bytes(cfg.ver_stride, cfg.hor_stride, cfg.dst_swap)
+        };
         Ok(Self {
             svc,
-            src: [alloc(frame)?, alloc(frame)?, alloc(frame)?],
-            dst: [alloc(dst_frame)?, alloc(dst_frame)?],
+            src: [alloc(src_len)?, alloc(src_len)?, alloc(src_len)?],
+            dst: [alloc(dst_len)?, alloc(dst_len)?],
             mv: alloc(iep::MV_BUF_BYTES)?,
             md: alloc(iep::MD_BUF_BYTES)?,
             mode: cfg.dil_mode,
             field_order: cfg.field_order,
             field_order_state: FieldOrderState::default(),
             pulldown: PulldownState::default(),
+            imported_stride: None,
+            imported_ver_stride: None,
             pd_mode: 0,
             submitted_pd: 0,
             cfg,
@@ -163,20 +181,205 @@ impl IepDeinterlace {
             .frame_bytes(self.cfg.width, self.cfg.height)
     }
 
+    /// Row stride used by both source and destination pictures.
+    pub fn hor_stride(&self) -> usize {
+        self.cfg.hor_stride
+    }
+
+    /// Row count stride used by the source and destination allocations.
+    pub fn ver_stride(&self) -> usize {
+        self.cfg.ver_stride
+    }
+
     /// Mutable view of source frame `i` ([current, next, previous]) for the
     /// caller to fill. The caller must flush it with `flush_src(i)` before `run`.
     pub fn src_frame_mut(&mut self, i: usize) -> &mut DmaBuf {
         &mut self.src[i]
     }
 
-    /// Read a deinterlaced output frame after `run`.
+    /// Read the raw output allocation after `run`.
+    ///
+    /// Rows are [`Self::hor_stride`] bytes apart. Use [`Self::dst_frame_compact`]
+    /// when a tightly packed picture is required.
     pub fn dst_frame(&self, i: usize) -> &[u8] {
         self.dst[i].as_slice()
+    }
+
+    /// Repack one output slot into the compact layout returned by
+    /// [`Self::dst_frame_bytes`].
+    pub fn dst_frame_compact(&self, i: usize) -> Result<Vec<u8>, String> {
+        if i >= self.dst.len() {
+            return Err(format!("IEP destination index {i} is out of range"));
+        }
+        let width = self.cfg.width;
+        let height = self.cfg.height;
+        let stride = self.cfg.hor_stride;
+        let chroma_width = width.div_ceil(2);
+        let chroma_height = height.div_ceil(2);
+        let src = self.dst[i].as_slice();
+        if stride == width && self.cfg.ver_stride == height {
+            return src
+                .get(..self.dst_frame_bytes())
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| "IEP destination frame is truncated".to_string());
+        }
+        let mut out = Vec::with_capacity(self.dst_frame_bytes());
+
+        append_rows(&mut out, src, 0, stride, width, height)?;
+        let uv_offset = stride
+            .checked_mul(self.cfg.ver_stride)
+            .ok_or_else(|| "IEP destination luma size overflow".to_string())?;
+        match (self.cfg.dst_fmt, self.cfg.dst_swap) {
+            (Iep2Fmt::Yuv420, Iep2YuvSwap::P) => {
+                let uv_stride = (stride / 2 + 15) / 16 * 16;
+                append_rows(
+                    &mut out,
+                    src,
+                    uv_offset,
+                    uv_stride,
+                    chroma_width,
+                    chroma_height,
+                )?;
+                let v_offset = uv_offset
+                    .checked_add(
+                        uv_stride
+                            .checked_mul(chroma_height)
+                            .ok_or_else(|| "IEP destination U plane size overflow".to_string())?,
+                    )
+                    .ok_or_else(|| "IEP destination V plane offset overflow".to_string())?;
+                append_rows(
+                    &mut out,
+                    src,
+                    v_offset,
+                    uv_stride,
+                    chroma_width,
+                    chroma_height,
+                )?;
+            }
+            (Iep2Fmt::Yuv422, Iep2YuvSwap::P) => {
+                let uv_stride = (stride / 2 + 15) / 16 * 16;
+                append_rows(&mut out, src, uv_offset, uv_stride, chroma_width, height)?;
+                let v_offset = uv_offset
+                    .checked_add(
+                        uv_stride
+                            .checked_mul(height)
+                            .ok_or_else(|| "IEP destination U plane size overflow".to_string())?,
+                    )
+                    .ok_or_else(|| "IEP destination V plane offset overflow".to_string())?;
+                append_rows(&mut out, src, v_offset, uv_stride, chroma_width, height)?;
+            }
+            (Iep2Fmt::Yuv420, swap) => {
+                let rows = chroma_height;
+                let row_bytes = chroma_width * 2;
+                append_interleaved_uv(&mut out, src, uv_offset, stride, row_bytes, rows, swap)?;
+            }
+            (Iep2Fmt::Yuv422, swap) => {
+                let row_bytes = chroma_width * 2;
+                append_interleaved_uv(&mut out, src, uv_offset, stride, row_bytes, height, swap)?;
+            }
+        }
+        Ok(out)
     }
 
     /// Finish CPU writes to source frame `i` so the engine can read it.
     pub fn flush_src(&mut self, i: usize) -> io::Result<()> {
         self.src[i].sync_write_end()
+    }
+
+    /// Import a DMA-BUF-backed NV12 decoder frame as source picture `i`.
+    ///
+    /// The frame allocation is duplicated into the IEP session instead of
+    /// copied through CPU memory. All three source frames must use the same
+    /// dimensions and horizontal stride.
+    pub fn import_src_frame(&mut self, i: usize, frame: &crate::sdk::Frame) -> Result<(), String> {
+        if i >= 3 {
+            return Err(format!("IEP source index {i} is out of range"));
+        }
+        if self.cfg.src_fmt != Iep2Fmt::Yuv420 || self.cfg.src_swap != Iep2YuvSwap::SpUv {
+            return Err("decoder-frame import requires NV12 source format".to_string());
+        }
+        if frame.format() != crate::sdk::PixelFormat::Nv12 {
+            return Err("decoder-frame import requires an NV12 frame".to_string());
+        }
+        if frame.width() != self.cfg.width || frame.height() != self.cfg.height {
+            return Err("decoder frame and IEP geometry differ".to_string());
+        }
+        let y = frame
+            .dmabuf_plane(0)
+            .ok_or_else(|| "decoder frame is not DMA-BUF backed".to_string())?;
+        let uv = frame
+            .dmabuf_plane(1)
+            .ok_or_else(|| "decoder frame has no NV12 chroma plane".to_string())?;
+        if y.fd() != uv.fd() {
+            return Err("decoder NV12 planes must share one dma-buf".to_string());
+        }
+        if y.offset() != 0 || uv.offset() != y.size() || uv.stride() != y.stride() {
+            return Err("decoder NV12 plane layout is not IEP2-compatible".to_string());
+        }
+        let stride = y.stride() as usize;
+        if stride < self.cfg.width {
+            return Err("decoder frame stride is shorter than its width".to_string());
+        }
+        if y.size() == 0 || y.size() % stride as u64 != 0 {
+            return Err("decoder luma plane does not have an integral vertical stride".to_string());
+        }
+        let ver_stride = usize::try_from(y.size() / stride as u64)
+            .map_err(|_| "decoder vertical stride is too large".to_string())?;
+        if ver_stride < self.cfg.height {
+            return Err("decoder vertical stride is shorter than its height".to_string());
+        }
+        let y_size = stride
+            .checked_mul(ver_stride)
+            .ok_or_else(|| "decoder frame luma size overflow".to_string())?;
+        let uv_size = stride
+            .checked_mul(ver_stride.div_ceil(2))
+            .ok_or_else(|| "decoder frame chroma size overflow".to_string())?;
+        if y.size() < y_size as u64 || uv.size() < uv_size as u64 {
+            return Err("decoder NV12 planes are shorter than their strides".to_string());
+        }
+        if let Some(expected) = self.imported_stride {
+            if stride != expected || self.imported_ver_stride != Some(ver_stride) {
+                return Err("decoder source frames use different strides".to_string());
+            }
+        } else {
+            self.imported_stride = Some(stride);
+            self.imported_ver_stride = Some(ver_stride);
+            if stride != self.cfg.hor_stride || ver_stride != self.cfg.ver_stride {
+                let heap = std::env::var("IEP_HEAP").unwrap_or_else(|_| "system".to_string());
+                let src_len =
+                    self.cfg
+                        .src_fmt
+                        .allocation_bytes(ver_stride, stride, self.cfg.src_swap);
+                let dst_len =
+                    self.cfg
+                        .dst_fmt
+                        .allocation_bytes(ver_stride, stride, self.cfg.dst_swap);
+                self.src = [
+                    DmaBuf::alloc(&heap, src_len, false)
+                        .map_err(|error| format!("reallocate IEP source: {error}"))?,
+                    DmaBuf::alloc(&heap, src_len, false)
+                        .map_err(|error| format!("reallocate IEP source: {error}"))?,
+                    DmaBuf::alloc(&heap, src_len, false)
+                        .map_err(|error| format!("reallocate IEP source: {error}"))?,
+                ];
+                self.dst = [
+                    DmaBuf::alloc(&heap, dst_len, false)
+                        .map_err(|error| format!("reallocate IEP destination: {error}"))?,
+                    DmaBuf::alloc(&heap, dst_len, false)
+                        .map_err(|error| format!("reallocate IEP destination: {error}"))?,
+                ];
+                self.cfg.hor_stride = stride;
+                self.cfg.ver_stride = ver_stride;
+            }
+        }
+        let owned = frame
+            .duplicate_dmabuf()
+            .map_err(|error| format!("duplicate decoder dma-buf: {error}"))?
+            .ok_or_else(|| "decoder frame is not DMA-BUF backed".to_string())?;
+        let imported = DmaBuf::import_fd(owned.as_raw_fd(), frame.data().len(), false)
+            .map_err(|error| format!("import decoder dma-buf: {error}"))?;
+        self.src[i] = imported;
+        Ok(())
     }
 
     /// Effective field order after `iep2_check_ffo` has had its say.
@@ -212,12 +415,10 @@ impl IepDeinterlace {
     /// Clear both destinations and make the sources visible to the engine, once
     /// per picture - `iep2_test` memsets before `RUN_SYNC`, not before every job.
     fn prepare(&mut self) -> Result<(), String> {
-        let dst_len = self.dst_frame_bytes();
         for dst in self.dst.iter_mut() {
             dst.sync_write_begin()
                 .map_err(|e| format!("dst clear sync: {e}"))?;
-            let len = dst_len.min(dst.len());
-            dst.as_mut_slice()[..len].fill(0);
+            dst.as_mut_slice().fill(0);
             dst.sync_write_end()
                 .map_err(|e| format!("dst clear flush: {e}"))?;
         }
@@ -240,6 +441,7 @@ impl IepDeinterlace {
             width: c.width,
             height: c.height,
             hor_stride: c.hor_stride,
+            ver_stride: c.ver_stride,
             src_fmt: c.src_fmt,
             src_swap: c.src_swap,
             dst_fmt: c.dst_fmt,
@@ -319,6 +521,69 @@ impl IepDeinterlace {
     }
 }
 
+fn append_rows(
+    out: &mut Vec<u8>,
+    src: &[u8],
+    offset: usize,
+    stride: usize,
+    row_bytes: usize,
+    rows: usize,
+) -> Result<(), String> {
+    for row in 0..rows {
+        let start = offset
+            .checked_add(
+                row.checked_mul(stride)
+                    .ok_or_else(|| "IEP plane row offset overflow".to_string())?,
+            )
+            .ok_or_else(|| "IEP plane row offset overflow".to_string())?;
+        let end = start
+            .checked_add(row_bytes)
+            .ok_or_else(|| "IEP plane row end overflow".to_string())?;
+        let line = src
+            .get(start..end)
+            .ok_or_else(|| "IEP destination plane is truncated".to_string())?;
+        out.extend_from_slice(line);
+    }
+    Ok(())
+}
+
+fn append_interleaved_uv(
+    out: &mut Vec<u8>,
+    src: &[u8],
+    offset: usize,
+    stride: usize,
+    row_bytes: usize,
+    rows: usize,
+    swap: Iep2YuvSwap,
+) -> Result<(), String> {
+    for row in 0..rows {
+        let start = offset
+            .checked_add(
+                row.checked_mul(stride)
+                    .ok_or_else(|| "IEP chroma row offset overflow".to_string())?,
+            )
+            .ok_or_else(|| "IEP chroma row offset overflow".to_string())?;
+        let end = start
+            .checked_add(row_bytes)
+            .ok_or_else(|| "IEP chroma row end overflow".to_string())?;
+        let line = src
+            .get(start..end)
+            .ok_or_else(|| "IEP destination chroma plane is truncated".to_string())?;
+        let (first, second) = match swap {
+            Iep2YuvSwap::SpUv => (0, 1),
+            Iep2YuvSwap::SpVu => (1, 0),
+            Iep2YuvSwap::P0 | Iep2YuvSwap::P => {
+                return Err("planar IEP output reached the interleaved UV path".to_string())
+            }
+        };
+        for pair in line.chunks_exact(2) {
+            out.push(pair[first]);
+            out.push(pair[second]);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,7 +597,10 @@ mod tests {
     #[test]
     fn config_defaults_are_the_iep2_test_picture() {
         let c = DeinterlaceConfig::default();
-        assert_eq!((c.width, c.height, c.hor_stride), (720, 480, 720));
+        assert_eq!(
+            (c.width, c.height, c.hor_stride, c.ver_stride),
+            (720, 480, 720, 480)
+        );
         assert_eq!(c.dil_mode, Iep2DilMode::I5O2);
         assert_eq!(c.src_fmt.frame_bytes(720, 480), 720 * 480 * 3 / 2);
     }

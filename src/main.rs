@@ -1302,8 +1302,7 @@ fn run_iep_dei(
     let out_len = dei.dst_frame_bytes();
     let mut out = Vec::with_capacity(out_len * 2);
     for i in 0..2 {
-        let n = out_len.min(dei.dst_frame(i).len());
-        out.extend_from_slice(&dei.dst_frame(i)[..n]);
+        out.extend_from_slice(&dei.dst_frame_compact(i)?);
     }
     std::fs::write(dst, &out).map_err(|e| format!("{dst}: {e}"))?;
     let (top, bottom) = cfg.dil_mode.output_slots();
@@ -1360,8 +1359,7 @@ fn run_iep_dect(
         ));
 
         for slot in [out_order, 1 - out_order] {
-            let n = out_len.min(dei.dst_frame(slot).len());
-            out.extend_from_slice(&dei.dst_frame(slot)[..n]);
+            out.extend_from_slice(&dei.dst_frame_compact(slot)?);
         }
         out_order = usize::from(order == rk_mpp_rs::hal::iep::Iep2FieldOrder::Bff);
     }
@@ -4647,6 +4645,7 @@ fn main() {
             width,
             height,
             hor_stride: width,
+            ver_stride: height,
             src_fmt,
             dst_fmt: Iep2Fmt::Yuv420,
             src_swap,
@@ -4745,6 +4744,7 @@ fn main() {
             width,
             height,
             hor_stride: width,
+            ver_stride: height,
             src_fmt: format,
             dst_fmt: format,
             src_swap: swap,

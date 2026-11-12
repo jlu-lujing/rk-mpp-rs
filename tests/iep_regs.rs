@@ -87,6 +87,7 @@ fn job() -> DeinterlaceJob<'static> {
         width: 720,
         height: 480,
         hor_stride: 720,
+        ver_stride: 480,
         src_fmt: Iep2Fmt::Yuv420,
         src_swap: Iep2YuvSwap::SpUv,
         dst_fmt: Iep2Fmt::Yuv420,
