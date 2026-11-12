@@ -202,6 +202,7 @@ cat >"$fit_its" <<EOF
     configurations {
         default = "conf";
         conf {
+            rollback-index = <0>;
             fdt = "fdt";
             kernel = "kernel";
             multi = "resource";

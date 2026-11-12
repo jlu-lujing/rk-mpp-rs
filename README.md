@@ -587,6 +587,7 @@ BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_10bit.sh # VDPU383 AV1 10-bit ski
 BOARD=lf1 ./scripts/board_vdpp2_hw_vs_c.sh   # RK3576 VDPP2 scale/hist 真机对比
 BOARD=lf1 ./scripts/board_enable_vdpp2_overlay.sh status  # DTB 是否启用 client 29
 # 在 x86_64 Linux 上生成 VDPP boot.img；默认只生成，不写板卡：
+# 6.1.75 + RK3576 源码示例：armbian/linux-rockchip rk-6.1-rkr3，00b3250140...
 ./scripts/build_lf1_vdpp2_kernel.sh <kernel-src> <board-config> <current-boot.img> <output-dir>
 BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh # V1 C/C++ H.264 + MJPEG SDK
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh

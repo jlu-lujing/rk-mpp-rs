@@ -827,8 +827,11 @@ H.264/VEPU580 编码已做到：
   `mpp_vdpp` 是 built-in `bool`，不是可加载模块。
   `build_lf1_vdpp2_kernel.sh` 可离线构建替换用 FIT，且会拒绝与板卡 6.1.75
   不一致或缺少 RK3576 VDPP 支持的源码；该脚本默认只生成产物，不写 eMMC。
-  当前公开 Google Drive 的精确 `Luckfox_Omni3576_SDK_250301.tar.gz` 被配额
-  限制，尚未得到同版本 Luckfox 内核源码，也没有向 lf1 刷入未验证内核。
+  Armbian `rk-6.1-rkr3` commit `00b325014004cf22a27fc67762fe2ff09163cec3`
+  正好是 Linux 6.1.75 + RK3576 VDPP，已生成 42,991,057-byte 替换 FIT
+  （SHA-256 `afe90fcc…c548f37a`）；新 Image 仅比当前内核大 34,816 bytes，
+  原 FDT/resource 逐字节不变。该 FIT 尚未写入 lf1，下一步需要显式批准的
+  boot 分区测试。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
 - `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1；

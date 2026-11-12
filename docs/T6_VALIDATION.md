@@ -53,22 +53,26 @@ t62 back to the RK3588 reference board.
 - The current lf1 boot partition (`mmcblk2p3`) was captured read-only as a
   64 MiB unsigned U-Boot FIT. It contains separate `fdt`, `kernel` and
   `resource` images; the FDT and resource can be preserved byte-for-byte.
-- The board config identifies Linux **6.1.75**. The Rockchip
-  `develop-6.1` snapshot whose version is 6.1.75 predates RK3576 support, while
-  the current branch contains RK3576 VDPP but reports 6.1.118. A 6.1.118
-  proof-of-structure build produced a valid 43,212,210-byte FIT with
-  `CONFIG_ROCKCHIP_MPP_VDPP=y` and `rockchip_vdpp_driver`, `vdpp_probe`,
-  `vdpp_remove` symbols, but it was explicitly rejected because the board is
-  6.1.75. It was not copied to or booted on lf1.
-- `scripts/build_lf1_vdpp2_kernel.sh` now requires the source tree to match the
-  board's 6.1.75 version and to contain `rockchip,vdpp-rk3576`; it builds and
-  validates the FIT without writing to the board. The exact Luckfox
-  `Luckfox_Omni3576_SDK_250301.tar.gz` is the intended source input
-  (`6,137,390,627` bytes, MD5 `74115a3b339535aeea346758fb0687d9`), but the
-  public Google Drive copy currently returns a download-quota error.
-- lf1 remains on its original boot image. Enabling configfs overlay cannot fix
-  this kernel because both `CONFIG_ROCKCHIP_MPP_VDPP` and `CONFIG_OF_OVERLAY`
-  are unset.
+- The board config identifies Linux **6.1.75**. The stock Rockchip 6.1.75
+  snapshot predates RK3576, and the current Rockchip branch reports 6.1.118.
+  The Armbian-maintained Rockchip `rk-6.1-rkr3` commit
+  `00b325014004cf22a27fc67762fe2ff09163cec3` has the required combination:
+  Linux 6.1.75, RK3576 DTS, and `rockchip,vdpp-rk3576`.
+- `scripts/build_lf1_vdpp2_kernel.sh` now requires an exact 6.1.75/RK3576 source
+  match and rejects both mismatched releases and kernels without VDPP. It built
+  and validated an unsigned replacement FIT without writing to the board:
+  **42,991,057 bytes**, SHA-256
+  `afe90fcc8c5dbc4223321158021ee860e233b770ae8d6da5c37bcb86c548f37a`.
+  The new `Image` is 41,036,288 bytes, only 34,816 bytes larger than the running
+  kernel; its SHA-256 is
+  `ee4141a244ddaa4f7baeda1bc7c760f0acac429e63ae4eed3f98c058d1b48300`.
+  `CONFIG_ROCKCHIP_MPP_VDPP=y` is embedded and vmlinux exports
+  `rockchip_vdpp_driver` with `vdpp_probe`/`vdpp_remove`. The original FDT and
+  resource images are byte-identical, and the FIT preserves `rollback-index=0`.
+- lf1 remains on its original boot image. The replacement is staged locally
+  under `target/lf1-vdpp2/`; booting it requires explicitly approved writes to
+  `mmcblk2p3`. Enabling a configfs overlay cannot fix the running kernel because
+  both `CONFIG_ROCKCHIP_MPP_VDPP` and `CONFIG_OF_OVERLAY` are unset.
 
 ## 2026-11-12 H.264 / JPEG / post-processing closeout
 

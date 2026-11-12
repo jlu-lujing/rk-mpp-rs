@@ -3402,9 +3402,12 @@ in what order the evidence gets produced.
       `mpp_vdpp` is booted. The driver is a built-in `bool` and cannot be loaded
       as a standalone module. `build_lf1_vdpp2_kernel.sh` now builds a replacement
       FIT without writing the board and rejects source trees that do not match
-      the board's Linux 6.1.75 or lack RK3576 VDPP support. The matching Luckfox
-      SDK source is currently unavailable from its public download because of a
-      Drive quota error.
+      the board's Linux 6.1.75 or lack RK3576 VDPP support. Armbian's Rockchip
+      `rk-6.1-rkr3` commit `00b325014004cf22a27fc67762fe2ff09163cec3` provides
+      that source combination and produced a validated 42,991,057-byte FIT with
+      VDPP symbols and SHA-256 `afe90fcc...c548f37a`; the original FDT/resource
+      images are unchanged. The artifact has not been flashed, so board boot and
+      hardware output remain the final gate.
 - [x] 10-bit ↔ 8-bit software conversion: `Frame::convert_format()` covers
       8-bit NV12/I420 and planar I420P10, including chroma deinterleave and
       reinterleave. The 8→10 expansion and 10→8 contract are exact inverses
