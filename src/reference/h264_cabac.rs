@@ -71,6 +71,7 @@ enum B16PartitionShape {
     P16x16,
     P16x8,
     P8x16,
+    P8x8,
 }
 
 impl B16PartitionShape {
@@ -79,6 +80,7 @@ impl B16PartitionShape {
             Self::P16x16 => &[(0, 0, 16, 16)],
             Self::P16x8 => &[(0, 0, 16, 8), (0, 8, 16, 8)],
             Self::P8x16 => &[(0, 0, 8, 16), (8, 0, 8, 16)],
+            Self::P8x8 => &[(0, 0, 8, 8), (8, 0, 8, 8), (0, 8, 8, 8), (8, 8, 8, 8)],
         }
     }
 }
@@ -623,14 +625,14 @@ fn decode_b_l0_partition_motions(
     contexts: &mut [Context],
     mb_index: usize,
     mb_width: usize,
-    shape: B16PartitionShape,
+    definitions: &[(usize, usize, usize, usize)],
     motion_valid: &mut [[bool; 16]],
     motion_vectors: &mut [[[i32; 2]; 16]],
     motion_vector_deltas: &mut [[[i32; 2]; 16]],
     reference_indices: &mut [[u8; 16]],
 ) -> Result<Vec<(usize, usize, usize, usize, [i32; 2], [i32; 2])>, H264CabacError> {
-    let mut partitions = Vec::with_capacity(shape.definitions().len());
-    for &(partition_x, partition_y, partition_width, partition_height) in shape.definitions() {
+    let mut partitions = Vec::with_capacity(definitions.len());
+    for &(partition_x, partition_y, partition_width, partition_height) in definitions {
         let predicted = partition_motion_predictor(
             mb_index,
             mb_width,
@@ -912,6 +914,24 @@ pub fn decode_cabac_b16_slice(
                         prediction_list = 0;
                         partition_shape = B16PartitionShape::P8x16;
                     }
+                    15 => {
+                        prediction_list = 0;
+                        partition_shape = B16PartitionShape::P8x8;
+                        for _ in 0..4 {
+                            if decoder.decode_bin(&mut contexts[36]) == 0 {
+                                return Err(H264CabacError::Unsupported(
+                                    "B_8x8 direct subpartition",
+                                ));
+                            }
+                            if decoder.decode_bin(&mut contexts[37]) != 0
+                                || decoder.decode_bin(&mut contexts[39]) != 0
+                            {
+                                return Err(H264CabacError::Unsupported(
+                                    "B_8x8 non-L0 subpartition",
+                                ));
+                            }
+                        }
+                    }
                     _ => {
                         return Err(H264CabacError::Unsupported(
                             "B slice contains an unsupported macroblock type",
@@ -981,7 +1001,7 @@ pub fn decode_cabac_b16_slice(
                     &mut contexts,
                     mb_index,
                     mb_width,
-                    partition_shape,
+                    partition_shape.definitions(),
                     &mut motion_valid,
                     &mut motion_vectors,
                     &mut motion_vector_deltas,

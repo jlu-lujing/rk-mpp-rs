@@ -339,6 +339,10 @@ cargo test --test fixture_manifest
   either two 16x8 or two 8x16 partitions. The pair exercises the CABAC B
   mb_type prefix for both shapes, two independent MVDs in scan order, shared
   residual syntax and independent motion compensation for each half.
+- `h264_cabac_b_8x8_l0_48x32` forces every B macroblock to `B_8x8` and all four
+  sub-macroblock types to `B_L0_8x8`. It exercises the B mb_type `15` path,
+  four CABAC sub_mb_type decisions, four list-0 MVDs in 8x8 scan order,
+  per-quadrant motion prediction/MC and one shared residual tree.
 - `h264_cabac_p16_48x32` is a two-frame 48x32 Main-profile CABAC stream with a
   constant-gray IDR followed by one-frame random luma noise. It was produced by
   a temporary local x264 source build whose analysis path was restricted to
