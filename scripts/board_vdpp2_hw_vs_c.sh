@@ -19,6 +19,8 @@ COPYFILE_DISABLE=1 tar \
 ssh "$board" 'bash -s' <<'REMOTE'
 set -euo pipefail
 
+export RUST_MIN_STACK="${RUST_MIN_STACK:-16777216}"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
 export PATH="$HOME/.cargo/bin:$PATH"
 cd "$HOME/rk-mpp-rs"
 cargo build --release --offline --bin rk-mpp-rs

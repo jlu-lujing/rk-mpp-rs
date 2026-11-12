@@ -1,6 +1,31 @@
 use rk_mpp_rs::hal::vdpp2::{
     Vdpp2Config, Vdpp2DmsrConfig, Vdpp2EsConfig, Vdpp2Job, Vdpp2Registers, Vdpp2SharpConfig,
+    Vdpp2TapBank,
 };
+
+const fn custom_tap_bank(bias: i32) -> Vdpp2TapBank {
+    let mut bank = [[[0i16; 8]; 17]; 11];
+    let mut scale = 0usize;
+    while scale < 11 {
+        let mut phase = 0usize;
+        while phase < 17 {
+            let mut tap = 0usize;
+            while tap < 8 {
+                let value = ((scale as i32) * 131 + (phase as i32) * 17 + (tap as i32) * 7 + bias)
+                    % 63
+                    - 31;
+                bank[scale][phase][tap] = value as i16;
+                tap += 1;
+            }
+            phase += 1;
+        }
+        scale += 1;
+    }
+    bank
+}
+
+static CUSTOM_TAP8: Vdpp2TapBank = custom_tap_bank(53);
+static CUSTOM_TAP6: Vdpp2TapBank = custom_tap_bank(97);
 
 fn custom_dmsr() -> Vdpp2DmsrConfig {
     Vdpp2DmsrConfig {
@@ -186,6 +211,11 @@ fn main() {
         config.zme.dering_sensitivity1 = 9;
         config.zme.dering_blend_alpha = 27;
         config.zme.dering_blend_beta = 5;
+        config
+    } else if args.get(5).map(String::as_str) == Some("custom-zme-tap") {
+        let mut config = Vdpp2Config::nv12_to_nv12(src_width, src_height, dst_width, dst_height);
+        config.zme.custom_tap8 = Some(&CUSTOM_TAP8);
+        config.zme.custom_tap6 = Some(&CUSTOM_TAP6);
         config
     } else {
         Vdpp2Config::nv12_to_yuv444(src_width, src_height, dst_width, dst_height)

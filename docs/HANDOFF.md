@@ -808,18 +808,22 @@ H.264/VEPU580 编码已做到：
 ### 5.5 M9 后处理（IEP）
 
 - VDPP（client 29）在 RK3588 **不存在**；RK3576 的 VDPP2 common/ZME scale、
-  DCI histogram 和默认 DMSR/ES/sharp register bank 已移植，并用 t6 fake-service
-  trace 对 C 做了十格逐字比较；除默认块外还覆盖自定义 ZME、完整 DMSR/ES/SHARP
-  输入以及 YUV420/YUV444 分离 Y/UV 输出。
+  DCI histogram、默认 DMSR/ES/sharp register bank 和可替换的自定义
+  11×17×8 tap8/tap6 bank 已移植，并用 t6 fake-service trace 对 C 做了十一格
+  逐字比较；除默认块外还覆盖自定义 ZME、完整 DMSR/ES/SHARP 输入、coefficient
+  bank 以及 YUV420/YUV444 分离 Y/UV 输出。
   10240-byte packed histogram 已能拆成 vendor 的
   4096 local + 256 global bin，`vdpp-hist` 会输出 packed/local/global 三份原始
   结果和 U10 平均亮度。真实像素/histogram/HDR 依赖一个实际绑定 client 29 的
-  RK3576 启动镜像；lf1 stock kernel/DTB 当前不暴露它，且 SSH 在 key exchange
-  前断开。Rockchip `develop-6.1` 的 `rk3576-evb.dtsi` 只通过
+  RK3576 启动镜像。lf1 已可通过 `luck2`（`192.0.2.148`）登录，DT 节点 status
+  是 `okay`，但当前内核为 `# CONFIG_ROCKCHIP_MPP_VDPP is not set`，并且
+  `CONFIG_OF_OVERLAY` 未开启；因此平台驱动不存在、client-29 init 返回 `EINVAL`，
+  真机门按设计 SKIP。Rockchip `develop-6.1` 的 `rk3576-evb.dtsi` 只通过
   `&vdpp { status = "okay"; };` 启用该节点，但内核还必须编入 `mpp_vdpp.c`。
-  `tools/rk3576-vdpp2-overlay.dts` + `board_enable_vdpp2_overlay.sh` 可在
-  configfs overlay 可用时做可撤销启用；`board_vdpp2_hw_vs_c.sh` 在节点出现后
-  比较 scale-only、默认 enhancement、packed histogram 与 U10 mean luma。
+  `tools/rk3576-vdpp2-overlay.dts` + `board_enable_vdpp2_overlay.sh` 只有在
+  内核同时启用 `CONFIG_OF_OVERLAY` 与 `CONFIG_ROCKCHIP_MPP_VDPP` 后才有意义；
+  `board_vdpp2_hw_vs_c.sh` 在驱动绑定后比较 scale-only、默认 enhancement、
+  packed histogram 与 U10 mean luma。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
 - `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1；

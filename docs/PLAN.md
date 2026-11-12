@@ -330,14 +330,16 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       第二个不可控硬件依赖。
 - [~] W4-6 VDPP：RK3576 client 29 的 NV12 scale、YUV444/420、DCI histogram
       和默认 DMSR/ES/sharp enhancement bank 已移植，全部 DMSR/ES/SHARP 输入
-      参数也已建模，ZME bypass/dering/blend 和 YUV420/YUV444 split Y/UV 输出
-      也已接通；`board_vdpp2_regs_vs_c.sh` 通过 fake-service C trace 十格逐字比较；
+      参数也已建模，ZME bypass/dering/blend、可替换的 11×17×8 tap8/tap6 bank
+      和 YUV420/YUV444 split Y/UV 输出也已接通；`board_vdpp2_regs_vs_c.sh`
+      通过 fake-service C trace 十一格逐字比较；
       packed histogram 的 4096 local /
       256 global bin 与 U10 平均亮度解析已完成，`vdpp-hist` 可供 lf1 做原始
       packed/local/global 对比。可撤销的 configfs DTB overlay 和
-      `board_vdpp2_hw_vs_c.sh` 已准备好；t6 没有 client 29，lf1 stock
-      kernel/DTB 也未绑定 `vdpp2`；真实硬件像素和 histogram 仍需要一个暴露
-      client 29 的启动镜像。
+      `board_vdpp2_hw_vs_c.sh` 已准备好；t6 没有 client 29，lf1 的 DT status
+      虽为 `okay`，但内核 `CONFIG_ROCKCHIP_MPP_VDPP` 未开启且无 configfs
+      overlay，平台驱动没有绑定，client-29 init 返回 `EINVAL`；真实硬件像素和
+      histogram 仍需重编包含 `mpp_vdpp` 的内核。
 
 验收：IEP 路径与 C 输出逐字节（或 PSNR ∞）；性能不低于 C，缩放不低于现有 `scale.rs`
 （若更慢，保留 `scale.rs` 作为推理链路默认）。

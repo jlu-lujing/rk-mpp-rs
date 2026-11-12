@@ -208,4 +208,31 @@ run_custom_zme_cell() {
 
 run_custom_zme_cell
 
+run_custom_zme_tap_cell() {
+  local name=custom_zme_tap_720_to_1920
+  local input=/tmp/vdpp2-reg-$name.nv12
+  local trace=/tmp/vdpp2-reg-$name.trace
+  local rust=/tmp/vdpp2-reg-$name.rust
+  ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=720x480:rate=30 \
+    -frames:v 1 -pix_fmt yuv420p -f rawvideo $input"
+  if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=/tmp/mpp_vdpp_fake.so \
+      /tmp/vdpp2_probe $input /tmp/vdpp2-reg-$name.yuv 720 480 1920 1080 420 enh tapcoeff \
+      >/dev/null 2>$trace &&
+    ~/rk-mpp-rs/target/release/examples/vdpp2_dump 720 480 1920 1080 custom-zme-tap >$rust"; then
+    printf 'FAIL vdpp2-reg/%s (trace generation failed)\n' "$name"
+    fail=1
+    return
+  fi
+  scp -q "$BOARD":"$trace" "$BOARD":"$rust" /tmp/
+  if python3 tools/compare_vdpp2.py --enh "/tmp/vdpp2-reg-$name.rust" \
+      "/tmp/vdpp2-reg-$name.trace"; then
+    printf 'PASS vdpp2-reg/%s\n' "$name"
+  else
+    printf 'FAIL vdpp2-reg/%s (register words differ)\n' "$name"
+    fail=1
+  fi
+}
+
+run_custom_zme_tap_cell
+
 exit "$fail"

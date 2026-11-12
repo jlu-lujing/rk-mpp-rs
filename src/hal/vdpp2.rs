@@ -28,6 +28,14 @@ const STATUS_BUS_ERROR: u32 = 1 << 4;
 const STATUS_TIMEOUT: u32 = 1 << 5;
 const STATUS_CONFIG_ERROR: u32 = 1 << 6;
 
+/// One complete VDPP2 11x17x8 ZME coefficient bank.
+///
+/// The outer index selects the scale class, the middle index selects the
+/// 1/16-sample phase, and the inner array holds one eight-tap filter.
+pub type Vdpp2TapBank = [[[i16; 8]; 17]; 11];
+pub type Vdpp2Tap8Bank = Vdpp2TapBank;
+pub type Vdpp2Tap6Bank = Vdpp2TapBank;
+
 pub const REG_OFF_DMSR: u32 = 0x0080;
 pub const REG_OFF_DCI: u32 = 0x00e0;
 pub const REG_OFF_ES: u32 = 0x0100;
@@ -101,6 +109,10 @@ pub struct Vdpp2ZmeConfig {
     pub dering_sensitivity1: u32,
     pub dering_blend_alpha: u32,
     pub dering_blend_beta: u32,
+    /// Replace the vendor horizontal tap-8 bank when set.
+    pub custom_tap8: Option<&'static Vdpp2Tap8Bank>,
+    /// Replace the vendor vertical tap-6 bank when set.
+    pub custom_tap6: Option<&'static Vdpp2Tap6Bank>,
 }
 
 impl Default for Vdpp2ZmeConfig {
@@ -112,6 +124,8 @@ impl Default for Vdpp2ZmeConfig {
             dering_sensitivity1: 4,
             dering_blend_alpha: 16,
             dering_blend_beta: 13,
+            custom_tap8: None,
+            custom_tap6: None,
         }
     }
 }
@@ -574,8 +588,8 @@ fn scale_info(
     }
     let act_height_scaled = act_height;
     let (ysd, ysu, y_factor) = scale_factor(act_height_scaled, dst_height);
-    let coeff = select_tap8(act_width, dst_width, xsu);
-    let y_coeff = select_tap6(act_height_scaled, dst_height, ysu);
+    let coeff = select_tap8(act_width, dst_width, xsu, zme.custom_tap8);
+    let y_coeff = select_tap6(act_height_scaled, dst_height, ysu, zme.custom_tap6);
     ScaleInfo {
         act_width: act_width as u16,
         act_height: act_height_scaled as u16,
@@ -651,12 +665,22 @@ fn scale_row(src: u32, dst: u32, up: bool) -> usize {
     }
 }
 
-fn select_tap8(src: u32, dst: u32, up: bool) -> &'static [[i16; 8]; 17] {
-    &TAP8[scale_row(src, dst, up)]
+fn select_tap8(
+    src: u32,
+    dst: u32,
+    up: bool,
+    custom: Option<&'static Vdpp2Tap8Bank>,
+) -> &'static [[i16; 8]; 17] {
+    &custom.unwrap_or(&TAP8)[scale_row(src, dst, up)]
 }
 
-fn select_tap6(src: u32, dst: u32, up: bool) -> &'static [[i16; 8]; 17] {
-    &TAP6[scale_row(src, dst, up)]
+fn select_tap6(
+    src: u32,
+    dst: u32,
+    up: bool,
+    custom: Option<&'static Vdpp2Tap6Bank>,
+) -> &'static [[i16; 8]; 17] {
+    &custom.unwrap_or(&TAP6)[scale_row(src, dst, up)]
 }
 
 fn build_zme(
@@ -785,6 +809,20 @@ const fn field(value: u32, shift: u32, width: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const fn marker_tap_bank(base: i16) -> Vdpp2TapBank {
+        let mut bank = [[[0i16; 8]; 17]; 11];
+        let mut scale = 0;
+        while scale < 11 {
+            bank[scale][0][0] = base + scale as i16;
+            bank[scale][0][1] = base + scale as i16 + 1;
+            scale += 1;
+        }
+        bank
+    }
+
+    static CUSTOM_TAP8: Vdpp2Tap8Bank = marker_tap_bank(10);
+    static CUSTOM_TAP6: Vdpp2Tap6Bank = marker_tap_bank(100);
 
     #[test]
     fn scale_geometry_validates_alignment_and_limits() {
@@ -946,6 +984,29 @@ mod tests {
         assert_eq!(regs.zme_common[12] & (0x7 << 16), 0);
         assert_eq!(regs.zme_common[7], 0x051b_091f);
         assert_eq!(regs.zme_common[15], 0x051b_091f);
+    }
+
+    #[test]
+    fn zme_custom_tap_banks_replace_the_vendor_tables() {
+        let mut cfg = Vdpp2Config::nv12_to_nv12(720, 480, 1920, 1080);
+        cfg.enhancement = false;
+        cfg.zme.custom_tap8 = Some(&CUSTOM_TAP8);
+        cfg.zme.custom_tap6 = Some(&CUSTOM_TAP6);
+        let regs = Vdpp2Registers::build(
+            &cfg,
+            &Vdpp2Job {
+                src_fd: 7,
+                src_uv_offset: 720 * 480,
+                dst_fd: 8,
+                dst_uv_offset: 1920 * 1080,
+                dst_c_fd: 10,
+                hist_fd: 9,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(regs.yrgb_hor_coe[0], 0x000c_000b);
+        assert_eq!(regs.yrgb_ver_coe[0], 0x0066_0065);
     }
 
     #[test]

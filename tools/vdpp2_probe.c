@@ -15,11 +15,29 @@ static int even_align(int value, int alignment)
     return (value + alignment - 1) / alignment * alignment;
 }
 
+static RK_S16 custom_tap8[11][17][8];
+static RK_S16 custom_tap6[11][17][8];
+
+static void init_custom_zme_taps(void)
+{
+    for (int scale = 0; scale < 11; ++scale) {
+        for (int phase = 0; phase < 17; ++phase) {
+            for (int tap = 0; tap < 8; ++tap) {
+                int base = scale * 131 + phase * 17 + tap * 7;
+
+                custom_tap8[scale][phase][tap] = (RK_S16)((base + 53) % 63 - 31);
+                custom_tap6[scale][phase][tap] = (RK_S16)((base + 97) % 63 - 31);
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 7 || argc > 10) {
+    if (argc < 7) {
         fprintf(stderr,
-                "usage: %s <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420] [hist] [enh] [custom] [sharp] [split]\n",
+                "usage: %s <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> "
+                "[420] [hist] [enh] [custom] [sharp] [split] [zme] [tapcoeff]\n",
                 argv[0]);
         return 2;
     }
@@ -34,6 +52,7 @@ int main(int argc, char **argv)
     int custom_enhancement = 0;
     int custom_sharpness = 0;
     int custom_zme = 0;
+    int custom_zme_taps = 0;
     for (int arg = 7; arg < argc; ++arg) {
         dst_yuv420 |= !strcmp(argv[arg], "420");
         split_output |= !strcmp(argv[arg], "split");
@@ -42,7 +61,9 @@ int main(int argc, char **argv)
         custom_enhancement |= !strcmp(argv[arg], "custom");
         custom_sharpness |= !strcmp(argv[arg], "sharp");
         custom_zme |= !strcmp(argv[arg], "zme");
+        custom_zme_taps |= !strcmp(argv[arg], "tapcoeff");
     }
+    init_custom_zme_taps();
     int src_w_vir = even_align(src_w, 16);
     int src_h_vir = even_align(src_h, 8);
     int dst_w_vir = even_align(dst_w, 16);
@@ -139,6 +160,17 @@ int main(int argc, char **argv)
         params.param = content;
         if (vdpp2_control(ctx, VDPP_CMD_SET_ZME_COM_CFG, &params)) {
             fprintf(stderr, "VDPP2 ZME config failed\n");
+            goto cleanup;
+        }
+    }
+    if (custom_zme_taps) {
+        memset(&content, 0, sizeof(content));
+        content.zme.tap8_coeff = custom_tap8;
+        content.zme.tap6_coeff = custom_tap6;
+        params.ptype = VDPP_PARAM_TYPE_ZME_COEFF;
+        params.param = content;
+        if (vdpp2_control(ctx, VDPP_CMD_SET_ZME_COEFF_CFG, &params)) {
+            fprintf(stderr, "VDPP2 ZME coefficient config failed\n");
             goto cleanup;
         }
     }
