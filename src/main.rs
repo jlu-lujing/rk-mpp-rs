@@ -4731,6 +4731,110 @@ fn main() {
         }
         return;
     }
+    if args.len() > 1 && args[1] == "vdpp-hist" {
+        use rk_mpp_rs::hal::vdpp2::{Vdpp2Config, Vdpp2Mode};
+        use rk_mpp_rs::service::vdpp2_session::Vdpp2Processor;
+
+        let src = args.get(2).map(String::as_str).unwrap_or("");
+        let output_prefix = args.get(3).map(String::as_str).unwrap_or("");
+        let width: usize = args
+            .get(4)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let height: usize = args
+            .get(5)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        if src.is_empty() || output_prefix.is_empty() || width == 0 || height == 0 {
+            eprintln!("usage: rk-mpp-rs vdpp-hist <in.nv12> <out-prefix> <width> <height>");
+            std::process::exit(2);
+        }
+        let mut config = Vdpp2Config::nv12_to_yuv444(width, height, width, height);
+        config.mode = Vdpp2Mode::Histogram;
+        config.histogram.enable = true;
+        config.enhancement = false;
+        let input = match std::fs::read(src) {
+            Ok(input) => input,
+            Err(error) => {
+                eprintln!("{src}: {error}");
+                std::process::exit(1);
+            }
+        };
+        let expected = width * height * 3 / 2;
+        if input.len() < expected {
+            eprintln!("{src}: expected at least {expected} bytes");
+            std::process::exit(1);
+        }
+        let mut processor = match Vdpp2Processor::open(config) {
+            Ok(processor) => processor,
+            Err(error) => {
+                eprintln!("vdpp-hist: {error}");
+                std::process::exit(1);
+            }
+        };
+        let source = processor.src_frame_mut();
+        if let Err(error) = source.sync_write_begin() {
+            eprintln!("vdpp-hist source sync: {error}");
+            std::process::exit(1);
+        }
+        let source_bytes = source.as_mut_slice();
+        source_bytes.fill(0);
+        for row in 0..height {
+            let input_start = row * width;
+            let output_start = row * config.src_width_vir;
+            source_bytes[output_start..output_start + width]
+                .copy_from_slice(&input[input_start..input_start + width]);
+        }
+        let luma_size = width * height;
+        let output_uv = config.src_width_vir * config.src_height_vir;
+        for row in 0..height.div_ceil(2) {
+            let input_start = luma_size + row * width;
+            let output_start = output_uv + row * config.src_width_vir;
+            source_bytes[output_start..output_start + width]
+                .copy_from_slice(&input[input_start..input_start + width]);
+        }
+        if let Err(error) = processor.run() {
+            eprintln!("vdpp-hist: {error}");
+            std::process::exit(1);
+        }
+        let histogram = match processor.parsed_histogram() {
+            Ok(histogram) => histogram,
+            Err(error) => {
+                eprintln!("vdpp-hist parse: {error}");
+                std::process::exit(1);
+            }
+        };
+        let packed = format!("{output_prefix}.packed");
+        let local = format!("{output_prefix}.local.bin");
+        let global = format!("{output_prefix}.global.bin");
+        if let Err(error) = std::fs::write(&packed, processor.histogram()) {
+            eprintln!("{packed}: {error}");
+            std::process::exit(1);
+        }
+        let local_bytes: Vec<u8> = histogram
+            .local
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let global_bytes: Vec<u8> = histogram
+            .global
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        if let Err(error) = std::fs::write(&local, local_bytes) {
+            eprintln!("{local}: {error}");
+            std::process::exit(1);
+        }
+        if let Err(error) = std::fs::write(&global, global_bytes) {
+            eprintln!("{global}: {error}");
+            std::process::exit(1);
+        }
+        match histogram.mean_luma_u10() {
+            Some(mean) => println!("mean_luma_u10={mean}"),
+            None => println!("mean_luma_u10=-1"),
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "iep-dect" {
         // The PD/DECT two-pass stream: `iep2_test` never selects this mode, so
         // this subcommand is the Rust half of `tools/iep2_dect_probe.c`.

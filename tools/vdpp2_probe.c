@@ -17,9 +17,9 @@ static int even_align(int value, int alignment)
 
 int main(int argc, char **argv)
 {
-    if (argc != 7 && argc != 8) {
+    if (argc < 7 || argc > 9) {
         fprintf(stderr,
-                "usage: %s <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420|444]\n",
+                "usage: %s <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420] [hist] [enh]\n",
                 argv[0]);
         return 2;
     }
@@ -27,8 +27,14 @@ int main(int argc, char **argv)
     int src_h = atoi(argv[4]);
     int dst_w = atoi(argv[5]);
     int dst_h = atoi(argv[6]);
-    int dst_yuv420 = argc == 8 && !strcmp(argv[7], "420");
-    int histogram_mode = argc == 8 && !strcmp(argv[7], "hist");
+    int dst_yuv420 = 0;
+    int histogram_mode = 0;
+    int enhancement = 0;
+    for (int arg = 7; arg < argc; ++arg) {
+        dst_yuv420 |= !strcmp(argv[arg], "420");
+        histogram_mode |= !strcmp(argv[arg], "hist");
+        enhancement |= !strcmp(argv[arg], "enh");
+    }
     int src_w_vir = even_align(src_w, 16);
     int src_h_vir = even_align(src_h, 8);
     int dst_w_vir = even_align(dst_w, 16);
@@ -82,7 +88,7 @@ int main(int argc, char **argv)
     content.com2.dst_width_vir = dst_w_vir;
     content.com2.dst_height_vir = dst_h_vir;
     content.com2.hist_mode_en = histogram_mode;
-    content.com2.cfg_set = 7u << 16;
+    content.com2.cfg_set = enhancement ? 0 : 7u << 16;
     params.ptype = VDPP_PARAM_TYPE_COM2;
     params.param = content;
 

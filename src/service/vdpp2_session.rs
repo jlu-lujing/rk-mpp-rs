@@ -2,10 +2,10 @@
 
 use super::dma_heap::DmaBuf;
 use super::{Batch, Client, MppService, RegOffsetInfo};
-use crate::hal::vdpp2::{self, Vdpp2Config, Vdpp2Job, Vdpp2Registers};
+use crate::hal::vdpp2::{self, Vdpp2Config, Vdpp2Histogram, Vdpp2Job, Vdpp2Registers};
 
 pub const VDPP_CLIENT: u32 = Client::Vdpp as u32;
-pub const HISTOGRAM_BYTES: usize = 10_240;
+pub const HISTOGRAM_BYTES: usize = vdpp2::HIST_PACKED_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeReport {
@@ -127,6 +127,10 @@ impl Vdpp2Processor {
         self.histogram.as_slice()
     }
 
+    pub fn parsed_histogram(&self) -> Result<Vdpp2Histogram, String> {
+        Vdpp2Histogram::parse(self.histogram.as_slice())
+    }
+
     pub fn run(&mut self) -> Result<[u32; vdpp2::COMMON_WORDS], String> {
         self.src
             .sync_write_end()
@@ -176,12 +180,7 @@ impl Vdpp2Processor {
         self.service
             .poll_hw_finish_recovering()
             .map_err(|error| format!("VDPP2 poll: {error}"))?;
-        if status[10] & 1 == 0 {
-            return Err(format!(
-                "VDPP2 did not report frame completion: {:08x}",
-                status[10]
-            ));
-        }
+        vdpp2::check_completion_status(status[10])?;
 
         self.dst
             .sync_read_begin()

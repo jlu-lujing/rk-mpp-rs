@@ -18,7 +18,7 @@ fn main() {
         .get(4)
         .and_then(|value| value.parse().ok())
         .unwrap_or(1080);
-    let config = if args.get(5).map(String::as_str) == Some("hist") {
+    let mut config = if args.get(5).map(String::as_str) == Some("hist") {
         let mut config = Vdpp2Config::nv12_to_yuv444(src_width, src_height, dst_width, dst_height);
         config.mode = rk_mpp_rs::hal::vdpp2::Vdpp2Mode::Histogram;
         config.histogram.enable = true;
@@ -28,6 +28,9 @@ fn main() {
     } else {
         Vdpp2Config::nv12_to_yuv444(src_width, src_height, dst_width, dst_height)
     };
+    if args.get(6).map(String::as_str) == Some("scale-only") {
+        config.enhancement = false;
+    }
     let registers = Vdpp2Registers::build(
         &config,
         &Vdpp2Job {

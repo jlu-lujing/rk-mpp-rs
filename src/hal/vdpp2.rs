@@ -2,19 +2,28 @@
 //!
 //! The hardware-independent part is shared between the board driver and the
 //! register tests. It covers NV12 input scaling to NV12 or NV12-planar/YUV444
-//! output plus the DCI histogram side path. Enhancement blocks are disabled in
-//! this first port so their large parameter banks cannot silently alter the
-//! scale result.
+//! output plus the DCI histogram side path. The default enhancement banks can
+//! be disabled for scale-only comparisons and debugging.
 
 use super::vdpp2_coeff::{TAP6, TAP8};
+use super::vdpp2_defaults::{DEFAULT_DMSR, DEFAULT_ES, DEFAULT_SHARP};
 
 pub const COMMON_WORDS: usize = 28;
 pub const HIST_WORDS: usize = 5;
+pub const HIST_LOCAL_BINS: usize = 16 * 16 * 16;
+pub const HIST_GLOBAL_BINS: usize = 256;
+pub const HIST_PACKED_BYTES: usize = 10_240;
 pub const DMSR_WORDS: usize = 21;
 pub const ES_WORDS: usize = 32;
 pub const SHARP_WORDS: usize = 172;
 pub const ZME_COMMON_WORDS: usize = 18;
 pub const ZME_COEFF_WORDS: usize = 68;
+
+const HIST_LOCAL_PACKED_BYTES: usize = HIST_LOCAL_BINS / 4 * 9;
+const STATUS_FRAME_DONE: u32 = 1 << 0;
+const STATUS_BUS_ERROR: u32 = 1 << 4;
+const STATUS_TIMEOUT: u32 = 1 << 5;
+const STATUS_CONFIG_ERROR: u32 = 1 << 6;
 
 pub const REG_OFF_DMSR: u32 = 0x0080;
 pub const REG_OFF_DCI: u32 = 0x00e0;
@@ -58,6 +67,19 @@ pub enum Vdpp2Mode {
     Histogram = 3,
 }
 
+pub fn check_completion_status(status: u32) -> Result<(), String> {
+    let errors = status & (STATUS_BUS_ERROR | STATUS_TIMEOUT | STATUS_CONFIG_ERROR);
+    if errors != 0 {
+        return Err(format!("VDPP2 hardware error status: {status:08x}"));
+    }
+    if status & STATUS_FRAME_DONE == 0 {
+        return Err(format!(
+            "VDPP2 did not report frame completion: {status:08x}"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vdpp2HistogramConfig {
     pub enable: bool,
@@ -81,6 +103,67 @@ impl Default for Vdpp2HistogramConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vdpp2Histogram {
+    pub local: [u32; HIST_LOCAL_BINS],
+    pub global: [u32; HIST_GLOBAL_BINS],
+}
+
+impl Vdpp2Histogram {
+    pub fn parse(packed: &[u8]) -> Result<Self, String> {
+        if packed.len() < HIST_PACKED_BYTES {
+            return Err(format!(
+                "VDPP2 packed histogram is {} bytes, expected at least {HIST_PACKED_BYTES}",
+                packed.len()
+            ));
+        }
+
+        let mut local = [0u32; HIST_LOCAL_BINS];
+        for (packed, values) in packed[..HIST_LOCAL_PACKED_BYTES]
+            .chunks_exact(9)
+            .zip(local.chunks_exact_mut(4))
+        {
+            values[0] = u32::from(packed[0])
+                | (u32::from(packed[1]) << 8)
+                | ((u32::from(packed[2]) & 0x03) << 16);
+            values[1] = (u32::from(packed[2]) >> 2)
+                | (u32::from(packed[3]) << 6)
+                | ((u32::from(packed[4]) & 0x0f) << 14);
+            values[2] = (u32::from(packed[4]) >> 4)
+                | (u32::from(packed[5]) << 4)
+                | ((u32::from(packed[6]) & 0x3f) << 12);
+            values[3] = (u32::from(packed[6]) >> 6)
+                | (u32::from(packed[7]) << 2)
+                | (u32::from(packed[8]) << 10);
+        }
+
+        let mut global = [0u32; HIST_GLOBAL_BINS];
+        for (packed, value) in packed[HIST_LOCAL_PACKED_BYTES..HIST_PACKED_BYTES]
+            .chunks_exact(4)
+            .zip(global.iter_mut())
+        {
+            *value = u32::from_le_bytes(
+                packed
+                    .try_into()
+                    .expect("VDPP2 global histogram chunk is four bytes"),
+            );
+        }
+
+        Ok(Self { local, global })
+    }
+
+    /// Return the vendor U10 mean luma, or `None` when the histogram is empty.
+    pub fn mean_luma_u10(&self) -> Option<u32> {
+        let mut luma_sum = 0u64;
+        let mut pixel_count = 0u64;
+        for (bin, count) in self.global.iter().enumerate() {
+            luma_sum += u64::from(*count) * (bin as u64 * 8 + 3);
+            pixel_count += u64::from(*count);
+        }
+        (pixel_count != 0).then_some((luma_sum / pixel_count / 2) as u32)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vdpp2Config {
     pub src_width: usize,
@@ -100,6 +183,9 @@ pub struct Vdpp2Config {
     pub dst_c_width_vir: usize,
     pub dst_c_height_vir: usize,
     pub mode: Vdpp2Mode,
+    /// Use the vendor default DMSR/ES/sharp register banks. Disable this for
+    /// a deterministic scale-only path.
+    pub enhancement: bool,
     pub histogram: Vdpp2HistogramConfig,
 }
 
@@ -128,6 +214,7 @@ impl Vdpp2Config {
             dst_c_width_vir: align(dst_width, 16),
             dst_c_height_vir: align(dst_height, 2),
             mode: Vdpp2Mode::Vep,
+            enhancement: true,
             histogram: Vdpp2HistogramConfig::default(),
         }
     }
@@ -179,6 +266,20 @@ impl Vdpp2Config {
                 {
                     return Err("VDPP2 destination is below the 128x128 minimum".to_string());
                 }
+                if self.src_width_vir & 15 != 0
+                    || self.dst_width_vir & 15 != 0
+                    || self.src_height_vir & 7 != 0
+                    || self.dst_height_vir & 1 != 0
+                {
+                    return Err("VDPP2 VEP stride alignment is invalid".to_string());
+                }
+                if self.src_width & 1 != 0
+                    || self.src_height & 1 != 0
+                    || self.dst_width & 1 != 0
+                    || self.dst_height & 1 != 0
+                {
+                    return Err("VDPP2 VEP visible geometry must be even".to_string());
+                }
             }
             Vdpp2Mode::Histogram => {
                 if self.src_width_vir > HIST_MAX_WIDTH || self.src_height_vir > HIST_MAX_HEIGHT {
@@ -188,20 +289,6 @@ impl Vdpp2Config {
                     return Err("VDPP2 histogram source stride must be 4-byte aligned".to_string());
                 }
             }
-        }
-        if self.src_width_vir & 15 != 0
-            || self.dst_width_vir & 15 != 0
-            || self.src_height_vir & 7 != 0
-            || self.dst_height_vir & 1 != 0
-        {
-            return Err("VDPP2 stride alignment is invalid".to_string());
-        }
-        if self.src_width & 1 != 0
-            || self.src_height & 1 != 0
-            || self.dst_width & 1 != 0
-            || self.dst_height & 1 != 0
-        {
-            return Err("VDPP2 visible geometry must be even".to_string());
         }
         Ok(())
     }
@@ -240,7 +327,8 @@ impl Vdpp2Registers {
             | field(config.dst_format as u32, 8, 2)
             | field(u32::from(config.yuv_out_diff), 10, 1)
             | field(config.dst_swap as u32, 12, 2)
-            | field(u32::from(config.histogram.enable), 25, 1);
+            | field(u32::from(config.histogram.enable), 25, 1)
+            | field(u32::from(config.enhancement), 24, 1);
         common[2] = config.mode as u32;
         common[4] = 0x0fff;
         common[8] =
@@ -292,11 +380,13 @@ impl Vdpp2Registers {
                 )
             };
 
-        // Keep the fields intentionally if later code enables them. The first
-        // scale/histogram slice leaves all three enhancement blocks disabled.
-        let dmsr = [0u32; DMSR_WORDS];
-        let es = [0u32; ES_WORDS];
-        let sharp = [0u32; SHARP_WORDS];
+        // Keep every bank in the submission so scale-only and the vendor default
+        // enhancement path exercise the same register-window layout.
+        let (dmsr, es, sharp) = if config.enhancement {
+            (DEFAULT_DMSR, DEFAULT_ES, DEFAULT_SHARP)
+        } else {
+            ([0u32; DMSR_WORDS], [0u32; ES_WORDS], [0u32; SHARP_WORDS])
+        };
         Ok(Self {
             yrgb_hor_coe,
             yrgb_ver_coe,
@@ -624,6 +714,27 @@ mod tests {
     }
 
     #[test]
+    fn histogram_geometry_only_requires_a_four_byte_source_stride() {
+        let mut cfg = Vdpp2Config::nv12_to_yuv444(132, 130, 128, 128);
+        cfg.mode = Vdpp2Mode::Histogram;
+        cfg.src_width_vir = 132;
+        cfg.src_height_vir = 130;
+        assert!(cfg.validate().is_ok());
+
+        cfg.src_width_vir = 130;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn completion_status_rejects_hardware_errors() {
+        assert!(check_completion_status(STATUS_FRAME_DONE).is_ok());
+        assert!(check_completion_status(0).is_err());
+        for error in [STATUS_BUS_ERROR, STATUS_TIMEOUT, STATUS_CONFIG_ERROR] {
+            assert!(check_completion_status(STATUS_FRAME_DONE | error).is_err());
+        }
+    }
+
+    #[test]
     fn scale_factor_tables_match_the_c_thresholds() {
         assert_eq!(scale_factor(1920, 320), (true, false, 24_640));
         assert_eq!(scale_factor(128, 1920), (false, true, 4_337));
@@ -682,7 +793,8 @@ mod tests {
 
     #[test]
     fn vendor_c_720_to_1920_scale_words_are_locked() {
-        let cfg = Vdpp2Config::nv12_to_yuv444(720, 480, 1920, 1080);
+        let mut cfg = Vdpp2Config::nv12_to_yuv444(720, 480, 1920, 1080);
+        cfg.enhancement = false;
         let regs = Vdpp2Registers::build(
             &cfg,
             &Vdpp2Job {
@@ -717,5 +829,58 @@ mod tests {
         assert_eq!(regs.common[14], 0x01df_02cf);
         assert_eq!(regs.common[15], 0x0437_077f);
         assert_eq!(regs.common[20], 0x88ff_ffff);
+    }
+
+    fn pack_local_histogram(values: [u32; 4]) -> [u8; 9] {
+        let mut packed = [0u8; 9];
+        packed[0] = values[0] as u8;
+        packed[1] = (values[0] >> 8) as u8;
+        packed[2] = ((values[0] >> 16) & 0x03) as u8 | ((values[1] & 0x3f) << 2) as u8;
+        packed[3] = (values[1] >> 6) as u8;
+        packed[4] = ((values[1] >> 14) & 0x0f) as u8 | ((values[2] & 0x0f) << 4) as u8;
+        packed[5] = (values[2] >> 4) as u8;
+        packed[6] = ((values[2] >> 12) & 0x3f) as u8 | ((values[3] & 0x03) << 6) as u8;
+        packed[7] = (values[3] >> 2) as u8;
+        packed[8] = (values[3] >> 10) as u8;
+        packed
+    }
+
+    #[test]
+    fn packed_histogram_matches_the_vendor_layout() {
+        let mut packed = [0u8; HIST_PACKED_BYTES];
+        let first = [0x0000_0001, 0x0001_2345, 0x0002_abcd, 0x0003_ffff];
+        let last = [0x0000_1111, 0x0001_2222, 0x0002_3333, 0x0003_4444];
+        packed[..9].copy_from_slice(&pack_local_histogram(first));
+        let last_offset = HIST_LOCAL_PACKED_BYTES - 9;
+        packed[last_offset..HIST_LOCAL_PACKED_BYTES].copy_from_slice(&pack_local_histogram(last));
+
+        let global_offset = HIST_LOCAL_PACKED_BYTES;
+        packed[global_offset..global_offset + 4].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        let global_last = global_offset + (HIST_GLOBAL_BINS - 1) * 4;
+        packed[global_last..global_last + 4].copy_from_slice(&0x89ab_cdefu32.to_le_bytes());
+
+        let histogram = Vdpp2Histogram::parse(&packed).unwrap();
+        assert_eq!(&histogram.local[..4], &first);
+        assert_eq!(&histogram.local[HIST_LOCAL_BINS - 4..], &last);
+        assert_eq!(histogram.global[0], 0x1234_5678);
+        assert_eq!(histogram.global[HIST_GLOBAL_BINS - 1], 0x89ab_cdef);
+    }
+
+    #[test]
+    fn histogram_mean_luma_matches_the_c_u10_formula() {
+        let mut packed = [0u8; HIST_PACKED_BYTES];
+        let global_offset = HIST_LOCAL_PACKED_BYTES;
+        packed[global_offset..global_offset + 4].copy_from_slice(&2u32.to_le_bytes());
+        let global_last = global_offset + (HIST_GLOBAL_BINS - 1) * 4;
+        packed[global_last..global_last + 4].copy_from_slice(&2u32.to_le_bytes());
+
+        let histogram = Vdpp2Histogram::parse(&packed).unwrap();
+        assert_eq!(histogram.mean_luma_u10(), Some(511));
+    }
+
+    #[test]
+    fn packed_histogram_rejects_truncated_buffers() {
+        let error = Vdpp2Histogram::parse(&[0u8; HIST_PACKED_BYTES - 1]).unwrap_err();
+        assert!(error.contains("expected at least 10240"));
     }
 }

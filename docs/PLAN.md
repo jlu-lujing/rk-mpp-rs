@@ -329,8 +329,11 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [x] W4-5 RGA3 为可选路径：现有 NEON 缩放覆盖推理链路且更快，不引入
       第二个不可控硬件依赖。
 - [~] W4-6 VDPP：RK3576 client 29 的 NV12 scale、YUV444/420、DCI histogram
-      common/ZME 参数已移植，`board_vdpp2_regs_vs_c.sh` 通过 fake-service C
-      trace 逐字比较；t6 没有 client 29，真实硬件像素和 sharpen 仍需 lf1。
+      和默认 DMSR/ES/sharp enhancement bank 已移植，`board_vdpp2_regs_vs_c.sh`
+      通过 fake-service C trace 五格逐字比较；packed histogram 的 4096 local /
+      256 global bin 与 U10 平均亮度解析已完成，`vdpp-hist` 可供 lf1 做原始
+      packed/local/global 对比。t6 没有 client 29，lf1 stock kernel/DTB 也未
+      绑定 `vdpp2`；真实硬件像素和 histogram 仍需要一个暴露 client 29 的启动镜像。
 
 验收：IEP 路径与 C 输出逐字节（或 PSNR ∞）；性能不低于 C，缩放不低于现有 `scale.rs`
 （若更慢，保留 `scale.rs` 作为推理链路默认）。

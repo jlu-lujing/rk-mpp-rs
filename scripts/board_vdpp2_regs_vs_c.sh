@@ -42,7 +42,7 @@ run_cell() {
   if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=/tmp/mpp_vdpp_fake.so \
       /tmp/vdpp2_probe $input /tmp/vdpp2-reg-$name.yuv $src_w $src_h $dst_w $dst_h $fmt \
       >/dev/null 2>$trace &&
-    ~/rk-mpp-rs/target/release/examples/vdpp2_dump $src_w $src_h $dst_w $dst_h $fmt >$rust"; then
+    ~/rk-mpp-rs/target/release/examples/vdpp2_dump $src_w $src_h $dst_w $dst_h $fmt scale-only >$rust"; then
     printf 'FAIL vdpp2-reg/%s (trace generation failed)\n' "$name"
     fail=1
     return
@@ -69,5 +69,32 @@ run_cell up_720_to_1080 720 480 1920 1080 444
 run_cell down_1080_to_640 1920 1080 640 640 420
 run_cell identity_640 640 480 640 480 420
 run_cell hist_720 720 480 1920 1080 hist
+
+run_enh_cell() {
+  local name=enh_720_to_1080
+  local input=/tmp/vdpp2-reg-$name.nv12
+  local trace=/tmp/vdpp2-reg-$name.trace
+  local rust=/tmp/vdpp2-reg-$name.rust
+  ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=720x480:rate=30 \
+    -frames:v 1 -pix_fmt yuv420p -f rawvideo $input"
+  if ! ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib LD_PRELOAD=/tmp/mpp_vdpp_fake.so \
+      /tmp/vdpp2_probe $input /tmp/vdpp2-reg-$name.yuv 720 480 1920 1080 444 enh \
+      >/dev/null 2>$trace &&
+    ~/rk-mpp-rs/target/release/examples/vdpp2_dump 720 480 1920 1080 444 >$rust"; then
+    printf 'FAIL vdpp2-reg/%s (trace generation failed)\n' "$name"
+    fail=1
+    return
+  fi
+  scp -q "$BOARD":"$trace" "$BOARD":"$rust" /tmp/
+  if python3 tools/compare_vdpp2.py --enh "/tmp/vdpp2-reg-$name.rust" \
+      "/tmp/vdpp2-reg-$name.trace"; then
+    printf 'PASS vdpp2-reg/%s\n' "$name"
+  else
+    printf 'FAIL vdpp2-reg/%s (register words differ)\n' "$name"
+    fail=1
+  fi
+}
+
+run_enh_cell
 
 exit "$fail"

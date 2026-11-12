@@ -52,7 +52,10 @@ def c_sections(path: Path) -> dict[str, list[int]]:
 def main() -> int:
     arguments = sys.argv[1:]
     histogram = arguments[:1] == ["--hist"]
+    enhancement = arguments[:1] == ["--enh"]
     if histogram:
+        arguments = arguments[1:]
+    if enhancement:
         arguments = arguments[1:]
     if len(arguments) != 2:
         print("usage: compare_vdpp2.py [--hist] rust.dump c.trace", file=sys.stderr)
@@ -60,14 +63,30 @@ def main() -> int:
     rust = rust_sections(Path(arguments[0]))
     c = c_sections(Path(arguments[1]))
     failed = False
-    names = ("common", "hist") if histogram else (
-        "yrgb_hor_coe",
-        "yrgb_ver_coe",
-        "cbcr_hor_coe",
-        "cbcr_ver_coe",
-        "zme_common",
-        "common",
-    )
+    if histogram:
+        names = ("common", "hist")
+    elif enhancement:
+        names = (
+            "yrgb_hor_coe",
+            "yrgb_ver_coe",
+            "cbcr_hor_coe",
+            "cbcr_ver_coe",
+            "zme_common",
+            "dmsr",
+            "hist",
+            "es",
+            "sharp",
+            "common",
+        )
+    else:
+        names = (
+            "yrgb_hor_coe",
+            "yrgb_ver_coe",
+            "cbcr_hor_coe",
+            "cbcr_ver_coe",
+            "zme_common",
+            "common",
+        )
     for name in names:
         left, right = rust[name], c[name]
         if len(left) != len(right):

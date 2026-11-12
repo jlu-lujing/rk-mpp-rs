@@ -807,10 +807,14 @@ H.264/VEPU580 编码已做到：
 
 ### 5.5 M9 后处理（IEP）
 
-- VDPP（client 29）在 RK3588 **不存在**；RK3576 的 VDPP2 common/ZME scale
-  与 DCI histogram register builder 已移植，并用 t6 fake-service trace 对 C
-  做了四格逐字比较。真实像素、sharp/HDR 仍依赖 lf1，当前 SSH 在 key exchange
-  前断开。
+- VDPP（client 29）在 RK3588 **不存在**；RK3576 的 VDPP2 common/ZME scale、
+  DCI histogram 和默认 DMSR/ES/sharp register bank 已移植，并用 t6 fake-service
+  trace 对 C 做了五格逐字比较。10240-byte packed histogram 已能拆成 vendor 的
+  4096 local + 256 global bin，`vdpp-hist` 会输出 packed/local/global 三份原始
+  结果和 U10 平均亮度。真实像素/histogram/HDR 依赖一个实际绑定 client 29 的
+  RK3576 启动镜像；lf1 stock kernel/DTB 当前不暴露它，且 SSH 在 key exchange
+  前断开。Rockchip `develop-6.1` 的 `rk3576-evb.dtsi` 只通过
+  `&vdpp { status = "okay"; };` 启用该节点，但内核还必须编入 `mpp_vdpp.c`。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
 - `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1；
