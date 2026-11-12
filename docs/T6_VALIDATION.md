@@ -3,6 +3,39 @@
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
 
+## 2026-11-12 H.264 / JPEG / post-processing closeout
+
+- H.264 encode fixed-QP remains **24/24** over 64x64, 320x240, 640x480 and
+  1280x720 x Baseline/Main/High x two QPs. CBR/VBR/AVBR, hierarchical QP and
+  SMART_P matrices pass.
+- `board_h264_reencode_vs_mpp.sh` passes **13/13** strategy cells: same-frame
+  CBR/VBR/AVBR reencode, super-frame reencode, NORMAL drop in all three RC
+  modes, CAVLC and CABAC PSKIP in all three RC modes. Each cell also compares
+  every submitted job's STATUS window.
+- H.264 GDR is **4/4** for row-4, col-4, row-8 and row-1 over 25 frames, 35 NAL
+  units per cell. Stock C is nondeterministic here: its ROI table copies
+  uninitialised `force_inter`/`mode_mask`/`reserved` stack bits into DMA, and
+  three fresh runs produced `d4432259…`, `a49958ff…` and `f77af73e…`.
+  `tools/mpp_roi_table_fix.c` zeroes only those undeclared bits at DMA sync;
+  Rust emits the same deterministic table and then matches C byte-for-byte.
+- H.264 ordinary slice splitting is **4/4** and low-delay packet output is
+  **5/5**. The first-packet length differs by the documented version-SEI text
+  delta; complete NAL streams and every following slice packet are identical.
+- JPEG encoding passes **41/41** cells across restart, 90/270 rotation,
+  RGB/YUV input, low-delay slices, four-band multicore and strided planes.
+- Post-processing hardware tests pass **4/4**, including client-28 binding,
+  two-frame I5O2, direct decoder DMA-BUF import, and a 50x34 H.264 surface with
+  horizontal stride 64 and vertical stride 48. The padded import is compared
+  against an explicit padded source and both destination slots are
+  byte-identical.
+- IEP2 full matrices remain **9/9** modes, **6/6** formats and **5/5** PD/DECT
+  cells; telecine, progressive content and 322x242/722x482/1366x768 geometry
+  all match the C probe's pixels and per-frame state.
+- Final t6 gate: `board_workspace_gate.sh` reports **1296 passed / 0 failed /
+  43 ignored** across 57 suites, `cargo fmt --check` is clean, and workspace
+  rustdoc passes with `-D warnings`. `cargo test --release --lib --offline`
+  reports **1126 passed / 0 failed / 0 ignored**.
+
 ## 2026-11-10 encoder packet metadata
 
 - `scripts/board_mpp_packet_meta.sh` compiles the unchanged vendor C probes and

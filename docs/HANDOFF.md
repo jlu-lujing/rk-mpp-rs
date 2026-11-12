@@ -541,7 +541,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 123 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 125 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。
@@ -728,11 +728,12 @@ H.264/VEPU580 编码已做到：
 ### 5.3 H.264 编码当前边界
 
 - 已闭合的路径包括固定 QP / CBR / VBR / AVBR、ROI/QP map、GDR、deblock、
-  `cal_first_i_start_qp`、场景检测、普通 slice split、逐 slice low-delay packet、
-  宽度 >4096 的 CIME 扩展行以及 P 帧。证据入口分别是
+  `cal_first_i_start_qp`、场景检测、hier QP / SMART_P、同帧与 super-frame
+  重编码、NORMAL drop、CAVLC/CABAC PSKIP、two-pass deflicker、普通 slice split、
+  逐 slice low-delay packet、宽度 >4096 的 CIME 扩展行以及 P 帧。证据入口分别是
   `board_h264_slice_vs_mpp.sh`（4/4）与 `board_h264_lowdelay_vs_mpp.sh`（5/5）。
-- 尚未开始的新功能：hier QP / SMART_P、重编码 / 多 pass、super frame 和相应
-  drop/pskip 策略。它们仍属于冻结的功能前沿，不与当前等价性回归混提。
+- 当前实现范围内 H.264 编码功能已闭合；没有把 C 参考本身不存在的调度模式
+  伪装成待移植路径。
 - JPEG 编码的 low-delay packet 输出已闭合：单 job 保持原字节流，`EncodedJpeg`
   在 RST 标记处暴露 packet ranges；320x240/5 packet 与 640x480/10 packet 均与
   C 逐字节、逐 packet 相同。low-delay part 的旋转和 >720p 组合仍明确拒绝；
@@ -817,6 +818,14 @@ H.264/VEPU580 编码已做到：
   I1O1T/B、DISABLE、BYPASS。T 模式只写 dst0，B 模式只写 dst1，未用槽为零。
 - 格式矩阵已闭合：420/422 × SP/Planar × UV/VU 为 **6/6**，输入 fixture、
   C probe 和 Rust 两侧同一格式，两个 raw dst slot 逐字节一致。
+- 解码 Frame 与 IEP2 已联动：`IepDeinterlace::import_src_frame()` dup 解码
+  NV12 dma-buf，校验单 fd、Y/UV offset 与 horizontal/vertical stride 后直接
+  替换内部 source，不经 CPU 像素拷贝。源/目标分配和 Y/UV 地址按实际
+  `hor_stride * ver_stride`；t6 的 rkvdec H.264 DMA frame→I5O2 以及
+  50×34/H=64/V=48 padded frame 对显式 strided source 的逐字节测试均通过。
+- 8/10-bit 后处理已补齐：`Frame::convert_format()` 支持 NV12/I420 与
+  I420P10 的双向转换，包含 NV12 chroma 解交织/回打包；8→10 位复制和
+  10→8 右移在 8-bit 输入域可逆，PTS/DTS/POC/error info 保持不变。
 - `src/scale.rs` 已覆盖推理链路需要的 RGB 缩放/letterbox，并新增
   `Frame::letterbox_nv12()`：直接读取 CPU/DMA Frame 的 Y/UV plane，在缩放中
   转 BT.601 RGB，不再生成整帧中间副本。真实 H.264 720p CPU/DMA 输出逐字节一致；

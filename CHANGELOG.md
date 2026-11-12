@@ -4,6 +4,17 @@ All notable changes to the public SDK are recorded here. The project version and
 the C ABI version are independent: the crate is currently `0.1.x`, while
 `RK_MPP_API_VERSION_MAJOR` defines shared-library ABI compatibility.
 
+## [Unreleased]
+
+- Added `Frame::convert_format()` for NV12/I420/I420P10 conversion while
+  preserving PTS, DTS, POC and error metadata.
+- `IepDeinterlace::import_src_frame()` can now consume decoder-owned NV12
+  DMA-BUF frames directly, and its source/destination allocations, Y/UV plane
+  offsets, and horizontal/vertical strides account for padded decoder surfaces.
+- H.264 GDR now writes a deterministic ROI force-intra table. The stock C
+  table builder leaks uninitialised bitfield stack data into DMA; the board
+  oracle normalises only those undeclared bits before comparison.
+
 ## [1.12] - 2026-11-09
 
 - Added `DmaBufInput` and `Encoder::submit_dmabuf_frame()` for NV12 encoder

@@ -190,6 +190,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [x] W1-12 QP map / ROI —— 走 `Vepu580RoiH264BsCfg`/`RoiQpCfg` 块记录，不是 `roi_qthd*`
       那八行；板级 2/2 格逐字节。
 - [x] W1-13 GDR / intra refresh —— 板级 4/4 逐字节（row-4 / col-4 / row-8 / row-1）。
+      stock C 的 ROI 表构造只赋值命名 bit，未初始化的
+      `force_inter`/`mode_mask`/`reserved` 会进入 DMA，连续三次 C 运行得到
+      `d4432259…`、`a49958ff…`、`f77af73e…`。`tools/mpp_roi_table_fix.c`
+      在 sync 前仅清零这些未定义位，Rust 与修正后的确定性 C 表 35 NAL 全一致。
       两个只有上板才能定的行为：sweep 处参考重发 SPS/PPS + recovery-point SEI；
       `refresh_num == 1` 时 band 起点经 `RK_U16` 截断为 0xFFF0 → 该帧不强制 intra。
 - [x] W1-14 deblock 细调 —— 含「参考不写 beta」这个 quirk；板级三格逐字节。
@@ -284,16 +288,16 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 7. W3 JPEG 编码余项（S–M，约 3–5 天）
 
-- [ ] W3-1 RGB / RGBX 输入（VEPU2 的输入格式寄存器路径）
-- [ ] W3-2 90/270 旋转
-- [ ] W3-3 restart markers（间隔、DRI）
+- [x] W3-1 RGB / RGBX 输入（VEPU2 的输入格式寄存器路径）
+- [x] W3-2 90/270 旋转
+- [x] W3-3 restart markers（间隔、DRI）
 - [x] W3-4 low-delay slices —— `board_jpege_lowdelay_vs_mpp.sh` 2/2；
       320x240 5 packet、640x480 10 packet 均与 C 的完整码流和逐 packet 长度一致。
       旋转和 >720p 因 C 走其它路径而明确拒绝。
 - [x] W3-5 多核切分 —— RK3588 默认四 band 路径已用 streaming `MULTI_MSG`
       批处理实现；1920x1080 qf50/qf90、1288x722 不均匀 band、rot90/rot270
       为 5/5，322x242/1366x768 stride 为 2/2。
-- [ ] W3-6 4:2:2/4:4:4/gray：记录为硬件不支持（已验），不实现伪支持
+- [x] W3-6 4:2:2/4:4:4/gray：记录为硬件不支持（已验），不实现伪支持
 
 验收：每种新输入/特性出可独立解码的流，与 C 逐字节；不支持的组合返回明确错误。
 
@@ -301,18 +305,31 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 8. W4 后处理（L，约 8–12 天）
 
-- [~] W4-1 IEP2（client 28）：I5O2、I5O1T/B、I2O2、I1O1T/B、DISABLE、BYPASS
+- [x] W4-1 IEP2（client 28）：I5O2、I5O1T/B、I2O2、I1O1T/B、DISABLE、BYPASS
       已板上 9/9 逐字节，原始 dst0/dst1 均比较；420/422 × SP/Planar × UV/VU
       为 6/6；PD/DECT 逆 telecine 已闭合（场序 + pulldown 状态机，
       `board_iep_dect_vs_probe.sh` 5/5 逐字节且逐帧状态相同，含 322x242/722x482/
       1366x768 等非 16 对齐尺寸）。
       client 28 的 `iep2_params` 只有 deinterlace，没有 YUV scale/crop 字段；
       legacy `/dev/iep` scale 后端在 t6 无节点、driver 不绑定，因此板上无法实现或验证。
-- [ ] W4-2 IEP 与解码器联动（NV12 直通、零拷贝）
-- [ ] W4-3 8/10-bit 互转（打包/planar、位深扩展）
-- [ ] W4-4 HDR tone mapping（若硬件块支持；先 probe）
-- [ ] W4-5 RGA3（可选）：只在 NEON 无法覆盖的操作（旋转/多平面合成）时做
-- [ ] W4-6 VDPP：**本板 client 29 不存在**，仅做代码占位与文档说明，不实现
+- [x] W4-2 IEP 与解码器联动（NV12 直通、零拷贝）：
+      `IepDeinterlace::import_src_frame()` 直接 dup 解码 Frame 的 dma-buf，
+      校验 NV12 单 fd、Y/UV plane offset、horizontal/vertical stride 后作为
+      三张 IEP 源图；源/目标分配和 `iep2_params` 地址都使用实际的
+      `hor_stride * ver_stride`。板上既有的
+      `iep_consumes_decoder_dmabuf_frames_without_copying_through_cpu` 通过，
+      新增 50×34 解码流（H=64/V=48）还将零拷贝导入与显式 padded source
+      对比，两张 destination slot 均逐字节一致。
+- [x] W4-3 8/10-bit 互转（打包/planar、位深扩展）：
+      `Frame::convert_format()` 支持 NV12/I420 ↔ I420P10，8→10 用位复制，
+      10→8 用右移；转换保留 PTS/DTS/POC/error info。宿主单测覆盖
+      I420 可逆转和 NV12 解交织/回打包。
+- [x] W4-4 HDR tone mapping 判定为平台不可用：t6 没有 VDPP，当前解码帧
+      也没有可验证的 HDR metadata/oracle；不提供伪装成硬件等价的软件 HDR。
+- [x] W4-5 RGA3 为可选路径：现有 NEON 缩放覆盖推理链路且更快，不引入
+      第二个不可控硬件依赖。
+- [x] W4-6 VDPP：**本板 client 29 不存在**；完成 capability probe 与文档
+      边界记录，不声称实现。
 
 验收：IEP 路径与 C 输出逐字节（或 PSNR ∞）；性能不低于 C，缩放不低于现有 `scale.rs`
 （若更慢，保留 `scale.rs` 作为推理链路默认）。

@@ -30,7 +30,7 @@
 
 | 能力 | 状态 | 证据 / 边界 |
 |---|---|---|
-| H.264（VEPU580） | 完成 | 固定 QP 24 格、P 帧 11 尺寸（含 FBC 阈值两侧）、CBR/VBR/AVBR、hier QP、SMART_P、two-pass deflicker、level、deblock、ROI/QP map、GDR 4/4、slice split 4/4、逐 slice 输出 5/5，全部逐字节或逐 job STATUS |
+| H.264（VEPU580） | 完成 | 固定 QP 24 格、P 帧 11 尺寸（含 FBC 阈值两侧）、CBR/VBR/AVBR、hier QP、SMART_P、two-pass deflicker、level、deblock、ROI/QP map、GDR 4/4、slice split 4/4、逐 slice 输出 5/5，全部逐字节或逐 job STATUS。GDR 用确定性 ROI 表对照：stock C 的未初始化栈字段会导致跨进程输出不同，修表后 C/Rust 35 NAL 全一致 |
 | H.265（VEPU580） | 完成 | IDR/P GOP、CBR/VBR/AVBR、GDR 4/4、ROI 4/4、deblock/SAO 4/4、BY_CTU/BY_BYTE 3/3、low-delay 4/4、水平 tiles 2/2 |
 | JPEG（vepu） | 完成 | baseline 4:2:0、restart、90/270 旋转、RGB/YUV 输入、低延迟 slices、RK3588 四 band 多核，逐字节/逐 packet |
 | WPP / B 帧 / 多参考 | 不存在 | C 参考没有实现（标志恒 0、无 entry point、无 B_FRAME、`num_ref = 1`），不是本 crate 的缺口 |
@@ -45,8 +45,11 @@
 | IEP2 模式 | 完成 | I5O2/I5O1T/B、I2O2、I1O1T/B、DISABLE、BYPASS 9/9，含 TFF/BFF 与 1280×720，原始双 dst slot |
 | IEP2 格式 | 完成 | 420/422 × SP/Planar × UV/VU 6/6 |
 | IEP2 PD/DECT 逆 telecine | 完成 | 场序 + pulldown 状态机；telecine/逐行 + 322×242/722×482/1366×768 共 5/5，逐字节且逐帧状态相同 |
-| VDPP（client 29） | 不存在 | RK3588 无该硬件；10-bit↔8-bit/HDR 随之不可验证 |
-| legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行 |
+| 解码 Frame → IEP2 零拷贝 | 完成 | `IepDeinterlace::import_src_frame()` dup 解码 NV12 dma-buf，校验单 fd、Y/UV offset、horizontal/vertical stride 后直接作为三张源图；t6 的 rkvdec H.264 DMA frame→I5O2 板级测试通过。新增 50×34 解码流（H stride 64、V stride 48）将零拷贝导入与显式 padded 源对比，两路 dst 输出逐字节一致 |
+| 8/10-bit 后处理转换 | 完成 | `Frame::convert_format()` 支持 8-bit NV12/I420 与 planar I420P10 双向转换、NV12 chroma 解交织/回打包，保留 PTS/DTS/POC/error info；8↔10 在 8-bit 输入域无损往返 |
+| VDPP（client 29） | 不存在 | RK3588 无该硬件；硬件 scale/rotate/CSC/histogram/HDR 路径不可验证 |
+| HDR tone mapping | 平台不可用 | t6 无 VDPP/tone-mapped CSC；没有 board oracle，不提供伪装成硬件等价的软件路径 |
+| legacy `/dev/iep` scale | 不可验证 | t6 没有该节点；IEP2 只有去隔行，通用缩放使用自研 NV12/RGB scaler |
 | 异步任务队列 / 缓冲池 | 完成 | 回调、等待、事件、逐任务 queue/run/turnaround timing、累计成功/失败/取消与队列高水位统计、引用计数 dma-heap 池；VP8 与 H.264/HEVC/AV1/VP9 DPB surface 均持有 lease；t6 async demo、H.264/HEVC/AV1/VP9 池化边界测试全过 |
 | 硬件错误恢复 | 完成（W5-8） | submit/poll 故障全部走 close-before-open 会话替换，不调用会污染 t6 的 `RESET_SESSION`。`board_framework_recovery.sh` 4/4：16 次替换、H.264 重开后逐字节复用、VP8 截断 packet 的真实 STATUS 错误，以及 H.265 tile 恢复。H.265 项用无效 input fd 触发真实 `int_sta=0`，重开后清空 tile line buffer、重新执行丢弃预跑，并强制下一帧为带参数集 IDR；恢复码流与全新会话逐字节一致，RC reencode callback 不能把该 IDR 降回 P |
 | 多核 CCU 批量提交 | 完成（W5-6） | `CcuTopology` 读取设备树的 vdec/venc/jpeg CCU 节点；`BatchServer` 以 `MPP_CMD_SET_SESSION_FD` 分隔最多 8 个 session。t6 的两条独立 VEPU2 JPEG session、lf1 的两条独立 VEPU510 H.264 session 都在一个批次中触发，之后按真实 session poll，输出均与各自单会话逐字节一致；两板各 3/3。当前 6.1 驱动的批量 wait 不写每条 `mpp_bat_msg.ret`，因此只批量提交、单独回收；无 CCU/命令时自动回退 |
@@ -163,7 +166,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
-当前 ROADMAP：**123 完成 / 6 未完成**（含缩进子项为 163 / 9）。未完成项里 5 项属于上表的
+当前 ROADMAP：**125 完成 / 6 未完成**（含缩进子项为 165 / 9）。未完成项里 5 项属于上表的
 平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 115 个 slice（含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、simple/advanced 20 帧 8-bit B-pyramid、12 帧单参考 10-bit B、20 帧 advanced 10-bit B、deblock/CDEF、10-bit I444P10 和 inter-LR 组合也已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
