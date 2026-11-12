@@ -333,6 +333,12 @@ cargo test --test fixture_manifest
   L0/L1 vectors. The test decodes the P picture first, supplies its 16x16
   motion map as reference metadata and compares the complete displayed B frame
   with FFmpeg.
+- `h264_cabac_b_16x8_l0_48x32` and `h264_cabac_b_8x16_l0_48x32` use the same
+  three-frame source with `--partitions b8x8` so x264 populates both partition
+  analyses. Temporary switches force every B macroblock to `B_L0_L0` with
+  either two 16x8 or two 8x16 partitions. The pair exercises the CABAC B
+  mb_type prefix for both shapes, two independent MVDs in scan order, shared
+  residual syntax and independent motion compensation for each half.
 - `h264_cabac_p16_48x32` is a two-frame 48x32 Main-profile CABAC stream with a
   constant-gray IDR followed by one-frame random luma noise. It was produced by
   a temporary local x264 source build whose analysis path was restricted to

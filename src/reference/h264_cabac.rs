@@ -66,6 +66,23 @@ pub struct DecodedMotionPartition {
     pub prediction_list: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum B16PartitionShape {
+    P16x16,
+    P16x8,
+    P8x16,
+}
+
+impl B16PartitionShape {
+    fn definitions(self) -> &'static [(usize, usize, usize, usize)] {
+        match self {
+            Self::P16x16 => &[(0, 0, 16, 16)],
+            Self::P16x8 => &[(0, 0, 16, 8), (0, 8, 16, 8)],
+            Self::P8x16 => &[(0, 0, 8, 16), (8, 0, 8, 16)],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CabacReferenceFrame<'a> {
     pub luma: &'a [u16],
@@ -600,6 +617,66 @@ fn decode_b16_motion(
     Ok(([predicted[0] + delta[0], predicted[1] + delta[1]], delta))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn decode_b_l0_partition_motions(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    mb_index: usize,
+    mb_width: usize,
+    shape: B16PartitionShape,
+    motion_valid: &mut [[bool; 16]],
+    motion_vectors: &mut [[[i32; 2]; 16]],
+    motion_vector_deltas: &mut [[[i32; 2]; 16]],
+    reference_indices: &mut [[u8; 16]],
+) -> Result<Vec<(usize, usize, usize, usize, [i32; 2], [i32; 2])>, H264CabacError> {
+    let mut partitions = Vec::with_capacity(shape.definitions().len());
+    for &(partition_x, partition_y, partition_width, partition_height) in shape.definitions() {
+        let predicted = partition_motion_predictor(
+            mb_index,
+            mb_width,
+            partition_x,
+            partition_y,
+            partition_width,
+            partition_height,
+            0,
+            motion_valid,
+            motion_vectors,
+            reference_indices,
+        );
+        let neighbor_sum = partition_neighbor_mvd_sum(
+            mb_index,
+            mb_width,
+            partition_x,
+            partition_y,
+            motion_valid,
+            motion_vector_deltas,
+        );
+        let delta = [
+            decode_cabac_mvd(decoder, contexts, 40, neighbor_sum[0])?,
+            decode_cabac_mvd(decoder, contexts, 47, neighbor_sum[1])?,
+        ];
+        let motion = [predicted[0] + delta[0], predicted[1] + delta[1]];
+        for block_y in partition_y / 4..(partition_y + partition_height) / 4 {
+            for block_x in partition_x / 4..(partition_x + partition_width) / 4 {
+                let block = block_y * 4 + block_x;
+                motion_valid[mb_index][block] = true;
+                motion_vectors[mb_index][block] = motion;
+                motion_vector_deltas[mb_index][block] = [delta[0].abs(), delta[1].abs()];
+                reference_indices[mb_index][block] = 0;
+            }
+        }
+        partitions.push((
+            partition_x,
+            partition_y,
+            partition_width,
+            partition_height,
+            motion,
+            delta,
+        ));
+    }
+    Ok(partitions)
+}
+
 /// Reconstruct a CABAC B slice made entirely of `B_L0_16x16` macroblocks.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_cabac_b_l0_16x16_slice(
@@ -815,21 +892,35 @@ pub fn decode_cabac_b16_slice(
                 "B direct without direct_8x8_inference",
             ));
         }
-        let mut prediction_list = if direct {
-            2
-        } else if decoder.decode_bin(&mut contexts[30]) == 0 {
-            decoder.decode_bin(&mut contexts[32]) as u8
-        } else if decoder.decode_bin(&mut contexts[31]) == 0
-            && decoder.decode_bin(&mut contexts[32]) == 0
-            && decoder.decode_bin(&mut contexts[32]) == 0
-            && decoder.decode_bin(&mut contexts[32]) == 0
-        {
-            2
-        } else {
-            return Err(H264CabacError::Unsupported(
-                "B slice contains an unsupported 16x16 type",
-            ));
-        };
+        let mut prediction_list = 2;
+        let mut partition_shape = B16PartitionShape::P16x16;
+        if !direct {
+            if decoder.decode_bin(&mut contexts[30]) == 0 {
+                prediction_list = decoder.decode_bin(&mut contexts[32]) as u8;
+            } else {
+                let bits = (decoder.decode_bin(&mut contexts[31]) << 3)
+                    | (decoder.decode_bin(&mut contexts[32]) << 2)
+                    | (decoder.decode_bin(&mut contexts[32]) << 1)
+                    | decoder.decode_bin(&mut contexts[32]);
+                match bits {
+                    0 => prediction_list = 2,
+                    1 => {
+                        prediction_list = 0;
+                        partition_shape = B16PartitionShape::P16x8;
+                    }
+                    2 => {
+                        prediction_list = 0;
+                        partition_shape = B16PartitionShape::P8x16;
+                    }
+                    _ => {
+                        return Err(H264CabacError::Unsupported(
+                            "B slice contains an unsupported macroblock type",
+                        ));
+                    }
+                }
+            }
+        }
+        let mut shaped_motion_partitions = Vec::new();
         let (motion_vector_l0, motion_vector_delta_l0, motion_vector_l1, motion_vector_delta_l1) =
             if direct {
                 let (mut motion_l0, mut motion_l1) = if slice.direct_spatial {
@@ -884,6 +975,19 @@ pub fn decode_cabac_b16_slice(
                     motion_l1,
                     motion_l1.map(|_| [0, 0]),
                 )
+            } else if partition_shape != B16PartitionShape::P16x16 {
+                shaped_motion_partitions = decode_b_l0_partition_motions(
+                    &mut decoder,
+                    &mut contexts,
+                    mb_index,
+                    mb_width,
+                    partition_shape,
+                    &mut motion_valid,
+                    &mut motion_vectors,
+                    &mut motion_vector_deltas,
+                    &mut reference_indices,
+                )?;
+                (None, None, None, None)
             } else {
                 let (motion_vector_l0, motion_vector_delta_l0) = if prediction_list == 0
                     || prediction_list == 2
@@ -967,7 +1071,27 @@ pub fn decode_cabac_b16_slice(
         qp = add_cabac_qp(qp, qp_delta, max_qp)?;
         let mb_x = (mb_index % mb_width) * 16;
         let mb_y = (mb_index / mb_width) * 16;
-        if prediction_list != 2 {
+        if !shaped_motion_partitions.is_empty() {
+            for &(partition_x, partition_y, partition_width, partition_height, motion, _) in
+                &shaped_motion_partitions
+            {
+                motion_compensate_partition(
+                    references_l0[0].luma,
+                    references_l0[0].chroma_cb,
+                    references_l0[0].chroma_cr,
+                    &mut luma_plane,
+                    &mut cb_plane,
+                    &mut cr_plane,
+                    mb_x + partition_x,
+                    mb_y + partition_y,
+                    partition_width,
+                    partition_height,
+                    motion,
+                    context.bit_depth_luma.min(context.bit_depth_chroma),
+                    None,
+                )?;
+            }
+        } else if prediction_list != 2 {
             let (reference, motion_vector) = if prediction_list == 0 {
                 (&references_l0[0], motion_vector_l0.unwrap())
             } else {
@@ -1057,17 +1181,35 @@ pub fn decode_cabac_b16_slice(
         }
         state.coded_flags[mb_index] = coded_flags;
         state.qp[mb_index] = qp as u8;
-        motion_partitions.push(DecodedMotionPartition {
-            macroblock: mb_index,
-            x: mb_x,
-            y: mb_y,
-            width: 16,
-            height: 16,
-            motion_vector: motion_vector_l0.or(motion_vector_l1).unwrap(),
-            motion_vector_delta: motion_vector_delta_l0.or(motion_vector_delta_l1).unwrap(),
-            reference_index: 0,
-            prediction_list,
-        });
+        if shaped_motion_partitions.is_empty() {
+            motion_partitions.push(DecodedMotionPartition {
+                macroblock: mb_index,
+                x: mb_x,
+                y: mb_y,
+                width: 16,
+                height: 16,
+                motion_vector: motion_vector_l0.or(motion_vector_l1).unwrap(),
+                motion_vector_delta: motion_vector_delta_l0.or(motion_vector_delta_l1).unwrap(),
+                reference_index: 0,
+                prediction_list,
+            });
+        } else {
+            for &(partition_x, partition_y, width, height, motion_vector, motion_vector_delta) in
+                &shaped_motion_partitions
+            {
+                motion_partitions.push(DecodedMotionPartition {
+                    macroblock: mb_index,
+                    x: mb_x + partition_x,
+                    y: mb_y + partition_y,
+                    width,
+                    height,
+                    motion_vector,
+                    motion_vector_delta,
+                    reference_index: 0,
+                    prediction_list,
+                });
+            }
+        }
         macroblocks += 1;
         if decoder.decode_terminate() {
             break;
