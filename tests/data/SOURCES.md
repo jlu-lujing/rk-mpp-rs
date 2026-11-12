@@ -327,6 +327,12 @@ cargo test --test fixture_manifest
   differences, spatial neighbor MV derivation, per-list direct MC, the BI
   blend, zero-residual skip reconstruction and coded direct residual syntax.
   The displayed B frame matches FFmpeg sample-exactly.
+- `h264_cabac_b_temporal_direct_skip_48x32` keeps the same forced macroblock
+  mix but selects temporal direct. The IDR/P/B POCs are 0/4/2, so the colocated
+  P-frame list-0 motion is projected with scale factor 128 into the B frame's
+  L0/L1 vectors. The test decodes the P picture first, supplies its 16x16
+  motion map as reference metadata and compares the complete displayed B frame
+  with FFmpeg.
 - `h264_cabac_p16_48x32` is a two-frame 48x32 Main-profile CABAC stream with a
   constant-gray IDR followed by one-frame random luma noise. It was produced by
   a temporary local x264 source build whose analysis path was restricted to

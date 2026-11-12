@@ -1,7 +1,8 @@
 use rk_mpp_rs::codec::h264::parser::{parse_pps, parse_slice_header, parse_sps, split_annex_b};
 use rk_mpp_rs::reference::h264_cabac::{
     decode_cabac_b16_slice, decode_cabac_i_picture_slices, decode_cabac_p_multi_ref_slice,
-    decode_cabac_p_skip_slice, decode_cabac_p_slice, CabacReferenceFrame, DecodedMotionPartition,
+    decode_cabac_p_skip_slice, decode_cabac_p_slice, CabacReferenceFrame,
+    CabacReferenceMotionFrame, DecodedMotionPartition,
 };
 use rk_mpp_rs::reference::h264_deblock::{deblock_i_picture, deblock_p_picture};
 use rk_mpp_rs::reference::h264_recon::PlaneMut;
@@ -304,6 +305,16 @@ fn cabac_b_direct_and_skip_match_ffmpeg_yuv420p() {
     compare_cabac_b16_fixture(
         include_bytes!("../tests/data/h264_cabac_b_direct_skip_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_b_direct_skip_48x32.yuv"),
+        None,
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_b_temporal_direct_and_skip_match_ffmpeg_yuv420p() {
+    compare_cabac_b16_fixture(
+        include_bytes!("../tests/data/h264_cabac_b_temporal_direct_skip_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_b_temporal_direct_skip_48x32.yuv"),
         None,
     )
     .unwrap();
@@ -1041,11 +1052,15 @@ fn compare_cabac_p16_multiref_fixture(stream: &[u8], expected: &[u8]) -> Result<
             luma: &reference0_y,
             chroma_cb: &reference0_u,
             chroma_cr: &reference0_v,
+            picture_order_count: 0,
+            motion: None,
         },
         CabacReferenceFrame {
             luma: &reference1_y,
             chroma_cb: &reference1_u,
             chroma_cr: &reference1_v,
+            picture_order_count: 1,
+            motion: None,
         },
     ];
     let mut p_y = vec![0u16; y_len];
@@ -1123,6 +1138,10 @@ fn compare_cabac_b16_fixture(
         .iter()
         .position(|header| header.is_b())
         .ok_or("missing B slice")?;
+    let p_index = headers
+        .iter()
+        .position(|header| header.is_p())
+        .ok_or("missing P slice")?;
     if headers.iter().filter(|header| header.is_b()).count() != 1 {
         return Err("expected exactly one B slice".into());
     }
@@ -1159,11 +1178,30 @@ fn compare_cabac_b16_fixture(
         luma: &l0_y,
         chroma_cb: &l0_u,
         chroma_cr: &l0_v,
+        picture_order_count: headers[0].poc_lsb.unwrap_or(0) as i32,
+        motion: None,
     }];
+    let mut p_y = vec![0u16; y_len];
+    let mut p_u = vec![0u16; chroma_len];
+    let mut p_v = vec![0u16; chroma_len];
+    let p_decoded = decode_cabac_p_multi_ref_slice(
+        &slice_nals[p_index].rbsp,
+        &headers[p_index],
+        &sps,
+        &pps,
+        &references_l0,
+        &mut p_y,
+        &mut p_u,
+        &mut p_v,
+    )
+    .map_err(|error| error.to_string())?;
+    let l1_motion = CabacReferenceMotionFrame { slice: &p_decoded };
     let references_l1 = [CabacReferenceFrame {
         luma: &l1_y,
         chroma_cb: &l1_u,
         chroma_cr: &l1_v,
+        picture_order_count: headers[p_index].poc_lsb.unwrap_or(0) as i32,
+        motion: Some(l1_motion),
     }];
     let mut b_y = vec![0u16; y_len];
     let mut b_u = vec![0u16; chroma_len];
@@ -1173,6 +1211,7 @@ fn compare_cabac_b16_fixture(
         &headers[b_index],
         &sps,
         &pps,
+        headers[b_index].poc_lsb.unwrap_or(0) as i32,
         &references_l0,
         &references_l1,
         &mut b_y,

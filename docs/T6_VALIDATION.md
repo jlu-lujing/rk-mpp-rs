@@ -437,6 +437,29 @@ t62 back to the RK3588 reference board.
   41 ignored**, and release-library tests are **1123 passed / 0 failed /
   0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
 
+## 2026-11-12 H.264 CABAC temporal B_Direct and B_Skip
+
+- A second IDR+P+B stream keeps the same BI/direct/skip mix but selects
+  temporal direct. The coded picture POCs are 0/4/2. The test decodes the P
+  picture first and supplies its 16x16 motion partitions through the reference
+  frame metadata.
+- Direct motion uses the normative distance scale, here 128, to project the
+  colocated P list-0 vector into the B picture's L0 vector; the L1 vector is
+  the projected vector minus the colocated vector. Both lists then use the
+  existing fractional luma/chroma motion compensation and BI blend.
+- Stream SHA-256 is
+  `b7bd26b4b60abe4843d72638f4b7809e183289fede92d346352f6df559ab5932`,
+  decoded YUV is
+  `68c2443dbf2eece268399d7f057f3598c0e417b9786d9a5b0ae6cad256c176ef`,
+  and the displayed 48x32 frame matches FFmpeg sample-exactly.
+- Col-zero B references, colocated non-16x16 partitions, weighted B and B
+  deblocking remain open.
+- The B16 focused gate is **5/5**, the complete CABAC integration suite is
+  **29/29**, the crate `--all-targets` gate is **1283 passed / 0 failed /
+  41 ignored**, `scripts/board_workspace_gate.sh` is **1287 passed / 0 failed /
+  41 ignored**, and release-library tests are **1123 passed / 0 failed /
+  0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
+
 ## 2026-11-08 W5-4 pool closeout
 
 - H.265 lease test passed; the HEVC board suite is **13 PASS / 1 SKIP /

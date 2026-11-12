@@ -71,6 +71,13 @@ pub struct CabacReferenceFrame<'a> {
     pub luma: &'a [u16],
     pub chroma_cb: &'a [u16],
     pub chroma_cr: &'a [u16],
+    pub picture_order_count: i32,
+    pub motion: Option<CabacReferenceMotionFrame<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CabacReferenceMotionFrame<'a> {
+    pub slice: &'a DecodedCabacSlice,
 }
 
 /// Reconstruct a CABAC P slice whose macroblocks all use `P_Skip`.
@@ -279,6 +286,8 @@ pub fn decode_cabac_p_slice(
             luma: reference_luma,
             chroma_cb: reference_chroma_cb,
             chroma_cr: reference_chroma_cr,
+            picture_order_count: 0,
+            motion: None,
         }],
         luma,
         chroma_cb,
@@ -609,6 +618,7 @@ pub fn decode_cabac_b_l0_16x16_slice(
         slice,
         sps,
         pps,
+        slice.poc_lsb.unwrap_or(0) as i32,
         references_l0,
         references_l1,
         luma,
@@ -625,6 +635,7 @@ pub fn decode_cabac_b16_slice(
     slice: &SliceHeader,
     sps: &Sps,
     pps: &Pps,
+    current_picture_order_count: i32,
     references_l0: &[CabacReferenceFrame<'_>],
     references_l1: &[CabacReferenceFrame<'_>],
     luma: &mut [u16],
@@ -799,9 +810,6 @@ pub fn decode_cabac_b16_slice(
             let type_context = 27 + usize::from(left_non_direct) + usize::from(top_non_direct);
             decoder.decode_bin(&mut contexts[type_context]) == 0
         };
-        if direct && !slice.direct_spatial {
-            return Err(H264CabacError::Unsupported("temporal B direct"));
-        }
         if direct && !sps.direct_8x8_inference {
             return Err(H264CabacError::Unsupported(
                 "B direct without direct_8x8_inference",
@@ -824,20 +832,32 @@ pub fn decode_cabac_b16_slice(
         };
         let (motion_vector_l0, motion_vector_delta_l0, motion_vector_l1, motion_vector_delta_l1) =
             if direct {
-                let mut motion_l0 = spatial_direct_motion(
-                    mb_index,
-                    mb_width,
-                    &motion_valid,
-                    &motion_vectors,
-                    &reference_indices,
-                );
-                let mut motion_l1 = spatial_direct_motion(
-                    mb_index,
-                    mb_width,
-                    &motion_valid_l1,
-                    &motion_vectors_l1,
-                    &reference_indices_l1,
-                );
+                let (mut motion_l0, mut motion_l1) = if slice.direct_spatial {
+                    (
+                        spatial_direct_motion(
+                            mb_index,
+                            mb_width,
+                            &motion_valid,
+                            &motion_vectors,
+                            &reference_indices,
+                        ),
+                        spatial_direct_motion(
+                            mb_index,
+                            mb_width,
+                            &motion_valid_l1,
+                            &motion_vectors_l1,
+                            &reference_indices_l1,
+                        ),
+                    )
+                } else {
+                    let (motion_l0, motion_l1) = temporal_direct_motion(
+                        mb_index,
+                        current_picture_order_count,
+                        references_l0,
+                        references_l1,
+                    )?;
+                    (Some(motion_l0), Some(motion_l1))
+                };
                 if motion_l0.is_none() && motion_l1.is_none() {
                     motion_l0 = Some([0, 0]);
                     motion_l1 = Some([0, 0]);
@@ -1184,6 +1204,57 @@ fn spatial_direct_motion(
         1 => Some(top_right.unwrap().1),
         _ => unreachable!("spatial direct requires at least one available reference"),
     }
+}
+
+fn temporal_scale_factor(current_poc: i32, future_poc: i32, past_poc: i32) -> i32 {
+    let td = (future_poc - past_poc).clamp(i32::from(i8::MIN), i32::from(i8::MAX));
+    if td == 0 {
+        return 256;
+    }
+    let tb = (current_poc - past_poc).clamp(i32::from(i8::MIN), i32::from(i8::MAX));
+    let tx = (16_384 + (td.abs() >> 1)) / td;
+    ((tb * tx + 32) >> 6).clamp(-1024, 1023)
+}
+
+fn temporal_direct_motion(
+    mb_index: usize,
+    current_picture_order_count: i32,
+    references_l0: &[CabacReferenceFrame<'_>],
+    references_l1: &[CabacReferenceFrame<'_>],
+) -> Result<([i32; 2], [i32; 2]), H264CabacError> {
+    let motion = references_l1[0].motion.ok_or(H264CabacError::Unsupported(
+        "temporal B direct reference motion",
+    ))?;
+    let colocated = motion
+        .slice
+        .motion_partitions
+        .iter()
+        .find(|partition| {
+            partition.macroblock == mb_index && partition.width == 16 && partition.height == 16
+        })
+        .ok_or(H264CabacError::Unsupported(
+            "temporal B direct colocated partition",
+        ))?;
+    if colocated.reference_index != 0 {
+        return Err(H264CabacError::Unsupported(
+            "temporal B direct reference mapping",
+        ));
+    }
+    let scale = temporal_scale_factor(
+        current_picture_order_count,
+        references_l1[0].picture_order_count,
+        references_l0[0].picture_order_count,
+    );
+    let colocated_motion = colocated.motion_vector;
+    let motion_l0 = [
+        (scale * colocated_motion[0] + 128) >> 8,
+        (scale * colocated_motion[1] + 128) >> 8,
+    ];
+    let motion_l1 = [
+        motion_l0[0] - colocated_motion[0],
+        motion_l0[1] - colocated_motion[1],
+    ];
+    Ok((motion_l0, motion_l1))
 }
 
 fn partition_motion_predictor(
