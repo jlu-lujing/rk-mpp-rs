@@ -448,6 +448,138 @@ impl Frame {
         }
     }
 
+    /// Convert between the supported 8-bit NV12/I420 layouts and planar
+    /// 10-bit I420 using CPU-accessible storage.
+    ///
+    /// 8-bit values expand to 10 bits with `(v << 2) | (v >> 6)` and contract
+    /// with `v >> 2`, so a round trip is lossless before clipping. The
+    /// result owns a compact CPU frame; timestamps, POC and error metadata are
+    /// preserved.
+    pub fn convert_format(&self, format: PixelFormat) -> Result<Self, Error> {
+        if format == self.format {
+            return Ok(self.clone());
+        }
+        let width = self.width;
+        let height = self.height;
+        let chroma_width = width.div_ceil(2);
+        let chroma_height = height.div_ceil(2);
+        let y_size = width * height;
+        let chroma_size = chroma_width * chroma_height;
+
+        let read_u8 = |index: usize, plane_width: usize, plane_height: usize| {
+            let plane = self
+                .plane(index)
+                .ok_or(Error::State("source frame is missing a plane"))?;
+            let mut compact = Vec::with_capacity(plane_width * plane_height);
+            for row in 0..plane_height {
+                let start = row * plane.stride;
+                compact.extend_from_slice(&plane.data[start..start + plane_width]);
+            }
+            Ok::<_, Error>(compact)
+        };
+        let read_u16 = |index: usize, plane_width: usize, plane_height: usize| {
+            let plane = self
+                .plane(index)
+                .ok_or(Error::State("source frame is missing a plane"))?;
+            let mut compact = Vec::with_capacity(plane_width * plane_height);
+            for row in 0..plane_height {
+                for column in 0..plane_width {
+                    let offset = row * plane.stride + column * 2;
+                    compact.push(u16::from_le_bytes([
+                        plane.data[offset],
+                        plane.data[offset + 1],
+                    ]));
+                }
+            }
+            Ok::<_, Error>(compact)
+        };
+
+        let (y, u, v) = match self.format {
+            PixelFormat::I420 => {
+                let y = read_u8(0, width, height)?;
+                let u = read_u8(1, chroma_width, chroma_height)?;
+                let v = read_u8(2, chroma_width, chroma_height)?;
+                (
+                    y.into_iter().map(u16::from).collect(),
+                    u.into_iter().map(u16::from).collect(),
+                    v.into_iter().map(u16::from).collect(),
+                )
+            }
+            PixelFormat::Nv12 => {
+                let y = read_u8(0, width, height)?;
+                let uv = read_u8(1, chroma_width * 2, chroma_height)?;
+                let mut u = Vec::with_capacity(chroma_size);
+                let mut v = Vec::with_capacity(chroma_size);
+                for row in uv.chunks_exact(chroma_width * 2) {
+                    for pair in row.chunks_exact(2) {
+                        u.push(u16::from(pair[0]));
+                        v.push(u16::from(pair[1]));
+                    }
+                }
+                (y.into_iter().map(u16::from).collect(), u, v)
+            }
+            PixelFormat::I420P10 => (
+                read_u16(0, width, height)?,
+                read_u16(1, chroma_width, chroma_height)?,
+                read_u16(2, chroma_width, chroma_height)?,
+            ),
+        };
+        let source_is_ten_bit = self.format == PixelFormat::I420P10;
+        let to_8bit = |sample: u16| {
+            if source_is_ten_bit {
+                contract_10bit(sample)
+            } else {
+                sample as u8
+            }
+        };
+        let to_10bit = |sample: u16| {
+            if source_is_ten_bit {
+                sample
+            } else {
+                expand_8bit(sample)
+            }
+        };
+
+        let bytes = match format {
+            PixelFormat::I420 => {
+                let mut bytes = Vec::with_capacity(y_size + chroma_size * 2);
+                bytes.extend(y.into_iter().map(to_8bit));
+                bytes.extend(u.into_iter().map(to_8bit));
+                bytes.extend(v.into_iter().map(to_8bit));
+                bytes
+            }
+            PixelFormat::Nv12 => {
+                let mut bytes = Vec::with_capacity(y_size + chroma_size * 2);
+                bytes.extend(y.into_iter().map(to_8bit));
+                for (u, v) in u.into_iter().zip(v) {
+                    bytes.push(to_8bit(u));
+                    bytes.push(to_8bit(v));
+                }
+                bytes
+            }
+            PixelFormat::I420P10 => {
+                let mut bytes = Vec::with_capacity((y_size + chroma_size * 2) * 2);
+                for sample in y.into_iter().chain(u).chain(v) {
+                    bytes.extend_from_slice(&to_10bit(sample).to_le_bytes());
+                }
+                bytes
+            }
+        };
+        let mut frame = Self {
+            width,
+            height,
+            format,
+            pts: self.pts,
+            dts: self.dts,
+            poc: self.poc,
+            err_info: self.err_info,
+            storage: FrameStorage::Cpu(bytes),
+            planes: [PlaneLayout::default(); 3],
+        };
+        frame.layout_yuv()?;
+        Ok(frame)
+    }
+
     /// Scale a strided NV12 frame directly into RGB888 model input.
     ///
     /// DMA-BUF frames are read in place; no whole-frame CPU NV12 or RGB
@@ -2087,6 +2219,15 @@ fn write_dma(buffer: &mut DmaBuf, bytes: &[u8]) -> Result<(), Error> {
     buffer.sync_write_end().map_err(Error::from)
 }
 
+fn expand_8bit(value: u16) -> u16 {
+    let value = value & 0xff;
+    (value << 2) | (value >> 6)
+}
+
+fn contract_10bit(value: u16) -> u8 {
+    (value.min(1023) >> 2) as u8
+}
+
 fn i420_to_nv12(planar: &[u8], width: usize, height: usize) -> Vec<u8> {
     let chroma_width = width / 2;
     let chroma_height = height / 2;
@@ -2279,9 +2420,25 @@ pub fn hevc_access_units(data: &[u8]) -> Vec<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_jpegs, take_h264_access_units, take_hevc_access_units, Codec, DecoderConfig,
-        PacketFlags, PixelFormat,
+        extract_jpegs, take_h264_access_units, take_hevc_access_units, Codec, DecoderConfig, Frame,
+        FrameStorage, PacketFlags, PixelFormat, PlaneLayout,
     };
+
+    fn cpu_frame(width: usize, height: usize, format: PixelFormat, bytes: Vec<u8>) -> Frame {
+        let mut frame = Frame {
+            width,
+            height,
+            format,
+            pts: 17,
+            dts: 11,
+            poc: 3,
+            err_info: 9,
+            storage: FrameStorage::Cpu(bytes),
+            planes: [PlaneLayout::default(); 3],
+        };
+        frame.layout_yuv().unwrap();
+        frame
+    }
 
     #[test]
     fn h264_framer_keeps_the_tail_until_a_new_picture_or_flush() {
@@ -2355,6 +2512,60 @@ mod tests {
             super::i420_to_nv12(&planar, 4, 2),
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 10, 12]
         );
+    }
+
+    #[test]
+    fn frame_8bit_to_10bit_round_trips_i420_and_preserves_metadata() {
+        let input: Vec<u8> = [0, 1, 64, 255, 32, 128, 96, 224]
+            .into_iter()
+            .chain([0, 255].into_iter())
+            .chain([64, 128].into_iter())
+            .collect();
+        let frame = cpu_frame(4, 2, PixelFormat::I420, input.clone());
+        let ten_bit = frame.convert_format(PixelFormat::I420P10).unwrap();
+        assert_eq!(ten_bit.format(), PixelFormat::I420P10);
+        assert_eq!(
+            (
+                ten_bit.width(),
+                ten_bit.height(),
+                ten_bit.pts(),
+                ten_bit.dts()
+            ),
+            (4, 2, 17, 11)
+        );
+        assert_eq!((ten_bit.poc(), ten_bit.err_info()), (3, 9));
+        let samples: Vec<u16> = ten_bit
+            .data()
+            .chunks_exact(2)
+            .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
+            .collect();
+        assert_eq!(
+            samples,
+            [0, 4, 257, 1023, 128, 514, 385, 899, 0, 1023, 257, 514]
+        );
+
+        let eight_bit = ten_bit.convert_format(PixelFormat::I420).unwrap();
+        assert_eq!(eight_bit.format(), PixelFormat::I420);
+        assert_eq!(eight_bit.data(), input);
+    }
+
+    #[test]
+    fn frame_nv12_to_i420p10_deinterleaves_and_expands_chroma() {
+        let frame = cpu_frame(
+            4,
+            2,
+            PixelFormat::Nv12,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 64, 255, 1, 128],
+        );
+        let ten_bit = frame.convert_format(PixelFormat::I420P10).unwrap();
+        let samples: Vec<u16> = ten_bit
+            .data()
+            .chunks_exact(2)
+            .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
+            .collect();
+        assert_eq!(samples, [4, 8, 12, 16, 20, 24, 28, 32, 257, 4, 1023, 514]);
+        let eight_bit = ten_bit.convert_format(PixelFormat::Nv12).unwrap();
+        assert_eq!(eight_bit.data(), [1, 2, 3, 4, 5, 6, 7, 8, 64, 255, 1, 128]);
     }
 
     #[test]
