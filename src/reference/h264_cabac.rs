@@ -74,6 +74,16 @@ enum B16PartitionShape {
     P8x8,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DecodedBPartitionMotion {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    motion_l0: Option<([i32; 2], [i32; 2])>,
+    motion_l1: Option<([i32; 2], [i32; 2])>,
+}
+
 impl B16PartitionShape {
     fn definitions(self) -> &'static [(usize, usize, usize, usize)] {
         match self {
@@ -620,6 +630,58 @@ fn decode_b16_motion(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn decode_b_list_partition_motion(
+    decoder: &mut CabacDecoder<'_>,
+    contexts: &mut [Context],
+    mb_index: usize,
+    mb_width: usize,
+    partition_x: usize,
+    partition_y: usize,
+    partition_width: usize,
+    partition_height: usize,
+    motion_valid: &mut [[bool; 16]],
+    motion_vectors: &mut [[[i32; 2]; 16]],
+    motion_vector_deltas: &mut [[[i32; 2]; 16]],
+    reference_indices: &mut [[u8; 16]],
+) -> Result<([i32; 2], [i32; 2]), H264CabacError> {
+    let predicted = partition_motion_predictor(
+        mb_index,
+        mb_width,
+        partition_x,
+        partition_y,
+        partition_width,
+        partition_height,
+        0,
+        motion_valid,
+        motion_vectors,
+        reference_indices,
+    );
+    let neighbor_sum = partition_neighbor_mvd_sum(
+        mb_index,
+        mb_width,
+        partition_x,
+        partition_y,
+        motion_valid,
+        motion_vector_deltas,
+    );
+    let delta = [
+        decode_cabac_mvd(decoder, contexts, 40, neighbor_sum[0])?,
+        decode_cabac_mvd(decoder, contexts, 47, neighbor_sum[1])?,
+    ];
+    let motion = [predicted[0] + delta[0], predicted[1] + delta[1]];
+    for block_y in partition_y / 4..(partition_y + partition_height) / 4 {
+        for block_x in partition_x / 4..(partition_x + partition_width) / 4 {
+            let block = block_y * 4 + block_x;
+            motion_valid[mb_index][block] = true;
+            motion_vectors[mb_index][block] = motion;
+            motion_vector_deltas[mb_index][block] = [delta[0].abs(), delta[1].abs()];
+            reference_indices[mb_index][block] = 0;
+        }
+    }
+    Ok((motion, delta))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn decode_b_l0_partition_motions(
     decoder: &mut CabacDecoder<'_>,
     contexts: &mut [Context],
@@ -630,53 +692,36 @@ fn decode_b_l0_partition_motions(
     motion_vectors: &mut [[[i32; 2]; 16]],
     motion_vector_deltas: &mut [[[i32; 2]; 16]],
     reference_indices: &mut [[u8; 16]],
-) -> Result<Vec<(usize, usize, usize, usize, [i32; 2], [i32; 2])>, H264CabacError> {
-    let mut partitions = Vec::with_capacity(definitions.len());
-    for &(partition_x, partition_y, partition_width, partition_height) in definitions {
-        let predicted = partition_motion_predictor(
-            mb_index,
-            mb_width,
-            partition_x,
-            partition_y,
-            partition_width,
-            partition_height,
-            0,
-            motion_valid,
-            motion_vectors,
-            reference_indices,
-        );
-        let neighbor_sum = partition_neighbor_mvd_sum(
-            mb_index,
-            mb_width,
-            partition_x,
-            partition_y,
-            motion_valid,
-            motion_vector_deltas,
-        );
-        let delta = [
-            decode_cabac_mvd(decoder, contexts, 40, neighbor_sum[0])?,
-            decode_cabac_mvd(decoder, contexts, 47, neighbor_sum[1])?,
-        ];
-        let motion = [predicted[0] + delta[0], predicted[1] + delta[1]];
-        for block_y in partition_y / 4..(partition_y + partition_height) / 4 {
-            for block_x in partition_x / 4..(partition_x + partition_width) / 4 {
-                let block = block_y * 4 + block_x;
-                motion_valid[mb_index][block] = true;
-                motion_vectors[mb_index][block] = motion;
-                motion_vector_deltas[mb_index][block] = [delta[0].abs(), delta[1].abs()];
-                reference_indices[mb_index][block] = 0;
-            }
-        }
-        partitions.push((
-            partition_x,
-            partition_y,
-            partition_width,
-            partition_height,
-            motion,
-            delta,
-        ));
-    }
-    Ok(partitions)
+) -> Result<Vec<DecodedBPartitionMotion>, H264CabacError> {
+    definitions
+        .iter()
+        .map(
+            |&(partition_x, partition_y, partition_width, partition_height)| {
+                let (motion, delta) = decode_b_list_partition_motion(
+                    decoder,
+                    contexts,
+                    mb_index,
+                    mb_width,
+                    partition_x,
+                    partition_y,
+                    partition_width,
+                    partition_height,
+                    motion_valid,
+                    motion_vectors,
+                    motion_vector_deltas,
+                    reference_indices,
+                )?;
+                Ok(DecodedBPartitionMotion {
+                    x: partition_x,
+                    y: partition_y,
+                    width: partition_width,
+                    height: partition_height,
+                    motion_l0: Some((motion, delta)),
+                    motion_l1: None,
+                })
+            },
+        )
+        .collect()
 }
 
 /// Reconstruct a CABAC B slice made entirely of `B_L0_16x16` macroblocks.
@@ -896,6 +941,7 @@ pub fn decode_cabac_b16_slice(
         }
         let mut prediction_list = 2;
         let mut partition_shape = B16PartitionShape::P16x16;
+        let mut b8x8_sub_types = Vec::new();
         if !direct {
             if decoder.decode_bin(&mut contexts[30]) == 0 {
                 prediction_list = decoder.decode_bin(&mut contexts[32]) as u8;
@@ -915,20 +961,32 @@ pub fn decode_cabac_b16_slice(
                         partition_shape = B16PartitionShape::P8x16;
                     }
                     15 => {
-                        prediction_list = 0;
+                        prediction_list = 2;
                         partition_shape = B16PartitionShape::P8x8;
+                        b8x8_sub_types.reserve(4);
                         for _ in 0..4 {
                             if decoder.decode_bin(&mut contexts[36]) == 0 {
                                 return Err(H264CabacError::Unsupported(
                                     "B_8x8 direct subpartition",
                                 ));
                             }
-                            if decoder.decode_bin(&mut contexts[37]) != 0
-                                || decoder.decode_bin(&mut contexts[39]) != 0
-                            {
-                                return Err(H264CabacError::Unsupported(
-                                    "B_8x8 non-L0 subpartition",
-                                ));
+                            if decoder.decode_bin(&mut contexts[37]) == 0 {
+                                b8x8_sub_types.push(1 + decoder.decode_bin(&mut contexts[39]));
+                            } else {
+                                if decoder.decode_bin(&mut contexts[38]) != 0 {
+                                    return Err(H264CabacError::Unsupported(
+                                        "B_8x8 8x4/4x8/4x4 subpartition",
+                                    ));
+                                }
+                                let first = decoder.decode_bin(&mut contexts[39]);
+                                let second = decoder.decode_bin(&mut contexts[39]);
+                                let sub_type = 3 + 2 * first + second;
+                                if sub_type != 3 {
+                                    return Err(H264CabacError::Unsupported(
+                                        "B_8x8 non-8x8 subpartition",
+                                    ));
+                                }
+                                b8x8_sub_types.push(sub_type);
                             }
                         }
                     }
@@ -995,6 +1053,64 @@ pub fn decode_cabac_b16_slice(
                     motion_l1,
                     motion_l1.map(|_| [0, 0]),
                 )
+            } else if partition_shape == B16PartitionShape::P8x8 {
+                let definitions = partition_shape.definitions();
+                shaped_motion_partitions = definitions
+                    .iter()
+                    .map(
+                        |&(partition_x, partition_y, partition_width, partition_height)| {
+                            DecodedBPartitionMotion {
+                                x: partition_x,
+                                y: partition_y,
+                                width: partition_width,
+                                height: partition_height,
+                                motion_l0: None,
+                                motion_l1: None,
+                            }
+                        },
+                    )
+                    .collect();
+                for (partition, &(partition_x, partition_y, partition_width, partition_height)) in
+                    shaped_motion_partitions.iter_mut().zip(definitions)
+                {
+                    if matches!(b8x8_sub_types[partition.x / 8 + partition.y / 8 * 2], 1 | 3) {
+                        partition.motion_l0 = Some(decode_b_list_partition_motion(
+                            &mut decoder,
+                            &mut contexts,
+                            mb_index,
+                            mb_width,
+                            partition_x,
+                            partition_y,
+                            partition_width,
+                            partition_height,
+                            &mut motion_valid,
+                            &mut motion_vectors,
+                            &mut motion_vector_deltas,
+                            &mut reference_indices,
+                        )?);
+                    }
+                }
+                for (partition, &(partition_x, partition_y, partition_width, partition_height)) in
+                    shaped_motion_partitions.iter_mut().zip(definitions)
+                {
+                    if matches!(b8x8_sub_types[partition.x / 8 + partition.y / 8 * 2], 2 | 3) {
+                        partition.motion_l1 = Some(decode_b_list_partition_motion(
+                            &mut decoder,
+                            &mut contexts,
+                            mb_index,
+                            mb_width,
+                            partition_x,
+                            partition_y,
+                            partition_width,
+                            partition_height,
+                            &mut motion_valid_l1,
+                            &mut motion_vectors_l1,
+                            &mut motion_vector_deltas_l1,
+                            &mut reference_indices_l1,
+                        )?);
+                    }
+                }
+                (None, None, None, None)
             } else if partition_shape != B16PartitionShape::P16x16 {
                 shaped_motion_partitions = decode_b_l0_partition_motions(
                     &mut decoder,
@@ -1092,24 +1208,97 @@ pub fn decode_cabac_b16_slice(
         let mb_x = (mb_index % mb_width) * 16;
         let mb_y = (mb_index / mb_width) * 16;
         if !shaped_motion_partitions.is_empty() {
-            for &(partition_x, partition_y, partition_width, partition_height, motion, _) in
-                &shaped_motion_partitions
-            {
-                motion_compensate_partition(
-                    references_l0[0].luma,
-                    references_l0[0].chroma_cb,
-                    references_l0[0].chroma_cr,
-                    &mut luma_plane,
-                    &mut cb_plane,
-                    &mut cr_plane,
-                    mb_x + partition_x,
-                    mb_y + partition_y,
-                    partition_width,
-                    partition_height,
-                    motion,
-                    context.bit_depth_luma.min(context.bit_depth_chroma),
-                    None,
-                )?;
+            for partition in &shaped_motion_partitions {
+                let partition_x = mb_x + partition.x;
+                let partition_y = mb_y + partition.y;
+                let bit_depth = context.bit_depth_luma.min(context.bit_depth_chroma);
+                match (partition.motion_l0, partition.motion_l1) {
+                    (Some((motion, _)), None) => motion_compensate_partition(
+                        references_l0[0].luma,
+                        references_l0[0].chroma_cb,
+                        references_l0[0].chroma_cr,
+                        &mut luma_plane,
+                        &mut cb_plane,
+                        &mut cr_plane,
+                        partition_x,
+                        partition_y,
+                        partition.width,
+                        partition.height,
+                        motion,
+                        bit_depth,
+                        None,
+                    )?,
+                    (None, Some((motion, _))) => motion_compensate_partition(
+                        references_l1[0].luma,
+                        references_l1[0].chroma_cb,
+                        references_l1[0].chroma_cr,
+                        &mut luma_plane,
+                        &mut cb_plane,
+                        &mut cr_plane,
+                        partition_x,
+                        partition_y,
+                        partition.width,
+                        partition.height,
+                        motion,
+                        bit_depth,
+                        None,
+                    )?,
+                    (Some((motion_l0, _)), Some((motion_l1, _))) => {
+                        if partition.width != 8 || partition.height != 8 {
+                            return Err(H264CabacError::Unsupported("bi-predicted B subpartition"));
+                        }
+                        let (l0_y, l0_u, l0_v) = predict_b8x8_partition(
+                            references_l0[0].luma,
+                            references_l0[0].chroma_cb,
+                            references_l0[0].chroma_cr,
+                            width,
+                            height,
+                            partition_x,
+                            partition_y,
+                            motion_l0,
+                            bit_depth,
+                        );
+                        let (l1_y, l1_u, l1_v) = predict_b8x8_partition(
+                            references_l1[0].luma,
+                            references_l1[0].chroma_cb,
+                            references_l1[0].chroma_cr,
+                            width,
+                            height,
+                            partition_x,
+                            partition_y,
+                            motion_l1,
+                            bit_depth,
+                        );
+                        for row in 0..8 {
+                            for column in 0..8 {
+                                luma_plane.data[(partition_y + row) * luma_plane.stride
+                                    + partition_x
+                                    + column] = ((u32::from(l0_y[row * 8 + column])
+                                    + u32::from(l1_y[row * 8 + column])
+                                    + 1)
+                                    >> 1) as u16;
+                            }
+                        }
+                        for row in 0..4 {
+                            for column in 0..4 {
+                                let destination = (partition_y / 2 + row) * cb_plane.stride
+                                    + partition_x / 2
+                                    + column;
+                                cb_plane.data[destination] = ((u32::from(l0_u[row * 4 + column])
+                                    + u32::from(l1_u[row * 4 + column])
+                                    + 1)
+                                    >> 1)
+                                    as u16;
+                                cr_plane.data[destination] = ((u32::from(l0_v[row * 4 + column])
+                                    + u32::from(l1_v[row * 4 + column])
+                                    + 1)
+                                    >> 1)
+                                    as u16;
+                            }
+                        }
+                    }
+                    (None, None) => unreachable!("B shape partition has no motion"),
+                }
             }
         } else if prediction_list != 2 {
             let (reference, motion_vector) = if prediction_list == 0 {
@@ -1214,15 +1403,20 @@ pub fn decode_cabac_b16_slice(
                 prediction_list,
             });
         } else {
-            for &(partition_x, partition_y, width, height, motion_vector, motion_vector_delta) in
-                &shaped_motion_partitions
-            {
+            for partition in &shaped_motion_partitions {
+                let (motion_vector, motion_vector_delta, prediction_list) =
+                    match (partition.motion_l0, partition.motion_l1) {
+                        (Some((motion, delta)), None) => (motion, delta, 0),
+                        (None, Some((motion, delta))) => (motion, delta, 1),
+                        (Some((motion_l0, delta_l0)), Some(_)) => (motion_l0, delta_l0, 2),
+                        (None, None) => unreachable!("B shape partition has no motion"),
+                    };
                 motion_partitions.push(DecodedMotionPartition {
                     macroblock: mb_index,
-                    x: mb_x + partition_x,
-                    y: mb_y + partition_y,
-                    width,
-                    height,
+                    x: mb_x + partition.x,
+                    y: mb_y + partition.y,
+                    width: partition.width,
+                    height: partition.height,
                     motion_vector,
                     motion_vector_delta,
                     reference_index: 0,
@@ -1645,6 +1839,68 @@ fn weighted_sample(sample: u16, prediction: WeightedPredictionPlane) -> u16 {
         (scaled + (1 << (prediction.log2_denom - 1))) >> prediction.log2_denom
     };
     interpolate_sample(scaled + prediction.offset, prediction.bit_depth)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn predict_b8x8_partition(
+    reference_luma: &[u16],
+    reference_chroma_cb: &[u16],
+    reference_chroma_cr: &[u16],
+    picture_width: usize,
+    picture_height: usize,
+    partition_x: usize,
+    partition_y: usize,
+    motion_vector: [i32; 2],
+    bit_depth: u8,
+) -> ([u16; 64], [u16; 16], [u16; 16]) {
+    let mut luma = [0u16; 64];
+    let mut cb = [0u16; 16];
+    let mut cr = [0u16; 16];
+    let luma_x = partition_x as i32 + (motion_vector[0] >> 2);
+    let luma_y = partition_y as i32 + (motion_vector[1] >> 2);
+    for row in 0..8 {
+        for column in 0..8 {
+            luma[row * 8 + column] = fractional_luma_prediction(
+                reference_luma,
+                picture_width,
+                picture_height,
+                luma_x + column as i32,
+                luma_y + row as i32,
+                motion_vector[0] & 3,
+                motion_vector[1] & 3,
+                bit_depth,
+            );
+        }
+    }
+    let chroma_x = partition_x as i32 / 2 + (motion_vector[0] >> 3);
+    let chroma_y = partition_y as i32 / 2 + (motion_vector[1] >> 3);
+    let chroma_width = picture_width / 2;
+    let chroma_height = picture_height / 2;
+    for row in 0..4 {
+        for column in 0..4 {
+            cb[row * 4 + column] = fractional_chroma_prediction(
+                reference_chroma_cb,
+                chroma_width,
+                chroma_height,
+                chroma_x + column as i32,
+                chroma_y + row as i32,
+                motion_vector[0] & 7,
+                motion_vector[1] & 7,
+                bit_depth,
+            );
+            cr[row * 4 + column] = fractional_chroma_prediction(
+                reference_chroma_cr,
+                chroma_width,
+                chroma_height,
+                chroma_x + column as i32,
+                chroma_y + row as i32,
+                motion_vector[0] & 7,
+                motion_vector[1] & 7,
+                bit_depth,
+            );
+        }
+    }
+    (luma, cb, cr)
 }
 
 #[allow(clippy::too_many_arguments)]

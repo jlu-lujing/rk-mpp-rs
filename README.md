@@ -81,7 +81,7 @@
 
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-121 项完成、6 项未完成（含缩进子项为 161 / 9）；未完成项里有硬件不存在、无 conformance
+122 项完成、6 项未完成（含缩进子项为 162 / 9）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 115 个
 AV1 slice。第 110 slice 把 20 帧 B-pyramid 与高级 inter 工具组合起来：保留 global/warped
 motion、OBMC、inter-intra、masked/distance-weighted compound 和 reference-frame MVs，
@@ -123,7 +123,8 @@ list-0 ref/MVD、B skip/type CABAC 上下文和 forward-only MC 均与 FFmpeg
 temporal direct 也已用 POC 0/4/2 的 colocated P 运动图接通 16x16 缩放投影；
 `B_L0_L0_16x8` 与 `B_L0_L0_8x16` 又接通双分区 MVD、共享 residual 和独立 MC。
 `B_8x8` 的四种 L0 8x8 子分区也已接通四个 MVD 和逐象限 MC。
-col-zero B reference、混合列表/BI 分区、mixed B_8x8、weighted B 和 B deblock 仍未完成。
+同一结构下的 L1 与 BI 8x8 子分区也已接通双列表 MVD 和逐象限平均。
+col-zero B reference、8x4/4x8/4x4 子分区、Direct 8x8、weighted B 和 B deblock 仍未完成。
 第 114 slice 把高级 B/多参考组合扩到
 10-bit 4:4:4：20 帧 I444P10 共 9,216,000 bytes，Y/U/V 全样本与 `aomdec` 一致。
 第 113 slice 在 10-bit 高级 B/多参考流上

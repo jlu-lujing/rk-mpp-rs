@@ -351,6 +351,26 @@ fn cabac_b_8x8_l0_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
+fn cabac_b_8x8_l1_matches_ffmpeg_yuv420p() {
+    compare_cabac_b16_fixture(
+        include_bytes!("../tests/data/h264_cabac_b_8x8_l1_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_b_8x8_l1_48x32.yuv"),
+        Some(1),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_b_8x8_bi_matches_ffmpeg_yuv420p() {
+    compare_cabac_b16_fixture(
+        include_bytes!("../tests/data/h264_cabac_b_8x8_bi_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_b_8x8_bi_48x32.yuv"),
+        Some(2),
+    )
+    .unwrap();
+}
+
+#[test]
 fn sixteen_macroblock_luma_matches_ffmpeg_yuv420p() {
     compare_fixture_planes(
         include_bytes!("../tests/data/h264_i64_cavlc.264"),

@@ -343,6 +343,10 @@ cargo test --test fixture_manifest
   sub-macroblock types to `B_L0_8x8`. It exercises the B mb_type `15` path,
   four CABAC sub_mb_type decisions, four list-0 MVDs in 8x8 scan order,
   per-quadrant motion prediction/MC and one shared residual tree.
+- `h264_cabac_b_8x8_l1_48x32` and `h264_cabac_b_8x8_bi_48x32` keep the same
+  structure but force all four sub-macroblock types to `B_L1_8x8` and
+  `B_BI_8x8`. They exercise list-1 MVDs, dual-list order and temporary
+  per-quadrant luma/chroma predictions before the normative rounded BI average.
 - `h264_cabac_p16_48x32` is a two-frame 48x32 Main-profile CABAC stream with a
   constant-gray IDR followed by one-frame random luma noise. It was produced by
   a temporary local x264 source build whose analysis path was restricted to

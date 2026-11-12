@@ -102,8 +102,9 @@ B skip/type CABAC 上下文、list-0 ref/MVD 和 forward MC，显示帧逐样本
 temporal direct 再通过 POC 0/4/2 的 distance scale 与 colocated P 16×16
 运动图生成 B 的两列表 MV；`B_L0_L0_16x8`/`8x16` 也接通 CABAC 形状前缀、
 顺序双 MVD、逐分区 MC 和共享 residual；`B_8x8` 再接通四个 L0 sub_mb_type、
-四个 MVD 和逐象限 MC。当前仍缺 weighted P_Skip、col-zero B reference、
-mixed-list/BI B 分区、mixed B_8x8 和 weighted/deblock B。
+四个 MVD 和逐象限 MC；同一结构下的 L1/BI 8x8 子分区也已闭合双列表 MVD
+和临时双向预测。当前仍缺 weighted P_Skip、col-zero B reference、
+mixed-list/BI B 宏块分区、8x4/4x8/4x4 与 direct B_8x8、weighted/deblock B。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -539,7 +540,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 121 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 122 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。

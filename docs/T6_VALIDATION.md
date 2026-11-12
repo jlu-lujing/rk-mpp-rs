@@ -504,6 +504,31 @@ t62 back to the RK3588 reference board.
 - Direct/L1/BI subpartitions, mixed 8x4/4x8/4x4 shapes, col-zero B references
   and weighted/deblock B remain open.
 
+## 2026-11-12 H.264 CABAC B_8x8 L1 and BI subpartitions
+
+- Two more IDR+P+B streams keep mb_type `B_8x8` but force all four
+  sub_mb_types to `B_L1_8x8` and `B_BI_8x8`; x264 reports L1 100% and BI
+  100%. The L1 stream SHA-256 is
+  `f92fde6bf8c020589376cc2701b245c0d71fd5c4e62c29857704b898f76eeeca`
+  with YUV
+  `b0fdb0307b0996bf93ebb051ff3a2798445e242f5229a59a975b7ffaa5196611`.
+  The BI stream is
+  `a6b7a9dbcffbdbe5b3ff5555e872c559800f3e2a800e1f1b24f338c38c3d8b2e`
+  with YUV
+  `52acffe0637ac105fa8790038230d8e63540f5009ed12cffb3dec3e6ba5d0161`.
+- The B_8x8 parser now accepts sub_mb_type paths for L0, L1 and BI 8x8.
+  List-0 MVDs are consumed for all four quadrants before list-1, each list
+  updates its own 4x4 motion cache, and BI builds separate 8x8 luma/chroma
+  predictions before the normative rounded average. Both displayed frames
+  match FFmpeg sample-exactly.
+- The B16 focused gate is **10/10**, the complete CABAC integration suite is
+  **34/34**, the crate `--all-targets` gate is **1288 passed / 0 failed /
+  41 ignored**, `scripts/board_workspace_gate.sh` is **1292 passed / 0 failed /
+  41 ignored**, and release-library tests are **1123 passed / 0 failed /
+  0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
+- Direct 8x8, 8x4/4x8/4x4, col-zero B references, weighted B and B deblocking
+  remain open.
+
 ## 2026-11-08 W5-4 pool closeout
 
 - H.265 lease test passed; the HEVC board suite is **13 PASS / 1 SKIP /
