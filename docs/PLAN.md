@@ -330,7 +330,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       第二个不可控硬件依赖。
 - [~] W4-6 VDPP：RK3576 client 29 的 NV12 scale、YUV444/420、DCI histogram
       和默认 DMSR/ES/sharp enhancement bank 已移植，全部 DMSR/ES/SHARP 输入
-      参数也已建模，`board_vdpp2_regs_vs_c.sh` 通过 fake-service C trace 七格逐字比较；
+      参数也已建模，YUV420/YUV444 split Y/UV 输出也已接通；
+      `board_vdpp2_regs_vs_c.sh` 通过 fake-service C trace 九格逐字比较；
       packed histogram 的 4096 local /
       256 global bin 与 U10 平均亮度解析已完成，`vdpp-hist` 可供 lf1 做原始
       packed/local/global 对比。可撤销的 configfs DTB overlay 和

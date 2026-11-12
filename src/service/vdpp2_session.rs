@@ -46,6 +46,7 @@ pub struct Vdpp2Processor {
     config: Vdpp2Config,
     src: DmaBuf,
     dst: DmaBuf,
+    dst_c: Option<DmaBuf>,
     histogram: DmaBuf,
 }
 
@@ -75,6 +76,21 @@ impl Vdpp2Processor {
                 .and_then(|luma| luma.checked_mul(3)),
         }
         .ok_or_else(|| "VDPP2 destination size overflow".to_string())?;
+        let dst_c_bytes = if config.yuv_out_diff {
+            Some(
+                config
+                    .dst_c_width_vir
+                    .checked_mul(config.dst_c_height_vir)
+                    .and_then(|chroma| chroma.checked_mul(2))
+                    .ok_or_else(|| "VDPP2 chroma destination size overflow".to_string())?,
+            )
+        } else {
+            None
+        };
+        let dst_c = dst_c_bytes
+            .map(|bytes| DmaBuf::alloc(&heap, bytes, false))
+            .transpose()
+            .map_err(|error| format!("allocate VDPP2 chroma destination: {error}"))?;
         Ok(Self {
             service,
             config,
@@ -82,6 +98,7 @@ impl Vdpp2Processor {
                 .map_err(|error| format!("allocate VDPP2 source: {error}"))?,
             dst: DmaBuf::alloc(&heap, dst_bytes, false)
                 .map_err(|error| format!("allocate VDPP2 destination: {error}"))?,
+            dst_c,
             histogram: DmaBuf::alloc(&heap, HISTOGRAM_BYTES, false)
                 .map_err(|error| format!("allocate VDPP2 histogram: {error}"))?,
         })
@@ -99,16 +116,39 @@ impl Vdpp2Processor {
         self.dst.as_slice()
     }
 
+    pub fn dst_chroma_frame(&self) -> Option<&[u8]> {
+        self.dst_c.as_ref().map(DmaBuf::as_slice)
+    }
+
     pub fn dst_frame_compact(&self) -> Result<Vec<u8>, String> {
         let width = self.config.dst_width;
         let height = self.config.dst_height;
         let stride = self.config.dst_width_vir;
+        let chroma_bytes = self
+            .config
+            .dst_c_width
+            .checked_mul(self.config.dst_c_height)
+            .and_then(|pixels| pixels.checked_mul(2))
+            .ok_or_else(|| "VDPP2 compact chroma size overflow".to_string())?;
+        let capacity = width
+            .checked_mul(height)
+            .and_then(|luma| luma.checked_add(chroma_bytes))
+            .ok_or_else(|| "VDPP2 compact output size overflow".to_string())?;
+        let mut out = Vec::with_capacity(capacity);
+        append_rows(&mut out, self.dst.as_slice(), 0, stride, width, height)?;
+        if let Some(dst_c) = &self.dst_c {
+            append_rows(
+                &mut out,
+                dst_c.as_slice(),
+                0,
+                self.config.dst_c_width_vir,
+                self.config.dst_c_width * 2,
+                self.config.dst_c_height,
+            )?;
+            return Ok(out);
+        }
+
         let src = self.dst.as_slice();
-        let mut out = Vec::with_capacity(match self.config.dst_format {
-            vdpp2::Vdpp2Format::Yuv420 => width * height * 3 / 2,
-            vdpp2::Vdpp2Format::Yuv444 => width * height * 3,
-        });
-        append_rows(&mut out, src, 0, stride, width, height)?;
         let uv_offset = stride
             .checked_mul(self.config.dst_height_vir)
             .ok_or_else(|| "VDPP2 destination luma size overflow".to_string())?;
@@ -148,6 +188,7 @@ impl Vdpp2Processor {
             src_uv_offset: (self.config.src_width_vir * self.config.src_height_vir) as u32,
             dst_fd: self.dst.fd(),
             dst_uv_offset: (self.config.dst_width_vir * self.config.dst_height_vir) as u32,
+            dst_c_fd: self.dst_c.as_ref().map_or(self.dst.fd(), DmaBuf::fd),
             hist_fd: self.histogram.fd(),
         };
         let registers = Vdpp2Registers::build(&self.config, &job)?;
@@ -158,7 +199,11 @@ impl Vdpp2Processor {
             },
             RegOffsetInfo {
                 reg_idx: 27,
-                offset: job.dst_uv_offset,
+                offset: if self.config.yuv_out_diff {
+                    0
+                } else {
+                    job.dst_uv_offset
+                },
             },
         ];
         let mut status = [0u32; vdpp2::COMMON_WORDS];
@@ -186,6 +231,11 @@ impl Vdpp2Processor {
         self.dst
             .sync_read_begin()
             .map_err(|error| format!("VDPP2 destination invalidate: {error}"))?;
+        if let Some(dst_c) = &self.dst_c {
+            dst_c
+                .sync_read_begin()
+                .map_err(|error| format!("VDPP2 chroma destination invalidate: {error}"))?;
+        }
         self.histogram
             .sync_read_begin()
             .map_err(|error| format!("VDPP2 histogram invalidate: {error}"))?;

@@ -19,7 +19,7 @@ int main(int argc, char **argv)
 {
     if (argc < 7 || argc > 10) {
         fprintf(stderr,
-                "usage: %s <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420] [hist] [enh] [custom]\n",
+                "usage: %s <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420] [hist] [enh] [custom] [sharp] [split]\n",
                 argv[0]);
         return 2;
     }
@@ -28,12 +28,14 @@ int main(int argc, char **argv)
     int dst_w = atoi(argv[5]);
     int dst_h = atoi(argv[6]);
     int dst_yuv420 = 0;
+    int split_output = 0;
     int histogram_mode = 0;
     int enhancement = 0;
     int custom_enhancement = 0;
     int custom_sharpness = 0;
     for (int arg = 7; arg < argc; ++arg) {
         dst_yuv420 |= !strcmp(argv[arg], "420");
+        split_output |= !strcmp(argv[arg], "split");
         histogram_mode |= !strcmp(argv[arg], "hist");
         enhancement |= !strcmp(argv[arg], "enh");
         custom_enhancement |= !strcmp(argv[arg], "custom");
@@ -43,11 +45,17 @@ int main(int argc, char **argv)
     int src_h_vir = even_align(src_h, 8);
     int dst_w_vir = even_align(dst_w, 16);
     int dst_h_vir = even_align(dst_h, 2);
+    int dst_c_w = dst_yuv420 ? dst_w / 2 : dst_w;
+    int dst_c_h = dst_yuv420 ? dst_h / 2 : dst_h;
+    int dst_c_w_vir = even_align(dst_c_w, 16);
+    int dst_c_h_vir = even_align(dst_c_h, 2);
     size_t src_size = (size_t)src_w_vir * src_h_vir * 3 / 2;
     size_t dst_size = (size_t)dst_w_vir * dst_h_vir * (dst_yuv420 ? 3 : 6) / 2;
+    size_t dst_c_size = (size_t)dst_c_w_vir * dst_c_h_vir * 2;
     MppBufferGroup group = NULL;
     MppBuffer src_buf = NULL;
     MppBuffer dst_buf = NULL;
+    MppBuffer dst_c_buf = NULL;
     MppBuffer hist_buf = NULL;
     FILE *in = fopen(argv[1], "rb");
     FILE *out = fopen(argv[2], "wb");
@@ -57,6 +65,7 @@ int main(int argc, char **argv)
     struct vdpp_api_params params;
     VdppImg src;
     VdppImg dst;
+    VdppImg dst_c;
     FILE *hist_out = NULL;
     int hist_fd;
     int initialized = 0;
@@ -71,6 +80,11 @@ int main(int argc, char **argv)
         mpp_buffer_get(group, &dst_buf, dst_size) ||
         mpp_buffer_get(group, &hist_buf, 10240)) {
         fprintf(stderr, "buffer allocation failed\n");
+        goto cleanup;
+    }
+    if (split_output &&
+        mpp_buffer_get(group, &dst_c_buf, dst_c_size)) {
+        fprintf(stderr, "chroma buffer allocation failed\n");
         goto cleanup;
     }
     if (fread(mpp_buffer_get_ptr(src_buf), 1, src_size, in) != src_size) {
@@ -92,6 +106,11 @@ int main(int argc, char **argv)
     content.com2.dst_height = dst_h;
     content.com2.dst_width_vir = dst_w_vir;
     content.com2.dst_height_vir = dst_h_vir;
+    content.com2.yuv_out_diff = split_output;
+    content.com2.dst_c_width = dst_c_w;
+    content.com2.dst_c_height = dst_c_h;
+    content.com2.dst_c_width_vir = dst_c_w_vir;
+    content.com2.dst_c_height_vir = dst_c_h_vir;
     content.com2.hist_mode_en = histogram_mode;
     content.com2.cfg_set = enhancement ? 0 : 7u << 16;
     params.ptype = VDPP_PARAM_TYPE_COM2;
@@ -285,11 +304,18 @@ int main(int argc, char **argv)
     src.uv_off = (uint32_t)src_w_vir * src_h_vir;
     dst.mem_addr = dst.uv_addr = mpp_buffer_get_fd(dst_buf);
     dst.uv_off = (uint32_t)dst_w_vir * dst_h_vir;
+    memset(&dst_c, 0, sizeof(dst_c));
+    if (dst_c_buf) {
+        dst_c.mem_addr = mpp_buffer_get_fd(dst_buf);
+        dst_c.uv_addr = mpp_buffer_get_fd(dst_c_buf);
+    }
     memset(mpp_buffer_get_ptr(hist_buf), 0, 10240);
     mpp_buffer_sync_end(hist_buf);
     hist_fd = mpp_buffer_get_fd(hist_buf);
     vdpp2_control(ctx, VDPP_CMD_SET_SRC, &src);
     vdpp2_control(ctx, VDPP_CMD_SET_DST, &dst);
+    if (dst_c_buf)
+        vdpp2_control(ctx, VDPP_CMD_SET_DST_C, &dst_c);
     vdpp2_control(ctx, VDPP_CMD_SET_HIST_FD, &hist_fd);
     if (vdpp2_control(ctx, VDPP_CMD_RUN_SYNC, NULL)) {
         fprintf(stderr, "VDPP2 run failed\n");
@@ -298,6 +324,24 @@ int main(int argc, char **argv)
     mpp_buffer_sync_begin(dst_buf);
     fwrite(mpp_buffer_get_ptr(dst_buf), 1, dst_size, out);
     mpp_buffer_sync_end(dst_buf);
+    if (dst_c_buf) {
+        const char *chroma_path = getenv("VDPP_CHROMA_OUT");
+
+        if (chroma_path) {
+            FILE *chroma_out = fopen(chroma_path, "wb");
+            if (!chroma_out)
+                goto cleanup;
+            mpp_buffer_sync_begin(dst_c_buf);
+            size_t written =
+                fwrite(mpp_buffer_get_ptr(dst_c_buf), 1, dst_c_size, chroma_out);
+            mpp_buffer_sync_end(dst_c_buf);
+            fclose(chroma_out);
+            if (written != dst_c_size) {
+                fprintf(stderr, "chroma dump failed\n");
+                goto cleanup;
+            }
+        }
+    }
     if (histogram_mode) {
         const char *hist_path = getenv("VDPP_HIST_PACKED_OUT");
 
@@ -331,6 +375,8 @@ cleanup:
         mpp_buffer_put(src_buf);
     if (dst_buf)
         mpp_buffer_put(dst_buf);
+    if (dst_c_buf)
+        mpp_buffer_put(dst_c_buf);
     if (hist_buf)
         mpp_buffer_put(hist_buf);
     if (group)

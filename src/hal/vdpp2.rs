@@ -215,10 +215,10 @@ impl Vdpp2Config {
             dst_format: Vdpp2Format::Yuv420,
             dst_swap: Vdpp2Swap::SpUv,
             yuv_out_diff: false,
-            dst_c_width: dst_width,
-            dst_c_height: dst_height,
-            dst_c_width_vir: align(dst_width, 16),
-            dst_c_height_vir: align(dst_height, 2),
+            dst_c_width: dst_width / 2,
+            dst_c_height: dst_height / 2,
+            dst_c_width_vir: align(dst_width / 2, 16),
+            dst_c_height_vir: align(dst_height / 2, 2),
             mode: Vdpp2Mode::Vep,
             enhancement: true,
             dmsr: Vdpp2DmsrConfig::default(),
@@ -236,14 +236,15 @@ impl Vdpp2Config {
     ) -> Self {
         Self {
             dst_format: Vdpp2Format::Yuv444,
+            dst_c_width: dst_width,
+            dst_c_height: dst_height,
+            dst_c_width_vir: align(dst_width, 16),
+            dst_c_height_vir: align(dst_height, 2),
             ..Self::nv12_to_nv12(src_width, src_height, dst_width, dst_height)
         }
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.yuv_out_diff {
-            return Err("VDPP2 split Y/UV output is not wired yet".to_string());
-        }
         if self.src_width == 0 || self.src_height == 0 {
             return Err("VDPP2 source has a zero dimension".to_string());
         }
@@ -289,6 +290,25 @@ impl Vdpp2Config {
                 {
                     return Err("VDPP2 VEP visible geometry must be even".to_string());
                 }
+                if self.yuv_out_diff {
+                    if self.dst_c_width_vir > VEP_MAX_WIDTH
+                        || self.dst_c_height_vir > VEP_MAX_HEIGHT
+                        || self.dst_c_width < MODE_MIN_WIDTH
+                        || self.dst_c_height < MODE_MIN_HEIGHT
+                        || self.dst_c_width_vir < MODE_MIN_WIDTH
+                        || self.dst_c_height_vir < MODE_MIN_HEIGHT
+                    {
+                        return Err("VDPP2 split chroma geometry is outside the supported range"
+                            .to_string());
+                    }
+                    if self.dst_c_width_vir & 15 != 0
+                        || self.dst_c_height_vir & 1 != 0
+                        || self.dst_c_width & 1 != 0
+                        || self.dst_c_height & 1 != 0
+                    {
+                        return Err("VDPP2 split chroma alignment is invalid".to_string());
+                    }
+                }
             }
             Vdpp2Mode::Histogram => {
                 if self.src_width_vir > HIST_MAX_WIDTH || self.src_height_vir > HIST_MAX_HEIGHT {
@@ -309,6 +329,7 @@ pub struct Vdpp2Job {
     pub src_uv_offset: u32,
     pub dst_fd: i32,
     pub dst_uv_offset: u32,
+    pub dst_c_fd: i32,
     pub hist_fd: i32,
 }
 
@@ -371,7 +392,11 @@ impl Vdpp2Registers {
         common[24] = job.src_fd as u32;
         common[25] = job.src_fd as u32;
         common[26] = job.dst_fd as u32;
-        common[27] = job.dst_fd as u32;
+        common[27] = if config.yuv_out_diff {
+            job.dst_c_fd as u32
+        } else {
+            job.dst_fd as u32
+        };
 
         let mut hist = [0u32; HIST_WORDS];
         build_histogram(config, job, &mut hist, &mut common);
@@ -619,8 +644,20 @@ fn build_zme(
         config.dst_height as u32,
     );
     let (chroma_dst_w, chroma_dst_h) = match config.dst_format {
-        Vdpp2Format::Yuv444 => (config.dst_width, config.dst_height),
-        Vdpp2Format::Yuv420 => (config.dst_width / 2, config.dst_height / 2),
+        Vdpp2Format::Yuv444 => {
+            if config.yuv_out_diff {
+                (config.dst_c_width, config.dst_c_height)
+            } else {
+                (config.dst_width, config.dst_height)
+            }
+        }
+        Vdpp2Format::Yuv420 => {
+            if config.yuv_out_diff {
+                (config.dst_c_width / 2, config.dst_c_height / 2)
+            } else {
+                (config.dst_width / 2, config.dst_height / 2)
+            }
+        }
     };
     let c = scale_info(
         (config.src_width / 2) as u32,
@@ -764,6 +801,7 @@ mod tests {
                 src_uv_offset: 720 * 480,
                 dst_fd: 8,
                 dst_uv_offset: 1920 * 1080,
+                dst_c_fd: 10,
                 hist_fd: 9,
             },
         )
@@ -787,11 +825,58 @@ mod tests {
                 src_uv_offset: 720 * 480,
                 dst_fd: 8,
                 dst_uv_offset: 1920 * 1080,
+                dst_c_fd: 10,
                 hist_fd: 9,
             },
         )
         .unwrap();
         assert_eq!(regs.common[1] & (1 << 24), 0);
+    }
+
+    #[test]
+    fn split_output_uses_the_chroma_fd_and_geometry() {
+        let mut cfg = Vdpp2Config::nv12_to_nv12(1280, 720, 640, 360);
+        cfg.yuv_out_diff = true;
+        cfg.enhancement = false;
+        let regs = Vdpp2Registers::build(
+            &cfg,
+            &Vdpp2Job {
+                src_fd: 7,
+                src_uv_offset: 1280 * 720,
+                dst_fd: 8,
+                dst_uv_offset: 640 * 360,
+                dst_c_fd: 10,
+                hist_fd: 9,
+            },
+        )
+        .unwrap();
+        assert_eq!(regs.common[1] & (1 << 10), 1 << 10);
+        assert_eq!(regs.common[13] >> 16, 320 / 4);
+        assert_eq!(regs.common[16], 0x00b3_013f);
+        assert_eq!(regs.common[27], 10);
+
+        cfg.dst_c_width = 321;
+        assert!(cfg.validate().is_err());
+
+        let mut cfg = Vdpp2Config::nv12_to_yuv444(1280, 720, 640, 360);
+        cfg.yuv_out_diff = true;
+        cfg.enhancement = false;
+        let regs = Vdpp2Registers::build(
+            &cfg,
+            &Vdpp2Job {
+                src_fd: 7,
+                src_uv_offset: 1280 * 720,
+                dst_fd: 8,
+                dst_uv_offset: 640 * 360,
+                dst_c_fd: 10,
+                hist_fd: 9,
+            },
+        )
+        .unwrap();
+        assert_eq!(regs.common[1] & (1 << 10), 1 << 10);
+        assert_eq!(regs.common[13] >> 16, 640 / 4);
+        assert_eq!(regs.common[16], 0x0167_027f);
+        assert_eq!(regs.common[27], 10);
     }
 
     #[test]
@@ -806,6 +891,7 @@ mod tests {
                 src_uv_offset: 640 * 480,
                 dst_fd: 12,
                 dst_uv_offset: 640 * 480,
+                dst_c_fd: 14,
                 hist_fd: 13,
             },
         )
@@ -833,6 +919,7 @@ mod tests {
                 src_uv_offset: 720 * 480,
                 dst_fd: 8,
                 dst_uv_offset: 1920 * 1080,
+                dst_c_fd: 10,
                 hist_fd: 9,
             },
         )

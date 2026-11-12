@@ -94,6 +94,38 @@ run_scale() {
 run_scale scale-only "" scale-only
 run_scale enhancement enh ""
 
+run_split() {
+    local fmt="$1"
+    local luma_bytes=$((640 * 360))
+    local chroma_bytes
+    if [ "$fmt" = 420 ]; then
+        chroma_bytes=$((320 * 180 * 2))
+    else
+        chroma_bytes=$((640 * 360 * 2))
+    fi
+
+    sudo rm -f /tmp/vdpp2-hw-split-c-chroma.bin
+    sudo env VDPP_CHROMA_OUT=/tmp/vdpp2-hw-split-c-chroma.bin \
+        LD_LIBRARY_PATH="$mpp_lib_dir" timeout 120 /tmp/vdpp2_probe_hw \
+        /tmp/vdpp2-hw-1280x720.nv12 /tmp/vdpp2-hw-split-c.yuv \
+        1280 720 640 360 "$fmt" split \
+        > /tmp/vdpp2-hw-split-c.log 2>&1
+    timeout 120 ./target/release/rk-mpp-rs vdpp-scale \
+        /tmp/vdpp2-hw-1280x720.nv12 /tmp/vdpp2-hw-split-rust.yuv \
+        1280 720 640 360 "$fmt" split scale-only \
+        > /tmp/vdpp2-hw-split-rust.log 2>&1
+
+    test "$(stat -c %s /tmp/vdpp2-hw-split-c-chroma.bin)" -eq "$chroma_bytes"
+    cmp -n "$luma_bytes" /tmp/vdpp2-hw-split-c.yuv /tmp/vdpp2-hw-split-rust.yuv
+    cmp /tmp/vdpp2-hw-split-c-chroma.bin \
+        <(tail -c "$chroma_bytes" /tmp/vdpp2-hw-split-rust.yuv)
+    printf 'PASS vdpp2-hw/split%s luma %s + chroma %s bytes\n' \
+        "$fmt" "$luma_bytes" "$chroma_bytes"
+}
+
+run_split 420
+run_split 444
+
 sudo rm -f /tmp/vdpp2-hw-hist-c.packed
 sudo env VDPP_HIST_PACKED_OUT=/tmp/vdpp2-hw-hist-c.packed \
     LD_LIBRARY_PATH="$mpp_lib_dir" timeout 120 /tmp/vdpp2_probe_hw \

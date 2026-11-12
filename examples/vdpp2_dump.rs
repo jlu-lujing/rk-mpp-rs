@@ -168,6 +168,16 @@ fn main() {
         config
     } else if args.get(5).map(String::as_str) == Some("420") {
         Vdpp2Config::nv12_to_nv12(src_width, src_height, dst_width, dst_height)
+    } else if args.get(5).map(String::as_str) == Some("split420") {
+        let mut config = Vdpp2Config::nv12_to_nv12(src_width, src_height, dst_width, dst_height);
+        config.yuv_out_diff = true;
+        config.enhancement = false;
+        config
+    } else if args.get(5).map(String::as_str) == Some("split444") {
+        let mut config = Vdpp2Config::nv12_to_yuv444(src_width, src_height, dst_width, dst_height);
+        config.yuv_out_diff = true;
+        config.enhancement = false;
+        config
     } else {
         Vdpp2Config::nv12_to_yuv444(src_width, src_height, dst_width, dst_height)
     };
@@ -190,6 +200,7 @@ fn main() {
             src_uv_offset: (config.src_width_vir * config.src_height_vir) as u32,
             dst_fd: 8,
             dst_uv_offset: (config.dst_width_vir * config.dst_height_vir) as u32,
+            dst_c_fd: 10,
             hist_fd: 9,
         },
     )

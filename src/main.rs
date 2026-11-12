@@ -4656,7 +4656,9 @@ fn main() {
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
         let output_420 = args.get(8).map(String::as_str) == Some("420");
-        let scale_only = args.get(9).map(String::as_str) == Some("scale-only");
+        let split_output = args.get(9).map(String::as_str) == Some("split");
+        let scale_only = args.get(9).map(String::as_str) == Some("scale-only")
+            || args.get(10).map(String::as_str) == Some("scale-only");
         if src.is_empty()
             || dst.is_empty()
             || src_width == 0
@@ -4665,7 +4667,7 @@ fn main() {
             || dst_height == 0
         {
             eprintln!(
-                "usage: rk-mpp-rs vdpp-scale <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420|444] [scale-only]"
+                "usage: rk-mpp-rs vdpp-scale <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420|444] [split] [scale-only]"
             );
             std::process::exit(2);
         }
@@ -4677,6 +4679,7 @@ fn main() {
         if scale_only {
             config.enhancement = false;
         }
+        config.yuv_out_diff = split_output;
         let input = match std::fs::read(src) {
             Ok(input) => input,
             Err(error) => {
