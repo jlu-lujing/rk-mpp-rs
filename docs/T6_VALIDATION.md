@@ -27,6 +27,11 @@ t62 back to the RK3588 reference board.
   luma, truncated-input, legal histogram geometry and hardware-status tests.
   `vdpp-scale` and `vdpp-hist` are ready for hardware validation on an RK3576
   boot image that actually binds client 29; the stock lf1 kernel/DTB does not.
+- The VDPP2 hardware assets also compile on t6: the C probe builds against the
+  2024-04 C source/library, the RK3576 overlay compiles to a 267-byte DTBO, and
+  the independent packed-histogram checker passes synthetic
+  `4096 local / 256 global / mean=511` data. `board_vdpp2_hw_vs_c.sh` correctly
+  reports SKIP when the target board does not expose client 29.
 
 ## 2026-11-12 H.264 / JPEG / post-processing closeout
 

@@ -584,6 +584,8 @@ BOARD=luck2 ./scripts/board_rk3576_av1_vdpu383_10bit.sh # VDPU383 AV1 10-bit ski
 ./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
 ./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
 ./scripts/board_vdpp2_regs_vs_c.sh           # RK3576 VDPP2 fake-service regs：5/5
+BOARD=lf1 ./scripts/board_vdpp2_hw_vs_c.sh   # RK3576 VDPP2 scale/hist 真机对比
+BOARD=lf1 ./scripts/board_enable_vdpp2_overlay.sh status  # DTB 是否启用 client 29
 BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh # V1 C/C++ H.264 + MJPEG SDK
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 ```
@@ -648,7 +650,7 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 | `h265e510-roi2 <in.2x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 ROI / QP 区 |
 | `h265e510-tiles <unused.nv12> <unused.265> <columns>` | RK3576 VEPU510 H.265 tile 请求边界；多于 1 列必须显式拒绝 |
 | `iep-dei <in.yuv> <out.yuv> <w> <h> [TFF\|BFF] [I5O2\|I5O1T\|I5O1B\|I2O2\|I1O1T\|I1O1B]` | IEP2 去隔行；原始输出保留两个 dst slot |
-| `vdpp-scale <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420\|444]` | RK3576 VDPP2 缩放与格式转换 |
+| `vdpp-scale <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420\|444] [scale-only]` | RK3576 VDPP2 缩放、格式转换与默认 enhancement 开关 |
 | `vdpp-hist <in.nv12> <out-prefix> <width> <height>` | RK3576 VDPP2 DCI histogram；输出 `.packed`、`.local.bin`、`.global.bin` 和 U10 平均亮度 |
 | `spspps` / `h264dpb` | H.264 参数集与 DPB 打印 |
 | `probe-frame` / `bench-scale` / `bench-decode` / `bench-dma` / `pipeline` | 夹具与基准 |

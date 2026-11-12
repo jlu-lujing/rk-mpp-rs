@@ -4656,6 +4656,7 @@ fn main() {
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
         let output_420 = args.get(8).map(String::as_str) == Some("420");
+        let scale_only = args.get(9).map(String::as_str) == Some("scale-only");
         if src.is_empty()
             || dst.is_empty()
             || src_width == 0
@@ -4664,15 +4665,18 @@ fn main() {
             || dst_height == 0
         {
             eprintln!(
-                "usage: rk-mpp-rs vdpp-scale <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420|444]"
+                "usage: rk-mpp-rs vdpp-scale <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420|444] [scale-only]"
             );
             std::process::exit(2);
         }
-        let config = if output_420 {
+        let mut config = if output_420 {
             Vdpp2Config::nv12_to_nv12(src_width, src_height, dst_width, dst_height)
         } else {
             Vdpp2Config::nv12_to_yuv444(src_width, src_height, dst_width, dst_height)
         };
+        if scale_only {
+            config.enhancement = false;
+        }
         let input = match std::fs::read(src) {
             Ok(input) => input,
             Err(error) => {

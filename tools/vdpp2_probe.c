@@ -53,6 +53,7 @@ int main(int argc, char **argv)
     struct vdpp_api_params params;
     VdppImg src;
     VdppImg dst;
+    FILE *hist_out = NULL;
     int hist_fd;
     int initialized = 0;
     int ret = 1;
@@ -107,6 +108,8 @@ int main(int argc, char **argv)
     src.uv_off = (uint32_t)src_w_vir * src_h_vir;
     dst.mem_addr = dst.uv_addr = mpp_buffer_get_fd(dst_buf);
     dst.uv_off = (uint32_t)dst_w_vir * dst_h_vir;
+    memset(mpp_buffer_get_ptr(hist_buf), 0, 10240);
+    mpp_buffer_sync_end(hist_buf);
     hist_fd = mpp_buffer_get_fd(hist_buf);
     vdpp2_control(ctx, VDPP_CMD_SET_SRC, &src);
     vdpp2_control(ctx, VDPP_CMD_SET_DST, &dst);
@@ -118,11 +121,31 @@ int main(int argc, char **argv)
     mpp_buffer_sync_begin(dst_buf);
     fwrite(mpp_buffer_get_ptr(dst_buf), 1, dst_size, out);
     mpp_buffer_sync_end(dst_buf);
+    if (histogram_mode) {
+        const char *hist_path = getenv("VDPP_HIST_PACKED_OUT");
+
+        if (hist_path) {
+            hist_out = fopen(hist_path, "wb");
+            if (!hist_out)
+                goto cleanup;
+            mpp_buffer_sync_begin(hist_buf);
+            size_t written = fwrite(mpp_buffer_get_ptr(hist_buf), 1, 10240, hist_out);
+            mpp_buffer_sync_end(hist_buf);
+            if (written != 10240) {
+                fprintf(stderr, "histogram dump failed\n");
+                goto cleanup;
+            }
+            fclose(hist_out);
+            hist_out = NULL;
+        }
+    }
     ret = 0;
 
 cleanup:
     if (initialized)
         vdpp2_deinit(ctx);
+    if (hist_out)
+        fclose(hist_out);
     if (in)
         fclose(in);
     if (out)

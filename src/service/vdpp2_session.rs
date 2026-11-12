@@ -135,12 +135,13 @@ impl Vdpp2Processor {
         self.src
             .sync_write_end()
             .map_err(|error| format!("VDPP2 source flush: {error}"))?;
-        self.dst
-            .sync_write_begin()
-            .map_err(|error| format!("VDPP2 destination sync: {error}"))?;
         self.histogram
             .sync_write_begin()
-            .map_err(|error| format!("VDPP2 histogram sync: {error}"))?;
+            .map_err(|error| format!("VDPP2 histogram clear begin: {error}"))?;
+        self.histogram.as_mut_slice().fill(0);
+        self.histogram
+            .sync_write_end()
+            .map_err(|error| format!("VDPP2 histogram clear flush: {error}"))?;
 
         let job = Vdpp2Job {
             src_fd: self.src.fd(),

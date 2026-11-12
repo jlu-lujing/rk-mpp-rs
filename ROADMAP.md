@@ -3381,7 +3381,11 @@ in what order the evidence gets produced.
       tables and parses the 10240-byte hardware histogram into the vendor
       4096-local-bin / 256-global-bin layout plus U10 mean luma.
       `src/service/vdpp2_session.rs` owns client-29 DMA-BUF submission and the
-      `vdpp-probe`/`vdpp-scale`/`vdpp-hist` entry points. `board_vdpp2_regs_vs_c.sh`
+      `vdpp-probe`/`vdpp-scale`/`vdpp-hist` entry points. The opt-in
+      `rk3576-vdpp2-overlay.dts` and `board_enable_vdpp2_overlay.sh` expose the
+      disabled DTB node when configfs overlays are available; the revocable
+      `board_vdpp2_hw_vs_c.sh` compares scale-only, default enhancement, packed
+      histogram and mean luma. `board_vdpp2_regs_vs_c.sh`
       runs a fake mpp_service ioctl shim on t6 and matches vendor C word-for-word
       for 720x480->1920x1080 YUV444, 1920x1080->640x640 YUV420, 640x480 identity
       and histogram cells, with a separate full default enhancement cell.

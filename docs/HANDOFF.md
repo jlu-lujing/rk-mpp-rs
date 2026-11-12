@@ -815,6 +815,9 @@ H.264/VEPU580 编码已做到：
   RK3576 启动镜像；lf1 stock kernel/DTB 当前不暴露它，且 SSH 在 key exchange
   前断开。Rockchip `develop-6.1` 的 `rk3576-evb.dtsi` 只通过
   `&vdpp { status = "okay"; };` 启用该节点，但内核还必须编入 `mpp_vdpp.c`。
+  `tools/rk3576-vdpp2-overlay.dts` + `board_enable_vdpp2_overlay.sh` 可在
+  configfs overlay 可用时做可撤销启用；`board_vdpp2_hw_vs_c.sh` 在节点出现后
+  比较 scale-only、默认 enhancement、packed histogram 与 U10 mean luma。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
 - `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1；
