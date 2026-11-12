@@ -403,8 +403,22 @@ impl Vdpp2Registers {
         common[8] =
             field(1, 0, 1) | field(1, 1, 1) | field(1, 4, 1) | field(1, 5, 1) | field(1, 6, 1);
         common[12] = (config.src_width_vir / 4) as u32;
+        let (dst_c_reg_width, dst_c_reg_height, dst_c_reg_width_vir) =
+            if config.yuv_out_diff && config.dst_format == Vdpp2Format::Yuv420 {
+                (
+                    config.dst_c_width * 2,
+                    config.dst_c_height * 2,
+                    config.dst_c_width_vir * 2,
+                )
+            } else {
+                (
+                    config.dst_c_width,
+                    config.dst_c_height,
+                    config.dst_c_width_vir,
+                )
+            };
         let dst_c_stride = if config.yuv_out_diff {
-            config.dst_c_width_vir / 4
+            dst_c_reg_width_vir / 4
         } else {
             0
         };
@@ -422,10 +436,10 @@ impl Vdpp2Registers {
             | field(dst_right as u32, 12, 4)
             | field((config.dst_height - 1) as u32, 16, 11);
         if config.yuv_out_diff {
-            let dst_c_right = redundant(config.dst_c_width, 16);
-            common[16] = field((config.dst_c_width + dst_c_right - 1) as u32, 0, 11)
+            let dst_c_right = redundant(dst_c_reg_width, 16);
+            common[16] = field((dst_c_reg_width + dst_c_right - 1) as u32, 0, 11)
                 | field(dst_c_right as u32, 12, 4)
-                | field((config.dst_c_height - 1) as u32, 16, 11);
+                | field((dst_c_reg_height - 1) as u32, 16, 11);
         }
         common[20] = 0x88ff_ffff;
         common[24] = job.src_fd as u32;
@@ -709,7 +723,7 @@ fn build_zme(
         }
         Vdpp2Format::Yuv420 => {
             if config.yuv_out_diff {
-                (config.dst_c_width / 2, config.dst_c_height / 2)
+                (config.dst_c_width, config.dst_c_height)
             } else {
                 (config.dst_width / 2, config.dst_height / 2)
             }
@@ -928,9 +942,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(regs.common[1] & (1 << 10), 1 << 10);
-        assert_eq!(regs.common[13] >> 16, 320 / 4);
-        assert_eq!(regs.common[16], 0x00b3_013f);
+        assert_eq!(regs.common[13] >> 16, 640 / 4);
+        assert_eq!(regs.common[16], 0x0167_027f);
         assert_eq!(regs.common[27], 10);
+        assert_eq!(regs.zme_common[14], 0x00b3_013f);
 
         cfg.dst_c_width = 321;
         assert!(cfg.validate().is_err());

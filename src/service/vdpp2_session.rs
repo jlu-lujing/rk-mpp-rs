@@ -137,11 +137,16 @@ impl Vdpp2Processor {
         let mut out = Vec::with_capacity(capacity);
         append_rows(&mut out, self.dst.as_slice(), 0, stride, width, height)?;
         if let Some(dst_c) = &self.dst_c {
+            let chroma_stride = self
+                .config
+                .dst_c_width_vir
+                .checked_mul(2)
+                .ok_or_else(|| "VDPP2 compact chroma stride overflow".to_string())?;
             append_rows(
                 &mut out,
                 dst_c.as_slice(),
                 0,
-                self.config.dst_c_width_vir,
+                chroma_stride,
                 self.config.dst_c_width * 2,
                 self.config.dst_c_height,
             )?;
@@ -157,18 +162,21 @@ impl Vdpp2Processor {
                 append_rows(&mut out, src, uv_offset, stride, width, height.div_ceil(2))?;
             }
             vdpp2::Vdpp2Format::Yuv444 => {
-                append_rows(&mut out, src, uv_offset, stride, width * 2, height)?;
+                let uv_stride = stride
+                    .checked_mul(2)
+                    .ok_or_else(|| "VDPP2 compact UV stride overflow".to_string())?;
+                append_rows(&mut out, src, uv_offset, uv_stride, width * 2, height)?;
             }
         }
         Ok(out)
     }
 
     pub fn histogram(&self) -> &[u8] {
-        self.histogram.as_slice()
+        &self.histogram.as_slice()[..HISTOGRAM_BYTES]
     }
 
     pub fn parsed_histogram(&self) -> Result<Vdpp2Histogram, String> {
-        Vdpp2Histogram::parse(self.histogram.as_slice())
+        Vdpp2Histogram::parse(self.histogram())
     }
 
     pub fn run(&mut self) -> Result<[u32; vdpp2::COMMON_WORDS], String> {

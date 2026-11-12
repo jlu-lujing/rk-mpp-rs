@@ -60,14 +60,20 @@ if ! compgen -G "$mpp_lib_dir/librockchip_mpp.so*" >/dev/null; then
     echo "SKIP vdpp2 hardware: C MPP shared library is missing" >&2
     exit 0
 fi
+vdpp_sources=(
+    "$mpp_src/mpp/vproc/vdpp/vdpp2.c"
+    "$mpp_src/mpp/vproc/vdpp/vdpp_common.c"
+)
+if [ -f "$mpp_src/mpp/vproc/vdpp/vdpp.c" ]; then
+    vdpp_sources+=("$mpp_src/mpp/vproc/vdpp/vdpp.c")
+fi
 cc -O2 -w -pthread \
     -I"$mpp_src/inc" \
     -I"$mpp_src/mpp/vproc/vdpp" \
     -I"$mpp_src/mpp/vproc/inc" \
     -I"$mpp_src/osal/inc" \
     tools/vdpp2_probe.c \
-    "$mpp_src/mpp/vproc/vdpp/vdpp2.c" \
-    "$mpp_src/mpp/vproc/vdpp/vdpp_common.c" \
+    "${vdpp_sources[@]}" \
     -L"$mpp_lib_dir" -lrockchip_mpp \
     -lpthread -lm -Wl,-rpath,"$mpp_lib_dir" -o /tmp/vdpp2_probe_hw
 

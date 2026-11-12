@@ -19,10 +19,13 @@ if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1"; then
 fi
 
 scp -q tools/mpp_vdpp_fake.c tools/vdpp2_probe.c "$BOARD":/tmp/
-if ! ssh "$BOARD" "cc -O2 -Wall -Wextra -Werror -shared -fPIC /tmp/mpp_vdpp_fake.c -ldl -o /tmp/mpp_vdpp_fake.so &&
+if ! ssh "$BOARD" "set -e;
+  cc -O2 -Wall -Wextra -Werror -shared -fPIC /tmp/mpp_vdpp_fake.c -ldl -o /tmp/mpp_vdpp_fake.so;
+  vdpp_extra=;
+  if [ -f $mpp_ref/mpp/vproc/vdpp/vdpp.c ]; then vdpp_extra=$mpp_ref/mpp/vproc/vdpp/vdpp.c; fi;
   cc -O2 -w -I$mpp_ref/inc -I$mpp_ref/mpp/vproc/vdpp -I$mpp_ref/mpp/vproc/inc -I$mpp_ref/osal/inc \
     /tmp/vdpp2_probe.c $mpp_ref/mpp/vproc/vdpp/vdpp2.c $mpp_ref/mpp/vproc/vdpp/vdpp_common.c \
-    $mpp_lib/librockchip_mpp.so.1 -lpthread -lm -o /tmp/vdpp2_probe"; then
+    \$vdpp_extra $mpp_lib/librockchip_mpp.so.1 -lpthread -lm -o /tmp/vdpp2_probe"; then
   printf 'FAIL vdpp2-regs (C probe build failed)\n'
   exit 1
 fi
@@ -178,7 +181,14 @@ run_split_cell() {
   fi
 }
 
-run_split_cell split420_720_to_640 420 split420
+case "$mpp_ref" in
+  *mpp-old*)
+    printf 'SKIP vdpp2-reg/split420_720_to_640 (legacy C halves chroma twice; hardware target uses newer C semantics)\n'
+    ;;
+  *)
+    run_split_cell split420_720_to_640 420 split420
+    ;;
+esac
 run_split_cell split444_720_to_640 444 split444
 
 run_custom_zme_cell() {

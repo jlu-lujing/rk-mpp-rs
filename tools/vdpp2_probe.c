@@ -8,7 +8,18 @@
 #include <string.h>
 
 #include "mpp_buffer.h"
+#include "vdpp_api.h"
 #include "vdpp2.h"
+
+#if defined(VDPP_PYR_MAX_LAYERS)
+typedef VdppApiContent ProbeVdppApiContent;
+typedef VdppApiParams ProbeVdppApiParams;
+#define PROBE_VDPP2_INIT(ctx) vdpp2_init(ctx)
+#else
+typedef union vdpp_api_content ProbeVdppApiContent;
+typedef struct vdpp_api_params ProbeVdppApiParams;
+#define PROBE_VDPP2_INIT(ctx) vdpp2_init(&(ctx))
+#endif
 
 static int even_align(int value, int alignment)
 {
@@ -84,8 +95,8 @@ int main(int argc, char **argv)
     FILE *out = fopen(argv[2], "wb");
     struct vdpp2_api_ctx *api = calloc(1, sizeof(*api));
     VdppCtx ctx = api;
-    union vdpp_api_content content;
-    struct vdpp_api_params params;
+    ProbeVdppApiContent content;
+    ProbeVdppApiParams params;
     VdppImg src;
     VdppImg dst;
     VdppImg dst_c;
@@ -139,7 +150,7 @@ int main(int argc, char **argv)
     params.ptype = VDPP_PARAM_TYPE_COM2;
     params.param = content;
 
-    if (vdpp2_init(&ctx)) {
+    if (PROBE_VDPP2_INIT(ctx)) {
         fprintf(stderr, "VDPP2 init failed\n");
         goto cleanup;
     }
@@ -147,6 +158,20 @@ int main(int argc, char **argv)
     if (vdpp2_control(ctx, VDPP_CMD_SET_COM2_CFG, &params)) {
         fprintf(stderr, "VDPP2 init/config failed\n");
         goto cleanup;
+    }
+    if (histogram_mode) {
+        memset(&content, 0, sizeof(content));
+        content.hist.hist_cnt_en = 1;
+        content.hist.dci_csc_range = 0;
+#if defined(VDPP_PYR_MAX_LAYERS)
+        content.hist.hist_addr = mpp_buffer_get_fd(hist_buf);
+#endif
+        params.ptype = VDPP_PARAM_TYPE_HIST;
+        params.param = content;
+        if (vdpp2_control(ctx, VDPP_CMD_SET_DCI_HIST, &params)) {
+            fprintf(stderr, "VDPP2 histogram config failed\n");
+            goto cleanup;
+        }
     }
     if (custom_zme) {
         memset(&content, 0, sizeof(content));

@@ -31,11 +31,20 @@ if [ "$action" = status ]; then
         fi
         printf "kernel CONFIG_ROCKCHIP_MPP_VDPP: %s\n" "${config:-unavailable}"
         printf "kernel CONFIG_OF_OVERLAY: %s\n" "${overlay:-unavailable}"
-        if [ -e /sys/bus/platform/devices/vdpp@27961000 ]; then
+        platform_device=
+        for candidate in \
+            /sys/bus/platform/devices/27961000.vdpp \
+            /sys/bus/platform/devices/vdpp@27961000; do
+            if [ -e "$candidate" ]; then
+                platform_device=$candidate
+                break
+            fi
+        done
+        if [ -n "$platform_device" ]; then
             printf "platform device: present\n"
-            if [ -e /sys/bus/platform/devices/vdpp@27961000/driver ]; then
+            if [ -e "$platform_device/driver" ]; then
                 printf "driver: %s\n" \
-                    "$(basename "$(readlink -f /sys/bus/platform/devices/vdpp@27961000/driver)")"
+                    "$(basename "$(readlink -f "$platform_device/driver")")"
             else
                 echo "driver: unbound"
             fi
