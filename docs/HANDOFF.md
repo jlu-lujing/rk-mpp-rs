@@ -830,8 +830,11 @@ H.264/VEPU580 编码已做到：
   Armbian `rk-6.1-rkr3` commit `00b325014004cf22a27fc67762fe2ff09163cec3`
   正好是 Linux 6.1.75 + RK3576 VDPP，已生成 42,991,057-byte 替换 FIT
   （SHA-256 `afe90fcc…c548f37a`）；新 Image 仅比当前内核大 34,816 bytes，
-  原 FDT/resource 逐字节不变。该 FIT 尚未写入 lf1，下一步需要显式批准的
-  boot 分区测试。
+  原 FDT/resource 逐字节不变。2026-11-13 已获授权写入 lf1 并重启，写后
+  回读 SHA-256 一致；但板卡 180 秒内未恢复 LAN/SSH，全段扫描无地址，也没有
+  出现 USB Loader。首次 boot 判定失败。原 p3 备份在
+  `target/lf1-vdpp2/lf1-p3-backup-20261113-014828.img`，SHA-256
+  `11ccf48e…17d30`；下一步需要物理 Power Cycle/Loader/串口恢复。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
 - `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1；

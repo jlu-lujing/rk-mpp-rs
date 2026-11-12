@@ -79,6 +79,22 @@ t62 back to the RK3588 reference board.
   image span back and verifies SHA-256 before an optional reboot. A dry run
   against lf1 passes with the staged 42,991,057-byte image.
 
+### 2026-11-13 first lf1 VDPP boot attempt
+
+- With explicit authorization, the staged FIT was written to `mmcblk2p3`.
+  The write completed in 0.39 seconds and readback matched SHA-256
+  `afe90fcc8c5dbc4223321158021ee860e233b770ae8d6da5c37bcb86c548f37a`.
+- The original p3 was backed up before writing as
+  `target/lf1-vdpp2/lf1-p3-backup-20261113-014828.img`, 64 MiB, SHA-256
+  `11ccf48e1bb04cdf21318d72ce29da57123c6c70d5139d2ca711d2a553317d30`.
+- lf1 rebooted but did not return on `192.0.2.148` within 180 seconds. A full
+  `192.0.2.0/24` ICMP sweep found no board address, and no Rockchip USB loader
+  device appeared on the host. The EasyTier `198.18.0.31` route accepts TCP
+  locally but returns no SSH banner, so it cannot be used as a recovery shell.
+- The first 6.1.75 `rk-6.1-rkr3` serve attempt is therefore **not bootable
+  enough for hardware validation**. The board needs a physical power cycle
+  and/or Loader/MaskROM or serial-console entry before restoring the saved p3.
+
 ## 2026-11-12 H.264 / JPEG / post-processing closeout
 
 - H.264 encode fixed-QP remains **24/24** over 64x64, 320x240, 640x480 and
