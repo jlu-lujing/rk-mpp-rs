@@ -320,6 +320,13 @@ cargo test --test fixture_manifest
   100%. The pair exercises independent list-1 MV prediction, dual list-0/list-1
   MVD order, temporary per-list prediction planes and normative
   `(L0 + L1 + 1) >> 1` blending. Both displayed B frames match FFmpeg.
+- `h264_cabac_b_direct_skip_48x32` reuses the same I/B/P source with spatial
+  direct prediction enabled. A temporary x264 switch forces one BI macroblock,
+  then alternates `B_Direct_16x16` and `B_Skip`; x264 reports B16 direct 50%,
+  skip 33.3% and BI 16.7%. The fixture exercises B skip/type context
+  differences, spatial neighbor MV derivation, per-list direct MC, the BI
+  blend, zero-residual skip reconstruction and coded direct residual syntax.
+  The displayed B frame matches FFmpeg sample-exactly.
 - `h264_cabac_p16_48x32` is a two-frame 48x32 Main-profile CABAC stream with a
   constant-gray IDR followed by one-frame random luma noise. It was produced by
   a temporary local x264 source build whose analysis path was restricted to

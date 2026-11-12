@@ -97,7 +97,9 @@ reference cache、参考相关 MC 和 A-only MVP fallback，P2 参考模式
 `1,0,0,0,1,0` 与 FFmpeg 逐样本一致。B-slice 的首个 `B_L0_16x16` 门也已接通
 B skip/type CABAC 上下文、list-0 ref/MVD 和 forward MC，显示帧逐样本一致。
 随后 `B_L1_16x16` 与 `B_BI_16x16` 也接通独立 L0/L1 cache、双 MVD 顺序和
-规范 BI 平均。当前仍缺 weighted P_Skip、B_Direct、B 子分区和 weighted/deblock B。
+规范 BI 平均。`B_Direct_16x16`/`B_Skip` 又接通 spatial A/B/C 参考与 MV
+选择、skip/type 独立上下文、逐 list direct MC 和零 residual skip。
+当前仍缺 weighted P_Skip、temporal B_Direct、B 子分区和 weighted/deblock B。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 
@@ -533,7 +535,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh   # 固定 QP：6 格全 PASS 约 3 �
 ./scripts/board_vp_corrupt_vs_mpp.sh         # 损坏流 vs C 判决表
 ```
 
-ROADMAP 顶层清单当前为 117 项完成、6 项未完成；未完成项包含硬件不存在、无
+ROADMAP 顶层清单当前为 118 项完成、6 项未完成；未完成项包含硬件不存在、无
 conformance 流和冻结的功能前沿，不能直接用勾选比例估算代码工作量。已完成路径里
 H.264/H.265 编码、JPEG、IEP2 和主要解码矩阵都有板上逐字节证据。
 AV1 tile 的 t62 超时已作为历史事件记录并完成根因修复；当前工作板回到 t6。

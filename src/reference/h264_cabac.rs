@@ -45,7 +45,7 @@ pub struct DecodedCabacSlice {
     pub end_bit: usize,
     pub final_qp: u8,
     pub deblock: DeblockMap,
-    /// Decoded P motion partitions in bitstream order.
+    /// Decoded inter motion partitions in bitstream order.
     pub motion_partitions: Vec<DecodedMotionPartition>,
 }
 
@@ -617,8 +617,8 @@ pub fn decode_cabac_b_l0_16x16_slice(
     )
 }
 
-/// Reconstruct a CABAC B slice made of 16x16 L0, L1 or bi-predicted
-/// macroblocks.
+/// Reconstruct a CABAC B slice made of 16x16 L0, L1, bi-predicted, spatial
+/// direct and skipped macroblocks.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_cabac_b16_slice(
     rbsp: &[u8],
@@ -780,24 +780,36 @@ pub fn decode_cabac_b16_slice(
         let left_non_skip = mb_index
             .checked_sub(1)
             .filter(|_| mb_index % mb_width != 0)
-            .is_some_and(|left| state.decoded[left]);
+            .is_some_and(|left| state.decoded[left] && !state.skipped[left]);
         let top_non_skip = mb_index
             .checked_sub(mb_width)
-            .is_some_and(|top| state.decoded[top]);
+            .is_some_and(|top| state.decoded[top] && !state.skipped[top]);
         let skip_context = 24 + usize::from(left_non_skip) + usize::from(top_non_skip);
-        if decoder.decode_bin(&mut contexts[skip_context]) != 0 {
+        let skipped = decoder.decode_bin(&mut contexts[skip_context]) != 0;
+        let left_non_direct = mb_index
+            .checked_sub(1)
+            .filter(|_| mb_index % mb_width != 0)
+            .is_some_and(|left| state.decoded[left] && !state.skipped[left] && !state.direct[left]);
+        let top_non_direct = mb_index
+            .checked_sub(mb_width)
+            .is_some_and(|top| state.decoded[top] && !state.skipped[top] && !state.direct[top]);
+        let direct = if skipped {
+            true
+        } else {
+            let type_context = 27 + usize::from(left_non_direct) + usize::from(top_non_direct);
+            decoder.decode_bin(&mut contexts[type_context]) == 0
+        };
+        if direct && !slice.direct_spatial {
+            return Err(H264CabacError::Unsupported("temporal B direct"));
+        }
+        if direct && !sps.direct_8x8_inference {
             return Err(H264CabacError::Unsupported(
-                "B slice contains a B_Skip/B_Direct macroblock",
+                "B direct without direct_8x8_inference",
             ));
         }
-
-        let type_context = 27 + usize::from(left_non_skip) + usize::from(top_non_skip);
-        if decoder.decode_bin(&mut contexts[type_context]) != 1 {
-            return Err(H264CabacError::Unsupported(
-                "B slice contains a B_Direct macroblock",
-            ));
-        }
-        let prediction_list = if decoder.decode_bin(&mut contexts[30]) == 0 {
+        let mut prediction_list = if direct {
+            2
+        } else if decoder.decode_bin(&mut contexts[30]) == 0 {
             decoder.decode_bin(&mut contexts[32]) as u8
         } else if decoder.decode_bin(&mut contexts[31]) == 0
             && decoder.decode_bin(&mut contexts[32]) == 0
@@ -810,72 +822,129 @@ pub fn decode_cabac_b16_slice(
                 "B slice contains an unsupported 16x16 type",
             ));
         };
-        let (motion_vector_l0, motion_vector_delta_l0) =
-            if prediction_list == 0 || prediction_list == 2 {
-                let (motion, delta) = decode_b16_motion(
-                    &mut decoder,
-                    &mut contexts,
+        let (motion_vector_l0, motion_vector_delta_l0, motion_vector_l1, motion_vector_delta_l1) =
+            if direct {
+                let mut motion_l0 = spatial_direct_motion(
                     mb_index,
                     mb_width,
                     &motion_valid,
                     &motion_vectors,
-                    &motion_vector_deltas,
                     &reference_indices,
-                )?;
-                for block in 0..16 {
-                    motion_valid[mb_index][block] = true;
-                    motion_vectors[mb_index][block] = motion;
-                    motion_vector_deltas[mb_index][block] = [delta[0].abs(), delta[1].abs()];
-                    reference_indices[mb_index][block] = 0;
-                }
-                (Some(motion), Some(delta))
-            } else {
-                (None, None)
-            };
-        let (motion_vector_l1, motion_vector_delta_l1) =
-            if prediction_list == 1 || prediction_list == 2 {
-                let (motion, delta) = decode_b16_motion(
-                    &mut decoder,
-                    &mut contexts,
+                );
+                let mut motion_l1 = spatial_direct_motion(
                     mb_index,
                     mb_width,
                     &motion_valid_l1,
                     &motion_vectors_l1,
-                    &motion_vector_deltas_l1,
                     &reference_indices_l1,
-                )?;
+                );
+                if motion_l0.is_none() && motion_l1.is_none() {
+                    motion_l0 = Some([0, 0]);
+                    motion_l1 = Some([0, 0]);
+                }
+                prediction_list = match (motion_l0.is_some(), motion_l1.is_some()) {
+                    (true, true) => 2,
+                    (true, false) => 0,
+                    (false, true) => 1,
+                    (false, false) => unreachable!("direct motion has no prediction list"),
+                };
                 for block in 0..16 {
-                    motion_valid_l1[mb_index][block] = true;
-                    motion_vectors_l1[mb_index][block] = motion;
-                    motion_vector_deltas_l1[mb_index][block] = [delta[0].abs(), delta[1].abs()];
+                    motion_valid[mb_index][block] = motion_l0.is_some();
+                    motion_vectors[mb_index][block] = motion_l0.unwrap_or([0, 0]);
+                    motion_vector_deltas[mb_index][block] = [0, 0];
+                    reference_indices[mb_index][block] = 0;
+                    motion_valid_l1[mb_index][block] = motion_l1.is_some();
+                    motion_vectors_l1[mb_index][block] = motion_l1.unwrap_or([0, 0]);
+                    motion_vector_deltas_l1[mb_index][block] = [0, 0];
                     reference_indices_l1[mb_index][block] = 0;
                 }
-                (Some(motion), Some(delta))
+                (
+                    motion_l0,
+                    motion_l0.map(|_| [0, 0]),
+                    motion_l1,
+                    motion_l1.map(|_| [0, 0]),
+                )
             } else {
-                (None, None)
+                let (motion_vector_l0, motion_vector_delta_l0) = if prediction_list == 0
+                    || prediction_list == 2
+                {
+                    let (motion, delta) = decode_b16_motion(
+                        &mut decoder,
+                        &mut contexts,
+                        mb_index,
+                        mb_width,
+                        &motion_valid,
+                        &motion_vectors,
+                        &motion_vector_deltas,
+                        &reference_indices,
+                    )?;
+                    for block in 0..16 {
+                        motion_valid[mb_index][block] = true;
+                        motion_vectors[mb_index][block] = motion;
+                        motion_vector_deltas[mb_index][block] = [delta[0].abs(), delta[1].abs()];
+                        reference_indices[mb_index][block] = 0;
+                    }
+                    (Some(motion), Some(delta))
+                } else {
+                    (None, None)
+                };
+                let (motion_vector_l1, motion_vector_delta_l1) = if prediction_list == 1
+                    || prediction_list == 2
+                {
+                    let (motion, delta) = decode_b16_motion(
+                        &mut decoder,
+                        &mut contexts,
+                        mb_index,
+                        mb_width,
+                        &motion_valid_l1,
+                        &motion_vectors_l1,
+                        &motion_vector_deltas_l1,
+                        &reference_indices_l1,
+                    )?;
+                    for block in 0..16 {
+                        motion_valid_l1[mb_index][block] = true;
+                        motion_vectors_l1[mb_index][block] = motion;
+                        motion_vector_deltas_l1[mb_index][block] = [delta[0].abs(), delta[1].abs()];
+                        reference_indices_l1[mb_index][block] = 0;
+                    }
+                    (Some(motion), Some(delta))
+                } else {
+                    (None, None)
+                };
+                (
+                    motion_vector_l0,
+                    motion_vector_delta_l0,
+                    motion_vector_l1,
+                    motion_vector_delta_l1,
+                )
             };
-        let (residual, qp_delta, coded_flags) = decode_cabac_inter_residual(
-            &mut decoder,
-            &mut contexts,
-            context,
-            neighbors,
-            &mut last_qscale_diff,
-        )?;
-        qp = add_cabac_qp(qp, qp_delta, max_qp)?;
-        let options = super::h264_residual::ResidualPlaneOptions {
-            qp: qp as u8,
-            chroma_qp_offset: [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
-            bit_depth_luma: context.bit_depth_luma,
-            bit_depth_chroma: context.bit_depth_chroma,
-            transform_bypass: false,
-            scan4: super::h264::CavlcScan4x4::Frame,
-            scan8: super::h264::CavlcScan8x8::CabacFrame,
-            luma_4x4_scaling: None,
-            luma_8x8_scaling: None,
-            chroma_4x4_scaling: [None, None],
+        let (residual_planes, qp_delta, coded_flags) = if skipped {
+            (None, 0, 0)
+        } else {
+            let (residual, qp_delta, coded_flags) = decode_cabac_inter_residual(
+                &mut decoder,
+                &mut contexts,
+                context,
+                neighbors,
+                &mut last_qscale_diff,
+            )?;
+            let options = super::h264_residual::ResidualPlaneOptions {
+                qp: add_cabac_qp(qp, qp_delta, max_qp)? as u8,
+                chroma_qp_offset: [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
+                bit_depth_luma: context.bit_depth_luma,
+                bit_depth_chroma: context.bit_depth_chroma,
+                transform_bypass: false,
+                scan4: super::h264::CavlcScan4x4::Frame,
+                scan8: super::h264::CavlcScan8x8::CabacFrame,
+                luma_4x4_scaling: None,
+                luma_8x8_scaling: None,
+                chroma_4x4_scaling: [None, None],
+            };
+            let residual_planes = assemble_inter_macroblock_residual(&residual, context, &options)
+                .map_err(|_| H264CabacError::Malformed("B16 residual"))?;
+            (Some((residual, residual_planes)), qp_delta, coded_flags)
         };
-        let residual_planes = assemble_inter_macroblock_residual(&residual, context, &options)
-            .map_err(|_| H264CabacError::Malformed("B16 residual"))?;
+        qp = add_cabac_qp(qp, qp_delta, max_qp)?;
         let mb_x = (mb_index % mb_width) * 16;
         let mb_y = (mb_index / mb_width) * 16;
         if prediction_list != 2 {
@@ -946,20 +1015,26 @@ pub fn decode_cabac_b16_slice(
                 }
             }
         }
-        reconstruct_inter_macroblock(
-            &residual_planes,
-            context.bit_depth_luma.min(context.bit_depth_chroma),
-            &mut luma_plane,
-            Some(&mut cb_plane),
-            Some(&mut cr_plane),
-            mb_x,
-            mb_y,
-        )
-        .map_err(|_| H264CabacError::Malformed("B16 reconstruction"))?;
+        if let Some((_, residual_planes)) = &residual_planes {
+            reconstruct_inter_macroblock(
+                residual_planes,
+                context.bit_depth_luma.min(context.bit_depth_chroma),
+                &mut luma_plane,
+                Some(&mut cb_plane),
+                Some(&mut cr_plane),
+                mb_x,
+                mb_y,
+            )
+            .map_err(|_| H264CabacError::Malformed("B16 reconstruction"))?;
+        }
         state.decoded[mb_index] = true;
-        state.luma_counts[mb_index] = residual.luma_non_zero;
-        state.chroma_counts[0][mb_index].copy_from_slice(&residual.chroma_non_zero[0]);
-        state.chroma_counts[1][mb_index].copy_from_slice(&residual.chroma_non_zero[1]);
+        state.skipped[mb_index] = skipped;
+        state.direct[mb_index] = direct;
+        if let Some((residual, _)) = &residual_planes {
+            state.luma_counts[mb_index] = residual.luma_non_zero;
+            state.chroma_counts[0][mb_index].copy_from_slice(&residual.chroma_non_zero[0]);
+            state.chroma_counts[1][mb_index].copy_from_slice(&residual.chroma_non_zero[1]);
+        }
         state.coded_flags[mb_index] = coded_flags;
         state.qp[mb_index] = qp as u8;
         motion_partitions.push(DecodedMotionPartition {
@@ -1042,6 +1117,73 @@ fn reference_at(
         .get(mb_index)
         .filter(|valid| valid[block])
         .map(|_| reference_indices[mb_index][block])
+}
+
+fn spatial_direct_motion(
+    mb_index: usize,
+    mb_width: usize,
+    motion_valid: &[[bool; 16]],
+    motion_vectors: &[[[i32; 2]; 16]],
+    reference_indices: &[[u8; 16]],
+) -> Option<[i32; 2]> {
+    let macroblock_x = (mb_index % mb_width * 16) as i32;
+    let macroblock_y = (mb_index / mb_width * 16) as i32;
+    let left = motion_at(
+        mb_width,
+        macroblock_x - 1,
+        macroblock_y,
+        motion_valid,
+        motion_vectors,
+        reference_indices,
+    );
+    let top = motion_at(
+        mb_width,
+        macroblock_x,
+        macroblock_y - 4,
+        motion_valid,
+        motion_vectors,
+        reference_indices,
+    );
+    let top_right = motion_at(
+        mb_width,
+        macroblock_x + 16,
+        macroblock_y - 4,
+        motion_valid,
+        motion_vectors,
+        reference_indices,
+    )
+    .or_else(|| {
+        motion_at(
+            mb_width,
+            macroblock_x - 4,
+            macroblock_y - 4,
+            motion_valid,
+            motion_vectors,
+            reference_indices,
+        )
+    });
+
+    let reference_index = [left, top, top_right]
+        .into_iter()
+        .flatten()
+        .map(|(reference, _)| reference)
+        .min()?;
+    let matching_count = left.is_some_and(|(reference, _)| reference == reference_index) as u8
+        + top.is_some_and(|(reference, _)| reference == reference_index) as u8
+        + top_right.is_some_and(|(reference, _)| reference == reference_index) as u8;
+    match matching_count {
+        2..=3 => Some(median_motion_vector(
+            left.map(|(_, motion)| motion).unwrap_or([0, 0]),
+            top.map(|(_, motion)| motion).unwrap_or([0, 0]),
+            top_right.map(|(_, motion)| motion).unwrap_or([0, 0]),
+        )),
+        1 if left.is_some_and(|(reference, _)| reference == reference_index) => {
+            Some(left.unwrap().1)
+        }
+        1 if top.is_some_and(|(reference, _)| reference == reference_index) => Some(top.unwrap().1),
+        1 => Some(top_right.unwrap().1),
+        _ => unreachable!("spatial direct requires at least one available reference"),
+    }
 }
 
 fn partition_motion_predictor(
@@ -1712,6 +1854,8 @@ struct CabacPictureState {
     mb_width: usize,
     mb_height: usize,
     decoded: Vec<bool>,
+    skipped: Vec<bool>,
+    direct: Vec<bool>,
     luma_counts: Vec<[u8; 16]>,
     chroma_counts: [Vec<Vec<u8>>; 2],
     chroma_modes: Vec<u8>,
@@ -1730,6 +1874,8 @@ impl CabacPictureState {
             mb_width,
             mb_height,
             decoded: vec![false; total_mbs],
+            skipped: vec![false; total_mbs],
+            direct: vec![false; total_mbs],
             luma_counts: vec![[0; 16]; total_mbs],
             chroma_counts: [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]],
             chroma_modes: vec![0; total_mbs],

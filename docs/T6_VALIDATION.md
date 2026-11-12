@@ -415,6 +415,28 @@ t62 back to the RK3588 reference board.
   0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
 - B_Direct/B_Skip, B 16x8/8x16/8x8, weighted B and B deblocking remain open.
 
+## 2026-11-12 H.264 CABAC spatial B_Direct and B_Skip
+
+- A new IDR+P+B stream enables spatial direct and mixes one BI macroblock with
+  three `B_Direct_16x16` and two `B_Skip` macroblocks. x264 reports direct
+  50%, skip 33.3% and BI 16.7%. Stream SHA-256 is
+  `e4a0a2177f4b81d41b37af504f3746bcf0ad28e8720f05178f85feeb475d60a0`,
+  decoded YUV is
+  `5745621d236e55f3fce23d96a1bf8416ad09f887fc7667b1f00bc8b594b10306`.
+- Skip and type contexts now use different neighbor predicates: `B_Skip`
+  counts as skipped, while direct still counts as non-skip for the skip
+  context but is excluded from the type context. Spatial direct derives L0/L1
+  motion from the A/B/C neighbors, performs separate list prediction and
+  applies the normative BI average. Coded direct consumes the inter residual
+  tree; `B_Skip` consumes neither residual nor macroblock-QP syntax.
+- The displayed 48x32 B frame matches FFmpeg sample-exactly. Temporal direct,
+  B 16x8/8x16/8x8, weighted B and B deblocking remain open.
+- The B16 focused gate is **4/4**, the complete CABAC integration suite is
+  **28/28**, the crate `--all-targets` gate is **1282 passed / 0 failed /
+  41 ignored**, `scripts/board_workspace_gate.sh` is **1286 passed / 0 failed /
+  41 ignored**, and release-library tests are **1123 passed / 0 failed /
+  0 ignored**. Fixture manifest, rustfmt and strict workspace rustdoc pass.
+
 ## 2026-11-08 W5-4 pool closeout
 
 - H.265 lease test passed; the HEVC board suite is **13 PASS / 1 SKIP /

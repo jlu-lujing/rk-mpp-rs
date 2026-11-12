@@ -271,30 +271,40 @@ fn cabac_p16_multiple_references_match_ffmpeg_yuv420p() {
 
 #[test]
 fn cabac_b_l0_16x16_matches_ffmpeg_yuv420p() {
-    compare_cabac_b_l0_16x16_fixture(
+    compare_cabac_b16_fixture(
         include_bytes!("../tests/data/h264_cabac_b_l0_16x16_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_b_l0_16x16_48x32.yuv"),
-        0,
+        Some(0),
     )
     .unwrap();
 }
 
 #[test]
 fn cabac_b_l1_16x16_matches_ffmpeg_yuv420p() {
-    compare_cabac_b_l0_16x16_fixture(
+    compare_cabac_b16_fixture(
         include_bytes!("../tests/data/h264_cabac_b_l1_16x16_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_b_l1_16x16_48x32.yuv"),
-        1,
+        Some(1),
     )
     .unwrap();
 }
 
 #[test]
 fn cabac_b_bi_16x16_matches_ffmpeg_yuv420p() {
-    compare_cabac_b_l0_16x16_fixture(
+    compare_cabac_b16_fixture(
         include_bytes!("../tests/data/h264_cabac_b_bi_16x16_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_b_bi_16x16_48x32.yuv"),
-        2,
+        Some(2),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_b_direct_and_skip_match_ffmpeg_yuv420p() {
+    compare_cabac_b16_fixture(
+        include_bytes!("../tests/data/h264_cabac_b_direct_skip_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_b_direct_skip_48x32.yuv"),
+        None,
     )
     .unwrap();
 }
@@ -1076,10 +1086,10 @@ fn compare_cabac_p16_multiref_fixture(stream: &[u8], expected: &[u8]) -> Result<
     compare_samples(&actual, frame2, &[y_len, chroma_len, chroma_len])
 }
 
-fn compare_cabac_b_l0_16x16_fixture(
+fn compare_cabac_b16_fixture(
     stream: &[u8],
     expected: &[u8],
-    expected_prediction_list: u8,
+    expected_prediction_list: Option<u8>,
 ) -> Result<(), String> {
     let nals = split_annex_b(stream);
     let sps = parse_sps(
@@ -1176,12 +1186,14 @@ fn compare_cabac_b_l0_16x16_fixture(
             decoded.macroblocks
         ));
     }
-    if decoded.motion_partitions.iter().any(|partition| {
-        partition.prediction_list != expected_prediction_list || partition.reference_index != 0
-    }) {
-        return Err(format!(
-            "B fixture did not decode as prediction list {expected_prediction_list}"
-        ));
+    if let Some(expected_prediction_list) = expected_prediction_list {
+        if decoded.motion_partitions.iter().any(|partition| {
+            partition.prediction_list != expected_prediction_list || partition.reference_index != 0
+        }) {
+            return Err(format!(
+                "B fixture did not decode as prediction list {expected_prediction_list}"
+            ));
+        }
     }
     let mut actual = Vec::with_capacity(frame_len);
     for plane in [&b_y, &b_u, &b_v] {
