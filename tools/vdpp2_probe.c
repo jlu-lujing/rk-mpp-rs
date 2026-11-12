@@ -31,11 +31,13 @@ int main(int argc, char **argv)
     int histogram_mode = 0;
     int enhancement = 0;
     int custom_enhancement = 0;
+    int custom_sharpness = 0;
     for (int arg = 7; arg < argc; ++arg) {
         dst_yuv420 |= !strcmp(argv[arg], "420");
         histogram_mode |= !strcmp(argv[arg], "hist");
         enhancement |= !strcmp(argv[arg], "enh");
         custom_enhancement |= !strcmp(argv[arg], "custom");
+        custom_sharpness |= !strcmp(argv[arg], "sharp");
     }
     int src_w_vir = even_align(src_w, 16);
     int src_h_vir = even_align(src_h, 8);
@@ -160,6 +162,120 @@ int main(int argc, char **argv)
         params.param = content;
         if (vdpp2_control(ctx, VDPP_CMD_SET_ES, &params)) {
             fprintf(stderr, "VDPP2 ES config failed\n");
+            goto cleanup;
+        }
+    }
+    if (custom_sharpness) {
+        memset(&content, 0, sizeof(content));
+        memcpy(&content.sharp, &api->params.shp_params, sizeof(content.sharp));
+        content.sharp.sharp_enable = 1;
+        content.sharp.sharp_coloradj_bypass_en = 0;
+        content.sharp.lti_h_enable = 1;
+        content.sharp.lti_h_slope = 123;
+        content.sharp.lti_h_thresold = 37;
+        content.sharp.lti_h_gain = 17;
+        content.sharp.lti_h_noise_thr_pos = 900;
+        content.sharp.lti_h_noise_thr_neg = 800;
+        content.sharp.lti_v_enable = 1;
+        content.sharp.lti_v_radius = 0;
+        content.sharp.lti_v_slope = 111;
+        content.sharp.lti_v_thresold = 41;
+        content.sharp.lti_v_gain = 19;
+        content.sharp.lti_v_noise_thr_pos = 901;
+        content.sharp.lti_v_noise_thr_neg = 799;
+        content.sharp.cti_h_enable = 1;
+        content.sharp.cti_h_slope = 99;
+        content.sharp.cti_h_thresold = 31;
+        content.sharp.cti_h_gain = 11;
+        content.sharp.cti_h_noise_thr_pos = 777;
+        content.sharp.cti_h_noise_thr_neg = 666;
+        content.sharp.peaking_gain = 333;
+        for (int index = 0; index < 7; ++index) {
+            content.sharp.peaking_coring_zero[index] = index + 2;
+            content.sharp.peaking_coring_thr[index] = 20 + index;
+            content.sharp.peaking_coring_ratio[index] = 900 + index * 10;
+            content.sharp.peaking_gain_pos[index] = 300 + index * 20;
+            content.sharp.peaking_gain_neg[index] = 280 + index * 20;
+            content.sharp.peaking_limit_ctrl_pos0[index] = 60 + index;
+            content.sharp.peaking_limit_ctrl_pos1[index] = 116 + index;
+            content.sharp.peaking_limit_ctrl_neg0[index] = 58 + index;
+            content.sharp.peaking_limit_ctrl_neg1[index] = 114 + index;
+            content.sharp.peaking_limit_ctrl_ratio[index] = 96 + index;
+        }
+        content.sharp.peaking_filt_core_H0[0] = 5;
+        content.sharp.peaking_filt_core_H0[1] = 15;
+        content.sharp.peaking_filt_core_H0[2] = 25;
+        content.sharp.peaking_filt_core_H1[0] = -8;
+        content.sharp.peaking_filt_core_H1[1] = 1;
+        content.sharp.peaking_filt_core_H1[2] = 31;
+        content.sharp.peaking_filt_core_V0[0] = 0;
+        content.sharp.peaking_filt_core_V0[1] = 5;
+        content.sharp.peaking_filt_core_V0[2] = 7;
+        content.sharp.peaking_edge_ctrl_enable = 1;
+        content.sharp.peaking_edge_ctrl_non_dir_thr = 21;
+        content.sharp.peaking_edge_ctrl_dir_cmp_ratio = 5;
+        content.sharp.peaking_edge_ctrl_non_dir_wgt_offset = 73;
+        content.sharp.peaking_edge_ctrl_non_dir_wgt_ratio = 19;
+        content.sharp.peaking_edge_ctrl_dir_cnt_thr = 4;
+        content.sharp.peaking_edge_ctrl_dir_cnt_avg = 5;
+        content.sharp.peaking_edge_ctrl_dir_cnt_offset = 3;
+        content.sharp.peaking_edge_ctrl_diag_dir_thr = 17;
+        for (int index = 0; index < 8; ++index)
+            content.sharp.peaking_edge_ctrl_diag_adj_gain_tab[index] = 5 + index;
+        content.sharp.peaking_estc_delta_offset_h = 5;
+        content.sharp.peaking_estc_alpha_over_h = 9;
+        content.sharp.peaking_estc_alpha_under_h = 17;
+        content.sharp.peaking_estc_alpha_over_unlimit_h = 65;
+        content.sharp.peaking_estc_alpha_under_unlimit_h = 111;
+        content.sharp.shootctrl_delta_offset = 17;
+        content.sharp.shootctrl_alpha_over = 9;
+        content.sharp.shootctrl_alpha_under = 10;
+        content.sharp.shootctrl_alpha_over_unlimit = 109;
+        content.sharp.shootctrl_alpha_under_unlimit = 108;
+        content.sharp.global_gain_enable = 1;
+        content.sharp.global_gain_lum_mode = 1;
+        const RK_S32 lum_grd[] = {0, 100, 400, 700, 900, 1023};
+        const RK_S32 lum_val[] = {20, 40, 60, 80, 100, 120};
+        const RK_S32 adp_grd[] = {0, 20, 80, 200, 400, 1023};
+        const RK_S32 adp_val[] = {30, 40, 50, 60, 70, 80};
+        const RK_S32 var_grd[] = {0, 50, 120, 220, 520, 1023};
+        const RK_S32 var_val[] = {25, 35, 45, 55, 65, 75};
+        memcpy(content.sharp.global_gain_lum_grd, lum_grd, sizeof(lum_grd));
+        memcpy(content.sharp.global_gain_lum_val, lum_val, sizeof(lum_val));
+        memcpy(content.sharp.global_gain_adp_grd, adp_grd, sizeof(adp_grd));
+        memcpy(content.sharp.global_gain_adp_val, adp_val, sizeof(adp_val));
+        memcpy(content.sharp.global_gain_var_grd, var_grd, sizeof(var_grd));
+        memcpy(content.sharp.global_gain_var_val, var_val, sizeof(var_val));
+        content.sharp.color_ctrl_enable = 1;
+        content.sharp.color_ctrl_p0_scaling_coef = 2;
+        content.sharp.color_ctrl_p0_point_u = 110;
+        content.sharp.color_ctrl_p0_point_v = 150;
+        content.sharp.color_ctrl_p1_scaling_coef = 3;
+        content.sharp.color_ctrl_p1_point_u = 80;
+        content.sharp.color_ctrl_p1_point_v = 130;
+        content.sharp.color_ctrl_p2_scaling_coef = 4;
+        content.sharp.color_ctrl_p2_point_u = 120;
+        content.sharp.color_ctrl_p2_point_v = 140;
+        content.sharp.color_ctrl_p3_scaling_coef = 5;
+        content.sharp.color_ctrl_p3_point_u = 130;
+        content.sharp.color_ctrl_p3_point_v = 150;
+        for (int index = 0; index < 16; ++index) {
+            content.sharp.color_ctrl_p0_roll_tab[index] = index;
+            content.sharp.color_ctrl_p1_roll_tab[index] = 31 - index;
+            content.sharp.color_ctrl_p2_roll_tab[index] = 8 + index / 2;
+            content.sharp.color_ctrl_p3_roll_tab[index] = 24 - index / 2;
+        }
+        content.sharp.tex_adj_enable = 1;
+        content.sharp.tex_adj_y_mode_select = 2;
+        content.sharp.tex_adj_mode_select = 1;
+        const RK_S32 tex_grd[] = {0, 100, 300, 500, 700, 1023};
+        const RK_S32 tex_val[] = {30, 45, 60, 75, 90, 110};
+        memcpy(content.sharp.tex_adj_grd, tex_grd, sizeof(tex_grd));
+        memcpy(content.sharp.tex_adj_val, tex_val, sizeof(tex_val));
+        params.ptype = VDPP_PARAM_TYPE_SHARP;
+        params.param = content;
+        if (vdpp2_control(ctx, VDPP_CMD_SET_SHARP, &params)) {
+            fprintf(stderr, "VDPP2 SHARP config failed\n");
             goto cleanup;
         }
     }

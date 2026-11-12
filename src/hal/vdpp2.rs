@@ -6,9 +6,10 @@
 //! be disabled for scale-only comparisons and debugging.
 
 use super::vdpp2_coeff::{TAP6, TAP8};
-use super::vdpp2_defaults::DEFAULT_SHARP;
 use super::vdpp2_enhance::{build_dmsr, build_es};
 pub use super::vdpp2_enhance::{Vdpp2DmsrConfig, Vdpp2EsConfig};
+use super::vdpp2_sharp::build_sharp;
+pub use super::vdpp2_sharp::Vdpp2SharpConfig;
 
 pub const COMMON_WORDS: usize = 28;
 pub const HIST_WORDS: usize = 5;
@@ -190,6 +191,7 @@ pub struct Vdpp2Config {
     pub enhancement: bool,
     pub dmsr: Vdpp2DmsrConfig,
     pub es: Vdpp2EsConfig,
+    pub sharp: Vdpp2SharpConfig,
     pub histogram: Vdpp2HistogramConfig,
 }
 
@@ -221,6 +223,7 @@ impl Vdpp2Config {
             enhancement: true,
             dmsr: Vdpp2DmsrConfig::default(),
             es: Vdpp2EsConfig::default(),
+            sharp: Vdpp2SharpConfig::default(),
             histogram: Vdpp2HistogramConfig::default(),
         }
     }
@@ -392,7 +395,7 @@ impl Vdpp2Registers {
             (
                 build_dmsr(&config.dmsr),
                 build_es(&config.es),
-                DEFAULT_SHARP,
+                build_sharp(&config.sharp),
             )
         } else {
             ([0u32; DMSR_WORDS], [0u32; ES_WORDS], [0u32; SHARP_WORDS])
