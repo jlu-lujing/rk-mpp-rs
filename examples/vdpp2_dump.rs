@@ -178,6 +178,15 @@ fn main() {
         config.yuv_out_diff = true;
         config.enhancement = false;
         config
+    } else if args.get(5).map(String::as_str) == Some("custom-zme") {
+        let mut config = Vdpp2Config::nv12_to_nv12(src_width, src_height, dst_width, dst_height);
+        config.zme.bypass_enabled = false;
+        config.zme.dering_enabled = false;
+        config.zme.dering_sensitivity0 = 31;
+        config.zme.dering_sensitivity1 = 9;
+        config.zme.dering_blend_alpha = 27;
+        config.zme.dering_blend_beta = 5;
+        config
     } else {
         Vdpp2Config::nv12_to_yuv444(src_width, src_height, dst_width, dst_height)
     };

@@ -809,7 +809,7 @@ H.264/VEPU580 编码已做到：
 
 - VDPP（client 29）在 RK3588 **不存在**；RK3576 的 VDPP2 common/ZME scale、
   DCI histogram 和默认 DMSR/ES/sharp register bank 已移植，并用 t6 fake-service
-  trace 对 C 做了九格逐字比较；除默认块外还覆盖完整自定义 DMSR/ES/SHARP
+  trace 对 C 做了十格逐字比较；除默认块外还覆盖自定义 ZME、完整 DMSR/ES/SHARP
   输入以及 YUV420/YUV444 分离 Y/UV 输出。
   10240-byte packed histogram 已能拆成 vendor 的
   4096 local + 256 global bin，`vdpp-hist` 会输出 packed/local/global 三份原始

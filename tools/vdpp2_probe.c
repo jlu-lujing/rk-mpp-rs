@@ -33,6 +33,7 @@ int main(int argc, char **argv)
     int enhancement = 0;
     int custom_enhancement = 0;
     int custom_sharpness = 0;
+    int custom_zme = 0;
     for (int arg = 7; arg < argc; ++arg) {
         dst_yuv420 |= !strcmp(argv[arg], "420");
         split_output |= !strcmp(argv[arg], "split");
@@ -40,6 +41,7 @@ int main(int argc, char **argv)
         enhancement |= !strcmp(argv[arg], "enh");
         custom_enhancement |= !strcmp(argv[arg], "custom");
         custom_sharpness |= !strcmp(argv[arg], "sharp");
+        custom_zme |= !strcmp(argv[arg], "zme");
     }
     int src_w_vir = even_align(src_w, 16);
     int src_h_vir = even_align(src_h, 8);
@@ -124,6 +126,21 @@ int main(int argc, char **argv)
     if (vdpp2_control(ctx, VDPP_CMD_SET_COM2_CFG, &params)) {
         fprintf(stderr, "VDPP2 init/config failed\n");
         goto cleanup;
+    }
+    if (custom_zme) {
+        memset(&content, 0, sizeof(content));
+        content.zme.bypass_enable = false;
+        content.zme.dering_enable = false;
+        content.zme.dering_sen_0 = 31;
+        content.zme.dering_sen_1 = 9;
+        content.zme.dering_blend_alpha = 27;
+        content.zme.dering_blend_beta = 5;
+        params.ptype = VDPP_PARAM_TYPE_ZME_COM;
+        params.param = content;
+        if (vdpp2_control(ctx, VDPP_CMD_SET_ZME_COM_CFG, &params)) {
+            fprintf(stderr, "VDPP2 ZME config failed\n");
+            goto cleanup;
+        }
     }
     if (custom_enhancement) {
         memset(&content, 0, sizeof(content));

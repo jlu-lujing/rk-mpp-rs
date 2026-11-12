@@ -13,21 +13,21 @@ t62 back to the RK3588 reference board.
   factors, all four 17x8 coefficient banks, DCI histogram words, and validated
   geometry limits.
 - `scripts/board_vdpp2_regs_vs_c.sh` runs the unchanged C builder under a
-  fake `mpp_service` ioctl shim on t6. Nine cells pass: 720x480 to 1920x1080
+  fake `mpp_service` ioctl shim on t6. Ten cells pass: 720x480 to 1920x1080
   YUV444, 1920x1080 to 640x640 YUV420, 640x480 identity, histogram mode, and
   full default enhancement (DMSR/ES/sharp), a custom DMSR/ES profile and a
-  custom SHARP profile, plus YUV420 and YUV444 split Y/UV output. All compared
-  register sections are identical.
+  custom SHARP profile, YUV420/YUV444 split Y/UV output and a custom ZME
+  dering/blend profile. All compared register sections are identical.
 - `src/service/vdpp2_session.rs` owns source/destination/optional chroma/histogram
   DMA-BUFs, submits the nine VDPP2 register sections plus address offsets, polls
   completion, and combines or exposes split Y/UV output. The packed DCI buffer is
   decoded into the vendor 4096-local-bin / 256-global-bin layout, and the U10
   mean-luma helper follows `get_avg_luma_from_hist()`.
-- The targeted t6 library gate for VDPP2 is **19 passed / 0 failed / 0 ignored**
+- The targeted t6 library gate for VDPP2 is **20 passed / 0 failed / 0 ignored**
   after adding exact 9-byte local-bin packing, little-endian global bins, mean
   luma, truncated-input, legal histogram geometry, hardware-status, default
-  DMSR/ES/SHARP golden-trace, custom parameter-packing and split-output geometry
-  tests. `vdpp-scale` and `vdpp-hist` are ready for hardware validation on an
+  DMSR/ES/SHARP golden-trace, ZME configurability, custom parameter-packing and
+  split-output geometry tests. `vdpp-scale` and `vdpp-hist` are ready for hardware validation on an
   RK3576 boot image that actually binds client 29; the stock lf1 kernel/DTB does not.
 - The VDPP2 hardware assets also compile on t6: the C probe builds against the
   2024-04 C source/library, the RK3576 overlay compiles to a 267-byte DTBO, and
@@ -64,10 +64,10 @@ t62 back to the RK3588 reference board.
 - IEP2 full matrices remain **9/9** modes, **6/6** formats and **5/5** PD/DECT
   cells; telecine, progressive content and 322x242/722x482/1366x768 geometry
   all match the C probe's pixels and per-frame state.
-- Final t6 gate: `board_workspace_gate.sh` reports **1315 passed / 0 failed /
+- Final t6 gate: `board_workspace_gate.sh` reports **1316 passed / 0 failed /
   45 ignored** across 59 suites, `cargo fmt --check` is clean, and workspace
   rustdoc passes with `-D warnings`. `cargo test --release --lib --offline`
-  reports **1145 passed / 0 failed / 0 ignored**.
+  reports **1146 passed / 0 failed / 0 ignored**.
 
 ## 2026-11-10 encoder packet metadata
 

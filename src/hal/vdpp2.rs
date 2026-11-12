@@ -93,6 +93,29 @@ pub struct Vdpp2HistogramConfig {
     pub full_range: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Vdpp2ZmeConfig {
+    pub bypass_enabled: bool,
+    pub dering_enabled: bool,
+    pub dering_sensitivity0: u32,
+    pub dering_sensitivity1: u32,
+    pub dering_blend_alpha: u32,
+    pub dering_blend_beta: u32,
+}
+
+impl Default for Vdpp2ZmeConfig {
+    fn default() -> Self {
+        Self {
+            bypass_enabled: true,
+            dering_enabled: true,
+            dering_sensitivity0: 16,
+            dering_sensitivity1: 4,
+            dering_blend_alpha: 16,
+            dering_blend_beta: 13,
+        }
+    }
+}
+
 impl Default for Vdpp2HistogramConfig {
     fn default() -> Self {
         Self {
@@ -192,6 +215,7 @@ pub struct Vdpp2Config {
     pub dmsr: Vdpp2DmsrConfig,
     pub es: Vdpp2EsConfig,
     pub sharp: Vdpp2SharpConfig,
+    pub zme: Vdpp2ZmeConfig,
     pub histogram: Vdpp2HistogramConfig,
 }
 
@@ -224,6 +248,7 @@ impl Vdpp2Config {
             dmsr: Vdpp2DmsrConfig::default(),
             es: Vdpp2EsConfig::default(),
             sharp: Vdpp2SharpConfig::default(),
+            zme: Vdpp2ZmeConfig::default(),
             histogram: Vdpp2HistogramConfig::default(),
         }
     }
@@ -521,7 +546,13 @@ struct ScaleInfo {
     y_scaling: &'static [[i16; 8]; 17],
 }
 
-fn scale_info(act_width: u32, act_height: u32, dst_width: u32, dst_height: u32) -> ScaleInfo {
+fn scale_info(
+    act_width: u32,
+    act_height: u32,
+    dst_width: u32,
+    dst_height: u32,
+    zme: &Vdpp2ZmeConfig,
+) -> ScaleInfo {
     let mut act_width = act_width;
     let mut x_gt = false;
     let mut x_gt_mode = 0;
@@ -554,16 +585,16 @@ fn scale_info(act_width: u32, act_height: u32, dst_width: u32, dst_height: u32) 
         xsu,
         ysd,
         ysu,
-        dering: true,
+        dering: zme.dering_enabled,
         x_factor,
         y_factor,
         x_gt,
         x_gt_mode,
         y_gt,
         y_gt_mode,
-        xsd_bypass: !xsd,
-        xsu_bypass: !xsu,
-        ys_bypass: !(ysd || ysu),
+        xsd_bypass: zme.bypass_enabled && !xsd,
+        xsu_bypass: zme.bypass_enabled && !xsu,
+        ys_bypass: zme.bypass_enabled && !(ysd || ysu),
         x_scaling: coeff,
         y_scaling: y_coeff,
     }
@@ -642,6 +673,7 @@ fn build_zme(
         config.src_height as u32,
         config.dst_width as u32,
         config.dst_height as u32,
+        &config.zme,
     );
     let (chroma_dst_w, chroma_dst_h) = match config.dst_format {
         Vdpp2Format::Yuv444 => {
@@ -664,6 +696,7 @@ fn build_zme(
         (config.src_height / 2) as u32,
         chroma_dst_w as u32,
         chroma_dst_h as u32,
+        &config.zme,
     );
     let mut common = [0u32; ZME_COMMON_WORDS];
     common[0] = field(1, 31, 1)
@@ -681,13 +714,19 @@ fn build_zme(
     common[4] = zme_flags(y);
     common[5] = field(y.act_width as u32 - 1, 0, 16) | field(y.act_height as u32 - 1, 16, 16);
     common[6] = field(y.dst_width as u32 - 1, 0, 16) | field(y.dst_height as u32 - 1, 16, 16);
-    common[7] = field(16, 0, 5) | field(4, 8, 5) | field(16, 16, 5) | field(13, 24, 5);
+    common[7] = field(config.zme.dering_sensitivity0, 0, 5)
+        | field(config.zme.dering_sensitivity1, 8, 5)
+        | field(config.zme.dering_blend_alpha, 16, 5)
+        | field(config.zme.dering_blend_beta, 24, 5);
     common[8] = field(y.x_factor as u32, 0, 16);
     common[9] = field(y.y_factor as u32, 0, 16);
     common[12] = zme_flags(c);
     common[13] = field(c.act_width as u32 - 1, 0, 16) | field(c.act_height as u32 - 1, 16, 16);
     common[14] = field(c.dst_width as u32 - 1, 0, 16) | field(c.dst_height as u32 - 1, 16, 16);
-    common[15] = field(16, 0, 5) | field(4, 8, 5) | field(16, 16, 5) | field(13, 24, 5);
+    common[15] = field(config.zme.dering_sensitivity0, 0, 5)
+        | field(config.zme.dering_sensitivity1, 8, 5)
+        | field(config.zme.dering_blend_alpha, 16, 5)
+        | field(config.zme.dering_blend_beta, 24, 5);
     common[16] = field(c.x_factor as u32, 0, 16);
     common[17] = field(c.y_factor as u32, 0, 16);
     (
@@ -877,6 +916,36 @@ mod tests {
         assert_eq!(regs.common[13] >> 16, 640 / 4);
         assert_eq!(regs.common[16], 0x0167_027f);
         assert_eq!(regs.common[27], 10);
+    }
+
+    #[test]
+    fn zme_config_controls_bypass_and_dering_words() {
+        let mut cfg = Vdpp2Config::nv12_to_nv12(720, 480, 1920, 1080);
+        cfg.enhancement = false;
+        cfg.zme.bypass_enabled = false;
+        cfg.zme.dering_enabled = false;
+        cfg.zme.dering_sensitivity0 = 31;
+        cfg.zme.dering_sensitivity1 = 9;
+        cfg.zme.dering_blend_alpha = 27;
+        cfg.zme.dering_blend_beta = 5;
+        let regs = Vdpp2Registers::build(
+            &cfg,
+            &Vdpp2Job {
+                src_fd: 7,
+                src_uv_offset: 720 * 480,
+                dst_fd: 8,
+                dst_uv_offset: 1920 * 1080,
+                dst_c_fd: 10,
+                hist_fd: 9,
+            },
+        )
+        .unwrap();
+        assert_eq!(regs.zme_common[4] & (1 << 8), 0);
+        assert_eq!(regs.zme_common[4] & (0x7 << 16), 0);
+        assert_eq!(regs.zme_common[12] & (1 << 8), 0);
+        assert_eq!(regs.zme_common[12] & (0x7 << 16), 0);
+        assert_eq!(regs.zme_common[7], 0x051b_091f);
+        assert_eq!(regs.zme_common[15], 0x051b_091f);
     }
 
     #[test]
