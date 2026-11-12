@@ -73,6 +73,11 @@ t62 back to the RK3588 reference board.
   under `target/lf1-vdpp2/`; booting it requires explicitly approved writes to
   `mmcblk2p3`. Enabling a configfs overlay cannot fix the running kernel because
   both `CONFIG_ROCKCHIP_MPP_VDPP` and `CONFIG_OF_OVERLAY` are unset.
+- `scripts/flash_lf1_vdpp2_boot.sh` defaults to a dry run. Its applied path
+  verifies kernel 6.1.75, VDPP DTB status, p3 capacity, the local image hash and
+  passwordless sudo; backs up p3; writes with `dd conv=fsync`; reads the exact
+  image span back and verifies SHA-256 before an optional reboot. A dry run
+  against lf1 passes with the staged 42,991,057-byte image.
 
 ## 2026-11-12 H.264 / JPEG / post-processing closeout
 

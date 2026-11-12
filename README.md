@@ -589,6 +589,8 @@ BOARD=lf1 ./scripts/board_enable_vdpp2_overlay.sh status  # DTB 是否启用 cli
 # 在 x86_64 Linux 上生成 VDPP boot.img；默认只生成，不写板卡：
 # 6.1.75 + RK3576 源码示例：armbian/linux-rockchip rk-6.1-rkr3，00b3250140...
 ./scripts/build_lf1_vdpp2_kernel.sh <kernel-src> <board-config> <current-boot.img> <output-dir>
+# 默认 dry-run；仅显式 APPLY=1 才写 p3，REBOOT=1 才重启：
+BOARD=luck2 ./scripts/flash_lf1_vdpp2_boot.sh <boot.img> <sha256>
 BOARD=luck2 ./scripts/board_c_api_h264_mjpeg.sh # V1 C/C++ H.264 + MJPEG SDK
 BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 ```
