@@ -45,6 +45,31 @@ t62 back to the RK3588 reference board.
   SKIP rather than claiming pixel or histogram validation. A rebuilt kernel
   containing `mpp_vdpp` is required.
 
+### lf1 kernel enablement investigation
+
+- `mpp_vdpp` is a built-in `bool` driver in the Rockchip Kconfig, not a loadable
+  module, and it calls non-exported MPP core symbols. A standalone
+  `mpp_vdpp.ko` is therefore not a valid delivery path.
+- The current lf1 boot partition (`mmcblk2p3`) was captured read-only as a
+  64 MiB unsigned U-Boot FIT. It contains separate `fdt`, `kernel` and
+  `resource` images; the FDT and resource can be preserved byte-for-byte.
+- The board config identifies Linux **6.1.75**. The Rockchip
+  `develop-6.1` snapshot whose version is 6.1.75 predates RK3576 support, while
+  the current branch contains RK3576 VDPP but reports 6.1.118. A 6.1.118
+  proof-of-structure build produced a valid 43,212,210-byte FIT with
+  `CONFIG_ROCKCHIP_MPP_VDPP=y` and `rockchip_vdpp_driver`, `vdpp_probe`,
+  `vdpp_remove` symbols, but it was explicitly rejected because the board is
+  6.1.75. It was not copied to or booted on lf1.
+- `scripts/build_lf1_vdpp2_kernel.sh` now requires the source tree to match the
+  board's 6.1.75 version and to contain `rockchip,vdpp-rk3576`; it builds and
+  validates the FIT without writing to the board. The exact Luckfox
+  `Luckfox_Omni3576_SDK_250301.tar.gz` is the intended source input
+  (`6,137,390,627` bytes, MD5 `74115a3b339535aeea346758fb0687d9`), but the
+  public Google Drive copy currently returns a download-quota error.
+- lf1 remains on its original boot image. Enabling configfs overlay cannot fix
+  this kernel because both `CONFIG_ROCKCHIP_MPP_VDPP` and `CONFIG_OF_OVERLAY`
+  are unset.
+
 ## 2026-11-12 H.264 / JPEG / post-processing closeout
 
 - H.264 encode fixed-QP remains **24/24** over 64x64, 320x240, 640x480 and

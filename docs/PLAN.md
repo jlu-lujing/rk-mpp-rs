@@ -339,7 +339,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `board_vdpp2_hw_vs_c.sh` 已准备好；t6 没有 client 29，lf1 的 DT status
       虽为 `okay`，但内核 `CONFIG_ROCKCHIP_MPP_VDPP` 未开启且无 configfs
       overlay，平台驱动没有绑定，client-29 init 返回 `EINVAL`；真实硬件像素和
-      histogram 仍需重编包含 `mpp_vdpp` 的内核。
+      histogram 仍需重编包含 `mpp_vdpp` 的内核。该驱动是 built-in bool，不能
+      作为 `.ko` 加载；`build_lf1_vdpp2_kernel.sh` 已可离线生成并校验替换 FIT，
+      但要求源码同时匹配 Linux 6.1.75 且包含 RK3576 VDPP。精确 Luckfox SDK
+      源码当前受公开下载配额限制，脚本本身不会写板卡。
 
 验收：IEP 路径与 C 输出逐字节（或 PSNR ∞）；性能不低于 C，缩放不低于现有 `scale.rs`
 （若更慢，保留 `scale.rs` 作为推理链路默认）。

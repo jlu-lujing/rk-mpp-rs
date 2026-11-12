@@ -3399,7 +3399,12 @@ in what order the evidence gets produced.
       set`; its DT node is present with status `okay`, but no platform driver
       binds and client-29 init returns `EINVAL`. Pixel output, histogram contents
       and sharpening therefore remain unverified until a kernel with
-      `mpp_vdpp` is booted.
+      `mpp_vdpp` is booted. The driver is a built-in `bool` and cannot be loaded
+      as a standalone module. `build_lf1_vdpp2_kernel.sh` now builds a replacement
+      FIT without writing the board and rejects source trees that do not match
+      the board's Linux 6.1.75 or lack RK3576 VDPP support. The matching Luckfox
+      SDK source is currently unavailable from its public download because of a
+      Drive quota error.
 - [x] 10-bit ↔ 8-bit software conversion: `Frame::convert_format()` covers
       8-bit NV12/I420 and planar I420P10, including chroma deinterleave and
       reinterleave. The 8→10 expansion and 10→8 contract are exact inverses

@@ -824,6 +824,11 @@ H.264/VEPU580 编码已做到：
   内核同时启用 `CONFIG_OF_OVERLAY` 与 `CONFIG_ROCKCHIP_MPP_VDPP` 后才有意义；
   `board_vdpp2_hw_vs_c.sh` 在驱动绑定后比较 scale-only、默认 enhancement、
   packed histogram 与 U10 mean luma。
+  `mpp_vdpp` 是 built-in `bool`，不是可加载模块。
+  `build_lf1_vdpp2_kernel.sh` 可离线构建替换用 FIT，且会拒绝与板卡 6.1.75
+  不一致或缺少 RK3576 VDPP 支持的源码；该脚本默认只生成产物，不写 eMMC。
+  当前公开 Google Drive 的精确 `Luckfox_Omni3576_SDK_250301.tar.gz` 被配额
+  限制，尚未得到同版本 Luckfox 内核源码，也没有向 lf1 刷入未验证内核。
 - IEP2（client 28）可绑定，但 `iep2_params` 只有去隔行，没有 YUV scale/crop 字段。
   通用 scale 属于 legacy `/dev/iep`；t6 没有该节点，driver 也不绑定。
 - `tools/iep2_probe.c` 可按数值 mode 驱动 client 28，并原样输出 dst0/dst1；

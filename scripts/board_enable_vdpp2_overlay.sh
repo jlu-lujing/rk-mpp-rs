@@ -18,8 +18,30 @@ esac
 
 if [ "$action" = status ]; then
     ssh "$board" '
-        printf "vdpp status: "
-        cat /proc/device-tree/vdpp@27961000/status 2>/dev/null || echo unavailable
+        config=$(zcat /proc/config.gz 2>/dev/null |
+            sed -n "s/^CONFIG_ROCKCHIP_MPP_VDPP=//p; s/^# CONFIG_ROCKCHIP_MPP_VDPP is not set$/n/p")
+        overlay=$(zcat /proc/config.gz 2>/dev/null |
+            sed -n "s/^CONFIG_OF_OVERLAY=//p; s/^# CONFIG_OF_OVERLAY is not set$/n/p")
+        printf "dt status: "
+        if [ -f /proc/device-tree/vdpp@27961000/status ]; then
+            tr -d "\0" < /proc/device-tree/vdpp@27961000/status
+            echo
+        else
+            echo unavailable
+        fi
+        printf "kernel CONFIG_ROCKCHIP_MPP_VDPP: %s\n" "${config:-unavailable}"
+        printf "kernel CONFIG_OF_OVERLAY: %s\n" "${overlay:-unavailable}"
+        if [ -e /sys/bus/platform/devices/vdpp@27961000 ]; then
+            printf "platform device: present\n"
+            if [ -e /sys/bus/platform/devices/vdpp@27961000/driver ]; then
+                printf "driver: %s\n" \
+                    "$(basename "$(readlink -f /sys/bus/platform/devices/vdpp@27961000/driver)")"
+            else
+                echo "driver: unbound"
+            fi
+        else
+            echo "platform device: absent"
+        fi
         if [ -d /sys/kernel/config/device-tree/overlays/vdpp2 ]; then
             echo "configfs overlay: loaded"
         else
@@ -44,6 +66,13 @@ fi
 scp -q "$overlay" "$board":/tmp/rk3576-vdpp2-overlay.dts
 ssh "$board" '
     set -eu
+    config=$(zcat /proc/config.gz 2>/dev/null |
+        sed -n "s/^CONFIG_ROCKCHIP_MPP_VDPP=//p; s/^# CONFIG_ROCKCHIP_MPP_VDPP is not set$/n/p")
+    if [ "${config:-n}" = n ]; then
+        echo "CONFIG_ROCKCHIP_MPP_VDPP is not built into this kernel" >&2
+        echo "a DTB overlay cannot create the missing platform driver" >&2
+        exit 1
+    fi
     command -v dtc >/dev/null || {
         echo "dtc is required to build the VDPP2 overlay" >&2
         exit 1
