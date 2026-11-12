@@ -63,6 +63,8 @@ pub mod jpege_tables;
 pub mod m2vd;
 pub mod mpg4d;
 pub mod osd;
+pub mod vdpp2;
+mod vdpp2_coeff;
 pub mod vdpu2;
 pub mod vdpu34x_regs;
 pub mod vdpu383_regs;

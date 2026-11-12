@@ -169,6 +169,20 @@ pub fn require_jpeg_encode(expected: JpegEncodeHal) -> io::Result<SocProfile> {
     Ok(profile)
 }
 
+pub fn require_video_post_process(expected: VideoPostProcessor) -> io::Result<SocProfile> {
+    let profile = SocProfile::detect()?;
+    if profile.video_post_processor != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "this post-processor requires {:?}, but {:?} selects {:?}",
+                expected, profile.id, profile.video_post_processor
+            ),
+        ));
+    }
+    Ok(profile)
+}
+
 fn profile_for(id: SocId) -> SocProfile {
     let (video_decode, video_encode, jpeg_encode, video_post_processor) = match id {
         SocId::Rk3588 => (

@@ -4603,6 +4603,134 @@ fn main() {
         );
         return;
     }
+    if args.len() > 1 && args[1] == "vdpp-probe" {
+        let r = rk_mpp_rs::service::vdpp2_session::probe();
+        println!("VDPP client 29:");
+        println!("  kernel present (probe_hw_support bit 29): {}", r.present);
+        println!(
+            "  session init (INIT_CLIENT_TYPE):         {}",
+            if r.binds { "binds" } else { "FAIL" }
+        );
+        if !r.binds {
+            if let Some(error) = r.open_errno {
+                println!(
+                    "    errno: {error} ({})",
+                    std::io::Error::from_raw_os_error(error)
+                );
+            }
+        }
+        println!(
+            "  SET_REG_ADDR_OFFSET:                     {}",
+            if r.reg_offset { "yes" } else { "no" }
+        );
+        println!(
+            "  POLL_HW_FINISH:                          {}",
+            if r.poll { "yes" } else { "no" }
+        );
+        println!(
+            "  hw_id: {}",
+            r.hw_id.map_or_else(|| "-".to_string(), |id| id.to_string())
+        );
+        return;
+    }
+    if args.len() > 1 && args[1] == "vdpp-scale" {
+        use rk_mpp_rs::hal::vdpp2::Vdpp2Config;
+        use rk_mpp_rs::service::vdpp2_session::Vdpp2Processor;
+
+        let src = args.get(2).map(String::as_str).unwrap_or("");
+        let dst = args.get(3).map(String::as_str).unwrap_or("");
+        let src_width: usize = args
+            .get(4)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let src_height: usize = args
+            .get(5)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let dst_width: usize = args
+            .get(6)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let dst_height: usize = args
+            .get(7)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let output_420 = args.get(8).map(String::as_str) == Some("420");
+        if src.is_empty()
+            || dst.is_empty()
+            || src_width == 0
+            || src_height == 0
+            || dst_width == 0
+            || dst_height == 0
+        {
+            eprintln!(
+                "usage: rk-mpp-rs vdpp-scale <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420|444]"
+            );
+            std::process::exit(2);
+        }
+        let config = if output_420 {
+            Vdpp2Config::nv12_to_nv12(src_width, src_height, dst_width, dst_height)
+        } else {
+            Vdpp2Config::nv12_to_yuv444(src_width, src_height, dst_width, dst_height)
+        };
+        let input = match std::fs::read(src) {
+            Ok(input) => input,
+            Err(error) => {
+                eprintln!("{src}: {error}");
+                std::process::exit(1);
+            }
+        };
+        let expected = src_width * src_height * 3 / 2;
+        if input.len() < expected {
+            eprintln!("{src}: expected at least {expected} bytes");
+            std::process::exit(1);
+        }
+        let mut processor = match Vdpp2Processor::open(config) {
+            Ok(processor) => processor,
+            Err(error) => {
+                eprintln!("vdpp-scale: {error}");
+                std::process::exit(1);
+            }
+        };
+        let source = processor.src_frame_mut();
+        if let Err(error) = source.sync_write_begin() {
+            eprintln!("vdpp-scale source sync: {error}");
+            std::process::exit(1);
+        }
+        let source_bytes = source.as_mut_slice();
+        source_bytes.fill(0);
+        for row in 0..src_height {
+            let input_start = row * src_width;
+            let output_start = row * config.src_width_vir;
+            source_bytes[output_start..output_start + src_width]
+                .copy_from_slice(&input[input_start..input_start + src_width]);
+        }
+        let chroma_height = src_height.div_ceil(2);
+        let luma_size = src_width * src_height;
+        let output_uv = config.src_width_vir * config.src_height_vir;
+        for row in 0..chroma_height {
+            let input_start = luma_size + row * src_width;
+            let output_start = output_uv + row * config.src_width_vir;
+            source_bytes[output_start..output_start + src_width]
+                .copy_from_slice(&input[input_start..input_start + src_width]);
+        }
+        if let Err(error) = processor.run() {
+            eprintln!("vdpp-scale: {error}");
+            std::process::exit(1);
+        }
+        let output = match processor.dst_frame_compact() {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("vdpp-scale output: {error}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(error) = std::fs::write(dst, output) {
+            eprintln!("{dst}: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "iep-dect" {
         // The PD/DECT two-pass stream: `iep2_test` never selects this mode, so
         // this subcommand is the Rust half of `tools/iep2_dect_probe.c`.

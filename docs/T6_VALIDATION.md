@@ -3,6 +3,26 @@
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
 
+## 2026-11-12 VDPP2 register bring-up
+
+- t6 `vdpp-probe` confirms client 29 is absent: hardware bit 29 is false,
+  `INIT_CLIENT_TYPE` returns `EINVAL`, and neither register offsets nor polling
+  are available.
+- RK3576 VDPP2 parameter generation is now hardware-independent in
+  `src/hal/vdpp2.rs`. It carries the vendor common register layout, ZME scale
+  factors, all four 17x8 coefficient banks, DCI histogram words, and validated
+  geometry limits.
+- `scripts/board_vdpp2_regs_vs_c.sh` runs the unchanged C builder under a
+  fake `mpp_service` ioctl shim on t6. Four cells pass: 720x480 to 1920x1080
+  YUV444, 1920x1080 to 640x640 YUV420, 640x480 identity, and histogram mode.
+  Common, ZME common, four coefficient banks and histogram words are identical;
+  only inactive default enhancement banks differ because the Rust path disables
+  them.
+- `src/service/vdpp2_session.rs` owns source/destination/histogram DMA-BUFs,
+  submits the nine VDPP2 register sections plus address offsets, polls completion,
+  and exposes compact output extraction. `vdpp-scale` is ready for lf1 hardware
+  validation.
+
 ## 2026-11-12 H.264 / JPEG / post-processing closeout
 
 - H.264 encode fixed-QP remains **24/24** over 64x64, 320x240, 640x480 and
@@ -31,10 +51,10 @@ t62 back to the RK3588 reference board.
 - IEP2 full matrices remain **9/9** modes, **6/6** formats and **5/5** PD/DECT
   cells; telecine, progressive content and 322x242/722x482/1366x768 geometry
   all match the C probe's pixels and per-frame state.
-- Final t6 gate: `board_workspace_gate.sh` reports **1296 passed / 0 failed /
-  43 ignored** across 57 suites, `cargo fmt --check` is clean, and workspace
+- Final t6 gate: `board_workspace_gate.sh` reports **1304 passed / 0 failed /
+  45 ignored** across 59 suites, `cargo fmt --check` is clean, and workspace
   rustdoc passes with `-D warnings`. `cargo test --release --lib --offline`
-  reports **1126 passed / 0 failed / 0 ignored**.
+  reports **1134 passed / 0 failed / 0 ignored**.
 
 ## 2026-11-10 encoder packet metadata
 

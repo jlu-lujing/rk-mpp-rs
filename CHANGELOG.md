@@ -14,6 +14,10 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 - H.264 GDR now writes a deterministic ROI force-intra table. The stock C
   table builder leaks uninitialised bitfield stack data into DMA; the board
   oracle normalises only those undeclared bits before comparison.
+- Added the RK3576 VDPP2 client-29 common/ZME scale and DCI histogram register
+  builders, DMA-BUF session plumbing, and `vdpp-probe`/`vdpp-scale` entry
+  points. The register images match the vendor C builder through a fake-service
+  trace; lf1 hardware validation remains pending.
 
 ## [1.12] - 2026-11-09
 

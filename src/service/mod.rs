@@ -10,6 +10,7 @@ pub mod dma_heap;
 pub mod iep_session;
 pub mod soc;
 pub mod task_queue;
+pub mod vdpp2_session;
 
 use std::ffi::CString;
 use std::io;
