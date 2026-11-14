@@ -17,6 +17,10 @@ set -uo pipefail
 rust_bin="$HOME/rk-mpp-rs/target/release/rk-mpp-rs"
 mpp_bin="/tmp/mpp-develop/build/test/mpi_dec_test"
 samples="${SAMPLES:-5}"
+# mpi_dec_test defaults to 4 KiB reader packets. That causes repeated 1 ms
+# sleeps while the decoder drains 1080p frames and measures the harness, not
+# decoder throughput. 256 KiB is sufficient to keep the input queue fed.
+mpp_reader_buf_size="${MPP_READER_BUF_SIZE:-262144}"
 
 # stream : rust subcommand : MppCodingType : width : height : max frames (0 = all)
 streams=(
@@ -68,7 +72,8 @@ run_rust() {
 run_mpp() {
   local type="$1" stream="$2" width="$3" height="$4" frames="$5"
   (cd "$(dirname "$mpp_bin")" &&
-    sudo "$mpp_bin" -i "$stream" -o /dev/null -w "$width" -h "$height" \
+    sudo env reader_buf_size="$mpp_reader_buf_size" \
+      "$mpp_bin" -i "$stream" -o /dev/null -w "$width" -h "$height" \
       -t "$type" -n "$frames" -v q 2>&1) |
     sed -nE 's/.*decode ([0-9]+) frames time ([0-9]+) ms.*/\1 \2/p' | tail -1
 }

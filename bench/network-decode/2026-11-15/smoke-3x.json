@@ -1,0 +1,25 @@
+{
+  "video_url": "http://192.0.2.10:18081/demo30.m3u8",
+  "frames": 742,
+  "samples": 3,
+  "c": {
+    "wall_ms": [
+      1283,
+      1278,
+      1257
+    ],
+    "median_ms": 1278,
+    "fps": 580.59
+  },
+  "rust": {
+    "wall_ms": [
+      2168,
+      2197,
+      2157
+    ],
+    "median_ms": 2168,
+    "fps": 342.25,
+    "internal_ms": []
+  },
+  "rust_vs_c_time_percent": 69.64
+}

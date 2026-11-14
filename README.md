@@ -697,6 +697,7 @@ tests/data/       C 侧真实输出构成的 golden / fixture
 - [ROADMAP.md](ROADMAP.md) —— 逐 capability 的进度台账与证据（权威）
 - [docs/PLAN.md](docs/PLAN.md) —— 完整未来计划：全部剩余工作、阶段出口、依赖与风险
 - [docs/T6_VALIDATION.md](docs/T6_VALIDATION.md) —— 2026-11-06 的 t6 全量测试、板级回归、性能与播放结果
+- [docs/NETWORK_DECODE_BENCH.md](docs/NETWORK_DECODE_BENCH.md) —— 板端网络拉流的 H.264 C/Rust 纯解码基准与 `mpi_dec_test` 喂包陷阱
 - [docs/DIVERGENCES.md](docs/DIVERGENCES.md) —— 已知与 C 的差异登记：必须修 / 已证 C bug / 无 oracle
 - [docs/HANDOFF.md](docs/HANDOFF.md) —— 交接：下一步、板子工具链、易错清单
 - [docs/rk3576.md](docs/rk3576.md) —— RK3576 硬件代际、C MPP 基线与 Rust 适配进度
