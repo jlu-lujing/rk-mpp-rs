@@ -7,10 +7,22 @@ STREAM=${STREAM:-/tmp/rfi-network-decode.264}
 FRAMES=${FRAMES:-}
 SAMPLES=${SAMPLES:-7}
 PULL=${PULL:-auto}
+OUTPUT=${OUTPUT:-planar}
+POLL_US=${POLL_US:-20}
 RUST_BIN=${RUST_BIN:-"$HOME/rk-mpp-rs/target/release/rk-mpp-rs"}
 OUT=${OUT:-"$HOME/rk-mpp-rs/target/network-decode-$(date +%Y%m%d-%H%M%S)"}
 
 mkdir -p "$OUT"
+
+case "$OUTPUT" in
+    planar) c_pix_fmt=yuv420p ;;
+    nv12) c_pix_fmt=nv12 ;;
+    dmabuf) c_pix_fmt=nv12 ;;
+    *)
+        echo "OUTPUT must be planar, nv12, or dmabuf" >&2
+        exit 1
+        ;;
+esac
 
 if [[ "$PULL" == 1 || ! -s "$STREAM" ]]; then
     tmp="$STREAM.part"
@@ -24,7 +36,7 @@ if [[ -z "$FRAMES" ]]; then
     progress="$OUT/frame-count.progress"
     ffmpeg -nostdin -hide_banner -loglevel quiet -nostats \
         -progress "$progress" -c:v h264_rkmpp -i "$STREAM" \
-        -map 0:v:0 -fps_mode passthrough -pix_fmt yuv420p -f null -
+        -map 0:v:0 -fps_mode passthrough -pix_fmt "$c_pix_fmt" -f null -
     FRAMES=$(awk -F= '$1 == "frame" { frame = $2 } END { print frame }' "$progress")
 fi
 [[ "$FRAMES" =~ ^[0-9]+$ && "$FRAMES" -gt 0 ]] || {
@@ -38,7 +50,7 @@ run_c() {
     start=$(date +%s%N)
     ffmpeg -nostdin -hide_banner -loglevel quiet \
         -c:v h264_rkmpp -i "$STREAM" -map 0:v:0 \
-        -fps_mode passthrough -pix_fmt yuv420p -f rawvideo -y /dev/null
+        -fps_mode passthrough -pix_fmt "$c_pix_fmt" -f rawvideo -y /dev/null
     end=$(date +%s%N)
     printf '%s\n' $(((end - start) / 1000000)) > "$OUT/c_${round}.ms"
 }
@@ -47,8 +59,19 @@ run_rust() {
     local round=$1
     local start end
     start=$(date +%s%N)
-    sudo -n "$RUST_BIN" h264dec "$STREAM" /dev/null \
-        > "$OUT/rust_${round}.jsonish" 2> "$OUT/rust_${round}.log"
+    if [[ "$OUTPUT" == dmabuf ]]; then
+        sudo -n env RKMPP_DECODE_DMABUF=1 RKMPP_POLL_US="$POLL_US" \
+            "$RUST_BIN" h264dec "$STREAM" /dev/null \
+            > "$OUT/rust_${round}.jsonish" 2> "$OUT/rust_${round}.log"
+    elif [[ "$OUTPUT" == nv12 ]]; then
+        sudo -n env RKMPP_DECODE_NV12=1 RKMPP_POLL_US="$POLL_US" \
+            "$RUST_BIN" h264dec "$STREAM" /dev/null \
+            > "$OUT/rust_${round}.jsonish" 2> "$OUT/rust_${round}.log"
+    else
+        sudo -n env RKMPP_POLL_US="$POLL_US" \
+            "$RUST_BIN" h264dec "$STREAM" /dev/null \
+            > "$OUT/rust_${round}.jsonish" 2> "$OUT/rust_${round}.log"
+    fi
     end=$(date +%s%N)
     printf '%s\n' $(((end - start) / 1000000)) > "$OUT/rust_${round}.ms"
 }
@@ -65,7 +88,7 @@ for round in $(seq 1 "$SAMPLES"); do
     fi
 done
 
-python3 - "$OUT" "$FRAMES" "$VIDEO_URL" <<'PY'
+python3 - "$OUT" "$FRAMES" "$VIDEO_URL" "$OUTPUT" "$POLL_US" <<'PY'
 import json
 import re
 import statistics
@@ -75,6 +98,8 @@ from pathlib import Path
 out = Path(sys.argv[1])
 frames = int(sys.argv[2])
 video_url = sys.argv[3]
+output = sys.argv[4]
+poll_us = int(sys.argv[5])
 
 
 def values(who):
@@ -95,6 +120,8 @@ for pattern in ("rust_[0-9]*.jsonish", "rust_[0-9]*.log"):
 
 summary = {
     "video_url": video_url,
+    "output": output,
+    "rust_poll_us": poll_us,
     "frames": frames,
     "samples": len(c_ms),
     "c": {

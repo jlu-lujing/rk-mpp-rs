@@ -1,7 +1,41 @@
-# t6 validation — 2026-11-12
+# t6 validation — 2026-11-16
 
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
+
+## 2026-11-16 H.264 stream-decode path optimization
+
+- The network/stream path no longer rescans Annex-B start codes per access
+  unit. `split_annex_b_headers` records NAL header ranges once, and
+  `Decoder::decode_parsed_access_unit` de-escapes only the AU being decoded.
+  Two unit tests lock the new path: header split matches the full NAL split on
+  type/ref-idc/offset/length, and the parsed AU boundaries equal the old
+  `split_access_units` ranges.
+- `perf` before the change put `split_annex_b` at 63.8 % of CPU. After it, the
+  per-picture cost is about 1.9 ms in hardware submit+poll versus 0.3 ms for
+  parse and DPB preparation, so the remaining C gap is queue depth rather than
+  a CPU hot loop.
+- The non-blocking hardware poll interval now defaults to 20 us instead of
+  200 us and is cached with a `OnceLock` (`RKMPP_POLL_US=0` spins). This alone
+  was about +2.5 %.
+- `RKMPP_DECODE_NV12=1` exposes the native packed output and
+  `RKMPP_DECODE_DMABUF=1` keeps the hardware surface, avoiding planarisation
+  and the full-frame CPU copy for an in-process consumer.
+- Sustained 1920x800 network stream (`/tmp/rfi-network-demo30.264`, 742
+  frames, 7 alternating samples): Rust planar improves 333.18 -> 363.73 FPS
+  (**+9.15 %**), and the native-surface median is 446.45 FPS versus C
+  `h264_rkmpp` -> NV12 at 690.23 FPS. See
+  `docs/NETWORK_DECODE_BENCH.md` and `bench/network-decode/2026-11-15/`.
+- Gates on this tree: workspace gate **1319 passed / 0 failed / 45 ignored**
+  across 59 suites, `cargo test --release --lib --offline` **1149 passed /
+  0 failed / 0 ignored**, `cargo fmt --check` and rustdoc `-D warnings` clean.
+- `scripts/board_regress.sh` had been silently skipping on t6 because its
+  fixtures live in `~/rk-mpp-oracles/corpus`, not `/tmp`. Run against the real
+  corpus it is now **7/7 byte-exact**. The `test720` reference in the corpus
+  was a 25-frame clip of a 120-frame stream; it was regenerated with
+  `ffmpeg -c:v h264` to `o720_ffmpeg_full.yuv`
+  (SHA-256 `f31d2c0321ed82f6f2d4da5fed36bdce53ee355773879877de93138bf1500582`),
+  which the Rust output matches exactly.
 
 ## 2026-11-12 VDPP2 register bring-up
 
