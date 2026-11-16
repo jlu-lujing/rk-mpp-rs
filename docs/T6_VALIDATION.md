@@ -26,9 +26,20 @@ t62 back to the RK3588 reference board.
   (**+9.15 %**), and the native-surface median is 446.45 FPS versus C
   `h264_rkmpp` -> NV12 at 690.23 FPS. See
   `docs/NETWORK_DECODE_BENCH.md` and `bench/network-decode/2026-11-15/`.
-- Gates on this tree: workspace gate **1319 passed / 0 failed / 45 ignored**
-  across 59 suites, `cargo test --release --lib --offline` **1149 passed /
+- Gates on this tree: workspace gate **1320 passed / 0 failed / 45 ignored**
+  across 59 suites, `cargo test --release --lib --offline` **1150 passed /
   0 failed / 0 ignored**, `cargo fmt --check` and rustdoc `-D warnings` clean.
+- Lazy RBSP de-escaping: `decode_nals` takes `NalHeader` and expands only the
+  SPS, PPS and the first VCL slice header; every slice payload reaches the
+  hardware as raw EBSP. The `00 00 03` probe behind `ebsp_to_rbsp` is now a
+  word-at-a-time SWAR scan with a unit test over 3^12 payloads. Seven
+  alternating samples give Rust planar 2013 ms (368.60 FPS) and DMA-BUF
+  1585 ms (468.14 FPS), against C 1284 ms / 1092 ms.
+- Measured with `perf stat` and per-phase timers: the CLI is idle 83 % of the
+  run (283 ms of task-clock over 1629 ms wall), submit costs 18 us per
+  picture and the hardware poll 1761 us. Both `rkvdec-core` instances get
+  equal interrupt counts, so the remaining C/Rust gap is queue depth — see the
+  concurrency table in `docs/NETWORK_DECODE_BENCH.md`.
 - `scripts/board_regress.sh` had been silently skipping on t6 because its
   fixtures live in `~/rk-mpp-oracles/corpus`, not `/tmp`. Run against the real
   corpus it is now **7/7 byte-exact**. The `test720` reference in the corpus

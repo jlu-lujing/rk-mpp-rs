@@ -74,6 +74,38 @@ decode-loop median is about 1.49 seconds, or roughly 498 FPS. This is the
 preferred Rust output mode for an in-process consumer: it avoids planarisation
 and makes the hardware surface available directly.
 
+### Lazy RBSP and word-width de-escape probe
+
+`perf` on the optimised tree still attributed 28.2 % of cycles to
+`split_annex_b_headers` and 23.8 % to `ebsp_to_rbsp`. The second one was wasted
+work: only the SPS, the PPS and the first slice header of an access unit are
+parsed, while every slice payload is handed to the hardware as raw EBSP. The
+start-code walk itself is inherently one pass over the stream, so it only got a
+cheaper inner loop. Two changes followed.
+
+- `decode_nals` now takes `NalHeader` and de-escapes lazily. SPS/PPS and the
+  first VCL slice are expanded on demand; the slice payloads are copied raw, so
+  the per-AU `Vec<NalUnit>` with one `Cow` per NAL is gone entirely.
+- The `00 00 03` probe behind `ebsp_to_rbsp` scans eight bytes at a time with a
+  SWAR zero-pair test and only falls back to byte comparisons on a hit. A unit
+  test compares it against `windows(3).any()` on hand-picked shapes and
+  exhaustively over 3^12 payloads from the `{0, 1, 3}` alphabet.
+
+Seven alternating samples after both changes:
+
+| Path | Median | FPS |
+| --- | ---: | ---: |
+| C `h264_rkmpp` -> planar | **1284 ms** | **577.88** |
+| Rust MPP -> planar | **2013 ms** | **368.60** |
+| C `h264_rkmpp` -> NV12 | **1092 ms** | **679.49** |
+| Rust MPP -> DMA-BUF surface | **1585 ms** | **468.14** |
+
+That is another **+1.36 %** planar and **+4.86 %** native-surface over the
+previous step, and the C-relative wall-time overhead is now 56.78 % planar and
+45.15 % native. Raw samples and the phase profile live in
+`bench/network-decode/2026-11-15/phase-profile.json`. `cargo test --release --lib` parses the whole 51 MB stream in
+88 ms, so the parser is no longer the lever.
+
 ## `mpi_dec_test` harness caveat
 
 The stock vendor `mpi_dec_test` defaults to 4 KiB reader packets. On this
@@ -104,15 +136,33 @@ correctness gates in the normal t6/t62 suites remain authoritative.
 ## Interpretation
 
 The optimized Rust H.264 command path is closer, but still slower than the
-production C FFmpeg/RKMPP frontend on a sustained 1080p network stream.
-Per-frame profiling after the parser change leaves roughly **1.9 ms in hardware
-submit+poll**, versus about 0.3 ms for parsing and DPB preparation. The remaining
-gap is therefore not another obvious CPU hot loop:
+production C FFmpeg/RKMPP frontend on a sustained 1080p network stream. The
+remaining gap is measured, not guessed:
 
-1. submission and polling remain synchronous per access unit;
-2. the input queue is not kept full while the previous picture runs;
-3. eliminating that gap needs a multi-job resource ring rather than more parser
-   micro-optimisation.
+| Measurement | Result |
+| --- | --- |
+| `perf stat` task-clock over 1629 ms wall | **283 ms**, 0.174 CPUs |
+| submit ioctl, per picture | **18 us** |
+| poll (hardware), per picture | **1761 us** |
+| whole-stream Annex-B split, 51 MB | **88 ms** |
+
+So the process is idle about 83 % of the wall time and the parser is no longer
+the lever. The driver already round-robins a single stream across both
+`rkvdec-core` instances — `/proc/interrupts` shows equal counts — but a score
+that saturates the silicon needs more than one picture in flight:
+
+| Concurrent decodes | Rust wall | C wall |
+| --- | ---: | ---: |
+| 1 | 1827 ms | 809 ms |
+| 2 | 1966 ms | 1390 ms |
+| 3 | 1983 ms | 1937 ms |
+| 4 | 2612 ms | 2476 ms |
+
+Rust barely slows down from one to three concurrent decoders, which is the
+signature of a submission pipe that is never full; C's single-stream 809 ms is
+already close to two-job overlap. The remaining work is therefore a multi-job
+resource ring (per-job register batch, global/RPS tables, RCB, stream buffer and
+output surface), not another parser micro-optimisation.
 
 For a YOLO/display consumer, the practical path is already clear: use
 `RKMPP_DECODE_DMABUF=1` and keep the decoded surface on the device.

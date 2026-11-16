@@ -1,43 +1,33 @@
 {
-  "video_url": "http://192.0.2.10:18081/demo30.m3u8",
-  "output": "dmabuf",
-  "rust_poll_us": 20,
-  "frames": 742,
-  "samples": 7,
-  "c": {
-    "wall_ms": [
-      1055,
-      1113,
-      1081,
-      1072,
-      1075,
-      1063,
-      1091
-    ],
-    "median_ms": 1075,
-    "fps": 690.23
-  },
-  "rust": {
-    "wall_ms": [
-      1632,
-      1620,
-      1867,
-      1662,
-      1652,
-      1773,
-      1751
-    ],
-    "median_ms": 1662,
-    "fps": 446.45,
-    "internal_ms": [
-      1470.4,
-      1464.5,
-      1691.2,
-      1490.7,
-      1473.3,
-      1604.0,
-      1563.6
-    ]
-  },
-  "rust_vs_c_time_percent": 54.6
+ "video_url": "http://192.0.2.10:18081/demo30.m3u8",
+ "output": "dmabuf",
+ "rust_poll_us": 20,
+ "frames": 742,
+ "samples": 7,
+ "note": "Lazy RBSP de-escaping + word-width emulation-stop probe.",
+ "c": {
+  "wall_ms": [
+   1092,
+   1054,
+   1093,
+   1102,
+   1076
+  ],
+  "median_ms": 1092,
+  "fps": 679.49
+ },
+ "rust": {
+  "wall_ms": [
+   1631,
+   1585,
+   1552,
+   1815,
+   1523,
+   1611,
+   1549
+  ],
+  "median_ms": 1585,
+  "fps": 468.14
+ },
+ "rust_vs_c_time_percent": 45.15
 }

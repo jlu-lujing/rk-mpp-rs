@@ -1,0 +1,37 @@
+{
+ "video_url": "http://192.0.2.10:18081/demo30.m3u8",
+ "frames": 742,
+ "stream_bytes": 52179071,
+ "annex_b_split_ms": [
+  88.78,
+  87.67,
+  88.09
+ ],
+ "perf_stat": {
+  "wall_ms": 1629.2,
+  "task_clock_ms": 282.76,
+  "cpus_utilized": 0.174,
+  "cycles": 518130945,
+  "instructions": 897111435
+ },
+ "per_frame_us": {
+  "submit": 18,
+  "poll": 1761
+ },
+ "concurrent_decodes": {
+  "rust_dmabuf_wall_ms": {
+   "1": 1827,
+   "2": 1966,
+   "3": 1983,
+   "4": 2612
+  },
+  "c_nv12_wall_ms": {
+   "1": 809,
+   "2": 1390,
+   "3": 1937,
+   "4": 2476
+  }
+ },
+ "rkvdec_cores": 2,
+ "note": "Both rkvdec-core instances get equal interrupt counts for a single stream."
+}
