@@ -504,7 +504,7 @@ dma-buf lease 归还前关闭；旧顺序曾让驱动在 `mpp_dma_find_buffer_fd
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --workspace --all-targets --offline   # t6 门：1320 passed / 0 failed / 45 ignored（59 suites）
+cargo test --workspace --all-targets --offline   # t6 门：1319 passed / 0 failed / 45 ignored（59 suites）
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json
@@ -1133,7 +1133,7 @@ ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-old/build/mpp rc_debug=0xf0 mpp_
 
 ## 8. 开工检查单
 
-1. `cargo test --workspace --all-targets --offline` 必须 1320 通过（45 个板级 ignore）；不通过先修，别加功能。
+1. `cargo test --workspace --all-targets --offline` 必须 1319 通过（45 个板级 ignore）；不通过先修，别加功能。
 2. `git status` 干净（除本文/补丁）；确认在 `e5e9a7f` 或其后。
 3. 跑 `scripts/setup_board_refs.sh`（秒级，幂等）确认三个 oracle 齐；缺了会自动从
    `~/rk-mpp-oracles` 回填，两边都没有才会触发 clone+cmake 重建（这一步最贵）。

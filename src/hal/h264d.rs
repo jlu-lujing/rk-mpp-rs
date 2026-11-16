@@ -302,15 +302,20 @@ struct JobSlot {
     rcb_scratch: Vec<RcbConfig>,
 }
 
+/// Deep enough to reproduce the vendor runtime's queue depth (it keeps two
+/// to four jobs pending).
+pub const JOB_SLOTS: usize = 4;
+
 pub struct H264d {
     svc: MppService,
     cabac: DmaBuf,
-    slots: [JobSlot; 2],
+    slots: Vec<JobSlot>,
     /// Slot the next job is built in.
     slot: usize,
     /// Submitted slots the driver has not reported yet, oldest first.
-    armed: [usize; 2],
-    armed_len: usize,
+    armed: Vec<usize>,
+    /// How many jobs may be in flight at once.
+    depth: usize,
     /// Submit without waiting, so two jobs can overlap. Off keeps the
     /// historical block-until-done semantics for every other caller.
     pipeline: bool,
@@ -342,14 +347,16 @@ impl H264d {
                 rcb_scratch: Vec::with_capacity(9),
             })
         };
-        let slots = [new_slot()?, new_slot()?];
+        let slots = (0..JOB_SLOTS)
+            .map(|_| new_slot())
+            .collect::<io::Result<Vec<_>>>()?;
         let mut hw = H264d {
             svc,
             cabac,
             slots,
             slot: 0,
-            armed: [0, 0],
-            armed_len: 0,
+            armed: Vec::with_capacity(JOB_SLOTS),
+            depth: 2,
             pipeline: false,
             rcb_info_supported,
             regs: reg::Regs::new(),
@@ -550,7 +557,7 @@ impl H264d {
         super::check_decode_geometry(cur.width, cur.height)?;
         // Both slots busy: the older job must be reported before its tables
         // are overwritten.
-        if self.armed_len == 2 {
+        if self.armed.len() >= self.depth {
             self.reap()?;
         }
         self.prepare_tables(sps, pps, sh, dpb, lists)?;
@@ -662,9 +669,8 @@ impl H264d {
         }
         self.svc
             .submit_batch_recovering(&mut self.slots[slot].batch)?;
-        self.armed[self.armed_len] = slot;
-        self.armed_len += 1;
-        self.slot = slot ^ 1;
+        self.armed.push(slot);
+        self.slot = (slot + 1) % JOB_SLOTS;
         if !self.pipeline {
             self.reap()?;
         }
@@ -690,18 +696,28 @@ impl H264d {
 
     /// Jobs submitted but not yet reported by the driver.
     pub fn in_flight(&self) -> usize {
-        self.armed_len
+        self.armed.len()
+    }
+
+    /// Choose how many jobs may overlap (clamped to the slot count).
+    pub fn set_depth(&mut self, depth: usize) {
+        self.depth = depth.clamp(1, JOB_SLOTS);
     }
 
     /// Poll the oldest submitted job and report whether it errored.
     pub fn reap(&mut self) -> io::Result<bool> {
-        if self.armed_len == 0 {
+        if self.armed.is_empty() {
             return Ok(false);
         }
-        self.svc.poll_hw_finish_recovering()?;
-        let slot = self.armed[0];
-        self.armed[0] = self.armed[1];
-        self.armed_len -= 1;
+        // With more than one job queued the vendor runtime waits with the
+        // blocking form; only the single-job path needed the non-blocking
+        // watchdog workaround.
+        if self.pipeline {
+            self.svc.poll_hw_finish_blocking()?;
+        } else {
+            self.svc.poll_hw_finish_recovering()?;
+        }
+        let slot = self.armed.remove(0);
         let rb = self.slots[slot].readback;
         self.last_status = (rb[224], rb[226], rb[227]);
         let failed = hardware_status_error(rb[224], rb[225], rb[226], rb[227]);
@@ -715,7 +731,7 @@ impl H264d {
     /// Drain every submitted job. Returns true if any of them errored.
     pub fn flush(&mut self) -> io::Result<bool> {
         let mut failed = false;
-        while self.armed_len > 0 {
+        while !self.armed.is_empty() {
             failed |= self.reap()?;
         }
         Ok(failed)

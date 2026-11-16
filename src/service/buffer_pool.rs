@@ -384,7 +384,13 @@ impl BufferPool<DmaBuf> {
     /// Pool over the `system` dma-heap with at most `limit` buffers.
     /// Allocates lazily; nothing is opened until the first acquire.
     pub fn new(limit: usize) -> BufferPool<DmaBuf> {
-        BufferPool::with_allocator(limit, |len| DmaBuf::alloc("system", len, false))
+        // The heap backing video frames decides how the hardware sees their
+        // physical layout; `RKMPP_DMA_HEAP` selects it for A/B runs.
+        static HEAP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let heap = HEAP.get_or_init(|| {
+            std::env::var("RKMPP_DMA_HEAP").unwrap_or_else(|_| "system".to_string())
+        });
+        BufferPool::with_allocator(limit, move |len| DmaBuf::alloc(heap, len, false))
     }
 }
 

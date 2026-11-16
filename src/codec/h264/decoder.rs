@@ -4,6 +4,7 @@ use std::io;
 
 use crate::hal::h264d::{Frame, H264d};
 use crate::hal::h264d383::H264d383;
+use crate::service::buffer_pool::BufferLease;
 use crate::service::buffer_pool::BufferPool;
 use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{SocProfile, VideoDecodeHal};
@@ -87,6 +88,23 @@ impl DisplayReorder {
     }
 }
 
+/// A submitted picture whose pixels may only be read once the driver has
+/// reported its job. Keeping the metadata here is what lets the decoder
+/// submit frame N+1 before draining frame N.
+struct PendingFrame {
+    poc: i32,
+    idr: bool,
+    err_info: u32,
+    reference: bool,
+    /// The surface is leased, not just indexed: an IDR or a resolution change
+    /// clears the frame table while this picture is still waiting to be read.
+    nv12: BufferLease<DmaBuf>,
+    width: usize,
+    height: usize,
+    hor_stride: usize,
+    ver_stride: usize,
+}
+
 #[derive(Clone)]
 struct PendingTopField {
     sh: SliceHeader,
@@ -114,7 +132,16 @@ pub struct Decoder {
     pending_top: Option<PendingTopField>,
     /// Slice payload and staging buffer, reused and grown across pictures.
     payload: Vec<u8>,
-    stream: Option<DmaBuf>,
+    /// One stream staging buffer per hardware job slot: the video block reads
+    /// it for the whole duration of the job.
+    streams: Vec<Option<DmaBuf>>,
+    /// How many jobs may overlap; 1 keeps the historical behaviour.
+    depth: usize,
+    stream_slot: usize,
+    /// Submit without waiting and hand back the previous picture instead.
+    pipeline: bool,
+    /// The submitted picture whose pixels the next step drains.
+    pending: Option<PendingFrame>,
     // Keep the interleaved chroma of every picture, for the debug dump only.
     capture_raw_uv: bool,
     max_num_reorder_frames: usize,
@@ -201,6 +228,40 @@ impl H264Hardware {
             Self::Vdpu383(hw) => hw.recover_session(),
         }
     }
+
+    /// Turn on submit-without-wait where the HAL supports it, and report
+    /// whether the request was honoured.
+    fn set_pipeline(&mut self, enabled: bool, depth: usize) -> bool {
+        match self {
+            Self::Vdpu34x(hw) => {
+                hw.set_pipeline(enabled);
+                hw.set_depth(depth);
+                true
+            }
+            Self::Vdpu383(_) => false,
+        }
+    }
+
+    fn in_flight(&self) -> usize {
+        match self {
+            Self::Vdpu34x(hw) => hw.in_flight(),
+            Self::Vdpu383(_) => 0,
+        }
+    }
+
+    fn reap(&mut self) -> io::Result<bool> {
+        match self {
+            Self::Vdpu34x(hw) => hw.reap(),
+            Self::Vdpu383(_) => Ok(false),
+        }
+    }
+
+    fn flush_jobs(&mut self) -> io::Result<bool> {
+        match self {
+            Self::Vdpu34x(hw) => hw.flush(),
+            Self::Vdpu383(_) => Ok(false),
+        }
+    }
 }
 
 impl Decoder {
@@ -233,7 +294,13 @@ impl Decoder {
             frame_mbs_only: true,
             pending_top: None,
             payload: Vec::new(),
-            stream: None,
+            streams: std::iter::repeat_with(|| None)
+                .take(crate::hal::h264d::JOB_SLOTS)
+                .collect(),
+            depth: 1,
+            stream_slot: 0,
+            pipeline: false,
+            pending: None,
             capture_raw_uv: std::env::var("RFI_DUMP_UV").is_ok(),
             max_num_reorder_frames: 16,
             output_nv12: false,
@@ -467,7 +534,9 @@ impl Decoder {
                 let _ = f.write_all(&self.payload);
             }
         }
-        load_stream_payload(&mut self.stream, &self.payload).map_err(|e| e.to_string())?;
+        let stream_slot = self.stream_slot;
+        load_stream_payload(&mut self.streams[stream_slot], &self.payload)
+            .map_err(|e| e.to_string())?;
 
         let table_list = |list: &[RefListEntry]| {
             list.iter()
@@ -529,25 +598,41 @@ impl Decoder {
             );
         }
         let cur = self.frames[slot].as_ref().unwrap();
-        let err_info = finish_hardware_job(reference_error, || {
-            self.hw.decode(
-                &sps,
-                &pps,
-                &sh,
-                order,
-                &dpb_slots,
-                lists,
-                cur,
-                &ref_refs,
-                &ref_pocs,
-                &ref_flags,
-                &ref_frame_nums,
-                self.stream.as_ref().expect("stream was just loaded"),
-                payload_len,
-                idr,
-            )?;
-            Ok(self.hw.last_hardware_error())
-        })?;
+        // A reference gap conceals the picture instead of decoding it, exactly
+        // as before; only a real submission arms a hardware job.
+        let mut submitted = false;
+        let err_info = if reference_error {
+            frame_error(true, false)
+        } else {
+            self.hw
+                .decode(
+                    &sps,
+                    &pps,
+                    &sh,
+                    order,
+                    &dpb_slots,
+                    lists,
+                    cur,
+                    &ref_refs,
+                    &ref_pocs,
+                    &ref_flags,
+                    &ref_frame_nums,
+                    self.streams[stream_slot]
+                        .as_ref()
+                        .expect("stream was just loaded"),
+                    payload_len,
+                    idr,
+                )
+                .map_err(|e| e.to_string())?;
+            submitted = true;
+            self.stream_slot = (self.stream_slot + 1) % self.streams.len();
+            if self.pipeline {
+                // The verdict belongs to the picture drained next.
+                frame_error(false, false)
+            } else {
+                frame_error(false, self.hw.last_hardware_error())
+            }
+        };
         if std::env::var_os("RFI_FIELD_TRACE").is_some() {
             eprintln!(
                 "FIELD fn={} field={} bottom={} top={} bottom_poc={} frame_poc={} slot={} paired_top={}",
@@ -664,85 +749,48 @@ impl Decoder {
         } else {
             self.pending_top = None;
         }
-        if is_top_field {
-            return Ok(None);
-        }
         let output_poc = paired_top
             .as_ref()
             .map(|top| top.poc.min(poc))
             .unwrap_or(poc);
         let output_idr = paired_top.as_ref().map(|top| top.idr).unwrap_or(idr);
-
-        // 7. copy out (the dma-buf is CPU-cached, so sync before reading).
-        // MPP never exposes pixel data for an invalid or hardware-errored job.
-        let (yuv, nv12, raw_uv, dmabuf) = if combined_err_info == 0 {
-            let frame = self.frames[slot].as_ref().unwrap();
-            if self.output_dmabuf {
-                let lease = frame
-                    .nv12
-                    .try_clone()
-                    .map_err(|error| format!("H.264 DMA-BUF lease: {error}"))?;
-                (
-                    Vec::new(),
-                    None,
-                    Vec::new(),
-                    Some(DmaBufPicture::pooled(
-                        lease,
-                        frame.hor_stride,
-                        frame.ver_stride,
-                    )),
-                )
-            } else {
-                let view = frame
-                    .nv12
-                    .data()
-                    .map_err(|error| format!("H.264 output pool: {error}"))?;
-                let y_size = frame.hor_stride * frame.ver_stride;
-                let y = &view[..y_size];
-                let uv = &view[y_size..y_size + y_size / 2];
-                let _ = view.buffer().sync_read_begin();
-                let (yuv, nv12) = if self.output_nv12 {
-                    (
-                        Vec::new(),
-                        Some(crate::codec::yuv::nv12_to_packed(
-                            y,
-                            uv,
-                            self.width,
-                            self.height,
-                            frame.hor_stride,
-                        )),
-                    )
-                } else {
-                    (
-                        crate::codec::yuv::nv12_to_planar(
-                            y,
-                            uv,
-                            self.width,
-                            self.height,
-                            frame.hor_stride,
-                        ),
-                        None,
-                    )
-                };
-                // The interleaved chroma is only ever dumped by the debug path; the
-                // hardware wrote it into the same buffer the planar copy just read.
-                let raw_uv: Vec<u8> = if self.capture_raw_uv {
-                    (0..self.height / 2)
-                        .flat_map(|row| {
-                            let off = row * frame.hor_stride;
-                            uv[off..off + self.width].to_vec()
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let _ = view.buffer().sync_read_end();
-                (yuv, nv12, raw_uv, None)
-            }
-        } else {
-            (Vec::new(), None, Vec::new(), None)
-        };
         let output_reference = current_reference || top_reference;
+        if self.pipeline {
+            // A top field produces no picture of its own, but the job it just
+            // submitted still has to travel through the ring.
+            let current = if submitted && !is_top_field {
+                let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+                Some(PendingFrame {
+                    poc: output_poc,
+                    idr: output_idr,
+                    err_info: combined_err_info,
+                    reference: output_reference,
+                    nv12: frame
+                        .nv12
+                        .try_clone()
+                        .map_err(|error| format!("H.264 pipeline lease: {error}"))?,
+                    width: self.width,
+                    height: self.height,
+                    hor_stride: frame.hor_stride,
+                    ver_stride: frame.ver_stride,
+                })
+            } else {
+                None
+            };
+            return self.pipeline_step(current);
+        }
+        if is_top_field {
+            return Ok(None);
+        }
+        let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+        let (yuv, nv12, raw_uv, dmabuf) = self.output_buffers(
+            &frame.nv12,
+            self.width,
+            self.height,
+            frame.hor_stride,
+            frame.ver_stride,
+            combined_err_info,
+        )?;
         Ok(Some(Picture {
             width: self.width,
             height: self.height,
@@ -755,6 +803,144 @@ impl Decoder {
             err_info: combined_err_info,
             discard: combined_err_info != 0 && !output_reference,
         }))
+    }
+
+    /// Read a decoded surface out of the pool. MPP never exposes pixels for an
+    /// invalid or hardware-errored job.
+    #[allow(clippy::type_complexity)]
+    fn output_buffers(
+        &self,
+        nv12_buffer: &BufferLease<DmaBuf>,
+        width: usize,
+        height: usize,
+        hor_stride: usize,
+        ver_stride: usize,
+        err_info: u32,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>, Vec<u8>, Option<DmaBufPicture>), String> {
+        if err_info != 0 {
+            return Ok((Vec::new(), None, Vec::new(), None));
+        }
+        if self.output_dmabuf {
+            let lease = nv12_buffer
+                .try_clone()
+                .map_err(|error| format!("H.264 DMA-BUF lease: {error}"))?;
+            return Ok((
+                Vec::new(),
+                None,
+                Vec::new(),
+                Some(DmaBufPicture::pooled(lease, hor_stride, ver_stride)),
+            ));
+        }
+        let view = nv12_buffer
+            .data()
+            .map_err(|error| format!("H.264 output pool: {error}"))?;
+        let y_size = hor_stride * ver_stride;
+        let y = &view[..y_size];
+        let uv = &view[y_size..y_size + y_size / 2];
+        let _ = view.buffer().sync_read_begin();
+        let (yuv, nv12) = if self.output_nv12 {
+            (
+                Vec::new(),
+                Some(crate::codec::yuv::nv12_to_packed(
+                    y, uv, width, height, hor_stride,
+                )),
+            )
+        } else {
+            (
+                crate::codec::yuv::nv12_to_planar(y, uv, width, height, hor_stride),
+                None,
+            )
+        };
+        // The interleaved chroma is only ever dumped by the debug path; the
+        // hardware wrote it into the same buffer the planar copy just read.
+        let raw_uv: Vec<u8> = if self.capture_raw_uv {
+            (0..height / 2)
+                .flat_map(|row| {
+                    let off = row * hor_stride;
+                    uv[off..off + width].to_vec()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let _ = view.buffer().sync_read_end();
+        Ok((yuv, nv12, raw_uv, None))
+    }
+
+    /// Drain the older submitted picture and queue the current one.
+    fn pipeline_step(&mut self, current: Option<PendingFrame>) -> Result<Option<Picture>, String> {
+        let mut out = None;
+        if self.hw.in_flight() >= self.depth {
+            let failed = self.hw.reap().map_err(|e| e.to_string())?;
+            if let Some(mut picture) = self.pending.take() {
+                if failed {
+                    picture.err_info |= FRAME_ERR_DEC_HW_ERR;
+                }
+                out = Some(self.copy_out(&picture)?);
+            }
+        }
+        if let Some(picture) = current {
+            self.pending = Some(picture);
+        }
+        Ok(out)
+    }
+
+    /// Build the caller-facing picture for a drained job.
+    fn copy_out(&self, picture: &PendingFrame) -> Result<Picture, String> {
+        let (yuv, nv12, raw_uv, dmabuf) = self.output_buffers(
+            &picture.nv12,
+            picture.width,
+            picture.height,
+            picture.hor_stride,
+            picture.ver_stride,
+            picture.err_info,
+        )?;
+        Ok(Picture {
+            width: picture.width,
+            height: picture.height,
+            poc: picture.poc,
+            idr: picture.idr,
+            yuv,
+            nv12,
+            dmabuf,
+            raw_uv,
+            err_info: picture.err_info,
+            discard: picture.err_info != 0 && !picture.reference,
+        })
+    }
+
+    /// Overlap the video block with the CPU: each call submits a picture and
+    /// hands back the previous one. Callers must drain [`Decoder::flush`] once
+    /// the stream ends, otherwise the last picture is lost.
+    ///
+    /// Returns whether the request was honoured; the RK3576 VDPU383 path has
+    /// no submission ring yet and stays synchronous.
+    pub fn set_pipeline(&mut self, enabled: bool) -> bool {
+        self.set_pipeline_depth(enabled, 2)
+    }
+
+    /// Same, with an explicit in-flight depth.
+    pub fn set_pipeline_depth(&mut self, enabled: bool, depth: usize) -> bool {
+        self.depth = depth.max(1);
+        self.pipeline = enabled && self.hw.set_pipeline(true, self.depth);
+        self.pipeline
+    }
+
+    /// Drain the last submitted picture. The caller should feed every returned
+    /// picture through the same reorder buffer as the streaming ones.
+    pub fn flush(&mut self) -> Result<Vec<Picture>, String> {
+        let mut out = Vec::new();
+        if !self.pipeline {
+            return Ok(out);
+        }
+        let failed = self.hw.flush_jobs().map_err(|e| e.to_string())?;
+        if let Some(mut picture) = self.pending.take() {
+            if failed {
+                picture.err_info |= FRAME_ERR_DEC_HW_ERR;
+            }
+            out.push(self.copy_out(&picture)?);
+        }
+        Ok(out)
     }
 
     /// VUI display reorder depth for the active SPS.
@@ -846,17 +1032,6 @@ fn frame_error(reference_error: bool, hardware_error: bool) -> u32 {
     } else {
         0
     }
-}
-
-fn finish_hardware_job<F>(reference_error: bool, job: F) -> Result<u32, String>
-where
-    F: FnOnce() -> io::Result<bool>,
-{
-    if reference_error {
-        return Ok(FRAME_ERR_DEC_INVALID);
-    }
-    let hardware_error = job().map_err(|e| e.to_string())?;
-    Ok(frame_error(false, hardware_error))
 }
 
 fn hardware_rps_lists<'a>(
@@ -1013,8 +1188,8 @@ fn first_mb_zero(rbsp: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_slice_payload, complementary_fields, current_reference_state, finish_hardware_job,
-        frame_error, hardware_rps_lists, pad_h264_payload, picture_is_output, sort_pictures_by_poc,
+        build_slice_payload, complementary_fields, current_reference_state, frame_error,
+        hardware_rps_lists, pad_h264_payload, picture_is_output, sort_pictures_by_poc,
         split_access_units, split_parsed_access_units, DisplayReorder, Picture,
         FRAME_ERR_DEC_HW_ERR, FRAME_ERR_DEC_INVALID,
     };
@@ -1295,14 +1470,6 @@ mod tests {
         assert_eq!(frame_error(true, true), FRAME_ERR_DEC_INVALID);
         assert_eq!(frame_error(false, true), FRAME_ERR_DEC_HW_ERR);
         assert_eq!(frame_error(false, false), 0);
-    }
-
-    #[test]
-    fn hardware_job_reports_the_status_returned_after_submission() {
-        assert_eq!(
-            finish_hardware_job(false, || Ok(true)).unwrap(),
-            FRAME_ERR_DEC_HW_ERR
-        );
     }
 
     #[test]

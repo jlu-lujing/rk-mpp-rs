@@ -26,8 +26,8 @@ t62 back to the RK3588 reference board.
   (**+9.15 %**), and the native-surface median is 446.45 FPS versus C
   `h264_rkmpp` -> NV12 at 690.23 FPS. See
   `docs/NETWORK_DECODE_BENCH.md` and `bench/network-decode/2026-11-15/`.
-- Gates on this tree: workspace gate **1320 passed / 0 failed / 45 ignored**
-  across 59 suites, `cargo test --release --lib --offline` **1150 passed /
+- Gates on this tree: workspace gate **1319 passed / 0 failed / 45 ignored**
+  across 59 suites, `cargo test --release --lib --offline` **1149 passed /
   0 failed / 0 ignored**, `cargo fmt --check` and rustdoc `-D warnings` clean.
 - Lazy RBSP de-escaping: `decode_nals` takes `NalHeader` and expands only the
   SPS, PPS and the first VCL slice header; every slice payload reaches the
