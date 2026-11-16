@@ -106,6 +106,47 @@ previous step, and the C-relative wall-time overhead is now 56.78 % planar and
 `bench/network-decode/2026-11-15/phase-profile.json`. `cargo test --release --lib` parses the whole 51 MB stream in
 88 ms, so the parser is no longer the lever.
 
+### Queue depth: what the driver actually does
+
+An `LD_PRELOAD` shim around `ioctl` captured every `MppReqV1` batch from both
+the vendor path and this crate (742 frames each). The register files are
+identical except the stream-length padding (±8 bytes) and one error-concealment
+bit, and both submit nine to ten requests per frame, so the submission shape is
+not the difference.
+
+Measured with the DDR governor pinned to `performance` (the default
+`dmc_ondemand` moves between 528 MHz and 2112 MHz, which alone swings this
+benchmark by 1.8x) and the decode thread pinned to a big core:
+
+| | vendor | this crate (1 job) |
+| --- | ---: | ---: |
+| poll wait per frame | **0.87 ms** | **1.58 ms** |
+| submits per poll | 1-4 | 1 |
+
+Queueing deeper does work when the pictures are independent. On an all-intra
+240-frame 1920x800 stream (`/tmp/ai.264`):
+
+| depth | wall | per frame |
+| --- | ---: | ---: |
+| 1 (blocking) | 700-740 ms | 2.9-3.1 ms |
+| 2 | 370-384 ms | 1.55 ms |
+| 3 | 264-282 ms | **1.15 ms** |
+| vendor | 358-435 ms | 1.5-1.8 ms |
+
+Depth 3 is 1.4x faster than the vendor path, which shows the hardware does
+have the headroom. It also shows the blocking path carries roughly 1.7 ms per
+frame of round-trip overhead that queueing hides.
+
+On streams with real inter prediction the same queueing produces deterministic
+but wrong pictures (40/120 frames at depth 2, 119/120 at depth 3), and the
+driver logs `mpp_rkvdec2 ... resetting for err 0x23 / 0x107`. The register
+stream is identical to the vendor's, so the remaining work is the DPB/frame
+lifetime under deferred output rather than the register file: the deferred
+picture holds a lease, which changes which buffer the pool hands out next.
+
+Queueing therefore stays opt-in (`RKMPP_H264_PIPELINE=<depth>`), and correctness
+gates run with it off.
+
 ## `mpi_dec_test` harness caveat
 
 The stock vendor `mpi_dec_test` defaults to 4 KiB reader packets. On this
