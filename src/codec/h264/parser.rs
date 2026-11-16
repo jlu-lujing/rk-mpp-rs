@@ -143,7 +143,7 @@ impl<'a> BitReader<'a> {
 
 /// Remove emulation-prevention bytes (`00 00 03` -> `00 00`).
 pub fn ebsp_to_rbsp(data: &[u8]) -> Cow<'_, [u8]> {
-    if !data.windows(3).any(|w| w == [0, 0, 3]) {
+    if !has_emulation_stop(data) {
         return Cow::Borrowed(data);
     }
     let mut out = Vec::with_capacity(data.len());
@@ -157,6 +157,35 @@ pub fn ebsp_to_rbsp(data: &[u8]) -> Cow<'_, [u8]> {
         zeros = if b == 0 { zeros + 1 } else { 0 };
     }
     Cow::Owned(out)
+}
+
+/// True when the payload contains an `00 00 03` emulation-prevention byte.
+///
+/// `windows(3).any()` is a full pass with a bounds check per byte, which showed
+/// up in profiles for every slice. Word-sized detection of two leading zeros
+/// skips an entire `u64` at a time whenever the window has no zero pair.
+fn has_emulation_stop(data: &[u8]) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let mut i = 0usize;
+    while i + 9 <= data.len() {
+        let word = u64::from_ne_bytes(data[i..i + 8].try_into().expect("8 bytes"));
+        let zero = (word.wrapping_sub(ONES)) & !word & HIGH;
+        // `zero >> 8` aligns each byte's marker with the byte before it, so a
+        // non-zero result marks a `00 00` pair starting at some byte of the
+        // word. Offsets 0..=7 are then checked for `00 00 03`, and the window
+        // advances by seven bytes so a pair straddling the boundary is
+        // re-examined by the next word.
+        if zero & (zero >> 8) != 0 {
+            for offset in 0..7 {
+                if data[i + offset..i + offset + 3] == [0, 0, 3] {
+                    return true;
+                }
+            }
+        }
+        i += 7;
+    }
+    data[i..].windows(3).any(|w| w == [0, 0, 3])
 }
 
 #[derive(Debug, Clone)]
@@ -1134,6 +1163,65 @@ mod tests {
         assert_eq!(nals[2].unit_type, NAL_IDR);
         assert!(nals[2].is_vcl());
         assert_eq!(&*nals[0].rbsp, &[0x42, 0x00, 0x1e]);
+    }
+
+    /// The word-at-a-time detector must agree with the obvious scan on every
+    /// payload shape that matters: no zeros, `00 00` at both window edges,
+    /// `00 00 03` straddling a boundary, and long zero runs.
+    #[test]
+    fn emulation_stop_detection_matches_the_naive_scan() {
+        let naive = |data: &[u8]| data.windows(3).any(|w| w == [0, 0, 3]);
+        let cases: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![1, 2, 3],
+            vec![0, 0, 3],
+            vec![0, 0, 0, 3],
+            vec![0, 0],
+            vec![0, 0, 0],
+            (0..64).map(|i| (i % 7) as u8).collect(),
+            (0..64).map(|i| if i % 6 == 5 { 0 } else { 0xff }).collect(),
+            {
+                let mut v = vec![0xffu8; 40];
+                v[5] = 0;
+                v[6] = 0;
+                v[7] = 3;
+                v
+            },
+            {
+                // `00 00` at the boundary between two windows, then `03`.
+                let mut v = vec![0xffu8; 40];
+                v[13] = 0;
+                v[14] = 0;
+                v[15] = 3;
+                v
+            },
+            {
+                // Two zeros then a non-3 byte: many times, no escape.
+                let mut v = Vec::new();
+                for _ in 0..20 {
+                    v.extend_from_slice(&[0, 0, 0xff]);
+                }
+                v
+            },
+        ];
+        for case in cases {
+            assert_eq!(
+                has_emulation_stop(&case),
+                naive(&case),
+                "payload {case:?} disagrees with the naive scan"
+            );
+        }
+        // Exhaustive over a 24-bit alphabet restricted to {0, 1, 3}.
+        let alphabet = [0u8, 1, 3];
+        let mut buffer = [0u8; 12];
+        for code in 0..3usize.pow(12) {
+            let mut value = code;
+            for slot in buffer.iter_mut() {
+                *slot = alphabet[value % 3];
+                value /= 3;
+            }
+            assert_eq!(has_emulation_stop(&buffer), naive(&buffer), "{buffer:?}");
+        }
     }
 
     #[test]

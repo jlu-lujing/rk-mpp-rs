@@ -287,7 +287,7 @@ impl Decoder {
 
     /// Decode one access unit (one picture worth of NAL units).
     pub fn decode_access_unit(&mut self, aub: &[u8]) -> Result<Option<Picture>, String> {
-        let nals = parser::split_annex_b(aub);
+        let nals = parser::split_annex_b_headers(aub);
         self.decode_nals(aub, &nals)
     }
 
@@ -298,24 +298,13 @@ impl Decoder {
         &mut self,
         access_unit: &ParsedAccessUnit<'_>,
     ) -> Result<Option<Picture>, String> {
-        let nals: Vec<_> = access_unit
-            .nals
-            .iter()
-            .map(|nal| parser::NalUnit {
-                ref_idc: nal.ref_idc,
-                unit_type: nal.unit_type,
-                rbsp: parser::ebsp_to_rbsp(nal.payload),
-                offset: nal.offset,
-                len: nal.len,
-            })
-            .collect();
-        self.decode_nals(access_unit.data, &nals)
+        self.decode_nals(access_unit.data, &access_unit.nals)
     }
 
     fn decode_nals(
         &mut self,
         aub: &[u8],
-        nals: &[parser::NalUnit<'_>],
+        nals: &[parser::NalHeader<'_>],
     ) -> Result<Option<Picture>, String> {
         if nals.is_empty() {
             return Ok(None);
@@ -324,7 +313,8 @@ impl Decoder {
         for n in nals {
             match n.unit_type {
                 parser::NAL_SPS => {
-                    let s = parser::parse_sps(&n.rbsp).map_err(|e| e.to_string())?;
+                    let s = parser::parse_sps(&parser::ebsp_to_rbsp(n.payload))
+                        .map_err(|e| e.to_string())?;
                     let id = (s.sps_id as usize) % 32;
                     if self.width != s.width as usize
                         || self.height != s.height as usize
@@ -343,7 +333,8 @@ impl Decoder {
                     self.sps[id] = Some(s);
                 }
                 parser::NAL_PPS => {
-                    let p = parser::parse_pps(&n.rbsp).map_err(|e| e.to_string())?;
+                    let p = parser::parse_pps(&parser::ebsp_to_rbsp(n.payload))
+                        .map_err(|e| e.to_string())?;
                     let id = p.pps_id as usize;
                     self.pps[id] = Some(p);
                 }
@@ -356,7 +347,11 @@ impl Decoder {
             .iter()
             .find(|n| n.is_vcl())
             .ok_or_else(|| "no slice in access unit".to_string())?;
-        let pid = parser::slice_pps_id(&first_vcl.rbsp).map_err(|e| e.to_string())? as usize;
+        // Only the first slice header and the parameter sets are parsed, so
+        // only those get de-escaped. The slice payloads go to the hardware as
+        // raw EBSP, which is what makes the whole-stream path allocation-free.
+        let first_rbsp = parser::ebsp_to_rbsp(first_vcl.payload);
+        let pid = parser::slice_pps_id(&first_rbsp).map_err(|e| e.to_string())? as usize;
         let pps = self.pps[pid].clone().ok_or("missing PPS")?;
         let sps = self.sps[(pps.sps_id as usize) % 32]
             .clone()
@@ -364,7 +359,7 @@ impl Decoder {
         self.max_num_reorder_frames = sps.max_num_reorder_frames.unwrap_or(16).min(16) as usize;
         let idr = first_vcl.unit_type == parser::NAL_IDR;
         let sh: SliceHeader = parser::parse_slice_header(
-            &first_vcl.rbsp,
+            &first_rbsp,
             &sps,
             &pps,
             first_vcl.unit_type,
@@ -815,7 +810,7 @@ fn pad_h264_payload(payload: &mut Vec<u8>) {
 /// Assemble the access unit's VCL slices into the payload MPP hands to the
 /// hardware. Appended into caller-owned scratch; the entry sequence is the
 /// original per-frame build, byte for byte.
-fn build_slice_payload(aub: &[u8], nals: &[parser::NalUnit], payload: &mut Vec<u8>) {
+fn build_slice_payload(aub: &[u8], nals: &[parser::NalHeader], payload: &mut Vec<u8>) {
     payload.reserve(aub.len());
     for n in nals.iter().filter(|n| n.is_vcl()) {
         // MPP hands the hardware a normalised 3-byte start code (a 4-byte
@@ -1024,7 +1019,7 @@ mod tests {
         FRAME_ERR_DEC_HW_ERR, FRAME_ERR_DEC_INVALID,
     };
     use crate::codec::h264::dpb::{RefListEntry, ReferenceFlags};
-    use crate::codec::h264::parser::{split_annex_b, SliceHeader};
+    use crate::codec::h264::parser::{split_annex_b_headers, SliceHeader};
 
     fn picture(poc: i32, idr: bool) -> Picture {
         Picture {
@@ -1243,7 +1238,7 @@ mod tests {
             0, 0, 1, 0x41, 0x8a, 0xb0, 0xc1, 0xd2, // non-IDR, 3-byte code
         ]
         .to_vec();
-        let nals = split_annex_b(&aub);
+        let nals = split_annex_b_headers(&aub);
 
         // The original sequence, spelled out exactly as the pre-optimisation
         // decode_access_unit() built it into a fresh Vec.
