@@ -96,9 +96,15 @@ struct PendingFrame {
     idr: bool,
     err_info: u32,
     reference: bool,
-    /// The surface is leased, not just indexed: an IDR or a resolution change
-    /// clears the frame table while this picture is still waiting to be read.
+    /// The surfaces are leased, not just indexed: the DPB may evict this
+    /// picture while its job is still in flight, and the pool would then hand
+    /// the buffers to another frame.
     nv12: BufferLease<DmaBuf>,
+    _colmv: BufferLease<DmaBuf>,
+    /// Every reference surface the running job reads. The DPB may unmark a
+    /// reference while the job is still in flight, and the pool would then
+    /// recycle the buffer underneath it.
+    _refs: Vec<BufferLease<DmaBuf>>,
     width: usize,
     height: usize,
     hor_stride: usize,
@@ -758,25 +764,46 @@ impl Decoder {
         if self.pipeline {
             // A top field produces no picture of its own, but the job it just
             // submitted still has to travel through the ring.
-            let current = if submitted && !is_top_field {
-                let frame = self.frames[slot].as_ref().expect("decoded frame slot");
-                Some(PendingFrame {
-                    poc: output_poc,
-                    idr: output_idr,
-                    err_info: combined_err_info,
-                    reference: output_reference,
-                    nv12: frame
-                        .nv12
-                        .try_clone()
-                        .map_err(|error| format!("H.264 pipeline lease: {error}"))?,
-                    width: self.width,
-                    height: self.height,
-                    hor_stride: frame.hor_stride,
-                    ver_stride: frame.ver_stride,
-                })
-            } else {
-                None
-            };
+            let current =
+                if submitted && !is_top_field {
+                    let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+                    Some(PendingFrame {
+                        poc: output_poc,
+                        idr: output_idr,
+                        err_info: combined_err_info,
+                        reference: output_reference,
+                        nv12: frame
+                            .nv12
+                            .try_clone()
+                            .map_err(|error| format!("H.264 pipeline lease: {error}"))?,
+                        _colmv: frame
+                            .colmv
+                            .try_clone()
+                            .map_err(|error| format!("H.264 pipeline colmv lease: {error}"))?,
+                        _refs: {
+                            let mut held = Vec::new();
+                            for reference in ref_refs.iter().flatten() {
+                                held.push(
+                                    reference.nv12.try_clone().map_err(|error| {
+                                        format!("H.264 reference lease: {error}")
+                                    })?,
+                                );
+                                held.push(
+                                    reference.colmv.try_clone().map_err(|error| {
+                                        format!("H.264 reference lease: {error}")
+                                    })?,
+                                );
+                            }
+                            held
+                        },
+                        width: self.width,
+                        height: self.height,
+                        hor_stride: frame.hor_stride,
+                        ver_stride: frame.ver_stride,
+                    })
+                } else {
+                    None
+                };
             return self.pipeline_step(current);
         }
         if is_top_field {

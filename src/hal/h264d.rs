@@ -25,7 +25,11 @@ pub const SPSPPS_SIZE: usize = 256 * SPSPPS_UNIT + 128;
 pub const RPS_SIZE: usize = 384;
 pub const SCLST_SIZE: usize = 6 * 16 + 2 * 64 + 128;
 pub const ERROR_INFO_SIZE: usize = 256 * 144 * 4;
-const REG_READBACK_WORDS: usize = 278;
+/// Only the status words this decoder looks at are read back: the vendor
+/// runtime asks for 22 words, while reading the whole 278-word file costs a
+/// 1.1 KB `copy_to_user` per picture.
+const REG_READBACK_FIRST: usize = 224;
+const REG_READBACK_WORDS: usize = 4;
 
 static CMV_DUMP_INDEX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -662,7 +666,7 @@ impl H264d {
             .reg_write(&reg_words[128..200], 512)
             .reg_write(&reg_words[200..205], 800)
             .reg_write(&reg_words[256..276], 1024)
-            .reg_read(readback, 0);
+            .reg_read(readback, (REG_READBACK_FIRST * 4) as u32);
         batch.reg_offsets(offsets);
         if rcb_info_supported && !rcb_scratch.is_empty() {
             batch.rcb_info(rcb_scratch);
@@ -709,18 +713,23 @@ impl H264d {
         if self.armed.is_empty() {
             return Ok(false);
         }
-        // With more than one job queued the vendor runtime waits with the
-        // blocking form; only the single-job path needed the non-blocking
-        // watchdog workaround.
-        if self.pipeline {
+        // The vendor runtime waits with the blocking form. The non-blocking
+        // loop exists for the AV1 watchdog incident and costs a wake-up
+        // round trip per picture, so allow the blocking path to be selected.
+        static BLOCKING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let blocking = *BLOCKING.get_or_init(|| {
+            std::env::var("RKMPP_POLL_BLOCKING").as_deref() != Ok("0") && self.pipeline
+                || std::env::var("RKMPP_POLL_BLOCKING").as_deref() == Ok("1")
+        });
+        if blocking {
             self.svc.poll_hw_finish_blocking()?;
         } else {
             self.svc.poll_hw_finish_recovering()?;
         }
         let slot = self.armed.remove(0);
         let rb = self.slots[slot].readback;
-        self.last_status = (rb[224], rb[226], rb[227]);
-        let failed = hardware_status_error(rb[224], rb[225], rb[226], rb[227]);
+        self.last_status = (rb[0], rb[2], rb[3]);
+        let failed = hardware_status_error(rb[0], rb[1], rb[2], rb[3]);
         self.last_hardware_error = failed;
         if failed {
             let _ = self.svc.restart_after_hardware_error();
