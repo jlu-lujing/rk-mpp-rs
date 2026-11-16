@@ -280,9 +280,12 @@ impl RcbInfo {
     }
 }
 
-pub struct H264d {
-    svc: MppService,
-    cabac: DmaBuf,
+/// Everything one hardware job owns privately.
+///
+/// The video block keeps reading these tables for the whole duration of the
+/// job, so a second job in flight needs its own copies. Two slots are enough
+/// to keep one picture executing while the next is prepared.
+struct JobSlot {
     spspps: DmaBuf,
     rps: DmaBuf,
     sclst: DmaBuf,
@@ -290,16 +293,32 @@ pub struct H264d {
     _errinfo: DmaBuf,
     rcb: DmaBuf,
     rcb_info: RcbInfo,
+    /// Register window copied at submit time; the kernel holds this pointer
+    /// until the job is polled.
+    reg_words: Vec<u32>,
+    batch: Batch,
+    readback: [u32; REG_READBACK_WORDS],
+    offsets: Vec<RegOffsetInfo>,
+    rcb_scratch: Vec<RcbConfig>,
+}
+
+pub struct H264d {
+    svc: MppService,
+    cabac: DmaBuf,
+    slots: [JobSlot; 2],
+    /// Slot the next job is built in.
+    slot: usize,
+    /// Submitted slots the driver has not reported yet, oldest first.
+    armed: [usize; 2],
+    armed_len: usize,
+    /// Submit without waiting, so two jobs can overlap. Off keeps the
+    /// historical block-until-done semantics for every other caller.
+    pipeline: bool,
     rcb_info_supported: bool,
     pub regs: reg::Regs,
     /// (reg224, reg226, reg227) read back after the last poll.
     pub last_status: (u32, u32, u32),
     pub last_hardware_error: bool,
-    /// Reused across frames: the ioctl needs owned scratch but not fresh
-    /// allocations, and the entries are rebuilt in full every job.
-    offsets_scratch: Vec<RegOffsetInfo>,
-    rcb_scratch: Vec<RcbConfig>,
-    batch: Batch,
 }
 
 impl H264d {
@@ -308,27 +327,34 @@ impl H264d {
         let svc = MppService::open(Client::RkvDec as u32)?;
         let rcb_info_supported = svc.cmd_supported(MPP_CMD_SET_RCB_INFO);
         let cabac = DmaBuf::alloc("system", CABAC_SIZE, false)?;
-        let spspps = DmaBuf::alloc("system", SPSPPS_SIZE, false)?;
-        let rps = DmaBuf::alloc("system", RPS_SIZE, false)?;
-        let sclst = DmaBuf::alloc("system", SCLST_SIZE, false)?;
-        let errinfo = DmaBuf::alloc("system", ERROR_INFO_SIZE, false)?;
-        let rcb = DmaBuf::alloc("system", 1 << 20, false)?;
+        let new_slot = || -> io::Result<JobSlot> {
+            Ok(JobSlot {
+                spspps: DmaBuf::alloc("system", SPSPPS_SIZE, false)?,
+                rps: DmaBuf::alloc("system", RPS_SIZE, false)?,
+                sclst: DmaBuf::alloc("system", SCLST_SIZE, false)?,
+                _errinfo: DmaBuf::alloc("system", ERROR_INFO_SIZE, false)?,
+                rcb: DmaBuf::alloc("system", 1 << 20, false)?,
+                rcb_info: RcbInfo::default(),
+                reg_words: vec![0u32; reg::N_WORDS],
+                batch: Batch::new(),
+                readback: [0u32; REG_READBACK_WORDS],
+                offsets: Vec::with_capacity(10),
+                rcb_scratch: Vec::with_capacity(9),
+            })
+        };
+        let slots = [new_slot()?, new_slot()?];
         let mut hw = H264d {
             svc,
             cabac,
-            spspps,
-            rps,
-            sclst,
-            _errinfo: errinfo,
-            rcb,
-            rcb_info: RcbInfo::default(),
+            slots,
+            slot: 0,
+            armed: [0, 0],
+            armed_len: 0,
+            pipeline: false,
             rcb_info_supported,
             regs: reg::Regs::new(),
             last_status: (0, 0, 0),
             last_hardware_error: false,
-            offsets_scratch: Vec::with_capacity(10),
-            rcb_scratch: Vec::with_capacity(9),
-            batch: Batch::new(),
         };
         hw.cabac.sync_write_begin()?;
         hw.cabac
@@ -464,14 +490,15 @@ impl H264d {
         lists: [&[RefListEntry]; 3],
     ) -> io::Result<()> {
         let unit = hw::build_sps_pps(sps, pps, dpb, sh);
-        self.spspps.sync_write_begin()?;
-        let buf = self.spspps.as_mut_slice();
+        let slot = self.slot;
+        self.slots[slot].spspps.sync_write_begin()?;
+        let buf = self.slots[slot].spspps.as_mut_slice();
         for i in 0..256 {
             let off = i * SPSPPS_UNIT;
             let n = unit.len().min(SPSPPS_UNIT);
             buf[off..off + n].copy_from_slice(&unit[..n]);
         }
-        self.spspps.sync_write_end()?;
+        self.slots[slot].spspps.sync_write_end()?;
         if std::env::var("RFI_SPSPPS_DUMP").is_ok() {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -480,20 +507,20 @@ impl H264d {
                 .open("/tmp/our_spspps.bin")
             {
                 let _ = writeln!(f, "TASK {}", sh.frame_num);
-                let _ = f.write_all(&self.spspps.as_slice()[..SPSPPS_UNIT]);
+                let _ = f.write_all(&self.slots[slot].spspps.as_slice()[..SPSPPS_UNIT]);
             }
         }
         let rps = hw::build_rps_entries(sps, sh, dpb, lists);
         let n = rps.len().min(RPS_SIZE);
-        self.rps.sync_write_begin()?;
-        self.rps.as_mut_slice()[..n].copy_from_slice(&rps[..n]);
-        self.rps.sync_write_end()?;
+        self.slots[slot].rps.sync_write_begin()?;
+        self.slots[slot].rps.as_mut_slice()[..n].copy_from_slice(&rps[..n]);
+        self.slots[slot].rps.sync_write_end()?;
         let scan = hw::build_scanlist(None, None);
         let n = scan.len().min(SCLST_SIZE);
         if n > 0 {
-            self.sclst.sync_write_begin()?;
-            self.sclst.as_mut_slice()[..n].copy_from_slice(&scan[..n]);
-            self.sclst.sync_write_end()?;
+            self.slots[slot].sclst.sync_write_begin()?;
+            self.slots[slot].sclst.as_mut_slice()[..n].copy_from_slice(&scan[..n]);
+            self.slots[slot].sclst.sync_write_end()?;
         }
         Ok(())
     }
@@ -521,6 +548,11 @@ impl H264d {
             eprintln!("SUBMIT len={} idr={} fn={}", stream_len, idr, sh.frame_num);
         }
         super::check_decode_geometry(cur.width, cur.height)?;
+        // Both slots busy: the older job must be reported before its tables
+        // are overwritten.
+        if self.armed_len == 2 {
+            self.reap()?;
+        }
         self.prepare_tables(sps, pps, sh, dpb, lists)?;
         if std::env::var("RFI_TABLE_DUMP").is_ok() {
             use std::io::Write;
@@ -530,17 +562,18 @@ impl H264d {
                 .open("/tmp/our_tables.bin")
             {
                 let _ = writeln!(f, "TASK {}", order.top as u32);
-                let _ = f.write_all(&self.rps.as_slice()[..RPS_SIZE]);
+                let _ = f.write_all(&self.slots[self.slot].rps.as_slice()[..RPS_SIZE]);
             }
         }
 
         let mbaff = !sps.frame_mbs_only && sps.mb_adaptive_frame_field && !sh.field_pic;
         let info = RcbInfo::compute(cur.width, cur.height, sps.bit_depth_luma as usize, mbaff);
         let total = info.total().max(4096);
-        if total > self.rcb.len() {
-            self.rcb = DmaBuf::alloc("system", align(total, 4096), false)?;
+        let slot = self.slot;
+        if total > self.slots[slot].rcb.len() {
+            self.slots[slot].rcb = DmaBuf::alloc("system", align(total, 4096), false)?;
         }
-        self.rcb_info = info;
+        self.slots[slot].rcb_info = info;
 
         self.fill_regs(
             sps,
@@ -556,14 +589,18 @@ impl H264d {
             idr,
         );
 
+        let slot = self.slot;
+        let spspps_fd = self.slots[slot].spspps.fd() as u32;
+        let rps_fd = self.slots[slot].rps.fd() as u32;
+        let sclst_fd = self.slots[slot].sclst.fd() as u32;
+        let rcb_fd = self.slots[slot].rcb.fd() as u32;
         let r = &mut self.regs;
         r.set(reg::w128::REG128_RLC_BASE, stream.fd() as u32)
             .set(reg::w129::REG129_RLCWRITE_BASE, stream.fd() as u32)
-            .set(reg::w161::REG161_PPS_HEAD_BASE, self.spspps.fd() as u32)
-            .set(reg::w163::REG163_RPS_BASE, self.rps.fd() as u32)
-            .set(reg::w180::REG180_SCANLIST_BASE, self.sclst.fd() as u32)
+            .set(reg::w161::REG161_PPS_HEAD_BASE, spspps_fd)
+            .set(reg::w163::REG163_RPS_BASE, rps_fd)
+            .set(reg::w180::REG180_SCANLIST_BASE, sclst_fd)
             .set(reg::w12::SCANLIST_ADDR_VALID_EN, 1);
-        let rcb_fd = self.rcb.fd() as u32;
         r.set(reg::w139::REG139_RCB_DBLK_BASE, rcb_fd)
             .set(reg::w133::REG133_RCB_INTRA_BASE, rcb_fd)
             .set(reg::w134::REG134_RCB_TRANSD_ROW_BASE, rcb_fd)
@@ -593,30 +630,43 @@ impl H264d {
                 }
             }
         }
-        self.offsets_scratch.clear();
-        self.rcb_info.write_offsets(&mut self.offsets_scratch);
-        self.rcb_scratch.clear();
-        self.rcb_info.write_hardware_sizes(&mut self.rcb_scratch);
-        let mut readback = [0u32; REG_READBACK_WORDS];
-        self.batch.clear();
-        self.batch
-            .reg_write(&r.w[8..64], 32)
-            .reg_write(&r.w[64..128], 256)
-            .reg_write(&r.w[128..200], 512)
-            .reg_write(&r.w[200..205], 800)
-            .reg_write(&r.w[256..276], 1024)
-            .reg_read(&mut readback, 0);
-        self.batch.reg_offsets(&self.offsets_scratch);
-        if self.rcb_info_supported && !self.rcb_scratch.is_empty() {
-            self.batch.rcb_info(&self.rcb_scratch);
+        // Hand the register window to this job's own copy: the kernel keeps
+        // the pointer until the job is polled, so the next frame must not
+        // write over it.
+        self.slots[slot].reg_words.copy_from_slice(&r.w);
+        let rcb_info_supported = self.rcb_info_supported;
+        let JobSlot {
+            reg_words,
+            batch,
+            readback,
+            offsets,
+            rcb_scratch,
+            rcb_info,
+            ..
+        } = &mut self.slots[slot];
+        offsets.clear();
+        rcb_info.write_offsets(offsets);
+        rcb_scratch.clear();
+        rcb_info.write_hardware_sizes(rcb_scratch);
+        batch.clear();
+        batch
+            .reg_write(&reg_words[8..64], 32)
+            .reg_write(&reg_words[64..128], 256)
+            .reg_write(&reg_words[128..200], 512)
+            .reg_write(&reg_words[200..205], 800)
+            .reg_write(&reg_words[256..276], 1024)
+            .reg_read(readback, 0);
+        batch.reg_offsets(offsets);
+        if rcb_info_supported && !rcb_scratch.is_empty() {
+            batch.rcb_info(rcb_scratch);
         }
-        self.svc.submit_batch_recovering(&mut self.batch)?;
-        self.svc.poll_hw_finish_recovering()?;
-        self.last_status = (readback[224], readback[226], readback[227]);
-        self.last_hardware_error =
-            hardware_status_error(readback[224], readback[225], readback[226], readback[227]);
-        if self.last_hardware_error {
-            let _ = self.svc.restart_after_hardware_error();
+        self.svc
+            .submit_batch_recovering(&mut self.slots[slot].batch)?;
+        self.armed[self.armed_len] = slot;
+        self.armed_len += 1;
+        self.slot = slot ^ 1;
+        if !self.pipeline {
+            self.reap()?;
         }
         if std::env::var_os("RFI_COLMV_DUMP").is_some() {
             use std::io::Write;
@@ -631,6 +681,44 @@ impl H264d {
             let _ = view.buffer().sync_read_end();
         }
         Ok(())
+    }
+
+    /// Let `decode` return right after submitting instead of waiting.
+    pub fn set_pipeline(&mut self, on: bool) {
+        self.pipeline = on;
+    }
+
+    /// Jobs submitted but not yet reported by the driver.
+    pub fn in_flight(&self) -> usize {
+        self.armed_len
+    }
+
+    /// Poll the oldest submitted job and report whether it errored.
+    pub fn reap(&mut self) -> io::Result<bool> {
+        if self.armed_len == 0 {
+            return Ok(false);
+        }
+        self.svc.poll_hw_finish_recovering()?;
+        let slot = self.armed[0];
+        self.armed[0] = self.armed[1];
+        self.armed_len -= 1;
+        let rb = self.slots[slot].readback;
+        self.last_status = (rb[224], rb[226], rb[227]);
+        let failed = hardware_status_error(rb[224], rb[225], rb[226], rb[227]);
+        self.last_hardware_error = failed;
+        if failed {
+            let _ = self.svc.restart_after_hardware_error();
+        }
+        Ok(failed)
+    }
+
+    /// Drain every submitted job. Returns true if any of them errored.
+    pub fn flush(&mut self) -> io::Result<bool> {
+        let mut failed = false;
+        while self.armed_len > 0 {
+            failed |= self.reap()?;
+        }
+        Ok(failed)
     }
 }
 
