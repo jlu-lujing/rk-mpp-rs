@@ -188,6 +188,13 @@ impl MppService {
     /// and get the old blocking behaviour.
     pub fn poll_hw_finish(&self) -> io::Result<()> {
         const DEADLINE: Duration = Duration::from_secs(5);
+        static POLL_US: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let poll_us = *POLL_US.get_or_init(|| {
+            std::env::var("RKMPP_POLL_US")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(20)
+        });
         let deadline = Instant::now() + DEADLINE;
         loop {
             match self.poll_hw_finish_try() {
@@ -204,7 +211,11 @@ impl MppService {
                     "hardware task did not finish within 5 s",
                 ));
             }
-            std::thread::sleep(Duration::from_micros(200));
+            if poll_us == 0 {
+                std::hint::spin_loop();
+            } else {
+                std::thread::sleep(Duration::from_micros(poll_us));
+            }
         }
     }
 

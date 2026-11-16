@@ -288,11 +288,40 @@ impl Decoder {
     /// Decode one access unit (one picture worth of NAL units).
     pub fn decode_access_unit(&mut self, aub: &[u8]) -> Result<Option<Picture>, String> {
         let nals = parser::split_annex_b(aub);
+        self.decode_nals(aub, &nals)
+    }
+
+    /// Decode an access unit whose NAL ranges were scanned once with the
+    /// surrounding stream. This avoids rescanning each AU for Annex-B start
+    /// codes in the offline/network stream path.
+    pub fn decode_parsed_access_unit(
+        &mut self,
+        access_unit: &ParsedAccessUnit<'_>,
+    ) -> Result<Option<Picture>, String> {
+        let nals: Vec<_> = access_unit
+            .nals
+            .iter()
+            .map(|nal| parser::NalUnit {
+                ref_idc: nal.ref_idc,
+                unit_type: nal.unit_type,
+                rbsp: parser::ebsp_to_rbsp(nal.payload),
+                offset: nal.offset,
+                len: nal.len,
+            })
+            .collect();
+        self.decode_nals(access_unit.data, &nals)
+    }
+
+    fn decode_nals(
+        &mut self,
+        aub: &[u8],
+        nals: &[parser::NalUnit<'_>],
+    ) -> Result<Option<Picture>, String> {
         if nals.is_empty() {
             return Ok(None);
         }
         // 1. parameter sets
-        for n in &nals {
+        for n in nals {
             match n.unit_type {
                 parser::NAL_SPS => {
                     let s = parser::parse_sps(&n.rbsp).map_err(|e| e.to_string())?;
@@ -427,7 +456,7 @@ impl Decoder {
         // (verified against the reference decoder: the first bytes it hands to
         // the hardware are `00 00 01 65 ...`), parameter sets excluded.
         self.payload.clear();
-        build_slice_payload(aub, &nals, &mut self.payload);
+        build_slice_payload(aub, nals, &mut self.payload);
         let payload_len = self.payload.len();
         if payload_len == 0 {
             return Ok(None);
@@ -889,7 +918,7 @@ pub fn sort_pictures_by_poc(pictures: &mut [Picture]) {
 /// access-unit delimiter. Parameter sets and SEI before the first slice stay
 /// attached to it.
 pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
-    let nals = parser::split_annex_b(data);
+    let nals = parser::split_annex_b_headers(data);
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
     let mut has_vcl = false;
@@ -897,7 +926,7 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
     for n in &nals {
         let boundary = match n.unit_type {
             parser::NAL_AUD => true,
-            1..=5 => first_mb_zero(&n.rbsp),
+            1..=5 => first_mb_zero(n.payload),
             _ => false,
         };
         if boundary && has_vcl {
@@ -926,6 +955,61 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
     out
 }
 
+/// One access unit with NAL header ranges borrowed from the original stream.
+pub struct ParsedAccessUnit<'a> {
+    pub data: &'a [u8],
+    pub nals: Vec<parser::NalHeader<'a>>,
+}
+
+/// Split a complete Annex-B stream while scanning start codes exactly once.
+///
+/// RBSP de-escaping remains per access unit, but the expensive start-code walk
+/// is not repeated by `Decoder::decode_parsed_access_unit`.
+pub fn split_parsed_access_units(data: &[u8]) -> Vec<ParsedAccessUnit<'_>> {
+    let nals = parser::split_annex_b_headers(data);
+    let mut out = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut has_vcl = false;
+    let mut trailing_non_vcl: Option<usize> = None;
+    for (index, nal) in nals.iter().enumerate() {
+        let boundary = match nal.unit_type {
+            parser::NAL_AUD => true,
+            1..=5 => first_mb_zero(nal.payload),
+            _ => false,
+        };
+        if boundary && has_vcl {
+            let next_start = trailing_non_vcl.unwrap_or(index);
+            let first = start.expect("an access unit with VCL has a start");
+            out.push(ParsedAccessUnit {
+                data,
+                nals: nals[first..next_start].to_vec(),
+            });
+            start = Some(next_start);
+            has_vcl = nal.is_vcl();
+            trailing_non_vcl = None;
+            continue;
+        }
+        if start.is_none() {
+            start = Some(index);
+        }
+        if nal.is_vcl() {
+            has_vcl = true;
+            trailing_non_vcl = None;
+        } else if has_vcl && trailing_non_vcl.is_none() {
+            trailing_non_vcl = Some(index);
+        }
+    }
+    if let Some(first) = start {
+        if has_vcl {
+            out.push(ParsedAccessUnit {
+                data,
+                nals: nals[first..].to_vec(),
+            });
+        }
+    }
+    out
+}
+
 fn first_mb_zero(rbsp: &[u8]) -> bool {
     // first_mb_in_slice is ue(v); 0 <=> the first bit is 1.
     matches!(rbsp.first(), Some(b) if *b & 0x80 != 0)
@@ -936,7 +1020,8 @@ mod tests {
     use super::{
         build_slice_payload, complementary_fields, current_reference_state, finish_hardware_job,
         frame_error, hardware_rps_lists, pad_h264_payload, picture_is_output, sort_pictures_by_poc,
-        split_access_units, DisplayReorder, Picture, FRAME_ERR_DEC_HW_ERR, FRAME_ERR_DEC_INVALID,
+        split_access_units, split_parsed_access_units, DisplayReorder, Picture,
+        FRAME_ERR_DEC_HW_ERR, FRAME_ERR_DEC_INVALID,
     };
     use crate::codec::h264::dpb::{RefListEntry, ReferenceFlags};
     use crate::codec::h264::parser::{split_annex_b, SliceHeader};
@@ -983,6 +1068,24 @@ mod tests {
         let aus = split_access_units(&data);
         assert_eq!(aus.len(), 2);
         assert_eq!(&aus[1][4..5], &[0x68]);
+    }
+
+    #[test]
+    fn parsed_access_units_keep_the_same_boundaries() {
+        let mut data = vec![0u8, 0, 0, 1, 0x67, 0x42];
+        data.extend_from_slice(&[0, 0, 0, 1, 0x65, 0x80]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x68, 0x00]);
+        data.extend_from_slice(&[0, 0, 0, 1, 0x41, 0x80]);
+
+        let ranges = split_access_units(&data);
+        let parsed = split_parsed_access_units(&data);
+        assert_eq!(parsed.len(), ranges.len());
+        for (access_unit, range) in parsed.iter().zip(ranges) {
+            let range_offset = range.as_ptr() as usize - data.as_ptr() as usize;
+            assert_eq!(access_unit.nals.first().unwrap().offset, range_offset);
+            assert!(access_unit.nals.last().unwrap().is_vcl());
+        }
+        assert_eq!(parsed[1].nals[0].unit_type, 8);
     }
 
     #[test]

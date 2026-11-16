@@ -169,14 +169,34 @@ pub struct NalUnit<'a> {
     pub len: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NalHeader<'a> {
+    pub ref_idc: u8,
+    pub unit_type: u8,
+    /// EBSP payload without the one-byte NAL header.
+    pub payload: &'a [u8],
+    pub offset: usize,
+    pub len: usize,
+}
+
 impl NalUnit<'_> {
     pub fn is_vcl(&self) -> bool {
         (1..=5).contains(&self.unit_type)
     }
 }
 
-/// Split an Annex-B byte stream into NAL units.
-pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
+impl NalHeader<'_> {
+    pub fn is_vcl(&self) -> bool {
+        (1..=5).contains(&self.unit_type)
+    }
+}
+
+/// Scan Annex-B start codes and NAL headers without de-escaping payload bytes.
+///
+/// Access-unit partitioning only needs the NAL type and the first slice-header
+/// bit. Keeping this path zero-copy avoids a full EBSP scan and allocation for
+/// every slice.
+pub fn split_annex_b_headers(data: &[u8]) -> Vec<NalHeader<'_>> {
     let mut starts = Vec::new();
     let mut i = 0usize;
     while i + 3 <= data.len() {
@@ -207,18 +227,30 @@ pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
         // Keep trailing_zero_8bits: they are part of the NAL for the
         // hardware parser (MPP's packets include them), and trimming them
         // truncates the last slice of an access unit.
-        let payload_end = end;
         let header = data[payload_start];
-        let body = &data[payload_start + 1..payload_end];
-        out.push(NalUnit {
+        out.push(NalHeader {
             ref_idc: (header >> 5) & 3,
             unit_type: header & 0x1f,
-            rbsp: ebsp_to_rbsp(body),
+            payload: &data[payload_start + 1..end],
             offset: sc_start,
-            len: payload_end - sc_start,
+            len: end - sc_start,
         });
     }
     out
+}
+
+/// Split an Annex-B byte stream into fully de-escaped NAL units.
+pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
+    split_annex_b_headers(data)
+        .into_iter()
+        .map(|nal| NalUnit {
+            ref_idc: nal.ref_idc,
+            unit_type: nal.unit_type,
+            rbsp: ebsp_to_rbsp(nal.payload),
+            offset: nal.offset,
+            len: nal.len,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1102,6 +1134,25 @@ mod tests {
         assert_eq!(nals[2].unit_type, NAL_IDR);
         assert!(nals[2].is_vcl());
         assert_eq!(&*nals[0].rbsp, &[0x42, 0x00, 0x1e]);
+    }
+
+    #[test]
+    fn header_split_matches_full_nals_without_deescaping() {
+        let stream = [
+            0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1e, //
+            0, 0, 1, 0x65, 0x88, 0x00, 0x00, 0x03, 0x01,
+        ];
+        let headers = split_annex_b_headers(&stream);
+        let nals = split_annex_b(&stream);
+        assert_eq!(headers.len(), nals.len());
+        for (header, nal) in headers.iter().zip(&nals) {
+            assert_eq!(header.unit_type, nal.unit_type);
+            assert_eq!(header.ref_idc, nal.ref_idc);
+            assert_eq!(header.offset, nal.offset);
+            assert_eq!(header.len, nal.len);
+        }
+        assert_eq!(headers[1].payload, &[0x88, 0x00, 0x00, 0x03, 0x01]);
+        assert_eq!(&*nals[1].rbsp, &[0x88, 0x00, 0x00, 0x01]);
     }
 
     #[test]

@@ -32,7 +32,7 @@ fn main() -> Result<(), String> {
         .ok_or_else(|| "usage: h264_stream_bench <in.264> [out.yuv]".to_string())?;
     let dst = args.next();
     let data = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
-    let aus = rk_mpp_rs::codec::h264::decoder::split_access_units(&data);
+    let aus = rk_mpp_rs::codec::h264::decoder::split_parsed_access_units(&data);
     let mut decoder = Decoder::new().map_err(|e| format!("open decoder: {e}"))?;
     let mut out = dst
         .map(|path| {
@@ -48,7 +48,7 @@ fn main() -> Result<(), String> {
     let mut reorder = DisplayReorder::new(decoder.max_num_reorder_frames());
     for au in aus {
         if let Some(picture) = decoder
-            .decode_access_unit(au)
+            .decode_parsed_access_unit(&au)
             .map_err(|e| format!("decode: {e}"))?
         {
             reorder.set_max_reorder(decoder.max_num_reorder_frames());

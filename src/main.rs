@@ -3549,6 +3549,7 @@ fn main() {
             eprintln!("RKMPP_DECODE_DMABUF requires an output of /dev/null");
             std::process::exit(2);
         }
+        let nv12_output = std::env::var_os("RKMPP_DECODE_NV12").is_some();
         let data = match std::fs::read(src) {
             Ok(data) => data,
             Err(e) => {
@@ -3556,7 +3557,14 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let aus = rk_mpp_rs::codec::h264::decoder::split_access_units(&data);
+        let split_started = Instant::now();
+        let aus = rk_mpp_rs::codec::h264::decoder::split_parsed_access_units(&data);
+        if std::env::var_os("RKMPP_TRACE").is_some() {
+            println!(
+                "access-unit split: {:.2} ms",
+                split_started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         println!("{} access units", aus.len());
         if aus.is_empty() {
             eprintln!("{src}: no H.264 access units found");
@@ -3571,6 +3579,8 @@ fn main() {
         };
         if dmabuf_output {
             dec.set_output_dmabuf(true);
+        } else if nv12_output {
+            dec.set_output_nv12(true);
         }
         use std::io::Write;
         let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
@@ -3582,7 +3592,7 @@ fn main() {
         let mut failed = false;
         for (i, au) in aus.iter().enumerate() {
             let t0 = Instant::now();
-            let decoded_picture = dec.decode_access_unit(au);
+            let decoded_picture = dec.decode_parsed_access_unit(au);
             decode_time += t0.elapsed();
             reorder.set_max_reorder(dec.max_num_reorder_frames());
             match decoded_picture {
@@ -3628,7 +3638,8 @@ fn main() {
                     }
                     reorder.push(pic, |pic| {
                         if write_error.is_none() {
-                            if let Err(e) = out.write_all(&pic.yuv) {
+                            let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
+                            if let Err(e) = out.write_all(bytes) {
                                 write_error = Some(e);
                             } else {
                                 written += 1;
@@ -3646,7 +3657,8 @@ fn main() {
         }
         reorder.flush(|pic| {
             if write_error.is_none() {
-                if let Err(e) = out.write_all(&pic.yuv) {
+                let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
+                if let Err(e) = out.write_all(bytes) {
                     write_error = Some(e);
                 } else {
                     written += 1;

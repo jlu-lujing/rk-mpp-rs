@@ -15,7 +15,10 @@ pub mod parser;
 pub mod regs;
 pub mod sei;
 
-pub use decoder::{sort_pictures_by_poc, Decoder, DisplayReorder, Picture};
+pub use decoder::{
+    sort_pictures_by_poc, split_parsed_access_units, Decoder, DisplayReorder, ParsedAccessUnit,
+    Picture,
+};
 pub use dpb::{Dpb, FrameStore};
 pub use parser::{
     parse_pps, parse_slice_header, parse_sps, split_annex_b, NalUnit, Pps, SliceHeader, Sps,
