@@ -1494,6 +1494,20 @@ impl Decoder {
     }
 }
 
+/// Ring depth for the SDK's in-process decoders. Three matches the CLI; the
+/// EOS paths drain the ring before flushing the reorder buffer, and `flush()`
+/// drains it for callers that do not send an EOS packet. `0` restores blocking
+/// decode through `RKMPP_SDK_PIPELINE=0`.
+fn sdk_pipeline_depth() -> usize {
+    static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *DEPTH.get_or_init(|| {
+        std::env::var("RKMPP_SDK_PIPELINE")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(3)
+    })
+}
+
 impl H264Backend {
     fn new(config: DecoderConfig) -> Result<Self, Error> {
         if config.output_format == PixelFormat::I420P10 {
@@ -1503,6 +1517,10 @@ impl H264Backend {
         }
         let mut decoder =
             h264::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?;
+        let depth = sdk_pipeline_depth();
+        if depth != 0 {
+            decoder.set_pipeline_depth(true, depth);
+        }
         decoder.set_output_nv12(config.output_format == PixelFormat::Nv12);
         decoder.set_output_dmabuf(config.dmabuf_output);
         let reorder_frames = if config.max_reorder_frames == 0 {
@@ -1556,6 +1574,20 @@ impl H264Backend {
             }
         }
         if packet.flags.contains(PacketFlags::EOS) {
+            // The submission ring still holds the last pictures; drain it
+            // before declaring the stream finished, otherwise an EOS packet
+            // silently drops `depth - 1` frames.
+            for picture in self.decoder.flush().map_err(classify_video_error)? {
+                decoded += 1;
+                self.push_pending(
+                    PendingH264 {
+                        picture,
+                        pts: packet.pts,
+                        dts: packet.dts,
+                    },
+                    output,
+                )?;
+            }
             self.eos = true;
             self.flush_reorder(output)?;
         }
@@ -1627,6 +1659,17 @@ impl H264Backend {
                 )?;
             }
         }
+        for picture in self.decoder.flush().map_err(classify_video_error)? {
+            decoded += 1;
+            self.push_pending(
+                PendingH264 {
+                    picture,
+                    pts: self.pending_pts,
+                    dts: self.pending_dts,
+                },
+                output,
+            )?;
+        }
         self.flush_reorder(output)?;
         self.eos = true;
         Ok(decoded)
@@ -1637,6 +1680,10 @@ impl H265Backend {
     fn new(config: DecoderConfig) -> Result<Self, Error> {
         let mut decoder =
             hevc::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?;
+        let depth = sdk_pipeline_depth();
+        if depth != 0 {
+            decoder.set_pipeline_depth(true, depth);
+        }
         decoder.set_output_dmabuf(config.dmabuf_output);
         let max_reorder_override = (config.max_reorder_frames as usize).min(16);
         Ok(Self {
@@ -1687,6 +1734,18 @@ impl H265Backend {
             }
         }
         if packet.flags.contains(PacketFlags::EOS) {
+            for picture in self.decoder.flush().map_err(classify_video_error)? {
+                decoded += 1;
+                self.refresh_reorder();
+                self.push_pending(
+                    PendingH265 {
+                        picture,
+                        pts: packet.pts,
+                        dts: packet.dts,
+                    },
+                    output,
+                )?;
+            }
             self.eos = true;
             self.flush_reorder(output)?;
         }
@@ -1770,6 +1829,18 @@ impl H265Backend {
                     output,
                 )?;
             }
+        }
+        for picture in self.decoder.flush().map_err(classify_video_error)? {
+            decoded += 1;
+            self.refresh_reorder();
+            self.push_pending(
+                PendingH265 {
+                    picture,
+                    pts: self.pending_pts,
+                    dts: self.pending_dts,
+                },
+                output,
+            )?;
         }
         self.flush_reorder(output)?;
         self.eos = true;
@@ -2253,7 +2324,10 @@ fn classify_video_error(message: String) -> Error {
 }
 
 fn take_h264_access_units(buffer: &mut Vec<u8>, flush: bool) -> Vec<Vec<u8>> {
-    let nals = h264::parser::split_annex_b(buffer);
+    // Header-only split: access-unit boundaries need the NAL type and the
+    // first payload byte, not a de-escaped RBSP. The full split de-escaped
+    // every NAL on every call, which `perf` showed as ~11 % of a 720p run.
+    let nals = h264::parser::split_annex_b_headers(buffer);
     if nals.is_empty() {
         if flush {
             buffer.clear();
@@ -2267,7 +2341,7 @@ fn take_h264_access_units(buffer: &mut Vec<u8>, flush: bool) -> Vec<Vec<u8>> {
     for nal in &nals {
         let boundary = match nal.unit_type {
             h264::parser::NAL_AUD => true,
-            1..=5 => nal.rbsp.first().is_some_and(|byte| byte & 0x80 != 0),
+            1..=5 => nal.payload.first().is_some_and(|byte| byte & 0x80 != 0),
             _ => false,
         };
         if boundary && has_vcl {

@@ -3,6 +3,26 @@
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
 
+## 2026-11-17 SDK / C API now use the submission ring
+
+- `SdkSession` enables the ring at depth 3 for H.264 and H.265 by default
+  (`RKMPP_SDK_PIPELINE=0` restores blocking). The blocking C-API comparison
+  failed at first because a packet carrying `PACKET_FLAG_EOS` set the finished
+  flag and flushed the reorder buffer without draining the decoder ring, which
+  dropped `depth - 1` frames. Both EOS paths now drain the ring first, and
+  `Decoder::flush` does the same for callers that never send EOS.
+- `take_h264_access_units` uses the header-only Annex-B split (access-unit
+  boundaries need the NAL type and the first payload byte, not a de-escaped
+  RBSP), removing the `ebsp_to_rbsp` pass from every submitted chunk.
+- Evidence: `board_c_api_h264_mjpeg.sh` PASS with the ring on, including the
+  313-byte-chunk and one-packet paths; workspace 59 suites exit 0. On a
+  120-frame 720p H.264 stream through the C API: blocking 708-720 ms
+  (bimodal; later samples 362-368 ms) versus **235-240 ms** with the ring,
+  about 1.6-1.7x. The reference C frontend takes 194 ms on the same stream,
+  so the C-API wrapper is still roughly 20 % behind C while the CLI and direct
+  decoder paths are 1.2-1.8x ahead; the remaining wrapper cost is per-frame
+  allocation (`munmap`/page-clear traffic).
+
 ## 2026-11-17 Final decoder throughput against the C baseline
 
 Interleaved samples, DDR/CPU governors pinned, planar output to `/dev/null` on

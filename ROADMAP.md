@@ -3915,6 +3915,17 @@ pipeline uses.
   concatenation differs from FFmpeg because of the documented C input-wrap
   bug, so it is not quoted.
 
+  **2026-11-17: the SDK/C API use the ring too.** SdkSession enables depth 3
+  for H.264/H.265 (`RKMPP_SDK_PIPELINE=0` disables it). A packet carrying
+  `PACKET_FLAG_EOS` used to mark the session finished and flush the reorder
+  buffer without draining the decoder ring, dropping `depth - 1` frames; both
+  EOS paths and `Decoder::flush` now drain it first. `take_h264_access_units`
+  also moved to the header-only split. C-API gate PASS; on a 120-frame 720p
+  stream the ring takes the C-API path from 708-720 ms (bimodal, 362-368 ms on
+  later samples) to **235-240 ms**, still roughly 20 % behind C's 194 ms
+  frontend because of per-frame allocation, while the CLI/direct paths are
+  1.2-1.8x ahead.
+
   Every decoder we ship beats the C library on its own stream, which is what the
   performance target asks for. Every row is one five-sample interleaved pass -
   the pass that landed with H.263 - so the rows are comparable with each other
