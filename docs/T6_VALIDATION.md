@@ -3,6 +3,28 @@
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
 
+## 2026-11-17 NEON chroma split and VP9 streamed output
+
+- `nv12_to_planar` now deinterleaves chroma 16 UV pairs per iteration with
+  `vuzp1q_u8`/`vuzp2q_u8` on aarch64 (runtime-detected, scalar tail, unit
+  tests unchanged). Every decoder that emits planar YUV uses this path.
+- The VP9 CLI now writes each packet's pictures as they come out instead of
+  collecting the whole stream. Holding ~1.4 MB per 720p picture made the
+  allocator fault in and clear fresh pages for every frame: `perf` attributed
+  about 20 % to page clear/fault/dcache traffic. The streaming loop keeps
+  `decode_stream`'s damage policy exactly (recoverable syntax error drops the
+  packet, anything else stops the run) by using the typed packet error, so the
+  corrupt-stream verdict table is unchanged.
+- Nine interleaved samples, governors pinned, planar to `/dev/null`:
+  VP9 720p C 201 ms vs Rust **168 ms (+19.6 %)**, VP9 320x240 C 45 ms vs
+  **33 ms (+36.4 %)**. Re-running the other decoders with the same change:
+  H.264 1920x800 inter 953 vs 527 ms (+80.8 %), 1080p 286 vs 181 ms
+  (+58.0 %), 720p 208 vs 124 ms (+67.7 %), all-intra 435 vs 334 ms
+  (+30.2 %); HEVC depth 3 720p 204 vs 157 ms (+29.9 %) and the four-IDR
+  stream 215 vs 157 ms (+36.9 %).
+- Gates: `board_vp9_matrix.sh` fail=0 named-differences=0 (including the known
+  C bug row), `board_vp_corrupt_vs_mpp.sh` exit 0, workspace 59 suites exit 0.
+
 ## 2026-11-17 H.265 job ring (opt-in)
 
 - The same submission-ring work was ported to the HEVC HAL: per-job CABAC,

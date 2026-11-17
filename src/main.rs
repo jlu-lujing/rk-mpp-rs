@@ -3534,45 +3534,72 @@ fn main() {
             }
         });
         let started = Instant::now();
-        let outcome = decoder.decode_stream(&data);
-        let mut shown = 0usize;
-        for picture in &outcome.pictures {
-            if picture.err_info == 0 {
-                output.write_all(&picture.yuv).expect("write VP9 frame");
+        // Same stream policy as `decode_stream`, but written out one picture
+        // at a time. Collecting the whole stream keeps ~1.4 MB per 720p
+        // picture alive, so the allocator faults in and clears fresh pages for
+        // every frame (page-clear/fault/dcache traffic showed up as ~20 % of
+        // the VP9 profile).
+        let mut stopped_early = false;
+        let mut dropped: Vec<(usize, String)> = Vec::new();
+        let ivf = match rk_mpp_rs::codec::vp9::parser::parse_ivf(&data) {
+            Ok(ivf) => ivf,
+            Err(error) => {
+                eprintln!("packet {} dropped: container: {error}", usize::MAX);
+                output.flush().ok();
+                eprintln!("decoded 0 packets (0 output, 1 packets dropped, stopped early)");
+                std::process::exit(1);
             }
-            shown += 1;
-            if std::env::var_os("RFI_VP9_TRACE").is_some() {
-                println!(
-                    "  picture {shown}: poc={} {}x{} err={:#x} status={:08x}/{:08x}/{:08x}",
-                    picture.poc,
-                    picture.width,
-                    picture.height,
-                    picture.err_info,
-                    decoder.status().0,
-                    decoder.status().1,
-                    decoder.status().2,
-                );
+        };
+        let mut shown = 0usize;
+        for (index, frame) in ivf.frames.iter().enumerate() {
+            match decoder.decode_packet_checked_pub(frame.data) {
+                Ok(pictures) => {
+                    for picture in pictures {
+                        if picture.err_info == 0 {
+                            output.write_all(&picture.yuv).expect("write VP9 frame");
+                        }
+                        shown += 1;
+                        if std::env::var_os("RFI_VP9_TRACE").is_some() {
+                            println!(
+                                "  picture {shown}: poc={} {}x{} err={:#x} status={:08x}/{:08x}/{:08x}",
+                                picture.poc,
+                                picture.width,
+                                picture.height,
+                                picture.err_info,
+                                decoder.status().0,
+                                decoder.status().1,
+                                decoder.status().2,
+                            );
+                        }
+                    }
+                }
+                Err(rk_mpp_rs::codec::vp9::decoder::PacketError::Syntax(error))
+                    if error.recoverable() =>
+                {
+                    dropped.push((index, error.to_string()));
+                }
+                Err(error) => {
+                    dropped.push((index, error.to_string()));
+                    stopped_early = true;
+                    break;
+                }
             }
         }
-        for drop in &outcome.dropped {
-            eprintln!("packet {} dropped: {}", drop.packet, drop.reason);
+        for (packet, reason) in &dropped {
+            eprintln!("packet {packet} dropped: {reason}");
         }
         output.flush().ok();
         let elapsed = started.elapsed().as_secs_f64();
         println!(
             "decoded {} packets ({} output, {} packets dropped{}) in {:.1} ms ({:.1} fps)",
-            shown + outcome.dropped.len(),
+            shown + dropped.len(),
             shown,
-            outcome.dropped.len(),
-            if outcome.stopped_early {
-                ", stopped early"
-            } else {
-                ""
-            },
+            dropped.len(),
+            if stopped_early { ", stopped early" } else { "" },
             elapsed * 1000.0,
             shown as f64 / elapsed.max(f64::EPSILON)
         );
-        if outcome.stopped_early {
+        if stopped_early {
             std::process::exit(1);
         }
         return;

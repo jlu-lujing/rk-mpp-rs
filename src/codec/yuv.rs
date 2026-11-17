@@ -68,6 +68,25 @@ pub fn nv12_to_planar(y: &[u8], uv: &[u8], width: usize, height: usize, stride: 
             }
             continue;
         }
+        // NEON splits sixteen UV pairs per iteration: two 16-byte loads feed
+        // one uzp1 (U) and one uzp2 (V) 16-byte store. This is the same pass
+        // the word-at-a-time path below performs, with a quarter of the
+        // instructions on the hardware that actually runs it.
+        #[cfg(target_arch = "aarch64")]
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            // SAFETY: `off + row_bytes <= uv.len()` was checked above, the
+            // output buffer was sized for the full planar frame, and NEON is
+            // present. The helper handles its own scalar tail.
+            unsafe {
+                deinterleave_uv_neon(
+                    uv.as_ptr().add(off),
+                    out.as_mut_ptr().add(u_row),
+                    out.as_mut_ptr().add(v_row),
+                    chroma_width,
+                );
+            }
+            continue;
+        }
         let mut sample = 0;
         while sample + 4 <= chroma_width {
             let src = off + sample * 2;
@@ -84,6 +103,36 @@ pub fn nv12_to_planar(y: &[u8], uv: &[u8], width: usize, height: usize, stride: 
     }
 
     out
+}
+
+/// Deinterleave `pairs` NV12 chroma samples into separate U and V rows.
+///
+/// # Safety
+/// `src` must have `pairs * 2` readable bytes, `u` and `v` must each have
+/// `pairs` writable bytes, and the caller must have confirmed NEON support.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn deinterleave_uv_neon(src: *const u8, u: *mut u8, v: *mut u8, pairs: usize) {
+    use core::arch::aarch64::*;
+    let mut i = 0;
+    while i + 16 <= pairs {
+        let a = vld1q_u8(src.add(i * 2));
+        let b = vld1q_u8(src.add(i * 2 + 16));
+        vst1q_u8(u.add(i), vuzp1q_u8(a, b));
+        vst1q_u8(v.add(i), vuzp2q_u8(a, b));
+        i += 16;
+    }
+    while i + 8 <= pairs {
+        let a = vld1q_u8(src.add(i * 2));
+        vst1_u8(u.add(i), vget_low_u8(vuzp1q_u8(a, a)));
+        vst1_u8(v.add(i), vget_low_u8(vuzp2q_u8(a, a)));
+        i += 8;
+    }
+    while i < pairs {
+        *u.add(i) = *src.add(2 * i);
+        *v.add(i) = *src.add(2 * i + 1);
+        i += 1;
+    }
 }
 
 /// Rockchip's packed 10-bit NV12 into planar little-endian 16-bit samples.

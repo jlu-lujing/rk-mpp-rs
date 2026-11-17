@@ -120,6 +120,17 @@ impl Decoder {
             .map_err(|error| error.to_string())
     }
 
+    /// Decode one IVF packet, keeping the error class so a caller can apply
+    /// the same policy as [`Decoder::decode_stream`] (recoverable syntax errors
+    /// drop the packet, everything else stops the run) while writing pictures
+    /// as they come out instead of holding the whole stream.
+    pub fn decode_packet_checked_pub(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<Vec<Picture>, PacketError> {
+        self.decode_packet_checked(packet)
+    }
+
     /// Decode a whole IVF file under the same damage policy the VP8 decoder
     /// documents: refused packets are recorded and skipped, hardware failures
     /// stop the run, and the shape of the outcome is what the tests lock.

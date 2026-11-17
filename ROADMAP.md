@@ -3867,6 +3867,16 @@ pipeline uses.
   of damaged/open-GOP streams (`hevc_slices_open`: 23 clean frames blocking,
   24 queued). `board_regress_hevc.sh` is green with the default blocking path.
   See `docs/T6_VALIDATION.md`.
+
+  **2026-11-17: shared planar path and streamed VP9 output.** `nv12_to_planar`
+  deinterleaves chroma with NEON (`vuzp1q_u8`/`vuzp2q_u8`, 16 UV pairs per
+  iteration) and the VP9 CLI writes each packet's pictures immediately instead
+  of holding the whole stream, which removes ~20 % page-clear/fault overhead.
+  Nine interleaved samples: VP9 720p 201 ms C vs **168 ms** (+19.6 %), VP9
+  320x240 45 vs **33 ms** (+36.4 %). With the same build H.264 reaches +80.8 %
+  (1920x800), +58.0 % (1080p), +67.7 % (720p), +30.2 % (all-intra), and HEVC
+  depth 3 +29.9 %/+36.9 %. `board_vp9_matrix.sh` and
+  `board_vp_corrupt_vs_mpp.sh` stay green.
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |
