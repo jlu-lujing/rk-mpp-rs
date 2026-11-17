@@ -3890,6 +3890,15 @@ pipeline uses.
   quoted as percentages. Byte-exact gates: `board_regress_vp8` 6/6,
   `board_regress_m2v` 3/3, `board_regress_mp4` 3/3, `board_regress_h263` 3/3,
   `board_vp9_matrix` fail=0. See `docs/T6_VALIDATION.md`.
+
+  **2026-11-17: streamed output for MPEG-2/MPEG-4/H.263.** These decoders and
+  their CLIs now hand each picture to the writer instead of building a
+  whole-stream `Vec`; `perf` put ~28 % of a 120-frame MPEG-4 run in page
+  clear/fault/memcg/LRU work. On ten-times-concatenated corpus streams that
+  are byte-identical to `ffmpeg -c:v <codec>_rkmpp`: MPEG-2 78 ms C vs
+  **68 ms** (+14.7 %), MPEG-4 105 vs **71 ms** (+47.9 %), H.263 118 vs
+  **104 ms** (+13.5 %). The interlaced MPEG-2 concatenation differs from
+  FFmpeg because of the documented C input-wrap bug, so it is not quoted.
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

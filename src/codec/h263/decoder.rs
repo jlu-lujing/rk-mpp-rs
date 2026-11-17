@@ -100,10 +100,26 @@ impl Decoder {
     /// is never a picture the caller has not been given already.
     pub fn decode(&mut self, data: &[u8]) -> Result<Vec<Picture>, String> {
         let mut output = Vec::new();
-        for picture in parser::parse(data) {
-            output.push(self.decode_picture(&picture, data)?);
-        }
+        self.decode_with(data, |picture| {
+            output.push(picture);
+            Ok(())
+        })?;
         Ok(output)
+    }
+
+    /// Decode a whole stream, handing each picture to `emit` as soon as it
+    /// exists so a CLI that writes immediately keeps one frame alive.
+    pub fn decode_with(
+        &mut self,
+        data: &[u8],
+        mut emit: impl FnMut(Picture) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        let mut emitted = 0usize;
+        for picture in parser::parse(data) {
+            emit(self.decode_picture(&picture, data)?)?;
+            emitted += 1;
+        }
+        Ok(emitted)
     }
 
     fn decode_picture(

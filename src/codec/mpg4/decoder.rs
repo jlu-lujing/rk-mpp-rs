@@ -86,13 +86,37 @@ impl Decoder {
     /// releases the trailing reference picture.
     pub fn decode(&mut self, data: &[u8]) -> Result<Vec<Picture>, String> {
         let mut output = Vec::new();
+        self.decode_with(data, |picture| {
+            output.push(picture);
+            Ok(())
+        })?;
+        Ok(output)
+    }
+
+    /// Decode a whole elementary stream, handing every picture to `emit` as
+    /// soon as it exists instead of building a `Vec`. A CLI that writes each
+    /// picture immediately keeps only one frame of output alive, so the
+    /// allocator reuses its pages instead of faulting in one untouched block
+    /// per picture (`perf` puts ~28 % of a 120-frame run there).
+    pub fn decode_with(
+        &mut self,
+        data: &[u8],
+        mut emit: impl FnMut(Picture) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        let mut emitted = 0usize;
         for item in parser::parse(data).map_err(|error| error.to_string())? {
             if let Item::Picture(picture) = item {
-                output.extend(self.decode_picture(&picture, data)?);
+                for picture in self.decode_picture(&picture, data)? {
+                    emit(picture)?;
+                    emitted += 1;
+                }
             }
         }
-        output.extend(self.flush()?);
-        Ok(output)
+        for picture in self.flush()? {
+            emit(picture)?;
+            emitted += 1;
+        }
+        Ok(emitted)
     }
 
     /// Hand the pictures still held by the reference rotation to the caller.

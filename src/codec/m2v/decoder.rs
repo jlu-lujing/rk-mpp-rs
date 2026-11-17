@@ -231,11 +231,32 @@ impl Decoder {
     /// releases the trailing reference picture.
     pub fn decode(&mut self, data: &[u8]) -> Result<Vec<Picture>, String> {
         let mut output = Vec::new();
-        for (start, end) in parser::picture_groups(data) {
-            output.extend(self.decode_group(&data[start..end])?);
-        }
-        output.extend(self.flush()?);
+        self.decode_with(data, |picture| {
+            output.push(picture);
+            Ok(())
+        })?;
         Ok(output)
+    }
+
+    /// Decode a whole stream, handing each picture to `emit` as soon as it
+    /// exists so a CLI that writes immediately keeps one frame alive.
+    pub fn decode_with(
+        &mut self,
+        data: &[u8],
+        mut emit: impl FnMut(Picture) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        let mut emitted = 0usize;
+        for (start, end) in parser::picture_groups(data) {
+            for picture in self.decode_group(&data[start..end])? {
+                emit(picture)?;
+                emitted += 1;
+            }
+        }
+        for picture in self.flush()? {
+            emit(picture)?;
+            emitted += 1;
+        }
+        Ok(emitted)
     }
 
     /// Hand the pictures still held by the reference rotation to the caller.

@@ -4197,37 +4197,28 @@ fn main() {
             }
         });
         let started = Instant::now();
-        let pictures = match decoder.decode(&data) {
-            Ok(pictures) => pictures,
-            Err(error) => {
-                eprintln!("{src}: {error}");
-                std::process::exit(1);
-            }
-        };
-        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut failed = false;
         let mut shown = 0usize;
-        for picture in &pictures {
+        let result = decoder.decode_with(&data, |picture| {
             if picture.err_info != 0 {
                 failed = true;
                 eprintln!(
-                    "picture tr={} failed with err={:#x} irq={:#x}",
-                    picture.temporal_reference, picture.err_info, decoder.last_irq
+                    "picture {} failed with err={:#x}",
+                    shown + 1,
+                    picture.err_info
                 );
             }
-            output.write_all(&picture.yuv).expect("write MPEG-2 frame");
+            output
+                .write_all(&picture.yuv)
+                .map_err(|error| error.to_string())?;
             shown += 1;
-            if std::env::var_os("RFI_M2V_TRACE").is_some() {
-                println!(
-                    "  picture {shown}: tr={} {}x{} err={:#x} irq={:#010x}",
-                    picture.temporal_reference,
-                    picture.width,
-                    picture.height,
-                    picture.err_info,
-                    decoder.last_irq,
-                );
-            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            eprintln!("{src}: {error}");
+            std::process::exit(1);
         }
+        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         output.flush().ok();
         println!(
             "decoded {shown} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps)",
@@ -4268,35 +4259,35 @@ fn main() {
             }
         });
         let started = Instant::now();
-        let pictures = match decoder.decode(&data) {
-            Ok(pictures) => pictures,
-            Err(error) => {
-                eprintln!("{src}: {error}");
-                std::process::exit(1);
-            }
-        };
-        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut failed = false;
         let mut shown = 0usize;
-        for picture in &pictures {
+        let trace = std::env::var_os("RFI_MP4_TRACE").is_some();
+        let result = decoder.decode_with(&data, |picture| {
             if picture.err_info != 0 {
                 failed = true;
                 eprintln!(
-                    "picture {} failed with err={:#x} irq={:#x}",
+                    "picture {} failed with err={:#x}",
                     shown + 1,
-                    picture.err_info,
-                    decoder.last_irq
+                    picture.err_info
                 );
             }
-            output.write_all(&picture.yuv).expect("write MPEG-4 frame");
+            output
+                .write_all(&picture.yuv)
+                .map_err(|error| error.to_string())?;
             shown += 1;
-            if std::env::var_os("RFI_MP4_TRACE").is_some() {
+            if trace {
                 println!(
-                    "  picture {shown}: {}x{} err={:#x} irq={:#010x}",
-                    picture.width, picture.height, picture.err_info, decoder.last_irq,
+                    "  picture {shown}: {}x{} err={:#x}",
+                    picture.width, picture.height, picture.err_info,
                 );
             }
+            Ok(())
+        });
+        if let Err(error) = result {
+            eprintln!("{src}: {error}");
+            std::process::exit(1);
         }
+        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         output.flush().ok();
         println!(
             "decoded {shown} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps)",
@@ -4337,42 +4328,28 @@ fn main() {
             }
         });
         let started = Instant::now();
-        let pictures = match decoder.decode(&data) {
-            Ok(pictures) => pictures,
-            Err(error) => {
-                eprintln!("{src}: {error}");
-                std::process::exit(1);
-            }
-        };
-        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut failed = false;
         let mut shown = 0usize;
-        for picture in &pictures {
+        let result = decoder.decode_with(&data, |picture| {
             if picture.err_info != 0 {
                 failed = true;
                 eprintln!(
-                    "picture tr={} failed with err={:#x} irq={:#x}",
-                    picture.temporal_reference, picture.err_info, decoder.last_irq
+                    "picture {} failed with err={:#x}",
+                    shown + 1,
+                    picture.err_info
                 );
             }
-            output.write_all(&picture.yuv).expect("write H.263 frame");
+            output
+                .write_all(&picture.yuv)
+                .map_err(|error| error.to_string())?;
             shown += 1;
-            if std::env::var_os("RFI_H263_TRACE").is_some() {
-                println!(
-                    "  picture {shown}: tr={} {} {}x{} err={:#x} irq={:#010x}",
-                    picture.temporal_reference,
-                    if picture.coding_type == rk_mpp_rs::codec::h263::parser::VOP_I {
-                        "I"
-                    } else {
-                        "P"
-                    },
-                    picture.width,
-                    picture.height,
-                    picture.err_info,
-                    decoder.last_irq,
-                );
-            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            eprintln!("{src}: {error}");
+            std::process::exit(1);
         }
+        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         output.flush().ok();
         println!(
             "decoded {shown} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps)",
@@ -4421,18 +4398,17 @@ fn main() {
             if picture.err_info != 0 {
                 failed = true;
                 eprintln!(
-                    "picture {} failed with err={:#x} irq={:#x}",
+                    "picture {} failed with err={:#x}",
                     shown + 1,
-                    picture.err_info,
-                    decoder.last_irq
+                    picture.err_info
                 );
             }
             output.write_all(&picture.yuv).expect("write VP8 frame");
             shown += 1;
             if std::env::var_os("RFI_VP8_TRACE").is_some() {
                 println!(
-                    "  picture {shown}: {}x{} err={:#x} irq={:#010x}",
-                    picture.width, picture.height, picture.err_info, decoder.last_irq,
+                    "  picture {shown}: {}x{} err={:#x}",
+                    picture.width, picture.height, picture.err_info,
                 );
             }
         }
