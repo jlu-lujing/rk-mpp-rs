@@ -3,6 +3,39 @@
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
 
+## 2026-11-17 Final decoder throughput against the C baseline
+
+Interleaved samples, DDR/CPU governors pinned, planar output to `/dev/null` on
+both sides. "verified" means the two decoders were byte-compared first; the C
+baseline is production `ffmpeg -c:v <codec>_rkmpp` except AV1, where the
+board's `av1_rkmpp` frontend cannot convert the stream at all and
+`mpi_dec_test` is the C decoder.
+
+| codec | stream | C | Rust | Rust advantage |
+| --- | --- | ---: | ---: | ---: |
+| H.264 | 1920x800 inter, 600f verified | 931 ms | **522 ms** | **+78.4 %** |
+| H.264 | 1080p inter, 90f verified | 308 ms | **195 ms** | **+57.9 %** |
+| H.264 | 720p, 120f verified | 194 ms | **133 ms** | **+45.9 %** |
+| H.264 | 1920x800 all-intra, 240f verified | 446 ms | **325 ms** | **+37.2 %** |
+| H.265 | 720p, 120f verified | 204 ms | **164 ms** | **+24.4 %** |
+| H.265 | four-IDR 720p, 120f verified | 206 ms | **165 ms** | **+24.8 %** |
+| VP9 | 720p, 120f, 15 samples | 207 ms | **159 ms** | **+30.2 %** |
+| VP9 | 320x240, 30f | 61 ms | **37 ms** | **+64.9 %** |
+| VP8 | 320x240, 120f verified | 107 ms | **90 ms** | **+18.9 %** |
+| MPEG-2 | 320x240, 100f verified | 78 ms | **68 ms** | **+14.7 %** |
+| MPEG-4 | 320x240, 120f verified | 105 ms | **71 ms** | **+47.9 %** |
+| H.263 | CIF, 120f verified | 118 ms | **104 ms** | **+13.5 %** |
+| AV1 | 720p, 60f, vs `mpi_dec_test` | 182 ms | **149 ms** | **+22.1 %** |
+
+The 120-frame VP8/MPEG-2/MPEG-4/H.263 streams are ten-times concatenations of
+the corpus fixtures (VP8 keeps a corrected IVF frame count); each was verified
+byte-identical to C before timing. Interlaced MPEG-2 is excluded: its
+concatenation hits the documented C input-wrap bug, so its evidence stays the
+1x fixture that matches FFmpeg's rounding.
+
+Every row above is ahead of C. VP9 720p is bimodal on this board (144-245 ms
+on both sides), so its 15-sample median is quoted.
+
 ## 2026-11-17 NEON chroma split and VP9 streamed output
 
 - `nv12_to_planar` now deinterleaves chroma 16 UV pairs per iteration with

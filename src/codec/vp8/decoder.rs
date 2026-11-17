@@ -71,6 +71,14 @@ pub struct StreamOutcome {
     pub stopped_early: bool,
 }
 
+/// What [`Decoder::decode_stream_with`] reports after streaming pictures out.
+#[derive(Debug, Default)]
+pub struct StreamSummary {
+    pub pictures: usize,
+    pub dropped: Vec<DroppedPacket>,
+    pub stopped_early: bool,
+}
+
 /// Zeroed bytes kept behind each packet. The C decoder copies the packet into a
 /// buffer of its own and the variable length decoder reads past the end of the
 /// picture, so the tail has to be readable.
@@ -202,48 +210,68 @@ impl Decoder {
     /// reaction to the same damage - is what the unit tests lock.
     pub fn decode_stream(&mut self, data: &[u8]) -> StreamOutcome {
         let mut outcome = StreamOutcome::default();
+        let summary = self.decode_stream_with(data, |picture| outcome.pictures.push(picture));
+        outcome.dropped = summary.dropped;
+        outcome.stopped_early = summary.stopped_early;
+        outcome
+    }
+
+    /// The same stream policy as [`Decoder::decode_stream`], but each picture
+    /// is handed to `emit` as soon as it exists. A CLI that writes immediately
+    /// then keeps one frame alive instead of the whole stream, which removes
+    /// the page-clear/fault traffic `perf` shows on long runs.
+    pub fn decode_stream_with(
+        &mut self,
+        data: &[u8],
+        mut emit: impl FnMut(Picture),
+    ) -> StreamSummary {
+        let mut summary = StreamSummary::default();
         let (frames, container, tail) = parser::parse_ivf_tolerant(data);
         if let Some(error) = container {
-            outcome.dropped.push(DroppedPacket {
+            summary.dropped.push(DroppedPacket {
                 packet: usize::MAX,
                 reason: format!("container: {error}"),
             });
         }
         if frames.is_empty() && tail.is_none() {
-            outcome.stopped_early = true;
-            return outcome;
+            summary.stopped_early = true;
+            return summary;
         }
         for (index, frame) in frames.iter().enumerate() {
             match self.decode_packet_checked(frame.data) {
-                Ok(pictures) => outcome.pictures.extend(pictures),
-                // The syntax refused one packet and says nothing about the next:
-                // record it, keep going, exactly as documented on `recoverable`.
+                Ok(pictures) => {
+                    for picture in pictures {
+                        emit(picture);
+                        summary.pictures += 1;
+                    }
+                }
                 Err(PacketError::Syntax(error)) if error.recoverable() => {
-                    outcome.dropped.push(DroppedPacket {
+                    summary.dropped.push(DroppedPacket {
                         packet: index,
                         reason: error.to_string(),
                     });
                 }
-                // A hardware failure or an impossible bookkeeping state leaves
-                // the machine's next state unknown; do not submit another job.
                 Err(error) => {
-                    outcome.dropped.push(DroppedPacket {
+                    summary.dropped.push(DroppedPacket {
                         packet: index,
                         reason: error.to_string(),
                     });
-                    outcome.stopped_early = true;
+                    summary.stopped_early = true;
                     break;
                 }
             }
         }
-        // The cut-short last packet, padded back to its declared size the way
-        // the reference's buffer copy leaves it: zeros where the file ran out.
         if let Some((partial, declared)) = tail {
             let mut padded = partial.to_vec();
             padded.resize(declared, 0);
             match self.decode_packet_checked(&padded) {
-                Ok(pictures) => outcome.pictures.extend(pictures),
-                Err(error) => outcome.dropped.push(DroppedPacket {
+                Ok(pictures) => {
+                    for picture in pictures {
+                        emit(picture);
+                        summary.pictures += 1;
+                    }
+                }
+                Err(error) => summary.dropped.push(DroppedPacket {
                     packet: frames.len(),
                     reason: format!("tail: {error}"),
                 }),
@@ -252,7 +280,7 @@ impl Decoder {
         for slot in self.dpb.flush() {
             self.release_slot(slot);
         }
-        outcome
+        summary
     }
 
     /// Decode one coded picture, which may produce no display picture at all

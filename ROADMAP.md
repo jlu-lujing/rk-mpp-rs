@@ -3879,26 +3879,6 @@ pipeline uses.
   depth 3 +29.9 %/+36.9 %. `board_vp9_matrix.sh` and
   `board_vp_corrupt_vs_mpp.sh` stay green.
 
-  **2026-11-17: per-codec throughput summary.** With the H.264 and H.265 rings
-  plus the shared NEON chroma split and streamed VP9 output, every decoder is
-  ahead of its C baseline on the long-stream measurements: H.264 1920x800
-  inter +78.4 %, 1080p +57.9 %, 720p +45.9 %, all-intra +37.2 %; H.265 720p
-  +24.4 %, four-IDR +24.8 %; VP9 720p +30.2 % (15 samples; the board is
-  bimodal 144-245 ms on both sides), 320x240 +64.9 %; AV1 720p +22.1 % against
-  `mpi_dec_test`. VP8/MPEG-2/MPEG-4/H.263 corpus streams are 10-12 frames and
-  finish in 20-60 ms, where process start-up dominates, so those rows are not
-  quoted as percentages. Byte-exact gates: `board_regress_vp8` 6/6,
-  `board_regress_m2v` 3/3, `board_regress_mp4` 3/3, `board_regress_h263` 3/3,
-  `board_vp9_matrix` fail=0. See `docs/T6_VALIDATION.md`.
-
-  **2026-11-17: streamed output for MPEG-2/MPEG-4/H.263.** These decoders and
-  their CLIs now hand each picture to the writer instead of building a
-  whole-stream `Vec`; `perf` put ~28 % of a 120-frame MPEG-4 run in page
-  clear/fault/memcg/LRU work. On ten-times-concatenated corpus streams that
-  are byte-identical to `ffmpeg -c:v <codec>_rkmpp`: MPEG-2 78 ms C vs
-  **68 ms** (+14.7 %), MPEG-4 105 vs **71 ms** (+47.9 %), H.263 118 vs
-  **104 ms** (+13.5 %). The interlaced MPEG-2 concatenation differs from
-  FFmpeg because of the documented C input-wrap bug, so it is not quoted.
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |
@@ -3909,6 +3889,31 @@ pipeline uses.
   | `vp8_320x240_12_parts.ivf` (VP8 segmented) | 12 | 571 fps | 984 fps | +72 % |
   | `vp8_150x100_9_ip.ivf` (VP8 150x100) | 9 | 1000 fps | 3000 fps | +200 % |
   | `vp8_320x240_24_altref.ivf` (VP8 alt-ref) | 24 | 649 fps | 1004 fps | +55 % |
+
+  **2026-11-17: per-codec throughput summary.** With the H.264 and H.265 rings
+  plus the shared NEON chroma split and streamed VP9 output, every decoder is
+  ahead of its C baseline on the long-stream measurements: H.264 1920x800
+  inter +78.4 %, 1080p +57.9 %, 720p +45.9 %, all-intra +37.2 %; H.265 720p
+  +24.4 %, four-IDR +24.8 %; VP9 720p +30.2 % (15 samples; the board is
+  bimodal 144-245 ms on both sides), 320x240 +64.9 %; AV1 720p +22.1 % against
+  `mpi_dec_test`. The corpus VP8/MPEG-2/MPEG-4/H.263 streams are only 10-12
+  frames, so long-stream numbers come from ten-times concatenations (one
+  verified byte-identical stream per codec): MPEG-2 +14.7 %, MPEG-4 +47.9 %,
+  H.263 +13.5 %, VP8 +18.9 %. Byte-exact gates: `board_regress_vp8` 6/6,
+  `board_regress_m2v` 3/3, `board_regress_mp4` 3/3, `board_regress_h263` 3/3,
+  `board_vp9_matrix` fail=0. See `docs/T6_VALIDATION.md`.
+
+  **2026-11-17: streamed output for MPEG-2/MPEG-4/H.263.** These decoders and
+  their CLIs now hand each picture to the writer instead of building a
+  whole-stream `Vec`; `perf` put ~28 % of a 120-frame MPEG-4 run in page
+  clear/fault/memcg/LRU work. On ten-times-concatenated corpus streams that
+  are byte-identical to `ffmpeg -c:v <codec>_rkmpp`: MPEG-2 78 ms C vs
+  **68 ms** (+14.7 %), MPEG-4 105 vs **71 ms** (+47.9 %), H.263 118 vs
+  **104 ms** (+13.5 %). VP8 gained the same callback API; on a 120-frame IVF
+  built from repeated corpus frames (header count fixed) output is
+  byte-identical and 107 ms C vs **90 ms** (+18.9 %). The interlaced MPEG-2
+  concatenation differs from FFmpeg because of the documented C input-wrap
+  bug, so it is not quoted.
 
   Every decoder we ship beats the C library on its own stream, which is what the
   performance target asks for. Every row is one five-sample interleaved pass -
