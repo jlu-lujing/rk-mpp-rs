@@ -3922,9 +3922,11 @@ pipeline uses.
   EOS paths and `Decoder::flush` now drain it first. `take_h264_access_units`
   also moved to the header-only split. C-API gate PASS; on a 120-frame 720p
   stream the ring takes the C-API path from 708-720 ms (bimodal, 362-368 ms on
-  later samples) to **235-240 ms**, still roughly 20 % behind C's 194 ms
-  frontend because of per-frame allocation, while the CLI/direct paths are
-  1.2-1.8x ahead.
+  later samples) to 235-240 ms. Host NV12 buffers returned by
+  `rk_mpp_frame_release` are now recycled into the decoder and the SDK uses an
+  incremental Annex-B NAL scanner instead of re-splitting its buffer per
+  submit, which brings the C-API path to **171-207 ms** on 720p NV12 against
+  C's 159-211 ms: parity within noise, with byte-identical output.
 
   Every decoder we ship beats the C library on its own stream, which is what the
   performance target asks for. Every row is one five-sample interleaved pass -
