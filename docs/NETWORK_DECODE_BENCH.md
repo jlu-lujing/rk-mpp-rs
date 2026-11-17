@@ -229,6 +229,48 @@ Correctness at that speed:
 * Workspace gate: **1319 passed / 0 failed** over 59 suites; release library
   **1149 passed / 0 failed / 0 ignored**.
 
+## Concurrent streams: how many 30 FPS decodes fit (2026-11-18)
+
+Each stream is an independent process decoding `/tmp/rfi-network-demo30.264`
+(1920x800, 742 frames) to planar YUV on `/dev/null`; C is production
+`ffmpeg -c:v h264_rkmpp`, Rust is `rk-mpp-rs h264dec`. Sweeps ran to 48
+streams, and each reported point is the slowest stream in the batch (three
+rounds at the ceiling, all stable).
+
+| streams | C slowest stream | Rust slowest stream |
+| ---: | ---: | ---: |
+| 8 | 98.2 FPS | 152.0 FPS |
+| 16 | 49.4 | 76.4 |
+| 24 | 32.7 | 50.8 |
+| 26 | **30.5-30.8** | 47 | 
+| 28 | 28.1 | 43.3 |
+| 32 | 24.6 | 38.0 |
+| 40 | — | **30.4** |
+| 44 | — | 27.8 |
+| 48 | — | 25.5 |
+
+Aggregate throughput is flat once the machine is full: **~798 FPS for C** and
+**~1225 FPS for Rust**. The two ceilings therefore are:
+
+| | max streams at >=30 FPS | aggregate | CPU at ceiling | RSS at ceiling |
+| --- | ---: | ---: | ---: | ---: |
+| C `ffmpeg h264_rkmpp` | **26** | 798 FPS | ~100 % (all cores) | ~3.3 GB |
+| Rust `h264dec` | **40** | 1225 FPS | ~18 % | ~2.2 GB |
+
+C saturates the CPU before the video block: one C stream already uses ~256 %
+CPU, and at 26 streams the host is at 100 % while aggregate decode is still
+only 798 FPS. Rust is hardware-bound at 40 streams (~18 % CPU), and 1225 FPS
+is the silicon limit measured on this stream. At C's ceiling of 26 streams,
+Rust still delivers ~47 FPS per stream.
+
+All 40 Rust processes at the ceiling exited 0 and each reported
+`decoded 742 frames (742 output)`; all 26 C processes exited 0. No
+`mpp_task_timeout_work` or decoder reset appeared during the sweeps.
+
+This supersedes the older note in `rknn-fastinfer/docs/LIBRARY.md`
+(C 28 / Rust 24): that used a different 1080p30 stream and a Rust build from
+before the submission ring, NEON chroma split and streamed output.
+
 ## `mpi_dec_test` harness caveat
 
 The stock vendor `mpi_dec_test` defaults to 4 KiB reader packets. On this
