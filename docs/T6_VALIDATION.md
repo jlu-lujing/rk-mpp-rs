@@ -30,6 +30,20 @@ t62 back to the RK3588 reference board.
   (bimodal 308 ms), depth 3 **171-207 ms**, against C 159-211 ms — parity
   within noise.
 
+## 2026-11-17 Encoder throughput against the C library
+
+Five interleaved samples per size, 12 frames each, wall clock around both
+commands (`mpi_enc_test` for C, the Rust CLI for this crate):
+
+| encoder | 320x240 | 640x480 | 1280x720 | 1920x1088 |
+| --- | ---: | ---: | ---: | ---: |
+| H.264 Rust vs C | +3.3 % | +50.0 % | +44.0 % | +36.7 % |
+| H.265 Rust vs C | +38.5 % | +2.4 % | +0.0 % | +1.9 % |
+
+JPEG encoding is also ahead on a 1080p 12-frame run (about 71 ms against
+115 ms for `ffmpeg -c:v mjpeg_rkmpp`), but the two were driven with different
+quality knobs, so only the direction is claimed.
+
 ## 2026-11-17 Final decoder throughput against the C baseline
 
 Interleaved samples, DDR/CPU governors pinned, planar output to `/dev/null` on

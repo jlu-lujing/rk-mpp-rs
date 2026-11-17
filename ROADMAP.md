@@ -3928,6 +3928,13 @@ pipeline uses.
   submit, which brings the C-API path to **171-207 ms** on 720p NV12 against
   C's 159-211 ms: parity within noise, with byte-identical output.
 
+  **2026-11-17: encoder throughput.** Five interleaved samples, 12 frames,
+  wall clock around both commands: H.264 Rust vs C +3.3 % (320x240), +50.0 %
+  (640x480), +44.0 % (720p), +36.7 % (1080p); H.265 +38.5 %, +2.4 %, +0.0 %,
+  +1.9 %. JPEG encoding is about 71 ms against 115 ms for `mjpeg_rkmpp` on
+  12x 1080p frames, but with different quality knobs, so only the direction is
+  claimed. Encoders are therefore at or above C as well.
+
   Every decoder we ship beats the C library on its own stream, which is what the
   performance target asks for. Every row is one five-sample interleaved pass -
   the pass that landed with H.263 - so the rows are comparable with each other
