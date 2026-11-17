@@ -3,6 +3,29 @@
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
 
+## 2026-11-17 H.265 job ring (opt-in)
+
+- The same submission-ring work was ported to the HEVC HAL: per-job CABAC,
+  SPS/PPS, RPS, scaling-list and RCB tables, a private register window,
+  readback and ioctl batch, plus deferred picture output that leases the
+  video, colmv and every reference surface the job reads.
+- Verified byte-identical to `ffmpeg -c:v hevc_rkmpp` at depths 0/2/3/4 on
+  `t720.hevc` and `hevc_multigop_120.hevc`, and to the blocking path on the
+  Main10 and scaling-list fixtures.
+- Seven interleaved samples, governors pinned: 720p 120 frames C 179 ms,
+  blocking Rust 433 ms, `RKMPP_HEVC_PIPELINE=3` **166 ms (+7.8 % vs C)**; the
+  four-IDR 120-frame stream C 212 ms, blocking 435 ms, depth 3 **167 ms
+  (+26.9 %)**.
+- The ring stays **opt-in** (`RKMPP_HEVC_PIPELINE=<depth>`): a queued job that
+  fails is reported only after later pictures were already submitted, which
+  changes which pictures a damaged/open-GOP stream outputs. `hevc_slices_open`
+  is the measured example (23 clean frames blocking, 24 queued). The CLI
+  detects that case and re-decodes through the blocking path, but the default
+  stays blocking until the error semantics live in the queue itself.
+- Gates: `board_regress_hevc.sh` PASS on tiles, Main10, three scaling-list
+  variants, open-GOP multi-slice and the four-IDR stream; workspace 59 suites
+  exit 0.
+
 ## 2026-11-17 H.264 submission ring: queued decode is the default and ahead of C
 
 - The deferred-output bug is closed. The pending list is now

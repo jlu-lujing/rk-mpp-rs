@@ -395,22 +395,45 @@ impl RcbInfo {
     }
 }
 
+/// Everything one hardware job owns privately.
+///
+/// The video block keeps reading the CABAC table, SPS/PPS packet, RPS table,
+/// scaling list and RCB scratch for the whole duration of the job, and the
+/// driver holds the register-window and readback pointers until it reports the
+/// job. A second picture in flight therefore needs its own copies.
+struct JobSlot {
+    bufs: DmaBuf,
+    rcb: DmaBuf,
+    reg_words: Vec<u32>,
+    batch: crate::service::Batch,
+    /// Nine status words starting at 224: 224/225/230 are the ones used.
+    readback: [u32; 9],
+    offsets: Vec<RegOffsetInfo>,
+    rcb_scratch: Vec<RcbConfig>,
+    scaling_list_offset: Option<u32>,
+    rcb_info: RcbInfo,
+}
+
+/// Deep enough to reproduce the vendor runtime's queue depth.
+pub const JOB_SLOTS: usize = 4;
+/// First status word the readback covers, and how many follow it.
+const REG_READBACK_FIRST: usize = 224;
+
 pub struct HevcHw {
     svc: MppService,
-    bufs: DmaBuf,
-    rcbs: Vec<DmaBuf>,
-    rcb_index: usize,
-    rcb_info: RcbInfo,
+    slots: Vec<JobSlot>,
+    /// Slot the next job is built in.
+    slot: usize,
+    /// Submitted slots the driver has not reported yet, oldest first.
+    armed: Vec<usize>,
+    /// How many jobs may be in flight at once.
+    depth: usize,
+    /// Submit without waiting, so two jobs can overlap.
+    pipeline: bool,
     rcb_info_supported: bool,
     pub regs: reg::Regs,
     pub last_status: (u32, u32, u32),
     pub last_hardware_error: bool,
-    scaling_list_offset: Option<u32>,
-    /// Reused across frames: the ioctl needs owned scratch but not fresh
-    /// allocations, and the entries are rebuilt in full every job.
-    offsets_scratch: Vec<RegOffsetInfo>,
-    rcb_scratch: Vec<RcbConfig>,
-    batch: crate::service::Batch,
 }
 
 impl HevcHw {
@@ -427,27 +450,34 @@ impl HevcHw {
             Err(_) => MppService::open(Client::RkvDec as u32)?,
         };
         let rcb_info_supported = svc.cmd_supported(MPP_CMD_SET_RCB_INFO);
-        let mut bufs = DmaBuf::alloc("system", BUFS_SIZE, false)?;
-        let n = bufs.as_mut_slice().len().min(CABAC_TABLE.len());
-        bufs.as_mut_slice()[CABAC_OFFSET..CABAC_OFFSET + n].copy_from_slice(&CABAC_TABLE[..n]);
-        let mut rcbs = Vec::with_capacity(RCB_BUFFER_COUNT);
-        for _ in 0..RCB_BUFFER_COUNT {
-            rcbs.push(DmaBuf::alloc("system", 1 << 20, false)?);
+        let mut slots = Vec::with_capacity(JOB_SLOTS);
+        for _ in 0..JOB_SLOTS {
+            let mut bufs = DmaBuf::alloc("system", BUFS_SIZE, false)?;
+            let n = bufs.as_mut_slice().len().min(CABAC_TABLE.len());
+            bufs.as_mut_slice()[CABAC_OFFSET..CABAC_OFFSET + n].copy_from_slice(&CABAC_TABLE[..n]);
+            slots.push(JobSlot {
+                bufs,
+                rcb: DmaBuf::alloc("system", 1 << 20, false)?,
+                reg_words: vec![0u32; reg::N_WORDS],
+                batch: crate::service::Batch::new(),
+                readback: [0u32; 9],
+                offsets: Vec::with_capacity(13),
+                rcb_scratch: Vec::with_capacity(9),
+                scaling_list_offset: None,
+                rcb_info: RcbInfo::default(),
+            });
         }
         let mut hw = HevcHw {
             svc,
-            bufs,
-            rcbs,
-            rcb_index: 0,
-            rcb_info: RcbInfo::default(),
+            slots,
+            slot: 0,
+            armed: Vec::with_capacity(JOB_SLOTS),
+            depth: 2,
+            pipeline: false,
             rcb_info_supported,
             regs: reg::Regs::new(),
             last_status: (0, 0, 0),
             last_hardware_error: false,
-            scaling_list_offset: None,
-            offsets_scratch: Vec::with_capacity(13),
-            rcb_scratch: Vec::with_capacity(9),
-            batch: crate::service::Batch::new(),
         };
         hw.init_common();
         Ok(hw)
@@ -481,7 +511,8 @@ impl HevcHw {
 
     fn prepare_tables(&mut self, sps: &Sps, pps: &Pps) {
         let pkt = hw::build_pps_packet(sps, pps);
-        let buf = self.bufs.as_mut_slice();
+        let slot = self.slot;
+        let buf = self.slots[slot].bufs.as_mut_slice();
         for i in 0..PPS_PACKET_COPIES {
             let off = SPSPPS_OFFSET + i * hw::PPS_PACKET_SIZE;
             buf[off..off + hw::PPS_PACKET_SIZE].copy_from_slice(&pkt);
@@ -489,14 +520,15 @@ impl HevcHw {
         let rps = hw::build_sps_rps_from_sps(sps);
         let n = rps.len().min(hw::RPS_TABLE_SIZE);
         buf[RPS_OFFSET..RPS_OFFSET + n].copy_from_slice(&rps[..n]);
-        self.scaling_list_offset = hw::build_scaling_list_packet(sps, pps).map(|table| {
-            let end = SCALING_LIST_OFFSET + hw::SCALING_LIST_TABLE_SIZE;
-            buf[SCALING_LIST_OFFSET..end].copy_from_slice(&table);
-            if std::env::var_os("RFI_HEVC_SCALING_DUMP").is_some() {
-                let _ = std::fs::write("/tmp/our_hevc_scaling_table.bin", &table);
-            }
-            SCALING_LIST_OFFSET as u32
-        });
+        self.slots[slot].scaling_list_offset =
+            hw::build_scaling_list_packet(sps, pps).map(|table| {
+                let end = SCALING_LIST_OFFSET + hw::SCALING_LIST_TABLE_SIZE;
+                buf[SCALING_LIST_OFFSET..end].copy_from_slice(&table);
+                if std::env::var_os("RFI_HEVC_SCALING_DUMP").is_some() {
+                    let _ = std::fs::write("/tmp/our_hevc_scaling_table.bin", &table);
+                }
+                SCALING_LIST_OFFSET as u32
+            });
     }
 
     /// Fill the register file for one picture.
@@ -514,6 +546,8 @@ impl HevcHw {
         stream_len: usize,
         slice_count: u32,
         nal_type: u8,
+        bufs_fd: u32,
+        has_scaling_list: bool,
     ) {
         // HEVC pads the bitstream length to 16 bytes plus 64 and always keeps
         // wr_ddr_align_en except for tiles.
@@ -537,14 +571,11 @@ impl HevcHw {
 
         r.set(reg::w130::REG130_DECOUT_BASE, cur.video_fd())
             .set(reg::w131::REG131_COLMV_CUR_BASE, cur.colmv_fd())
-            .set(reg::w161::REG161_PPS_HEAD_BASE, self.bufs.fd() as u32)
-            .set(reg::w163::REG163_RPS_BASE, self.bufs.fd() as u32)
-            .set(reg::w197::REG197_CABACTBL_BASE, self.bufs.fd() as u32)
-            .set(reg::w180::REG180_SCANLIST_BASE, self.bufs.fd() as u32)
-            .set(
-                reg::w12::SCANLIST_ADDR_VALID_EN,
-                self.scaling_list_offset.is_some() as u32,
-            );
+            .set(reg::w161::REG161_PPS_HEAD_BASE, bufs_fd)
+            .set(reg::w163::REG163_RPS_BASE, bufs_fd)
+            .set(reg::w197::REG197_CABACTBL_BASE, bufs_fd)
+            .set(reg::w180::REG180_SCANLIST_BASE, bufs_fd)
+            .set(reg::w12::SCANLIST_ADDR_VALID_EN, has_scaling_list as u32);
 
         let present: Vec<bool> = (0..16)
             .map(|i| refs.get(i).copied().flatten().is_some())
@@ -617,7 +648,16 @@ impl HevcHw {
         nal_type: u8,
     ) -> io::Result<()> {
         super::check_decode_geometry(cur.width, cur.height)?;
+        // The caller owns reaping; silently reaping here would consume a job
+        // without handing its picture to the decoder's pending queue and
+        // desynchronise the two lists.
+        if self.armed.len() >= self.depth {
+            return Err(io::Error::other(
+                "HEVC job ring is full: reap before submitting",
+            ));
+        }
         self.prepare_tables(sps, pps);
+        let slot = self.slot;
         let ctu_size = 1usize << (sps.log2_min_cb + sps.log2_diff_max_min_cb);
         let rcb = RcbInfo::compute(
             cur.width,
@@ -628,14 +668,10 @@ impl HevcHw {
             pps.tile_columns.saturating_sub(1) as usize,
         );
         let total = rcb.total().max(4096);
-        for rcb in &mut self.rcbs {
-            if total > rcb.len() {
-                *rcb = DmaBuf::alloc("system", align(total, 4096), false)?;
-            }
+        if total > self.slots[slot].rcb.len() {
+            self.slots[slot].rcb = DmaBuf::alloc("system", align(total, 4096), false)?;
         }
-        let rcb_index = self.rcb_index;
-        self.rcb_index = (self.rcb_index + 1) % RCB_BUFFER_COUNT;
-        self.rcb_info = rcb;
+        self.slots[slot].rcb_info = rcb;
         self.fill_regs(
             sps,
             pps,
@@ -648,6 +684,8 @@ impl HevcHw {
             stream_len,
             slice_count,
             nal_type,
+            self.slots[slot].bufs.fd() as u32,
+            self.slots[slot].scaling_list_offset.is_some(),
         );
 
         let r = &mut self.regs;
@@ -666,10 +704,15 @@ impl HevcHw {
         }
         r.set(reg::w128::REG128_RLC_BASE, stream.fd() as u32)
             .set(reg::w129::REG129_RLCWRITE_BASE, stream.fd() as u32);
+        // The tables live in this job's own buffer, not a shared one.
+        let bufs_fd = self.slots[slot].bufs.fd() as u32;
+        r.set(reg::w161::REG161_PPS_HEAD_BASE, bufs_fd)
+            .set(reg::w163::REG163_RPS_BASE, bufs_fd)
+            .set(reg::w197::REG197_CABACTBL_BASE, bufs_fd);
         // MPP's fast parser cycles through three RCB buffers. The hardware
         // leaves decoder state in this scratch area, so reusing one buffer
         // immediately for the next picture corrupts the second job.
-        let rcb_fd = self.rcbs[rcb_index].fd() as u32;
+        let rcb_fd = self.slots[slot].rcb.fd() as u32;
         r.set(reg::w139::REG139_RCB_DBLK_BASE, rcb_fd)
             .set(reg::w133::REG133_RCB_INTRA_BASE, rcb_fd)
             .set(reg::w134::REG134_RCB_TRANSD_ROW_BASE, rcb_fd)
@@ -683,48 +726,60 @@ impl HevcHw {
 
         // The register sections are contiguous in the register file, so the
         // batch points straight into it: same bytes, no per-frame copies.
-        self.offsets_scratch.clear();
-        self.rcb_info.write_offsets(&mut self.offsets_scratch);
+        let scaling_list_offset = self.slots[slot].scaling_list_offset;
+        let rcb_info = self.slots[slot].rcb_info;
+        {
+            let job = &mut self.slots[slot];
+            job.offsets.clear();
+            job.rcb_info.write_offsets(&mut job.offsets);
+        }
         // cabac sits at offset 0 of the shared buffer, the SPS/PPS packet and
         // the RPS follow at their layout offsets.
-        self.offsets_scratch.push(RegOffsetInfo {
+        self.slots[slot].offsets.push(RegOffsetInfo {
             reg_idx: 161,
             offset: SPSPPS_OFFSET as u32,
         });
-        self.offsets_scratch.push(RegOffsetInfo {
+        self.slots[slot].offsets.push(RegOffsetInfo {
             reg_idx: 163,
             offset: RPS_OFFSET as u32,
         });
-        if let Some(offset) = self.scaling_list_offset {
-            self.offsets_scratch.push(RegOffsetInfo {
+        if let Some(offset) = scaling_list_offset {
+            self.slots[slot].offsets.push(RegOffsetInfo {
                 reg_idx: 180,
                 offset,
             });
         }
         if std::env::var_os("RFI_HEVC_FULL_DUMP").is_some() {
-            dump_submission(poc, r, &self.bufs, stream, stream_len);
+            dump_submission(poc, r, &self.slots[slot].bufs, stream, stream_len);
         }
-        let mut readback = [0u32; 278];
-        self.batch.clear();
-        self.rcb_scratch.clear();
-        self.rcb_info.write_hardware_sizes(&mut self.rcb_scratch);
-        self.batch
-            .reg_write(&r.w[8..64], 32)
-            .reg_write(&r.w[64..128], 256)
-            .reg_write(&r.w[128..200], 512)
-            .reg_write(&r.w[200..205], 800)
-            .reg_write(&r.w[256..276], 1024)
-            .reg_read(&mut readback, 0);
-        self.batch.reg_offsets(&self.offsets_scratch);
-        if self.rcb_info_supported && !self.rcb_scratch.is_empty() {
-            self.batch.rcb_info(&self.rcb_scratch);
+        // The kernel holds the register window until the job is reported, so
+        // every job hands over its own copy.
+        self.slots[slot].reg_words.copy_from_slice(&r.w);
+        {
+            let job = &mut self.slots[slot];
+            job.batch.clear();
+            job.rcb_scratch.clear();
+            rcb_info.write_hardware_sizes(&mut job.rcb_scratch);
+            job.batch
+                .reg_write(&r.w[8..64], 32)
+                .reg_write(&r.w[64..128], 256)
+                .reg_write(&r.w[128..200], 512)
+                .reg_write(&r.w[200..205], 800)
+                .reg_write(&r.w[256..276], 1024)
+                .reg_read(&mut job.readback, (REG_READBACK_FIRST * 4) as u32);
+            job.batch.reg_offsets(&job.offsets);
         }
-        self.svc.submit_batch_recovering(&mut self.batch)?;
-        self.svc.poll_hw_finish_recovering()?;
-        self.last_status = (readback[224], readback[225], readback[230]);
-        self.last_hardware_error = hardware_status_error(readback[224]);
-        if self.last_hardware_error {
-            let _ = self.svc.restart_after_hardware_error();
+        if self.rcb_info_supported && !self.slots[slot].rcb_scratch.is_empty() {
+            let sizes = std::mem::take(&mut self.slots[slot].rcb_scratch);
+            self.slots[slot].batch.rcb_info(&sizes);
+            self.slots[slot].rcb_scratch = sizes;
+        }
+        self.svc
+            .submit_batch_recovering(&mut self.slots[slot].batch)?;
+        self.armed.push(slot);
+        self.slot = (slot + 1) % JOB_SLOTS;
+        if !self.pipeline {
+            self.reap()?;
         }
         if std::env::var_os("RFI_HEVC_FRAME_DUMP").is_some() {
             let task = COLMV_DUMP_INDEX.fetch_add(1, Ordering::Relaxed);
@@ -746,18 +801,55 @@ impl HevcHw {
         }
         if std::env::var("RFI_HEVC_STATUS").is_ok() {
             eprintln!(
-                "STATUS reg224={:08x} reg225={:08x} reg226={:08x} reg227={:08x} reg228={:08x} reg230={:08x} reg231={:08x} reg232={:08x}",
-                readback[224],
-                readback[225],
-                readback[226],
-                readback[227],
-                readback[228],
-                readback[230],
-                readback[231],
-                readback[232],
+                "STATUS last reg224={:08x} reg225={:08x} reg230={:08x} in_flight={}",
+                self.last_status.0,
+                self.last_status.1,
+                self.last_status.2,
+                self.armed.len(),
             );
         }
         Ok(())
+    }
+
+    /// Let `decode` return right after submitting instead of waiting.
+    pub fn set_pipeline(&mut self, on: bool) {
+        self.pipeline = on;
+    }
+
+    /// Choose how many jobs may overlap (clamped to the slot count).
+    pub fn set_depth(&mut self, depth: usize) {
+        self.depth = depth.clamp(1, JOB_SLOTS);
+    }
+
+    /// Jobs submitted but not yet reported by the driver.
+    pub fn in_flight(&self) -> usize {
+        self.armed.len()
+    }
+
+    /// Poll the oldest submitted job and report whether it errored.
+    pub fn reap(&mut self) -> io::Result<bool> {
+        if self.armed.is_empty() {
+            return Ok(false);
+        }
+        self.svc.poll_hw_finish_recovering()?;
+        let slot = self.armed.remove(0);
+        let rb = self.slots[slot].readback;
+        self.last_status = (rb[0], rb[1], rb[6]);
+        let failed = hardware_status_error(rb[0]);
+        self.last_hardware_error = failed;
+        if failed {
+            let _ = self.svc.restart_after_hardware_error();
+        }
+        Ok(failed)
+    }
+
+    /// Drain every submitted job. Returns true if any of them errored.
+    pub fn flush(&mut self) -> io::Result<bool> {
+        let mut failed = false;
+        while !self.armed.is_empty() {
+            failed |= self.reap()?;
+        }
+        Ok(failed)
     }
 }
 

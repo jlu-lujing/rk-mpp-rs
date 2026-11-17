@@ -3854,6 +3854,19 @@ pipeline uses.
   pool headroom that keeps leased surfaces out of the next frame); the seven
   corpus streams are byte-exact at depths 1-4 and `board_regress.sh` is 7/7
   with the default. See `docs/NETWORK_DECODE_BENCH.md`.
+
+  **2026-11-17: the same ring is available for H.265 (opt-in).** The HEVC HAL
+  now keeps per-job CABAC/SPS/PPS/RPS/scaling-list/RCB tables, register window,
+  readback and ioctl batch, and the decoder defers pictures while leasing the
+  video, colmv and every reference surface the job reads. t720.hevc and the
+  four-IDR stream are byte-identical to `ffmpeg -c:v hevc_rkmpp` at depths
+  0/2/3/4; seven interleaved samples give 720p 179 ms C vs **166 ms** at depth
+  3 (+7.8 %) and 212 ms vs **167 ms** on the four-IDR stream (+26.9 %), against
+  433/435 ms blocking. It stays opt-in because a queued failure is reported
+  after later pictures were already submitted, which changes the picture set
+  of damaged/open-GOP streams (`hevc_slices_open`: 23 clean frames blocking,
+  24 queued). `board_regress_hevc.sh` is green with the default blocking path.
+  See `docs/T6_VALIDATION.md`.
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

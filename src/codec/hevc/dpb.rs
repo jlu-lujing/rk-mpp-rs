@@ -43,6 +43,16 @@ impl Dpb {
         &self.frames
     }
 
+    /// Record that the picture in `buf` failed on the hardware. A deferred
+    /// output path only learns this after the DPB entry was inserted, and the
+    /// blocking path learns it before, so both must end up with the same flag:
+    /// later pictures that reference this one become reference errors.
+    pub fn mark_error(&mut self, buf: usize) {
+        if let Some(frame) = self.frames.iter_mut().find(|f| f.buf == buf) {
+            frame.error = true;
+        }
+    }
+
     pub fn clear(&mut self) {
         self.frames.clear();
         self.prev_poc_lsb = 0;

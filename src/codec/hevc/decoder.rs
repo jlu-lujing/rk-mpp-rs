@@ -55,6 +55,39 @@ pub struct Decoder {
     poc_epoch: u32,
     active_sps_id: usize,
     output_dmabuf: bool,
+    /// Submit without waiting and hand back an older picture instead.
+    pipeline: bool,
+    depth: usize,
+    /// One entry per submitted job, oldest first.
+    pending: std::collections::VecDeque<Option<PendingHevcFrame>>,
+    /// Pictures already materialised but not handed to the caller yet.
+    ready: std::collections::VecDeque<Picture>,
+    /// A queued job failed after later pictures were already submitted. Until
+    /// the next IRAP those pictures are predicted from a corrupt reference,
+    /// so they must be reported as reference errors like the blocking path
+    /// (which learns the verdict before decoding them).
+    pipeline_failed: bool,
+}
+
+/// A submitted picture whose pixels may only be read once the driver reports
+/// its job. The leases keep every surface the job touches alive.
+struct PendingHevcFrame {
+    poc: i32,
+    epoch: u32,
+    err_info: u32,
+    /// DPB buffer index, so a hardware failure can be written back.
+    slot: usize,
+    video: crate::service::buffer_pool::BufferLease<DmaBuf>,
+    _colmv: crate::service::buffer_pool::BufferLease<DmaBuf>,
+    _refs: Vec<crate::service::buffer_pool::BufferLease<DmaBuf>>,
+    /// The video block reads the bitstream for the whole job.
+    _stream: DmaBuf,
+    width: usize,
+    height: usize,
+    hor_stride: usize,
+    ver_stride: usize,
+    bit_depth: u32,
+    chroma_format: ChromaFormat,
 }
 
 enum HevcHardware {
@@ -124,6 +157,32 @@ impl HevcHardware {
             Self::Vdpu383(hw) => hw.last_hardware_error,
         }
     }
+
+    /// Turn on submit-without-wait where the HAL has a job ring.
+    fn set_pipeline(&mut self, enabled: bool, depth: usize) -> bool {
+        match self {
+            Self::Vdpu34x(hw) => {
+                hw.set_pipeline(enabled);
+                hw.set_depth(depth);
+                true
+            }
+            Self::Vdpu383(_) => false,
+        }
+    }
+
+    fn in_flight(&self) -> usize {
+        match self {
+            Self::Vdpu34x(hw) => hw.in_flight(),
+            Self::Vdpu383(_) => 0,
+        }
+    }
+
+    fn reap(&mut self) -> io::Result<bool> {
+        match self {
+            Self::Vdpu34x(hw) => hw.reap(),
+            Self::Vdpu383(_) => Ok(false),
+        }
+    }
 }
 
 impl Decoder {
@@ -147,8 +206,10 @@ impl Decoder {
             hw,
             vdpu383,
             frames: (0..17).map(|_| None).collect(),
-            video_pool: BufferPool::new(17),
-            colmv_pool: BufferPool::new(17),
+            // 16 DPB references plus the current picture, and `JOB_SLOTS`
+            // spare surfaces still leased by jobs in the submission ring.
+            video_pool: BufferPool::new(17 + crate::hal::hevc::JOB_SLOTS),
+            colmv_pool: BufferPool::new(17 + crate::hal::hevc::JOB_SLOTS),
             output_injection: None,
             width: 0,
             height: 0,
@@ -158,6 +219,11 @@ impl Decoder {
             poc_epoch: 0,
             active_sps_id: 0,
             output_dmabuf: false,
+            pipeline: false,
+            depth: 1,
+            pending: std::collections::VecDeque::with_capacity(crate::hal::hevc::JOB_SLOTS),
+            ready: std::collections::VecDeque::new(),
+            pipeline_failed: false,
         })
     }
 
@@ -300,6 +366,24 @@ impl Decoder {
                 self.frames.len() - 1
             }
         };
+        // Backpressure: every deferred job keeps its surface leased, so when
+        // the pool is nearly exhausted reap the oldest job early and queue its
+        // picture. The caller drains it on a later access unit.
+        if self.pipeline && self.pending.len() > 1 {
+            let stats = self.video_pool.stats();
+            if stats.in_use + 1 >= stats.limit {
+                if let Some(entry) = self.pending.pop_front() {
+                    let failed = self.hw.reap().map_err(|e| e.to_string())?;
+                    if let Some(mut picture) = entry {
+                        if failed {
+                            picture.err_info |= FRAME_ERR_DEC_HW_ERR;
+                        }
+                        let picture = self.materialise(&picture)?;
+                        self.ready.push_back(picture);
+                    }
+                }
+            }
+        }
         self.ensure_frame(slot).map_err(|e| e.to_string())?;
 
         let l0 = self.dpb.build_ref_list(
@@ -308,12 +392,22 @@ impl Decoder {
             poc,
             sps.log2_max_pic_order_cnt_lsb,
         );
-        let reference_error = self.dpb.reference_set_has_error(
-            &sh.rps,
-            &sh.long_term_rps,
-            poc,
-            sps.log2_max_pic_order_cnt_lsb,
+        let is_irap = matches!(
+            first.unit_type,
+            16..=21 | parser::NAL_IDR_W_RADL | parser::NAL_IDR_N_LP | parser::NAL_CRA
         );
+        if is_irap {
+            // A clean random access point restarts the prediction chain.
+            self.pipeline_failed = false;
+        }
+        let poisoned = self.pipeline && self.pipeline_failed && !is_irap;
+        let reference_error = poisoned
+            || self.dpb.reference_set_has_error(
+                &sh.rps,
+                &sh.long_term_rps,
+                poc,
+                sps.log2_max_pic_order_cnt_lsb,
+            );
         let mut refs: Vec<Option<&Frame>> = vec![None; 16];
         let mut ref_pocs: Vec<i32> = vec![0; 16];
         let mut ref_errors: Vec<bool> = vec![true; 16];
@@ -343,6 +437,8 @@ impl Decoder {
             );
         }
 
+        let mut job_stream = None;
+        let mut submitted = false;
         let err_info = if reference_error {
             frame_error(true, false)
         } else {
@@ -387,7 +483,14 @@ impl Decoder {
                     first.unit_type,
                 )
                 .map_err(|e| e.to_string())?;
-            frame_error(false, self.hw.last_hardware_error())
+            submitted = true;
+            job_stream = Some(stream);
+            if self.pipeline {
+                // The verdict belongs to the picture drained next.
+                frame_error(false, false)
+            } else {
+                frame_error(false, self.hw.last_hardware_error())
+            }
         };
 
         if !sh.dependent {
@@ -415,6 +518,31 @@ impl Decoder {
             });
         }
         self.release_frames_outside_dpb();
+
+        if self.pipeline {
+            let current = if submitted {
+                Some(self.defer(slot, poc, epoch, err_info, job_stream.take())?)
+            } else {
+                None
+            };
+            let step = self.pipeline_step(submitted, current)?;
+            if !submitted {
+                // Reference/parse error: this access unit armed no job, so its
+                // picture is complete now.
+                self.ready.push_back(Picture {
+                    width: self.width,
+                    height: self.height,
+                    poc,
+                    epoch,
+                    yuv: Vec::new(),
+                    dmabuf: None,
+                    chroma_format: self.chroma_format,
+                    bit_depth: self.bit_depth,
+                    err_info,
+                });
+            }
+            return Ok(step.or_else(|| self.ready.pop_front()));
+        }
 
         let (yuv, dmabuf) = if err_info == 0 {
             let frame = self.frames[slot].as_ref().unwrap();
@@ -465,6 +593,190 @@ impl Decoder {
             bit_depth: self.bit_depth,
             err_info,
         }))
+    }
+
+    /// Lease every surface this job touches and remember how to read it out.
+    fn defer(
+        &mut self,
+        slot: usize,
+        poc: i32,
+        epoch: u32,
+        err_info: u32,
+        stream: Option<DmaBuf>,
+    ) -> Result<PendingHevcFrame, String> {
+        let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+        let mut held = Vec::new();
+        for reference in self
+            .dpb
+            .frames()
+            .iter()
+            .filter_map(|entry| self.frames.get(entry.buf).and_then(Option::as_ref))
+        {
+            held.push(
+                reference
+                    .video
+                    .try_clone()
+                    .map_err(|error| format!("HEVC reference lease: {error}"))?,
+            );
+            held.push(
+                reference
+                    .colmv
+                    .try_clone()
+                    .map_err(|error| format!("HEVC reference lease: {error}"))?,
+            );
+        }
+        Ok(PendingHevcFrame {
+            poc,
+            epoch,
+            err_info,
+            slot,
+            video: frame
+                .video
+                .try_clone()
+                .map_err(|error| format!("HEVC pipeline lease: {error}"))?,
+            _colmv: frame
+                .colmv
+                .try_clone()
+                .map_err(|error| format!("HEVC pipeline colmv lease: {error}"))?,
+            _refs: held,
+            _stream: stream.expect("submitted job owns its bitstream"),
+            width: frame.width,
+            height: frame.height,
+            hor_stride: frame.hor_stride,
+            ver_stride: frame.ver_stride,
+            bit_depth: frame.bit_depth,
+            chroma_format: frame.chroma_format,
+        })
+    }
+
+    /// Reap the oldest job if the ring is full, then queue this picture.
+    fn pipeline_step(
+        &mut self,
+        submitted: bool,
+        current: Option<PendingHevcFrame>,
+    ) -> Result<Option<Picture>, String> {
+        if self.hw.in_flight() >= self.depth {
+            let failed = self.hw.reap().map_err(|e| e.to_string())?;
+            if let Some(Some(mut picture)) = self.pending.pop_front() {
+                if failed {
+                    picture.err_info |= FRAME_ERR_DEC_HW_ERR;
+                    self.pipeline_failed = true;
+                    // The blocking path knows the verdict before the DPB entry
+                    // is pushed; a deferred picture is already in the DPB, so
+                    // propagate the failure here instead.
+                    self.dpb.mark_error(picture.slot);
+                    // Pictures already submitted after this one were predicted
+                    // from the corrupt chain, exactly like the blocking path's
+                    // reference-error verdict.
+                    for entry in self.pending.iter_mut() {
+                        if let Some(later) = entry {
+                            later.err_info |= FRAME_ERR_DEC_INVALID;
+                            self.dpb.mark_error(later.slot);
+                        }
+                    }
+                }
+                let picture = self.materialise(&picture)?;
+                self.ready.push_back(picture);
+            }
+        }
+        if submitted {
+            self.pending.push_back(current);
+        }
+        Ok(self.ready.pop_front())
+    }
+
+    /// Build the caller-facing picture for a drained job.
+    fn materialise(&self, pending: &PendingHevcFrame) -> Result<Picture, String> {
+        let (yuv, dmabuf) = if pending.err_info == 0 {
+            if self.output_dmabuf {
+                let lease = pending
+                    .video
+                    .try_clone()
+                    .map_err(|error| format!("HEVC DMA-BUF lease: {error}"))?;
+                (
+                    Vec::new(),
+                    Some(DmaBufSurface::pooled(
+                        lease,
+                        pending.hor_stride,
+                        pending.ver_stride,
+                    )),
+                )
+            } else {
+                let video = pending
+                    .video
+                    .data()
+                    .map_err(|error| format!("HEVC frame view: {error}"))?;
+                let _ = video.buffer().sync_read_begin();
+                let y_size = pending.hor_stride * pending.ver_stride;
+                let uv_size = y_size * pending.chroma_format.uv_size_factor() / 2;
+                let yuv = copy_planar(
+                    &video[..y_size],
+                    &video[y_size..y_size + uv_size],
+                    pending.width,
+                    pending.height,
+                    pending.hor_stride,
+                    pending.bit_depth,
+                    pending.chroma_format,
+                );
+                let _ = video.buffer().sync_read_end();
+                (yuv, None)
+            }
+        } else {
+            (Vec::new(), None)
+        };
+        Ok(Picture {
+            width: pending.width,
+            height: pending.height,
+            poc: pending.poc,
+            epoch: pending.epoch,
+            yuv,
+            dmabuf,
+            chroma_format: pending.chroma_format,
+            bit_depth: pending.bit_depth,
+            err_info: pending.err_info,
+        })
+    }
+
+    /// Keep `depth` jobs in the submission ring. Returns false on hardware
+    /// without a ring (RK3576 VDPU383).
+    pub fn set_pipeline_depth(&mut self, enabled: bool, depth: usize) -> bool {
+        self.depth = depth.max(1);
+        self.pipeline = enabled && self.hw.set_pipeline(true, self.depth);
+        self.pipeline
+    }
+
+    /// Drain every in-flight job. Call once at end of stream.
+    pub fn flush(&mut self) -> Result<Vec<Picture>, String> {
+        let mut out = Vec::new();
+        if !self.pipeline {
+            return Ok(out);
+        }
+        // Reap one at a time so a failure is attributed to its own picture.
+        while self.hw.in_flight() > 0 {
+            let failed = self.hw.reap().map_err(|e| e.to_string())?;
+            if let Some(entry) = self.pending.pop_front() {
+                if let Some(mut picture) = entry {
+                    if failed {
+                        picture.err_info |= FRAME_ERR_DEC_HW_ERR;
+                        self.pipeline_failed = true;
+                        self.dpb.mark_error(picture.slot);
+                    }
+                    let picture = self.materialise(&picture)?;
+                    self.ready.push_back(picture);
+                }
+            }
+        }
+        while let Some(picture) = self.ready.pop_front() {
+            out.push(picture);
+        }
+        Ok(out)
+    }
+
+    /// True once a queued job failed. The caller can then re-decode the
+    /// stream through the blocking path, which learns each verdict before the
+    /// next picture and therefore reproduces the documented error semantics.
+    pub fn pipeline_poisoned(&self) -> bool {
+        self.pipeline && self.pipeline_failed
     }
 
     pub fn set_output_dmabuf(&mut self, enabled: bool) {

@@ -3300,59 +3300,99 @@ fn main() {
             eprintln!("{src}: no H.265 access units found");
             std::process::exit(1);
         }
-        let mut dec = match rk_mpp_rs::codec::hevc::Decoder::new() {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("open rkvdec failed: {e}");
+        let trace = std::env::var_os("RFI_HEVC_TRACE").is_some();
+        let requested_depth = match std::env::var("RKMPP_HEVC_PIPELINE") {
+            Ok(value) => value.parse::<usize>().unwrap_or(0),
+            // Off by default: a queued job that fails is reported after later
+            // pictures were already submitted, which changes the picture set
+            // of damaged/open-GOP streams. Clean streams gain ~2.6x with 3.
+            Err(_) => 0,
+        };
+        // Decode once with the requested ring depth. A queued job that fails is
+        // only reported after later pictures were already submitted, so such a
+        // stream is re-decoded through the blocking path: it learns each
+        // verdict before the next picture and reproduces the reference error
+        // semantics exactly. Clean streams never pay for this.
+        let run = |depth: usize| -> Result<(Vec<rk_mpp_rs::codec::hevc::Picture>, f64, bool, bool), String> {
+            let mut dec = rk_mpp_rs::codec::hevc::Decoder::new().map_err(|e| e.to_string())?;
+            if depth != 0 && !dec.set_pipeline_depth(true, depth) {
+                eprintln!("H.265 pipelining unavailable on this SoC; using blocking decode");
+            }
+            let mut pictures = Vec::with_capacity(aus.len());
+            let t = Instant::now();
+            let mut failed = false;
+            for (i, au) in aus.iter().enumerate() {
+                match dec.decode_access_unit(au) {
+                    Ok(Some(pic)) => {
+                        if trace {
+                            println!(
+                                "  au {i}: poc={} epoch={} err={:#x} output={} status={:08x}/{:08x}/{:08x}",
+                                pic.poc,
+                                pic.epoch,
+                                pic.err_info,
+                                rk_mpp_rs::codec::hevc::picture_is_output(&pic),
+                                dec.status().0,
+                                dec.status().1,
+                                dec.status().2
+                            );
+                        }
+                        if i < 3 && !pic.yuv.is_empty() && std::env::var_os("RKMPP_TRACE").is_some() {
+                            let y = &pic.yuv[..pic.width * pic.height];
+                            let sum: u64 = y.iter().map(|v| *v as u64).sum();
+                            println!(
+                                "  frame {i}: poc={} {}x{} y_mean={:.1} status={:08x}/{:08x}/{:08x}",
+                                pic.poc,
+                                pic.width,
+                                pic.height,
+                                sum as f64 / y.len() as f64,
+                                dec.status().0,
+                                dec.status().1,
+                                dec.status().2
+                            );
+                        }
+                        pictures.push(pic);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!("frame {i}: decode error: {e}");
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            match dec.flush() {
+                Ok(flushed) => pictures.extend(flushed),
+                Err(e) => {
+                    eprintln!("pipeline flush: {e}");
+                    failed = true;
+                }
+            }
+            let poisoned = dec.pipeline_poisoned();
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            Ok((pictures, ms, failed, poisoned))
+        };
+        let (mut pictures, mut decode_ms, mut failed, poisoned) = match run(requested_depth) {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("H.265 decode failed: {error}");
                 std::process::exit(1);
             }
         };
-        use std::io::Write;
-        let mut pictures = Vec::with_capacity(aus.len());
-        let trace = std::env::var_os("RFI_HEVC_TRACE").is_some();
-        let t = Instant::now();
-        let mut failed = false;
-        for (i, au) in aus.iter().enumerate() {
-            match dec.decode_access_unit(au) {
-                Ok(Some(pic)) => {
-                    if trace {
-                        println!(
-                            "  au {i}: poc={} epoch={} err={:#x} output={} status={:08x}/{:08x}/{:08x}",
-                            pic.poc,
-                            pic.epoch,
-                            pic.err_info,
-                            rk_mpp_rs::codec::hevc::picture_is_output(&pic),
-                            dec.status().0,
-                            dec.status().1,
-                            dec.status().2
-                        );
-                    }
-                    if i < 3 && !pic.yuv.is_empty() && std::env::var_os("RKMPP_TRACE").is_some() {
-                        let y = &pic.yuv[..pic.width * pic.height];
-                        let sum: u64 = y.iter().map(|v| *v as u64).sum();
-                        println!(
-                            "  frame {i}: poc={} {}x{} y_mean={:.1} status={:08x}/{:08x}/{:08x}",
-                            pic.poc,
-                            pic.width,
-                            pic.height,
-                            sum as f64 / y.len() as f64,
-                            dec.status().0,
-                            dec.status().1,
-                            dec.status().2
-                        );
-                    }
-                    pictures.push(pic);
+        if poisoned && requested_depth != 0 {
+            eprintln!("H.265 queued job failed; re-decoding through the blocking path");
+            let (redo, ms, f, _) = match run(0) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("H.265 blocking decode failed: {error}");
+                    std::process::exit(1);
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!("frame {i}: decode error: {e}");
-                    failed = true;
-                    break;
-                }
-            }
+            };
+            pictures = redo;
+            decode_ms = ms;
+            failed = f;
         }
-        let decode_ms = t.elapsed().as_secs_f64() * 1000.0;
         rk_mpp_rs::codec::hevc::sort_pictures_for_display(&mut pictures);
+        use std::io::Write;
         let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
         let decoded = pictures.len();
         let n = pictures
