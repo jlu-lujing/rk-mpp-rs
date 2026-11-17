@@ -19,6 +19,7 @@ Dispositions:
 
 | Case | Disposition | Evidence |
 |---|---|---|
+| H.264 1920x800 `/tmp/demo_short.264`, frames 18+ | **FIX** (open) | Rust and software FFmpeg agree on frames 0-17, then diverge; 402 of 600 frames differ, while C `h264_rkmpp` matches software FFmpeg on **600/600**. The stream is a cut of a network capture (mid-GOP start, small P frames around the divergence point, no IDR at frame 18), so reference/error-concealment state is the first suspect. Until this closes, the stream is excluded from performance claims: a timing comparison needs both decoders to produce the same pictures. `test720.264`, `test_hard.264` and `/tmp/ai.264` are verified byte-identical and are what the published H.264 numbers use. |
 | AV1 64x64 | **C-BUG** | The rkvdec job never reports done (status `0x1`; a good job reports `0x1100`), so C emits ten all-zero 64x64 pictures (61,440 bytes, 0 non-zero). libaom decodes real content; this crate reports `FRAME_ERR_DEC_HW_ERR` and writes nothing instead of black. 96x96 and up complete normally. |
 | AV1 profile 0 + 10-bit | **NO-ORACLE** | The AV1 spec requires 10-bit to use profile 2; libaom produced the stream anyway (ffprobe: profile Main, yuv420p10le). C and Rust differ in one byte at offset 76,802 of the 320x240 fixture, and an invalid combination is not a conformance target. |
 | AV1 sizes 96x96, 128x128, 192x192 | **FIXED** | Regenerated with libaom and adjudicated three ways: Rust and C both equal libaom byte for byte (13,8240 / 245,760 / 552,960 bytes), and the fixtures are locked in `tests/data`. |

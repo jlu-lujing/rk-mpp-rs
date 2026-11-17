@@ -178,18 +178,39 @@ becomes backpressure on queue depth instead of a hard failure.
 the blocking path. Depth 3 reaches the same poll time as 4 (about 15 us per
 picture) without needing the extra surface.
 
-Seven interleaved samples, wall clock, DDR governor pinned, t6, planar output
-to `/dev/null` on both sides (`C` = production `ffmpeg -c:v h264_rkmpp`):
+**Fairness gate.** A timing comparison is only meaningful when both decoders
+produce the same pictures, so every stream below was first compared
+byte-for-byte against software FFmpeg: Rust, C and the software reference are
+120/120 identical for `test720.264` (1280x720), 90/90 for `test_hard.264`
+(1920x1080) and 240/240 for `/tmp/ai.264` (all-intra 1920x800). A fourth
+candidate, `/tmp/demo_short.264`, is **excluded**: Rust and software agree on
+frames 0-17 and then drift (402/600 frames differ) while C matches software
+600/600. That is recorded as an open `FIX` in `docs/DIVERGENCES.md`; timing it
+would compare different work.
+
+Seven interleaved samples, wall clock, DDR governor pinned (`dmc` 2112 MHz, all
+CPU policies `performance`), planar output to `/dev/null` on both sides (`C` =
+production `ffmpeg -c:v h264_rkmpp`):
 
 | Stream | frames | C | Rust (depth 3) | Rust advantage |
 | --- | ---: | ---: | ---: | ---: |
-| all-intra 1920x800 (`/tmp/ai.264`) | 240 | 447 ms | **384 ms** | **+16.4 %** |
-| inter 1920x800 (`/tmp/demo_short.264`) | 600 | 936 ms | **535 ms** | **+75.0 %** |
-| 1280x720 (`test720.264`) | 120 | 194 ms | **130 ms** | **+49.2 %** |
+| 1920x1080 inter (`test_hard.264`) | 90 | 290 ms | **196 ms** | **+48.0 %** |
+| all-intra 1920x800 (`/tmp/ai.264`) | 240 | 457 ms | **384 ms** | **+19.0 %** |
+| 1280x720 (`test720.264`) | 120 | 200 ms | **128 ms** | **+56.2 %** |
 
-The first single-job measurement of the same inter stream was 1819 ms, so the
-ring is worth roughly 3.4x there; the previous "Rust is 1.45x behind C" state
-no longer holds on this board.
+Wall clock includes process start-up, and FFmpeg's fixed cost is larger: on a
+two-frame 48x32 stream the same commands take about 50 ms (C) and 30 ms (Rust).
+Subtracting that measured overhead leaves the advantage at roughly +45 %, +15 %
+and +53 % respectively — smaller, but still ahead on every verified stream.
+Only the comparison against the previous single-job H.264 path is unaffected
+by start-up: the same 1920x800 inter stream took 1819 ms with one job in
+flight, so the ring is worth roughly 3.4x inside the decoder.
+
+Method note: never compare the CLI by piping its stdout. The command prints
+"N access units" and three per-frame trace lines to stdout before/between the
+YUV bytes, so a pipe-based hash silently misaligns every frame. Comparisons
+must go through a real file (or `/dev/null`), which is what the numbers above
+do.
 
 Correctness at that speed:
 
@@ -197,9 +218,9 @@ Correctness at that speed:
   the PAFF `field_paff.264` and missing-AU `mr1_missing_au20.264` streams.
 * The same seven streams are byte-exact at depths 1, 2, 3 and 4 when depth is
   forced explicitly.
-* `demo_short.264` (600 frames, 1920x800) decodes to identical output at
-  depth 1, 2 and 3 (MD5 `a90c915e…c7bd`), and the NV12 path matches the
-  planar reference converted by ffmpeg.
+* Deferred output is output-preserving: `test720.264` at depths 1-4 is
+  byte-identical to the reference, and the NV12 path matches the planar
+  reference converted by ffmpeg.
 * `RKMPP_DECODE_DMABUF=1` still reports 120/120 output frames on
   `test720.264`; `RKMPP_H264_PIPELINE=0` still matches the reference.
 * Workspace gate: **1319 passed / 0 failed** over 59 suites; release library

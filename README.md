@@ -72,7 +72,7 @@
 |---|---|
 | `mpp_service` 客户端（全部 `MPP_CMD_*`、MULTI_MSG、RCB、IOVA、poll、probe） | 完成 |
 | JPEG 解码（jpegd，RGB888/NV12，1/2–1/8 缩放） | 完成，比 C 快约 30% |
-| H.264 解码（rkvdec） | 完成：frame/MBAFF/PAFF/长参考/错误路径**逐字节**；提交环默认 3 个 job 在途，t6 上 1920x800 inter 比 C `h264_rkmpp` 快 73%、全 I 快 15% |
+| H.264 解码（rkvdec） | 完成：frame/MBAFF/PAFF/长参考/错误路径**逐字节**；提交环默认 3 个 job 在途。在输出与 C **逐字节相同**的流上，t6 比 C `h264_rkmpp` 快 48%（1080p）、56%（720p）、19%（全 I 帧） |
 | H.265 解码（rkvdec） | 完成：Main/Main10/tiles/WPP/DSLICE/LTR/scaling list；RK3576 另通过 16 格确定性损坏矩阵（SPS/PPS/SEI、IDR/P slice 起中尾、三种尾部截断）。14 格 C/Rust 输出计数与 YUV 逐字节一致；损坏 SPS 和首个 IDR slice 起点时 C harness 会无限等待，Rust 会立即结束并输出 0 帧。4:2:2/4:4:4 被硬件拒收 |
 | VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；720p 分割流经 libvpx 三方判定为 **C 侧 bug**（Rust == libvpx，C 差 213 字节），321x241 亦为 C 丢帧；仅损坏流中止属刻意保留 |
 | AV1 解码（av1d） | Main 8/10-bit、film grain 逐字节；96x96 至 1920x1080（含 60 帧长 GOP、多 sequence、320↔640 分辨率切换）三方对齐 C 与 libaom 逐字节，64x64 为硬件不完成（C 输出全黑，已登记 C-bug）；t62/6.1.141 的 2x2 tile fixture 已修复 filter-base 缺失，10 帧输出与 C 逐字节一致。RK3576 VDPU383 已完成 8-bit 10 帧引用序列和 10-bit skip-grain 序列：`show_existing_frame`、八槽 CDF/colmv 生命周期、inter 主参考 coefficient-CDF 继承、704-byte 10-bit stride 与 packed-NV12 → planar u16 均已接通。10-bit 的 10 个显示帧共 2,304,000 bytes，与 C 逐字节，SHA-256 `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`；VDPU383 film grain 的 FGS enable/base 实验会以 STATUS 0 超时并复位，C HAL 也未启用该路径 |

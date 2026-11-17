@@ -18,25 +18,31 @@ t62 back to the RK3588 reference board.
   (`RKMPP_H264_PIPELINE=<depth>`, `0` = blocking). Depth 3 reaches the same
   per-picture poll time as 4 (about 15 us) without the extra surface. The
   library default is unchanged, so SDK/C-API callers see the same semantics.
+- Fairness gate first: every timed stream is verified byte-identical between
+  Rust, C and software FFmpeg (`test720.264` 120/120, `test_hard.264` 90/90,
+  `/tmp/ai.264` 240/240). `/tmp/demo_short.264` is **excluded** because Rust
+  and software disagree from frame 18 (402/600 frames) while C matches
+  software 600/600; that is an open `FIX` in `docs/DIVERGENCES.md`.
 - Seven interleaved wall-clock samples, DDR governor pinned, planar output to
   `/dev/null` on both sides, Rust default depth 3 against production
   `ffmpeg -c:v h264_rkmpp`:
 
   | stream | frames | C | Rust | Rust advantage |
   | --- | ---: | ---: | ---: | ---: |
-  | all-intra 1920x800 | 240 | 447 ms | **384 ms** | **+16.4 %** |
-  | inter 1920x800 | 600 | 936 ms | **535 ms** | **+75.0 %** |
-  | 1280x720 | 120 | 194 ms | **130 ms** | **+49.2 %** |
+  | 1920x1080 inter (`test_hard.264`) | 90 | 290 ms | **196 ms** | **+48.0 %** |
+  | all-intra 1920x800 | 240 | 457 ms | **384 ms** | **+19.0 %** |
+  | 1280x720 | 120 | 200 ms | **128 ms** | **+56.2 %** |
 
-  Single-job on the same inter stream was 1819 ms, so the ring is worth about
-  3.4x there. The earlier "Rust trails C by 1.45x" checkpoint is superseded.
+  Wall clock includes start-up; FFmpeg's fixed cost is about 20 ms higher on a
+  two-frame stream, so the start-up-corrected margins are about +45 %, +15 %
+  and +53 %. Single-job on a 1920x800 inter stream was 1819 ms against 535 ms
+  at depth 3, i.e. the ring is worth ~3.4x inside the decoder. The earlier
+  "Rust trails C by 1.45x" checkpoint is superseded.
 - Correctness: `scripts/board_regress.sh` **7/7 PASS** with the default
   depth, including `field_paff.264` (top/bottom fields) and
   `mr1_missing_au20.264` (concealed pictures). Forcing depths 1-4 on all seven
-  streams is byte-exact. The 600-frame 1920x800 inter stream is identical at
-  depth 1/2/3 (MD5 `a90c915e…c7bd`), the packed NV12 path matches the planar
-  reference converted by ffmpeg, and DMA-BUF output still returns 120/120
-  frames.
+  streams is byte-exact, the packed NV12 path matches the planar reference
+  converted by ffmpeg, and DMA-BUF output still returns 120/120 frames.
 - Gates: workspace **1319 passed / 0 failed / 45 ignored** over 59 suites,
   release library **1149 passed / 0 failed / 0 ignored**, `cargo fmt --check`
   clean. Numbers and the bug list live in `docs/NETWORK_DECODE_BENCH.md`.
