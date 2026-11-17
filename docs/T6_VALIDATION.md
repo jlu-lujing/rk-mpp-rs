@@ -25,25 +25,26 @@ t62 back to the RK3588 reference board.
 - Gates: `board_vp9_matrix.sh` fail=0 named-differences=0 (including the known
   C bug row), `board_vp_corrupt_vs_mpp.sh` exit 0, workspace 59 suites exit 0.
 
-## 2026-11-17 H.265 job ring (opt-in)
+## 2026-11-17 H.265 job ring: now the default and ahead of C
 
 - The same submission-ring work was ported to the HEVC HAL: per-job CABAC,
   SPS/PPS, RPS, scaling-list and RCB tables, a private register window,
   readback and ioctl batch, plus deferred picture output that leases the
   video, colmv and every reference surface the job reads.
-- Verified byte-identical to `ffmpeg -c:v hevc_rkmpp` at depths 0/2/3/4 on
-  `t720.hevc` and `hevc_multigop_120.hevc`, and to the blocking path on the
-  Main10 and scaling-list fixtures.
-- Seven interleaved samples, governors pinned: 720p 120 frames C 179 ms,
-  blocking Rust 433 ms, `RKMPP_HEVC_PIPELINE=3` **166 ms (+7.8 % vs C)**; the
-  four-IDR 120-frame stream C 212 ms, blocking 435 ms, depth 3 **167 ms
-  (+26.9 %)**.
-- The ring stays **opt-in** (`RKMPP_HEVC_PIPELINE=<depth>`): a queued job that
-  fails is reported only after later pictures were already submitted, which
-  changes which pictures a damaged/open-GOP stream outputs. `hevc_slices_open`
-  is the measured example (23 clean frames blocking, 24 queued). The CLI
-  detects that case and re-decodes through the blocking path, but the default
-  stays blocking until the error semantics live in the queue itself.
+- Error propagation now matches the blocking path. A queued job that fails is
+  reported after later pictures were already submitted, so the decoder marks
+  every still-pending picture it poisoned, writes the failure back to the DPB
+  and forces reference errors on the rest of the chain until the next IRAP.
+  `hevc_slices_open` (a hardware failure at POC 5 cascading through POC 4/3
+  and 9/7/6/8) is the regression that pins this: blocking and queued output
+  are byte-identical, 23 clean frames.
+- Seven HEVC fixtures are byte-identical between blocking and depth-3 queued
+  output: `t720.hevc`, the four-IDR stream, Main10, and the three scaling-list
+  variants.
+- Seven interleaved samples, governors pinned: 720p 120 frames C 199 ms,
+  blocking 412 ms, default depth 3 **164 ms (+21.3 % vs C)**; the four-IDR
+  stream C 210 ms, blocking 425 ms, depth 3 **175 ms (+20.0 %)**.
+- `RKMPP_HEVC_PIPELINE=0` restores blocking; `3` is the default.
 - Gates: `board_regress_hevc.sh` PASS on tiles, Main10, three scaling-list
   variants, open-GOP multi-slice and the four-IDR stream; workspace 59 suites
   exit 0.

@@ -653,10 +653,11 @@ impl Decoder {
     fn pipeline_step(
         &mut self,
         submitted: bool,
-        current: Option<PendingHevcFrame>,
+        mut current: Option<PendingHevcFrame>,
     ) -> Result<Option<Picture>, String> {
+        let mut failed = false;
         if self.hw.in_flight() >= self.depth {
-            let failed = self.hw.reap().map_err(|e| e.to_string())?;
+            failed = self.hw.reap().map_err(|e| e.to_string())?;
             if let Some(Some(mut picture)) = self.pending.pop_front() {
                 if failed {
                     picture.err_info |= FRAME_ERR_DEC_HW_ERR;
@@ -677,6 +678,14 @@ impl Decoder {
                 }
                 let picture = self.materialise(&picture)?;
                 self.ready.push_back(picture);
+            }
+        }
+        // This access unit was already submitted when the failure above was
+        // discovered, so it also decoded from the corrupt chain.
+        if failed {
+            if let Some(picture) = current.as_mut() {
+                picture.err_info |= FRAME_ERR_DEC_INVALID;
+                self.dpb.mark_error(picture.slot);
             }
         }
         if submitted {

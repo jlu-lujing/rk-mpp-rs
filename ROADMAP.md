@@ -3855,18 +3855,19 @@ pipeline uses.
   corpus streams are byte-exact at depths 1-4 and `board_regress.sh` is 7/7
   with the default. See `docs/NETWORK_DECODE_BENCH.md`.
 
-  **2026-11-17: the same ring is available for H.265 (opt-in).** The HEVC HAL
-  now keeps per-job CABAC/SPS/PPS/RPS/scaling-list/RCB tables, register window,
-  readback and ioctl batch, and the decoder defers pictures while leasing the
-  video, colmv and every reference surface the job reads. t720.hevc and the
-  four-IDR stream are byte-identical to `ffmpeg -c:v hevc_rkmpp` at depths
-  0/2/3/4; seven interleaved samples give 720p 179 ms C vs **166 ms** at depth
-  3 (+7.8 %) and 212 ms vs **167 ms** on the four-IDR stream (+26.9 %), against
-  433/435 ms blocking. It stays opt-in because a queued failure is reported
-  after later pictures were already submitted, which changes the picture set
-  of damaged/open-GOP streams (`hevc_slices_open`: 23 clean frames blocking,
-  24 queued). `board_regress_hevc.sh` is green with the default blocking path.
-  See `docs/T6_VALIDATION.md`.
+  **2026-11-17: the same ring is now the H.265 default.** The HEVC HAL keeps
+  per-job CABAC/SPS/PPS/RPS/scaling-list/RCB tables, register window, readback
+  and ioctl batch, and the decoder defers pictures while leasing the video,
+  colmv and every reference surface the job reads. A reaped failure is written
+  back to the DPB and poisons every still-pending picture and the rest of the
+  chain until the next IRAP, which makes `hevc_slices_open` (one hardware
+  failure cascading through POC 4/3 and 9/7/6/8) byte-identical to blocking:
+  23 clean frames. Seven fixtures (720p, four-IDR, Main10, three scaling-list
+  variants, tiled) agree between blocking and depth 3. Seven interleaved
+  samples with the queue on by default: 720p 199 ms C vs **164 ms**
+  (+21.3 %), four-IDR 210 vs **175 ms** (+20.0 %), against 412/425 ms
+  blocking. `board_regress_hevc.sh` is green with the queue on. See
+  `docs/T6_VALIDATION.md`.
 
   **2026-11-17: shared planar path and streamed VP9 output.** `nv12_to_planar`
   deinterleaves chroma with NEON (`vuzp1q_u8`/`vuzp2q_u8`, 16 UV pairs per
