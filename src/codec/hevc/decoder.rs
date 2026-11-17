@@ -392,10 +392,8 @@ impl Decoder {
             poc,
             sps.log2_max_pic_order_cnt_lsb,
         );
-        let is_irap = matches!(
-            first.unit_type,
-            16..=21 | parser::NAL_IDR_W_RADL | parser::NAL_IDR_N_LP | parser::NAL_CRA
-        );
+        // BLA_W_LP (16) .. CRA (21) are the IRAP types.
+        let is_irap = (16..=21).contains(&first.unit_type);
         if is_irap {
             // A clean random access point restarts the prediction chain.
             self.pipeline_failed = false;
