@@ -131,6 +131,9 @@ pub struct Decoder {
     nv12_pool: BufferPool<DmaBuf>,
     colmv_pool: BufferPool<DmaBuf>,
     output_injection: Option<DmaBuf>,
+    /// Host NV12 buffers handed back by a caller (the C API releases each
+    /// frame), reused instead of allocating a fresh frame-sized Vec.
+    output_recycle: Vec<Vec<u8>>,
     width: usize,
     height: usize,
     coded_height: usize,
@@ -303,6 +306,7 @@ impl Decoder {
             nv12_pool: BufferPool::new(17 + crate::hal::h264d::JOB_SLOTS),
             colmv_pool: BufferPool::new(17 + crate::hal::h264d::JOB_SLOTS),
             output_injection: None,
+            output_recycle: Vec::new(),
             width: 0,
             height: 0,
             coded_height: 0,
@@ -845,13 +849,23 @@ impl Decoder {
                 // Error concealment: this access unit armed no job, so its
                 // picture is complete now. Queue it behind the job results
                 // already waiting, which keeps output in submission order.
-                let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+                let (lease, hor_stride, ver_stride) = {
+                    let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+                    (
+                        frame
+                            .nv12
+                            .try_clone()
+                            .map_err(|error| format!("H.264 output lease: {error}"))?,
+                        frame.hor_stride,
+                        frame.ver_stride,
+                    )
+                };
                 let (yuv, nv12, raw_uv, dmabuf) = self.output_buffers(
-                    &frame.nv12,
+                    &lease,
                     self.width,
                     self.height,
-                    frame.hor_stride,
-                    frame.ver_stride,
+                    hor_stride,
+                    ver_stride,
                     combined_err_info,
                 )?;
                 self.ready.push_back(Picture {
@@ -872,13 +886,23 @@ impl Decoder {
         if is_top_field {
             return Ok(None);
         }
-        let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+        let (lease, hor_stride, ver_stride) = {
+            let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+            (
+                frame
+                    .nv12
+                    .try_clone()
+                    .map_err(|error| format!("H.264 output lease: {error}"))?,
+                frame.hor_stride,
+                frame.ver_stride,
+            )
+        };
         let (yuv, nv12, raw_uv, dmabuf) = self.output_buffers(
-            &frame.nv12,
+            &lease,
             self.width,
             self.height,
-            frame.hor_stride,
-            frame.ver_stride,
+            hor_stride,
+            ver_stride,
             combined_err_info,
         )?;
         Ok(Some(Picture {
@@ -899,7 +923,7 @@ impl Decoder {
     /// invalid or hardware-errored job.
     #[allow(clippy::type_complexity)]
     fn output_buffers(
-        &self,
+        &mut self,
         nv12_buffer: &BufferLease<DmaBuf>,
         width: usize,
         height: usize,
@@ -929,12 +953,13 @@ impl Decoder {
         let uv = &view[y_size..y_size + y_size / 2];
         let _ = view.buffer().sync_read_begin();
         let (yuv, nv12) = if self.output_nv12 {
-            (
-                Vec::new(),
-                Some(crate::codec::yuv::nv12_to_packed(
-                    y, uv, width, height, hor_stride,
-                )),
-            )
+            let mut buffer = self
+                .output_recycle
+                .pop()
+                .filter(|buffer| buffer.capacity() >= width * height * 3 / 2)
+                .unwrap_or_default();
+            crate::codec::yuv::nv12_to_packed_into(&mut buffer, y, uv, width, height, hor_stride);
+            (Vec::new(), Some(buffer))
         } else {
             (
                 crate::codec::yuv::nv12_to_planar(y, uv, width, height, hor_stride),
@@ -982,7 +1007,7 @@ impl Decoder {
     }
 
     /// Build the caller-facing picture for a drained job.
-    fn copy_out(&self, picture: &PendingFrame) -> Result<Picture, String> {
+    fn copy_out(&mut self, picture: &PendingFrame) -> Result<Picture, String> {
         let (yuv, nv12, raw_uv, dmabuf) = self.output_buffers(
             &picture.nv12,
             picture.width,
@@ -1054,6 +1079,13 @@ impl Decoder {
     /// chroma deinterleave pass for NV12-capable display/conversion consumers.
     pub fn set_output_nv12(&mut self, enabled: bool) {
         self.output_nv12 = enabled;
+    }
+
+    /// Hand a consumed host NV12 buffer back for reuse.
+    pub fn recycle_output(&mut self, buffer: Vec<u8>) {
+        if buffer.capacity() >= self.width * self.height * 3 / 2 && self.output_recycle.len() < 4 {
+            self.output_recycle.push(buffer);
+        }
     }
 
     pub fn set_output_dmabuf(&mut self, enabled: bool) {

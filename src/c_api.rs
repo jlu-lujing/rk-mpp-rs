@@ -371,7 +371,9 @@ pub unsafe extern "C" fn rk_mpp_frame_release(decoder: *mut RkMppDecoder, frame:
     }
     // SAFETY: decoder is live under the call contract.
     let decoder = unsafe { &mut *decoder };
-    decoder.last_frame = None;
+    if let Some(released) = decoder.last_frame.take() {
+        decoder.inner.recycle_frame(released);
+    }
     if !frame.is_null() {
         // SAFETY: caller guarantees writable frame storage.
         let frame = unsafe { &mut *frame };

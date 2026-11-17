@@ -378,6 +378,14 @@ impl Clone for Frame {
 }
 
 impl Frame {
+    /// Take the host storage of a consumed frame so a decoder can reuse it.
+    pub fn into_cpu_storage(self) -> Option<Vec<u8>> {
+        match self.storage {
+            FrameStorage::Cpu(vec) => Some(vec),
+            _ => None,
+        }
+    }
+
     pub const fn width(&self) -> usize {
         self.width
     }
@@ -1409,6 +1417,19 @@ impl Decoder {
 
     pub fn receive_frame(&mut self) -> Option<Frame> {
         self.frames.pop_front()
+    }
+
+    /// Return a consumed frame's host buffer to the decoder that produced it.
+    pub fn recycle_frame(&mut self, frame: Frame) {
+        let buffer = match frame.into_cpu_storage() {
+            Some(buffer) => buffer,
+            None => return,
+        };
+        match &mut self.backend {
+            Backend::H264(backend) => backend.decoder.recycle_output(buffer),
+            Backend::H265(_) => {}
+            _ => {}
+        }
     }
 
     pub fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), Error> {

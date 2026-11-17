@@ -15,6 +15,26 @@ pub fn nv12_to_packed(y: &[u8], uv: &[u8], width: usize, height: usize, stride: 
     let luma_size = width * height;
     let chroma_size = width * chroma_height;
     let mut out = Vec::with_capacity(luma_size + chroma_size);
+    nv12_to_packed_into(&mut out, y, uv, width, height, stride);
+    out
+}
+
+/// Write a packed NV12 frame into `out`, reusing its allocation. The C API
+/// hands frames back after the caller reads them, so a recycled buffer keeps
+/// the per-frame `mmap`/`munmap` pair (and its page clears) out of the path.
+pub fn nv12_to_packed_into(
+    out: &mut Vec<u8>,
+    y: &[u8],
+    uv: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+) {
+    let chroma_height = height / 2;
+    let luma_size = width * height;
+    let chroma_size = width * chroma_height;
+    out.clear();
+    out.reserve(luma_size + chroma_size);
     for row in 0..height {
         let src = row * stride;
         out.extend_from_slice(&y[src..src + width]);
@@ -24,7 +44,6 @@ pub fn nv12_to_packed(y: &[u8], uv: &[u8], width: usize, height: usize, stride: 
         out.extend_from_slice(&uv[src..src + width]);
     }
     debug_assert_eq!(out.len(), luma_size + chroma_size);
-    out
 }
 
 /// One 8-bit NV12 frame (luma plane, then interleaved UV plane, both `stride`

@@ -20,8 +20,10 @@ t62 back to the RK3588 reference board.
   (bimodal; later samples 362-368 ms) versus **235-240 ms** with the ring,
   about 1.6-1.7x. The reference C frontend takes 194 ms on the same stream,
   so the C-API wrapper is still roughly 20 % behind C while the CLI and direct
-  decoder paths are 1.2-1.8x ahead; the remaining wrapper cost is per-frame
-  allocation (`munmap`/page-clear traffic).
+  decoder paths are 1.2-1.8x ahead. Host NV12 buffers released through
+  `rk_mpp_frame_release` are now recycled into the decoder's output pool
+  (`nv12_to_packed_into`), which removes the per-frame `mmap`/`munmap` pair;
+  the remaining gap is the SDK's per-chunk Annex-B rescan plus its AU copies.
 
 ## 2026-11-17 Final decoder throughput against the C baseline
 
