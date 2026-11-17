@@ -146,8 +146,13 @@ pub struct Decoder {
     stream_slot: usize,
     /// Submit without waiting and hand back the previous picture instead.
     pipeline: bool,
-    /// The submitted picture whose pixels the next step drains.
-    pending: Option<PendingFrame>,
+    /// One entry per submitted job, oldest first; `None` for a top field,
+    /// which arms a job but produces no picture of its own. A queue depth of
+    /// D can leave up to D-1 jobs waiting here.
+    pending: std::collections::VecDeque<Option<PendingFrame>>,
+    /// Pictures already materialised but not handed to the caller yet, in
+    /// submission order. Concealed pictures (no hardware job) also land here.
+    ready: std::collections::VecDeque<Picture>,
     // Keep the interleaved chroma of every picture, for the debug dump only.
     capture_raw_uv: bool,
     max_num_reorder_frames: usize,
@@ -291,8 +296,12 @@ impl Decoder {
             hw,
             vdpu383,
             frames: (0..17).map(|_| None).collect(),
-            nv12_pool: BufferPool::new(17),
-            colmv_pool: BufferPool::new(17),
+            // 16 DPB references plus the picture being decoded. The extra
+            // `JOB_SLOTS` leaves room for surfaces still leased by jobs in the
+            // submission ring, so a deeper pipeline does not exhaust the pool
+            // while a deferred picture waits to be copied out.
+            nv12_pool: BufferPool::new(17 + crate::hal::h264d::JOB_SLOTS),
+            colmv_pool: BufferPool::new(17 + crate::hal::h264d::JOB_SLOTS),
             output_injection: None,
             width: 0,
             height: 0,
@@ -306,7 +315,8 @@ impl Decoder {
             depth: 1,
             stream_slot: 0,
             pipeline: false,
-            pending: None,
+            pending: std::collections::VecDeque::with_capacity(crate::hal::h264d::JOB_SLOTS),
+            ready: std::collections::VecDeque::new(),
             capture_raw_uv: std::env::var("RFI_DUMP_UV").is_ok(),
             max_num_reorder_frames: 16,
             output_nv12: false,
@@ -464,6 +474,26 @@ impl Decoder {
             || self
                 .dpb
                 .reference_list_error(&sh, poc, sps.log2_max_frame_num);
+        // Backpressure from the surface pool. Every deferred job keeps its
+        // output surface leased, so a queue deeper than the pool can back
+        // would fail to allocate the next picture. When the pool is nearly
+        // exhausted, reap the oldest job early and queue its picture; the
+        // caller drains it on the next access unit.
+        if self.pipeline && self.pending.len() > 1 {
+            let stats = self.nv12_pool.stats();
+            if stats.in_use + 1 >= stats.limit {
+                if let Some(entry) = self.pending.pop_front() {
+                    let failed = self.hw.reap().map_err(|e| e.to_string())?;
+                    if let Some(mut picture) = entry {
+                        if failed {
+                            picture.err_info |= FRAME_ERR_DEC_HW_ERR;
+                        }
+                        let picture = self.copy_out(&picture)?;
+                        self.ready.push_back(picture);
+                    }
+                }
+            }
+        }
         // 4. buffers. A fresh buffer for every IDR: reusing one that was a
         // reference makes the hardware's first (reference-less) frame come out
         // slightly wrong.
@@ -475,27 +505,31 @@ impl Decoder {
             // Reuse a buffer no DPB entry points at any more; otherwise grow.
             // A buffer that still backs a reference must never be the output.
             let live: Vec<usize> = self.dpb.frames().iter().map(|f| f.buf).collect();
-            match (0..self.frames.len()).find(|b| !live.contains(b) && self.frames[*b].is_some()) {
-                Some(b) => {
-                    if self.output_dmabuf
-                        && self.frames[b]
-                            .as_ref()
-                            .and_then(|frame| frame.nv12.refs())
-                            .is_some_and(|refs| refs > 1)
-                    {
-                        // A reordered Picture still owns this surface. Drop the
-                        // decoder slot's reference and acquire a different
-                        // pooled buffer instead of overwriting display data.
+            let refs_of = |b: usize| self.frames[b].as_ref().and_then(|frame| frame.nv12.refs());
+            let is_free = |b: usize| !live.contains(&b) && self.frames[b].is_some();
+            // Prefer a surface nobody else leases. A surface still leased by
+            // an in-flight job or by a picture waiting in the output queue
+            // must not be handed to a new frame: the hardware would write into
+            // pixels somebody has not read yet.
+            let idle = (0..self.frames.len()).find(|&b| is_free(b) && refs_of(b) == Some(1));
+            let leased = (0..self.frames.len()).find(|&b| is_free(b) && refs_of(b).is_some());
+            match idle {
+                Some(b) => b,
+                None => match leased {
+                    Some(b) => {
+                        // Drop the decoder slot's own reference and take a
+                        // fresh pooled buffer; the pending lease keeps the old
+                        // surface alive until it has been copied out.
                         self.frames[b] = None;
+                        b
                     }
-                    b
-                }
-                None => match self.frames.iter().position(|f| f.is_none()) {
-                    Some(b) => b,
-                    None => {
-                        self.frames.push(None);
-                        self.frames.len() - 1
-                    }
+                    None => match self.frames.iter().position(|f| f.is_none()) {
+                        Some(b) => b,
+                        None => {
+                            self.frames.push(None);
+                            self.frames.len() - 1
+                        }
+                    },
                 },
             }
         };
@@ -804,7 +838,34 @@ impl Decoder {
                 } else {
                     None
                 };
-            return self.pipeline_step(current);
+            let deferred = self.pipeline_step(submitted, current)?;
+            if !submitted && !is_top_field {
+                // Error concealment: this access unit armed no job, so its
+                // picture is complete now. Queue it behind the job results
+                // already waiting, which keeps output in submission order.
+                let frame = self.frames[slot].as_ref().expect("decoded frame slot");
+                let (yuv, nv12, raw_uv, dmabuf) = self.output_buffers(
+                    &frame.nv12,
+                    self.width,
+                    self.height,
+                    frame.hor_stride,
+                    frame.ver_stride,
+                    combined_err_info,
+                )?;
+                self.ready.push_back(Picture {
+                    width: self.width,
+                    height: self.height,
+                    poc: output_poc,
+                    idr: output_idr,
+                    yuv,
+                    nv12,
+                    dmabuf,
+                    raw_uv,
+                    err_info: combined_err_info,
+                    discard: combined_err_info != 0 && !output_reference,
+                });
+            }
+            return Ok(deferred.or_else(|| self.ready.pop_front()));
         }
         if is_top_field {
             return Ok(None);
@@ -894,22 +955,28 @@ impl Decoder {
         Ok((yuv, nv12, raw_uv, None))
     }
 
-    /// Drain the older submitted picture and queue the current one.
-    fn pipeline_step(&mut self, current: Option<PendingFrame>) -> Result<Option<Picture>, String> {
-        let mut out = None;
+    /// Drain the oldest submitted job if the ring is full, and queue this
+    /// access unit's job. `submitted` says whether a hardware job was armed;
+    /// a top field arms one without producing a picture.
+    fn pipeline_step(
+        &mut self,
+        submitted: bool,
+        current: Option<PendingFrame>,
+    ) -> Result<Option<Picture>, String> {
         if self.hw.in_flight() >= self.depth {
             let failed = self.hw.reap().map_err(|e| e.to_string())?;
-            if let Some(mut picture) = self.pending.take() {
+            if let Some(Some(mut picture)) = self.pending.pop_front() {
                 if failed {
                     picture.err_info |= FRAME_ERR_DEC_HW_ERR;
                 }
-                out = Some(self.copy_out(&picture)?);
+                let picture = self.copy_out(&picture)?;
+                self.ready.push_back(picture);
             }
         }
-        if let Some(picture) = current {
-            self.pending = Some(picture);
+        if submitted {
+            self.pending.push_back(current);
         }
-        Ok(out)
+        Ok(self.ready.pop_front())
     }
 
     /// Build the caller-facing picture for a drained job.
@@ -961,11 +1028,17 @@ impl Decoder {
             return Ok(out);
         }
         let failed = self.hw.flush_jobs().map_err(|e| e.to_string())?;
-        if let Some(mut picture) = self.pending.take() {
-            if failed {
-                picture.err_info |= FRAME_ERR_DEC_HW_ERR;
+        while let Some(entry) = self.pending.pop_front() {
+            if let Some(mut picture) = entry {
+                if failed {
+                    picture.err_info |= FRAME_ERR_DEC_HW_ERR;
+                }
+                let picture = self.copy_out(&picture)?;
+                self.ready.push_back(picture);
             }
-            out.push(self.copy_out(&picture)?);
+        }
+        while let Some(picture) = self.ready.pop_front() {
+            out.push(picture);
         }
         Ok(out)
     }

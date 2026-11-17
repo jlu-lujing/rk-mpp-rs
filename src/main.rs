@@ -3582,14 +3582,17 @@ fn main() {
         } else if nv12_output {
             dec.set_output_nv12(true);
         }
-        // Two jobs in flight only stay correct when the second picture does
-        // not read the first one's output, so this stays opt-in until the
-        // dependency is expressed to the driver.
-        if let Ok(depth) = std::env::var("RKMPP_H264_PIPELINE") {
-            if depth != "0" {
-                let depth = depth.parse::<usize>().unwrap_or(2);
-                dec.set_pipeline_depth(true, depth);
-            }
+        // Keep three jobs in the submission ring. The vendor runtime keeps
+        // two to four queued and a single blocking job leaves the second
+        // rkvdec core idle. Depth 3 reaches the same poll time as 4 without
+        // exhausting the surface pool on streams with 16 DPB references;
+        // `RKMPP_H264_PIPELINE=0` restores the blocking path.
+        let depth = match std::env::var("RKMPP_H264_PIPELINE") {
+            Ok(value) => value.parse::<usize>().unwrap_or(3),
+            Err(_) => 3,
+        };
+        if depth != 0 && !dec.set_pipeline_depth(true, depth) {
+            eprintln!("H.264 pipelining unavailable on this SoC; using blocking decode");
         }
         use std::io::Write;
         let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));

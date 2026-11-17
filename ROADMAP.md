@@ -3829,6 +3829,23 @@ pipeline uses.
   more than five samples (or a pinned frequency), and a change smaller than the
   spread is not evidence. Removing the CLI's three per-frame debug prints
   (`RKMPP_TRACE` now gates them) is a cleanliness change, not a claimed speedup.
+
+  **2026-11-17: overlapping jobs are implemented and the H.264 CLI now uses
+  them by default.** The audit above listed "fewer ioctls or overlapping jobs"
+  as frozen framework work; only the second half was actually needed. Three
+  jobs in the submission ring take the per-picture hardware wait from 1.51 ms
+  to 0.015 ms and let both `rkvdec` cores work on one stream. Seven interleaved
+  wall-clock samples with the DDR governor pinned, planar output to `/dev/null`
+  on both sides, against production `ffmpeg -c:v h264_rkmpp`: all-intra
+  1920x800 240 pictures 447 ms C vs **384 ms** Rust (+16.4 %), inter 1920x800
+  600 pictures 936 ms vs **535 ms** (+75.0 %), `test720.264` 120 pictures
+  194 ms vs **130 ms** (+49.2 %). Single-job on the same inter stream was
+  1819 ms, so the ring is worth about 3.4x. Closing this required four
+  deferred-output fixes (one pending entry per job, a `None` entry for a top
+  field, concealed pictures queued without a job, and a slot selector plus
+  pool headroom that keeps leased surfaces out of the next frame); the seven
+  corpus streams are byte-exact at depths 1-4 and `board_regress.sh` is 7/7
+  with the default. See `docs/NETWORK_DECODE_BENCH.md`.
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

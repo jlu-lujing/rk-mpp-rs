@@ -144,8 +144,66 @@ stream is identical to the vendor's, so the remaining work is the DPB/frame
 lifetime under deferred output rather than the register file: the deferred
 picture holds a lease, which changes which buffer the pool hands out next.
 
-Queueing therefore stays opt-in (`RKMPP_H264_PIPELINE=<depth>`), and correctness
-gates run with it off.
+Queueing was therefore left opt-in (`RKMPP_H264_PIPELINE=<depth>`) at that
+point, with correctness gates running it off. The 2026-11-17 section below
+closes that lifetime bug; the queued path is now the default at depth 3.
+
+### 2026-11-17: the pending ring is keyed to jobs, and queueing is on
+
+The deferred-output bookkeeping had four bugs, all of which only showed up
+once more than one job was in flight:
+
+1. **One pending slot for a ring of up to four jobs.** Depth 3 lost one
+   picture per run (`239/240`), because the second picture overwrote the
+   first in the single `Option<PendingFrame>`.
+2. **Top fields armed a job but produced no picture**, so the ring and the
+   pending list desynchronised and the PAFF stream pulled the wrong picture
+   out of the queue.
+3. **Concealed pictures armed no job**, so the missing-AU stream silently lost
+   the frame the blocking path still emits.
+4. **Deferred leases exhausted the surface pool.** A picture whose job was
+   still in flight kept its surface leased, but the slot selector reused that
+   slot anyway (replacing the lease with a fresh allocation) until
+   `BufferPool` reported `Full`.
+
+Fixes: the pending list is a `VecDeque<Option<PendingFrame>>` with exactly one
+entry per submitted job (`None` for a top field); pictures that need no
+hardware job (error concealment) are queued in submission order instead of
+being dropped; the slot selector prefers a free surface nobody else leases;
+and the surface pools carry `JOB_SLOTS` spare slots. If the pool still runs
+short, the oldest job is reaped early and its picture is queued — the pool
+becomes backpressure on queue depth instead of a hard failure.
+
+`RKMPP_H264_PIPELINE` now defaults to 3 for `rk-mpp-rs h264dec`; `0` restores
+the blocking path. Depth 3 reaches the same poll time as 4 (about 15 us per
+picture) without needing the extra surface.
+
+Seven interleaved samples, wall clock, DDR governor pinned, t6, planar output
+to `/dev/null` on both sides (`C` = production `ffmpeg -c:v h264_rkmpp`):
+
+| Stream | frames | C | Rust (depth 3) | Rust advantage |
+| --- | ---: | ---: | ---: | ---: |
+| all-intra 1920x800 (`/tmp/ai.264`) | 240 | 447 ms | **384 ms** | **+16.4 %** |
+| inter 1920x800 (`/tmp/demo_short.264`) | 600 | 936 ms | **535 ms** | **+75.0 %** |
+| 1280x720 (`test720.264`) | 120 | 194 ms | **130 ms** | **+49.2 %** |
+
+The first single-job measurement of the same inter stream was 1819 ms, so the
+ring is worth roughly 3.4x there; the previous "Rust is 1.45x behind C" state
+no longer holds on this board.
+
+Correctness at that speed:
+
+* `scripts/board_regress.sh` is **7/7 PASS** with the default depth, including
+  the PAFF `field_paff.264` and missing-AU `mr1_missing_au20.264` streams.
+* The same seven streams are byte-exact at depths 1, 2, 3 and 4 when depth is
+  forced explicitly.
+* `demo_short.264` (600 frames, 1920x800) decodes to identical output at
+  depth 1, 2 and 3 (MD5 `a90c915e…c7bd`), and the NV12 path matches the
+  planar reference converted by ffmpeg.
+* `RKMPP_DECODE_DMABUF=1` still reports 120/120 output frames on
+  `test720.264`; `RKMPP_H264_PIPELINE=0` still matches the reference.
+* Workspace gate: **1319 passed / 0 failed** over 59 suites; release library
+  **1149 passed / 0 failed / 0 ignored**.
 
 ## `mpi_dec_test` harness caveat
 

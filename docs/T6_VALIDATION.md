@@ -1,7 +1,45 @@
-# t6 validation — 2026-11-16
+# t6 validation — 2026-11-17
 
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
+
+## 2026-11-17 H.264 submission ring: queued decode is the default and ahead of C
+
+- The deferred-output bug is closed. The pending list is now
+  `VecDeque<Option<PendingFrame>>` with one entry per submitted job, so a top
+  field (job, no picture) and an error-concealed picture (picture, no job) no
+  longer desynchronise the ring. Previously depth 3 dropped one picture and
+  the PAFF / missing-AU streams diverged.
+- The slot selector prefers a surface nobody else leases, and the surface
+  pools carry `JOB_SLOTS` spare slots. When the pool is still short, the
+  oldest job is reaped early and its picture queued, so pool pressure
+  throttles the queue instead of failing the decode.
+- `rk-mpp-rs h264dec` now keeps three jobs in flight by default
+  (`RKMPP_H264_PIPELINE=<depth>`, `0` = blocking). Depth 3 reaches the same
+  per-picture poll time as 4 (about 15 us) without the extra surface. The
+  library default is unchanged, so SDK/C-API callers see the same semantics.
+- Seven interleaved wall-clock samples, DDR governor pinned, planar output to
+  `/dev/null` on both sides, Rust default depth 3 against production
+  `ffmpeg -c:v h264_rkmpp`:
+
+  | stream | frames | C | Rust | Rust advantage |
+  | --- | ---: | ---: | ---: | ---: |
+  | all-intra 1920x800 | 240 | 447 ms | **384 ms** | **+16.4 %** |
+  | inter 1920x800 | 600 | 936 ms | **535 ms** | **+75.0 %** |
+  | 1280x720 | 120 | 194 ms | **130 ms** | **+49.2 %** |
+
+  Single-job on the same inter stream was 1819 ms, so the ring is worth about
+  3.4x there. The earlier "Rust trails C by 1.45x" checkpoint is superseded.
+- Correctness: `scripts/board_regress.sh` **7/7 PASS** with the default
+  depth, including `field_paff.264` (top/bottom fields) and
+  `mr1_missing_au20.264` (concealed pictures). Forcing depths 1-4 on all seven
+  streams is byte-exact. The 600-frame 1920x800 inter stream is identical at
+  depth 1/2/3 (MD5 `a90c915e…c7bd`), the packed NV12 path matches the planar
+  reference converted by ffmpeg, and DMA-BUF output still returns 120/120
+  frames.
+- Gates: workspace **1319 passed / 0 failed / 45 ignored** over 59 suites,
+  release library **1149 passed / 0 failed / 0 ignored**, `cargo fmt --check`
+  clean. Numbers and the bug list live in `docs/NETWORK_DECODE_BENCH.md`.
 
 ## 2026-11-16 H.264 stream-decode path optimization
 
