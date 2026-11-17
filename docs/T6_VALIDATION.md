@@ -20,24 +20,28 @@ t62 back to the RK3588 reference board.
   library default is unchanged, so SDK/C-API callers see the same semantics.
 - Fairness gate first: every timed stream is verified byte-identical between
   Rust, C and software FFmpeg (`test720.264` 120/120, `test_hard.264` 90/90,
-  `/tmp/ai.264` 240/240). `/tmp/demo_short.264` is **excluded** because Rust
-  and software disagree from frame 18 (402/600 frames) while C matches
-  software 600/600; that is an open `FIX` in `docs/DIVERGENCES.md`.
+  `/tmp/ai.264` 240/240, `/tmp/demo_short.264` 600/600). Closing the last one
+  found a real bug: `frame_num` wraps at 16 in that stream, and DPB eviction
+  plus P-reference-list ordering compared the raw `frame_num` instead of
+  FrameNumWrap, so the older picture landed at `ref_idx` 0 and produced ±1
+  drift from frame 18. Frame stores now carry the epoch and both orderings use
+  FrameNumWrap; two unit tests pin it (`docs/DIVERGENCES.md`).
 - Seven interleaved wall-clock samples, DDR governor pinned, planar output to
   `/dev/null` on both sides, Rust default depth 3 against production
   `ffmpeg -c:v h264_rkmpp`:
 
   | stream | frames | C | Rust | Rust advantage |
   | --- | ---: | ---: | ---: | ---: |
-  | 1920x1080 inter (`test_hard.264`) | 90 | 290 ms | **196 ms** | **+48.0 %** |
-  | all-intra 1920x800 | 240 | 457 ms | **384 ms** | **+19.0 %** |
-  | 1280x720 | 120 | 200 ms | **128 ms** | **+56.2 %** |
+  | 1920x800 inter (`/tmp/demo_short.264`) | 600 | 923 ms | **533 ms** | **+73.2 %** |
+  | 1920x1080 inter (`test_hard.264`) | 90 | 287 ms | **202 ms** | **+42.1 %** |
+  | 1280x720 | 120 | 207 ms | **141 ms** | **+46.8 %** |
+  | all-intra 1920x800 | 240 | 442 ms | **372 ms** | **+18.8 %** |
 
   Wall clock includes start-up; FFmpeg's fixed cost is about 20 ms higher on a
-  two-frame stream, so the start-up-corrected margins are about +45 %, +15 %
-  and +53 %. Single-job on a 1920x800 inter stream was 1819 ms against 535 ms
-  at depth 3, i.e. the ring is worth ~3.4x inside the decoder. The earlier
-  "Rust trails C by 1.45x" checkpoint is superseded.
+  two-frame stream, so the short-row margins drop by roughly 5 points and the
+  600-frame row stays near +71 %. Single-job on the 1920x800 inter stream was
+  1819 ms against 533 ms at depth 3, i.e. the ring is worth ~3.4x inside the
+  decoder. The earlier "Rust trails C by 1.45x" checkpoint is superseded.
 - Correctness: `scripts/board_regress.sh` **7/7 PASS** with the default
   depth, including `field_paff.264` (top/bottom fields) and
   `mr1_missing_au20.264` (concealed pictures). Forcing depths 1-4 on all seven

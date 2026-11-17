@@ -182,11 +182,12 @@ picture) without needing the extra surface.
 produce the same pictures, so every stream below was first compared
 byte-for-byte against software FFmpeg: Rust, C and the software reference are
 120/120 identical for `test720.264` (1280x720), 90/90 for `test_hard.264`
-(1920x1080) and 240/240 for `/tmp/ai.264` (all-intra 1920x800). A fourth
-candidate, `/tmp/demo_short.264`, is **excluded**: Rust and software agree on
-frames 0-17 and then drift (402/600 frames differ) while C matches software
-600/600. That is recorded as an open `FIX` in `docs/DIVERGENCES.md`; timing it
-would compare different work.
+(1920x1080), 240/240 for `/tmp/ai.264` (all-intra 1920x800) and 600/600 for
+`/tmp/demo_short.264` (1920x800 inter). The last one required a real fix: it
+wraps `frame_num` at 16, and eviction plus P-list ordering compared the raw
+`frame_num` instead of FrameNumWrap, which selected the wrong reference and
+produced ±1 drift from frame 18. See `docs/DIVERGENCES.md`; it is now
+byte-identical and is included below.
 
 Seven interleaved samples, wall clock, DDR governor pinned (`dmc` 2112 MHz, all
 CPU policies `performance`), planar output to `/dev/null` on both sides (`C` =
@@ -194,17 +195,19 @@ production `ffmpeg -c:v h264_rkmpp`):
 
 | Stream | frames | C | Rust (depth 3) | Rust advantage |
 | --- | ---: | ---: | ---: | ---: |
-| 1920x1080 inter (`test_hard.264`) | 90 | 290 ms | **196 ms** | **+48.0 %** |
-| all-intra 1920x800 (`/tmp/ai.264`) | 240 | 457 ms | **384 ms** | **+19.0 %** |
-| 1280x720 (`test720.264`) | 120 | 200 ms | **128 ms** | **+56.2 %** |
+| 1920x800 inter (`/tmp/demo_short.264`) | 600 | 923 ms | **533 ms** | **+73.2 %** |
+| 1920x1080 inter (`test_hard.264`) | 90 | 287 ms | **202 ms** | **+42.1 %** |
+| 1280x720 (`test720.264`) | 120 | 207 ms | **141 ms** | **+46.8 %** |
+| all-intra 1920x800 (`/tmp/ai.264`) | 240 | 442 ms | **372 ms** | **+18.8 %** |
 
 Wall clock includes process start-up, and FFmpeg's fixed cost is larger: on a
 two-frame 48x32 stream the same commands take about 50 ms (C) and 30 ms (Rust).
-Subtracting that measured overhead leaves the advantage at roughly +45 %, +15 %
-and +53 % respectively — smaller, but still ahead on every verified stream.
-Only the comparison against the previous single-job H.264 path is unaffected
-by start-up: the same 1920x800 inter stream took 1819 ms with one job in
-flight, so the ring is worth roughly 3.4x inside the decoder.
+Subtracting that measured overhead leaves the 600-frame row at about +71 % and
+the short rows at roughly +40 % (1080p), +43 % (720p) and +15 % (all-intra) —
+smaller, but still ahead on every verified stream. Only the comparison against
+the previous single-job H.264 path is unaffected by start-up: the same
+1920x800 inter stream took 1819 ms with one job in flight, so the ring is worth
+roughly 3.4x inside the decoder.
 
 Method note: never compare the CLI by piping its stdout. The command prints
 "N access units" and three per-frame trace lines to stdout before/between the

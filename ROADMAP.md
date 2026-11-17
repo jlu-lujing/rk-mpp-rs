@@ -3837,17 +3837,18 @@ pipeline uses.
   to 0.015 ms and let both `rkvdec` cores work on one stream. Seven interleaved
   wall-clock samples with the DDR governor pinned, planar output to `/dev/null`
   on both sides, against production `ffmpeg -c:v h264_rkmpp`, on streams first
-  verified byte-identical between Rust, C and software FFmpeg: `test_hard.264`
-  90 pictures 290 ms C vs **196 ms** Rust (+48.0 %), all-intra 1920x800 240
-  pictures 457 ms vs **384 ms** (+19.0 %), `test720.264` 120 pictures 200 ms vs
-  **128 ms** (+56.2 %). Wall clock includes start-up, which costs FFmpeg about
-  20 ms more; start-up-corrected margins are about +45/+15/+53 %. Single-job
-  on a 1920x800 inter stream was 1819 ms against 535 ms at depth 3, so the ring
-  is worth about 3.4x inside the decoder. A 1920x800 cut
-  (`/tmp/demo_short.264`) is excluded from these claims: Rust diverges from
-  software FFmpeg there from frame 18 (402/600 frames) while C matches it
-  600/600, so it is an open `FIX` in `docs/DIVERGENCES.md`. Closing this
-  required four
+  verified byte-identical between Rust, C and software FFmpeg: 1920x800 inter
+  600 pictures 923 ms C vs **533 ms** Rust (+73.2 %), `test_hard.264` 90
+  pictures 287 ms vs **202 ms** (+42.1 %), `test720.264` 120 pictures 207 ms vs
+  **141 ms** (+46.8 %), all-intra 1920x800 240 pictures 442 ms vs **372 ms**
+  (+18.8 %). Wall clock includes start-up, which costs FFmpeg about 20 ms more;
+  the 600-frame margin is unaffected in practice (~+71 %) and the short rows
+  drop by roughly five points. Single-job on the 1920x800 inter stream was
+  1819 ms against 533 ms at depth 3, so the ring is worth about 3.4x inside the
+  decoder. Getting that stream into the set also fixed a real `frame_num`-wrap
+  bug: eviction and the initial P list must order by FrameNumWrap
+  (`frame_num_offset + frame_num`), not the raw counter, or the older picture
+  lands at `ref_idx` 0 after the wrap. Closing the pipeline required four
   deferred-output fixes (one pending entry per job, a `None` entry for a top
   field, concealed pictures queued without a job, and a slot selector plus
   pool headroom that keeps leased surfaces out of the next frame); the seven

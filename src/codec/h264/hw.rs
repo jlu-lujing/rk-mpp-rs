@@ -392,6 +392,7 @@ mod tests {
         };
         let f0 = FrameStore {
             frame_num: 0,
+            frame_num_offset: 0,
             poc: 0,
             top_poc: 0,
             bottom_poc: 0,
@@ -419,6 +420,7 @@ mod tests {
     fn rps_uses_long_term_frame_idx_in_frame_num_list() {
         let f0 = FrameStore {
             frame_num: 9,
+            frame_num_offset: 0,
             poc: 9,
             top_poc: 9,
             bottom_poc: 9,
@@ -457,6 +459,7 @@ mod tests {
     fn rps_encodes_the_bottom_field_selector() {
         let f0 = FrameStore {
             frame_num: 0,
+            frame_num_offset: 0,
             poc: 0,
             top_poc: 0,
             bottom_poc: 1,
@@ -497,6 +500,7 @@ mod tests {
     fn non_mvc_rps_has_no_reference_layer_bits() {
         let f0 = FrameStore {
             frame_num: 0,
+            frame_num_offset: 0,
             poc: 0,
             top_poc: 0,
             bottom_poc: 0,

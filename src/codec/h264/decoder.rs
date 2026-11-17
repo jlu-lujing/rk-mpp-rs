@@ -729,6 +729,7 @@ impl Decoder {
                 }
                 self.dpb.push(FrameStore {
                     frame_num: sh.frame_num,
+                    frame_num_offset: fno,
                     poc: top.poc.min(poc),
                     top_poc: top.order.top,
                     bottom_poc: order.bottom,
@@ -753,6 +754,7 @@ impl Decoder {
             let reference = current_reference_state(sh.field_pic, is_bottom_field);
             self.dpb.push(FrameStore {
                 frame_num: sh.frame_num,
+                frame_num_offset: fno,
                 poc,
                 top_poc: order.top,
                 bottom_poc: order.bottom,

@@ -4056,6 +4056,7 @@ fn main() {
                         let slot = d.free_slot(16).unwrap_or(0);
                         d.push(FrameStore {
                             frame_num: sh.frame_num,
+                            frame_num_offset: fno,
                             poc,
                             top_poc: poc,
                             bottom_poc: poc,

@@ -9,6 +9,10 @@ use super::parser::{Mmco, RefMod, SliceHeader, Sps};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameStore {
     pub frame_num: u32,
+    /// `frame_num_offset` of the epoch this picture was decoded in. Added to
+    /// `frame_num` it gives FrameNumWrap, which is what §8.2.5.3 orders by;
+    /// comparing raw `frame_num` picks the wrong victim right after a wrap.
+    pub frame_num_offset: u32,
     /// Frame POC used to order pictures for display.
     pub poc: i32,
     /// Top-field and bottom-field POCs written to the rkvdec registers.
@@ -313,7 +317,7 @@ impl Dpb {
             .iter()
             .enumerate()
             .filter(|(_, f)| !f.long_term)
-            .min_by_key(|(_, f)| f.frame_num)
+            .min_by_key(|(_, f)| f.frame_num_offset + f.frame_num)
             .map(|(i, _)| i)?;
         Some(self.frames.remove(victim))
     }
@@ -640,7 +644,13 @@ impl Dpb {
 
         let mut short: Vec<&FrameStore> = self.frames.iter().filter(|f| !f.long_term).collect();
         let mut long: Vec<&FrameStore> = self.frames.iter().filter(|f| f.long_term).collect();
-        short.sort_by(|a, b| b.frame_num.cmp(&a.frame_num));
+        // §8.2.4.2 orders the initial P list by descending PicNum, which is
+        // FrameNumWrap - `frame_num_offset + frame_num`. Sorting the raw
+        // `frame_num` reverses the list immediately after a wrap, so ref_idx 0
+        // would select the older picture.
+        short.sort_by(|a, b| {
+            (b.frame_num_offset + b.frame_num).cmp(&(a.frame_num_offset + a.frame_num))
+        });
         long.sort_by_key(|f| f.long_term_frame_idx);
         let l0 = short.into_iter().chain(long).map(|f| f.slot).collect();
         (l0, Vec::new())
@@ -813,6 +823,7 @@ mod tests {
     fn frame(slot: u8, frame_num: u32, poc: i32) -> FrameStore {
         FrameStore {
             frame_num,
+            frame_num_offset: 0,
             poc,
             top_poc: poc,
             bottom_poc: poc,
@@ -829,6 +840,37 @@ mod tests {
             bottom_used: true,
             error: 0,
         }
+    }
+
+    fn frame_in_epoch(slot: u8, frame_num: u32, offset: u32, poc: i32) -> FrameStore {
+        let mut f = frame(slot, frame_num, poc);
+        f.frame_num_offset = offset;
+        f
+    }
+
+    #[test]
+    fn sliding_window_evicts_by_frame_num_wrap() {
+        // After frame_num wraps at 16, the oldest reference is frame 15
+        // (FrameNumWrap 15), not frame 0 of the new epoch (FrameNumWrap 16).
+        let mut dpb = Dpb::new(2, 0);
+        dpb.push(frame_in_epoch(0, 15, 0, 30));
+        dpb.push(frame_in_epoch(1, 0, 16, 32));
+        let evicted = dpb.sliding_window().expect("buffer is full");
+        assert_eq!(evicted.frame_num, 15);
+        assert_eq!(evicted.frame_num_offset, 0);
+    }
+
+    #[test]
+    fn p_reference_list_orders_by_frame_num_wrap() {
+        // PicNum for frame 1 of the new epoch is 17, for frame 15 is 15; the
+        // initial P list is descending, so the new epoch comes first.
+        let mut dpb = Dpb::new(4, 0);
+        dpb.push(frame_in_epoch(3, 15, 0, 30));
+        dpb.push(frame_in_epoch(5, 1, 16, 34));
+        let mut sh = SliceHeader::default();
+        sh.slice_type = 5; // P
+        let (l0, _) = dpb.build_initial_ref_lists(&sh, 36);
+        assert_eq!(l0, vec![5, 3]);
     }
 
     #[test]

@@ -209,6 +209,7 @@ mod tests {
         let mut slots = [None; 16];
         let frame = FrameStore {
             frame_num: 3,
+            frame_num_offset: 0,
             poc: 3,
             top_poc: 3,
             bottom_poc: 3,
