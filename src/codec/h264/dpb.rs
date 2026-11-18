@@ -132,12 +132,50 @@ impl Dpb {
     /// then long-term pictures by `long_term_frame_idx` (§8.2.4 / MPP
     /// `prepare_init_dpb_info`). RPS entries index this compact table.
     pub fn reference_table(&self) -> Vec<&FrameStore> {
-        let mut table: Vec<&FrameStore> = self.frames.iter().filter(|f| !f.long_term).collect();
+        let mut table = Vec::with_capacity(self.frames.len().min(16));
+        self.reference_table_into_vec(&mut table);
+        table
+    }
+
+    /// Fill the fixed rkvdec reference table without a per-picture heap
+    /// allocation. Entries after the returned length are `None`.
+    pub fn reference_table_into<'a>(&'a self, table: &mut [Option<&'a FrameStore>; 16]) -> usize {
+        table.fill(None);
+        let mut count = 0usize;
+        for frame in self.frames.iter().filter(|frame| !frame.long_term).take(16) {
+            table[count] = Some(frame);
+            count += 1;
+        }
+        if count == 16 {
+            return count;
+        }
+        let mut long_term: [Option<&FrameStore>; 16] = [None; 16];
+        let mut long_count = 0usize;
+        for frame in self.frames.iter().filter(|frame| frame.long_term) {
+            if long_count == long_term.len() {
+                break;
+            }
+            long_term[long_count] = Some(frame);
+            long_count += 1;
+        }
+        long_term[..long_count]
+            .sort_unstable_by_key(|frame| frame.expect("long-term frame").long_term_frame_idx);
+        for frame in long_term[..long_count].iter().copied() {
+            if count == 16 {
+                break;
+            }
+            table[count] = frame;
+            count += 1;
+        }
+        count
+    }
+
+    fn reference_table_into_vec<'a>(&'a self, table: &mut Vec<&'a FrameStore>) {
+        table.extend(self.frames.iter().filter(|frame| !frame.long_term));
         let mut long: Vec<&FrameStore> = self.frames.iter().filter(|f| f.long_term).collect();
         long.sort_by_key(|f| f.long_term_frame_idx);
         table.extend(long);
         table.truncate(16);
-        table
     }
 
     pub fn clear(&mut self) {
@@ -1646,6 +1684,25 @@ mod tests {
         sh.ref_idx_l0_active = 2;
         let (l0, _) = d.build_ref_lists(&sh, 4, 8);
         assert_eq!(l0, vec![0, 1], "short-term first, long-term after");
+    }
+
+    #[test]
+    fn fixed_reference_table_matches_the_allocating_form() {
+        let mut d = Dpb::new(4, 2);
+        d.push(frame(0, 0, 0));
+        d.push(frame(1, 1, 2));
+        d.push(frame(2, 2, 4));
+        d.apply_mmco(&[Mmco::MakeLong { delta: 0, idx: 0 }], 3, 0, 16);
+
+        let expected: Vec<u8> = d.reference_table().iter().map(|frame| frame.slot).collect();
+        let mut table = [None; 16];
+        let count = d.reference_table_into(&mut table);
+        let actual: Vec<u8> = table[..count]
+            .iter()
+            .map(|frame| frame.expect("reference row").slot)
+            .collect();
+        assert_eq!(actual, expected);
+        assert!(table[count..].iter().all(Option::is_none));
     }
 
     #[test]

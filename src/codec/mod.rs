@@ -52,6 +52,43 @@ impl DmaBufSurface {
             .dup_fd()
             .map_err(|error| std::io::Error::other(error.to_string()))
     }
+
+    /// Copy this strided 8-bit NV12 surface into tightly packed planar I420.
+    ///
+    /// The surface lease stays in the caller; a worker can therefore convert
+    /// one completed hardware picture while the decoder submits the next.
+    pub fn to_planar_nv12(&self, width: usize, height: usize) -> Result<Vec<u8>, String> {
+        let view = self
+            .lease
+            .data()
+            .map_err(|error| format!("DMA-BUF frame view: {error}"))?;
+        let y_size = self
+            .hor_stride
+            .checked_mul(self.ver_stride)
+            .ok_or_else(|| "DMA-BUF frame size overflow".to_string())?;
+        let uv_size = y_size / 2;
+        if view.len() < y_size + uv_size {
+            return Err(format!(
+                "DMA-BUF surface is {} bytes, needs {}",
+                view.len(),
+                y_size + uv_size
+            ));
+        }
+        view.buffer()
+            .sync_read_begin()
+            .map_err(|error| format!("DMA-BUF read sync begin: {error}"))?;
+        let yuv = crate::codec::yuv::nv12_to_planar(
+            &view[..y_size],
+            &view[y_size..y_size + uv_size],
+            width,
+            height,
+            self.hor_stride,
+        );
+        view.buffer()
+            .sync_read_end()
+            .map_err(|error| format!("DMA-BUF read sync end: {error}"))?;
+        Ok(yuv)
+    }
 }
 
 impl std::fmt::Debug for DmaBufSurface {

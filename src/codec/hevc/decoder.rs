@@ -47,6 +47,9 @@ pub struct Decoder {
     video_pool: BufferPool<DmaBuf>,
     colmv_pool: BufferPool<DmaBuf>,
     output_injection: Option<DmaBuf>,
+    /// Blocking decode can reuse its own payload and bitstream DMA mapping.
+    payload: Vec<u8>,
+    reusable_stream: Option<DmaBuf>,
     width: usize,
     height: usize,
     bit_depth: u32,
@@ -211,6 +214,8 @@ impl Decoder {
             video_pool: BufferPool::new(17 + crate::hal::hevc::JOB_SLOTS),
             colmv_pool: BufferPool::new(17 + crate::hal::hevc::JOB_SLOTS),
             output_injection: None,
+            payload: Vec::new(),
+            reusable_stream: None,
             width: 0,
             height: 0,
             bit_depth: 8,
@@ -442,7 +447,7 @@ impl Decoder {
         } else {
             // The decoder reads from the first byte, so the access unit is fed
             // from the first NAL header (start code stripped).
-            let mut payload: Vec<u8> = Vec::with_capacity(aub.len());
+            self.payload.clear();
             for n in slices.iter() {
                 let code_len =
                     if aub.len() >= n.offset + 4 && aub[n.offset..n.offset + 4] == [0, 0, 0, 1] {
@@ -452,37 +457,47 @@ impl Decoder {
                     };
                 let start = n.offset + (code_len - 3);
                 let end = (n.offset + n.len).min(aub.len());
-                payload.extend_from_slice(&aub[start..end]);
+                self.payload.extend_from_slice(&aub[start..end]);
             }
-            let raw_len = payload.len();
+            let raw_len = self.payload.len();
             let pad16 = (16 - raw_len % 16) % 16;
-            payload.extend(std::iter::repeat(0u8).take(pad16 + 64));
-            let mut stream =
-                DmaBuf::alloc("system", payload.len(), false).map_err(|e| e.to_string())?;
+            self.payload.resize(raw_len + pad16 + 64, 0);
+            let mut stream = if self.pipeline {
+                DmaBuf::alloc("system", self.payload.len(), false).map_err(|e| e.to_string())?
+            } else {
+                match self.reusable_stream.take() {
+                    Some(buffer) if buffer.len() >= self.payload.len() => buffer,
+                    _ => DmaBuf::alloc("system", self.payload.len(), false)
+                        .map_err(|e| e.to_string())?,
+                }
+            };
             stream.sync_write_begin().map_err(|e| e.to_string())?;
-            stream.as_mut_slice()[..payload.len()].copy_from_slice(&payload);
+            stream.as_mut_slice()[..self.payload.len()].copy_from_slice(&self.payload);
             stream.sync_write_end().map_err(|e| e.to_string())?;
 
             let cur = self.frames[slot].as_ref().unwrap();
             let slice_count = slices.len() as u32;
-            self.hw
-                .decode(
-                    &sps,
-                    &pps,
-                    &sh,
-                    poc,
-                    cur,
-                    &refs,
-                    &ref_pocs,
-                    &ref_errors,
-                    &stream,
-                    raw_len,
-                    slice_count,
-                    first.unit_type,
-                )
-                .map_err(|e| e.to_string())?;
+            let decoded = self.hw.decode(
+                &sps,
+                &pps,
+                &sh,
+                poc,
+                cur,
+                &refs,
+                &ref_pocs,
+                &ref_errors,
+                &stream,
+                raw_len,
+                slice_count,
+                first.unit_type,
+            );
+            if self.pipeline {
+                job_stream = Some(stream);
+            } else {
+                self.reusable_stream = Some(stream);
+            }
+            decoded.map_err(|e| e.to_string())?;
             submitted = true;
-            job_stream = Some(stream);
             if self.pipeline {
                 // The verdict belongs to the picture drained next.
                 frame_error(false, false)

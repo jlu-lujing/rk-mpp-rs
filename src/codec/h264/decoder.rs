@@ -542,14 +542,13 @@ impl Decoder {
         // reference-table row (short-term rows first, then long-term rows).
         // RPS list entries must therefore contain table rows, not FrameStore
         // slot ids.
-        let reference_table = self.dpb.reference_table();
-        let dpb_slots: Vec<Option<&FrameStore>> =
-            (0..16).map(|i| reference_table.get(i).copied()).collect();
-        let mut ref_refs: Vec<Option<&Frame>> = vec![None; 16];
-        let mut ref_pocs: Vec<i32> = vec![0; 32];
-        let mut ref_flags: Vec<Option<ReferenceFlags>> = vec![None; 16];
-        let mut ref_frame_nums = vec![0u32; 16];
-        for (row, entry) in dpb_slots.iter().enumerate() {
+        let mut reference_table: [Option<&FrameStore>; 16] = [None; 16];
+        let reference_rows = self.dpb.reference_table_into(&mut reference_table);
+        let mut ref_refs: [Option<&Frame>; 16] = [None; 16];
+        let mut ref_pocs = [0i32; 32];
+        let mut ref_flags: [Option<ReferenceFlags>; 16] = [None; 16];
+        let mut ref_frame_nums = [0u32; 16];
+        for (row, entry) in reference_table[..reference_rows].iter().enumerate() {
             let Some(f) = entry else { continue };
             ref_refs[row] = self.frames.get(f.buf).and_then(|fr| fr.as_ref());
             ref_pocs[2 * row] = f.top_poc;
@@ -582,18 +581,25 @@ impl Decoder {
         load_stream_payload(&mut self.streams[stream_slot], &self.payload)
             .map_err(|e| e.to_string())?;
 
-        let table_list = |list: &[RefListEntry]| {
-            list.iter()
-                .filter_map(|entry| {
-                    reference_table
-                        .iter()
-                        .position(|f| f.slot == entry.slot)
-                        .map(|row| RefListEntry {
-                            slot: row as u8,
-                            bottom: entry.bottom,
-                        })
-                })
-                .collect::<Vec<RefListEntry>>()
+        let table_list = |list: &[RefListEntry], table: &mut [RefListEntry; 16]| -> usize {
+            let mut count = 0usize;
+            for entry in list {
+                let Some(row) = reference_table
+                    .iter()
+                    .position(|frame| frame.is_some_and(|frame| frame.slot == entry.slot))
+                else {
+                    continue;
+                };
+                if count == table.len() {
+                    break;
+                }
+                table[count] = RefListEntry {
+                    slot: row as u8,
+                    bottom: entry.bottom,
+                };
+                count += 1;
+            }
+            count
         };
         let p_list = self
             .dpb
@@ -601,14 +607,27 @@ impl Decoder {
         let (b_list0, b_list1) =
             self.dpb
                 .build_auxiliary_b_ref_list_entries(&sh, poc, sps.log2_max_frame_num);
-        let table_p = table_list(&p_list);
-        let table_l0 = table_list(&b_list0);
-        let table_l1 = table_list(&b_list1);
-        let lists = hardware_rps_lists(&sh, &table_p, &table_l0, &table_l1);
+        let empty_entry = RefListEntry {
+            slot: 0,
+            bottom: false,
+        };
+        let mut table_p = [empty_entry; 16];
+        let mut table_l0 = [empty_entry; 16];
+        let mut table_l1 = [empty_entry; 16];
+        let table_p_len = table_list(&p_list, &mut table_p);
+        let table_l0_len = table_list(&b_list0, &mut table_l0);
+        let table_l1_len = table_list(&b_list1, &mut table_l1);
+        let lists = hardware_rps_lists(
+            &sh,
+            &table_p[..table_p_len],
+            &table_l0[..table_l0_len],
+            &table_l1[..table_l1_len],
+        );
         if std::env::var_os("RFI_LIST_TRACE").is_some() {
-            let rows: Vec<String> = reference_table
+            let rows: Vec<String> = reference_table[..reference_rows]
                 .iter()
                 .enumerate()
+                .filter_map(|(row, frame)| frame.map(|f| (row, f)))
                 .map(|(row, f)| {
                     format!(
                         "{row}:fn{}:poc{}/{}:slot{}:field{}/top{}/bottom{}",
@@ -636,9 +655,9 @@ impl Decoder {
                 sh.frame_num,
                 sh.bottom_field,
                 rows.join(","),
-                fmt("p", &table_p),
-                fmt("b0", &table_l0),
-                fmt("b1", &table_l1),
+                fmt("p", &table_p[..table_p_len]),
+                fmt("b0", &table_l0[..table_l0_len]),
+                fmt("b1", &table_l1[..table_l1_len]),
             );
         }
         let cur = self.frames[slot].as_ref().unwrap();
@@ -654,7 +673,7 @@ impl Decoder {
                     &pps,
                     &sh,
                     order,
-                    &dpb_slots,
+                    &reference_table,
                     lists,
                     cur,
                     &ref_refs,
