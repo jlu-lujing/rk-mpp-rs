@@ -12,6 +12,8 @@ mod objects;
 mod osd;
 mod rc_api;
 mod standalone;
+mod sys_cfg;
+mod task_meta;
 
 type MppCtx = *mut c_void;
 type MppFrame = *mut c_void;

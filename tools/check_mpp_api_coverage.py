@@ -112,7 +112,7 @@ def main():
     for key in sorted(rows):
         total, covered = rows[key]
         optional = any(key.startswith(p) for p in ("mpp_venc", "mpp_vdec", "mpp_sys", "mpp_task"))
-        status = "optional" if optional else ("OK" if covered == total else "MISSING")
+        status = "OK" if covered == total else ("optional" if optional else "MISSING")
         if not optional and covered != total:
             core_missing += total - covered
         print(f"{key:<14} {covered:>8} {total:>9}  {status}")

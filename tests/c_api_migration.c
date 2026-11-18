@@ -4,6 +4,9 @@
 #include "mpp_frame.h"
 #include "mpp_log.h"
 #include "mpp_compat.h"
+#include "mpp_meta.h"
+#include "mpp_task.h"
+#include "rk_mpp_cfg.h"
 
 static int cb_calls;
 static void log_cb(void *ctx, int level, const char *tag, const char *fmt, const char *func, va_list args)
@@ -42,6 +45,29 @@ int main(void)
     MppCompat *one = mpp_compat_query_by_id(MPP_COMPAT_ENC_ASYNC_INPUT);
     if (!all || !one || one != all->next) { printf("compat query failed\n"); rc = 1; }
     if (mpp_compat_update(one, 1) != 0 || one->value_usr != 1) { printf("compat update failed\n"); rc = 1; }
+
+    /* sys_cfg: typed name/value storage round-trip. */
+    MppSysCfg cfg = NULL;
+    if (mpp_sys_cfg_get(&cfg) != 0) { printf("sys_cfg get failed\n"); rc = 1; }
+    if (mpp_sys_cfg_set_u32(cfg, "dec_buf_chk:width", 1920) != 0) { printf("sys_cfg set failed\n"); rc = 1; }
+    unsigned width = 0;
+    if (mpp_sys_cfg_get_u32(cfg, "dec_buf_chk:width", &width) != 0 || width != 1920) { printf("sys_cfg get %u\n", width); rc = 1; }
+    signed wrong = -1;
+    if (mpp_sys_cfg_get_s32(cfg, "dec_buf_chk:width", &wrong) == 0) { printf("sys_cfg type check failed\n"); rc = 1; }
+    if (mpp_sys_cfg_set_s64(cfg, "test:s64", -7) != 0 || mpp_sys_cfg_get_s64(cfg, "test:s64", (RK_S64 *)&wrong) != 0) { printf("sys_cfg s64 failed\n"); rc = 1; }
+    if (mpp_sys_cfg_ioctl(cfg) == 0) { printf("sys_cfg ioctl should be unsupported\n"); rc = 1; }
+    if (mpp_sys_cfg_put(cfg) != 0) { printf("sys_cfg put failed\n"); rc = 1; }
+
+    /* task_meta: delegates to the meta handle with vendor default semantics. */
+    MppMeta meta = NULL;
+    if (mpp_meta_get_with_tag(&meta, "migtest", __func__) != 0 || !meta) { printf("meta create failed\n"); return 1; }
+    if (mpp_task_meta_set_s32((MppTask)meta, KEY_ENC_FRAME_QP, 7) != 0) { printf("task_meta set failed\n"); rc = 1; }
+    RK_S32 got32 = 0;
+    if (mpp_task_meta_get_s32((MppTask)meta, KEY_ENC_FRAME_QP, &got32, -1) != 0 || got32 != 7) { printf("task_meta get %d\n", got32); rc = 1; }
+    RK_S32 missing = 123;
+    mpp_task_meta_get_s32((MppTask)meta, KEY_ENC_MADP_CTU, &missing, 55);
+    if (missing != 55) { printf("task_meta default %d\n", missing); rc = 1; }
+    mpp_meta_put(meta);
 
     printf("migtest %s (callback installed=%s)\n", rc ? "FAIL" : "PASS", cb_calls || 1 ? "yes" : "no");
     return rc;

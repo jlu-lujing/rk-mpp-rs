@@ -11,11 +11,13 @@ nm -D --defined-only target/release/librk_mpp_rs.so | awk '{print $3}' > /tmp/nm
 python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp/nm.txt
 ```
 
-当前结果：**核心 API 100% 覆盖**（`mpp_buffer` 29/29、`mpp_frame` 71/71、
-`mpp_packet` 34/34、`mpp_meta` 22/22、`mpp_dec_cfg` 13/13、
-`mpp_enc_cfg` 28/28、`mpp_compat` 4/4）。剩余 73 个符号全部属于四组可选子 API：
-`mpp_sys_cfg_*`（19）、`mpp_task_meta_*`（12）、`mpp_vdec_kcfg_*`（16）、
-`mpp_venc_kcfg_*`/`mpp_venc_ctrl_*`（28）。
+当前结果：**297 个声明符号覆盖 255 个**，核心 API 100 %（`mpp_buffer` 29/29、
+`mpp_frame` 71/71、`mpp_packet` 34/34、`mpp_meta` 22/22、`mpp_dec_cfg` 13/13、
+`mpp_enc_cfg` 28/28、`mpp_compat` 4/4）。`mpp_sys_cfg_*`（19）实现了句柄与
+按名称的类型化存储/回显，`mpp_task_meta_*`（12）映射到 `mpp_meta_*`。
+
+剩余 42 个符号只属于新版 kernel-side 配置：
+`mpp_vdec_kcfg_*`（16）与 `mpp_venc_kcfg_*`/`mpp_venc_ctrl_*`（26）。
 
 ## 1. 二进制 drop-in（不改代码）
 
@@ -123,8 +125,8 @@ for picture in dec.flush()? { use_picture(picture); }
 
 | 差异 | 影响 | 建议 |
 | --- | --- | --- |
-| `mpp_sys_cfg_*` 未实现 | 少量应用用它改 kernel 侧配置 | 保留厂商库，或改用 `MppDecCfg/MppEncCfg` |
-| `mpp_task_meta_*` 未实现 | 旧 task 框架的回调 API | 使用 `mpp_meta_*`（`KEY_OUTPUT_FRAME`、`KEY_INPUT_PACKET` 已接通） |
+| `mpp_sys_cfg_*` 只有存储/回显 | `mpp_sys_cfg_ioctl` 与 `st_get_*` 返回 `MPP_NOK`，不计算 dec_buf_chk 的 stride/size | 需要真实 buffer 检查时保留厂商库，或直接用本库的 frame layout |
+| `mpp_task_meta_*` 接受 meta 句柄 | 没有公开 task 对象；传入别的 runtime 的 task 指针会返回 `MPP_NOK` | 用 `mpp_meta_get_with_tag()` 创建句柄后直接传给它 |
 | `mpp_vdec_kcfg_*` / `mpp_venc_kcfg_*` 未实现 | 新版 kernel-side cfg | 使用 `MppDecCfg/MppEncCfg` 或新 SDK |
 | 不调用 `MPP_CMD_RESET_SESSION` | 板上会导致后续解码卡死 | 本库统一 close-before-open 恢复；不要手工 reset |
 | 不包含厂商二进制/固件 | 需要 `/dev/mpp_service` 与内核驱动 | 依赖系统内核，不需要 `librockchip_mpp` |
