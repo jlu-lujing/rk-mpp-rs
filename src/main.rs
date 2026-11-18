@@ -2751,22 +2751,33 @@ fn main() {
             .get(7)
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(26);
-        let input = match std::fs::read(src) {
-            Ok(input) => input,
+        // Stream one NV12 frame at a time. Reading the whole file made every
+        // concurrent session pull its own copy of the input through the page
+        // cache; perf put most of the system time there.
+        let frame_size = width * height * 3 / 2;
+        let needed = frame_size * frames;
+        let mut file = match std::fs::File::open(src) {
+            Ok(file) => file,
             Err(e) => {
                 eprintln!("{src}: {e}");
                 std::process::exit(1);
             }
         };
-        let frame_size = width * height * 3 / 2;
-        if input.len() < frame_size * frames {
-            eprintln!(
-                "{src}: {frames} frames of {width}x{height} need {} bytes, file has {}",
-                frame_size * frames,
-                input.len()
-            );
-            std::process::exit(1);
+        match std::fs::metadata(src) {
+            Ok(meta) if meta.len() >= needed as u64 => {}
+            Ok(meta) => {
+                eprintln!(
+                    "{src}: {frames} frames of {width}x{height} need {needed} bytes, file has {}",
+                    meta.len()
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("{src}: {e}");
+                std::process::exit(1);
+            }
         }
+        let mut frame = vec![0u8; frame_size];
         let mut split = h265_syntax::SliceSplit::default();
         let mut syntax = h265_syntax::SyntaxOptions::default();
         let mut refresh = None;
@@ -2832,8 +2843,11 @@ fn main() {
             let mut packets = 0;
             let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
             for index in 0..frames {
-                let frame = &input[index * frame_size..(index + 1) * frame_size];
-                let encoded = encoder.encode_frame_packets(frame)?;
+                use std::io::Read as _;
+                if let Err(e) = file.read_exact(&mut frame) {
+                    return Err(format!("{src}: frame {index}: {e}"));
+                }
+                let encoded = encoder.encode_frame_packets(&frame)?;
                 packets += encoded.packets.len();
                 if trace_packets {
                     let sizes = encoded
@@ -2895,23 +2909,34 @@ fn main() {
             .get(8)
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(51);
-        let input = match std::fs::read(src) {
-            Ok(input) => input,
+        // Stream frames instead of slurping the clip: concurrent sessions
+        // otherwise each pull a private copy of the input through the page
+        // cache, and perf attributed most of the system time to those reads.
+        let frame_size = width * height * 3 / 2;
+        let needed = frame_size * steps.len();
+        let mut file = match std::fs::File::open(src) {
+            Ok(file) => file,
             Err(e) => {
                 eprintln!("{src}: {e}");
                 std::process::exit(1);
             }
         };
-        let frame_size = width * height * 3 / 2;
-        if input.len() < frame_size * steps.len() {
-            eprintln!(
-                "{src}: {} frames of {width}x{height} need {} bytes, file has {}",
-                steps.len(),
-                frame_size * steps.len(),
-                input.len()
-            );
-            std::process::exit(1);
+        match std::fs::metadata(src) {
+            Ok(meta) if meta.len() >= needed as u64 => {}
+            Ok(meta) => {
+                eprintln!(
+                    "{src}: {} frames of {width}x{height} need {needed} bytes, file has {}",
+                    steps.len(),
+                    meta.len()
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("{src}: {e}");
+                std::process::exit(1);
+            }
         }
+        let mut frame = vec![0u8; frame_size];
         let bps: Option<(i64, i64, i64)> = args.get(9).and_then(|spec| {
             let f: Vec<i64> = spec.split(':').filter_map(|v| v.parse().ok()).collect();
             if f.len() == 3 {
@@ -2955,9 +2980,12 @@ fn main() {
                 }
                 let mut out = Vec::new();
                 for (index, (qp, bits)) in steps.iter().enumerate() {
-                    let frame = &input[index * frame_size..(index + 1) * frame_size];
+                    use std::io::Read as _;
+                    if let Err(e) = file.read_exact(&mut frame) {
+                        return Err(format!("{src}: frame {index}: {e}"));
+                    }
                     out.extend_from_slice(
-                        &encoder.encode_frame_with_rc(frame, *bits, *qp, min_qp, max_qp)?,
+                        &encoder.encode_frame_with_rc(&frame, *bits, *qp, min_qp, max_qp)?,
                     );
                 }
                 Ok(out)
@@ -3043,18 +3071,32 @@ fn main() {
                 }
             }
         }
-        let input = match std::fs::read(src) {
-            Ok(input) => input,
+        // Stream frames; see the h265-gop path for why the whole-file read
+        // hurts concurrent sessions.
+        let frame_size = width * height * 3 / 2;
+        let needed = frame_size * frames;
+        let mut file = match std::fs::File::open(src) {
+            Ok(file) => file,
             Err(e) => {
                 eprintln!("{src}: {e}");
                 std::process::exit(1);
             }
         };
-        let frame_size = width * height * 3 / 2;
-        if input.len() < frame_size * frames {
-            eprintln!("{src}: {frames} frames need {} bytes", frame_size * frames);
-            std::process::exit(1);
+        match std::fs::metadata(src) {
+            Ok(meta) if meta.len() >= needed as u64 => {}
+            Ok(meta) => {
+                eprintln!(
+                    "{src}: {frames} frames of {width}x{height} need {needed} bytes, file has {}",
+                    meta.len()
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("{src}: {e}");
+                std::process::exit(1);
+            }
         }
+        let mut frame = vec![0u8; frame_size];
         let result = h265e_session::Vepu580H265::open_rate(
             width, height, mode, target, min, max, init_qp, qp_min, qp_max,
         )
@@ -3065,8 +3107,11 @@ fn main() {
             let mut packets = 0;
             let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
             for index in 0..frames {
-                let encoded = encoder
-                    .encode_frame_packets(&input[index * frame_size..(index + 1) * frame_size])?;
+                use std::io::Read as _;
+                if let Err(e) = file.read_exact(&mut frame) {
+                    return Err(format!("{src}: frame {index}: {e}"));
+                }
+                let encoded = encoder.encode_frame_packets(&frame)?;
                 packets += encoded.packets.len();
                 if trace_packets {
                     let sizes = encoded

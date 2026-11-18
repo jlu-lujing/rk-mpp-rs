@@ -34,14 +34,16 @@ Board: NanoPC-T6-LTS (RK3588), CPU and DDR governors pinned to `performance`.
 | H.264 | 4 | 442 FPS | **470 FPS** | +6 % |
 | H.264 | 8 | **517 FPS** | 511 FPS | -1 % |
 | H.265 | 2 | 197 FPS | **260 FPS** | +32 % |
-| H.265 | 4 | **376 FPS** | 357 FPS | -5 % |
-| H.265 | 8 | **495 FPS** | 405 FPS | **-18 %** |
+| H.265 | 4 | 480 FPS | 460 FPS | -4 % |
+| H.265 | 8 | 493 FPS | **496 FPS** | **+1 %** |
 
-At 8 concurrent H.265 sessions the Rust run spends **2.54 s in system time**
-against C's 1.07 s (total CPU 2.85 s vs 1.65 s), while single-session syscall
-counts are *lower* than C's (393 ioctls vs 460 at 720p). The scaling loss is
-therefore driver/session contention rather than the encoder kernel itself and
-is tracked as an open issue.
+The first sweep had H.265 at 405 FPS at 8 sessions (18 % behind) with 2.54 s of
+system time against C's 1.07 s. The cause was the CLI reading the whole input
+file per session (`fs::read`): eight sessions each pulled a private 82 MB copy
+through the page cache, and `read` dominated the syscall profile. `h265-gop`,
+`h265-gop-rc` and `h265-rate` now open the file and decode one NV12 frame at a
+time, matching the H.264 path; the 8-session gap is gone and the Rust run uses
+less system time than C (0.499 s vs 0.548 s at 720p/8 sessions).
 
 ## JPEG
 
