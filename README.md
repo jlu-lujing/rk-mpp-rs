@@ -85,7 +85,7 @@
 
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-125 项完成、6 项未完成（含缩进子项为 165 / 9）；未完成项里有硬件不存在、无 conformance
+125 项完成、5 项未完成（含缩进子项为 165 / 9）；未完成项里有硬件不存在、无 conformance
 流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 115 个
 AV1 slice。第 110 slice 把 20 帧 B-pyramid 与高级 inter 工具组合起来：保留 global/warped
 motion、OBMC、inter-intra、masked/distance-weighted compound 和 reference-frame MVs，

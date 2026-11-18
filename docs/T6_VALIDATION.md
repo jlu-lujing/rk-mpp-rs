@@ -30,6 +30,24 @@ t62 back to the RK3588 reference board.
   (bimodal 308 ms), depth 3 **171-207 ms**, against C 159-211 ms — parity
   within noise.
 
+## 2026-11-18 Concurrent-stream ceiling: 40 vs C's 26
+
+On one 1920x800 / 742-frame H.264 stream, independent processes writing planar
+YUV to `/dev/null`, the slowest stream is the reported one (three stable
+rounds at the ceiling):
+
+| | streams at >=30 FPS | aggregate | CPU at ceiling | RSS at ceiling |
+| --- | ---: | ---: | ---: | ---: |
+| C `ffmpeg h264_rkmpp` | **26** | 798 FPS | ~100 % | ~3.3 GB |
+| Rust `h264dec` | **40** | 1225 FPS | ~18 % | ~2.2 GB |
+
+The limit is the VPU, not the host: at 40 Rust streams each `rkvdec` core
+serves 620 jobs/s (1240 total, exactly 40x30); at 26 C streams each serves
+442/s because the C frontend has already saturated every CPU core. Throughput
+scales with the stream: 640x360 ~5941 FPS (~198 streams), 720p ~1630 (~54),
+1920x800 ~1214 (~40), 1080p ~735 (~24). All 40 Rust processes reported
+742/742 frames with exit 0. See `docs/NETWORK_DECODE_BENCH.md`.
+
 ## 2026-11-17 Encoder throughput against the C library
 
 Five interleaved samples per size, 12 frames each, wall clock around both

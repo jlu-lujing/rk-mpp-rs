@@ -267,6 +267,34 @@ All 40 Rust processes at the ceiling exited 0 and each reported
 `decoded 742 frames (742 output)`; all 26 C processes exited 0. No
 `mpp_task_timeout_work` or decoder reset appeared during the sweeps.
 
+### Why 40 and not more: the VPU is the limit, not the CPU
+
+At the 40-stream ceiling the host CPU sits at about 18 %: every process spends
+its time blocked in `POLL_HW_FINISH` while the decoder works. The two
+`rkvdec` cores are what run out:
+
+| run | rkvdec-core0 | rkvdec-core1 | total jobs/s |
+| --- | ---: | ---: | ---: |
+| Rust, 40x 1920x800 | 620/s | 620/s | **1240** |
+| C, 26x 1920x800 (its ceiling) | 442/s | 442/s | 884 |
+
+`1240 / 30 = 41`, which is exactly the observed 40-stream ceiling. The number
+is not a process or session limit; it is "aggregate decode throughput divided
+by 30". The same machine on the same codec scales with the decode workload:
+
+| stream | aggregate at 8 concurrent | streams at >=30 FPS |
+| --- | ---: | ---: |
+| 640x360 | 5941 FPS | ~198 |
+| 1280x720 | 1630 FPS | ~54 |
+| 1920x800 | 1214 FPS | ~40 |
+| 1920x1080 | 735 FPS | ~24 |
+
+Planar and NV12 output give the same aggregate (1218 vs 1213 FPS at 8
+streams), so the host-side chroma conversion is not the limiter either. C
+leaves the VPU at about 71 % (884 of 1240 jobs/s) because its frontend already
+uses every CPU core at 26 streams; Rust reaches the silicon ceiling with the
+CPU mostly idle.
+
 This supersedes the older note in `rknn-fastinfer/docs/LIBRARY.md`
 (C 28 / Rust 24): that used a different 1080p30 stream and a Rust build from
 before the submission ring, NEON chroma split and streamed output.
