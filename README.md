@@ -353,11 +353,14 @@ cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 2
 rk-mpp-rs h264dec input.264 output.yuv
 RKMPP_DECODE_NV12=1 rk-mpp-rs h264dec input.264 output.nv12
 RKMPP_DECODE_DMABUF=1 rk-mpp-rs h264dec input.264 /dev/null
+RKMPP_DECODE_DMABUF=1 rk-mpp-rs hevcdec input.265 /dev/null
 ```
 
 `RKMPP_POLL_US` controls the non-blocking hardware poll interval and defaults
 to 20 microseconds. `RKMPP_DECODE_DMABUF=1` is the zero-copy surface mode for
-an in-process consumer; the CLI only permits it with `/dev/null` output.
+an in-process consumer. H.264 and H.265 CLIs only permit it with `/dev/null`
+output; H.265 uses a bounded display-order reorder buffer so decoder surfaces
+return to the pool as each display frame is emitted.
 
 `rk-mpp-rs-sys` 暴露 V1.12 的全部 36 个 C 导出、enum、struct 和不透明句柄。
 

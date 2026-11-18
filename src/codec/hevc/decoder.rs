@@ -980,6 +980,58 @@ fn resets_picture_order_count(unit_type: u8) -> bool {
     (16..=20).contains(&unit_type)
 }
 
+/// Bounded display-order reorder buffer for streaming output.
+pub struct DisplayReorder {
+    pending: Vec<Picture>,
+    max_reorder: usize,
+}
+
+impl DisplayReorder {
+    pub fn new(max_reorder: usize) -> Self {
+        Self {
+            pending: Vec::with_capacity(max_reorder.saturating_add(1)),
+            max_reorder: max_reorder.min(16),
+        }
+    }
+
+    pub fn push<F>(&mut self, picture: Picture, mut emit: F)
+    where
+        F: FnMut(Picture),
+    {
+        if self
+            .pending
+            .last()
+            .is_some_and(|queued| queued.epoch != picture.epoch)
+        {
+            self.flush(&mut emit);
+        }
+        if !picture_is_output(&picture) {
+            return;
+        }
+        self.pending.push(picture);
+        self.pending
+            .sort_by_key(|picture| (picture.epoch, picture.poc));
+        while self.pending.len() > self.max_reorder {
+            emit(self.pending.remove(0));
+        }
+    }
+
+    pub fn set_max_reorder(&mut self, max_reorder: usize) {
+        self.max_reorder = max_reorder.min(16);
+    }
+
+    pub fn flush<F>(&mut self, mut emit: F)
+    where
+        F: FnMut(Picture),
+    {
+        self.pending
+            .sort_by_key(|picture| (picture.epoch, picture.poc));
+        for picture in self.pending.drain(..) {
+            emit(picture);
+        }
+    }
+}
+
 /// Sort decoded pictures by epoch and POC for display.
 pub fn sort_pictures_for_display(pictures: &mut [Picture]) {
     // Stable sorting preserves decode order if a malformed stream repeats a POC.
@@ -1062,7 +1114,7 @@ mod tests {
     use super::{
         copy_planar, parse_picture_slices, read_packed_sample, resets_picture_order_count,
         sort_pictures_for_display, split_access_units, starts_new_display_epoch, ChromaFormat,
-        Picture,
+        DisplayReorder, Picture,
     };
     use crate::codec::hevc::parser::{NalUnit, Pps, Sps};
     use std::borrow::Cow;
@@ -1156,6 +1208,29 @@ mod tests {
             pictures.map(|picture| (picture.epoch, picture.poc)),
             [(1, 0), (1, 2), (1, 4), (1, 8), (2, 0)]
         );
+    }
+
+    #[test]
+    fn display_reorder_emits_in_epoch_then_poc_order() {
+        let mut reorder = DisplayReorder::new(2);
+        let mut emitted = Vec::new();
+        for (epoch, poc, marker) in [(1, 0, 1), (1, 4, 3), (1, 2, 2), (1, 8, 4)] {
+            reorder.push(picture(epoch, poc, marker), |picture| {
+                emitted.push(picture.poc)
+            });
+        }
+        reorder.flush(|picture| emitted.push(picture.poc));
+        assert_eq!(emitted, [0, 2, 4, 8]);
+    }
+
+    #[test]
+    fn display_reorder_flushes_the_previous_epoch() {
+        let mut reorder = DisplayReorder::new(16);
+        let mut emitted = Vec::new();
+        reorder.push(picture(1, 10, 1), |picture| emitted.push(picture.poc));
+        reorder.push(picture(2, 0, 2), |picture| emitted.push(picture.poc));
+        reorder.flush(|picture| emitted.push(picture.poc));
+        assert_eq!(emitted, [10, 0]);
     }
 
     #[test]

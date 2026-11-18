@@ -10,7 +10,8 @@ pub mod hw;
 pub mod parser;
 
 pub use decoder::{
-    picture_is_output, sort_pictures_for_display, Decoder, Picture, FRAME_ERR_DEC_HW_ERR,
+    picture_is_output, sort_pictures_for_display, Decoder, DisplayReorder, Picture,
+    FRAME_ERR_DEC_HW_ERR,
 };
 pub use dpb::{Dpb, FrameStore};
 pub use hw::{build_slice_rps, build_sps_rps, LongTermRef};

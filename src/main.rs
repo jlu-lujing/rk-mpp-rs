@@ -3332,6 +3332,11 @@ fn main() {
             eprintln!("usage: rk-mpp-rs hevcdec <in.265> <out.yuv>");
             std::process::exit(1);
         }
+        let dmabuf_output = std::env::var_os("RKMPP_DECODE_DMABUF").is_some();
+        if dmabuf_output && dst != "/dev/null" {
+            eprintln!("RKMPP_DECODE_DMABUF requires an output of /dev/null");
+            std::process::exit(2);
+        }
         let data = match std::fs::read(src) {
             Ok(data) => data,
             Err(e) => {
@@ -3350,70 +3355,122 @@ fn main() {
             Ok(value) => value.parse::<usize>().unwrap_or(3),
             Err(_) => 3,
         };
-        // Decode once with the requested ring depth. A queued job that fails is
-        // only reported after later pictures were already submitted, so such a
-        // stream is re-decoded through the blocking path: it learns each
-        // verdict before the next picture and reproduces the reference error
-        // semantics exactly. Clean streams never pay for this.
-        let run = |depth: usize| -> Result<
-            (
-                Vec<rk_mpp_rs::codec::hevc::Picture>,
-                f64,
-                bool,
-                bool,
-                (u32, u32, u32),
-            ),
+        use std::io::Write;
+        let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
+        // A queued-job failure is discovered after later pictures were
+        // submitted. Re-run through the blocking path and recreate the output
+        // so error semantics match the historical collect-and-sort CLI.
+        let run = |depth: usize,
+                   out: &mut std::io::BufWriter<std::fs::File>|
+         -> Result<
+            (usize, usize, f64, bool, bool, (u32, u32, u32), Vec<i32>),
             String,
         > {
             let mut dec = rk_mpp_rs::codec::hevc::Decoder::new().map_err(|e| e.to_string())?;
             if depth != 0 && !dec.set_pipeline_depth(true, depth) {
                 eprintln!("H.265 pipelining unavailable on this SoC; using blocking decode");
             }
-            let mut pictures = Vec::with_capacity(aus.len());
-            let t = Instant::now();
+            dec.set_output_dmabuf(dmabuf_output);
+            let mut reorder = rk_mpp_rs::codec::hevc::DisplayReorder::new(0);
+            let mut decoded = 0usize;
+            let mut shown = 0usize;
             let mut failed = false;
+            let mut write_error = None;
+            let mut decode_time = std::time::Duration::ZERO;
+            let mut pocs = Vec::with_capacity(aus.len());
+            let mut emit =
+                |picture: rk_mpp_rs::codec::hevc::Picture,
+                 out: &mut std::io::BufWriter<std::fs::File>| {
+                    if !dmabuf_output && write_error.is_none() {
+                        if let Err(error) = out.write_all(&picture.yuv) {
+                            write_error = Some(error);
+                        }
+                    }
+                    if write_error.is_none() {
+                        shown += 1;
+                        pocs.push(picture.poc);
+                        if trace {
+                            println!(
+                                "  picture {shown}: poc={} epoch={} err={:#x} output={}",
+                                picture.poc,
+                                picture.epoch,
+                                picture.err_info,
+                                rk_mpp_rs::codec::hevc::picture_is_output(&picture)
+                            );
+                        }
+                    }
+                };
             for (i, au) in aus.iter().enumerate() {
-                match dec.decode_access_unit(au) {
-                    Ok(Some(pic)) => {
-                        if i < 3 && !pic.yuv.is_empty() && std::env::var_os("RKMPP_TRACE").is_some()
+                let started = Instant::now();
+                let result = dec.decode_access_unit(au);
+                decode_time += started.elapsed();
+                match result {
+                    Ok(Some(picture)) => {
+                        decoded += 1;
+                        if i < 3
+                            && !picture.yuv.is_empty()
+                            && std::env::var_os("RKMPP_TRACE").is_some()
                         {
-                            let y = &pic.yuv[..pic.width * pic.height];
-                            let sum: u64 = y.iter().map(|v| *v as u64).sum();
+                            let y = &picture.yuv[..picture.width * picture.height];
+                            let sum: u64 = y.iter().map(|value| *value as u64).sum();
                             println!(
                                 "  frame {i}: poc={} {}x{} y_mean={:.1} status={:08x}/{:08x}/{:08x}",
-                                pic.poc,
-                                pic.width,
-                                pic.height,
+                                picture.poc,
+                                picture.width,
+                                picture.height,
                                 sum as f64 / y.len() as f64,
                                 dec.status().0,
                                 dec.status().1,
                                 dec.status().2
                             );
                         }
-                        pictures.push(pic);
+                        reorder.set_max_reorder(dec.max_num_reorder_pics());
+                        reorder.push(picture, |picture| emit(picture, out));
                     }
                     Ok(None) => {}
-                    Err(e) => {
-                        eprintln!("frame {i}: decode error: {e}");
+                    Err(error) => {
+                        eprintln!("frame {i}: decode error: {error}");
                         failed = true;
                         break;
                     }
                 }
             }
-            match dec.flush() {
-                Ok(flushed) => pictures.extend(flushed),
-                Err(e) => {
-                    eprintln!("pipeline flush: {e}");
+            let started = Instant::now();
+            let flushed = dec.flush();
+            decode_time += started.elapsed();
+            match flushed {
+                Ok(pictures) => {
+                    for picture in pictures {
+                        decoded += 1;
+                        reorder.set_max_reorder(dec.max_num_reorder_pics());
+                        reorder.push(picture, |picture| emit(picture, out));
+                    }
+                }
+                Err(error) => {
+                    eprintln!("pipeline flush: {error}");
                     failed = true;
                 }
             }
+            reorder.flush(|picture| emit(picture, out));
+            if let Some(error) = write_error {
+                eprintln!("write output: {error}");
+                failed = true;
+            }
+            out.flush().ok();
             let poisoned = dec.pipeline_poisoned();
             let status = dec.status();
-            let ms = t.elapsed().as_secs_f64() * 1000.0;
-            Ok((pictures, ms, failed, poisoned, status))
+            Ok((
+                decoded,
+                shown,
+                decode_time.as_secs_f64() * 1000.0,
+                failed,
+                poisoned,
+                status,
+                pocs,
+            ))
         };
-        let (mut pictures, mut decode_ms, mut failed, poisoned, mut dec_status_ref) =
-            match run(requested_depth) {
+        let (mut decoded, mut shown, mut decode_ms, mut failed, poisoned, mut status, mut pocs) =
+            match run(requested_depth, &mut out) {
                 Ok(value) => value,
                 Err(error) => {
                     eprintln!("H.265 decode failed: {error}");
@@ -3422,60 +3479,30 @@ fn main() {
             };
         if poisoned && requested_depth != 0 {
             eprintln!("H.265 queued job failed; re-decoding through the blocking path");
-            let (redo, ms, f, _, status) = match run(0) {
+            out.flush().ok();
+            out = std::io::BufWriter::new(std::fs::File::create(dst).expect("truncate output"));
+            (decoded, shown, decode_ms, failed, _, status, pocs) = match run(0, &mut out) {
                 Ok(value) => value,
                 Err(error) => {
                     eprintln!("H.265 blocking decode failed: {error}");
                     std::process::exit(1);
                 }
             };
-            pictures = redo;
-            decode_ms = ms;
-            failed = f;
-            dec_status_ref = status;
         }
-        rk_mpp_rs::codec::hevc::sort_pictures_for_display(&mut pictures);
-        use std::io::Write;
-        let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
-        let decoded = pictures.len();
-        let n = pictures
-            .iter()
-            .filter(|pic| rk_mpp_rs::codec::hevc::picture_is_output(pic))
-            .count();
-        let mut written = 0usize;
-        for pic in pictures
-            .iter()
-            .filter(|pic| rk_mpp_rs::codec::hevc::picture_is_output(pic))
-        {
-            out.write_all(&pic.yuv).expect("write frame");
-            written += 1;
-            if trace {
-                // Print at the point a picture actually leaves the decoder, so
-                // the last ring slots drained by `flush` are covered too.
-                println!(
-                    "  picture {written}: poc={} epoch={} err={:#x} output={} status={:08x}/{:08x}/{:08x}",
-                    pic.poc,
-                    pic.epoch,
-                    pic.err_info,
-                    rk_mpp_rs::codec::hevc::picture_is_output(pic),
-                    dec_status_ref.0,
-                    dec_status_ref.1,
-                    dec_status_ref.2
-                );
-            }
-        }
-        out.flush().ok();
         if trace {
-            let pocs: Vec<i32> = pictures
-                .iter()
-                .filter(|pic| rk_mpp_rs::codec::hevc::picture_is_output(pic))
-                .map(|pic| pic.poc)
-                .collect();
             println!("output pocs: {pocs:?}");
         }
+        let output_mode = if dmabuf_output {
+            "POC-streamed DMA-BUF output"
+        } else {
+            "POC-streamed output"
+        };
         println!(
-            "decoded {decoded} frames ({n} output) in {decode_ms:.1} ms ({:.1} fps), POC-sorted output",
-            n as f64 / (decode_ms / 1000.0)
+            "decoded {decoded} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps), {output_mode}, status={:08x}/{:08x}/{:08x}",
+            shown as f64 / (decode_ms / 1000.0),
+            status.0,
+            status.1,
+            status.2
         );
         if failed {
             std::process::exit(1);
