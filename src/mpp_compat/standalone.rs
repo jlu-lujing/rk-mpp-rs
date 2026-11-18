@@ -2593,3 +2593,63 @@ mod tests {
         assert_eq!(unsafe { (*list.entries.add(1)).id }, 1);
     }
 }
+
+// ---- MPP log level and callback (mpp_log.h) --------------------------------
+
+use std::sync::atomic::{AtomicI32, AtomicPtr};
+
+static LOG_LEVEL: AtomicI32 = AtomicI32::new(0); // 0 = resolve from env/default
+static LOG_CB_CTX: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static LOG_CB_FN: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// `mpp_get_log_level()` default: MPP_LOG_INFO, overridable with the same
+/// `mpp_log_level` environment variable the vendor runtime reads.
+fn resolved_log_level() -> c_int {
+    let stored = LOG_LEVEL.load(Ordering::Relaxed);
+    if stored != 0 {
+        return stored;
+    }
+    let from_env = std::env::var("mpp_log_level")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok());
+    match from_env {
+        Some(level) if (1..=7).contains(&level) => level,
+        _ => 4, // MPP_LOG_INFO
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mpp_set_log_level(level: c_int) {
+    let level = if (1..=7).contains(&level) { level } else { 4 };
+    LOG_LEVEL.store(level, Ordering::Relaxed);
+}
+
+#[no_mangle]
+pub extern "C" fn mpp_get_log_level() -> c_int {
+    resolved_log_level()
+}
+
+/// `mpp_set_log_callback(ctx, cb)`. Passing a null callback restores the
+/// default stderr logger. Returns MPP_OK.
+#[no_mangle]
+pub unsafe extern "C" fn mpp_set_log_callback(ctx: *mut c_void, cb: *mut c_void) -> c_int {
+    LOG_CB_CTX.store(ctx, Ordering::Relaxed);
+    LOG_CB_FN.store(cb, Ordering::Relaxed);
+    0
+}
+
+/// Accessors used by the C variadic trampoline in `standalone_log.c`.
+#[no_mangle]
+pub extern "C" fn rk_mpp_log_level_value() -> c_int {
+    resolved_log_level()
+}
+
+#[no_mangle]
+pub extern "C" fn rk_mpp_log_cb_ctx() -> *mut c_void {
+    LOG_CB_CTX.load(Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "C" fn rk_mpp_log_cb_fn() -> *mut c_void {
+    LOG_CB_FN.load(Ordering::Relaxed)
+}

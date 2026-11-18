@@ -7,6 +7,7 @@ use std::mem::size_of;
 use crate::{encoder, sdk};
 
 mod cfg;
+mod compat_table;
 mod objects;
 mod osd;
 mod rc_api;

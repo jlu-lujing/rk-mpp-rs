@@ -321,6 +321,29 @@ struct CompatPacket {
 }
 
 #[repr(C)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct MppFrameRational {
+    num: i32,
+    den: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct MppFrameMasteringDisplayMetadata {
+    display_primaries: [[u16; 2]; 3],
+    white_point: [u16; 2],
+    max_luminance: u32,
+    min_luminance: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(super) struct MppFrameContentLightMetadata {
+    max_cll: u16,
+    max_fall: u16,
+}
+
 pub(super) struct CompatFrame {
     magic: u64,
     width: u32,
@@ -343,6 +366,10 @@ pub(super) struct CompatFrame {
     thumbnail: u32,
     buffer: MppBuffer,
     meta: MppMeta,
+    sar: MppFrameRational,
+    mastering: MppFrameMasteringDisplayMetadata,
+    content_light: MppFrameContentLightMetadata,
+    hdr_dynamic_meta: *mut c_void,
 }
 
 unsafe fn magic_ref<T>(ptr: *mut c_void, magic: u64) -> Option<&'static T> {
@@ -1040,6 +1067,10 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
         thumbnail: 0,
         buffer,
         meta: std::ptr::null_mut(),
+        sar: MppFrameRational::default(),
+        mastering: MppFrameMasteringDisplayMetadata::default(),
+        content_light: MppFrameContentLightMetadata::default(),
+        hdr_dynamic_meta: std::ptr::null_mut(),
     }))
     .cast();
     Ok(frame)
@@ -1219,6 +1250,10 @@ pub(super) unsafe fn frame_eos() -> MppFrame {
         thumbnail: 0,
         buffer: std::ptr::null_mut(),
         meta: std::ptr::null_mut(),
+        sar: MppFrameRational::default(),
+        mastering: MppFrameMasteringDisplayMetadata::default(),
+        content_light: MppFrameContentLightMetadata::default(),
+        hdr_dynamic_meta: std::ptr::null_mut(),
     }))
     .cast()
 }
@@ -2598,6 +2633,10 @@ pub unsafe extern "C" fn mpp_frame_init(frame: *mut MppFrame) -> c_int {
             thumbnail: 0,
             buffer: std::ptr::null_mut(),
             meta: std::ptr::null_mut(),
+            sar: MppFrameRational::default(),
+            mastering: MppFrameMasteringDisplayMetadata::default(),
+            content_light: MppFrameContentLightMetadata::default(),
+            hdr_dynamic_meta: std::ptr::null_mut(),
         }))
         .cast();
     }
@@ -2875,6 +2914,79 @@ pub unsafe extern "C" fn mpp_frame_get_chroma_location(_frame: MppFrame) -> c_in
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_frame_set_chroma_location(_frame: MppFrame, _value: c_int) {}
+
+// ---- SAR / HDR frame metadata (mpp_frame.h) --------------------------------
+
+unsafe fn frame_meta_mut<'a>(frame: MppFrame) -> Option<&'a mut CompatFrame> {
+    let state = unsafe { frame.cast::<CompatFrame>().as_mut() }?;
+    (state.magic == FRAME_MAGIC).then_some(state)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_frame_get_sar(frame: MppFrame) -> MppFrameRational {
+    unsafe { frame_meta_mut(frame) }
+        .map(|state| state.sar)
+        .unwrap_or_default()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_frame_set_sar(frame: MppFrame, sar: MppFrameRational) {
+    if let Some(state) = unsafe { frame_meta_mut(frame) } {
+        state.sar = sar;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_frame_get_mastering_display(
+    frame: MppFrame,
+) -> MppFrameMasteringDisplayMetadata {
+    unsafe { frame_meta_mut(frame) }
+        .map(|state| state.mastering)
+        .unwrap_or_default()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_frame_set_mastering_display(
+    frame: MppFrame,
+    mastering: MppFrameMasteringDisplayMetadata,
+) {
+    if let Some(state) = unsafe { frame_meta_mut(frame) } {
+        state.mastering = mastering;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_frame_get_content_light(
+    frame: MppFrame,
+) -> MppFrameContentLightMetadata {
+    unsafe { frame_meta_mut(frame) }
+        .map(|state| state.content_light)
+        .unwrap_or_default()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_frame_set_content_light(
+    frame: MppFrame,
+    content_light: MppFrameContentLightMetadata,
+) {
+    if let Some(state) = unsafe { frame_meta_mut(frame) } {
+        state.content_light = content_light;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_frame_get_hdr_dynamic_meta(frame: MppFrame) -> *mut c_void {
+    unsafe { frame_meta_mut(frame) }
+        .map(|state| state.hdr_dynamic_meta)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_frame_set_hdr_dynamic_meta(frame: MppFrame, meta: *mut c_void) {
+    if let Some(state) = unsafe { frame_meta_mut(frame) } {
+        state.hdr_dynamic_meta = meta;
+    }
+}
 
 const _: () = {
     assert!(size_of::<CompatBufferInfo>() == 40);

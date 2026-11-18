@@ -9,6 +9,13 @@
 整个库。当前进度与逐项证据见 [ROADMAP.md](ROADMAP.md)，接手指南见
 [docs/HANDOFF.md](docs/HANDOFF.md)。
 
+## 从 C MPP 迁移
+
+三层路径（二进制 drop-in / 官方头文件源码替换 / 新 C API 与 Rust crate）、
+覆盖率检查、已知差异与验证命令见 [docs/MIGRATION.md](docs/MIGRATION.md)。
+当前核心 API 覆盖率 100%，剩余 73 个符号全部属于 `sys_cfg`、`task_meta`、
+`vdec_kcfg`、`venc_kcfg` 四组可选子 API。
+
 ## 验证范围（重要）
 完整能力矩阵（每条结论的证据与边界）：[docs/CAPABILITY.md](docs/CAPABILITY.md)。
 
