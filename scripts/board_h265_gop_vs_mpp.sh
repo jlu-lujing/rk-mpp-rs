@@ -50,7 +50,13 @@ for size in $only; do
   fi
   c_size=$(ssh "$BOARD" "stat -c%s $c_out")
   r_size=$(ssh "$BOARD" "stat -c%s $rust_out")
-  if ssh "$BOARD" "cmp -s $c_out $rust_out"; then
+  # Ignore the build-identity SEI text (C writes its own git line, this crate
+  # writes its version banner); everything else, including the rc-cfg SEI, is
+  # compared byte for byte.
+  scp -q scripts/strip_version_sei.py "$BOARD":/tmp/ 2>/dev/null
+  ssh "$BOARD" "python3 /tmp/strip_version_sei.py $c_out /tmp/h265_c_norm.265 &&
+      python3 /tmp/strip_version_sei.py $rust_out /tmp/h265_r_norm.265"
+  if ssh "$BOARD" "cmp -s /tmp/h265_c_norm.265 /tmp/h265_r_norm.265"; then
     printf 'PASS %-12s (%s bytes, %s pictures byte-identical to the C encoder)\n' \
       "$size" "$c_size" "$frames"
   else

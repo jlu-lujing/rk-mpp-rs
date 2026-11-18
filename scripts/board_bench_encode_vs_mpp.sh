@@ -66,8 +66,10 @@ run_mpp() { # width height file -> "frames ms"
 }
 
 run_rust() { # width height file -> "frames ms"
+  # The C harness uses its default GOP of 60; pass the same GOP so the
+  # bitstreams differ only in the build-identity SEI text.
   timed "$frames" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $3 \
-    /dev/null $1 $2 26 baseline $frames 120"
+    /dev/null $1 $2 26 baseline $frames 60"
 }
 
 printf '%-12s %3s pics | %-22s | %-22s | rust\n' 'size' 'pics' 'C MPP' 'this crate'

@@ -345,7 +345,8 @@ mod tests {
     use super::*;
 
     const BUS: &str = "/home/user/projects/rknn-projects-test/baseline/images/bus.jpg";
-    const COCO: &str = "/home/user/projects/rknn-projects-test/baseline/images/coco/000000288685.jpg";
+    const COCO: &str =
+        "/home/user/projects/rknn-projects-test/baseline/images/coco/000000288685.jpg";
 
     #[test]
     fn rejects_non_jpeg() {

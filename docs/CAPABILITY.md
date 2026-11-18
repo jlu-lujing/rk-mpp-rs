@@ -28,6 +28,11 @@
 
 ## 编码
 
+编码吞吐与 C 的对比（60 帧、固定 QP、GOP 对齐、输出验证一致）见
+[docs/ENCODE_BENCH.md](ENCODE_BENCH.md)：单路 H.264 快 39–86 %、H.265 快 6–39 %；
+并发 8 路时 H.264 持平，H.265 慢约 18 %（system time 是 C 的 2.4 倍，已登记 issue）。
+
+
 | 能力 | 状态 | 证据 / 边界 |
 |---|---|---|
 | H.264（VEPU580） | 完成 | 固定 QP 24 格、P 帧 11 尺寸（含 FBC 阈值两侧）、CBR/VBR/AVBR、hier QP、SMART_P、two-pass deflicker、level、deblock、ROI/QP map、GDR 4/4、slice split 4/4、逐 slice 输出 5/5，全部逐字节或逐 job STATUS。GDR 用确定性 ROI 表对照：stock C 的未初始化栈字段会导致跨进程输出不同，修表后 C/Rust 35 NAL 全一致 |
