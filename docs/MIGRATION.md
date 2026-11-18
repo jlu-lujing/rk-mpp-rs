@@ -11,13 +11,16 @@ nm -D --defined-only target/release/librk_mpp_rs.so | awk '{print $3}' > /tmp/nm
 python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp/nm.txt
 ```
 
-当前结果：**297 个声明符号覆盖 255 个**，核心 API 100 %（`mpp_buffer` 29/29、
-`mpp_frame` 71/71、`mpp_packet` 34/34、`mpp_meta` 22/22、`mpp_dec_cfg` 13/13、
-`mpp_enc_cfg` 28/28、`mpp_compat` 4/4）。`mpp_sys_cfg_*`（19）实现了句柄与
-按名称的类型化存储/回显，`mpp_task_meta_*`（12）映射到 `mpp_meta_*`。
+当前结果：**297 个声明符号全部覆盖（297/297）**。其中：
 
-剩余 42 个符号只属于新版 kernel-side 配置：
-`mpp_vdec_kcfg_*`（16）与 `mpp_venc_kcfg_*`/`mpp_venc_ctrl_*`（26）。
+- 核心 API 100 %（`mpp_buffer` 29/29、`mpp_frame` 71/71、`mpp_packet` 34/34、
+  `mpp_meta` 22/22、`mpp_dec_cfg` 13/13、`mpp_enc_cfg` 28/28、
+  `mpp_compat` 4/4）；
+- `mpp_sys_cfg_*`（19）：句柄 + 按名称的类型化存储/回显；
+- `mpp_task_meta_*`（12）：映射到 `mpp_meta_*`，保留 default_value 语义；
+- `mpp_vdec_kcfg_*`（16）与 `mpp_venc_kcfg_*`/`mpp_venc_ctrl_*`（26）：句柄 +
+  类型化存储 + 4 KiB flex 区。**它们只做存储，不向 kernel 下发 kcfg**，高级
+  kernel 侧配置不会改变本 HAL 的行为。
 
 ## 1. 二进制 drop-in（不改代码）
 
@@ -127,7 +130,7 @@ for picture in dec.flush()? { use_picture(picture); }
 | --- | --- | --- |
 | `mpp_sys_cfg_*` 只有存储/回显 | `mpp_sys_cfg_ioctl` 与 `st_get_*` 返回 `MPP_NOK`，不计算 dec_buf_chk 的 stride/size | 需要真实 buffer 检查时保留厂商库，或直接用本库的 frame layout |
 | `mpp_task_meta_*` 接受 meta 句柄 | 没有公开 task 对象；传入别的 runtime 的 task 指针会返回 `MPP_NOK` | 用 `mpp_meta_get_with_tag()` 创建句柄后直接传给它 |
-| `mpp_vdec_kcfg_*` / `mpp_venc_kcfg_*` 未实现 | 新版 kernel-side cfg | 使用 `MppDecCfg/MppEncCfg` 或新 SDK |
+| `mpp_*_kcfg_*` 只存储不下发 | 高级 kernel-side cfg 不生效 | 需要真实生效时用 `MppDecCfg/MppEncCfg` 或新 SDK；其余场景可原样迁移 |
 | 不调用 `MPP_CMD_RESET_SESSION` | 板上会导致后续解码卡死 | 本库统一 close-before-open 恢复；不要手工 reset |
 | 不包含厂商二进制/固件 | 需要 `/dev/mpp_service` 与内核驱动 | 依赖系统内核，不需要 `librockchip_mpp` |
 | 板级脚本假设 `t6`/`lf1` 主机别名 | 仅影响 `scripts/board_*.sh` | 使用前设置 `BOARD=<ssh alias>` |

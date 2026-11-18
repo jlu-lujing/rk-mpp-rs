@@ -8,6 +8,7 @@ use crate::{encoder, sdk};
 
 mod cfg;
 mod compat_table;
+mod kcfg;
 mod objects;
 mod osd;
 mod rc_api;

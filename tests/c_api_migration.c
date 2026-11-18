@@ -7,6 +7,8 @@
 #include "mpp_meta.h"
 #include "mpp_task.h"
 #include "rk_mpp_cfg.h"
+#include "rk_vdec_kcfg.h"
+#include "rk_venc_kcfg.h"
 
 static int cb_calls;
 static void log_cb(void *ctx, int level, const char *tag, const char *fmt, const char *func, va_list args)
@@ -68,6 +70,29 @@ int main(void)
     mpp_task_meta_get_s32((MppTask)meta, KEY_ENC_MADP_CTU, &missing, 55);
     if (missing != 55) { printf("task_meta default %d\n", missing); rc = 1; }
     mpp_meta_put(meta);
+
+    /* vdec/venc kcfg: handle + typed store + flex area. */
+    MppVdecKcfg vd = NULL;
+    if (mpp_vdec_kcfg_init(&vd, 0) != 0 || !vd) { printf("vdec_kcfg init failed\n"); return 1; }
+    if (mpp_vdec_kcfg_set_u32(vd, "test:width", 1920) != 0) { printf("vdec set failed\n"); rc = 1; }
+    unsigned vw = 0;
+    if (mpp_vdec_kcfg_get_u32(vd, "test:width", &vw) != 0 || vw != 1920) { printf("vdec get %u\n", vw); rc = 1; }
+    void *marker = (void *)0x1234;
+    if (mpp_vdec_kcfg_set_ptr(vd, "test:ptr", marker) != 0) { printf("vdec ptr set failed\n"); rc = 1; }
+    void *gotp = NULL;
+    if (mpp_vdec_kcfg_get_ptr(vd, "test:ptr", &gotp) != 0 || gotp != marker) { printf("vdec ptr get failed\n"); rc = 1; }
+    mpp_vdec_kcfg_deinit(vd);
+
+    MppVencKcfg ve = NULL;
+    if (mpp_venc_kcfg_init_by_name(&ve, "h264") != 0 || !ve) { printf("venc_kcfg init failed\n"); return 1; }
+    if (mpp_venc_kcfg_set_u8(ve, "test:qp", 26) != 0) { printf("venc u8 set failed\n"); rc = 1; }
+    RK_U8 qp = 0;
+    if (mpp_venc_kcfg_get_u8(ve, "test:qp", &qp) != 0 || qp != 26) { printf("venc u8 get %u\n", qp); rc = 1; }
+    unsigned char flex[8] = {1,2,3,4,5,6,7,8};
+    if (mpp_venc_ctrl_set_flex(ve, flex, sizeof(flex)) != 0) { printf("venc flex failed\n"); rc = 1; }
+    unsigned char *base = mpp_venc_ctrl_flex_base(ve);
+    if (!base || base[7] != 8) { printf("venc flex base failed\n"); rc = 1; }
+    mpp_venc_kcfg_deinit(ve);
 
     printf("migtest %s (callback installed=%s)\n", rc ? "FAIL" : "PASS", cb_calls || 1 ? "yes" : "no");
     return rc;

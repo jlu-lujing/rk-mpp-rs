@@ -13,9 +13,9 @@
 
 三层路径（二进制 drop-in / 官方头文件源码替换 / 新 C API 与 Rust crate）、
 覆盖率检查、已知差异与验证命令见 [docs/MIGRATION.md](docs/MIGRATION.md)。
-官方头文件 297 个声明符号已覆盖 255 个，核心 API 100%；`sys_cfg` 提供类型化
-存储/回显，`task_meta` 映射到 `mpp_meta_*`，剩余 42 个只有新版 `vdec_kcfg`/
-`venc_kcfg`。
+官方头文件 297 个声明符号**全部覆盖（297/297）**：核心 API 100%，`sys_cfg`
+与 `vdec_kcfg`/`venc_kcfg` 提供类型化存储/回显，`task_meta` 映射到
+`mpp_meta_*`。kernel-side kcfg 目前只存储、不下发。
 
 ## 验证范围（重要）
 完整能力矩阵（每条结论的证据与边界）：[docs/CAPABILITY.md](docs/CAPABILITY.md)。
