@@ -1464,7 +1464,7 @@ fn validate_ref_cfg(config: &mut RefCfg) -> bool {
     const MAX_REF_CFG: i32 = 16;
     const MAX_TEMPORAL_LAYERS: i32 = 4;
     const MAX_LT_INDEX: i32 = 16;
-    const REF_MODE_GLOBAL_BUTT: i32 = 8;
+    const REF_MODE_GLOBAL_BUTT: i32 = 7;
     const REF_TO_ST_REF_SETUP: i32 = 25;
     const REF_TO_LT_REF_SETUP: i32 = 29;
 
@@ -2786,6 +2786,9 @@ mod tests {
 
         config.st_count = 1;
         config.st[0].is_non_ref = 0;
+        config.st[0].ref_mode = 7;
+        assert!(!validate_ref_cfg(&mut config));
+        config.st[0].ref_mode = 0;
         config.lt_count = 2;
         config.lt[0].lt_idx = 0;
         config.lt[1].lt_idx = 0;
