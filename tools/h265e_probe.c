@@ -238,8 +238,10 @@ int main(int argc, char **argv)
     int bps_target = 300000, bps_min = 250000, bps_max = 350000;
     int have_split = 0, split_mode = 0, split_arg = 0, split_out = 0;
     int bit_depth = getenv("BIT_DEPTH") ? atoi(getenv("BIT_DEPTH")) : 8;
-    MppFrameFormat input_format =
-        bit_depth == 10 ? MPP_FMT_YUV420SP_10BIT : MPP_FMT_YUV420SP;
+    MppFrameFormat input_format = getenv("MPP_INPUT_FORMAT")
+                                      ? atoi(getenv("MPP_INPUT_FORMAT"))
+                                      : (bit_depth == 10 ? MPP_FMT_YUV420SP_10BIT
+                                                         : MPP_FMT_YUV420SP);
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size =

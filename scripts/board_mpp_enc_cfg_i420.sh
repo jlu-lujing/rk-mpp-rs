@@ -52,6 +52,12 @@ cc -O2 -w -pthread \
     "$MPP_REF/utils/mpp_enc_roi_utils.c" tools/h264e_probe.c \
     -L"$overlay" -lrockchip_mpp -Wl,-rpath,"$overlay" \
     -o /tmp/rk_mpp_h264_i420_probe
+cc -O2 -w -pthread \
+    -DCUSTOM_RC_HAS_BIT_TARGET_FIX="$rc_has_bit_target_fix" \
+    -I"$MPP_REF/inc" -I"$MPP_REF/utils" -I"$MPP_REF/osal/inc" \
+    "$MPP_REF/utils/mpp_enc_roi_utils.c" tools/h265e_probe.c \
+    -L"$overlay" -lrockchip_mpp -Wl,-rpath,"$overlay" \
+    -o /tmp/rk_mpp_h265_i420_probe
 
 ffmpeg -nostdin -v error -y -f lavfi \
     -i testsrc=size=320x240:rate=30 -frames:v 1 \
@@ -81,4 +87,21 @@ python3 scripts/compare_streams.py \
     /tmp/rk_mpp_i420_nv12.264 /tmp/rk_mpp_i420_nv21.264
 printf 'PASS H.264 MppEncCfg NV12/I420/NV21 produce identical stream (%s)\n' \
     "$(sha256sum /tmp/rk_mpp_i420_planar.264 | cut -d' ' -f1)"
+
+sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=0 FRAMES=1 GOP=1 \
+    /tmp/rk_mpp_h265_i420_probe /tmp/rk_mpp_i420_nv12.yuv \
+    /tmp/rk_mpp_h265_i420_nv12.265 320 240 0 26 \
+    288000:1500000:2500000 >/tmp/rk_mpp_h265_i420_nv12.log 2>&1
+sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=4 FRAMES=1 GOP=1 \
+    /tmp/rk_mpp_h265_i420_probe /tmp/rk_mpp_i420_planar.yuv \
+    /tmp/rk_mpp_h265_i420_planar.265 320 240 0 26 \
+    288000:1500000:2500000 >/tmp/rk_mpp_h265_i420_planar.log 2>&1
+sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=5 FRAMES=1 GOP=1 \
+    /tmp/rk_mpp_h265_i420_probe /tmp/rk_mpp_i420_nv21.yuv \
+    /tmp/rk_mpp_h265_i420_nv21.265 320 240 0 26 \
+    288000:1500000:2500000 >/tmp/rk_mpp_h265_i420_nv21.log 2>&1
+cmp /tmp/rk_mpp_h265_i420_nv12.265 /tmp/rk_mpp_h265_i420_planar.265
+cmp /tmp/rk_mpp_h265_i420_nv12.265 /tmp/rk_mpp_h265_i420_nv21.265
+printf 'PASS H.265 MppEncCfg NV12/I420/NV21 produce identical stream (%s)\n' \
+    "$(sha256sum /tmp/rk_mpp_h265_i420_planar.265 | cut -d' ' -f1)"
 REMOTE

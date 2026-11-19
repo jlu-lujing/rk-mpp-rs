@@ -4131,8 +4131,8 @@ pipeline uses.
   `encode_put_frame` accepted only format 0. It now maps format 4 to the typed
   I420 encoder, repacks planar U/V from `MppFrame` strides, and normalizes
   format-5 NV21 VU pairs. A focused probe encodes the same `testsrc` picture
-  through all three object paths and gets an identical five-NAL H.264 stream
-  (`073c6215…f00b435e`).
+  through all three object paths and gets identical streams for H.264
+  (`073c6215…f00b435e`) and H.265 (`df2395b1…be2f4b62`).
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

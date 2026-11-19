@@ -429,6 +429,7 @@ H.265 的 `h265:dblk_*`、`sao_*`、`lpf_acs_*` 和 `auto_tile` 会进入 typed
 兼容编码对象也接受 `prep:format=MPP_FMT_YUV420P/NV21`；I420 会拆包、
 NV21 会交换 V/U 后分别进入 typed I420/NV12 路径。
 `board_mpp_enc_cfg_i420.sh` 对比同一画面的 NV12/I420/NV21 码流。
+H.264 和 H.265 都覆盖这三条对象输入路径。
 t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
 也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
 （`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则

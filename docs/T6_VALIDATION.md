@@ -1415,8 +1415,8 @@ NALs under the version-SEI rule (`2730e887…10c697d4`).
 through the standalone object path; both object cells are byte-identical to
 the typed CLI (`1263cb1f…f647b4` and `1cef6ee0…b8171d`).
 `board_mpp_enc_cfg_i420.sh` encodes the same picture through NV12, I420 and
-NV21 compatible objects; all five-NAL streams are byte-identical
-(`073c6215…f00b435e`).
+NV21 compatible objects for both H.264 and H.265; all streams are
+byte-identical (`073c6215…f00b435e` and `df2395b1…be2f4b62`).
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the

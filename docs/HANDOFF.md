@@ -438,7 +438,8 @@ typed `SyntaxOptions`；VEPU510 对非默认 syntax 明确返回 unsupported。
 `1cef6ee0…b8171d`（SAO luma/chroma off）。
 兼容对象现在也接受 `prep:format=MPP_FMT_YUV420P/NV21` 和 format-4/5
 MppFrame。`board_mpp_enc_cfg_i420.sh` 用同一 `testsrc` 经 NV12/I420/NV21
-三条对象路径编码，5 NAL 与 SHA-256 `073c6215…f00b435e` 完全一致。
+三条对象路径分别编码 H.264 和 H.265：H.264 5 NAL 与
+`073c6215…f00b435e` 一致，H.265 与 `df2395b1…be2f4b62` 一致。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
