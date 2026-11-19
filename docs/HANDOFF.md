@@ -431,6 +431,10 @@ typed `H264DeblockConfig`，offset 限制为 `-6..=6`。同一 deblock 板级门
 Rust standalone 链接 vendor probe，alpha 与 disable 两个对象配置格均与 Rust
 CLI 的 5 NAL 一致（version-SEI 仅 framing 不同，
 `2730e887…10c697d4`）。
+`h264:cabac_en/trans8x8` 也已映射到 typed H.264 syntax，并修复 MPI 对象层
+错误拒绝 Main profile 77 的旧检查。vendor/Rust 对象 probe 各通过两格：
+Main-CAVLC/no8x8 `5c83b5e8…85e8c1ff`，High-CABAC/no8x8
+`349ac658…d4d2a5`。
 H.265 `h265:dblk_*`、SAO、`lpf_acs_*` 与 `auto_tile` 也已映射到
 typed `SyntaxOptions`；VEPU510 对非默认 syntax 明确返回 unsupported。
 独立对象路径门的两格均与 typed CLI 逐字节一致：

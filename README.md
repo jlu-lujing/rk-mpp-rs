@@ -424,6 +424,8 @@ vendor 自带的 `mpp_enc_cfg_test` 已可在 Rust standalone 库上通过 **9/9
 H.264 的 `h264:dblk_disable/alpha/beta`（以及兼容的 `h264:deblock_*`
 名称）同样进入 typed deblock 配置，并由 `board_h264_deblock_vs_mpp.sh`
 同时验证 vendor probe 对象路径。
+`h264:cabac_en/trans8x8` 也已成为 typed H.264 syntax 覆盖，
+`board_mpp_enc_cfg_h264_syntax.sh` 验证 Main-CAVLC 与 High-no-8x8。
 H.265 的 `h265:dblk_*`、`sao_*`、`lpf_acs_*` 和 `auto_tile` 会进入 typed
 `SyntaxOptions`，由 `board_mpp_enc_cfg_h265_syntax.sh` 验证对象路径。
 兼容编码对象也接受 `prep:format=MPP_FMT_YUV420P/NV21`；I420 会拆包、

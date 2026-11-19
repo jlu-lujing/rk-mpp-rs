@@ -3,8 +3,8 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use super::standalone;
 use crate::codec::h265::encoder::SyntaxOptions as H265SyntaxOptions;
 use crate::encoder::{
-    EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning, RateControlConfig,
-    RateControlMode,
+    EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning, H264SyntaxConfig,
+    RateControlConfig, RateControlMode,
 };
 use crate::sdk::{Codec, PixelFormat};
 
@@ -140,6 +140,14 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
                 disable.unwrap_or(0).max(0) as u32,
                 alpha.unwrap_or(0),
                 beta.unwrap_or(0),
+            ));
+        }
+        let cabac = unsafe { cfg.get("h264:cabac_en") };
+        let transform_8x8 = unsafe { cfg.get("h264:trans8x8") };
+        if cabac.is_some() || transform_8x8.is_some() {
+            result = result.with_h264_syntax(H264SyntaxConfig::new(
+                cabac.unwrap_or(0) != 0,
+                transform_8x8.unwrap_or(0) != 0,
             ));
         }
     }

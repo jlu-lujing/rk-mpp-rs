@@ -4117,6 +4117,14 @@ pipeline uses.
   produce the same five NALs as the typed CLI under the version-SEI rule
   (`2730e887…10c697d4`).
 
+- **2026-11-20: MppEncCfg carries H.264 entropy/transform syntax.** The
+  compatible object path now maps `h264:cabac_en` and `h264:trans8x8` into
+  typed H.264 syntax overrides instead of always deriving them from profile.
+  Main profile was also removed from a stale MPI-side rejection list. Vendor
+  and Rust object probes match for Main-CAVLC without 8x8
+  (`5c83b5e8…85e8c1ff`) and High-CABAC without 8x8
+  (`349ac658…d4d2a5`).
+
 - **2026-11-20: MppEncCfg carries H.265 syntax controls.** The compatible
   object path now maps `h265:dblk_*`, `sao_luma/chroma_disable`,
   `lpf_acs_sli_en`, `lpf_acs_tile_disable` and `auto_tile` into typed

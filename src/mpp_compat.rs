@@ -1038,7 +1038,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                     }
                     if context.coding == MPP_VIDEO_CODING_AVC {
                         if !context.encoder_ref_pattern.is_empty() {
-                            if !matches!(config.profile(), 0 | 66 | 100) {
+                            if !matches!(config.profile(), 0 | 66 | 77 | 100) {
                                 eprintln!(
                                     "rk-mpp-rs mpp: H.264 profile {} is not supported",
                                     config.profile()
@@ -1055,7 +1055,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                                 );
                                 return MPP_NOK;
                             }
-                        } else if !matches!(config.profile(), 0 | 66 | 100) {
+                        } else if !matches!(config.profile(), 0 | 66 | 77 | 100) {
                             eprintln!(
                                 "rk-mpp-rs mpp: H.264 profile {} is not supported",
                                 config.profile()

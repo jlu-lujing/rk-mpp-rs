@@ -305,6 +305,7 @@ int main(int argc, char **argv)
     int have_aqstep = 0;
     int sei_off = 0;
     int header_each = 0;
+    int profile = getenv("H264_PROFILE") ? atoi(getenv("H264_PROFILE")) : 66;
     int input_format = getenv("MPP_INPUT_FORMAT")
                            ? atoi(getenv("MPP_INPUT_FORMAT"))
                            : MPP_FMT_YUV420SP;
@@ -551,10 +552,16 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_flex", 0));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num", 30));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denom", 1));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:profile", 66));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:profile", profile));
     CHECK(mpp_enc_cfg_set_s32(cfg, "h264:level", 30));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 0));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "h264:trans8x8", 0));
+    CHECK(mpp_enc_cfg_set_s32(
+        cfg, "h264:cabac_en",
+        getenv("H264_CABAC") ? atoi(getenv("H264_CABAC"))
+                             : (profile >= 77 ? 1 : 0)));
+    CHECK(mpp_enc_cfg_set_s32(
+        cfg, "h264:trans8x8",
+        getenv("H264_TRANS8X8") ? atoi(getenv("H264_TRANS8X8"))
+                                : (profile >= 100 ? 1 : 0)));
     if (have_dblk)
         CHECK(set_deblock(cfg, dblk_disable, dblk_alpha, dblk_beta));
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));

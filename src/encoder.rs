@@ -500,6 +500,30 @@ impl H264DeblockConfig {
     }
 }
 
+/// Entropy and transform overrides from `MppEncH264Cfg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct H264SyntaxConfig {
+    entropy_coding: bool,
+    transform_8x8: bool,
+}
+
+impl H264SyntaxConfig {
+    pub const fn new(entropy_coding: bool, transform_8x8: bool) -> Self {
+        Self {
+            entropy_coding,
+            transform_8x8,
+        }
+    }
+
+    pub const fn entropy_coding(self) -> bool {
+        self.entropy_coding
+    }
+
+    pub const fn transform_8x8(self) -> bool {
+        self.transform_8x8
+    }
+}
+
 /// What cuts one coded picture into multiple slices.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -590,6 +614,7 @@ pub struct EncoderConfig {
     h264_rc_tuning: Option<H264RcTuning>,
     h264_aq_step_i: Option<[i8; 16]>,
     h264_deblock: Option<H264DeblockConfig>,
+    h264_syntax: Option<H264SyntaxConfig>,
     h265_syntax: H265SyntaxOptions,
     roi: Option<RoiConfig>,
     gdr: Option<GdrConfig>,
@@ -628,6 +653,7 @@ impl EncoderConfig {
             h264_rc_tuning: None,
             h264_aq_step_i: None,
             h264_deblock: None,
+            h264_syntax: None,
             h265_syntax: H265_SYNTAX_DEFAULT,
             roi: None,
             gdr: None,
@@ -697,6 +723,10 @@ impl EncoderConfig {
 
     pub const fn h264_deblock(self) -> Option<H264DeblockConfig> {
         self.h264_deblock
+    }
+
+    pub const fn h264_syntax(self) -> Option<H264SyntaxConfig> {
+        self.h264_syntax
     }
 
     pub const fn h265_syntax(self) -> H265SyntaxOptions {
@@ -783,6 +813,11 @@ impl EncoderConfig {
 
     pub const fn with_h264_deblock(mut self, deblock: H264DeblockConfig) -> Self {
         self.h264_deblock = Some(deblock);
+        self
+    }
+
+    pub const fn with_h264_syntax(mut self, syntax: H264SyntaxConfig) -> Self {
+        self.h264_syntax = Some(syntax);
         self
     }
 
@@ -2184,6 +2219,10 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
     }
     h264.entropy_coding = profile >= PROFILE_MAIN;
     h264.transform_8x8 = profile >= PROFILE_HIGH;
+    if let Some(syntax) = config.h264_syntax {
+        h264.entropy_coding = syntax.entropy_coding;
+        h264.transform_8x8 = syntax.transform_8x8;
+    }
     if let Some(rate_control) = config.rate_control {
         match rate_control.mode {
             RateControlMode::FixedQp => {}
@@ -2623,8 +2662,8 @@ fn format_nv12_padded<'a>(
 mod tests {
     use super::{
         format_nv12_input, BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode,
-        H264DeblockConfig, H264RcTuning, H265SyntaxOptions, PacketMeta, PixelFormat,
-        RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
+        H264DeblockConfig, H264RcTuning, H264SyntaxConfig, H265SyntaxOptions, PacketMeta,
+        PixelFormat, RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
         SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
@@ -2707,6 +2746,7 @@ mod tests {
             .with_qp_range(10, 40)
             .with_hierarchical_qp([1, 2, 3, 4], [1, 1, 1, 1]);
         let deblock = H264DeblockConfig::new(1, -2, 3);
+        let syntax = H264SyntaxConfig::new(false, false);
         let config = EncoderConfig::new(Codec::H264, 320, 240)
             .with_input_format(PixelFormat::I420)
             .with_profile(77)
@@ -2720,6 +2760,7 @@ mod tests {
             .with_jpeg_restart_mcus(16)
             .with_h264_aq_step_i(aq_step_i)
             .with_h264_deblock(deblock)
+            .with_h264_syntax(syntax)
             .with_h264_rc_tuning(h264_tuning)
             .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
@@ -2736,6 +2777,7 @@ mod tests {
         assert_eq!(config.h264_aq_step_i(), Some(aq_step_i));
         assert_eq!(config.h264_rc_tuning(), Some(h264_tuning));
         assert_eq!(config.h264_deblock(), Some(deblock));
+        assert_eq!(config.h264_syntax(), Some(syntax));
         assert_eq!(config.rate_control(), Some(rate_control));
         assert!(rate_control.hier_qp_enabled());
         assert_eq!(rate_control.hier_qp_delta(), [1, 2, 3, 4]);
@@ -2748,6 +2790,8 @@ mod tests {
             ),
             (1, -2, 3)
         );
+        assert!(!syntax.entropy_coding());
+        assert!(!syntax.transform_8x8());
         assert!(config.validate_advanced_controls().is_ok());
         let invalid = EncoderConfig::new(Codec::H264, 320, 240)
             .with_h264_deblock(H264DeblockConfig::new(0, 7, 0));

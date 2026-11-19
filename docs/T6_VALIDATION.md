@@ -1411,6 +1411,9 @@ byte-identical (`bc22eb33…454f035`) to the typed CLI path.
 `board_h264_deblock_vs_mpp.sh` now includes Rust-object cells for
 `h264:dblk_alpha` and `h264:dblk_disable`; both match the typed CLI's five
 NALs under the version-SEI rule (`2730e887…10c697d4`).
+`board_mpp_enc_cfg_h264_syntax.sh` matches vendor/Rust object streams for
+Main-CAVLC without 8x8 (`5c83b5e8…85e8c1ff`) and High-CABAC without 8x8
+(`349ac658…d4d2a5`).
 `board_mpp_enc_cfg_h265_syntax.sh` maps H.265 deblock/SAO/loop-filter keys
 through the standalone object path; both object cells are byte-identical to
 the typed CLI (`1263cb1f…f647b4` and `1cef6ee0…b8171d`).
