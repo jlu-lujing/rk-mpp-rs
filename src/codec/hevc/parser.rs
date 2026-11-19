@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use crate::codec::h264::parser::BitReader;
+use crate::codec::h264::parser::{annex_b_start_codes, has_emulation_stop, BitReader};
 
 // ---- NAL unit types (Table 7-1) ----
 pub const NAL_TRAIL_N: u8 = 0;
@@ -52,7 +52,7 @@ impl From<crate::codec::h264::parser::SpsError> for HevcError {
 
 /// Remove emulation-prevention bytes (`00 00 03` -> `00 00`).
 pub fn ebsp_to_rbsp(data: &[u8]) -> Cow<'_, [u8]> {
-    if !data.windows(3).any(|w| w == [0, 0, 3]) {
+    if !has_emulation_stop(data) {
         return Cow::Borrowed(data);
     }
     let mut out = Vec::with_capacity(data.len());
@@ -93,23 +93,7 @@ impl NalUnit<'_> {
 
 /// Split an Annex-B byte stream into HEVC NAL units (two-byte header).
 pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
-    let mut starts = Vec::new();
-    let mut i = 0usize;
-    while i + 3 <= data.len() {
-        if data[i] == 0 && data[i + 1] == 0 {
-            if data[i + 2] == 1 {
-                starts.push((i, i + 3));
-                i += 3;
-                continue;
-            }
-            if i + 4 <= data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
-                starts.push((i, i + 4));
-                i += 4;
-                continue;
-            }
-        }
-        i += 1;
-    }
+    let starts = annex_b_start_codes(data);
     let mut out = Vec::with_capacity(starts.len());
     for (n, &(sc_start, payload_start)) in starts.iter().enumerate() {
         let end = starts.get(n + 1).map(|&(s, _)| s).unwrap_or(data.len());

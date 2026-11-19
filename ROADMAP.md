@@ -3892,6 +3892,15 @@ pipeline uses.
   unchanged. On RK3576 the available VDPU383 H.264 edge row passed and the
   H.265 corruption matrix remained 16/16.
 
+  **2026-11-19: H.264/H.265 share a vectorized Annex-B scanner.**
+  `memchr` now jumps between zero-byte candidates before the parser confirms
+  `00 00 01` or `00 00 00 01`, and HEVC uses the same word-at-a-time
+  emulation-prevention detector as H.264. On t6 at the 80% OPP cap,
+  1200-frame task-clock fell from 419.2 to **379.6 ms** for H.264 and 419.0
+  to **379.1 ms** for H.265 (about 9.5% each); a 24-stream H.264 run moved
+  from 1764 to **1733 ms**. H.264 corpus output and seven H.265 streams,
+  including Main10 and scaling lists, were byte-identical before and after.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

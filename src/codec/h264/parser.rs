@@ -164,7 +164,7 @@ pub fn ebsp_to_rbsp(data: &[u8]) -> Cow<'_, [u8]> {
 /// `windows(3).any()` is a full pass with a bounds check per byte, which showed
 /// up in profiles for every slice. Word-sized detection of two leading zeros
 /// skips an entire `u64` at a time whenever the window has no zero pair.
-fn has_emulation_stop(data: &[u8]) -> bool {
+pub(crate) fn has_emulation_stop(data: &[u8]) -> bool {
     const ONES: u64 = 0x0101_0101_0101_0101;
     const HIGH: u64 = 0x8080_8080_8080_8080;
     let mut i = 0usize;
@@ -220,29 +220,52 @@ impl NalHeader<'_> {
     }
 }
 
+/// Return every Annex-B start code as `(start_code_offset, payload_offset)`.
+///
+/// Compressed video spends most bytes away from a start code. Use libc's
+/// vectorized `memchr` to jump between zero-byte candidates, then confirm the
+/// two legal prefixes there. The previous byte-at-a-time loop showed up in
+/// whole-stream profiles even though almost every probe could not start a NAL.
+pub(crate) fn annex_b_start_codes(data: &[u8]) -> Vec<(usize, usize)> {
+    let mut starts = Vec::new();
+    let mut search = 0usize;
+    while let Some(i) = next_zero(data, search) {
+        if i + 3 > data.len() {
+            break;
+        }
+        if data[i + 1] == 0 {
+            if data[i + 2] == 1 {
+                starts.push((i, i + 3));
+                search = i + 3;
+                continue;
+            }
+            if i + 4 <= data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
+                starts.push((i, i + 4));
+                search = i + 4;
+                continue;
+            }
+        }
+        search = i + 1;
+    }
+    starts
+}
+
+#[inline]
+fn next_zero(data: &[u8], i: usize) -> Option<usize> {
+    let base = data.as_ptr();
+    // SAFETY: `i <= data.len()`, the search length stays inside the allocation,
+    // and libc::memchr does not retain the pointer after returning.
+    let found = unsafe { libc::memchr(base.add(i).cast(), 0, data.len() - i).cast::<u8>() };
+    (!found.is_null()).then(|| found as usize - base as usize)
+}
+
 /// Scan Annex-B start codes and NAL headers without de-escaping payload bytes.
 ///
 /// Access-unit partitioning only needs the NAL type and the first slice-header
 /// bit. Keeping this path zero-copy avoids a full EBSP scan and allocation for
 /// every slice.
 pub fn split_annex_b_headers(data: &[u8]) -> Vec<NalHeader<'_>> {
-    let mut starts = Vec::new();
-    let mut i = 0usize;
-    while i + 3 <= data.len() {
-        if data[i] == 0 && data[i + 1] == 0 {
-            if data[i + 2] == 1 {
-                starts.push((i, i + 3));
-                i += 3;
-                continue;
-            }
-            if i + 4 <= data.len() && data[i + 2] == 0 && data[i + 3] == 1 {
-                starts.push((i, i + 4));
-                i += 4;
-                continue;
-            }
-        }
-        i += 1;
-    }
+    let starts = annex_b_start_codes(data);
 
     let mut out = Vec::with_capacity(starts.len());
     for (n, &(sc_start, payload_start)) in starts.iter().enumerate() {
@@ -1163,6 +1186,45 @@ mod tests {
         assert_eq!(nals[2].unit_type, NAL_IDR);
         assert!(nals[2].is_vcl());
         assert_eq!(&*nals[0].rbsp, &[0x42, 0x00, 0x1e]);
+    }
+
+    #[test]
+    fn start_code_scan_matches_the_naive_scan() {
+        let naive = |data: &[u8]| {
+            let mut starts = Vec::new();
+            let mut i = 0usize;
+            while i + 3 <= data.len() {
+                if i + 4 <= data.len() && data[i..i + 4] == [0, 0, 0, 1] {
+                    starts.push((i, i + 4));
+                    i += 4;
+                } else if data[i..i + 3] == [0, 0, 1] {
+                    starts.push((i, i + 3));
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            }
+            starts
+        };
+        let mut cases = vec![
+            vec![],
+            vec![0; 64],
+            (0..96).map(|i| (i % 11) as u8).collect(),
+            [vec![0xff; 13], vec![0, 0, 1], vec![0xff; 19]].concat(),
+            [vec![0xff; 30], vec![0, 0, 0, 1], vec![0xff; 9]].concat(),
+        ];
+        for split in [0usize, 1, 7, 8, 9, 15, 31] {
+            let mut data = vec![0xff; split];
+            data.extend_from_slice(&[0, 0, 0, 1, 1, 0, 0, 1, 2]);
+            cases.push(data);
+        }
+        for data in cases {
+            assert_eq!(
+                annex_b_start_codes(&data),
+                naive(&data),
+                "start-code scan mismatch for {data:?}"
+            );
+        }
     }
 
     /// The word-at-a-time detector must agree with the obvious scan on every

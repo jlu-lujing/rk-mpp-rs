@@ -277,6 +277,14 @@ DMA-BUF frame 模式不需要 CPU 生成 planar YUV，CLI 现在通过
 提前释放空闲 surface；“新鲜 IDR”由最后一个 lease 的引用计数保证，而不是
 靠重新分配。两者都不改变输出语义，只移除 CPU/内核固定成本。
 
+Annex-B 扫描也改成共享热路径。H.264/H.265 先用 libc `memchr` 跳到零字节
+候选，再确认 `00 00 01` / `00 00 00 01`；emulation-prevention 检测复用
+H.264 已按 64-bit 构造的 two-zero detector。t6、80% OPP cap 下，1200 帧
+流量的 task-clock 从 H.264 `419.2 -> 379.6 ms`、H.265
+`419.0 -> 379.1 ms`，各降约 9.5%；24 路 H.264 并发
+`1764 -> 1733 ms`。单路的帧率仍主要受硬件节拍限制，因此这里只把 CPU
+下降作为主要证据。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；
