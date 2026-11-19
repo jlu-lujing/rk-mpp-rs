@@ -76,6 +76,11 @@ H.265 similarly reuses aggregate/per-tile STATUS vectors and Batch storage.
 Seven interleaved 500-frame 720p samples moved from 1111 to 1069 ms with an
 identical stream (`ae613590…c93b469783`).
 
+The kernel overwrites the complete STATUS range through `SET_REG_READ`, so the
+per-frame 16 KiB clear was redundant. Removing it moved H.264 from 1098 to
+1052 ms and H.265 from 1129 to 1075 ms in seven interleaved 500-frame 720p
+samples, with unchanged stream hashes.
+
 ## Earlier 60-frame single-stream baseline
 
 | codec | size | C MPP | this crate | Rust advantage |

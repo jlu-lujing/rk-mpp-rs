@@ -375,6 +375,10 @@ H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复�
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
 一致（`ae613590ee5b546f89d76dad1ecaa1528da292abfbd4e92303cc84c93b469783`）。
 
+H.264/H.265 的 STATUS 全范围是内核 `SET_REG_READ` 目标，硬件会逐 word 覆盖，
+因此去掉了每帧 16 KiB 的清零。7 次交错 500 帧 720p 中，H.264 从 1098 ms
+降到 1052 ms，H.265 从 1129 ms 降到 1075 ms，码流哈希不变。
+
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里
 累计整条码流；`/dev/null` 基准仍跳过文件写入。120 帧 720p 输出 SHA-256 保持
 `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`，

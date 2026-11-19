@@ -1538,6 +1538,10 @@ VEPU580 H.265 reuses aggregate STATUS, per-tile STATUS and Batch storage. Seven
 interleaved 500-frame 720p samples moved from 1111 to 1069 ms with an identical
 stream (`ae613590…c93b469783`).
 
+Because `SET_REG_READ` overwrites the complete STATUS range, the 16 KiB clear
+was removed. H.264 moved from 1098 to 1052 ms and H.265 from 1129 to 1075 ms
+over seven interleaved 500-frame samples, with unchanged streams.
+
 The H.264 and HEVC `/tmp` corpora were restored from
 `~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and
 the HEVC suite passed every available large-profile, tile, slice, open-GOP,

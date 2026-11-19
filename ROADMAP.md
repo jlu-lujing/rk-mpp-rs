@@ -4043,6 +4043,13 @@ pipeline uses.
   produced the same stream
   (`ae613590ee5b546f89d76dad1ecaa1528da292abfbd4e92303cc84c93b469783`).
 
+- **2026-11-19: encoder STATUS buffers no longer clear every frame.** The full
+  STATUS range is a kernel `SET_REG_READ` destination and is overwritten word
+  for word. H.264/H.265 now keep the initialized scratch capacity but skip the
+  redundant 16 KiB clear. Seven interleaved 500-frame 720p samples moved
+  H.264 from 1098 to 1052 ms and H.265 from 1129 to 1075 ms; both streams
+  remained byte-identical.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

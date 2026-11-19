@@ -1134,8 +1134,9 @@ impl Vepu580H264 {
         dump_job_registers(&job, &registers);
 
         let mut status = std::mem::take(&mut self.status_scratch);
+        // SET_REG_READ covers every STATUS word, so the kernel overwrites the
+        // complete initialized buffer; only a lost scratch vector needs growth.
         status.resize(STATUS_WORDS, 0);
-        status.fill(0);
         let mut hw_status = [0u32; 1];
         let mut batch = std::mem::take(&mut self.batch_scratch);
         batch.clear();

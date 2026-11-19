@@ -1115,8 +1115,9 @@ impl Vepu580H265 {
             ]);
 
             let mut status = std::mem::take(&mut self.status_scratch);
+            // The full STATUS range is a SET_REG_READ destination, so every word
+            // is overwritten by the kernel. Resize only restores a lost scratch.
             status.resize(STATUS_WORDS, 0);
-            status.fill(0);
             let mut hw_status = [0u32; 1];
             let mut batch = std::mem::take(&mut self.batch_scratch);
             batch.clear();
