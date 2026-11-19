@@ -299,6 +299,13 @@ H.265 现在也提供与 H.264 对称的 parsed-AU 接口：
 code。CLI 已切到这个路径。输出与旧接口相同；1200 帧交错墙钟差异只有
 约 0.1%，因此这是 API/集成能力改进，不宣传为吞吐优化。
 
+Host CI 也已补齐。`.github/workflows/ci.yml` 在 Ubuntu 上执行
+`cargo fmt --check`、workspace/all-targets clippy 和完整 host tests；硬件测试
+继续通过 `#[ignore]` 与板级脚本分离。为此修复了 macOS 的 `c_char` cast、
+Linux affinity API 的平台门，以及 `rk-mpp-rs-sys` 在只有 `.a` 时错误坚持
+dylib 链接的问题。`native_smoke` 是 Linux 动态库门，在非 Linux host 上跳过。
+同轮 clippy 还发现 AV1 4:4:0 的 `subsampling_y` 重复判断，已改为同时检查 x/y。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；

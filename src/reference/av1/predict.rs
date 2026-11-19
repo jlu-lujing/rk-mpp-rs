@@ -1013,7 +1013,7 @@ mod tests {
         let pred = directional_lt90(&above, 27, 1, 1);
         // Row 1 uses idx 54: base 0+j and shift 27 -> blend of above[0..2].
         let shift = 27u32;
-        assert_eq!(pred[2], ((0 * (32 - shift) + 64 * shift + 16) >> 5) as u16);
+        assert_eq!(pred[2], ((64 * shift + 16) >> 5) as u16);
         assert_eq!(
             pred[3],
             ((64 * (32 - shift) + 128 * shift + 16) >> 5) as u16

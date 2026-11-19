@@ -14,22 +14,18 @@ fn main() {
         println!("cargo:rerun-if-changed={}", header.display());
     }
 
-    let link_kind = if env::var_os("RK_MPP_RS_SYS_STATIC").is_some() {
-        "static"
-    } else {
-        "dylib"
-    };
+    let static_requested = env::var_os("RK_MPP_RS_SYS_STATIC").is_some();
 
     if let Some(dir) = env::var_os("RK_MPP_RS_SYS_LIB_DIR").map(PathBuf::from) {
         emit_search(&dir);
-        emit_link(link_kind);
+        emit_link(link_kind_for(&dir, static_requested));
         return;
     }
 
     if env::var_os("RK_MPP_RS_SYS_USE_PKG_CONFIG").is_some() {
         if let Some(dir) = pkg_config_library_dir() {
             emit_search(&dir);
-            emit_link(link_kind);
+            emit_link(link_kind_for(&dir, static_requested));
             return;
         }
         panic!(
@@ -64,7 +60,7 @@ fn main() {
         .find(|dir| native_library_exists(dir));
     let selected = selected.unwrap_or_else(|| target_dir.join(profile));
     emit_search(&selected);
-    emit_link(link_kind);
+    emit_link(link_kind_for(&selected, static_requested));
 }
 
 fn emit_search(dir: &Path) {
@@ -76,7 +72,19 @@ fn emit_link(kind: &str) {
 }
 
 fn native_library_exists(dir: &Path) -> bool {
-    dir.join("librk_mpp_rs.so").is_file() || dir.join("librk_mpp_rs.a").is_file()
+    dir.join("librk_mpp_rs.so").is_file()
+        || dir.join("librk_mpp_rs.dylib").is_file()
+        || dir.join("librk_mpp_rs.a").is_file()
+}
+
+fn link_kind_for(dir: &Path, static_requested: bool) -> &'static str {
+    let shared_exists =
+        dir.join("librk_mpp_rs.so").is_file() || dir.join("librk_mpp_rs.dylib").is_file();
+    if static_requested || !shared_exists {
+        "static"
+    } else {
+        "dylib"
+    }
 }
 
 fn pkg_config_library_dir() -> Option<PathBuf> {

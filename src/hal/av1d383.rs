@@ -598,7 +598,7 @@ pub fn build_uncompressed_header(params: &Av1PicParams) -> [u8; UNCOMPRESSED_HEA
 
     let yuv_format = if params.format.mono_chrome != 0 {
         0
-    } else if params.format.subsampling_y == 1 && params.format.subsampling_y == 1 {
+    } else if params.format.subsampling_x == 1 && params.format.subsampling_y == 1 {
         1
     } else if params.format.subsampling_x == 1 {
         2

@@ -585,6 +585,17 @@ restart MCU 间隔。lf1/t6 单帧 JPEG 与现有 `jpeg-enc` CLI 输出逐字节
 复跑：
 
 ```bash
+cargo fmt --all -- --check                   # GitHub host CI
+cargo clippy --workspace --all-targets       # warnings allowed, denied lints must stay clean
+cargo test --workspace --all-targets         # hardware tests are #[ignore]
+```
+
+`.github/workflows/ci.yml` runs the three host commands above on Ubuntu for
+every push and pull request. macOS is also supported for host compilation and
+tests; the Linux-only native dynamic-library smoke test is gated to Linux.
+Board evidence remains a separate gate:
+
+```bash
 cargo test --release --all-targets           # t6 当前全量门见 docs/HANDOFF.md
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
 ./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR

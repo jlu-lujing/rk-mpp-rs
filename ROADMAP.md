@@ -3919,6 +3919,15 @@ pipeline uses.
   symmetry with H.264 rather than a throughput claim. Seven stream outputs
   stayed byte-identical and the RK3576 corruption matrix stayed 16/16.
 
+  **2026-11-19: host CI covers fmt, clippy and tests.** The public workflow
+  runs on Ubuntu for every push and pull request. Making the same checks pass
+  on macOS required platform-gating Linux CPU-affinity calls, correcting the
+  cross-platform `c_char` cast, and teaching `rk-mpp-rs-sys` to use the static
+  archive when no `.so`/`.dylib` exists. The Linux-only native dynamic-library
+  smoke test is gated to Linux. Clippy also exposed a duplicated
+  `subsampling_y` check in the VDPU383 AV1 format selection; it now tests both
+  `subsampling_x` and `subsampling_y`.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

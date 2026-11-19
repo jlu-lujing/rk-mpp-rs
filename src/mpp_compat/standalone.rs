@@ -777,7 +777,7 @@ pub unsafe extern "C" fn mpp_trie_add_info(
     let pointer = Box::into_raw(info.into_boxed_slice()).cast::<u8>() as usize;
     trie.infos.push(pointer);
     trie.names.push((
-        unsafe { CStr::from_ptr(name.as_ptr()) }.to_owned(),
+        unsafe { CStr::from_ptr(name.as_ptr().cast()) }.to_owned(),
         pointer,
         context as usize,
     ));

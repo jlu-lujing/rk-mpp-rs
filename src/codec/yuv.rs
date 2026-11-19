@@ -59,6 +59,7 @@ pub fn nv12_to_planar(y: &[u8], uv: &[u8], width: usize, height: usize, stride: 
 }
 
 /// Write a planar I420 frame into a caller-owned allocation.
+#[allow(clippy::uninit_vec)]
 pub fn nv12_to_planar_into(
     out: &mut Vec<u8>,
     y: &[u8],
@@ -185,6 +186,7 @@ pub fn packed10_nv12_to_planar(
 }
 
 /// Write a Rockchip packed-10 4:2:0 frame into a reusable planar allocation.
+#[allow(clippy::uninit_vec)]
 pub fn packed10_nv12_to_planar_into(
     out: &mut Vec<u8>,
     y: &[u8],

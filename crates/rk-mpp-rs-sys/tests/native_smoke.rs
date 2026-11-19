@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 use core::ffi::CStr;
 use core::mem::size_of;
 use rk_mpp_rs_sys::*;

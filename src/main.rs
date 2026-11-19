@@ -308,6 +308,7 @@ fn fill_dma_input(
     read_result
 }
 
+#[cfg(target_os = "linux")]
 fn select_input_reader_cpu() -> Option<usize> {
     if let Some(cpu) = std::env::var("RKMPP_INPUT_CPU")
         .ok()
@@ -329,6 +330,12 @@ fn select_input_reader_cpu() -> Option<usize> {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn select_input_reader_cpu() -> Option<usize> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 fn pin_current_thread(cpu: usize) {
     if cpu >= libc::CPU_SETSIZE as usize {
         return;
@@ -342,6 +349,9 @@ fn pin_current_thread(cpu: usize) {
         libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+fn pin_current_thread(_cpu: usize) {}
 
 fn encode_h264(
     path: &str,
