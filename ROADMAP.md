@@ -4142,6 +4142,13 @@ pipeline uses.
   through all three object paths and gets identical streams for H.264
   (`073c6215…f00b435e`) and H.265 (`df2395b1…be2f4b62`).
 
+- **2026-11-20: compatible encoder input scratch is reused.** `encode_put_frame`
+  previously allocated a packed staging `Vec` for every frame before the typed
+  encoder copied it into its HAL surface. The compat context now retains that
+  buffer and the formatter overwrites it in place. The 25-frame H.264/H.265
+  object GDR sessions remain byte-identical (`09b7bc26…4367ca8` and
+  `bc22eb33…454f035`).
+
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a
   request Batch. The session now reuses and clears both. Seven interleaved

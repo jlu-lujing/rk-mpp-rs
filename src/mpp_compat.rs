@@ -162,6 +162,7 @@ struct CompatContext {
     venc_init_kcfg: Option<kcfg::VencInitConfig>,
     encoder_max_width: u32,
     encoder_max_height: u32,
+    encoder_input_scratch: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -545,7 +546,11 @@ unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
     (context.magic == CONTEXT_MAGIC).then_some(context)
 }
 
-fn video_input(frame: &objects::FrameInputView, format: u32) -> Result<Vec<u8>, c_int> {
+fn video_input_into(
+    frame: &objects::FrameInputView,
+    format: u32,
+    output: &mut Vec<u8>,
+) -> Result<(), c_int> {
     let luma_size = frame
         .hor_stride
         .checked_mul(frame.ver_stride)
@@ -565,7 +570,7 @@ fn video_input(frame: &objects::FrameInputView, format: u32) -> Result<Vec<u8>, 
         return Err(MPP_ERR_VALUE);
     }
     let bytes = unsafe { std::slice::from_raw_parts(frame.data, frame.len) };
-    let mut output = vec![0u8; output_size];
+    output.resize(output_size, 0);
     for row in 0..frame.height {
         let source = row * frame.hor_stride;
         let destination = row * frame.width;
@@ -623,6 +628,13 @@ fn video_input(frame: &objects::FrameInputView, format: u32) -> Result<Vec<u8>, 
         }
         _ => return Err(MPP_ERR_VALUE),
     }
+    Ok(())
+}
+
+#[cfg(test)]
+fn video_input(frame: &objects::FrameInputView, format: u32) -> Result<Vec<u8>, c_int> {
+    let mut output = Vec::new();
+    video_input_into(frame, format, &mut output)?;
     Ok(output)
 }
 
@@ -779,13 +791,6 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         );
         return MPP_ERR_VALUE;
     }
-    let input = match video_input(&frame, frame.format) {
-        Ok(input) => input,
-        Err(ret) => {
-            eprintln!("rk-mpp-rs mpp: encode frame is not a complete NV12 picture");
-            return ret;
-        }
-    };
     let osd = match unsafe { osd::frame_config(frame.osd_data, &context.osd_palette) } {
         Ok(osd) => osd,
         Err(error) => {
@@ -793,79 +798,89 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             return MPP_NOK;
         }
     };
-    let input = encoder::InputFrame::new(&input)
-        .with_pts(frame.pts)
-        .with_dts(frame.dts)
-        .with_osd(osd);
-    if let Some(frame) = picture_layout.as_ref() {
-        let Some(encoder) = context.encoder.as_mut() else {
-            return MPP_ERR_VALUE;
+    let mut scratch = std::mem::take(&mut context.encoder_input_scratch);
+    let result = (|| -> Result<(), c_int> {
+        if video_input_into(&frame, frame.format, &mut scratch).is_err() {
+            eprintln!("rk-mpp-rs mpp: encode frame is not a complete YUV420 picture");
+            return Err(MPP_ERR_VALUE);
+        }
+        let input = encoder::InputFrame::new(&scratch)
+            .with_pts(frame.pts)
+            .with_dts(frame.dts)
+            .with_osd(osd);
+        if let Some(frame) = picture_layout.as_ref() {
+            let Some(encoder) = context.encoder.as_mut() else {
+                return Err(MPP_ERR_VALUE);
+            };
+            if let Err(error) = encoder.force_next_picture_layout(
+                frame.current_slot,
+                frame.reference_slot,
+                frame.non_reference,
+                Some(frame.temporal_id),
+                frame.frame_num,
+                frame.poc,
+                frame.reference_reorder,
+                frame.current_long_term_index,
+            ) {
+                eprintln!("rk-mpp-rs mpp: reference layout rejected: {error}");
+                return Err(MPP_NOK);
+            }
+        }
+        match context.prepare_custom_rc() {
+            Ok(CustomRcAction::Encode) => {}
+            Ok(CustomRcAction::Skip) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        let submitted = if context.custom_rc_pending.is_some() {
+            context.submit_custom_rc_frame(input)
+        } else {
+            match context.encoder.as_mut() {
+                Some(encoder) => encoder.submit_frame(input),
+                None => return Err(MPP_ERR_VALUE),
+            }
         };
-        if let Err(error) = encoder.force_next_picture_layout(
-            frame.current_slot,
-            frame.reference_slot,
-            frame.non_reference,
-            Some(frame.temporal_id),
-            frame.frame_num,
-            frame.poc,
-            frame.reference_reorder,
-            frame.current_long_term_index,
-        ) {
-            eprintln!("rk-mpp-rs mpp: reference layout rejected: {error}");
-            return MPP_NOK;
-        }
-    }
-    match context.prepare_custom_rc() {
-        Ok(CustomRcAction::Encode) => {}
-        Ok(CustomRcAction::Skip) => return MPP_OK,
-        Err(error) => return error,
-    }
-    let submitted = if context.custom_rc_pending.is_some() {
-        context.submit_custom_rc_frame(input)
-    } else {
-        match context.encoder.as_mut() {
-            Some(encoder) => encoder.submit_frame(input),
-            None => {
-                return MPP_ERR_VALUE;
-            }
-        }
-    };
-    match submitted {
-        Ok(count) => {
-            if let Err(error) = context.finish_custom_rc() {
-                return error;
-            }
-            if let (Some(schedule), Some(frame)) =
-                (context.encoder_ref_schedule.as_mut(), picture_layout)
-            {
-                schedule.commit(frame);
-            }
-            if !motion_info.is_null() {
-                let Some(encoder) = context.encoder.as_mut() else {
-                    return MPP_NOK;
-                };
-                if let Some(mut data) = encoder.take_motion_info() {
-                    if let Some(capacity) = unsafe { objects::buffer_capacity(motion_info) } {
-                        data.truncate(capacity);
-                    }
-                    if !unsafe { objects::buffer_replace(motion_info, &data) } {
-                        eprintln!(
-                            "rk-mpp-rs mpp: failed to write the caller's KEY_MOTION_INFO buffer"
-                        );
-                        return MPP_NOK;
+        match submitted {
+            Ok(count) => {
+                if let Err(error) = context.finish_custom_rc() {
+                    return Err(error);
+                }
+                if let (Some(schedule), Some(frame)) =
+                    (context.encoder_ref_schedule.as_mut(), picture_layout)
+                {
+                    schedule.commit(frame);
+                }
+                if !motion_info.is_null() {
+                    let Some(encoder) = context.encoder.as_mut() else {
+                        return Err(MPP_NOK);
+                    };
+                    if let Some(mut data) = encoder.take_motion_info() {
+                        if let Some(capacity) = unsafe { objects::buffer_capacity(motion_info) } {
+                            data.truncate(capacity);
+                        }
+                        if !unsafe { objects::buffer_replace(motion_info, &data) } {
+                            eprintln!(
+                                "rk-mpp-rs mpp: failed to write the caller's KEY_MOTION_INFO buffer"
+                            );
+                            return Err(MPP_NOK);
+                        }
                     }
                 }
+                for _ in 0..count {
+                    context.pending_packet_motion_info.push_back(motion_info);
+                }
+                Ok(())
             }
-            for _ in 0..count {
-                context.pending_packet_motion_info.push_back(motion_info);
+            Err(error) => {
+                context.custom_rc_pending = None;
+                eprintln!("rk-mpp-rs mpp: encode frame failed: {error}");
+                Err(MPP_NOK)
             }
-            MPP_OK
         }
-        Err(error) => {
-            context.custom_rc_pending = None;
-            eprintln!("rk-mpp-rs mpp: encode frame failed: {error}");
-            MPP_NOK
-        }
+    })();
+    context.encoder_input_scratch = scratch;
+    match result {
+        Ok(()) => MPP_OK,
+        Err(ret) => ret,
     }
 }
 
@@ -944,6 +959,7 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
     context.pending_packet_motion_info.clear();
+    context.encoder_input_scratch.clear();
     context.encoder_ref_pattern.clear();
     context.encoder_ref_schedule = None;
     context.custom_rc = None;
@@ -1344,6 +1360,7 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             venc_init_kcfg: None,
             encoder_max_width: 0,
             encoder_max_height: 0,
+            encoder_input_scratch: Vec::new(),
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();

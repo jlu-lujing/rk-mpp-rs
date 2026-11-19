@@ -444,6 +444,9 @@ typed `SyntaxOptions`；VEPU510 对非默认 syntax 明确返回 unsupported。
 MppFrame。`board_mpp_enc_cfg_i420.sh` 用同一 `testsrc` 经 NV12/I420/NV21
 三条对象路径分别编码 H.264 和 H.265：H.264 5 NAL 与
 `073c6215…f00b435e` 一致，H.265 与 `df2395b1…be2f4b62` 一致。
+compat context 现在持有可复用的 `encoder_input_scratch`，每帧 NV12/I420/NV21
+整理只调整容量和内容，不再重新分配输入 Vec。25 帧 H.264/H.265 对象 GDR
+连续会话仍分别保持 `09b7bc26…4367ca8` 与 `bc22eb33…454f035`。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
