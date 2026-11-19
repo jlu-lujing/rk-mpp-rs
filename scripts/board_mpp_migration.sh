@@ -11,8 +11,8 @@ ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo buil
 inc=$(ssh "$BOARD" 'for d in /tmp/mpp-develop/inc "$HOME/rk-mpp-oracles/mpp-develop/inc"; do
     [ -f "$d/mpp_frame.h" ] && printf "%s\n" "$d" && break; done')
 if [ -z "$inc" ]; then
-    echo "SKIP (official MPP headers not found; run scripts/setup_board_refs.sh)"
-    exit 0
+    source "$(cd "$(dirname "$0")" && pwd)/scripts/board_dependency.sh" \
+        "MPP migration" "official MPP headers not found"
 fi
 ssh "$BOARD" "cd ~/rk-mpp-rs &&
   gcc -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -I$inc \

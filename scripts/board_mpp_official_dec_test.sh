@@ -71,7 +71,8 @@ if command -v ffmpeg >/dev/null 2>&1; then
     printf 'PASS h264 through unchanged vendor mpi_dec_test (%s)\n' \
         "$(sha256sum "$h264_ours" | cut -d' ' -f1)"
 else
-    printf 'SKIP h264 (ffmpeg missing)\n'
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+        "official MPI decoder" "ffmpeg missing"
 fi
 run_case h265 "$h265" 16777220 1 115200 \
     fcedb435aa69996d93a2bd87b2c5ffb5f22ccc48d86ea7fe3d935d0311d805e0

@@ -14,8 +14,8 @@ ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs &&
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
 if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1"; then
-  printf 'SKIP vdpp2-regs (reference build missing at %s)\n' "$mpp_lib"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "VDPP2 registers" "reference build missing at $mpp_lib"
 fi
 
 scp -q tools/mpp_vdpp_fake.c tools/vdpp2_probe.c "$BOARD":/tmp/

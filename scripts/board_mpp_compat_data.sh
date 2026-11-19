@@ -43,8 +43,8 @@ run_case() {
     local case_output="${output%.*}-${name}.yuv"
 
     if [ ! -s "$input" ]; then
-        printf 'SKIP %s (missing %s)\n' "$name" "$input"
-        return 0
+        source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+            "MPP compat data" "$name missing at $input"
     fi
     LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
         /tmp/rk_mpp_official_data "$input" "$case_output" "$coding" "$frames" \
@@ -86,7 +86,8 @@ if [ -s "$vp9_input" ] && [ -x /usr/local/bin/mpi_dec_test ]; then
         printf 'SKIP vp9 (system C decoder oracle failed)\n'
     fi
 else
-    printf 'SKIP vp9 (fixture or system C decoder oracle missing)\n'
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+        "MPP compat VP9" "fixture or system C decoder oracle missing"
 fi
 
 av1_input="$repo/tests/data/av1_320x240_10.ivf"
@@ -108,7 +109,8 @@ if [ -s "$av1_input" ] && [ -x /usr/local/bin/mpi_dec_test ]; then
         printf 'SKIP av1 (system C decoder oracle failed)\n'
     fi
 else
-    printf 'SKIP av1 (fixture or system C decoder oracle missing)\n'
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+        "MPP compat AV1" "fixture or system C decoder oracle missing"
 fi
 
 mjpeg_input=/tmp/rk_mpp_compat_mjpeg.jpg
@@ -135,5 +137,6 @@ if command -v ffmpeg >/dev/null 2>&1 &&
         printf 'SKIP mjpeg (system C decoder oracle failed)\n'
     fi
 else
-    printf 'SKIP mjpeg (ffmpeg or system C decoder oracle missing)\n'
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+        "MPP compat MJPEG" "ffmpeg or system C decoder oracle missing"
 fi

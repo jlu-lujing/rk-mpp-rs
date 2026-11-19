@@ -45,8 +45,8 @@ for ref in /tmp/mpp-old /tmp/mpp-develop '~/rk-mpp-oracles/mpp-old' '~/rk-mpp-or
 done
 
 if [ -z "${MPP_BIN:-}" ]; then
-  printf 'SKIP IEP (no iep2_test oracle build found; build mpp with -DIEP2_TEST=ON)\n'
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "IEP deinterlace" "no iep2_test oracle build found"
 fi
 
 in=/tmp/rk-mpp-rs-iep-in.yuv

@@ -40,8 +40,8 @@ check_case() {
     local expected_bytes=$(( frame_bytes * frames ))
 
     if [ ! -s "$input" ]; then
-        printf 'SKIP %-24s missing %s\n' "$name" "$input"
-        return
+        source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+            "RK3576 H.264 edge $name" "input missing at $input"
     fi
 
     rm -f "$rust" "$c_raw" "$c_planar" "$reference"
@@ -82,8 +82,8 @@ check_missing_reference_case() {
     local expected_bytes=$(( frame_bytes * output_frames ))
 
     if [ ! -s "$input" ]; then
-        printf 'SKIP %-24s missing %s\n' "$name" "$input"
-        return
+        source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+            "RK3576 H.264 edge $name" "input missing at $input"
     fi
     rm -f "$rust" "$c_raw" "$c_planar"
     timeout 600 ./target/debug/rk-mpp-rs h264dec "$input" "$rust" \

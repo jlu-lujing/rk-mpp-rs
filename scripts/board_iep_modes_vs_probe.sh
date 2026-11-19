@@ -17,8 +17,8 @@ remote_home=$(ssh "$BOARD" 'printf %s "$HOME"')
 mpp_ref="${MPP_REF:-$remote_home/rk-mpp-rs/refs/mpp}"
 mpp_lib="${MPP_LIB:-$mpp_ref/build-t6/mpp}"
 if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
-  printf 'SKIP IEP modes (reference build missing at %s)\n' "$mpp_lib"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "IEP modes" "reference build missing at $mpp_lib"
 fi
 
 scp -q tools/iep2_probe.c "$BOARD":/tmp/iep2_probe.c

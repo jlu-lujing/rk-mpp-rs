@@ -126,7 +126,8 @@ for fixture in "$still6 still" "$mv_fixture moving"; do
   set -- $fixture
   src="$1"; label="$2"
   if ! ssh "$BOARD" "test -s $src"; then
-    printf 'SKIP %-12s (source missing)\n' "$label"; continue
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+      "H.264 QP $label" "source missing at $src"
   fi
   for n in 2 4 6; do
     c_out="/tmp/rk-mpp-rs-gop-${label}-${n}f-c.264"

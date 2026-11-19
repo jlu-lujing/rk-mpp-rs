@@ -26,8 +26,8 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Car
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
-mpp_bin=/tmp/mpp-develop/build/test/mpi_dec_test
-mpp_lib=/tmp/mpp-develop/build/mpp
+mpp_bin="${MPP_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
+mpp_lib="${MPP_LIB:-/tmp/mpp-develop/build/mpp}"
 
 ssh "$BOARD" "cat > /tmp/vp_damage.py" <<'PY'
 import struct, sys
@@ -89,8 +89,8 @@ run_pair() { # codec-type frame_bytes label stream
 }
 
 if ! ssh "$BOARD" "test -x $mpp_bin"; then
-  printf 'SKIP (mpi_dec_test missing)\n'
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "VP corruption matrix" "mpi_dec_test missing at $mpp_bin"
 fi
 
 for damage in container half-last mid-flip; do

@@ -348,6 +348,12 @@ H.264/H.265/JPEG 的独立 `*_vs_mpp.sh` 矩阵也统一走
 默认 `exit 2`，只有显式 `ALLOW_SKIPS=1` 才输出 `SKIP` 并返回成功。已用错误
 `MPP_REF` 验证失败路径，并验证显式允许后的跳过路径。
 
+同一依赖门已扩到 H.264/HEVC/VP8/VP9/MPEG-2/MPEG-4/H.263 回归、损坏流、IEP2、
+VDPP2 register/hardware、官方头文件 migration、compat data 和 RK3576
+H.264 edge corpus。相关脚本都支持
+`MPP_BIN`/`MPP_LIB`/`MPP_REF`/`MPP_SRC` 覆盖；只有硬件本身不存在等平台
+边界才保留无条件 `SKIP`。
+
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里
 累计整条码流；`/dev/null` 基准仍跳过文件写入。120 帧 720p 输出 SHA-256 保持
 `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`，

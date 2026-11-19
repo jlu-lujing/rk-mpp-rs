@@ -48,8 +48,8 @@ fi
 if [ -z "$mpp_src" ] ||
     [ ! -f "$mpp_src/mpp/vproc/vdpp/vdpp2.c" ] ||
     [ ! -f "$mpp_src/mpp/vproc/vdpp/vdpp_common.c" ]; then
-    echo "SKIP vdpp2 hardware: set MPP_SRC to a C MPP source tree" >&2
-    exit 0
+    source "$HOME/rk-mpp-rs/scripts/board_dependency.sh" \
+        "VDPP2 hardware" "set MPP_SRC to a C MPP source tree"
 fi
 
 mpp_lib_dir="$mpp_src/build/mpp"
@@ -57,8 +57,8 @@ if ! compgen -G "$mpp_lib_dir/librockchip_mpp.so*" >/dev/null; then
     mpp_lib_dir=/usr/local/lib
 fi
 if ! compgen -G "$mpp_lib_dir/librockchip_mpp.so*" >/dev/null; then
-    echo "SKIP vdpp2 hardware: C MPP shared library is missing" >&2
-    exit 0
+    source "$HOME/rk-mpp-rs/scripts/board_dependency.sh" \
+        "VDPP2 hardware" "C MPP shared library is missing"
 fi
 vdpp_sources=(
     "$mpp_src/mpp/vproc/vdpp/vdpp2.c"

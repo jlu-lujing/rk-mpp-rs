@@ -15,5 +15,6 @@ if ssh "$BOARD" "test -d $corpus"; then
   scp -q "$here/board_vp8_profile_probe.py" "$BOARD":/tmp/board_vp8_profile_probe.py
   ssh "$BOARD" "python3 /tmp/board_vp8_profile_probe.py $corpus"
 else
-  printf 'SKIP corpus missing at %s\n' "$corpus"
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "VP8 profile probe" "corpus missing at $corpus"
 fi

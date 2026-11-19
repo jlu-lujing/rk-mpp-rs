@@ -4001,6 +4001,15 @@ pipeline uses.
   640x480/720p model CBR, VBR, AVBR and smart-GOP cells pass 13/13 with
   normalized stream equality.
 
+- **2026-11-19: decoder and post-processing board gates use strict
+  dependencies.** H.264/HEVC/VP8/VP9/MPEG-2/MPEG-4/H.263 regression scripts,
+  corruption probes, IEP2 matrices, VDPP2 register/hardware compares and the
+  official-header migration consumer, compatibility data matrix and RK3576
+  H.264 edge corpus now fail when their configured oracle,
+  library, corpus or source tree is missing. `MPP_BIN`, `MPP_LIB`, `MPP_REF`
+  and `MPP_SRC` path overrides are preserved; hardware that genuinely does not
+  exist remains an explicit platform `SKIP`.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

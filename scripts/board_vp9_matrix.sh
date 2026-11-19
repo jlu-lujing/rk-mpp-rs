@@ -28,8 +28,8 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Car
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
-mpp_bin=/tmp/mpp-develop/build/test/mpi_dec_test
-mpp_lib=/tmp/mpp-develop/build/mpp
+mpp_bin="${MPP_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
+mpp_lib="${MPP_LIB:-/tmp/mpp-develop/build/mpp}"
 
 # name : width : height : packets : bit_depth : per-frame-bytes override
 # The packets column is the *packet* count; hidden reference frames make it
@@ -46,8 +46,8 @@ streams=(
 )
 
 if ! ssh "$BOARD" "test -x $mpp_bin"; then
-  printf 'SKIP VP9 matrix (mpi_dec_test missing)\n'
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "VP9 matrix" "mpi_dec_test missing at $mpp_bin"
 fi
 
 fail=0

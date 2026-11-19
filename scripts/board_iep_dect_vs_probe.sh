@@ -19,8 +19,8 @@ test_dir="$mpp_ref/build/mpp/vproc/iep2/test"
 fail=0
 
 if ! ssh "$BOARD" "test -d $mpp_ref && test -f $mpp_lib/librockchip_mpp.so.1"; then
-    printf 'SKIP IEP PD/DECT (reference build missing at %s)\n' "$mpp_ref"
-    exit 0
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+        "IEP PD/DECT" "reference build missing at $mpp_ref"
 fi
 
 scp -q tools/iep2_dect_probe.c "$BOARD":/tmp/ 2>/dev/null

@@ -42,12 +42,12 @@ for pair in "${streams[@]}"; do
   in_name="${pair%%:*}"; in_name="${in_name##*/}"
   ref_name="${pair##*:}"; ref_name="${ref_name##*/}"
   if ! in=$(remote_find "$in_name"); then
-    printf 'SKIP %s (stream missing)\n' "$in_name"
-    continue
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+      "H.264 regression" "stream missing at $in_name"
   fi
   if ! ref=$(remote_find "$ref_name"); then
-    printf 'SKIP %s (reference output %s missing)\n' "$in_name" "$ref_name"
-    continue
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+      "H.264 regression" "reference output $ref_name missing"
   fi
   out="/tmp/${ref_name%.yuv}_rust.yuv"
   ssh "$BOARD" "sudo rm -f $out"

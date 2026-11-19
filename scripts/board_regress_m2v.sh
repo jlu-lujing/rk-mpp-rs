@@ -18,8 +18,8 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Car
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 fail=0
-mpp_bin=/tmp/mpp-develop/build/test/mpi_dec_test
-mpp_lib=/tmp/mpp-develop/build/mpp
+mpp_bin="${MPP_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
+mpp_lib="${MPP_LIB:-/tmp/mpp-develop/build/mpp}"
 data='~/rk-mpp-rs/tests/data'
 
 # fixture : width : height : pictures
@@ -46,7 +46,8 @@ rust_decode() {
 }
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
-  printf 'SKIP MPEG-2 (MPP decoder binary or library missing)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "MPEG-2 regression" "MPP decoder binary or library missing"
 else
   for entry in "${streams[@]}"; do
     IFS=':' read -r name width height frames <<<"$entry"

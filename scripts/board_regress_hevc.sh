@@ -8,13 +8,15 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Car
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
 fail=0
+mpp_bin="${MPP_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
+mpp_lib="${MPP_LIB:-/tmp/mpp-develop/build/mpp}"
 
 decode_component() {
   local input="$1"
   local output="$2"
   if ! ssh "$BOARD" "test -f $input"; then
-    printf 'SKIP %s (stream missing)\n' "$input"
-    return
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+      "HEVC regression" "stream missing at $input"
   fi
   ssh "$BOARD" "sudo rm -f $output"
   if ! ssh "$BOARD" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs hevcdec $input $output" >/dev/null 2>&1; then
@@ -33,7 +35,8 @@ if ssh "$BOARD" 'test -f /tmp/mpp_hevc_nob_planar.yuv'; then
     fail=1
   fi
 else
-  printf 'SKIP /tmp/t720_nob.hevc (MPP reference missing)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC /tmp/t720_nob.hevc" "MPP reference missing"
 fi
 
 decode_component /tmp/t720.hevc /tmp/t720_rust_display.yuv
@@ -50,7 +53,8 @@ if ssh "$BOARD" 'test -f /tmp/mpp_hevc_b.yuv'; then
     fail=1
   fi
 else
-  printf 'SKIP /tmp/t720.hevc (MPP reference missing)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC /tmp/t720.hevc" "MPP reference missing"
 fi
 
 decode_component /tmp/t1080.hevc /tmp/t1080_rust_display.yuv
@@ -67,23 +71,24 @@ if ssh "$BOARD" 'test -f /tmp/t1080_mpp_ref.yuv'; then
     fail=1
   fi
 else
-  printf 'SKIP /tmp/t1080.hevc (MPP reference missing)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC /tmp/t1080.hevc" "MPP reference missing"
 fi
 
 if ! ./scripts/gen_hevc_tiles.sh; then
   printf 'FAIL /tmp/hevc_tiles_720p.hevc (could not generate MPP tiled stream)\n'
   fail=1
-elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-    test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
-  printf 'SKIP /tmp/hevc_tiles_720p.hevc (MPP decoder binary or library missing)\n'
+elif ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC /tmp/hevc_tiles_720p.hevc" "MPP decoder binary or library missing"
 else
   ssh "$BOARD" 'sudo rm -f /tmp/hevc_tiles_mpp.yuv \
     /tmp/hevc_tiles_mpp_planar.yuv /tmp/hevc_tiles_rust.yuv'
-  ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-    /tmp/mpp-develop/build/test/mpi_dec_test \
+  ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+    $mpp_bin \
     -i /tmp/hevc_tiles_720p.hevc -t 16777220 \
     -o /tmp/hevc_tiles_mpp.yuv -w 1280 -h 720 -n 30 -v q \
-    >/tmp/hevc_tiles_mpp.log 2>&1'
+    >/tmp/hevc_tiles_mpp.log 2>&1"
   if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
       -video_size 1280x720 -i /tmp/hevc_tiles_mpp.yuv \
       -pix_fmt yuv420p -f rawvideo /tmp/hevc_tiles_mpp_planar.yuv'; then
@@ -115,17 +120,17 @@ fi
 if ! ./scripts/gen_hevc_main10.sh; then
   printf 'FAIL /tmp/hevc_main10_256.hevc (could not generate Main10 stream)\n'
   fail=1
-elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-    test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
-  printf 'SKIP /tmp/hevc_main10_256.hevc (MPP decoder binary or library missing)\n'
+elif ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC /tmp/hevc_main10_256.hevc" "MPP decoder binary or library missing"
 else
   ssh "$BOARD" 'sudo rm -f /tmp/hevc_main10_mpp.yuv \
     /tmp/hevc_main10_mpp_planar.yuv /tmp/hevc_main10_rust.yuv'
-  ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-    /tmp/mpp-develop/build/test/mpi_dec_test \
+  ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+    $mpp_bin \
     -i /tmp/hevc_main10_256.hevc -t 16777220 \
     -o /tmp/hevc_main10_mpp.yuv -w 256 -h 256 -n 30 -v q \
-    >/tmp/hevc_main10_mpp.log 2>&1'
+    >/tmp/hevc_main10_mpp.log 2>&1"
   if ! ssh "$BOARD" 'python3 - <<"PY"
 from pathlib import Path
 
@@ -187,8 +192,8 @@ fi
 
 if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     test -x /tmp/mpp-develop/build/test/mpi_enc_test &&
-    test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-    test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
+    test -x '"$mpp_bin"' &&
+    test -f '"$mpp_lib"'/librockchip_mpp.so.0 &&
     test -f /tmp/mpp-develop/test/cfg/enc/base_h265_1920x1080.json'; then
   if ! ssh "$BOARD" 'set -e
       sudo rm -f /tmp/hevc_scaling.hevc /tmp/hevc_scaling_encode.log
@@ -213,11 +218,11 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
   else
     ssh "$BOARD" 'sudo rm -f /tmp/hevc_scaling_mpp.yuv \
       /tmp/hevc_scaling_mpp_planar.yuv /tmp/hevc_scaling_rust.yuv'
-    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-      /tmp/mpp-develop/build/test/mpi_dec_test \
+    ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+      $mpp_bin \
       -i /tmp/hevc_scaling.hevc -t 16777220 \
       -o /tmp/hevc_scaling_mpp.yuv -w 1920 -h 1080 -n 10 -v q \
-      >/tmp/hevc_scaling_mpp.log 2>&1'
+      >/tmp/hevc_scaling_mpp.log 2>&1"
     if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 1920x1080 -i /tmp/hevc_scaling_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_scaling_mpp_planar.yuv'; then
@@ -247,12 +252,13 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     fi
   fi
 else
-  printf 'SKIP /tmp/hevc_scaling.hevc (MPP scaling-list fixture unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC /tmp/hevc_scaling.hevc" "MPP scaling-list fixture unavailable"
 fi
 
 if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
-    test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-    test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
+    test -x '"$mpp_bin"' &&
+    test -f '"$mpp_lib"'/librockchip_mpp.so.0 &&
     test -f ~/rk-mpp-rs/scripts/hevc_explicit_scalinglist.txt'; then
   if ! ssh "$BOARD" 'set -e
       ffmpeg -loglevel error -y -f lavfi \
@@ -274,11 +280,11 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     ssh "$BOARD" 'sudo rm -f /tmp/hevc_explicit_scaling_mpp.yuv \
       /tmp/hevc_explicit_scaling_mpp_planar.yuv \
       /tmp/hevc_explicit_scaling_rust.yuv /tmp/hevc_explicit_scaling_rust.log'
-    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-      /tmp/mpp-develop/build/test/mpi_dec_test \
+    ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+      $mpp_bin \
       -i /tmp/hevc_explicit_scaling.hevc -t 16777220 \
       -o /tmp/hevc_explicit_scaling_mpp.yuv -w 256 -h 256 -n 10 -v q \
-      >/tmp/hevc_explicit_scaling_mpp.log 2>&1'
+      >/tmp/hevc_explicit_scaling_mpp.log 2>&1"
     if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 256x256 -i /tmp/hevc_explicit_scaling_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_explicit_scaling_mpp_planar.yuv'; then
@@ -310,12 +316,13 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     fi
   fi
 else
-  printf 'SKIP /tmp/hevc_explicit_scaling.hevc (explicit scaling-list fixture unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC explicit scaling" "fixture unavailable"
 fi
 
 if ssh "$BOARD" 'command -v ffmpeg >/dev/null && command -v python3 >/dev/null &&
-    test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-    test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
+    test -x '"$mpp_bin"' &&
+    test -f '"$mpp_lib"'/librockchip_mpp.so.0 &&
     test -f ~/rk-mpp-rs/scripts/hevc_explicit_scalinglist.txt &&
     test -f ~/rk-mpp-rs/scripts/make_hevc_pps_scaling.py'; then
   if ! ssh "$BOARD" 'set -e
@@ -340,11 +347,11 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null && command -v python3 >/dev/null &
     ssh "$BOARD" 'sudo rm -f /tmp/hevc_pps_scaling_mpp.yuv \
       /tmp/hevc_pps_scaling_mpp_planar.yuv \
       /tmp/hevc_pps_scaling_rust.yuv /tmp/hevc_pps_scaling_rust.log'
-    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-      /tmp/mpp-develop/build/test/mpi_dec_test \
+    ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+      $mpp_bin \
       -i /tmp/hevc_pps_scaling.hevc -t 16777220 \
       -o /tmp/hevc_pps_scaling_mpp.yuv -w 256 -h 256 -n 10 -v q \
-      >/tmp/hevc_pps_scaling_mpp.log 2>&1'
+      >/tmp/hevc_pps_scaling_mpp.log 2>&1"
     if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 256x256 -i /tmp/hevc_pps_scaling_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_pps_scaling_mpp_planar.yuv'; then
@@ -375,7 +382,8 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null && command -v python3 >/dev/null &
     fi
   fi
 else
-  printf 'SKIP /tmp/hevc_pps_scaling.hevc (explicit PPS scaling-list fixture unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC PPS scaling" "fixture unavailable"
 fi
 
 if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
@@ -391,17 +399,17 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
         >/tmp/hevc_slices_encode.log 2>&1'; then
     printf 'FAIL /tmp/hevc_slices_open.hevc (could not generate multi-slice stream)\n'
     fail=1
-  elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-      test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
-    printf 'SKIP /tmp/hevc_slices_open.hevc (MPP decoder binary or library missing)\n'
+  elif ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+      "HEVC open slices" "MPP decoder binary or library missing"
   else
     ssh "$BOARD" 'sudo rm -f /tmp/hevc_slices_mpp.yuv /tmp/hevc_slices_mpp_planar.yuv \
       /tmp/hevc_slices_rust.yuv /tmp/hevc_slices_rust.log'
-    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-      /tmp/mpp-develop/build/test/mpi_dec_test \
+    ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+      $mpp_bin \
       -i /tmp/hevc_slices_open.hevc -t 16777220 \
       -o /tmp/hevc_slices_mpp.yuv -w 256 -h 256 -n 30 \
-      >/tmp/hevc_slices_mpp.log 2>&1'
+      >/tmp/hevc_slices_mpp.log 2>&1"
     if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 256x256 -i /tmp/hevc_slices_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_slices_mpp_planar.yuv'; then
@@ -432,7 +440,8 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
     fi
   fi
 else
-  printf 'SKIP /tmp/hevc_slices_open.hevc (ffmpeg/libx265 unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC open slices" "ffmpeg/libx265 unavailable"
 fi
 
 if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
@@ -444,17 +453,17 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
       >/tmp/hevc_multigop_encode.log 2>&1'; then
     printf 'FAIL /tmp/hevc_multigop_120.hevc (could not generate stream)\n'
     fail=1
-  elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-      test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
-    printf 'SKIP /tmp/hevc_multigop_120.hevc (MPP decoder binary or library missing)\n'
+  elif ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+      "HEVC multigop" "MPP decoder binary or library missing"
   else
     ssh "$BOARD" 'sudo rm -f /tmp/hevc_multigop_mpp.yuv \
       /tmp/hevc_multigop_mpp_planar.yuv /tmp/hevc_multigop_rust.yuv'
-    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-      /tmp/mpp-develop/build/test/mpi_dec_test \
+    ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+      $mpp_bin \
       -i /tmp/hevc_multigop_120.hevc -t 16777220 \
       -o /tmp/hevc_multigop_mpp.yuv -w 1280 -h 720 -n 120 -v q \
-      >/tmp/hevc_multigop_mpp.log 2>&1'
+      >/tmp/hevc_multigop_mpp.log 2>&1"
     if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 1280x720 -i /tmp/hevc_multigop_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_multigop_mpp_planar.yuv'; then
@@ -483,7 +492,8 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
     fi
   fi
 else
-  printf 'SKIP /tmp/hevc_multigop_120.hevc (ffmpeg/libx265 unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC multigop" "ffmpeg/libx265 unavailable"
 fi
 
 if ssh "$BOARD" 'test -f /tmp/t720.hevc'; then
@@ -529,16 +539,16 @@ assert len(groups) == 10, len(groups)
 Path("/tmp/t720_missing_au2.hevc").write_bytes(b"".join(groups[:2] + groups[3:]))
 PY'
 fi
-if ssh "$BOARD" 'test -f /tmp/t720_missing_au2.hevc &&
-    test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-    test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
+if ssh "$BOARD" "test -f /tmp/t720_missing_au2.hevc &&
+    test -x $mpp_bin &&
+    test -f $mpp_lib/librockchip_mpp.so.0"; then
   ssh "$BOARD" 'sudo rm -f /tmp/t720_missing_au2_mpp.yuv \
     /tmp/t720_missing_au2_mpp_2planar.yuv'
-  ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-    /tmp/mpp-develop/build/test/mpi_dec_test \
+  ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+    $mpp_bin \
     -i /tmp/t720_missing_au2.hevc -t 16777220 \
     -o /tmp/t720_missing_au2_mpp.yuv -v q \
-    >/tmp/t720_missing_au2_mpp.log 2>&1'
+    >/tmp/t720_missing_au2_mpp.log 2>&1"
   if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
       -video_size 1280x720 -i /tmp/t720_missing_au2_mpp.yuv \
       -pix_fmt yuv420p -f rawvideo \
@@ -567,7 +577,8 @@ if ssh "$BOARD" 'test -f /tmp/t720_missing_au2.hevc &&
     fi
   fi
 else
-  printf 'SKIP /tmp/t720_missing_au2.hevc (MPP decoder binary or library missing)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC missing AU" "MPP decoder binary, library or fixture missing"
 fi
 
 if ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
@@ -605,17 +616,17 @@ assert {8, 9, 21}.issubset(types), sorted(types)
 PY'; then
     printf 'FAIL /tmp/hevc_cra_open.hevc (could not generate CRA/RASL stream)\n'
     fail=1
-  elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-      test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
-    printf 'SKIP /tmp/hevc_cra_open.hevc (MPP decoder binary or library missing)\n'
+  elif ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+      "HEVC CRA" "MPP decoder binary or library missing"
   else
     ssh "$BOARD" 'sudo rm -f /tmp/hevc_cra_mpp.yuv /tmp/hevc_cra_mpp_planar.yuv \
       /tmp/hevc_cra_rust.yuv'
-    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-      /tmp/mpp-develop/build/test/mpi_dec_test \
+    ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+      $mpp_bin \
       -i /tmp/hevc_cra_open.hevc -t 16777220 \
       -o /tmp/hevc_cra_mpp.yuv -v q \
-      >/tmp/hevc_cra_mpp.log 2>&1'
+      >/tmp/hevc_cra_mpp.log 2>&1"
     if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 128x128 -i /tmp/hevc_cra_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_cra_mpp_planar.yuv'; then
@@ -644,12 +655,13 @@ PY'; then
     fi
   fi
 else
-  printf 'SKIP /tmp/hevc_cra_open.hevc (ffmpeg/libx265 unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC CRA" "ffmpeg/libx265 unavailable"
 fi
 
 if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     test -x /tmp/mpp-develop/build/test/mpi_enc_test &&
-    test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
+    test -f '"$mpp_lib"'/librockchip_mpp.so.0 &&
     test -f /tmp/mpp-develop/test/cfg/enc/ref_cfg_gop3_tsvc4.json &&
     test -f /tmp/mpp-develop/test/cfg/enc/frm_ltr_mark.json &&
     test -f /tmp/mpp-develop/test/cfg/enc/frm_ltr_use.json'; then
@@ -676,17 +688,17 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
       grep -q "LongTermRefPic { poc_lsb: 4, used: true" /tmp/hevc_ltr_dpb.log'; then
     printf 'FAIL /tmp/hevc_ltr_320.hevc (stream does not exercise LTR)\n'
     fail=1
-  elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-      test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0'; then
-    printf 'SKIP /tmp/hevc_ltr_320.hevc (MPP decoder binary or library missing)\n'
+  elif ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
+    source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+      "HEVC LTR" "MPP decoder binary or library missing"
   else
     ssh "$BOARD" 'sudo rm -f /tmp/hevc_ltr_mpp.yuv \
       /tmp/hevc_ltr_mpp_planar.yuv /tmp/hevc_ltr_rust.yuv'
-    ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-      /tmp/mpp-develop/build/test/mpi_dec_test \
+    ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+      $mpp_bin \
       -i /tmp/hevc_ltr_320.hevc -t 16777220 \
       -o /tmp/hevc_ltr_mpp.yuv -w 320 -h 320 -n 30 -v q \
-      >/tmp/hevc_ltr_mpp.log 2>&1'
+      >/tmp/hevc_ltr_mpp.log 2>&1"
     if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
         -video_size 320x320 -i /tmp/hevc_ltr_mpp.yuv \
         -pix_fmt yuv420p -f rawvideo /tmp/hevc_ltr_mpp_planar.yuv'; then
@@ -717,7 +729,8 @@ if ssh "$BOARD" 'command -v ffmpeg >/dev/null &&
     fi
   fi
 else
-  printf 'SKIP /tmp/hevc_ltr_320.hevc (MPP LTR encoder/config unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC LTR" "MPP LTR encoder or config unavailable"
 fi
 
 dslice_fixture=/tmp/DSLICE_A_HHI_5.bit
@@ -727,20 +740,21 @@ if [[ ! -s "$dslice_fixture" ]]; then
     printf 'NOTE could not download dependent-slice conformance stream\n'
 fi
 if [[ ! -s "$dslice_fixture" ]]; then
-  printf 'SKIP dependent slices (conformance stream unavailable)\n'
-elif ! ssh "$BOARD" 'test -x /tmp/mpp-develop/build/test/mpi_dec_test &&
-    test -f /tmp/mpp-develop/build/mpp/librockchip_mpp.so.0 &&
-    command -v ffmpeg >/dev/null'; then
-  printf 'SKIP dependent slices (MPP decoder or ffmpeg unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC dependent slices" "conformance stream unavailable"
+elif ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 &&
+    command -v ffmpeg >/dev/null"; then
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "HEVC dependent slices" "MPP decoder or ffmpeg unavailable"
 else
   scp -q "$dslice_fixture" "$BOARD":/tmp/DSLICE_A_HHI_5.bit
   ssh "$BOARD" 'sudo rm -f /tmp/dslice_mpp.yuv /tmp/dslice_mpp_planar.yuv \
     /tmp/dslice_rust.yuv /tmp/dslice_rust.log /tmp/dslice_mpp.log'
-  ssh "$BOARD" 'sudo env LD_LIBRARY_PATH=/tmp/mpp-develop/build/mpp \
-    /tmp/mpp-develop/build/test/mpi_dec_test \
+  ssh "$BOARD" "sudo env LD_LIBRARY_PATH=$mpp_lib \
+    $mpp_bin \
     -i /tmp/DSLICE_A_HHI_5.bit -t 16777220 \
     -o /tmp/dslice_mpp.yuv -w 1920 -h 1080 -n 50 -v q \
-    >/tmp/dslice_mpp.log 2>&1'
+    >/tmp/dslice_mpp.log 2>&1"
   if ! ssh "$BOARD" 'ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
       -video_size 1920x1080 -i /tmp/dslice_mpp.yuv \
       -pix_fmt yuv420p -f rawvideo /tmp/dslice_mpp_planar.yuv'; then
