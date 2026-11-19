@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1347 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1348 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1349 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1350 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -388,7 +388,10 @@ RC 模型；`board_mpp_hier_qp.sh` 的 33 帧 CBR 流在剥离 version-SEI 后�
 `mpp_enc_cfg_set/get/extract/apply`。补齐 `mpp_enc_cfg_objdef` 和
 `kmpp_obj_to_entry` 导出后，未修改的 vendor `mpp_enc_cfg_test` 在 Rust 库上
 达到 **9/9 success**，包括 scalar/array、LOG/JSON extract/apply 与 kobj
-roundtrip；LOG/JSON/TOML vendor/Rust 双向读取仍为 **3/3 PASS**。
+roundtrip；LOG/JSON/TOML vendor/Rust 双向读取仍为 **3/3 PASS**。ST_CFG
+句柄本身也支持四个已知数组的 `set_st/get_st/extract/apply`，并有独立 C
+探针对 LOG/JSON/TOML 各做一次 scalar+array 往返；`mpp_enc_cfg_deinit()`
+按 vendor 用法释放该句柄。
 
 H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出

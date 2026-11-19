@@ -1206,10 +1206,14 @@ fn enc_cfg_snapshot(config: *mut c_void) -> Option<EncCfg> {
     for (name, value) in &store.values {
         values.insert(CString::new(name.as_str()).ok()?, kcfg_to_config(*value)?);
     }
+    let mut arrays = HashMap::new();
+    for (name, values) in &store.arrays {
+        arrays.insert(CString::new(name.as_str()).ok()?, values.clone());
+    }
     Some(EncCfg {
         magic: ENC_CFG_MAGIC,
         values,
-        arrays: HashMap::new(),
+        arrays,
     })
 }
 
@@ -2822,7 +2826,9 @@ fn apply_enc_text_to_kcfg(config: *mut c_void, format: i32, text: &str) -> i32 {
     let Some(parsed) = parse_enc_text(format, text) else {
         return MPP_NOK;
     };
-    if !parsed.arrays.is_empty() {
+    if parsed.arrays.iter().any(|(name, values)| {
+        enc_cfg_array_len(name).is_none_or(|expected| values.len() != expected)
+    }) {
         return MPP_NOK;
     }
     let Some(store) = kcfg::venc_st_cfg_mut(config) else {
@@ -2832,6 +2838,11 @@ fn apply_enc_text_to_kcfg(config: *mut c_void, format: i32, text: &str) -> i32 {
         store
             .values
             .insert(name.to_string_lossy().into_owned(), config_to_kcfg(value));
+    }
+    for (name, values) in parsed.arrays {
+        store
+            .arrays
+            .insert(name.to_string_lossy().into_owned(), values);
     }
     MPP_OK
 }
@@ -2916,12 +2927,15 @@ pub unsafe extern "C" fn mpp_enc_cfg_create(config: *mut *mut c_void, _mode: u32
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_cfg_deinit(config: *mut c_void) -> i32 {
-    let Some(config) = enc_cfg_mut(config) else {
-        return MPP_ERR_NULL_PTR;
-    };
-    config.magic = 0;
-    drop(unsafe { Box::from_raw((config as *mut EncCfg).cast::<c_void>()) });
-    MPP_OK
+    if let Some(config) = enc_cfg_mut(config) {
+        config.magic = 0;
+        drop(unsafe { Box::from_raw((config as *mut EncCfg).cast::<c_void>()) });
+        return MPP_OK;
+    }
+    if kcfg::venc_st_cfg_ref(config).is_some() {
+        return unsafe { kcfg::mpp_venc_kcfg_deinit(config) };
+    }
+    MPP_ERR_NULL_PTR
 }
 
 #[no_mangle]
@@ -3014,9 +3028,6 @@ pub unsafe extern "C" fn mpp_enc_cfg_set_st(
     if value.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let Some(config) = enc_cfg_mut(config) else {
-        return MPP_ERR_NULL_PTR;
-    };
     let name = match c_name(name) {
         Ok(name) => name,
         Err(error) => return error,
@@ -3025,8 +3036,17 @@ pub unsafe extern "C" fn mpp_enc_cfg_set_st(
         return MPP_NOK;
     };
     let values = unsafe { std::slice::from_raw_parts(value.cast::<i32>(), len) };
-    config.arrays.insert(name.to_owned(), values.to_vec());
-    MPP_OK
+    if let Some(config) = enc_cfg_mut(config) {
+        config.arrays.insert(name.to_owned(), values.to_vec());
+        return MPP_OK;
+    }
+    if let Some(store) = kcfg::venc_st_cfg_mut(config) {
+        store
+            .arrays
+            .insert(name.to_string_lossy().into_owned(), values.to_vec());
+        return MPP_OK;
+    }
+    MPP_ERR_NULL_PTR
 }
 
 #[no_mangle]
@@ -3180,9 +3200,6 @@ pub unsafe extern "C" fn mpp_enc_cfg_get_st(
     if value.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let Some(config) = enc_cfg_ref(config) else {
-        return MPP_ERR_NULL_PTR;
-    };
     let name = match c_name(name) {
         Ok(name) => name,
         Err(error) => return error,
@@ -3191,15 +3208,29 @@ pub unsafe extern "C" fn mpp_enc_cfg_get_st(
         return MPP_NOK;
     };
     let output = unsafe { std::slice::from_raw_parts_mut(value.cast::<i32>(), len) };
-    if let Some(values) = config.arrays.get(name) {
-        if values.len() != len {
-            return MPP_NOK;
+    if let Some(config) = enc_cfg_ref(config) {
+        if let Some(values) = config.arrays.get(name) {
+            if values.len() != len {
+                return MPP_NOK;
+            }
+            output.copy_from_slice(values);
+        } else {
+            output.fill(0);
         }
-        output.copy_from_slice(values);
-    } else {
-        output.fill(0);
+        return MPP_OK;
     }
-    MPP_OK
+    if let Some(store) = kcfg::venc_st_cfg_ref(config) {
+        if let Some(values) = store.arrays.get(&name.to_string_lossy().into_owned()) {
+            if values.len() != len {
+                return MPP_NOK;
+            }
+            output.copy_from_slice(values);
+        } else {
+            output.fill(0);
+        }
+        return MPP_OK;
+    }
+    MPP_ERR_NULL_PTR
 }
 
 #[no_mangle]
@@ -3800,6 +3831,28 @@ mod tests {
             unsafe { mpp_enc_cfg_set_s32(config, c"rc:bps_target".as_ptr(), 654_321) },
             MPP_OK
         );
+        let hierarchy = [1, 2, 3, 4];
+        let aq_step = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        assert_eq!(
+            unsafe {
+                mpp_enc_cfg_set_st(
+                    config,
+                    c"rc:hier_qp_delta".as_ptr(),
+                    hierarchy.as_ptr().cast_mut().cast(),
+                )
+            },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe {
+                mpp_enc_cfg_set_st(
+                    config,
+                    c"hw:aq_step_i".as_ptr(),
+                    aq_step.as_ptr().cast_mut().cast(),
+                )
+            },
+            MPP_OK
+        );
         let mut text = std::ptr::null_mut();
         assert_eq!(
             unsafe { mpp_enc_cfg_extract(config, MPP_CFG_STR_FMT_JSON, &mut text) },
@@ -3811,11 +3864,33 @@ mod tests {
             MPP_OK
         );
         assert_eq!(
+            unsafe {
+                mpp_enc_cfg_set_st(
+                    config,
+                    c"rc:hier_qp_delta".as_ptr(),
+                    [0; 4].as_ptr().cast_mut().cast(),
+                )
+            },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe {
+                mpp_enc_cfg_set_st(
+                    config,
+                    c"hw:aq_step_i".as_ptr(),
+                    [0; 16].as_ptr().cast_mut().cast(),
+                )
+            },
+            MPP_OK
+        );
+        assert_eq!(
             unsafe { mpp_enc_cfg_apply(config, MPP_CFG_STR_FMT_JSON, text) },
             MPP_OK
         );
         let mut mode = 0;
         let mut bps = 0;
+        let mut restored_hierarchy = [0; 4];
+        let mut restored_aq_step = [0; 16];
         assert_eq!(
             unsafe { mpp_enc_cfg_get_s32(config, c"rc:mode".as_ptr(), &mut mode) },
             MPP_OK
@@ -3824,9 +3899,53 @@ mod tests {
             unsafe { mpp_enc_cfg_get_s32(config, c"rc:bps_target".as_ptr(), &mut bps) },
             MPP_OK
         );
+        assert_eq!(
+            unsafe {
+                mpp_enc_cfg_get_st(
+                    config,
+                    c"rc:hier_qp_delta".as_ptr(),
+                    restored_hierarchy.as_mut_ptr().cast(),
+                )
+            },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe {
+                mpp_enc_cfg_get_st(
+                    config,
+                    c"hw:aq_step_i".as_ptr(),
+                    restored_aq_step.as_mut_ptr().cast(),
+                )
+            },
+            MPP_OK
+        );
         assert_eq!((mode, bps), (7, 654_321));
+        assert_eq!(restored_hierarchy, hierarchy);
+        assert_eq!(restored_aq_step, aq_step);
         unsafe { libc::free(text.cast()) };
-        assert_eq!(unsafe { kcfg::mpp_venc_kcfg_deinit(config) }, MPP_OK);
+        assert_eq!(unsafe { mpp_enc_cfg_deinit(config) }, MPP_OK);
+    }
+
+    #[test]
+    fn encoder_cfg_string_apply_to_venc_st_kcfg_is_atomic() {
+        let mut config = std::ptr::null_mut();
+        assert_eq!(unsafe { kcfg::mpp_venc_kcfg_init(&mut config, 5) }, MPP_OK);
+        assert_eq!(
+            unsafe { mpp_enc_cfg_set_s32(config, c"rc:mode".as_ptr(), 7) },
+            MPP_OK
+        );
+        let json = CString::new(r#"{"rc":{"mode":2},"hw":{"unknown_array":[1,2,3]}}"#).unwrap();
+        assert_eq!(
+            unsafe { mpp_enc_cfg_apply(config, MPP_CFG_STR_FMT_JSON, json.as_ptr().cast_mut()) },
+            MPP_NOK
+        );
+        let mut mode = 0;
+        assert_eq!(
+            unsafe { mpp_enc_cfg_get_s32(config, c"rc:mode".as_ptr(), &mut mode) },
+            MPP_OK
+        );
+        assert_eq!(mode, 7, "failed apply must not partially mutate the cfg");
+        assert_eq!(unsafe { mpp_enc_cfg_deinit(config) }, MPP_OK);
     }
 
     #[test]

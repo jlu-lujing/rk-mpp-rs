@@ -41,8 +41,9 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   `rc:hier_qp_delta`、`rc:hier_frame_num`、`hw:aq_step_i` 和
   `hw:qbias_arr` 数值数组可由 `set_st/get_st` 保存并恢复。未知大小的数组键
   会明确返回 `MPP_NOK`，失败的 apply 不会部分修改现有配置。普通 EncCfg 与
-  `MPP_VENC_KCFG_TYPE_ST_CFG` 句柄共享这些访问器；vendor 自带的
-  `mpp_enc_cfg_test` 可通过 `librk_mpp_rs.so` 运行 9/9。
+  `MPP_VENC_KCFG_TYPE_ST_CFG` 句柄共享这些标量和数组访问器，
+  `mpp_enc_cfg_deinit()` 也接受后者；vendor 自带的 `mpp_enc_cfg_test`
+  可通过 `librk_mpp_rs.so` 运行 9/9。
 
 ## 1. 二进制 drop-in（不改代码）
 

@@ -77,6 +77,7 @@ pub(super) struct KcfgStore {
     pub(super) type_id: u32,
     name: Option<String>,
     pub(super) values: HashMap<String, Val>,
+    pub(super) arrays: HashMap<String, Vec<i32>>,
     flex: Flex,
 }
 
@@ -114,6 +115,7 @@ fn new_store(kind: KcfgKind, type_id: u32, name: Option<String>) -> *mut c_void 
         type_id,
         name,
         values,
+        arrays: HashMap::new(),
         flex: Flex {
             buffer: vec![0u8; 4096],
         },

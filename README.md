@@ -414,6 +414,9 @@ standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 真实数值标量/数组往返；t6 vendor 与 Rust 可互相读取三种格式。层级 QP 数组、
 自定义 `hw:aq_step_i` 和高级 RC 策略也已从对象配置真实传入编码器。
 vendor 自带的 `mpp_enc_cfg_test` 已可在 Rust standalone 库上通过 **9/9**。
+同一套 scalar/array `get/set/extract/apply` 也工作在
+`MPP_VENC_KCFG_TYPE_ST_CFG` 句柄上，且 `mpp_enc_cfg_deinit()` 会按 vendor
+路径释放该句柄。
 t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
 也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
 （`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则

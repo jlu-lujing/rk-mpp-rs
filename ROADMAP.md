@@ -4053,8 +4053,11 @@ pipeline uses.
   old oracle. The regular EncCfg and `MPP_VENC_KCFG_TYPE_ST_CFG` handles now
   share the same scalar string APIs. Exporting `mpp_enc_cfg_objdef` and
   `kmpp_obj_to_entry` lets the unmodified vendor `mpp_enc_cfg_test` pass 9/9;
-  the LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1347 passed / 45 ignored and t6 workspace tests are 1349 passed / 45 ignored,
+  the ST_CFG handle now also carries the known arrays through `set_st/get_st`
+  and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
+  A focused board consumer checks all three ST_CFG formats; the independent
+  LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
+  1348 passed / 45 ignored and t6 workspace tests are 1350 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
