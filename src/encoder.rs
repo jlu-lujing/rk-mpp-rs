@@ -1422,7 +1422,7 @@ impl Encoder {
                 }
                 let input = format_nv12_input(self.config, frame.data)?;
                 let encoded = encoder
-                    .encode_frame(&input)
+                    .encode_frame_for_queue(&input)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
                 let coded_width = self.config.width().div_ceil(16) * 16;
@@ -1481,7 +1481,7 @@ impl Encoder {
                 let input = format_nv12_input(self.config, frame.data)?;
                 let encoded = if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
                     encoder
-                        .encode_frame_with_rc_packets(
+                        .encode_frame_with_rc_packets_for_queue(
                             &input,
                             rc.bit_target,
                             rc.qp_target,
@@ -1491,7 +1491,7 @@ impl Encoder {
                         .map_err(|error| Error::Hardware(error))?
                 } else {
                     encoder
-                        .encode_frame_packets(&input)
+                        .encode_frame_packets_for_queue(&input)
                         .map_err(|error| Error::Hardware(error.to_string()))?
                 };
                 let count = encoded.packets.len();
@@ -1781,7 +1781,7 @@ impl Encoder {
                     });
                 }
                 let encoded = encoder
-                    .encode_frame_fd(input_fd)
+                    .encode_frame_fd_for_queue(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
                 let coded_width = self.config.width().div_ceil(16) * 16;
@@ -1836,7 +1836,7 @@ impl Encoder {
                     ));
                 }
                 let encoded = encoder
-                    .encode_frame_packets_fd(input_fd)
+                    .encode_frame_packets_fd_for_queue(input_fd)
                     .map_err(|error| Error::Hardware(error.to_string()))?;
                 let count = encoded.packets.len();
                 let meta =

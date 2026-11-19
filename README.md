@@ -352,6 +352,7 @@ Rust 最小示例：
 ```bash
 cargo run --example sdk_decode -- h264 input.264 output.yuv
 cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 26 6
+cargo run --release --example sdk_encode_stream -- h265 input.nv12 output.265 320 240 26 6
 rk-mpp-rs h264dec input.264 output.yuv
 RKMPP_DECODE_NV12=1 rk-mpp-rs h264dec input.264 output.nv12
 RKMPP_DECODE_DMABUF=1 rk-mpp-rs h264dec input.264 /dev/null

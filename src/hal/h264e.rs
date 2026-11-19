@@ -1249,7 +1249,22 @@ impl Vepu580H264 {
     }
 
     pub fn encode_frame(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
-        self.encode_frame_with_policy(nv12, None)
+        self.encode_frame_with_policy(nv12, None, true)
+    }
+
+    pub(crate) fn encode_frame_for_queue(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
+        self.encode_frame_with_policy(nv12, None, false)
+    }
+
+    pub(crate) fn encode_frame_fd_for_queue(
+        &mut self,
+        input_fd: i32,
+    ) -> Result<EncodedFrame, String> {
+        if input_fd < 0 {
+            return Err("H.264 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_frame_for_queue(&[])
     }
 
     pub(crate) fn encode_frame_with_rc_reencode(
@@ -1268,7 +1283,7 @@ impl Vepu580H264 {
             qp_delta_row: 2,
             qp_delta_row_i: 2,
         });
-        self.encode_frame_with_policy(nv12, Some(reencode))
+        self.encode_frame_with_policy(nv12, Some(reencode), false)
     }
 
     pub(crate) fn encode_frame_with_fixed_qp_reencode(
@@ -1279,7 +1294,7 @@ impl Vepu580H264 {
         ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<EncodedFrame, String> {
         self.next_rate_control_override = None;
-        self.encode_frame_with_policy(nv12, Some(reencode))
+        self.encode_frame_with_policy(nv12, Some(reencode), false)
     }
 
     fn encode_frame_with_policy(
@@ -1288,6 +1303,7 @@ impl Vepu580H264 {
         mut reencode: Option<
             &mut dyn FnMut(RateControlFeedback) -> Result<Option<RateControlReencode>, String>,
         >,
+        include_annex_b: bool,
     ) -> Result<EncodedFrame, String> {
         self.active_osd = self.next_osd.take();
         let previous_state = self.state;
@@ -1603,9 +1619,14 @@ impl Vepu580H264 {
             })
             .unwrap_or_default();
         let prefixed_payload = prefix_slices(&payload, &slice_lengths, &slice_prefix)?;
-        let mut annex_b = Vec::with_capacity(headers.len() + prefixed_payload.len());
-        annex_b.extend_from_slice(&headers);
-        annex_b.extend_from_slice(prefixed_payload.as_ref());
+        let annex_b = if include_annex_b {
+            let mut annex_b = Vec::with_capacity(headers.len() + prefixed_payload.len());
+            annex_b.extend_from_slice(&headers);
+            annex_b.extend_from_slice(prefixed_payload.as_ref());
+            annex_b
+        } else {
+            Vec::new()
+        };
         let packets = output_packets(&headers, &slice_prefix, &payload, &slice_lengths)?;
         self.last_rate_control = external_rate_control.or_else(|| {
             self.rc.as_ref().map(|_| RateControl {

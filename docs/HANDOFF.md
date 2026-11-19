@@ -401,6 +401,13 @@ H.264 输出布局现在用 `Cow` 复用无 temporal prefix 的 hardware payload
 省掉一整个码流的临时复制。同一 t6 80% OPP 条件、7 次交错 500 帧 720p
 中位数从 1088 ms 降到 1073 ms（约 1.4%），输出 SHA-256 不变。
 
+高层 `Encoder::submit_frame()` 只需要 packet view，因此 H.264/H.265 新增
+crate 内部 queue 路径，不再为每帧同时构造公开 `EncodedFrame::annex_b`。
+公开 `encode_frame*()` API 仍保留完整 Annex-B 字段。t6 上旧/新
+`sdk_encode` 各编码 500 帧 720p，H.264 SHA-256
+`68715bd4…617c05`、H.265 SHA-256 `ae613590…469783` 均完全一致。
+`examples/sdk_encode_stream` 同时提供固定内存的流式示例。
+
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
 一致（`ae613590ee5b546f89d76dad1ecaa1528da292abfbd4e92303cc84c93b469783`）。

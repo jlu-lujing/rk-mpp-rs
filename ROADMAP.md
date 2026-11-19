@@ -4068,6 +4068,15 @@ pipeline uses.
   Both binaries produced the same 7,031,305-byte stream
   (`68715bd450098e6559911a6e1fd9837fa142fd29df4ec8a3707932e2d5617c05`).
 
+- **2026-11-20: high-level encoder queues skip the Annex-B duplicate.** The
+  public `Encoder` consumes packet views, but the H.264/H.265 sessions also
+  built and retained a complete Annex-B access unit for every submitted frame.
+  Crate-internal queue methods now omit that unused duplicate while the public
+  `encode_frame*()` APIs keep their existing complete fields. A bounded-memory
+  `sdk_encode_stream` example drives the same public encoder API. On t6, the
+  old and new binaries produced identical 500-frame H.264 and H.265 streams
+  (`68715bd4…617c05` and `ae613590…469783`).
+
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a
   request Batch. The session now reuses and clears both. Seven interleaved

@@ -386,6 +386,21 @@ impl Vepu580H265 {
     /// slicing this has one packet per completed slice; otherwise it is one
     /// complete access unit.
     pub fn encode_frame_packets(&mut self, nv12: &[u8]) -> Result<EncodedFrame, String> {
+        self.encode_frame_packets_inner(nv12, true)
+    }
+
+    pub(crate) fn encode_frame_packets_for_queue(
+        &mut self,
+        nv12: &[u8],
+    ) -> Result<EncodedFrame, String> {
+        self.encode_frame_packets_inner(nv12, false)
+    }
+
+    fn encode_frame_packets_inner(
+        &mut self,
+        nv12: &[u8],
+        include_annex_b: bool,
+    ) -> Result<EncodedFrame, String> {
         self.synchronize_service_recovery()?;
         let recovery_restart = self.recovery_pending;
         let force_idr = std::mem::take(&mut self.force_next_idr);
@@ -432,8 +447,14 @@ impl Vepu580H265 {
                 qp_delta_row: 2,
                 qp_delta_row_i: 2,
             };
-            let mut encoded =
-                self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, Some(rc))?;
+            let mut encoded = self.encode_picture_rc(
+                nv12,
+                picture,
+                prefix,
+                recovery_prefix,
+                Some(rc),
+                include_annex_b,
+            )?;
             if let Some(measured) = self.last_measured.take() {
                 if std::env::var_os("H265_RC_DEBUG").is_some() {
                     eprintln!("h265 rc measured: {:?}", measured);
@@ -459,7 +480,14 @@ impl Vepu580H265 {
             let poc = self.frames.saturating_sub(self.idr_frame);
             (Picture::P { poc_lsb: poc }, false)
         };
-        let encoded = self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, None)?;
+        let encoded = self.encode_picture_rc(
+            nv12,
+            picture,
+            prefix,
+            recovery_prefix,
+            None,
+            include_annex_b,
+        )?;
         self.slot = 1 - self.slot;
         self.frames += 1;
         self.recovery_pending = false;
@@ -474,13 +502,24 @@ impl Vepu580H265 {
         self.encode_frame_packets(&[])
     }
 
+    pub(crate) fn encode_frame_packets_fd_for_queue(
+        &mut self,
+        input_fd: i32,
+    ) -> Result<EncodedFrame, String> {
+        if input_fd < 0 {
+            return Err("H.265 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_frame_packets_for_queue(&[])
+    }
+
     fn encode_picture_packets(
         &mut self,
         nv12: &[u8],
         picture: Picture,
         with_prefix: bool,
     ) -> Result<EncodedFrame, String> {
-        self.encode_picture_rc(nv12, picture, with_prefix, false, None)
+        self.encode_picture_rc(nv12, picture, with_prefix, false, None, true)
     }
 
     /// One picture with an explicit rate-control decision: the same job the model
@@ -719,6 +758,29 @@ impl Vepu580H265 {
         qp_min: u32,
         qp_max: u32,
     ) -> Result<EncodedFrame, String> {
+        self.encode_frame_with_rc_packets_inner(nv12, bit_target, qp_target, qp_min, qp_max, true)
+    }
+
+    pub(crate) fn encode_frame_with_rc_packets_for_queue(
+        &mut self,
+        nv12: &[u8],
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<EncodedFrame, String> {
+        self.encode_frame_with_rc_packets_inner(nv12, bit_target, qp_target, qp_min, qp_max, false)
+    }
+
+    fn encode_frame_with_rc_packets_inner(
+        &mut self,
+        nv12: &[u8],
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+        include_annex_b: bool,
+    ) -> Result<EncodedFrame, String> {
         self.encode_frame_with_rc_policy(
             nv12,
             Some(ExternalRateControl {
@@ -728,6 +790,7 @@ impl Vepu580H265 {
                 qp_max,
             }),
             None,
+            include_annex_b,
         )
     }
 
@@ -754,7 +817,7 @@ impl Vepu580H265 {
             RateControlFeedback,
         ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<EncodedFrame, String> {
-        self.encode_frame_with_rc_policy(nv12, Some(initial), Some(reencode))
+        self.encode_frame_with_rc_policy(nv12, Some(initial), Some(reencode), false)
     }
 
     pub(crate) fn encode_frame_with_fixed_qp_reencode(
@@ -764,7 +827,7 @@ impl Vepu580H265 {
             RateControlFeedback,
         ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<EncodedFrame, String> {
-        self.encode_frame_with_rc_policy(nv12, None, Some(reencode))
+        self.encode_frame_with_rc_policy(nv12, None, Some(reencode), false)
     }
 
     fn encode_frame_with_rc_policy(
@@ -774,6 +837,7 @@ impl Vepu580H265 {
         mut reencode: Option<
             &mut dyn FnMut(RateControlFeedback) -> Result<Option<RateControlReencode>, String>,
         >,
+        include_annex_b: bool,
     ) -> Result<EncodedFrame, String> {
         self.synchronize_service_recovery()?;
         let recovery_restart = self.recovery_pending;
@@ -824,7 +888,7 @@ impl Vepu580H265 {
                 previous_header_qp
             };
             let hardware_result =
-                self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, rc);
+                self.encode_picture_rc(nv12, picture, prefix, recovery_prefix, rc, include_annex_b);
             self.qp = original_fixed_qp;
             self.fixed_qp_header_override = previous_header_qp;
             let encoded = hardware_result?;
@@ -904,6 +968,7 @@ impl Vepu580H265 {
         with_prefix: bool,
         recovery_prefix: bool,
         rc: Option<RateControl>,
+        include_annex_b: bool,
     ) -> Result<EncodedFrame, String> {
         self.active_osd = self.next_osd.take();
         let input_fd = if let Some(input_fd) = self.input_fd_override.take() {
@@ -947,7 +1012,7 @@ impl Vepu580H265 {
         if self.tile_widths().len() > 1 && !self.tile_warmed {
             self.tile_warmed = true;
             self.input_fd_override = Some(input_fd);
-            self.encode_picture_rc(nv12, picture, false, false, rc)?;
+            self.encode_picture_rc(nv12, picture, false, false, rc, false)?;
         }
 
         // The GOP's long-term reference is the opening IDR (`used_by_lt_flg0` and
@@ -1238,9 +1303,14 @@ impl Vepu580H265 {
                 .map_err(|e| format!("H.265 prefix: {e:?}"))?
         };
         let packets = output_packets(&headers, &payload, &slice_lengths)?;
-        let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
-        annex_b.extend_from_slice(&headers);
-        annex_b.extend_from_slice(&payload);
+        let annex_b = if include_annex_b {
+            let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
+            annex_b.extend_from_slice(&headers);
+            annex_b.extend_from_slice(&payload);
+            annex_b
+        } else {
+            Vec::new()
+        };
         self.active_osd = None;
         Ok(EncodedFrame {
             annex_b,
