@@ -41,6 +41,9 @@ a failure by default, not a successful no-op.
 The same dependency gate covers codec regression/corruption scripts, IEP2,
 VDPP2 and the official-header migration consumer. Keep platform-capability
 skips explicit; missing configured paths are failures.
+An oracle that exists but exits non-zero is always a test failure, including
+under `ALLOW_SKIPS=1`; that switch accepts missing capabilities, not failed
+execution.
 
 ---
 

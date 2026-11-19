@@ -83,7 +83,8 @@ if [ -s "$vp9_input" ] && [ -x /usr/local/bin/mpi_dec_test ]; then
         printf 'PASS vp9 official data path matches C MPP (%s)\n' \
             "$(sha256sum "$vp9_output" | cut -d' ' -f1)"
     else
-        printf 'SKIP vp9 (system C decoder oracle failed)\n'
+        printf 'FAIL vp9 (system C decoder oracle failed)\n' >&2
+        exit 1
     fi
 else
     source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
@@ -106,7 +107,8 @@ if [ -s "$av1_input" ] && [ -x /usr/local/bin/mpi_dec_test ]; then
         printf 'PASS av1 official data path matches C MPP (%s)\n' \
             "$(sha256sum "$av1_output" | cut -d' ' -f1)"
     else
-        printf 'SKIP av1 (system C decoder oracle failed)\n'
+        printf 'FAIL av1 (system C decoder oracle failed)\n' >&2
+        exit 1
     fi
 else
     source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
@@ -134,7 +136,8 @@ if command -v ffmpeg >/dev/null 2>&1 &&
         printf 'PASS mjpeg official data path matches C MPP (%s)\n' \
             "$(sha256sum "$mjpeg_output" | cut -d' ' -f1)"
     else
-        printf 'SKIP mjpeg (system C decoder oracle failed)\n'
+        printf 'FAIL mjpeg (system C decoder oracle failed)\n' >&2
+        exit 1
     fi
 else
     source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \

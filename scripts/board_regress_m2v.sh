@@ -89,7 +89,8 @@ fi
 
 # Interlaced pictures: ffmpeg is the oracle, hardware rounding is allowed.
 if ! ssh "$BOARD" 'command -v ffmpeg >/dev/null && command -v python3 >/dev/null'; then
-  printf 'SKIP m2v_320x240_ilaced.m2v (ffmpeg or python3 unavailable)\n'
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "MPEG-2 interlaced" "ffmpeg or python3 unavailable"
 elif ! ssh "$BOARD" "ffmpeg -loglevel error -y -i $data/m2v_320x240_ilaced.m2v \
     -pix_fmt yuv420p -f rawvideo /tmp/m2v_ilaced_ff.yuv" 2>/dev/null; then
   printf 'FAIL m2v_320x240_ilaced.m2v (could not decode with ffmpeg)\n'
