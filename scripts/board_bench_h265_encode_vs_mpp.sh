@@ -11,7 +11,7 @@ mpp_bin="$mpp_ref/build/test/mpi_enc_test"
 rust_bin="${RUST_BIN:-~/rk-mpp-rs/target/release/rk-mpp-rs}"
 mpp_lib="$mpp_ref/build/mpp"
 samples="${SAMPLES:-5}"
-frames=12
+frames="${FRAMES:-60}"
 allow_skips="${ALLOW_SKIPS:-0}"
 sizes=(320x240 640x480 1280x720 1920x1088)
 

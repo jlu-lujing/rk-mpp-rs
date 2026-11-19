@@ -319,6 +319,15 @@ override 已写入 `docs/board.md`。
 覆盖；只有显式 `ALLOW_SKIPS=1` 才允许部分测量。这样 `board_perf_gate.sh`
 不会把缺文件误判成“没有该行”的软跳过。
 
+H.265 文件输入也改成与 H.264 相同的双 surface DMA 管线：reader 线程填下一
+幅，VEPU580 编码当前幅，`h265-gop` 通过 surface fd 直接提交，不再先读进
+临时 `Vec` 再复制。t6、80% OPP 下，120 帧 720p 的 wall time 从 415 ms 降到
+302 ms，task-clock 从 182.4 ms 降到 99.8 ms，system time 从 137.7 ms 降到
+58.5 ms；前后 H.265 流的 SHA-256 都是
+`a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`。
+五次交错 60 帧矩阵中，H.265 在 320x240、640x480、720p、1080p 分别比 C 快
+39.1%、77.3%、27.1%、35.7%。
+
 上游 `mpi_enc_test` 的 `MPP_SET_VENC_INIT_KCFG` 已接通。兼容层复制
 type/coding/max dimensions 到 `mpp_init`/`MPP_ENC_SET_CFG`，保留所有已知
 kernel-only key，遇到未知 key 返回 `MPP_NOK`；type/coding mismatch 返回

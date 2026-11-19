@@ -33,7 +33,7 @@ mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
 mpp_lib="$mpp_ref/build/mpp"
 samples="${SAMPLES:-5}"
-frames=12
+frames="${FRAMES:-60}"
 allow_skips="${ALLOW_SKIPS:-0}"
 fail=0
 

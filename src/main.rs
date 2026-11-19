@@ -202,10 +202,10 @@ impl DmaInputPipeline {
         let (stop, stop_rx) = mpsc::sync_channel(1);
         for _ in 0..2 {
             let buffer = dma_heap::DmaBuf::alloc("system-uncached", frame_bytes, false)
-                .map_err(|error| format!("allocate H.264 input surface: {error}"))?;
+                .map_err(|error| format!("allocate encoder input surface: {error}"))?;
             recycle
                 .send(buffer)
-                .map_err(|_| "H.264 input pipeline stopped during setup".to_string())?;
+                .map_err(|_| "encoder input pipeline stopped during setup".to_string())?;
         }
         let path = path.to_string();
         let reader_cpu = select_input_reader_cpu();
@@ -220,11 +220,11 @@ impl DmaInputPipeline {
                     for index in 0..wanted {
                         let mut buffer = recycle_rx
                             .recv()
-                            .map_err(|_| "H.264 input pipeline was closed".to_string())?;
+                            .map_err(|_| "encoder input pipeline was closed".to_string())?;
                         fill_dma_input(&mut buffer, frame_bytes, &mut source)?;
                         frame_tx
                             .send(DmaInputEvent::Frame(DmaInputFrame { buffer, index }))
-                            .map_err(|_| "H.264 encoder stopped reading input".to_string())?;
+                            .map_err(|_| "encoder stopped reading input".to_string())?;
                     }
                     let _ = stop_rx.recv();
                     Ok(())
@@ -246,12 +246,12 @@ impl DmaInputPipeline {
         match self
             .frames
             .recv()
-            .map_err(|_| "H.264 input pipeline stopped unexpectedly".to_string())?
+            .map_err(|_| "encoder input pipeline stopped unexpectedly".to_string())?
         {
             DmaInputEvent::Frame(frame) => {
                 if frame.index != expected {
                     return Err(format!(
-                        "H.264 input pipeline frame {} arrived while waiting for {}",
+                        "encoder input pipeline frame {} arrived while waiting for {}",
                         frame.index, expected
                     ));
                 }
@@ -264,7 +264,7 @@ impl DmaInputPipeline {
     fn recycle(&self, buffer: dma_heap::DmaBuf) -> Result<(), String> {
         self.recycle
             .send(buffer)
-            .map_err(|_| "H.264 input pipeline stopped before recycle".to_string())
+            .map_err(|_| "encoder input pipeline stopped before recycle".to_string())
     }
 
     fn finish(mut self) {
@@ -282,13 +282,13 @@ fn fill_dma_input(
 ) -> Result<(), String> {
     if expected > buffer.len() {
         return Err(format!(
-            "H.264 input surface is {} bytes, needs {expected}",
+            "encoder input surface is {} bytes, needs {expected}",
             buffer.len()
         ));
     }
     buffer
         .sync_write_begin()
-        .map_err(|error| format!("H.264 input sync begin: {error}"))?;
+        .map_err(|error| format!("encoder input sync begin: {error}"))?;
     let read_result = (|| {
         let mut filled = 0usize;
         let target = &mut buffer.as_mut_slice()[..expected];
@@ -304,7 +304,7 @@ fn fill_dma_input(
     })();
     buffer
         .sync_write_end()
-        .map_err(|error| format!("H.264 input flush: {error}"))?;
+        .map_err(|error| format!("encoder input flush: {error}"))?;
     read_result
 }
 
@@ -2816,13 +2816,6 @@ fn main() {
         // cache; perf put most of the system time there.
         let frame_size = width * height * 3 / 2;
         let needed = frame_size * frames;
-        let mut file = match std::fs::File::open(src) {
-            Ok(file) => file,
-            Err(e) => {
-                eprintln!("{src}: {e}");
-                std::process::exit(1);
-            }
-        };
         match std::fs::metadata(src) {
             Ok(meta) if meta.len() >= needed as u64 => {}
             Ok(meta) => {
@@ -2837,7 +2830,6 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        let mut frame = vec![0u8; frame_size];
         let mut split = h265_syntax::SliceSplit::default();
         let mut syntax = h265_syntax::SyntaxOptions::default();
         let mut refresh = None;
@@ -2899,15 +2891,41 @@ fn main() {
             }
             encoder.set_slice_split(split)?;
             encoder.set_roi_regions(&rois)?;
+            let input_parallelism = std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get())
+                .unwrap_or(1);
+            let pipeline = if input_parallelism > 1 {
+                Some(DmaInputPipeline::start(src, frame_size, frames)?)
+            } else {
+                None
+            };
+            let mut file = if pipeline.is_none() {
+                Some(std::fs::File::open(src).map_err(|error| format!("{src}: {error}"))?)
+            } else {
+                None
+            };
+            let mut frame = if pipeline.is_none() {
+                vec![0u8; frame_size]
+            } else {
+                Vec::new()
+            };
             let mut out = Vec::new();
             let mut packets = 0;
             let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
             for index in 0..frames {
-                use std::io::Read as _;
-                if let Err(e) = file.read_exact(&mut frame) {
-                    return Err(format!("{src}: frame {index}: {e}"));
-                }
-                let encoded = encoder.encode_frame_packets(&frame)?;
+                let encoded = if let Some(pipeline) = pipeline.as_ref() {
+                    let input = pipeline.next(index)?;
+                    let encoded = encoder.encode_frame_packets_fd(input.fd())?;
+                    pipeline.recycle(input)?;
+                    encoded
+                } else {
+                    use std::io::Read as _;
+                    file.as_mut()
+                        .expect("sequential H.265 input source")
+                        .read_exact(&mut frame)
+                        .map_err(|error| format!("{src}: frame {index}: {error}"))?;
+                    encoder.encode_frame_packets(&frame)?
+                };
                 packets += encoded.packets.len();
                 if trace_packets {
                     let sizes = encoded
@@ -2922,6 +2940,9 @@ fn main() {
                     );
                 }
                 out.extend_from_slice(&encoded.annex_b);
+            }
+            if let Some(pipeline) = pipeline {
+                pipeline.finish();
             }
             Ok((out, packets))
         });

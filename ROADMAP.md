@@ -3939,6 +3939,18 @@ pipeline uses.
   `docs/board.md`. Decode and encode benchmark scripts now fail on missing
   binaries, oracles or fixtures unless `ALLOW_SKIPS=1` is explicit.
 
+- **2026-11-19: H.265 encoder input shares the H.264 DMA pipeline.** The
+  `h265-gop` CLI now uses the same two reusable `system-uncached` input
+  surfaces as H.264: one reader thread fills the next picture while VEPU580
+  encodes the current one, and the encoder receives the surface fd directly.
+  This removes the temporary frame `Vec` and the second copy from the steady
+  state. On t6 at 80% OPP, 120 frames of 720p moved from 415 to 302 ms wall
+  time, task-clock from 182.4 to 99.8 ms, and system time from 137.7 to
+  58.5 ms; the before/after H.265 SHA-256 stayed
+  `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`.
+  The five-sample 60-frame H.265 matrix is +39.1%, +77.3%, +27.1% and
+  +35.7% faster than C at 320x240, 640x480, 720p and 1080p respectively.
+
 - **2026-11-19: venc init kcfg is consumed.** The drop-in layer now handles
   `MPP_SET_VENC_INIT_KCFG`, mirrors the upstream init key set, rejects unknown
   keys, maps type/coding and maximum dimensions into `mpp_init` /

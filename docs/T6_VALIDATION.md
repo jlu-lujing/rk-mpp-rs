@@ -1494,6 +1494,28 @@ with SHA-256
 `tools/mpp_nv12_fill.c`, checks both hashes and repeats the interleaved
 benchmark.
 
+### H.265 file-input DMA pipeline
+
+The `h265-gop` file path now uses the same two-surface reader/encoder overlap
+as H.264. The previous path allocated a plain frame `Vec`, read each picture
+into it, and then copied it into the encoder's DMA input surface. The new path
+fills the next `system-uncached` surface on the reader thread, submits the
+current surface fd, and recycles the surface only after the hardware job
+finishes.
+
+At the persistent 80% OPP cap, the same 120-frame 720p fixture produced the
+same H.265 stream before and after the change:
+`a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`.
+`perf stat` measured 415 to 302 ms wall time, 182.4 to 99.8 ms task-clock and
+137.7 to 58.5 ms system time. A seven-sample interleaved comparison selected
+the retained `system-uncached` heap at a 275 ms median over `system` at 285 ms.
+
+The current five-sample, 60-frame release benchmark passes all four H.265
+rows. Rust versus C throughput is +39.1% at 320x240, +77.3% at 640x480,
++27.1% at 720p and +35.7% at 1080p. On a 500-frame 720p run, Rust completed
+in 1.047 s against C's 1.842 s; H.264 completed in 1.022 s against C's
+2.503 s.
+
 The H.264 and HEVC `/tmp` corpora were restored from
 `~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and
 the HEVC suite passed every available large-profile, tile, slice, open-GOP,
