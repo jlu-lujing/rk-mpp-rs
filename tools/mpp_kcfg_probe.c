@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "rk_mpi.h"
+#include "rk_vdec_kcfg.h"
 #include "rk_venc_kcfg.h"
 
 static int set_init_keys(MppVencKcfg cfg)
@@ -72,6 +73,35 @@ int main(void)
     mpp_destroy(ctx);
     mpp_venc_kcfg_deinit(cfg);
 
-    puts("PASS venc init kcfg mapping, mismatch and unknown-key rejection");
+    MppVdecKcfg vdec = NULL;
+    if (mpp_vdec_kcfg_init(&vdec, MPP_VDEC_KCFG_TYPE_BUTT) != MPP_ERR_VALUE)
+        return 12;
+    if (mpp_vdec_kcfg_init_by_name(&vdec, "not-a-vendor-config") != MPP_ERR_VALUE)
+        return 13;
+    if (mpp_vdec_kcfg_init_by_name(&vdec, "KmppVdecStartCfg") || !vdec)
+        return 14;
+    if (mpp_vdec_kcfg_set_u32(vdec, "test:width", 1920) ||
+        mpp_vdec_kcfg_deinit(vdec))
+        return 15;
+
+    MppVencKcfg ctrl = NULL;
+    RK_U32 flags = 0;
+    RK_U32 size = 0;
+    const RK_U8 flex[] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    if (mpp_venc_kcfg_init(&ctrl, MPP_VENC_KCFG_TYPE_CTRL_CFG) || !ctrl)
+        return 16;
+    if (mpp_venc_ctrl_set_flex(ctrl, flex, sizeof(flex)))
+        return 17;
+    if (mpp_venc_kcfg_get_u32(ctrl, "flags", &flags) ||
+        mpp_venc_kcfg_get_u32(ctrl, "size", &size) ||
+        flags != KMPP_CTRL_FLAG_FLEX || size != sizeof(flex))
+        return 18;
+    void *base = mpp_venc_ctrl_flex_base(ctrl);
+    if (!base || memcmp(base, flex, sizeof(flex)))
+        return 19;
+    if (mpp_venc_kcfg_deinit(ctrl))
+        return 20;
+
+    puts("PASS kcfg init, name, init-kcfg and ctrl-flex compatibility");
     return 0;
 }

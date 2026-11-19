@@ -337,6 +337,12 @@ kernel-only key，遇到未知 key 返回 `MPP_NOK`；type/coding mismatch 返�
 `mpi_enc_test -kmpp_mode=1` 仍需要更大的 KMPP object ABI，边界与 key 审计
 写在 `docs/KCFG.md`。
 
+`vdec_kcfg`/`venc_kcfg` 的句柄生命周期也已按 vendor 收紧：非法 type 返回
+`MPP_ERR_VALUE`，`init_by_name` 只接受 `KmppVdec*Cfg`/`KmppVenc*Cfg`
+规范族名，CTRL_CFG 初始化 `cmd/val/arg/ret`，flex base/set 仅允许 CTRL_CFG；
+`set_flex` 同步写入 `flags=KMPP_CTRL_FLAG_FLEX` 与 size。t6 的扩展
+`mpp_kcfg_probe` 和只使用官方头文件的 `board_mpp_migration.sh` 均通过。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；

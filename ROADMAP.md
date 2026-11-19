@@ -3960,6 +3960,14 @@ pipeline uses.
   Full `mpi_enc_test -kmpp_mode=1` still requires the wider KMPP object ABI;
   that boundary is documented in `docs/KCFG.md`.
 
+- **2026-11-19: kcfg handles follow vendor lifecycle semantics.** Invalid
+  vdec/venc config types now return `MPP_ERR_VALUE`, `init_by_name()` accepts
+  only the canonical `KmppVdec*Cfg` / `KmppVenc*Cfg` families, CTRL_CFG starts
+  with the vendor `cmd`/`val`/`arg`/`ret` entries, and flex helpers are valid
+  only for CTRL_CFG. `set_flex` records `KMPP_CTRL_FLAG_FLEX` and the flex
+  size. The extended header probe and the official-header C migration
+  consumer both pass on t6.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

@@ -33,7 +33,8 @@ BOARD=t6 scripts/board_mpp_kcfg.sh
 
 It compiles `tools/mpp_kcfg_probe.c` against the upstream vendor headers,
 loads it with `librk_mpp_rs.so` as `librockchip_mpp.so.1`, and checks mapping,
-mismatch and unknown-key rejection.
+mismatch, unknown-key rejection, canonical name lookup, invalid-type rejection
+and CTRL_CFG flex metadata.
 
 ## Other kcfg objects
 
@@ -41,6 +42,23 @@ mismatch and unknown-key rejection.
 `mpp_venc_ctrl_*` retain vendor-compatible typed storage and flex-buffer
 semantics. They do not issue a kernel kcfg ioctl because this crate programs
 the HAL directly.
+
+The handle lifecycle now follows the vendor object rules:
+
+- `mpp_vdec_kcfg_init()` and `mpp_venc_kcfg_init()` reject
+  `MPP_*_KCFG_TYPE_BUTT` and larger values with `MPP_ERR_VALUE`;
+- `init_by_name()` recognizes only the canonical `KmppVdec*Cfg` and
+  `KmppVenc*Cfg` names, including the vendor's accepted prefix form;
+- `MPP_VENC_KCFG_TYPE_CTRL_CFG` starts with `cmd=0`, `val=0`, null `arg` and
+  null `ret`;
+- `mpp_venc_ctrl_flex_base()` and `mpp_venc_ctrl_set_flex()` reject handles
+  other than CTRL_CFG. `set_flex` records `flags=KMPP_CTRL_FLAG_FLEX` and the
+  flex `size`, matching the upstream helper.
+
+`MPP_VDEC_KCFG_TYPE_INIT` is used by the KMPP object API, not by an
+`MppApi.control()` command: the current `rk_mpi_cmd.h` exposes only
+`MPP_SET_VENC_INIT_KCFG`. Decoder keys therefore remain storage-only for the
+drop-in MPI path rather than being silently fed into `DecoderConfig`.
 
 The complete upstream `mpi_enc_test -kmpp_mode=1` still requires the broader
 KMPP object ABI (`kmpp_obj_get`, `kmpp_obj_to_shm`, object definitions, shared

@@ -15,6 +15,31 @@ const KCFG_MAGIC: u64 = 0x4d50_5052_4b43_4647; // "MPPRKCFG"
 const MPP_OK: c_int = 0;
 const MPP_NOK: c_int = -1;
 const MPP_ERR_NULL_PTR: c_int = -3;
+const MPP_ERR_VALUE: c_int = -6;
+
+const VDEC_KCFG_TYPE_BUTT: u32 = 5;
+const VENC_KCFG_TYPE_BUTT: u32 = 8;
+const VENC_KCFG_TYPE_CTRL_CFG: u32 = 7;
+const KMPP_CTRL_FLAG_FLEX: u32 = 2;
+
+const VDEC_KCFG_NAMES: [&str; VDEC_KCFG_TYPE_BUTT as usize] = [
+    "KmppVdecInitCfg",
+    "KmppVdecDeinitCfg",
+    "KmppVdecResetCfg",
+    "KmppVdecStartCfg",
+    "KmppVdecStopCfg",
+];
+
+const VENC_KCFG_NAMES: [&str; VENC_KCFG_TYPE_BUTT as usize] = [
+    "KmppVencInitCfg",
+    "KmppVencDeinitCfg",
+    "KmppVencResetCfg",
+    "KmppVencStartCfg",
+    "KmppVencStopCfg",
+    "KmppVencStCfg",
+    "KmppVencRefCfg",
+    "KmppVencCtrlCfg",
+];
 
 #[derive(Clone, Copy)]
 enum Val {
@@ -40,9 +65,15 @@ pub(super) struct VencInitConfig {
     pub max_height: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KcfgKind {
+    Vdec,
+    Venc,
+}
+
 pub(super) struct KcfgStore {
     magic: u64,
-    kind: &'static str,
+    kind: KcfgKind,
     type_id: u32,
     name: Option<String>,
     values: HashMap<String, Val>,
@@ -54,13 +85,20 @@ fn store_mut<'a>(cfg: *mut c_void) -> Option<&'a mut KcfgStore> {
     (store.magic == KCFG_MAGIC).then_some(store)
 }
 
-fn new_store(kind: &'static str, type_id: u32, name: Option<String>) -> *mut c_void {
+fn new_store(kind: KcfgKind, type_id: u32, name: Option<String>) -> *mut c_void {
+    let mut values = HashMap::new();
+    if kind == KcfgKind::Venc && type_id == VENC_KCFG_TYPE_CTRL_CFG {
+        values.insert("cmd".to_string(), Val::S32(0));
+        values.insert("val".to_string(), Val::S64(0));
+        values.insert("arg".to_string(), Val::Ptr(std::ptr::null_mut()));
+        values.insert("ret".to_string(), Val::Ptr(std::ptr::null_mut()));
+    }
     Box::into_raw(Box::new(KcfgStore {
         magic: KCFG_MAGIC,
         kind,
         type_id,
         name,
-        values: HashMap::new(),
+        values,
         flex: Flex {
             buffer: vec![0u8; 4096],
         },
@@ -77,6 +115,13 @@ unsafe fn key(name: *const c_char) -> Option<String> {
             .to_string_lossy()
             .into_owned(),
     )
+}
+
+fn type_by_name(name: &str, names: &[&str]) -> Option<u32> {
+    names
+        .iter()
+        .position(|canonical| name.starts_with(canonical))
+        .map(|index| index as u32)
 }
 
 fn set_value(cfg: *mut c_void, name: *const c_char, value: Val) -> c_int {
@@ -137,7 +182,10 @@ pub unsafe extern "C" fn mpp_vdec_kcfg_init(out: *mut *mut c_void, type_id: u32)
     if out.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    unsafe { *out = new_store("vdec", type_id, None) };
+    if type_id >= VDEC_KCFG_TYPE_BUTT {
+        return MPP_ERR_VALUE;
+    }
+    unsafe { *out = new_store(KcfgKind::Vdec, type_id, None) };
     MPP_OK
 }
 
@@ -152,7 +200,10 @@ pub unsafe extern "C" fn mpp_vdec_kcfg_init_by_name(
     let Some(name) = (unsafe { key(name) }) else {
         return MPP_ERR_NULL_PTR;
     };
-    unsafe { *out = new_store("vdec", 0, Some(name)) };
+    let Some(type_id) = type_by_name(&name, &VDEC_KCFG_NAMES) else {
+        return MPP_ERR_VALUE;
+    };
+    unsafe { *out = new_store(KcfgKind::Vdec, type_id, Some(name)) };
     MPP_OK
 }
 
@@ -161,7 +212,7 @@ pub unsafe extern "C" fn mpp_vdec_kcfg_deinit(cfg: *mut c_void) -> c_int {
     if cfg.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    if unsafe { store_mut(cfg) }.is_none() {
+    if store_mut(cfg).is_none() {
         return MPP_NOK;
     }
     unsafe { drop(Box::from_raw(cfg.cast::<KcfgStore>())) };
@@ -208,7 +259,7 @@ ptr_only!(mpp_vdec_kcfg_set_st, mpp_vdec_kcfg_get_st);
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_vdec_kcfg_show(cfg: *mut c_void) {
-    show_store("vdec", cfg);
+    show_store(KcfgKind::Vdec, cfg);
 }
 
 // ---- venc ------------------------------------------------------------------
@@ -218,7 +269,10 @@ pub unsafe extern "C" fn mpp_venc_kcfg_init(out: *mut *mut c_void, type_id: u32)
     if out.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    unsafe { *out = new_store("venc", type_id, None) };
+    if type_id >= VENC_KCFG_TYPE_BUTT {
+        return MPP_ERR_VALUE;
+    }
+    unsafe { *out = new_store(KcfgKind::Venc, type_id, None) };
     MPP_OK
 }
 
@@ -233,7 +287,10 @@ pub unsafe extern "C" fn mpp_venc_kcfg_init_by_name(
     let Some(name) = (unsafe { key(name) }) else {
         return MPP_ERR_NULL_PTR;
     };
-    unsafe { *out = new_store("venc", 0, Some(name)) };
+    let Some(type_id) = type_by_name(&name, &VENC_KCFG_NAMES) else {
+        return MPP_ERR_VALUE;
+    };
+    unsafe { *out = new_store(KcfgKind::Venc, type_id, Some(name)) };
     MPP_OK
 }
 
@@ -242,7 +299,7 @@ pub unsafe extern "C" fn mpp_venc_kcfg_deinit(cfg: *mut c_void) -> c_int {
     if cfg.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    if unsafe { store_mut(cfg) }.is_none() {
+    if store_mut(cfg).is_none() {
         return MPP_NOK;
     }
     unsafe { drop(Box::from_raw(cfg.cast::<KcfgStore>())) };
@@ -262,13 +319,13 @@ ptr_only!(mpp_venc_kcfg_set_st, mpp_venc_kcfg_get_st);
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_venc_kcfg_show(cfg: *mut c_void) {
-    show_store("venc", cfg);
+    show_store(KcfgKind::Venc, cfg);
 }
 
 /// Base of the flex area for a CTRL_CFG handle (4 KiB, zeroed).
 #[no_mangle]
 pub unsafe extern "C" fn mpp_venc_ctrl_flex_base(cfg: *mut c_void) -> *mut c_void {
-    match store_mut(cfg) {
+    match ctrl_store_mut(cfg) {
         Some(store) => store.flex.buffer.as_mut_ptr().cast(),
         None => std::ptr::null_mut(),
     }
@@ -283,7 +340,7 @@ pub unsafe extern "C" fn mpp_venc_ctrl_set_flex(
     if data.is_null() || size == 0 {
         return MPP_ERR_NULL_PTR;
     }
-    let Some(store) = store_mut(cfg) else {
+    let Some(store) = ctrl_store_mut(cfg) else {
         return MPP_NOK;
     };
     let size = size as usize;
@@ -293,13 +350,33 @@ pub unsafe extern "C" fn mpp_venc_ctrl_set_flex(
     unsafe {
         std::ptr::copy_nonoverlapping(data.cast::<u8>(), store.flex.buffer.as_mut_ptr(), size);
     }
+    store
+        .values
+        .insert("flags".to_string(), Val::U32(KMPP_CTRL_FLAG_FLEX));
+    store
+        .values
+        .insert("size".to_string(), Val::U32(size as u32));
     MPP_OK
 }
 
-fn show_store(kind: &str, cfg: *mut c_void) {
+fn ctrl_store_mut<'a>(cfg: *mut c_void) -> Option<&'a mut KcfgStore> {
+    let store = store_mut(cfg)?;
+    (store.kind == KcfgKind::Venc && store.type_id == VENC_KCFG_TYPE_CTRL_CFG).then_some(store)
+}
+
+fn show_store(kind: KcfgKind, cfg: *mut c_void) {
     let Some(store) = store_mut(cfg) else {
-        eprintln!("rk-mpp-rs: {kind}_kcfg: invalid handle");
+        eprintln!("rk-mpp-rs: kcfg: invalid handle");
         return;
+    };
+    if store.kind != kind {
+        eprintln!("rk-mpp-rs: kcfg: handle kind does not match show function");
+        return;
+    }
+    let kind = if kind == KcfgKind::Vdec {
+        "vdec"
+    } else {
+        "venc"
     };
     eprintln!(
         "rk-mpp-rs: {kind}_kcfg type={} name={:?} entries={} (storage only; not sent to the kernel)",
@@ -359,3 +436,94 @@ fn required_u32(store: &KcfgStore, name: &str) -> Result<u32, String> {
 const _: () = {
     let _ = MPP_NOK;
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn init_validation_and_names_match_the_vendor_handles() {
+        let mut vdec = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { mpp_vdec_kcfg_init(&mut vdec, VDEC_KCFG_TYPE_BUTT) },
+            MPP_ERR_VALUE
+        );
+        let mut venc = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { mpp_venc_kcfg_init(&mut venc, VENC_KCFG_TYPE_BUTT) },
+            MPP_ERR_VALUE
+        );
+
+        let name = CString::new("KmppVdecStartCfg:test").unwrap();
+        assert_eq!(
+            unsafe { mpp_vdec_kcfg_init_by_name(&mut vdec, name.as_ptr()) },
+            MPP_OK
+        );
+        assert_eq!(unsafe { (*vdec.cast::<KcfgStore>()).type_id }, 3);
+        assert_eq!(unsafe { mpp_vdec_kcfg_deinit(vdec) }, MPP_OK);
+
+        let name = CString::new("not-a-vendor-config").unwrap();
+        assert_eq!(
+            unsafe { mpp_venc_kcfg_init_by_name(&mut venc, name.as_ptr()) },
+            MPP_ERR_VALUE
+        );
+    }
+
+    #[test]
+    fn ctrl_cfg_initializes_and_records_flex_metadata() {
+        let mut ctrl = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { mpp_venc_kcfg_init(&mut ctrl, VENC_KCFG_TYPE_CTRL_CFG) },
+            MPP_OK
+        );
+        let store = unsafe { &*ctrl.cast::<KcfgStore>() };
+        assert!(matches!(store.values.get("cmd"), Some(Val::S32(0))));
+        assert!(matches!(store.values.get("val"), Some(Val::S64(0))));
+        assert!(matches!(
+            store.values.get("arg"),
+            Some(Val::Ptr(ptr)) if ptr.is_null()
+        ));
+
+        let data = [1u8, 2, 3, 4];
+        assert_eq!(
+            unsafe {
+                mpp_venc_ctrl_set_flex(ctrl, data.as_ptr().cast(), data.len().try_into().unwrap())
+            },
+            MPP_OK
+        );
+        let mut flags = 0u32;
+        let mut size = 0u32;
+        let flags_key = CString::new("flags").unwrap();
+        let size_key = CString::new("size").unwrap();
+        assert_eq!(
+            unsafe { mpp_venc_kcfg_get_u32(ctrl, flags_key.as_ptr(), &mut flags) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_venc_kcfg_get_u32(ctrl, size_key.as_ptr(), &mut size) },
+            MPP_OK
+        );
+        assert_eq!(flags, KMPP_CTRL_FLAG_FLEX);
+        assert_eq!(size, 4);
+        let base = unsafe { mpp_venc_ctrl_flex_base(ctrl) }.cast::<u8>();
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(base, data.len()) },
+            data
+        );
+        assert_eq!(unsafe { mpp_venc_kcfg_deinit(ctrl) }, MPP_OK);
+    }
+
+    #[test]
+    fn ctrl_flex_rejects_non_ctrl_handles() {
+        let mut init = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_venc_kcfg_init(&mut init, 0) }, MPP_OK);
+        assert!(unsafe { mpp_venc_ctrl_flex_base(init) }.is_null());
+        let data = [1u8];
+        assert_eq!(
+            unsafe { mpp_venc_ctrl_set_flex(init, data.as_ptr().cast(), 1) },
+            MPP_NOK
+        );
+        assert_eq!(unsafe { mpp_venc_kcfg_deinit(init) }, MPP_OK);
+    }
+}

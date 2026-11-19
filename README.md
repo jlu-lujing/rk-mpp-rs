@@ -16,7 +16,8 @@
 官方头文件 297 个声明符号**全部覆盖（297/297）**：核心 API 100%，`sys_cfg`
 与 `vdec_kcfg`/`venc_kcfg` 提供类型化存储/回显，`task_meta` 映射到
 `mpp_meta_*`。`MPP_SET_VENC_INIT_KCFG` 的 type/coding/max dimensions 已映射，
-其余 kernel-only 键保留存储语义；审计见 `docs/KCFG.md`。
+其余 kernel-only 键保留存储语义；非法句柄 type、未知 canonical name 和
+非 CTRL_CFG flex 操作按 vendor 语义拒绝，审计见 `docs/KCFG.md`。
 
 ## 验证范围（重要）
 完整能力矩阵（每条结论的证据与边界）：[docs/CAPABILITY.md](docs/CAPABILITY.md)。

@@ -21,7 +21,8 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
 - `mpp_vdec_kcfg_*`（16）与 `mpp_venc_kcfg_*`/`mpp_venc_ctrl_*`（26）：句柄 +
   类型化存储 + 4 KiB flex 区。`MPP_SET_VENC_INIT_KCFG` 已消费 type/coding、
   max dimensions 和上游 init keys；其余 kernel-only 键仍是 storage-only。
-  unknown init key 会明确拒绝。完整审计见 [`KCFG.md`](KCFG.md)。
+  unknown init key 会明确拒绝。非法句柄 type、未知 canonical name 和非
+  CTRL_CFG flex 操作也会按 vendor 语义报错。完整审计见 [`KCFG.md`](KCFG.md)。
 
 ## 1. 二进制 drop-in（不改代码）
 

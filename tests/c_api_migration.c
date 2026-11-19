@@ -84,15 +84,27 @@ int main(void)
     mpp_vdec_kcfg_deinit(vd);
 
     MppVencKcfg ve = NULL;
-    if (mpp_venc_kcfg_init_by_name(&ve, "h264") != 0 || !ve) { printf("venc_kcfg init failed\n"); return 1; }
+    if (mpp_venc_kcfg_init(&ve, MPP_VENC_KCFG_TYPE_BUTT) != MPP_ERR_VALUE) {
+        printf("venc_kcfg accepted an invalid type\n");
+        return 1;
+    }
+    if (mpp_venc_kcfg_init_by_name(&ve, "KmppVencInitCfg") != 0 || !ve) { printf("venc_kcfg init failed\n"); return 1; }
     if (mpp_venc_kcfg_set_u8(ve, "test:qp", 26) != 0) { printf("venc u8 set failed\n"); rc = 1; }
     RK_U8 qp = 0;
     if (mpp_venc_kcfg_get_u8(ve, "test:qp", &qp) != 0 || qp != 26) { printf("venc u8 get %u\n", qp); rc = 1; }
-    unsigned char flex[8] = {1,2,3,4,5,6,7,8};
-    if (mpp_venc_ctrl_set_flex(ve, flex, sizeof(flex)) != 0) { printf("venc flex failed\n"); rc = 1; }
-    unsigned char *base = mpp_venc_ctrl_flex_base(ve);
-    if (!base || base[7] != 8) { printf("venc flex base failed\n"); rc = 1; }
+    if (mpp_venc_ctrl_flex_base(ve) != NULL) { printf("init cfg exposed ctrl flex\n"); rc = 1; }
     mpp_venc_kcfg_deinit(ve);
+
+    MppVencKcfg ve_ctrl = NULL;
+    if (mpp_venc_kcfg_init(&ve_ctrl, MPP_VENC_KCFG_TYPE_CTRL_CFG) != 0 || !ve_ctrl) {
+        printf("venc ctrl init failed\n");
+        return 1;
+    }
+    unsigned char flex[8] = {1,2,3,4,5,6,7,8};
+    if (mpp_venc_ctrl_set_flex(ve_ctrl, flex, sizeof(flex)) != 0) { printf("venc flex failed\n"); rc = 1; }
+    unsigned char *base = mpp_venc_ctrl_flex_base(ve_ctrl);
+    if (!base || base[7] != 8) { printf("venc flex base failed\n"); rc = 1; }
+    mpp_venc_kcfg_deinit(ve_ctrl);
 
     printf("migtest %s (callback installed=%s)\n", rc ? "FAIL" : "PASS", cb_calls || 1 ? "yes" : "no");
     return rc;
