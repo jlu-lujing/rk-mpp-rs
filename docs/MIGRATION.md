@@ -50,6 +50,8 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   `scripts/board_h264_deblock_vs_mpp.sh` 同时验证对象路径。
   H.265 的 deblock/SAO/loop-filter/auto-tile 键映射到 typed syntax；
   `scripts/board_mpp_enc_cfg_h265_syntax.sh` 验证对象路径。
+  `prep:format=MPP_FMT_YUV420P` 会进入 I420 planar 路径；
+  `scripts/board_mpp_enc_cfg_i420.sh` 验证 NV12/I420 码流一致。
 
 ## 1. 二进制 drop-in（不改代码）
 

@@ -42,6 +42,8 @@ const MPP_VIDEO_CODING_VP8: c_int = 9;
 const MPP_VIDEO_CODING_VP9: c_int = 10;
 const MPP_VIDEO_CODING_HEVC: c_int = 0x0100_0004;
 const MPP_VIDEO_CODING_AV1: c_int = 0x0100_0008;
+const MPP_FMT_YUV420SP: u32 = 0;
+const MPP_FMT_YUV420P: u32 = 4;
 
 const MPP_DEC_SET_OUTPUT_FORMAT: c_int = 3_211_274;
 const MPP_DEC_SET_DISABLE_ERROR: c_int = 3_211_275;
@@ -542,7 +544,7 @@ unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
     (context.magic == CONTEXT_MAGIC).then_some(context)
 }
 
-fn nv12_input(frame: &objects::FrameInputView) -> Result<Vec<u8>, c_int> {
+fn video_input(frame: &objects::FrameInputView, format: u32) -> Result<Vec<u8>, c_int> {
     let luma_size = frame
         .hor_stride
         .checked_mul(frame.ver_stride)
@@ -552,10 +554,12 @@ fn nv12_input(frame: &objects::FrameInputView) -> Result<Vec<u8>, c_int> {
         .checked_mul(frame.height)
         .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
         .ok_or(MPP_ERR_VALUE)?;
+    let required = luma_size.checked_mul(3).map(|bytes| bytes / 2);
     if frame.data.is_null()
-        || frame.len < luma_size
         || frame.hor_stride < frame.width
+        || frame.width % 2 != 0
         || frame.height % 2 != 0
+        || required.is_none_or(|required| frame.len < required)
     {
         return Err(MPP_ERR_VALUE);
     }
@@ -567,13 +571,45 @@ fn nv12_input(frame: &objects::FrameInputView) -> Result<Vec<u8>, c_int> {
         output[destination..destination + frame.width]
             .copy_from_slice(&bytes[source..source + frame.width]);
     }
-    let uv_source = luma_size;
-    let uv_destination = frame.width * frame.height;
-    for row in 0..frame.height / 2 {
-        let source = uv_source + row * frame.hor_stride;
-        let destination = uv_destination + row * frame.width;
-        output[destination..destination + frame.width]
-            .copy_from_slice(&bytes[source..source + frame.width]);
+    let chroma_destination = frame.width * frame.height;
+    match format {
+        MPP_FMT_YUV420SP => {
+            let uv_source = luma_size;
+            for row in 0..frame.height / 2 {
+                let source = uv_source + row * frame.hor_stride;
+                let destination = chroma_destination + row * frame.width;
+                output[destination..destination + frame.width]
+                    .copy_from_slice(&bytes[source..source + frame.width]);
+            }
+        }
+        MPP_FMT_YUV420P => {
+            if frame.hor_stride % 2 != 0 || frame.ver_stride % 2 != 0 {
+                return Err(MPP_ERR_VALUE);
+            }
+            let chroma_width = frame.width / 2;
+            let chroma_height = frame.height / 2;
+            let chroma_stride = frame.hor_stride / 2;
+            let chroma_plane = chroma_stride
+                .checked_mul(frame.ver_stride / 2)
+                .ok_or(MPP_ERR_VALUE)?;
+            let u_source = luma_size;
+            let v_source = u_source.checked_add(chroma_plane).ok_or(MPP_ERR_VALUE)?;
+            if frame.len < v_source.checked_add(chroma_plane).ok_or(MPP_ERR_VALUE)? {
+                return Err(MPP_ERR_VALUE);
+            }
+            for row in 0..chroma_height {
+                let destination = chroma_destination + row * chroma_width;
+                let u = u_source + row * chroma_stride;
+                let v = v_source + row * chroma_stride;
+                output[destination..destination + chroma_width]
+                    .copy_from_slice(&bytes[u..u + chroma_width]);
+                let v_destination = chroma_destination + chroma_width * chroma_height;
+                output
+                    [v_destination + row * chroma_width..v_destination + (row + 1) * chroma_width]
+                    .copy_from_slice(&bytes[v..v + chroma_width]);
+            }
+        }
+        _ => return Err(MPP_ERR_VALUE),
     }
     Ok(output)
 }
@@ -718,14 +754,17 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     if frame.eos {
         return MPP_OK;
     }
-    if frame.width == 0 || frame.height == 0 || frame.format != 0 {
+    if frame.width == 0
+        || frame.height == 0
+        || !matches!(frame.format, MPP_FMT_YUV420SP | MPP_FMT_YUV420P)
+    {
         eprintln!(
             "rk-mpp-rs mpp: encode frame has invalid geometry/format {}x{} fmt {}",
             frame.width, frame.height, frame.format
         );
         return MPP_ERR_VALUE;
     }
-    let input = match nv12_input(&frame) {
+    let input = match video_input(&frame, frame.format) {
         Ok(input) => input,
         Err(ret) => {
             eprintln!("rk-mpp-rs mpp: encode frame is not a complete NV12 picture");
@@ -1390,6 +1429,37 @@ mod tests {
             reference_mode,
             reference_argument: 0,
         }
+    }
+
+    #[test]
+    fn i420_frame_input_is_packed_to_typed_encoder_order() {
+        let mut source = vec![0xffu8; 8 * 8 * 3 / 2];
+        for row in 0..4 {
+            source[row * 8..row * 8 + 4].fill(row as u8 + 1);
+        }
+        for row in 0..2 {
+            source[64 + row * 4..64 + row * 4 + 2].fill(10 + row as u8);
+            source[80 + row * 4..80 + row * 4 + 2].fill(20 + row as u8);
+        }
+        let frame = objects::FrameInputView {
+            data: source.as_ptr(),
+            len: source.len(),
+            width: 4,
+            height: 4,
+            hor_stride: 8,
+            ver_stride: 8,
+            format: MPP_FMT_YUV420P,
+            pts: 0,
+            dts: 0,
+            eos: false,
+            motion_info: ptr::null_mut(),
+            osd_data: ptr::null_mut(),
+        };
+        let packed = video_input(&frame, frame.format).unwrap();
+        assert_eq!(
+            packed,
+            [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 10, 10, 11, 11, 20, 20, 21, 21,]
+        );
     }
 
     #[test]

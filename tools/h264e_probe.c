@@ -305,6 +305,9 @@ int main(int argc, char **argv)
     int have_aqstep = 0;
     int sei_off = 0;
     int header_each = 0;
+    int input_format = getenv("MPP_INPUT_FORMAT")
+                           ? atoi(getenv("MPP_INPUT_FORMAT"))
+                           : MPP_FMT_YUV420SP;
     const char *force_idr = NULL;
     int hier_qp_delta[4] = { 0, 0, 0, 0 };
     int hier_frame_num[4] = { 0, 0, 0, 0 };
@@ -491,7 +494,7 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:height", height));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", input_format));
     CHECK(mpp_enc_cfg_set_s32(cfg,
                               "rc:mode",
                               mode == 0 ? MPP_ENC_RC_MODE_FIXQP
@@ -600,7 +603,7 @@ int main(int argc, char **argv)
         mpp_frame_set_height(frame, height);
         mpp_frame_set_hor_stride(frame, hor_stride);
         mpp_frame_set_ver_stride(frame, ver_stride);
-        mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+        mpp_frame_set_fmt(frame, input_format);
         mpp_frame_set_buffer(frame, frame_buf);
 
         meta = mpp_frame_get_meta(frame);

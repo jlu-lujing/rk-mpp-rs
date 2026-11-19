@@ -6,7 +6,7 @@ use crate::encoder::{
     EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning, RateControlConfig,
     RateControlMode,
 };
-use crate::sdk::Codec;
+use crate::sdk::{Codec, PixelFormat};
 
 const MPP_OK: c_int = 0;
 const MPP_VIDEO_CODING_MPEG2: c_int = 2;
@@ -81,11 +81,15 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
         .filter(|value| *value > 0)
         .ok_or_else(|| "MppEncCfg has no positive prep:height".to_string())?;
     let format = unsafe { cfg.get_or("prep:format", 0) };
-    if format != 0 {
-        return Err(format!(
-            "compatible encoder object path currently accepts NV12 only, got {format}"
-        ));
-    }
+    let input_format = match format {
+        0 => PixelFormat::Nv12,
+        4 => PixelFormat::I420,
+        _ => {
+            return Err(format!(
+                "compatible encoder object path accepts NV12(0) or I420(4), got {format}"
+            ))
+        }
+    };
 
     let gop = unsafe { cfg.get_or("rc:gop", 60) }.max(1) as u32;
     let fps_num = unsafe { cfg.get_or("rc:fps_in_num", 30) }.max(1) as u32;
@@ -106,6 +110,7 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
     let jpeg_qfactor = unsafe { cfg.get_or("jpeg:q_factor", 80) }.clamp(1, 100) as u32;
 
     let mut result = EncoderConfig::new(codec, width as usize, height as usize)
+        .with_input_format(input_format)
         .with_gop(gop)
         .with_qp(qp)
         .with_fps(fps_num, fps_den)

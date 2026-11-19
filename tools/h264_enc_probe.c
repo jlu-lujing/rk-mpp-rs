@@ -58,6 +58,34 @@ static void fill_nv12(uint8_t *pixels, int width, int height, int hor_stride,
     }
 }
 
+static void fill_i420(uint8_t *pixels, int width, int height, int hor_stride,
+                      int ver_stride)
+{
+    memset(pixels, 16, (size_t)hor_stride * ver_stride);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int value = 16 + (x * 200 / (width - 1) +
+                              y * 200 / (height - 1)) /
+                                 2;
+            pixels[(size_t)y * hor_stride + x] = (uint8_t)value;
+        }
+    }
+
+    size_t luma_size = (size_t)hor_stride * ver_stride;
+    size_t chroma_plane = luma_size / 4;
+    uint8_t *u = pixels + luma_size;
+    uint8_t *v = u + chroma_plane;
+    memset(u, 128, chroma_plane * 2);
+    for (int y = 0; y < height / 2; ++y) {
+        for (int x = 0; x < width / 2; ++x) {
+            u[(size_t)y * (hor_stride / 2) + x] =
+                (uint8_t)(48 + x * 128 / (width / 2 - 1));
+            v[(size_t)y * (hor_stride / 2) + x] =
+                (uint8_t)(208 - y * 128 / (height / 2 - 1));
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *output_path = argc > 1 ? argv[1] : "/tmp/h264_golden.264";
@@ -66,6 +94,9 @@ int main(int argc, char **argv)
     int profile = argc > 4 ? atoi(argv[4]) : 66;
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
+    int input_format = getenv("MPP_INPUT_FORMAT")
+                           ? atoi(getenv("MPP_INPUT_FORMAT"))
+                           : MPP_FMT_YUV420SP;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
     size_t packet_size = frame_size + 4096;
 
@@ -101,8 +132,12 @@ int main(int argc, char **argv)
     CHECK(mpp_buffer_get(group, &packet_buf, packet_size));
 
     mpp_buffer_sync_begin(frame_buf);
-    fill_nv12((uint8_t *)mpp_buffer_get_ptr(frame_buf), width, height,
-              hor_stride, ver_stride);
+    if (input_format == MPP_FMT_YUV420P)
+        fill_i420((uint8_t *)mpp_buffer_get_ptr(frame_buf), width, height,
+                  hor_stride, ver_stride);
+    else
+        fill_nv12((uint8_t *)mpp_buffer_get_ptr(frame_buf), width, height,
+                  hor_stride, ver_stride);
     mpp_buffer_sync_end(frame_buf);
 
     {
@@ -131,7 +166,7 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:height", height));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
-    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP));
+    CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", input_format));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:mode", MPP_ENC_RC_MODE_FIXQP));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:gop", 1));
     CHECK(mpp_enc_cfg_set_s32(cfg, "rc:qp_init", 26));
@@ -163,7 +198,7 @@ int main(int argc, char **argv)
     mpp_frame_set_height(frame, height);
     mpp_frame_set_hor_stride(frame, hor_stride);
     mpp_frame_set_ver_stride(frame, ver_stride);
-    mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+    mpp_frame_set_fmt(frame, input_format);
     mpp_frame_set_buffer(frame, frame_buf);
 
     meta = mpp_frame_get_meta(frame);
