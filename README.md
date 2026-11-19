@@ -354,8 +354,6 @@ rk-mpp-rs h264dec input.264 output.yuv
 RKMPP_DECODE_NV12=1 rk-mpp-rs h264dec input.264 output.nv12
 RKMPP_DECODE_DMABUF=1 rk-mpp-rs h264dec input.264 /dev/null
 RKMPP_DECODE_DMABUF=1 rk-mpp-rs hevcdec input.265 /dev/null
-RKMPP_DECODE_YUV_PIPELINE=1 rk-mpp-rs h264dec input.264 output.yuv
-RKMPP_DECODE_YUV_PIPELINE=1 rk-mpp-rs hevcdec input.265 output.yuv
 ```
 
 `RKMPP_POLL_US` controls the non-blocking hardware poll interval and defaults
@@ -364,12 +362,10 @@ an in-process consumer. H.264 and H.265 CLIs only permit it with `/dev/null`
 output; H.265 uses a bounded display-order reorder buffer so decoder surfaces
 return to the pool as each display frame is emitted.
 
-`RKMPP_DECODE_YUV_PIPELINE=<depth>` keeps the same DMA-BUF decode output but
-runs the display-ordered NV12-to-I420 copy on one worker thread, overlapping it
-with later hardware decode. Depth 1 is the lowest-footprint choice; depth 2-4
-may smooth scheduling but the lf1 sweep did not improve on 1. `RKMPP_YUV_CPU`
-optionally pins that worker to one CPU. This mode cannot be combined with
-`RKMPP_DECODE_DMABUF=1`, which deliberately returns no CPU YUV.
+VDPU383 now uses the same multi-job submission model as VDPU34x. H.264 and
+H.265 default to three in-flight jobs; `RKMPP_H264_PIPELINE=0` and
+`RKMPP_HEVC_PIPELINE=0` restore blocking submission. The ring overlaps hardware
+decode with display reorder and CPU output without a second YUV worker thread.
 
 `rk-mpp-rs-sys` 暴露 V1.12 的全部 36 个 C 导出、enum、struct 和不透明句柄。
 

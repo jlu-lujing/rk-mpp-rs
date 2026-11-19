@@ -169,21 +169,25 @@ impl HevcHardware {
                 hw.set_depth(depth);
                 true
             }
-            Self::Vdpu383(_) => false,
+            Self::Vdpu383(hw) => {
+                hw.set_pipeline(enabled);
+                hw.set_depth(depth);
+                true
+            }
         }
     }
 
     fn in_flight(&self) -> usize {
         match self {
             Self::Vdpu34x(hw) => hw.in_flight(),
-            Self::Vdpu383(_) => 0,
+            Self::Vdpu383(hw) => hw.in_flight(),
         }
     }
 
     fn reap(&mut self) -> io::Result<bool> {
         match self {
             Self::Vdpu34x(hw) => hw.reap(),
-            Self::Vdpu383(_) => Ok(false),
+            Self::Vdpu383(hw) => hw.reap(),
         }
     }
 }

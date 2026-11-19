@@ -23,6 +23,7 @@ use crate::service::{
 const REG_READBACK_WORDS: usize = 360;
 const CABAC_SIZE: usize = 928 * 4 + 128;
 const RCB_ALIGNMENT: usize = 64;
+pub const JOB_SLOTS: usize = 4;
 static DUMP_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -155,16 +156,26 @@ fn align(value: usize, alignment: usize) -> usize {
 pub struct H264d383 {
     svc: MppService,
     cabac: DmaBuf,
-    global: DmaBuf,
-    rps: DmaBuf,
-    rcb: DmaBuf,
+    slots: Vec<JobSlot383>,
+    slot: usize,
+    armed: Vec<usize>,
+    depth: usize,
+    pipeline: bool,
     rcb_info_supported: bool,
     regs: reg::Regs,
     pub last_status: (u32, u32, u32),
     pub last_hardware_error: bool,
-    offsets_scratch: Vec<RegOffsetInfo>,
+}
+
+struct JobSlot383 {
+    global: DmaBuf,
+    rps: DmaBuf,
+    rcb: DmaBuf,
+    reg_words: Vec<u32>,
+    offsets: Vec<RegOffsetInfo>,
     rcb_scratch: Vec<RcbConfig>,
     batch: Batch,
+    readback: [u32; REG_READBACK_WORDS],
 }
 
 impl H264d383 {
@@ -182,19 +193,32 @@ impl H264d383 {
             *destination = source;
         }
         cabac.sync_write_end()?;
+        let slots = (0..JOB_SLOTS)
+            .map(|_| {
+                Ok(JobSlot383 {
+                    global: DmaBuf::alloc("system", hw383::GLOBAL_CFG_BYTES, false)?,
+                    rps: DmaBuf::alloc("system", hw383::RPS_BYTES, false)?,
+                    rcb: DmaBuf::alloc("system", 1 << 20, false)?,
+                    reg_words: vec![0u32; reg::N_WORDS],
+                    offsets: Vec::with_capacity(11),
+                    rcb_scratch: Vec::with_capacity(11),
+                    batch: Batch::new(),
+                    readback: [0u32; REG_READBACK_WORDS],
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         let mut hw = Self {
             svc,
             cabac,
-            global: DmaBuf::alloc("system", hw383::GLOBAL_CFG_BYTES, false)?,
-            rps: DmaBuf::alloc("system", hw383::RPS_BYTES, false)?,
-            rcb: DmaBuf::alloc("system", 1 << 20, false)?,
+            slots,
+            slot: 0,
+            armed: Vec::with_capacity(JOB_SLOTS),
+            depth: 3,
+            pipeline: false,
             rcb_info_supported,
             regs: reg::Regs::new(),
             last_status: (0, 0, 0),
             last_hardware_error: false,
-            offsets_scratch: Vec::with_capacity(10),
-            rcb_scratch: Vec::with_capacity(11),
-            batch: Batch::new(),
         };
         hw.init_common();
         Ok(hw)
@@ -258,14 +282,18 @@ impl H264d383 {
         _idr: bool,
     ) -> io::Result<()> {
         super::check_decode_geometry(cur.width, cur.height)?;
+        if self.armed.len() >= self.depth {
+            self.reap()?;
+        }
+        let slot = self.slot;
         let global = hw383::build_global_cfg(sps, pps, dpb, sh, order);
         let rps = hw383::build_rps(sps, sh, dpb, lists);
-        self.global.sync_write_begin()?;
-        self.global.as_mut_slice()[..global.len()].copy_from_slice(&global);
-        self.global.sync_write_end()?;
-        self.rps.sync_write_begin()?;
-        self.rps.as_mut_slice()[..rps.len()].copy_from_slice(&rps);
-        self.rps.sync_write_end()?;
+        self.slots[slot].global.sync_write_begin()?;
+        self.slots[slot].global.as_mut_slice()[..global.len()].copy_from_slice(&global);
+        self.slots[slot].global.sync_write_end()?;
+        self.slots[slot].rps.sync_write_begin()?;
+        self.slots[slot].rps.as_mut_slice()[..rps.len()].copy_from_slice(&rps);
+        self.slots[slot].rps.sync_write_end()?;
 
         let mbaff = !sps.frame_mbs_only && sps.mb_adaptive_frame_field && !sh.field_pic;
         let rcb = Rcb383::compute(
@@ -275,8 +303,8 @@ impl H264d383 {
             sps.bit_depth_luma as usize,
             sps.chroma_format_idc,
         );
-        if rcb.total > self.rcb.len() {
-            self.rcb = DmaBuf::alloc("system", rcb.total, false)?;
+        if rcb.total > self.slots[slot].rcb.len() {
+            self.slots[slot].rcb = DmaBuf::alloc("system", rcb.total, false)?;
         }
 
         let present = std::array::from_fn(|index| refs.get(index).copied().flatten().is_some());
@@ -301,7 +329,7 @@ impl H264d383 {
             }
         }
 
-        let rcb_fd = self.rcb.fd() as u32;
+        let rcb_fd = self.slots[slot].rcb.fd() as u32;
         rcb.write_regs(r, rcb_fd);
         r.set(reg::w66::REG66_STREAM_LEN, stream_len as u32)
             .set(reg::w67::REG67_GLOBAL_LEN, 11)
@@ -327,9 +355,12 @@ impl H264d383 {
                 (cur.hor_stride * cur.ver_stride / 16) as u32,
             )
             .set(reg::w128::REG128_STRM_BASE, stream.fd() as u32)
-            .set(reg::w129::REG129_RPS_BASE, self.rps.fd() as u32)
+            .set(reg::w129::REG129_RPS_BASE, self.slots[slot].rps.fd() as u32)
             .set(reg::w130::REG130_CABACTBL_BASE, self.cabac.fd() as u32)
-            .set(reg::w131::REG131_GBL_BASE, self.global.fd() as u32)
+            .set(
+                reg::w131::REG131_GBL_BASE,
+                self.slots[slot].global.fd() as u32,
+            )
             .set(reg::w132::REG132_SCANLIST_ADDR, 0)
             .set(reg::w168::REG168_DECOUT_BASE, cur.nv12_fd())
             .set(reg::w192::REG192_PAYLOAD_ST_CUR_BASE, cur.nv12_fd())
@@ -337,10 +368,6 @@ impl H264d383 {
             .set(reg::w169::REG169_ERROR_REF_BASE, error_ref.nv12_fd())
             .set(reg::w193::REG193_FBC_PAYLOAD_OFFSET, 0);
 
-        self.offsets_scratch.clear();
-        self.offsets_scratch.extend(rcb.offsets());
-        self.rcb_scratch.clear();
-        self.rcb_scratch.extend(rcb.hardware_sizes());
         if std::env::var_os("RFI_H264383_DUMP").is_some() {
             let task = DUMP_INDEX.fetch_add(1, Ordering::Relaxed);
             let _ = std::fs::write(format!("/tmp/rust_h264383_global_{task:02}.bin"), &global);
@@ -352,27 +379,82 @@ impl H264d383 {
                     .collect();
             let _ = std::fs::write(format!("/tmp/rust_h264383_regs_{task:02}.txt"), regs);
         }
-        let mut readback = [0u32; REG_READBACK_WORDS];
-        self.batch.clear();
-        self.batch
-            .reg_write(&r.w[8..64], 8 * 4)
-            .reg_write(&r.w[64..107], 64 * 4)
-            .reg_write(&r.w[128..233], 128 * 4)
+        self.slots[slot].reg_words.copy_from_slice(&r.w);
+        let JobSlot383 {
+            reg_words,
+            offsets,
+            rcb_scratch,
+            batch,
+            readback,
+            ..
+        } = &mut self.slots[slot];
+        offsets.clear();
+        offsets.extend(rcb.offsets());
+        rcb_scratch.clear();
+        rcb_scratch.extend(rcb.hardware_sizes());
+        batch.clear();
+        batch
+            .reg_write(&reg_words[8..64], 8 * 4)
+            .reg_write(&reg_words[64..107], 64 * 4)
+            .reg_write(&reg_words[128..233], 128 * 4)
             .reg_read(&mut readback[15..16], 15 * 4)
             .reg_read(&mut readback[320..360], 320 * 4);
-        self.batch.reg_offsets(&self.offsets_scratch);
-        if self.rcb_info_supported && !self.rcb_scratch.is_empty() {
-            self.batch.rcb_info(&self.rcb_scratch);
+        batch.reg_offsets(offsets);
+        if self.rcb_info_supported && !rcb_scratch.is_empty() {
+            batch.rcb_info(rcb_scratch);
         }
-        self.svc.submit_batch_recovering(&mut self.batch)?;
-        self.svc.poll_hw_finish_recovering()?;
-        let status = readback[15];
-        self.last_status = (status, readback[320], readback[356]);
-        self.last_hardware_error = status & 1 == 0 || status & 0x7e != 0;
+        self.svc
+            .submit_batch_recovering(&mut self.slots[slot].batch)?;
+        self.armed.push(slot);
+        self.slot = (slot + 1) % JOB_SLOTS;
+        if !self.pipeline {
+            self.reap()?;
+        }
+        Ok(())
+    }
+
+    pub fn set_pipeline(&mut self, enabled: bool) {
+        self.pipeline = enabled;
+    }
+
+    pub fn set_depth(&mut self, depth: usize) {
+        self.depth = depth.clamp(1, JOB_SLOTS);
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.armed.len()
+    }
+
+    pub fn reap(&mut self) -> io::Result<bool> {
+        if self.armed.is_empty() {
+            return Ok(false);
+        }
+        static BLOCKING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let blocking = *BLOCKING.get_or_init(|| {
+            std::env::var("RKMPP_POLL_BLOCKING").as_deref() != Ok("0") && self.pipeline
+                || std::env::var("RKMPP_POLL_BLOCKING").as_deref() == Ok("1")
+        });
+        if blocking {
+            self.svc.poll_hw_finish_blocking()?;
+        } else {
+            self.svc.poll_hw_finish_recovering()?;
+        }
+        let slot = self.armed.remove(0);
+        let readback = self.slots[slot].readback;
+        self.last_status = (readback[15], readback[320], readback[356]);
+        self.last_hardware_error = readback[15] & 1 == 0 || readback[15] & 0x7e != 0;
         if self.last_hardware_error {
             let _ = self.svc.restart_after_hardware_error();
         }
-        Ok(())
+        Ok(self.last_hardware_error)
+    }
+
+    pub fn flush(&mut self) -> io::Result<bool> {
+        let mut failed = false;
+        while !self.armed.is_empty() {
+            failed |= self.reap()?;
+        }
+        Ok(failed)
     }
 }
 

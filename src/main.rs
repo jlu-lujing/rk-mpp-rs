@@ -293,84 +293,6 @@ fn pin_current_thread(cpu: usize) {
     }
 }
 
-struct PlanarOutputJob {
-    surface: rk_mpp_rs::codec::DmaBufSurface,
-    width: usize,
-    height: usize,
-}
-
-#[derive(Default)]
-struct PlanarOutputStats {
-    frames: usize,
-    bytes: usize,
-    conversion: std::time::Duration,
-    elapsed: std::time::Duration,
-}
-
-struct PlanarOutputPipeline {
-    jobs: Option<mpsc::SyncSender<PlanarOutputJob>>,
-    worker: Option<std::thread::JoinHandle<Result<PlanarOutputStats, String>>>,
-}
-
-impl PlanarOutputPipeline {
-    fn start(path: &str, depth: usize) -> Result<Self, String> {
-        use std::io::Write;
-
-        let (jobs, receiver) = mpsc::sync_channel::<PlanarOutputJob>(depth.max(1));
-        let path = path.to_string();
-        let output = std::fs::File::create(&path).map_err(|error| format!("{path}: {error}"))?;
-        let worker_cpu = std::env::var("RKMPP_YUV_CPU")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .or_else(select_input_reader_cpu);
-        let worker = std::thread::Builder::new()
-            .name("rk-mpp-yuv-output".to_string())
-            .spawn(move || {
-                if let Some(cpu) = worker_cpu {
-                    pin_current_thread(cpu);
-                }
-                let started = Instant::now();
-                let mut output = std::io::BufWriter::with_capacity(1024 * 1024, output);
-                let mut stats = PlanarOutputStats::default();
-                while let Ok(job) = receiver.recv() {
-                    let convert_started = Instant::now();
-                    let yuv = job.surface.to_planar_nv12(job.width, job.height)?;
-                    stats.conversion += convert_started.elapsed();
-                    output
-                        .write_all(&yuv)
-                        .map_err(|error| format!("{path}: {error}"))?;
-                    stats.frames += 1;
-                    stats.bytes += yuv.len();
-                }
-                output.flush().map_err(|error| format!("{path}: {error}"))?;
-                stats.elapsed = started.elapsed();
-                Ok(stats)
-            })
-            .map_err(|error| format!("start YUV output pipeline: {error}"))?;
-        Ok(Self {
-            jobs: Some(jobs),
-            worker: Some(worker),
-        })
-    }
-
-    fn push(&self, job: PlanarOutputJob) -> Result<(), String> {
-        self.jobs
-            .as_ref()
-            .ok_or_else(|| "YUV output pipeline is closed".to_string())?
-            .send(job)
-            .map_err(|_| "YUV output worker stopped unexpectedly".to_string())
-    }
-
-    fn finish(mut self) -> Result<PlanarOutputStats, String> {
-        drop(self.jobs.take());
-        self.worker
-            .take()
-            .ok_or_else(|| "YUV output worker is missing".to_string())?
-            .join()
-            .map_err(|_| "YUV output worker panicked".to_string())?
-    }
-}
-
 fn encode_h264(
     path: &str,
     out_path: &str,
@@ -3415,14 +3337,6 @@ fn main() {
             eprintln!("RKMPP_DECODE_DMABUF requires an output of /dev/null");
             std::process::exit(2);
         }
-        let yuv_pipeline_depth = match std::env::var("RKMPP_DECODE_YUV_PIPELINE") {
-            Ok(value) => value.parse::<usize>().unwrap_or(2),
-            Err(_) => 0,
-        };
-        if dmabuf_output && yuv_pipeline_depth != 0 {
-            eprintln!("RKMPP_DECODE_DMABUF cannot be combined with RKMPP_DECODE_YUV_PIPELINE");
-            std::process::exit(2);
-        }
         let data = match std::fs::read(src) {
             Ok(data) => data,
             Err(e) => {
@@ -3442,27 +3356,12 @@ fn main() {
             Err(_) => 3,
         };
         use std::io::Write;
-        let mut output_pipeline = (yuv_pipeline_depth != 0)
-            .then(|| PlanarOutputPipeline::start(dst, yuv_pipeline_depth))
-            .transpose()
-            .unwrap_or_else(|error| {
-                eprintln!("{error}");
-                std::process::exit(1);
-            });
-        let mut out = if output_pipeline.is_some() {
-            None
-        } else {
-            Some(std::io::BufWriter::new(
-                std::fs::File::create(dst).expect("create out"),
-            ))
-        };
-        let total_started = Instant::now();
+        let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
         // A queued-job failure is discovered after later pictures were
         // submitted. Re-run through the blocking path and recreate the output
         // so error semantics match the historical collect-and-sort CLI.
         let run = |depth: usize,
-                   out: Option<&mut std::io::BufWriter<std::fs::File>>,
-                   output_pipeline: Option<&PlanarOutputPipeline>|
+                   out: &mut std::io::BufWriter<std::fs::File>|
          -> Result<
             (usize, usize, f64, bool, bool, (u32, u32, u32), Vec<i32>),
             String,
@@ -3471,58 +3370,36 @@ fn main() {
             if depth != 0 && !dec.set_pipeline_depth(true, depth) {
                 eprintln!("H.265 pipelining unavailable on this SoC; using blocking decode");
             }
-            dec.set_output_dmabuf(dmabuf_output || output_pipeline.is_some());
+            dec.set_output_dmabuf(dmabuf_output);
             let mut reorder = rk_mpp_rs::codec::hevc::DisplayReorder::new(0);
             let mut decoded = 0usize;
             let mut shown = 0usize;
             let mut failed = false;
-            let mut output_error: Option<String> = None;
+            let mut write_error = None;
             let mut decode_time = std::time::Duration::ZERO;
             let mut pocs = Vec::with_capacity(aus.len());
-            let mut out = out;
-            let mut emit = |mut picture: rk_mpp_rs::codec::hevc::Picture| {
-                if output_error.is_some() {
-                    return;
-                }
-                if let Some(pipeline) = output_pipeline {
-                    match picture.dmabuf.take() {
-                        Some(surface) => {
-                            if let Err(error) = pipeline.push(PlanarOutputJob {
-                                surface,
-                                width: picture.width,
-                                height: picture.height,
-                            }) {
-                                output_error = Some(error);
-                            }
-                        }
-                        None => {
-                            output_error =
-                                Some("H.265 YUV pipeline returned no DMA-BUF surface".to_string());
+            let mut emit =
+                |picture: rk_mpp_rs::codec::hevc::Picture,
+                 out: &mut std::io::BufWriter<std::fs::File>| {
+                    if !dmabuf_output && write_error.is_none() {
+                        if let Err(error) = out.write_all(&picture.yuv) {
+                            write_error = Some(error);
                         }
                     }
-                } else if !dmabuf_output {
-                    if let Err(error) = out
-                        .as_mut()
-                        .expect("synchronous output")
-                        .write_all(&picture.yuv)
-                    {
-                        output_error = Some(error.to_string());
+                    if write_error.is_none() {
+                        shown += 1;
+                        pocs.push(picture.poc);
+                        if trace {
+                            println!(
+                                "  picture {shown}: poc={} epoch={} err={:#x} output={}",
+                                picture.poc,
+                                picture.epoch,
+                                picture.err_info,
+                                rk_mpp_rs::codec::hevc::picture_is_output(&picture)
+                            );
+                        }
                     }
-                }
-                if output_error.is_none() {
-                    shown += 1;
-                    pocs.push(picture.poc);
-                    if trace {
-                        println!(
-                            "  picture {shown}: poc={} epoch={} err={:#x} output={}",
-                            picture.poc,
-                            picture.epoch,
-                            picture.err_info,
-                            rk_mpp_rs::codec::hevc::picture_is_output(&picture)
-                        );
-                    }
-                }
-            };
+                };
             for (i, au) in aus.iter().enumerate() {
                 let started = Instant::now();
                 let result = dec.decode_access_unit(au);
@@ -3548,7 +3425,7 @@ fn main() {
                             );
                         }
                         reorder.set_max_reorder(dec.max_num_reorder_pics());
-                        reorder.push(picture, &mut emit);
+                        reorder.push(picture, |picture| emit(picture, out));
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -3566,7 +3443,7 @@ fn main() {
                     for picture in pictures {
                         decoded += 1;
                         reorder.set_max_reorder(dec.max_num_reorder_pics());
-                        reorder.push(picture, &mut emit);
+                        reorder.push(picture, |picture| emit(picture, out));
                     }
                 }
                 Err(error) => {
@@ -3574,14 +3451,12 @@ fn main() {
                     failed = true;
                 }
             }
-            reorder.flush(&mut emit);
-            if let Some(error) = output_error {
+            reorder.flush(|picture| emit(picture, out));
+            if let Some(error) = write_error {
                 eprintln!("write output: {error}");
                 failed = true;
             }
-            if let Some(out) = out.as_mut() {
-                out.flush().ok();
-            }
+            out.flush().ok();
             let poisoned = dec.pipeline_poisoned();
             let status = dec.status();
             Ok((
@@ -3594,13 +3469,8 @@ fn main() {
                 pocs,
             ))
         };
-        let effective_depth = if yuv_pipeline_depth == 0 {
-            requested_depth
-        } else {
-            0
-        };
         let (mut decoded, mut shown, mut decode_ms, mut failed, poisoned, mut status, mut pocs) =
-            match run(effective_depth, out.as_mut(), output_pipeline.as_ref()) {
+            match run(requested_depth, &mut out) {
                 Ok(value) => value,
                 Err(error) => {
                     eprintln!("H.265 decode failed: {error}");
@@ -3609,14 +3479,9 @@ fn main() {
             };
         if poisoned && requested_depth != 0 {
             eprintln!("H.265 queued job failed; re-decoding through the blocking path");
-            if let Some(out) = out.as_mut() {
-                out.flush().ok();
-            }
-            out = Some(std::io::BufWriter::new(
-                std::fs::File::create(dst).expect("truncate output"),
-            ));
-            (decoded, shown, decode_ms, failed, _, status, pocs) = match run(0, out.as_mut(), None)
-            {
+            out.flush().ok();
+            out = std::io::BufWriter::new(std::fs::File::create(dst).expect("truncate output"));
+            (decoded, shown, decode_ms, failed, _, status, pocs) = match run(0, &mut out) {
                 Ok(value) => value,
                 Err(error) => {
                     eprintln!("H.265 blocking decode failed: {error}");
@@ -3627,42 +3492,18 @@ fn main() {
         if trace {
             println!("output pocs: {pocs:?}");
         }
-        let pipeline_stats = match output_pipeline.take().map(PlanarOutputPipeline::finish) {
-            Some(Ok(stats)) => Some(stats),
-            Some(Err(error)) => {
-                eprintln!("write output: {error}");
-                failed = true;
-                None
-            }
-            None => None,
-        };
-        let total_ms = total_started.elapsed().as_secs_f64() * 1000.0;
-        let output_mode = if yuv_pipeline_depth != 0 {
-            "POC-pipelined output"
-        } else if dmabuf_output {
+        let output_mode = if dmabuf_output {
             "POC-streamed DMA-BUF output"
         } else {
             "POC-streamed output"
         };
-        if let Some(stats) = pipeline_stats.as_ref() {
-            println!(
-                "decoded {decoded} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps), {output_mode}, convert {:.1} ms, end-to-end {total_ms:.1} ms ({:.1} fps), status={:08x}/{:08x}/{:08x}",
-                shown as f64 / (decode_ms / 1000.0),
-                stats.conversion.as_secs_f64() * 1000.0,
-                stats.frames as f64 * 1000.0 / total_ms,
-                status.0,
-                status.1,
-                status.2
-            );
-        } else {
-            println!(
-                "decoded {decoded} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps), {output_mode}, status={:08x}/{:08x}/{:08x}",
-                shown as f64 / (decode_ms / 1000.0),
-                status.0,
-                status.1,
-                status.2
-            );
-        }
+        println!(
+            "decoded {decoded} frames ({shown} output) in {decode_ms:.1} ms ({:.1} fps), {output_mode}, status={:08x}/{:08x}/{:08x}",
+            shown as f64 / (decode_ms / 1000.0),
+            status.0,
+            status.1,
+            status.2
+        );
         if failed {
             std::process::exit(1);
         }
@@ -3861,14 +3702,6 @@ fn main() {
             eprintln!("RKMPP_DECODE_DMABUF requires an output of /dev/null");
             std::process::exit(2);
         }
-        let yuv_pipeline_depth = match std::env::var("RKMPP_DECODE_YUV_PIPELINE") {
-            Ok(value) => value.parse::<usize>().unwrap_or(2),
-            Err(_) => 0,
-        };
-        if dmabuf_output && yuv_pipeline_depth != 0 {
-            eprintln!("RKMPP_DECODE_DMABUF cannot be combined with RKMPP_DECODE_YUV_PIPELINE");
-            std::process::exit(2);
-        }
         let nv12_output = std::env::var_os("RKMPP_DECODE_NV12").is_some();
         let data = match std::fs::read(src) {
             Ok(data) => data,
@@ -3897,7 +3730,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        if dmabuf_output || yuv_pipeline_depth != 0 {
+        if dmabuf_output {
             dec.set_output_dmabuf(true);
         } else if nv12_output {
             dec.set_output_nv12(true);
@@ -3915,58 +3748,13 @@ fn main() {
             eprintln!("H.264 pipelining unavailable on this SoC; using blocking decode");
         }
         use std::io::Write;
-        let mut output_pipeline = (yuv_pipeline_depth != 0)
-            .then(|| PlanarOutputPipeline::start(dst, yuv_pipeline_depth))
-            .transpose()
-            .unwrap_or_else(|error| {
-                eprintln!("{error}");
-                std::process::exit(1);
-            });
-        let mut out = if output_pipeline.is_some() {
-            None
-        } else {
-            Some(std::io::BufWriter::new(
-                std::fs::File::create(dst).expect("create out"),
-            ))
-        };
-        let total_started = Instant::now();
+        let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
         let mut reorder = rk_mpp_rs::codec::h264::DisplayReorder::new(dec.max_num_reorder_frames());
         let mut decode_time = std::time::Duration::ZERO;
         let mut decoded = 0usize;
         let mut written = 0usize;
-        let mut output_error: Option<String> = None;
+        let mut write_error = None;
         let mut failed = false;
-        let mut emit = |mut pic: rk_mpp_rs::codec::h264::decoder::Picture| {
-            if output_error.is_some() {
-                return;
-            }
-            if let Some(pipeline) = output_pipeline.as_ref() {
-                match pic.dmabuf.take() {
-                    Some(surface) => {
-                        if let Err(error) = pipeline.push(PlanarOutputJob {
-                            surface,
-                            width: pic.width,
-                            height: pic.height,
-                        }) {
-                            output_error = Some(error);
-                        } else {
-                            written += 1;
-                        }
-                    }
-                    None => {
-                        output_error =
-                            Some("H.264 YUV pipeline returned no DMA-BUF surface".to_string());
-                    }
-                }
-            } else {
-                let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
-                if let Err(error) = out.as_mut().expect("synchronous output").write_all(bytes) {
-                    output_error = Some(error.to_string());
-                } else {
-                    written += 1;
-                }
-            }
-        };
         for (i, au) in aus.iter().enumerate() {
             let t0 = Instant::now();
             let decoded_picture = dec.decode_parsed_access_unit(au);
@@ -4013,7 +3801,16 @@ fn main() {
                             dec.status().2
                         );
                     }
-                    reorder.push(pic, &mut emit);
+                    reorder.push(pic, |pic| {
+                        if write_error.is_none() {
+                            let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
+                            if let Err(e) = out.write_all(bytes) {
+                                write_error = Some(e);
+                            } else {
+                                written += 1;
+                            }
+                        }
+                    });
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -4027,7 +3824,16 @@ fn main() {
             Ok(pictures) => {
                 for pic in pictures {
                     decoded += 1;
-                    reorder.push(pic, &mut emit);
+                    reorder.push(pic, |pic| {
+                        if write_error.is_none() {
+                            let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
+                            if let Err(e) = out.write_all(bytes) {
+                                write_error = Some(e);
+                            } else {
+                                written += 1;
+                            }
+                        }
+                    });
                 }
             }
             Err(e) => {
@@ -4035,38 +3841,26 @@ fn main() {
                 failed = true;
             }
         }
-        reorder.flush(&mut emit);
-        drop(emit);
-        if let Some(out) = out.as_mut() {
-            out.flush().ok();
-        }
-        let pipeline_stats = match output_pipeline.take().map(PlanarOutputPipeline::finish) {
-            Some(Ok(stats)) => Some(stats),
-            Some(Err(error)) => {
-                output_error = Some(error);
-                None
+        reorder.flush(|pic| {
+            if write_error.is_none() {
+                let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
+                if let Err(e) = out.write_all(bytes) {
+                    write_error = Some(e);
+                } else {
+                    written += 1;
+                }
             }
-            None => None,
-        };
-        if let Some(error) = output_error {
-            eprintln!("write output: {error}");
+        });
+        out.flush().ok();
+        if let Some(e) = write_error {
+            eprintln!("write output: {e}");
             failed = true;
         }
         let decode_ms = decode_time.as_secs_f64() * 1000.0;
-        let total_ms = total_started.elapsed().as_secs_f64() * 1000.0;
-        if let Some(stats) = pipeline_stats.as_ref() {
-            println!(
-                "decoded {decoded} frames ({written} output) in {decode_ms:.1} ms ({:.1} fps), POC-pipelined output, convert {:.1} ms, end-to-end {total_ms:.1} ms ({:.1} fps)",
-                written as f64 / (decode_ms / 1000.0),
-                stats.conversion.as_secs_f64() * 1000.0,
-                stats.frames as f64 * 1000.0 / total_ms,
-            );
-        } else {
-            println!(
-                "decoded {decoded} frames ({written} output) in {decode_ms:.1} ms ({:.1} fps), POC-sorted output",
-                written as f64 / (decode_ms / 1000.0)
-            );
-        }
+        println!(
+            "decoded {decoded} frames ({written} output) in {decode_ms:.1} ms ({:.1} fps), POC-sorted output",
+            written as f64 / (decode_ms / 1000.0)
+        );
         if failed {
             std::process::exit(1);
         }
