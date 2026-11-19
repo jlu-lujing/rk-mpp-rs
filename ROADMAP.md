@@ -4023,8 +4023,12 @@ pipeline uses.
   reports matching DPB, LT/ST count, LT index, temporal ID, LT-GOP and ST-GOP
   fields for IPPP and TSVC2/3/4. Reset/init now restore the vendor default
   one-frame forward-reference IPPP instead of an empty configuration.
-  `apply/apply_file/extract` now parse and emit the vendor JSON ref-cfg schema
-  without adding an external runtime dependency. The scheduler now resolves
+  `apply/apply_file/extract` now parse and emit the vendor LOG, JSON and TOML
+  ref-cfg schemas without adding an external runtime dependency. LOG and JSON
+  round-trip bidirectionally with the current vendor library. TOML extraction
+  is byte-identical and Rust can apply it, while the vendor rejects its own
+  extracted TOML with parser return -40; the board gate records that C bug.
+  The scheduler now resolves
   `REF_TO_PREV_ST_REF`, `REF_TO_LT_REF_IDX` and `REF_TO_ST_PREV_N_REF` instead
   of rejecting those valid modes. Existing six/12-frame TSVC2/3/4 and 64-frame
   IGOP restart board streams remain exact.

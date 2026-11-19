@@ -14,6 +14,9 @@ const MPP_ERR_VALUE: c_int = -6;
 const DEC_CFG_MAGIC: u64 = 0x524b_4445_4343_4647;
 const ENC_CFG_MAGIC: u64 = 0x524b_454e_4343_4647;
 const REF_CFG_MAGIC: u64 = 0x524b_5245_4643_4647;
+const MPP_CFG_STR_FMT_LOG: i32 = 0;
+const MPP_CFG_STR_FMT_JSON: i32 = 1;
+const MPP_CFG_STR_FMT_TOML: i32 = 2;
 
 #[no_mangle]
 pub static mut mpp_debug: c_uint = 0;
@@ -1196,10 +1199,35 @@ fn json_i32(text: &str, key: &str) -> Option<i32> {
     value[..end].parse().ok()
 }
 
-fn json_object_array<'a>(text: &'a str, key: &str) -> Option<Vec<&'a str>> {
-    let key = format!("\"{key}\"");
-    let start = text.find(&key)? + key.len();
-    let open = start + text[start..].find('[')?;
+fn text_i32(text: &str, key: &str, separator: char) -> Option<i32> {
+    let start = field_key_position(text, key)?;
+    let rest = &text[start + key.len()..];
+    let delimiter = rest.find(separator)?;
+    let value = rest[delimiter + 1..].trim_start();
+    let end = value
+        .find(|ch: char| !(ch == '-' || ch.is_ascii_digit()))
+        .unwrap_or(value.len());
+    value[..end].parse().ok()
+}
+
+fn field_key_position(text: &str, key: &str) -> Option<usize> {
+    let mut search = 0;
+    while let Some(found) = text[search..].find(key) {
+        let start = search + found;
+        let before = text[..start].chars().next_back();
+        let after = text[start + key.len()..].chars().next();
+        if before.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            || after.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            search = start + key.len();
+            continue;
+        }
+        return Some(start);
+    }
+    None
+}
+
+fn object_array_at(text: &str, open: usize) -> Option<(Vec<&str>, usize)> {
     let mut depth = 0usize;
     let mut object_start = None;
     let mut quoted = false;
@@ -1231,11 +1259,51 @@ fn json_object_array<'a>(text: &'a str, key: &str) -> Option<Vec<&'a str>> {
                     object_start = None;
                 }
             }
-            ']' if depth == 0 => return Some(objects),
+            ']' if depth == 0 => return Some((objects, open + offset + 1)),
             _ => {}
         }
     }
     None
+}
+
+fn labeled_object_array<'a>(text: &'a str, key: &str, separator: char) -> Option<Vec<&'a str>> {
+    let start = field_key_position(text, key)? + key.len();
+    let delimiter = start + text[start..].find(separator)?;
+    let open = delimiter + text[delimiter..].find('[')?;
+    object_array_at(text, open).map(|(objects, _)| objects)
+}
+
+fn json_object_array<'a>(text: &'a str, key: &str) -> Option<Vec<&'a str>> {
+    labeled_object_array(text, &format!("\"{key}\""), ':')
+}
+
+fn toml_records<'a>(body: &'a str, first_key: &str) -> Vec<&'a str> {
+    let mut starts = Vec::new();
+    let mut search = 0;
+    while let Some(relative) = field_key_position(&body[search..], first_key) {
+        let start = search + relative;
+        starts.push(start);
+        search = start + first_key.len();
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, start)| {
+            let end = starts.get(index + 1).copied().unwrap_or(body.len());
+            &body[*start..end]
+        })
+        .collect()
+}
+
+fn toml_object_arrays<'a>(text: &'a str) -> Option<(Vec<&'a str>, Vec<&'a str>)> {
+    let first = text.find('[')?;
+    let first_end = first + 1 + text[first + 1..].find(']')?;
+    let second = first_end + 1 + text[first_end + 1..].find('[')?;
+    let second_end = second + 1 + text[second + 1..].find(']')?;
+    Some((
+        toml_records(&text[first + 1..first_end], "is_non_ref"),
+        toml_records(&text[second + 1..second_end], "lt_idx"),
+    ))
 }
 
 fn apply_ref_json(config: &mut RefCfg, text: &str) -> i32 {
@@ -1292,6 +1360,104 @@ fn apply_ref_json(config: &mut RefCfg, text: &str) -> i32 {
     }
 }
 
+fn apply_ref_log(config: &mut RefCfg, text: &str) -> i32 {
+    let Some(st_count) = text_i32(text, "st_cfg_cnt", ':') else {
+        return MPP_NOK;
+    };
+    let Some(lt_count) = text_i32(text, "lt_cfg_cnt", ':') else {
+        return MPP_NOK;
+    };
+    if !(0..=16).contains(&st_count) || !(0..=16).contains(&lt_count) {
+        return MPP_NOK;
+    }
+    let Some(st_objects) = labeled_object_array(text, "st_cfg", ':') else {
+        return MPP_NOK;
+    };
+    let Some(lt_objects) = labeled_object_array(text, "lt_cfg", ':') else {
+        return MPP_NOK;
+    };
+    apply_ref_objects(
+        config,
+        text,
+        ':',
+        st_count,
+        lt_count,
+        &st_objects,
+        &lt_objects,
+    )
+}
+
+fn apply_ref_toml(config: &mut RefCfg, text: &str) -> i32 {
+    let Some(st_count) = text_i32(text, "st_cfg_cnt", '=') else {
+        return MPP_NOK;
+    };
+    let Some(lt_count) = text_i32(text, "lt_cfg_cnt", '=') else {
+        return MPP_NOK;
+    };
+    if !(0..=16).contains(&st_count) || !(0..=16).contains(&lt_count) {
+        return MPP_NOK;
+    }
+    let Some((st_objects, lt_objects)) = toml_object_arrays(text) else {
+        return MPP_NOK;
+    };
+    apply_ref_objects(
+        config,
+        text,
+        '=',
+        st_count,
+        lt_count,
+        &st_objects,
+        &lt_objects,
+    )
+}
+
+fn apply_ref_objects(
+    config: &mut RefCfg,
+    text: &str,
+    separator: char,
+    st_count: i32,
+    lt_count: i32,
+    st_objects: &[&str],
+    lt_objects: &[&str],
+) -> i32 {
+    if st_objects.len() < st_count as usize || lt_objects.len() < lt_count as usize {
+        return MPP_NOK;
+    }
+
+    *config = new_ref_cfg();
+    config.st_capacity = st_count;
+    config.lt_capacity = lt_count;
+    config.st_count = st_count;
+    config.lt_count = lt_count;
+    config.keep_cpb = text_i32(text, "keep_cpb", separator).unwrap_or(0);
+    for (index, object) in st_objects[..st_count as usize].iter().enumerate() {
+        config.st[index] = RefStCfg {
+            is_non_ref: text_i32(object, "is_non_ref", separator).unwrap_or(0),
+            temporal_id: text_i32(object, "temporal_id", separator).unwrap_or(0),
+            ref_mode: text_i32(object, "ref_mode", separator).unwrap_or(0),
+            ref_arg: text_i32(object, "ref_arg", separator).unwrap_or(0),
+            repeat: text_i32(object, "repeat", separator).unwrap_or(0),
+        };
+    }
+    for (index, object) in lt_objects[..lt_count as usize].iter().enumerate() {
+        config.lt[index] = RefLtCfg {
+            lt_idx: text_i32(object, "lt_idx", separator).unwrap_or(0),
+            temporal_id: text_i32(object, "temporal_id", separator).unwrap_or(0),
+            ref_mode: text_i32(object, "ref_mode", separator).unwrap_or(0),
+            ref_arg: text_i32(object, "ref_arg", separator).unwrap_or(0),
+            lt_gap: text_i32(object, "lt_gap", separator).unwrap_or(0),
+            lt_delay: text_i32(object, "lt_delay", separator).unwrap_or(0),
+        };
+    }
+    if validate_ref_cfg(config) {
+        MPP_OK
+    } else {
+        config.st_count = 0;
+        config.lt_count = 0;
+        MPP_NOK
+    }
+}
+
 fn extract_ref_json(config: &RefCfg) -> String {
     let mut out = format!(
         "{{\n    \"keep_cpb\" : {},\n    \"st_cfg_cnt\" : {},\n    \"lt_cfg_cnt\" : {},\n",
@@ -1333,6 +1499,90 @@ fn extract_ref_json(config: &RefCfg) -> String {
         out.push_str("\n    ");
     }
     out.push_str("]\n}\n");
+    out
+}
+
+fn extract_ref_log(config: &RefCfg) -> String {
+    let mut out = format!(
+        "{{\n    keep_cpb : {}\n    st_cfg_cnt : {}\n    lt_cfg_cnt : {}\n",
+        config.keep_cpb, config.st_count, config.lt_count
+    );
+    out.push_str("    st_cfg : [\n");
+    for step in &config.st[..config.st_count as usize] {
+        out.push_str(&format!(
+            "        {{\n            is_non_ref : {}\n            temporal_id : {}\n            ref_mode : {}\n            ref_arg : {}\n            repeat : {}\n        }}\n",
+            step.is_non_ref,
+            step.temporal_id,
+            step.ref_mode,
+            step.ref_arg,
+            step.repeat
+        ));
+    }
+    out.push_str("    ]\n    lt_cfg : [\n");
+    for step in &config.lt[..config.lt_count as usize] {
+        out.push_str(&format!(
+            "        {{\n            lt_idx : {}\n            temporal_id : {}\n            ref_mode : {}\n            ref_arg : {}\n            lt_gap : {}\n            lt_delay : {}\n        }}\n",
+            step.lt_idx,
+            step.temporal_id,
+            step.ref_mode,
+            step.ref_arg,
+            step.lt_gap,
+            step.lt_delay
+        ));
+    }
+    out.push_str("    ]\n}\n");
+    out
+}
+
+fn extract_ref_toml(config: &RefCfg) -> String {
+    let mut out = format!(
+        "mpp_enc_ref_cfg = keep_cpb = {}\n\
+         lt_cfg_cap = {}\n\
+         st_cfg_cap = {}\n\
+         lt_cfg_off = 256\n\
+         st_cfg_off = 76\n\
+         lt_cfg_cnt = {}\n\
+         st_cfg_cnt = {}\n\
+         max_tlayers = {}\n\
+         ready = 1\n[\n",
+        config.keep_cpb,
+        config.lt_capacity,
+        config.st_capacity,
+        config.lt_count,
+        config.st_count,
+        config.max_tlayers
+    );
+    for (index, step) in config.st[..config.st_count as usize].iter().enumerate() {
+        if index != 0 {
+            out.push_str(",\n");
+        }
+        out.push_str(&format!(
+            "    is_non_ref = {}\ntemporal_id = {}\nref_mode = {}\nref_arg = {}\nrepeat = {}",
+            step.is_non_ref, step.temporal_id, step.ref_mode, step.ref_arg, step.repeat
+        ));
+    }
+    if config.st_count != 0 {
+        out.push('\n');
+    }
+    out.push_str("]\n[\n");
+    for (index, step) in config.lt[..config.lt_count as usize].iter().enumerate() {
+        if index != 0 {
+            out.push_str(",\n");
+        }
+        out.push_str(&format!(
+            "    lt_idx = {}\ntemporal_id = {}\nref_mode = {}\nref_arg = {}\nlt_gap = {}\nlt_delay = {}",
+            step.lt_idx,
+            step.temporal_id,
+            step.ref_mode,
+            step.ref_arg,
+            step.lt_gap,
+            step.lt_delay
+        ));
+    }
+    if config.lt_count != 0 {
+        out.push('\n');
+    }
+    out.push_str("]\n");
     out
 }
 
@@ -2563,8 +2813,11 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_apply(
     format: i32,
     buffer: *mut c_char,
 ) -> i32 {
-    const MPP_CFG_STR_FMT_JSON: i32 = 1;
-    if format != MPP_CFG_STR_FMT_JSON || buffer.is_null() {
+    if !matches!(
+        format,
+        MPP_CFG_STR_FMT_LOG | MPP_CFG_STR_FMT_JSON | MPP_CFG_STR_FMT_TOML
+    ) || buffer.is_null()
+    {
         return MPP_NOK;
     }
     let Some(config) = ref_cfg_mut(ref_cfg) else {
@@ -2574,7 +2827,12 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_apply(
     let Ok(text) = text.to_str() else {
         return MPP_NOK;
     };
-    apply_ref_json(config, text)
+    match format {
+        MPP_CFG_STR_FMT_LOG => apply_ref_log(config, text),
+        MPP_CFG_STR_FMT_JSON => apply_ref_json(config, text),
+        MPP_CFG_STR_FMT_TOML => apply_ref_toml(config, text),
+        _ => MPP_NOK,
+    }
 }
 
 #[no_mangle]
@@ -2583,8 +2841,11 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_apply_file(
     format: i32,
     path: *const c_char,
 ) -> i32 {
-    const MPP_CFG_STR_FMT_JSON: i32 = 1;
-    if format != MPP_CFG_STR_FMT_JSON || path.is_null() {
+    if !matches!(
+        format,
+        MPP_CFG_STR_FMT_LOG | MPP_CFG_STR_FMT_JSON | MPP_CFG_STR_FMT_TOML
+    ) || path.is_null()
+    {
         return MPP_NOK;
     }
     let Some(config) = ref_cfg_mut(ref_cfg) else {
@@ -2597,7 +2858,12 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_apply_file(
     let Ok(text) = std::fs::read_to_string(path) else {
         return MPP_NOK;
     };
-    apply_ref_json(config, &text)
+    match format {
+        MPP_CFG_STR_FMT_LOG => apply_ref_log(config, &text),
+        MPP_CFG_STR_FMT_JSON => apply_ref_json(config, &text),
+        MPP_CFG_STR_FMT_TOML => apply_ref_toml(config, &text),
+        _ => MPP_NOK,
+    }
 }
 
 #[no_mangle]
@@ -2606,12 +2872,14 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_extract(
     format: i32,
     buffer: *mut *mut c_char,
 ) -> i32 {
-    const MPP_CFG_STR_FMT_JSON: i32 = 1;
     if buffer.is_null() {
         return MPP_ERR_NULL_PTR;
     }
     unsafe { buffer.write(ptr::null_mut()) };
-    if format != MPP_CFG_STR_FMT_JSON {
+    if !matches!(
+        format,
+        MPP_CFG_STR_FMT_LOG | MPP_CFG_STR_FMT_JSON | MPP_CFG_STR_FMT_TOML
+    ) {
         return MPP_NOK;
     }
     let Some(config) = ref_cfg_mut(ref_cfg) else {
@@ -2620,7 +2888,12 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_extract(
     if !validate_ref_cfg(config) {
         return MPP_NOK;
     }
-    let text = extract_ref_json(config);
+    let text = match format {
+        MPP_CFG_STR_FMT_LOG => extract_ref_log(config),
+        MPP_CFG_STR_FMT_JSON => extract_ref_json(config),
+        MPP_CFG_STR_FMT_TOML => extract_ref_toml(config),
+        _ => return MPP_NOK,
+    };
     let output = unsafe { libc::malloc(text.len() + 1) }.cast::<c_char>();
     if output.is_null() {
         return MPP_NOK;
@@ -3022,6 +3295,134 @@ mod tests {
         assert_eq!(json_object_array(output_text, "st_cfg").unwrap().len(), 3);
         unsafe { libc::free(output.cast()) };
         assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut config) }, MPP_OK);
+    }
+
+    #[test]
+    fn reference_cfg_applies_vendor_log_and_toml_schemas() {
+        let log = r#"{
+            keep_cpb : 0
+            st_cfg_cnt : 3
+            lt_cfg_cnt : 0
+            st_cfg : [
+                { is_non_ref : 0
+                  temporal_id : 0
+                  ref_mode : 4
+                  ref_arg : 0
+                  repeat : 0 }
+                { is_non_ref : 1
+                  temporal_id : 1
+                  ref_mode : 0
+                  ref_arg : 0
+                  repeat : 0 }
+                { is_non_ref : 0
+                  temporal_id : 0
+                  ref_mode : 0
+                  ref_arg : 0
+                  repeat : 0 }
+            ]
+            lt_cfg : []
+        }"#;
+        let toml = r#"mpp_enc_ref_cfg = keep_cpb = 0
+st_cfg_cnt = 3
+lt_cfg_cnt = 0
+[
+    is_non_ref = 0
+    temporal_id = 0
+    ref_mode = 4
+    ref_arg = 0
+    repeat = 0,
+    is_non_ref = 1
+    temporal_id = 1
+    ref_mode = 0
+    ref_arg = 0
+    repeat = 0,
+    is_non_ref = 0
+    temporal_id = 0
+    ref_mode = 0
+    ref_arg = 0
+    repeat = 0
+]
+[]
+"#;
+        for (format, source) in [(MPP_CFG_STR_FMT_LOG, log), (MPP_CFG_STR_FMT_TOML, toml)] {
+            let mut config = std::ptr::null_mut();
+            assert_eq!(unsafe { mpp_enc_ref_cfg_init(&mut config) }, MPP_OK);
+            let source = CString::new(source).unwrap();
+            assert_eq!(
+                unsafe { mpp_enc_ref_cfg_apply(config, format, source.as_ptr().cast_mut()) },
+                MPP_OK,
+                "format {format}"
+            );
+            assert_eq!(
+                unsafe { *mpp_enc_ref_cfg_get_cpb_info(config) },
+                MppEncCpbInfo {
+                    dpb_size: 1,
+                    max_st_cnt: 1,
+                    max_st_tid: 1,
+                    st_gop: 2,
+                    ..MppEncCpbInfo::default()
+                }
+            );
+            assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut config) }, MPP_OK);
+        }
+    }
+
+    #[test]
+    fn reference_cfg_round_trips_all_vendor_string_formats() {
+        let mut source = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_ref_cfg_init(&mut source) }, MPP_OK);
+        let st = [
+            RefStCfg {
+                temporal_id: 0,
+                ref_mode: 4,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 1,
+                ..RefStCfg::default()
+            },
+            RefStCfg {
+                temporal_id: 0,
+                ..RefStCfg::default()
+            },
+        ];
+        assert_eq!(unsafe { mpp_enc_ref_cfg_setup(source, 0, 3) }, MPP_OK);
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_add_st_cfg(source, 3, st.as_ptr()) },
+            MPP_OK
+        );
+        assert_eq!(unsafe { mpp_enc_ref_cfg_check(source) }, MPP_OK);
+
+        for format in [
+            MPP_CFG_STR_FMT_LOG,
+            MPP_CFG_STR_FMT_JSON,
+            MPP_CFG_STR_FMT_TOML,
+        ] {
+            let mut output = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { mpp_enc_ref_cfg_extract(source, format, &mut output) },
+                MPP_OK
+            );
+            assert!(!output.is_null());
+            let mut destination = std::ptr::null_mut();
+            assert_eq!(unsafe { mpp_enc_ref_cfg_init(&mut destination) }, MPP_OK);
+            assert_eq!(
+                unsafe { mpp_enc_ref_cfg_apply(destination, format, output) },
+                MPP_OK
+            );
+            assert_eq!(
+                reference_frame_pattern(destination),
+                reference_frame_pattern(source)
+            );
+            assert_eq!(
+                unsafe { *mpp_enc_ref_cfg_get_cpb_info(destination) },
+                unsafe { *mpp_enc_ref_cfg_get_cpb_info(source) }
+            );
+            unsafe { libc::free(output.cast()) };
+            assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut destination) }, MPP_OK);
+        }
+        assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut source) }, MPP_OK);
     }
 
     #[test]

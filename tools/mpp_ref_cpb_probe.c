@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "mpp_enc_ref.h"
 #include "rk_mpi.h"
+#ifdef RK_MPP_HAS_REF_CFG_FORMATS
+#include "rk_mpp_cfg.h"
+#endif
 
 static int run_case(const char *name, const MppEncRefStFrmCfg *st_cfg,
                     int st_count, const MppEncRefLtFrmCfg *lt_cfg,
@@ -36,6 +41,7 @@ static int run_case(const char *name, const MppEncRefStFrmCfg *st_cfg,
     return 0;
 }
 
+#ifdef RK_MPP_HAS_REF_CFG_FORMATS
 static int run_json(const char *path)
 {
     MppEncRefCfg ref = NULL;
@@ -57,8 +63,72 @@ static int run_json(const char *path)
     return 0;
 }
 
+static int write_format(const char *path, MppCfgStrFmt format,
+                        const MppEncRefStFrmCfg *st_cfg, int st_count,
+                        const MppEncRefLtFrmCfg *lt_cfg, int lt_count)
+{
+    MppEncRefCfg ref = NULL;
+    char *text = NULL;
+    FILE *file = NULL;
+    int ret;
+
+    ret = mpp_enc_ref_cfg_init(&ref);
+    if (!ret)
+        ret = mpp_enc_ref_cfg_set_cfg_cnt(ref, lt_count, st_count);
+    if (!ret && st_count)
+        ret = mpp_enc_ref_cfg_add_st_cfg(ref, st_count, (void *)st_cfg);
+    if (!ret && lt_count)
+        ret = mpp_enc_ref_cfg_add_lt_cfg(ref, lt_count, (void *)lt_cfg);
+    if (!ret)
+        ret = mpp_enc_ref_cfg_check(ref);
+    if (!ret)
+        ret = mpp_enc_ref_cfg_extract(ref, format, &text);
+    if (ret || !text) {
+        mpp_enc_ref_cfg_deinit(&ref);
+        return 3;
+    }
+    file = fopen(path, "w");
+    if (!file) {
+        free(text);
+        mpp_enc_ref_cfg_deinit(&ref);
+        return 4;
+    }
+    ret = fputs(text, file) < 0;
+    if (fclose(file))
+        ret = 1;
+    free(text);
+    mpp_enc_ref_cfg_deinit(&ref);
+    return ret ? 5 : 0;
+}
+
+static int apply_format(const char *label, MppCfgStrFmt format, const char *path)
+{
+    MppEncRefCfg ref = NULL;
+    MppEncCpbInfo *info;
+    int ret;
+
+    ret = mpp_enc_ref_cfg_init(&ref);
+    if (!ret)
+        ret = mpp_enc_ref_cfg_apply_file(ref, format, path);
+    info = mpp_enc_ref_cfg_get_cpb_info(ref);
+    if (ret || !info) {
+        mpp_enc_ref_cfg_deinit(&ref);
+        return 6;
+    }
+    printf("%s dpb=%d lt=%d st=%d lt_idx=%d tid=%d lt_gop=%d st_gop=%d\n",
+           label, info->dpb_size, info->max_lt_cnt, info->max_st_cnt,
+           info->max_lt_idx, info->max_st_tid, info->lt_gop, info->st_gop);
+    mpp_enc_ref_cfg_deinit(&ref);
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
+#ifndef RK_MPP_HAS_REF_CFG_FORMATS
+    (void)argc;
+    (void)argv;
+#endif
     const MppEncRefStFrmCfg ippp[] = {
         { .is_non_ref = 0, .temporal_id = 0, .ref_mode = REF_TO_PREV_REF_FRM },
     };
@@ -94,11 +164,44 @@ int main(int argc, char **argv)
         },
     };
 
+#ifdef RK_MPP_HAS_REF_CFG_FORMATS
+    if (argc > 2 && !strcmp(argv[1], "dump-formats")) {
+        char path[512];
+        const int st_count = (int)(sizeof(tsvc4) / sizeof(tsvc4[0]));
+#define DUMP_FORMAT(suffix, fmt) do {                                    \
+        snprintf(path, sizeof(path), "%s.%s", argv[2], suffix);          \
+        if (write_format(path, fmt, tsvc4, st_count, tsvc4_lt, 1))       \
+            return 1;                                                    \
+    } while (0)
+        DUMP_FORMAT("log", MPP_CFG_STR_FMT_LOG);
+        DUMP_FORMAT("json", MPP_CFG_STR_FMT_JSON);
+        DUMP_FORMAT("toml", MPP_CFG_STR_FMT_TOML);
+#undef DUMP_FORMAT
+        return 0;
+    }
+
+    if (argc > 3 && !strcmp(argv[1], "apply-format")) {
+        MppCfgStrFmt format;
+        if (!strcmp(argv[2], "log"))
+            format = MPP_CFG_STR_FMT_LOG;
+        else if (!strcmp(argv[2], "json"))
+            format = MPP_CFG_STR_FMT_JSON;
+        else if (!strcmp(argv[2], "toml"))
+            format = MPP_CFG_STR_FMT_TOML;
+        else
+            return 1;
+        return apply_format(argv[2], format, argv[3]);
+    }
+#endif
+
     if (run_case("ippp", ippp, 1, NULL, 0) ||
         run_case("tsvc2", tsvc2, 3, NULL, 0) ||
         run_case("tsvc3", tsvc3, 5, NULL, 0) ||
-        run_case("tsvc4", tsvc4, 9, tsvc4_lt, 1) ||
-        (argc > 1 && run_json(argv[1])))
+        run_case("tsvc4", tsvc4, 9, tsvc4_lt, 1)
+#ifdef RK_MPP_HAS_REF_CFG_FORMATS
+        || (argc > 1 && run_json(argv[1]))
+#endif
+    )
         return 1;
 
     return 0;

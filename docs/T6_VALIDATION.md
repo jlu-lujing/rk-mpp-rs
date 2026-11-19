@@ -1366,6 +1366,13 @@ standalone streams decode byte-identically to the vendor streams
 (`08eb7c6f…b5388623`). This closes the one-frame object path; reference-cfg
 objects also survive create/reset/LT/ST add/check and the H.264 case uses
 `-g 1:60`.
+`board_mpp_ref_cpb.sh` now also exercises all `MppCfgStrFmt` string formats
+against the current vendor. LOG and JSON produced by either library are
+accepted by the other with matching CPB fields. TOML extraction is
+byte-identical between vendor and Rust, and Rust accepts the vendor file, but
+the vendor rejects its own extracted TOML in `mpp_cfg_from_toml` with return
+`-40`; this is registered in `docs/DIVERGENCES.md`. Reproduce the format
+matrix with `BOARD=t6 MPP_REF=/tmp/mpp-develop scripts/board_mpp_ref_cpb.sh`.
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the

@@ -30,8 +30,11 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   检查剩余容量，`mpp_enc_ref_cfg_copy` 复制完整层级；
   `mpp_enc_ref_cfg_get_cpb_info` 的 DPB/LT/ST/temporal/GOP 字段由虚拟 CPB
   dryrun 计算，并与 vendor 的 IPPP、TSVC2/3/4 probe 一致。`init/reset` 的
-  默认值也恢复成 vendor 的单帧 forward-reference IPPP。JSON 格式的
-  `apply/apply_file/extract` 已实现，可读取 vendor 的 ref-cfg schema。
+  默认值也恢复成 vendor 的单帧 forward-reference IPPP。LOG、JSON、TOML
+  三种 `apply/apply_file/extract` 均已实现，可读取 vendor 的 ref-cfg schema；
+  LOG/JSON 与 vendor 双向通过，TOML 提取逐字节相同且 Rust 可回读。当前 vendor
+  连自己导出的 TOML 也无法再次解析，该 C bug 记录在
+  [`DIVERGENCES.md`](DIVERGENCES.md)。
   调度器已支持上一 ST、指定 LT index 和倒数第 N 个 ST 引用模式。
 
 ## 1. 二进制 drop-in（不改代码）

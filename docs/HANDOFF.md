@@ -360,11 +360,11 @@ temporal-zero reference；负 repeat 按 vendor 行为归零。`set_cfg_cnt` 现
 是容量设置并清空 live entry，`add_*` 从当前尾部追加，copy 复制完整层级。
 `get_cpb_info` 通过移植 vendor 的虚拟 CPB dryrun 计算 DPB/LT/ST/temporal/GOP，
 IPPP 与 TSVC2/3/4 的输出逐字段一致。`init/reset` 默认恢复为 vendor 的单帧
-forward-reference IPPP。JSON `apply/apply_file/extract` 也已实现，t6 直接读取
-vendor 的 `ref_cfg_gop3_tsvc4.json` 后 CPB 信息逐字段一致。reference
-scheduler 也补上了上一 ST、指定 LT index、倒数第 N 个 ST 三种合法 mode。
-host/t6 各 1172 个库测试通过；standalone 的 TSVC2/3/4 与 64 帧 IGOP 重启流继续逐
-NAL/重建一致。
+forward-reference IPPP。LOG、JSON、TOML `apply/apply_file/extract` 均已实现。
+t6 上 LOG/JSON 与 vendor 双向解析一致；TOML 导出与 vendor 逐字节相同，Rust
+可回读，但 vendor 对自己导出的 TOML 仍返回解析错误，已登记为 C bug。
+reference scheduler 也补上了上一 ST、指定 LT index、倒数第 N 个 ST 三种合法
+mode。standalone 的 TSVC2/3/4 与 64 帧 IGOP 重启流继续逐 NAL/重建一致。
 
 H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出

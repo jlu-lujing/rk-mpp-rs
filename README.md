@@ -407,7 +407,10 @@ standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG
 单帧编码：H.264/H.265 重建逐字节一致，MJPEG stream 逐字节一致。
 `MppEncRefCfg` 的 create/reset/LT/ST add/check 与
-`MPP_ENC_SET_REF_CFG` 已接通，t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
+`MPP_ENC_SET_REF_CFG` 已接通，LOG/JSON/TOML 三种 cfg-string
+`apply/apply_file/extract` 也已实现；LOG/JSON 与 vendor 双向通过，TOML 提取
+逐字节相同且 Rust 可回读，而 vendor 对自己导出的 TOML 仍解析失败（C-BUG）。
+t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
 也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
 （`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则
 一致，YUV SHA-256 为 `d9a3ed55…ecad7e63`。TSVC3 的 12 帧同样达到

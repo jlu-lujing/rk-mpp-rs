@@ -47,10 +47,15 @@ common=(-O2 -Wall -Wextra -Werror
     -I"$MPP_REF/inc"
     -I"$MPP_REF/mpp/base/inc"
     -I"$MPP_REF/osal/inc")
-cc "${common[@]}" /tmp/mpp_ref_cpb_probe.c \
+format_flags=()
+if [ -f "$MPP_REF/inc/rk_mpp_cfg.h" ] &&
+    grep -q 'mpp_enc_ref_cfg_apply_file' "$MPP_REF/inc/rk_venc_ref.h"; then
+    format_flags=(-DRK_MPP_HAS_REF_CFG_FORMATS=1)
+fi
+cc "${common[@]}" "${format_flags[@]}" /tmp/mpp_ref_cpb_probe.c \
     "$MPP_REF/build/mpp/librockchip_mpp.so.1" \
     -o /tmp/mpp_ref_cpb_vendor
-cc "${common[@]}" /tmp/mpp_ref_cpb_probe.c \
+cc "${common[@]}" "${format_flags[@]}" /tmp/mpp_ref_cpb_probe.c \
     -L"$overlay" -lrockchip_mpp \
     -o /tmp/mpp_ref_cpb_rs
 
@@ -61,13 +66,42 @@ sudo -n env LD_LIBRARY_PATH="$overlay" \
 diff -u /tmp/mpp_ref_cpb_vendor.txt /tmp/mpp_ref_cpb_rs.txt
 cat /tmp/mpp_ref_cpb_rs.txt
 
-json="$MPP_REF/test/cfg/enc/ref_cfg_gop3_tsvc4.json"
-if [ -f "$json" ]; then
+if [ "${#format_flags[@]}" -ne 0 ]; then
     sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" \
-        /tmp/mpp_ref_cpb_vendor "$json" > /tmp/mpp_ref_cpb_vendor_json.txt
+        /tmp/mpp_ref_cpb_vendor dump-formats /tmp/mpp_ref_fmt_vendor
     sudo -n env LD_LIBRARY_PATH="$overlay" \
-        /tmp/mpp_ref_cpb_rs "$json" > /tmp/mpp_ref_cpb_rs_json.txt
-    diff -u /tmp/mpp_ref_cpb_vendor_json.txt /tmp/mpp_ref_cpb_rs_json.txt
-    cat /tmp/mpp_ref_cpb_rs_json.txt
+        /tmp/mpp_ref_cpb_rs dump-formats /tmp/mpp_ref_fmt_rust
+    for format in log json toml; do
+        sudo -n env LD_LIBRARY_PATH="$overlay" \
+            /tmp/mpp_ref_cpb_rs apply-format "$format" \
+            "/tmp/mpp_ref_fmt_vendor.$format" > "/tmp/mpp_ref_rust_reads_$format.txt"
+        if [ "$format" = toml ]; then
+            cmp -s /tmp/mpp_ref_fmt_vendor.toml /tmp/mpp_ref_fmt_rust.toml
+            if sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" \
+                /tmp/mpp_ref_cpb_vendor apply-format toml \
+                /tmp/mpp_ref_fmt_rust.toml >/dev/null 2>&1; then
+                echo "C unexpectedly accepted its own TOML ref-cfg" >&2
+                exit 1
+            fi
+            printf 'PASS ref-cfg/toml extraction; vendor self-apply remains a C-BUG\n'
+            continue
+        fi
+        sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" \
+            /tmp/mpp_ref_cpb_vendor apply-format "$format" \
+            "/tmp/mpp_ref_fmt_rust.$format" > "/tmp/mpp_ref_vendor_reads_$format.txt"
+        diff -u "/tmp/mpp_ref_vendor_reads_$format.txt" \
+            "/tmp/mpp_ref_rust_reads_$format.txt"
+        printf 'PASS ref-cfg/%s bidirectional strings\n' "$format"
+    done
+
+    json="$MPP_REF/test/cfg/enc/ref_cfg_gop3_tsvc4.json"
+    if [ -f "$json" ]; then
+        sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" \
+            /tmp/mpp_ref_cpb_vendor "$json" > /tmp/mpp_ref_cpb_vendor_json.txt
+        sudo -n env LD_LIBRARY_PATH="$overlay" \
+            /tmp/mpp_ref_cpb_rs "$json" > /tmp/mpp_ref_cpb_rs_json.txt
+        diff -u /tmp/mpp_ref_cpb_vendor_json.txt /tmp/mpp_ref_cpb_rs_json.txt
+        cat /tmp/mpp_ref_cpb_rs_json.txt
+    fi
 fi
 REMOTE
