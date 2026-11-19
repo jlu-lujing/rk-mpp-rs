@@ -2,7 +2,8 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 
 use super::standalone;
 use crate::encoder::{
-    EncoderConfig, GdrConfig, GdrMode, H264RcTuning, RateControlConfig, RateControlMode,
+    EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning, RateControlConfig,
+    RateControlMode,
 };
 use crate::sdk::Codec;
 
@@ -89,8 +90,18 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
     let fps_num = unsafe { cfg.get_or("rc:fps_in_num", 30) }.max(1) as u32;
     let fps_den = unsafe { cfg.get_or("rc:fps_in_denom", 1) }.max(1) as u32;
     let qp = unsafe { cfg.get_or("rc:qp_init", 26) }.clamp(0, 51) as u8;
-    let profile = unsafe { cfg.get_or("h264:profile", 0) }.clamp(0, u8::MAX as i32) as u8;
-    let level = unsafe { cfg.get_or("h264:level", 30) }.clamp(0, u8::MAX as i32) as u8;
+    let profile_key = if codec == Codec::H265 {
+        "h265:profile"
+    } else {
+        "h264:profile"
+    };
+    let level_key = if codec == Codec::H265 {
+        "h265:level"
+    } else {
+        "h264:level"
+    };
+    let profile = unsafe { cfg.get_or(profile_key, 0) }.clamp(0, u8::MAX as i32) as u8;
+    let level = unsafe { cfg.get_or(level_key, 30) }.clamp(0, u8::MAX as i32) as u8;
     let jpeg_qfactor = unsafe { cfg.get_or("jpeg:q_factor", 80) }.clamp(1, 100) as u32;
 
     let mut result = EncoderConfig::new(codec, width as usize, height as usize)
@@ -111,6 +122,19 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
                     .map_err(|_| format!("hw:aq_step_i value {input} is outside i8"))?;
             }
             result = result.with_h264_aq_step_i(aq_step_i);
+        }
+        let disable = unsafe { cfg.get("h264:dblk_disable") }
+            .or_else(|| unsafe { cfg.get("h264:deblock_disable") });
+        let alpha = unsafe { cfg.get("h264:dblk_alpha") }
+            .or_else(|| unsafe { cfg.get("h264:deblock_offset_alpha") });
+        let beta = unsafe { cfg.get("h264:dblk_beta") }
+            .or_else(|| unsafe { cfg.get("h264:deblock_offset_beta") });
+        if disable.is_some() || alpha.is_some() || beta.is_some() {
+            result = result.with_h264_deblock(H264DeblockConfig::new(
+                disable.unwrap_or(0).max(0) as u32,
+                alpha.unwrap_or(0),
+                beta.unwrap_or(0),
+            ));
         }
     }
 

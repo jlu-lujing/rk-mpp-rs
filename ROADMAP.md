@@ -4108,6 +4108,15 @@ pipeline uses.
   H.264 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`), and
   H.265 is byte-identical (`bc22eb33…454f035`).
 
+- **2026-11-20: MppEncCfg carries H.264 deblock controls.** The compatible
+  object path now maps `h264:dblk_disable`, `dblk_alpha` and `dblk_beta` (and
+  their longer `deblock_*` aliases) into a validated typed configuration.
+  `EncodedFrame` behavior is unchanged; offsets outside `-6..=6` are rejected.
+  The existing deblock board gate now also compiles the vendor probe against
+  the Rust standalone library. Object-path alpha and disable cells both
+  produce the same five NALs as the typed CLI under the version-SEI rule
+  (`2730e887…10c697d4`).
+
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a
   request Batch. The session now reuses and clears both. Seven interleaved

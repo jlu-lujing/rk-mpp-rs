@@ -46,6 +46,8 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   可通过 `librk_mpp_rs.so` 运行 9/9。
   `rc:refresh_en/mode/num` 会映射到 H.264/H.265 typed GDR；可用
   `scripts/board_mpp_enc_cfg_gdr.sh` 验证未修改 vendor probe 与 Rust CLI 输出。
+  H.264 的 `h264:dblk_disable/alpha/beta` 会映射到 typed deblock；
+  `scripts/board_h264_deblock_vs_mpp.sh` 同时验证对象路径。
 
 ## 1. 二进制 drop-in（不改代码）
 

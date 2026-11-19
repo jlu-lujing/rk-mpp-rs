@@ -459,6 +459,46 @@ impl GdrConfig {
     }
 }
 
+/// H.264 slice-deblock controls from `MppEncH264Cfg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct H264DeblockConfig {
+    disable: u32,
+    alpha_offset_div2: i32,
+    beta_offset_div2: i32,
+}
+
+impl H264DeblockConfig {
+    pub const fn new(disable: u32, alpha_offset_div2: i32, beta_offset_div2: i32) -> Self {
+        Self {
+            disable,
+            alpha_offset_div2,
+            beta_offset_div2,
+        }
+    }
+
+    pub const fn disable(self) -> u32 {
+        self.disable
+    }
+
+    pub const fn alpha_offset_div2(self) -> i32 {
+        self.alpha_offset_div2
+    }
+
+    pub const fn beta_offset_div2(self) -> i32 {
+        self.beta_offset_div2
+    }
+
+    fn validate(self) -> Result<(), Error> {
+        if !(-6..=6).contains(&self.alpha_offset_div2) || !(-6..=6).contains(&self.beta_offset_div2)
+        {
+            return Err(Error::InvalidInput(
+                "H.264 deblock offsets must be in -6..=6".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// What cuts one coded picture into multiple slices.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -548,6 +588,7 @@ pub struct EncoderConfig {
     rate_control: Option<RateControlConfig>,
     h264_rc_tuning: Option<H264RcTuning>,
     h264_aq_step_i: Option<[i8; 16]>,
+    h264_deblock: Option<H264DeblockConfig>,
     roi: Option<RoiConfig>,
     gdr: Option<GdrConfig>,
     slice_split: Option<SliceSplitConfig>,
@@ -573,6 +614,7 @@ impl EncoderConfig {
             rate_control: None,
             h264_rc_tuning: None,
             h264_aq_step_i: None,
+            h264_deblock: None,
             roi: None,
             gdr: None,
             slice_split: None,
@@ -637,6 +679,10 @@ impl EncoderConfig {
 
     pub const fn h264_aq_step_i(self) -> Option<[i8; 16]> {
         self.h264_aq_step_i
+    }
+
+    pub const fn h264_deblock(self) -> Option<H264DeblockConfig> {
+        self.h264_deblock
     }
 
     pub const fn h264_rc_tuning(self) -> Option<H264RcTuning> {
@@ -717,6 +763,11 @@ impl EncoderConfig {
         self
     }
 
+    pub const fn with_h264_deblock(mut self, deblock: H264DeblockConfig) -> Self {
+        self.h264_deblock = Some(deblock);
+        self
+    }
+
     pub const fn with_h264_rc_tuning(mut self, tuning: H264RcTuning) -> Self {
         self.h264_rc_tuning = Some(tuning);
         self
@@ -789,6 +840,9 @@ impl EncoderConfig {
         }
         if let Some(slice_split) = self.slice_split {
             slice_split.validate()?;
+        }
+        if let Some(deblock) = self.h264_deblock {
+            deblock.validate()?;
         }
         Ok(())
     }
@@ -2081,6 +2135,11 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
     h264.fps_num = config.fps_num;
     h264.fps_den = config.fps_den;
     h264.aq_step_i = config.h264_aq_step_i;
+    if let Some(deblock) = config.h264_deblock {
+        h264.deblock_disable = deblock.disable;
+        h264.deblock_offset_alpha = deblock.alpha_offset_div2;
+        h264.deblock_offset_beta = deblock.beta_offset_div2;
+    }
     if let Some(tuning) = config.h264_rc_tuning {
         h264.max_reencode_times = tuning.max_reencode_times;
         h264.super_mode = tuning.super_mode;
@@ -2527,9 +2586,9 @@ fn format_nv12_padded<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        format_nv12_input, BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode, H264RcTuning,
-        PacketMeta, PixelFormat, RateControlConfig, RateControlMode, RoiConfig, RoiRegion,
-        SliceOutputMode, SliceSplitConfig, SliceSplitMode,
+        format_nv12_input, BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode,
+        H264DeblockConfig, H264RcTuning, PacketMeta, PixelFormat, RateControlConfig,
+        RateControlMode, RoiConfig, RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
     use std::borrow::Cow;
@@ -2610,6 +2669,7 @@ mod tests {
             .with_initial_qp(26)
             .with_qp_range(10, 40)
             .with_hierarchical_qp([1, 2, 3, 4], [1, 1, 1, 1]);
+        let deblock = H264DeblockConfig::new(1, -2, 3);
         let config = EncoderConfig::new(Codec::H264, 320, 240)
             .with_input_format(PixelFormat::I420)
             .with_profile(77)
@@ -2622,6 +2682,7 @@ mod tests {
             .with_jpeg_qfactor(80)
             .with_jpeg_restart_mcus(16)
             .with_h264_aq_step_i(aq_step_i)
+            .with_h264_deblock(deblock)
             .with_h264_rc_tuning(h264_tuning)
             .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
@@ -2637,10 +2698,26 @@ mod tests {
         assert_eq!(config.jpeg_restart_mcus(), 16);
         assert_eq!(config.h264_aq_step_i(), Some(aq_step_i));
         assert_eq!(config.h264_rc_tuning(), Some(h264_tuning));
+        assert_eq!(config.h264_deblock(), Some(deblock));
         assert_eq!(config.rate_control(), Some(rate_control));
         assert!(rate_control.hier_qp_enabled());
         assert_eq!(rate_control.hier_qp_delta(), [1, 2, 3, 4]);
         assert_eq!(rate_control.hier_frame_num(), [1, 1, 1, 1]);
+        assert_eq!(
+            (
+                deblock.disable(),
+                deblock.alpha_offset_div2(),
+                deblock.beta_offset_div2(),
+            ),
+            (1, -2, 3)
+        );
+        assert!(config.validate_advanced_controls().is_ok());
+        let invalid = EncoderConfig::new(Codec::H264, 320, 240)
+            .with_h264_deblock(H264DeblockConfig::new(0, 7, 0));
+        assert!(matches!(
+            invalid.validate_advanced_controls(),
+            Err(Error::InvalidInput(_))
+        ));
     }
 
     #[test]

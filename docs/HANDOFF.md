@@ -426,6 +426,11 @@ H.265 为 2,517,365 bytes /
 只设置这些对象键，并与 Rust CLI 比较：H.264 35 NAL 一致
 （version-SEI 仅 framing 不同，`09b7bc26…4367ca8`），H.265 stream 逐字节一致
 （`bc22eb33…454f035`）。
+H.264 `h264:dblk_disable/alpha/beta` 及兼容的 `deblock_*` 别名也已映射到
+typed `H264DeblockConfig`，offset 限制为 `-6..=6`。同一 deblock 板级门用
+Rust standalone 链接 vendor probe，alpha 与 disable 两个对象配置格均与 Rust
+CLI 的 5 NAL 一致（version-SEI 仅 framing 不同，
+`2730e887…10c697d4`）。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全

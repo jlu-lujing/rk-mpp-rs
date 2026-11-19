@@ -1408,6 +1408,9 @@ The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`) and H.265 is
 byte-identical (`bc22eb33…454f035`) to the typed CLI path.
+`board_h264_deblock_vs_mpp.sh` now includes Rust-object cells for
+`h264:dblk_alpha` and `h264:dblk_disable`; both match the typed CLI's five
+NALs under the version-SEI rule (`2730e887…10c697d4`).
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the

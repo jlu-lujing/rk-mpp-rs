@@ -35,11 +35,30 @@ if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/lib
     "H.264 deblock" "reference build missing at $mpp_ref"
 fi
 
+if ssh "$BOARD" "grep -q bit_target_fix $mpp_ref/inc/mpp_rc_defs.h"; then
+  rc_has_bit_target_fix=1
+else
+  rc_has_bit_target_fix=0
+fi
+
 # The probe links the reference's own ROI helper only for symbol availability;
 # these cells do not use it. Build once, tolerate either library SONAME.
 scp -q tools/h264e_probe.c "$BOARD":/tmp/ 2>/dev/null
-ssh "$BOARD" "cc -O2 -w -pthread -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
-        cc -O2 -w -pthread -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
+ssh "$BOARD" "cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
+        cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
+
+ssh "$BOARD" "rm -rf /tmp/rk-mpp-rs-dblk-overlay &&
+    mkdir -p /tmp/rk-mpp-rs-dblk-overlay &&
+    for name in librockchip_mpp.so librockchip_mpp.so.1 librk_mpp_rs.so librk_mpp_rs.so.1; do
+        ln -s \$HOME/rk-mpp-rs/target/release/librk_mpp_rs.so \
+            /tmp/rk-mpp-rs-dblk-overlay/\$name;
+    done &&
+    cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix \
+        -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc \
+        $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c \
+        -L/tmp/rk-mpp-rs-dblk-overlay -lrockchip_mpp \
+        -Wl,-rpath,/tmp/rk-mpp-rs-dblk-overlay \
+        -o /tmp/h264e_cfg_probe_rust"
 
 ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
@@ -72,6 +91,37 @@ run_cell fixqp_dblk_default "26 baseline 1 60" \
 run_cell fixqp_dblk_alpha   "26 baseline 1 60 dblk:1:-3:4" \
   "1 0 26 288000:1500000:2500000 dblk 1 -3 4"
 run_cell fixqp_dblk_disable "26 baseline 1 60 dblk:2:2:5" \
+  "1 0 26 288000:1500000:2500000 dblk 2 2 5"
+
+run_object_cell() {
+  local name="$1" ours_args="$2" probe_args="$3"
+  ssh "$BOARD" "sudo rm -f /tmp/dblk_ours_$name.264 /tmp/dblk_obj_$name.264 &&
+          cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
+            /tmp/dblk_ours_$name.264 $SIZE $ours_args >/dev/null &&
+          sudo env LD_LIBRARY_PATH=/tmp/rk-mpp-rs-dblk-overlay \
+            /tmp/h264e_cfg_probe_rust $fixture /tmp/dblk_obj_$name.264 \
+            320 240 $probe_args >/dev/null 2>&1 &&
+          sudo chmod 644 /tmp/dblk_ours_$name.264 /tmp/dblk_obj_$name.264"
+  if ! ssh "$BOARD" "test -s /tmp/dblk_ours_$name.264 &&
+      test -s /tmp/dblk_obj_$name.264"; then
+    printf 'FAIL object-mapping/%s (one side produced no stream)\n' "$name"
+    fail=1
+    return
+  fi
+  scp -q "$BOARD":"/tmp/dblk_ours_$name.264" \
+    "$BOARD":"/tmp/dblk_obj_$name.264" /tmp/ 2>/dev/null
+  if python3 scripts/compare_streams.py \
+      "/tmp/dblk_ours_$name.264" "/tmp/dblk_obj_$name.264"; then
+    printf 'PASS object-mapping/%s\n' "$name"
+  else
+    printf 'FAIL object-mapping/%s (bitstreams differ)\n' "$name"
+    fail=1
+  fi
+}
+
+run_object_cell fixqp_dblk_alpha "26 baseline 1 60 dblk:1:-3:4" \
+  "1 0 26 288000:1500000:2500000 dblk 1 -3 4"
+run_object_cell fixqp_dblk_disable "26 baseline 1 60 dblk:2:2:5" \
   "1 0 26 288000:1500000:2500000 dblk 2 2 5"
 
 # The unset initial quality, on CBR: `auto` on our side, qp -1 on the probe's.
