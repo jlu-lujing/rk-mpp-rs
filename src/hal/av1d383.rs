@@ -431,13 +431,15 @@ impl Frame {
                 );
                 output
             } else {
-                crate::codec::yuv::packed10_nv12_to_planar(
+                crate::codec::yuv::packed10_nv12_to_planar_into(
+                    &mut output,
                     &bytes[..luma_size],
                     &bytes[luma_size..output_size],
                     self.width,
                     self.height,
                     self.stride,
-                )
+                );
+                output
             }
         };
         view.buffer().sync_read_end()?;

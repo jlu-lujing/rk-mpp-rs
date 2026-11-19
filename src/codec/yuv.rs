@@ -179,12 +179,27 @@ pub fn packed10_nv12_to_planar(
     height: usize,
     stride: usize,
 ) -> Vec<u8> {
+    let mut out = Vec::new();
+    packed10_nv12_to_planar_into(&mut out, y, uv, width, height, stride);
+    out
+}
+
+/// Write a Rockchip packed-10 4:2:0 frame into a reusable planar allocation.
+pub fn packed10_nv12_to_planar_into(
+    out: &mut Vec<u8>,
+    y: &[u8],
+    uv: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+) {
     let chroma_width = width.div_ceil(2);
     let chroma_height = height.div_ceil(2);
     let luma_samples = width * height;
     let chroma_samples = chroma_width * chroma_height;
     let size = (luma_samples + 2 * chroma_samples) * 2;
-    let mut out = Vec::with_capacity(size);
+    out.clear();
+    out.reserve(size);
     // SAFETY: every byte up to `size` is filled below. `u8` needs no drop and
     // the spare capacity is never exposed as initialized.
     unsafe { out.set_len(size) };
@@ -204,7 +219,6 @@ pub fn packed10_nv12_to_planar(
         let v_row = &mut v_plane[row * chroma_width * 2..][..chroma_width * 2];
         unpack_packed10_uv_row(&uv[row * stride..], u_row, v_row, chroma_width);
     }
-    out
 }
 
 fn unpack_packed10_row(src: &[u8], dst: &mut [u8], samples: usize) {
@@ -413,6 +427,28 @@ mod tests {
             }
             assert_eq!(actual, expected, "{width}x{height}");
         }
+    }
+
+    #[test]
+    fn packed10_copy_reuses_the_caller_allocation() {
+        let width = 8;
+        let height = 2;
+        let stride = 10;
+        let mut y = vec![0u8; stride * height];
+        let mut uv = vec![0u8; stride];
+        for row in 0..height {
+            let samples: Vec<u16> = (0..width)
+                .map(|index| (row * width + index) as u16)
+                .collect();
+            pack_packed10(&samples, &mut y[row * stride..]);
+        }
+        let chroma: Vec<u16> = (0..width).map(|index| 100 + index as u16).collect();
+        pack_packed10(&chroma, &mut uv);
+
+        let expected = packed10_nv12_to_planar(&y, &uv, width, height, stride);
+        let mut actual = vec![0xaa; 4096];
+        packed10_nv12_to_planar_into(&mut actual, &y, &uv, width, height, stride);
+        assert_eq!(actual, expected);
     }
 
     fn pack_packed10(samples: &[u16], row: &mut [u8]) {

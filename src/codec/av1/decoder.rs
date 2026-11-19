@@ -599,7 +599,8 @@ fn copy_planar_data(
         return out;
     }
     if bit_depth == 10 {
-        return crate::codec::yuv::packed10_nv12_to_planar(y, uv, width, height, stride);
+        crate::codec::yuv::packed10_nv12_to_planar_into(&mut out, y, uv, width, height, stride);
+        return out;
     }
     let chroma_width = width.div_ceil(2);
     let chroma_height = height.div_ceil(2);
