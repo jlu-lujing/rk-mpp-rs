@@ -1132,7 +1132,7 @@ pub fn slice_pps_id(rbsp: &[u8], nal_type: u8) -> Result<u32, parser::HevcError>
 
 /// Split an Annex-B stream into access units at picture boundaries.
 pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
-    let nals = parser::split_annex_b(data);
+    let nals = parser::split_annex_b_headers(data);
     let mut out = Vec::new();
     let mut start: Option<usize> = None;
     let mut has_vcl = false;
@@ -1140,7 +1140,7 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
     for n in &nals {
         let boundary = match n.unit_type {
             parser::NAL_AUD => true,
-            t if t <= 31 => first_slice(&n.rbsp),
+            t if t <= 31 => first_slice(n.payload),
             _ => false,
         };
         if boundary && has_vcl {

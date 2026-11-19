@@ -82,6 +82,16 @@ pub struct NalUnit<'a> {
     pub len: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct NalHeader<'a> {
+    pub unit_type: u8,
+    pub layer_id: u8,
+    pub temporal_id_plus1: u8,
+    pub payload: &'a [u8],
+    pub offset: usize,
+    pub len: usize,
+}
+
 impl NalUnit<'_> {
     pub fn is_vcl(&self) -> bool {
         self.unit_type <= 31
@@ -91,8 +101,14 @@ impl NalUnit<'_> {
     }
 }
 
-/// Split an Annex-B byte stream into HEVC NAL units (two-byte header).
-pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
+impl NalHeader<'_> {
+    pub fn is_vcl(&self) -> bool {
+        self.unit_type <= 31
+    }
+}
+
+/// Scan NAL boundaries and two-byte headers without de-escaping payloads.
+pub fn split_annex_b_headers(data: &[u8]) -> Vec<NalHeader<'_>> {
     let starts = annex_b_start_codes(data);
     let mut out = Vec::with_capacity(starts.len());
     for (n, &(sc_start, payload_start)) in starts.iter().enumerate() {
@@ -102,20 +118,31 @@ pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
         }
         let h0 = data[payload_start];
         let h1 = data[payload_start + 1];
-        let unit_type = (h0 >> 1) & 0x3f;
-        let layer_id = ((h0 & 1) << 5) | (h1 >> 3);
-        let temporal_id_plus1 = h1 & 0x07;
-        let body = &data[payload_start + 2..end];
-        out.push(NalUnit {
-            unit_type,
-            layer_id,
-            temporal_id_plus1,
-            rbsp: ebsp_to_rbsp(body),
+        out.push(NalHeader {
+            unit_type: (h0 >> 1) & 0x3f,
+            layer_id: ((h0 & 1) << 5) | (h1 >> 3),
+            temporal_id_plus1: h1 & 0x07,
+            payload: &data[payload_start + 2..end],
             offset: sc_start,
             len: end - sc_start,
         });
     }
     out
+}
+
+/// Split an Annex-B byte stream into HEVC NAL units (two-byte header).
+pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit<'_>> {
+    split_annex_b_headers(data)
+        .into_iter()
+        .map(|nal| NalUnit {
+            unit_type: nal.unit_type,
+            layer_id: nal.layer_id,
+            temporal_id_plus1: nal.temporal_id_plus1,
+            rbsp: ebsp_to_rbsp(nal.payload),
+            offset: nal.offset,
+            len: nal.len,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1037,6 +1064,21 @@ mod tests {
         assert!(nals[3].is_irap());
         assert!(!nals[2].is_vcl());
         assert_eq!(nals[0].temporal_id_plus1, 1);
+    }
+
+    #[test]
+    fn header_split_keeps_ebsp_while_full_split_deescapes() {
+        let stream = [0, 0, 1, 0x26, 0x01, 0x80, 0, 0, 3, 1];
+        let headers = split_annex_b_headers(&stream);
+        let nals = split_annex_b(&stream);
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].unit_type, NAL_IDR_W_RADL);
+        assert_eq!(headers[0].layer_id, 0);
+        assert_eq!(headers[0].temporal_id_plus1, 1);
+        assert_eq!(headers[0].payload, &[0x80, 0, 0, 3, 1]);
+        assert_eq!(&*nals[0].rbsp, &[0x80, 0, 0, 1]);
+        assert_eq!(headers[0].offset, nals[0].offset);
+        assert_eq!(headers[0].len, nals[0].len);
     }
 
     #[test]

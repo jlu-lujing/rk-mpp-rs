@@ -285,6 +285,14 @@ H.264 已按 64-bit 构造的 two-zero detector。t6、80% OPP cap 下，1200 �
 `1764 -> 1733 ms`。单路的帧率仍主要受硬件节拍限制，因此这里只把 CPU
 下降作为主要证据。
 
+H.265 的整段 AU 定位进一步改为 header-only：`split_access_units()` 只读取
+NAL type、两层 NAL header、offset 和原始 payload 范围，不再为了判断
+`first_slice_segment_in_pic_flag` 对每个压缩 NAL 做完整 EPB 重写和分配。
+具体 AU 进入 decoder 后仍走原来的完整 `split_annex_b()`，因此参数集和
+slice header 的解转义语义不变。t6 80% OPP cap 下，1200 帧 task-clock
+`381.8 -> 368.1 ms`（-3.6%），instructions `836.3M -> 784.8M`（-6.2%）；
+并发墙钟持平，因此只按解析 CPU 成本记账。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；
