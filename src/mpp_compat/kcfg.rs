@@ -42,7 +42,7 @@ const VENC_KCFG_NAMES: [&str; VENC_KCFG_TYPE_BUTT as usize] = [
 ];
 
 #[derive(Clone, Copy)]
-enum Val {
+pub(super) enum Val {
     S8(i8),
     U8(u8),
     S16(i16),
@@ -66,23 +66,38 @@ pub(super) struct VencInitConfig {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum KcfgKind {
+pub(super) enum KcfgKind {
     Vdec,
     Venc,
 }
 
 pub(super) struct KcfgStore {
     magic: u64,
-    kind: KcfgKind,
-    type_id: u32,
+    pub(super) kind: KcfgKind,
+    pub(super) type_id: u32,
     name: Option<String>,
-    values: HashMap<String, Val>,
+    pub(super) values: HashMap<String, Val>,
     flex: Flex,
 }
 
-fn store_mut<'a>(cfg: *mut c_void) -> Option<&'a mut KcfgStore> {
+pub(super) fn store_mut<'a>(cfg: *mut c_void) -> Option<&'a mut KcfgStore> {
     let store = unsafe { cfg.cast::<KcfgStore>().as_mut() }?;
     (store.magic == KCFG_MAGIC).then_some(store)
+}
+
+fn store_ref<'a>(cfg: *mut c_void) -> Option<&'a KcfgStore> {
+    let store = unsafe { cfg.cast::<KcfgStore>().as_ref() }?;
+    (store.magic == KCFG_MAGIC).then_some(store)
+}
+
+pub(super) fn venc_st_cfg_mut(cfg: *mut c_void) -> Option<&'static mut KcfgStore> {
+    let store = store_mut(cfg)?;
+    (store.kind == KcfgKind::Venc && store.type_id == 5).then_some(store)
+}
+
+pub(super) fn venc_st_cfg_ref(cfg: *mut c_void) -> Option<&'static KcfgStore> {
+    let store = store_ref(cfg)?;
+    (store.kind == KcfgKind::Venc && store.type_id == 5).then_some(store)
 }
 
 fn new_store(kind: KcfgKind, type_id: u32, name: Option<String>) -> *mut c_void {

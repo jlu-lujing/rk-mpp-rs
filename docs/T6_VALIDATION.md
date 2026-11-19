@@ -1392,6 +1392,14 @@ advanced scalar fields from `MppEncCfg`. A 12-frame CBR debreath run and a
 six-frame super-frame reencode run both match `/tmp/mpp-old` after removing the
 build-identity SEI. A third low-bitrate six-frame `DROP_MODE=2` cell exercises
 the software PSKIP replacement and is byte-identical as well.
+`scripts/board_mpp_enc_cfg_test.sh` runs the vendor's unmodified
+`mpp_enc_cfg_test` with `librk_mpp_rs.so` as `librockchip_mpp.so.1`. All nine
+cases pass: scalar/array access, LOG extraction, scalar/array apply,
+extract/apply roundtrip, JSON apply and the `KmppVencStCfg` kobj roundtrip.
+The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
+**3/3 PASS**. The same tree also passes the host workspace gate with
+**1347 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
+**1349 passed / 0 failed / 45 ignored** plus strict rustdoc.
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the
