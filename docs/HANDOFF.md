@@ -375,6 +375,9 @@ t6 原生 vendor 的完整配置与 Rust scalar/array 配置已做三格式双�
 `MppEncCfg -> MPP_ENC_SET_CFG -> RateControlConfig -> Vepu580H264` 真正进入
 RC 模型；`board_mpp_hier_qp.sh` 的 33 帧 CBR 流在剥离 version-SEI 后与
 `/tmp/mpp-old` 逐字节一致。
+同一路径也已接入 `hw:aq_step_i`：16 项自定义 I 帧 AQ 表会写入 VEPU580 的
+`RCKLUT.aq_step`，P 帧继续使用参考的独立默认表。板级门增加自定义
+`0..15` AQ 表，33 帧 CBR 码流同样与 old oracle 逐字节一致。
 
 H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出

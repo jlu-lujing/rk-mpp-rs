@@ -1383,7 +1383,10 @@ arrays.
 CBR plus `hier 1:2:3:4:1:1:1:1`. The probe sets the hierarchical-QP scalar and
 both arrays through `MppEncCfg`; after `MPP_ENC_SET_CFG`, Rust must reproduce
 the VEPU580 stream. Against the stable `/tmp/mpp-old` encoder oracle, both
-streams are byte-identical after removing only the build-identity SEI.
+streams are byte-identical after removing only the build-identity SEI. A second
+cell supplies the 16-entry `hw:aq_step_i` table `0..15`; Rust replaces the
+I-picture `RCKLUT.aq_step` while preserving the distinct P-picture default, and
+the stream again matches the old oracle.
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the

@@ -453,6 +453,7 @@ pub struct EncoderConfig {
     jpeg_qfactor: Option<u32>,
     jpeg_restart_mcus: u32,
     rate_control: Option<RateControlConfig>,
+    h264_aq_step_i: Option<[i8; 16]>,
     roi: Option<RoiConfig>,
     gdr: Option<GdrConfig>,
     slice_split: Option<SliceSplitConfig>,
@@ -476,6 +477,7 @@ impl EncoderConfig {
             jpeg_qfactor: None,
             jpeg_restart_mcus: 0,
             rate_control: None,
+            h264_aq_step_i: None,
             roi: None,
             gdr: None,
             slice_split: None,
@@ -536,6 +538,10 @@ impl EncoderConfig {
 
     pub const fn rate_control(self) -> Option<RateControlConfig> {
         self.rate_control
+    }
+
+    pub const fn h264_aq_step_i(self) -> Option<[i8; 16]> {
+        self.h264_aq_step_i
     }
 
     pub const fn roi(self) -> Option<RoiConfig> {
@@ -604,6 +610,11 @@ impl EncoderConfig {
 
     pub const fn with_rate_control(mut self, rate_control: RateControlConfig) -> Self {
         self.rate_control = Some(rate_control);
+        self
+    }
+
+    pub const fn with_h264_aq_step_i(mut self, aq_step_i: [i8; 16]) -> Self {
+        self.h264_aq_step_i = Some(aq_step_i);
         self
     }
 
@@ -1921,6 +1932,7 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
     }
     h264.fps_num = config.fps_num;
     h264.fps_den = config.fps_den;
+    h264.aq_step_i = config.h264_aq_step_i;
     h264.entropy_coding = profile >= PROFILE_MAIN;
     h264.transform_8x8 = profile >= PROFILE_HIGH;
     if let Some(rate_control) = config.rate_control {
@@ -2391,6 +2403,7 @@ mod tests {
 
     #[test]
     fn encoder_builder_keeps_public_configuration() {
+        let aq_step_i = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
         let rate_control = RateControlConfig::vbr(2_000_000, 1_500_000, 2_500_000)
             .with_initial_qp(26)
             .with_qp_range(10, 40)
@@ -2406,6 +2419,7 @@ mod tests {
             .with_jpeg_quality(7)
             .with_jpeg_qfactor(80)
             .with_jpeg_restart_mcus(16)
+            .with_h264_aq_step_i(aq_step_i)
             .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
         assert_eq!(config.input_format(), PixelFormat::I420);
@@ -2418,6 +2432,7 @@ mod tests {
         assert_eq!(config.jpeg_quality(), 7);
         assert_eq!(config.jpeg_qfactor(), Some(80));
         assert_eq!(config.jpeg_restart_mcus(), 16);
+        assert_eq!(config.h264_aq_step_i(), Some(aq_step_i));
         assert_eq!(config.rate_control(), Some(rate_control));
         assert!(rate_control.hier_qp_enabled());
         assert_eq!(rate_control.hier_qp_delta(), [1, 2, 3, 4]);

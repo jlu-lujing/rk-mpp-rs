@@ -1849,6 +1849,20 @@ pub(super) fn encoder_cfg_has_ref_cfg(config: *mut c_void) -> bool {
     encoder_cfg_reference(config).is_some()
 }
 
+pub(super) fn encoder_cfg_i32_array<const N: usize>(
+    config: *mut c_void,
+    name: &str,
+) -> Option<[i32; N]> {
+    let config = enc_cfg_ref(config)?;
+    let name = CString::new(name).ok()?;
+    let values = config.arrays.get(&name)?;
+    (values.len() == N).then(|| {
+        let mut result = [0; N];
+        result.copy_from_slice(values);
+        result
+    })
+}
+
 pub(super) fn encoder_cfg_long_term_config(config: *mut c_void) -> Option<LongTermReferenceConfig> {
     let reference = encoder_cfg_reference(config)?;
     reference_long_term_config(reference)

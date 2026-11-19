@@ -2983,7 +2983,11 @@ impl RegisterFile {
         // is per slice type, both written through a byte pointer as the reference
         // does.
         self.put_bytes(&vepu580_regs::RCKLUT_AQ_TTHD, &AQ_THRESHOLD_DEFAULT)?;
-        let step = if state.is_idr { &AQ_STEP_I } else { &AQ_STEP_P };
+        let step = if state.is_idr {
+            config.aq_step_i.as_ref().unwrap_or(&AQ_STEP_I)
+        } else {
+            &AQ_STEP_P
+        };
         let step: Vec<u8> = step.iter().map(|v| (*v as u8) & 0x3f).collect();
         self.put_bytes(&vepu580_regs::RCKLUT_AQ_STEP, &step)?;
 
@@ -4286,6 +4290,40 @@ mod tests {
             idr.rc_klut[vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word - 1024],
             CHROMA_KLUT_WEIGHT[0]
         );
+    }
+
+    #[test]
+    fn custom_aq_step_applies_to_the_intra_picture_only() {
+        let mut config = config();
+        config.gop = 4;
+        config.aq_step_i = Some([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+        let idr = registers_at(&config, FrameState::default());
+        let p = build_registers(&Job {
+            tune: quiet_tune(),
+            reference_fd: 21,
+            reference_thumb_fd: 22,
+            ..job(
+                &config,
+                FrameState {
+                    index: 1,
+                    is_idr: false,
+                    frame_num: 1,
+                    poc: 2,
+                    ..FrameState::default()
+                },
+            )
+        })
+        .unwrap();
+        let aq_byte = |file: &RegisterFile, index: usize| {
+            (file.rc_klut[1045 - 1024 + index / 4] >> ((index % 4) * 8)) & 0xff
+        };
+        assert_eq!(
+            (0..16)
+                .map(|index| aq_byte(&idr, index))
+                .collect::<Vec<_>>(),
+            (1..=16).collect::<Vec<_>>()
+        );
+        assert_eq!(aq_byte(&p, 14), 7);
     }
 
     /// The STATUS field positions come from `Vepu580Status_t`, but what makes them

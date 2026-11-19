@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Verify hierarchical QP arrays from MppEncCfg reach the Rust encoder.
+# Verify hierarchical QP and custom AQ tables from MppEncCfg reach Rust.
 
 set -euo pipefail
 
@@ -56,24 +56,32 @@ cc -D_GNU_SOURCE -DCUSTOM_RC_HAS_BIT_TARGET_FIX="$rc_has_bit_target_fix" \
     "$MPP_REF/build/mpp/librockchip_mpp.so.1" -o /tmp/mpp_hier_qp_probe
 
 raw=/tmp/rk_mpp_hier_qp_320x240_33.nv12
-vendor=/tmp/rk_mpp_hier_qp_vendor.264
-rust=/tmp/rk_mpp_hier_qp_rust.264
 ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 33 \
     -pix_fmt nv12 -f rawvideo "$raw"
 
-args=("$raw" "$vendor" 320 240 33 1 26 300000:250000:350000
-    gop 60 hier 1:2:3:4:1:1:1:1)
-sudo -n rm -f "$vendor" "$rust"
-sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" \
-    /tmp/mpp_hier_qp_probe "${args[@]}" >/tmp/rk_mpp_hier_qp_vendor.log 2>&1
-args[1]="$rust"
-sudo -n env LD_LIBRARY_PATH="$overlay" \
-    /tmp/mpp_hier_qp_probe "${args[@]}" >/tmp/rk_mpp_hier_qp_rust.log 2>&1
+run_case() {
+    local label="$1"
+    shift
+    local vendor="/tmp/rk_mpp_${label}_vendor.264"
+    local rust="/tmp/rk_mpp_${label}_rust.264"
+    local args=("$raw" "$vendor" 320 240 33 1 26 300000:250000:350000
+        gop 60 "$@")
 
-sudo -n python3 /tmp/strip_version_sei.py "$vendor" /tmp/rk_mpp_hier_qp_vendor.norm
-sudo -n python3 /tmp/strip_version_sei.py "$rust" /tmp/rk_mpp_hier_qp_rust.norm
-sudo -n cmp -s /tmp/rk_mpp_hier_qp_vendor.norm /tmp/rk_mpp_hier_qp_rust.norm
-sudo -n stat -c '%n %s' "$vendor" "$rust"
-echo "PASS mpp/hier-qp arrays through MPP_ENC_SET_CFG"
+    sudo -n rm -f "$vendor" "$rust"
+    sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" \
+        /tmp/mpp_hier_qp_probe "${args[@]}" >"/tmp/${label}_vendor.log" 2>&1
+    args[1]="$rust"
+    sudo -n env LD_LIBRARY_PATH="$overlay" \
+        /tmp/mpp_hier_qp_probe "${args[@]}" >"/tmp/${label}_rust.log" 2>&1
+
+    sudo -n python3 /tmp/strip_version_sei.py "$vendor" "$vendor.norm"
+    sudo -n python3 /tmp/strip_version_sei.py "$rust" "$rust.norm"
+    sudo -n cmp -s "$vendor.norm" "$rust.norm"
+    sudo -n stat -c '%n %s' "$vendor" "$rust"
+    printf 'PASS mpp/%s through MPP_ENC_SET_CFG\n' "$label"
+}
+
+run_case hier-qp hier 1:2:3:4:1:1:1:1
+run_case custom-aq aqstep 0:1:2:3:4:5:6:7:8:9:10:11:12:13:14:15
 REMOTE

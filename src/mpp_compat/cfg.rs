@@ -1,5 +1,6 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 
+use super::standalone;
 use crate::encoder::{EncoderConfig, RateControlConfig, RateControlMode};
 use crate::sdk::Codec;
 
@@ -15,12 +16,10 @@ const MPP_VIDEO_CODING_HEVC: c_int = 0x0100_0004;
 const MPP_VIDEO_CODING_AV1: c_int = 0x0100_0008;
 
 type GetS32 = unsafe extern "C" fn(*mut c_void, *const c_char, *mut i32) -> c_int;
-type GetSt = unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void) -> c_int;
 
 struct VendorEncCfg {
     config: *mut c_void,
     get_s32: GetS32,
-    get_st: GetSt,
 }
 
 impl VendorEncCfg {
@@ -35,19 +34,7 @@ impl VendorEncCfg {
             return None;
         }
         let get_s32 = unsafe { std::mem::transmute::<*mut c_void, GetS32>(pointer) };
-        let symbol = CStr::from_bytes_with_nul(b"mpp_enc_cfg_get_st\0")
-            .ok()?
-            .as_ptr();
-        let pointer = unsafe { libc::dlsym(libc::RTLD_DEFAULT, symbol) };
-        if pointer.is_null() {
-            return None;
-        }
-        let get_st = unsafe { std::mem::transmute::<*mut c_void, GetSt>(pointer) };
-        Some(Self {
-            config,
-            get_s32,
-            get_st,
-        })
+        Some(Self { config, get_s32 })
     }
 
     unsafe fn get(&self, name: &str) -> Option<i32> {
@@ -59,14 +46,6 @@ impl VendorEncCfg {
 
     unsafe fn get_or(&self, name: &str, default: i32) -> i32 {
         unsafe { self.get(name) }.unwrap_or(default)
-    }
-
-    unsafe fn get_i32_array4(&self, name: &str) -> Option<[i32; 4]> {
-        let name = CString::new(name).ok()?;
-        let mut value = [0i32; 4];
-        let result =
-            unsafe { (self.get_st)(self.config, name.as_ptr(), value.as_mut_ptr().cast()) };
-        (result == MPP_OK).then_some(value)
     }
 }
 
@@ -122,6 +101,17 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
         result = result.with_jpeg_qfactor(jpeg_qfactor);
     }
 
+    if codec == Codec::H264 {
+        if let Some(values) = standalone::encoder_cfg_i32_array::<16>(config, "hw:aq_step_i") {
+            let mut aq_step_i = [0i8; 16];
+            for (output, input) in aq_step_i.iter_mut().zip(values) {
+                *output = i8::try_from(input)
+                    .map_err(|_| format!("hw:aq_step_i value {input} is outside i8"))?;
+            }
+            result = result.with_h264_aq_step_i(aq_step_i);
+        }
+    }
+
     if codec == Codec::H264 || codec == Codec::H265 {
         if codec == Codec::H264 {
             result = result.with_num_ref_frames(2);
@@ -156,8 +146,10 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
                 .with_qp_range(qp_min, qp_max);
             if codec == Codec::H264 && unsafe { cfg.get_or("rc:hier_qp_en", 0) } != 0 {
                 rate_control = rate_control.with_hierarchical_qp(
-                    unsafe { cfg.get_i32_array4("rc:hier_qp_delta") }.unwrap_or([0; 4]),
-                    unsafe { cfg.get_i32_array4("rc:hier_frame_num") }.unwrap_or([0; 4]),
+                    standalone::encoder_cfg_i32_array::<4>(config, "rc:hier_qp_delta")
+                        .unwrap_or([0; 4]),
+                    standalone::encoder_cfg_i32_array::<4>(config, "rc:hier_frame_num")
+                        .unwrap_or([0; 4]),
                 );
             }
             result = result.with_rate_control(rate_control);

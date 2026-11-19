@@ -4044,7 +4044,9 @@ pipeline uses.
   vendor and Rust accept each other's exports in all three formats. The H.264
   hierarchical controls now continue through
   `MPP_ENC_SET_CFG -> RateControlConfig -> H264EncoderConfig`; a 33-frame CBR
-  probe is byte-identical to the stable `/tmp/mpp-old` oracle.
+  probe is byte-identical to the stable `/tmp/mpp-old` oracle. The same gate
+  supplies a custom 16-entry `hw:aq_step_i`; the value reaches the VEPU580
+  I-picture `RCKLUT.aq_step` while P keeps its separate default curve.
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

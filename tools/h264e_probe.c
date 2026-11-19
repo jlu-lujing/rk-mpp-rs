@@ -22,6 +22,7 @@
  *   h264e_probe in.nv12 out.264 w h frames <0|1|2|3> qp [bps[:min:max]]
  *               [dblk disable alpha beta] [roi x y w h fi qpmode qpval]...
  *               [gop n] [hier d0:d1:d2:d3:n0:n1:n2:n3]
+ *               [aqstep s0:s1:...:s15]
  *               [gdr mode num] [split mode arg] [splitout value] [seioff]
  *               [forceidr frame[,frame...]] [headereach]
  *
@@ -34,6 +35,7 @@
  *   `splitout 1` enables MPP_ENC_SPLIT_OUT_LOWDELAY; packets are then drained
  *   through EOI. The default of zero keeps one access unit per picture.
  *   `hier` enables hierarchical QP with four layer deltas and frame counts.
+ *   `aqstep` supplies the 16-entry `hw:aq_step_i` table.
  *   `seioff` sends MPP_ENC_SEI_MODE_DISABLE for streams intended to compare
  *   only the SPS/PPS prefix.
  *   `forceidr` sends MPP_ENC_SET_IDR_FRAME immediately before each listed
@@ -300,11 +302,13 @@ int main(int argc, char **argv)
     int have_gdr = 0, gdr_mode = 0, gdr_num = 0;
     int have_split = 0, split_mode = 0, split_arg = 0, split_out = 0;
     int have_hier = 0;
+    int have_aqstep = 0;
     int sei_off = 0;
     int header_each = 0;
     const char *force_idr = NULL;
     int hier_qp_delta[4] = { 0, 0, 0, 0 };
     int hier_frame_num[4] = { 0, 0, 0, 0 };
+    int aq_step[16] = { 0 };
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size = (size_t)hor_stride * ver_stride * 3 / 2;
@@ -424,6 +428,19 @@ int main(int argc, char **argv)
                 return 2;
             }
             have_hier = 1;
+        } else if (!strcmp(argv[arg], "aqstep")) {
+            if (arg + 1 >= argc ||
+                sscanf(argv[++arg],
+                       "%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d:%d",
+                       &aq_step[0], &aq_step[1], &aq_step[2], &aq_step[3],
+                       &aq_step[4], &aq_step[5], &aq_step[6], &aq_step[7],
+                       &aq_step[8], &aq_step[9], &aq_step[10], &aq_step[11],
+                       &aq_step[12], &aq_step[13], &aq_step[14],
+                       &aq_step[15]) != 16) {
+                fprintf(stderr, "aqstep wants 16 colon-separated values\n");
+                goto cleanup;
+            }
+            have_aqstep = 1;
         } else if (!strcmp(argv[arg], "seioff")) {
             sei_off = 1;
         } else if (!strcmp(argv[arg], "forceidr")) {
@@ -508,6 +525,8 @@ int main(int argc, char **argv)
         CHECK(mpp_enc_cfg_set_st(cfg, "rc:hier_qp_delta", hier_qp_delta));
         CHECK(mpp_enc_cfg_set_st(cfg, "rc:hier_frame_num", hier_frame_num));
     }
+    if (have_aqstep)
+        CHECK(mpp_enc_cfg_set_st(cfg, "hw:aq_step_i", aq_step));
     if (have_gdr) {
         /* The refresh trio of `MppEncRcCfg`, registered as U32 keys.
          * `h264e_proc_cfg` derives `refresh_length` from these on SET_CFG,

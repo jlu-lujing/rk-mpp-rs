@@ -91,6 +91,8 @@ pub struct EncoderConfig {
     pub hier_qp_enabled: bool,
     pub hier_qp_delta: [i32; 4],
     pub hier_frame_num: [i32; 4],
+    /// `hw:aq_step_i`, the custom I-picture adaptive-quantisation curve.
+    pub aq_step_i: Option<[i8; 16]>,
     /// The smart-GOP `vi_len` from `mpi_enc_gen_smart_gop_ref_cfg`. MPP turns
     /// the reference schedule into `SMART_P` only when its derived `vgop`
     /// reaches one second of output and remains shorter than the IGOP.
@@ -284,6 +286,7 @@ impl EncoderConfig {
             hier_qp_enabled: false,
             hier_qp_delta: [0; 4],
             hier_frame_num: [0; 4],
+            aq_step_i: None,
             smart_vi_len: 0,
             max_reencode_times: 1,
             super_mode: 0,

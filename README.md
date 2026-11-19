@@ -412,7 +412,7 @@ standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 逐字节相同且 Rust 可回读，而 vendor 对自己导出的 TOML 仍解析失败（C-BUG）。
 `MppEncCfg` 自身的 LOG/JSON/TOML `extract/apply/apply_file` 也已从假成功改为
 真实数值标量/数组往返；t6 vendor 与 Rust 可互相读取三种格式，层级 QP 数组
-也已从对象配置真实传入 RC 模型。
+与自定义 `hw:aq_step_i` 也已从对象配置真实传入编码器。
 t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
 也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
 （`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则
