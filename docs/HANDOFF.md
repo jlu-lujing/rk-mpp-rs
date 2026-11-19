@@ -354,6 +354,11 @@ H.264 edge corpus。相关脚本都支持
 `MPP_BIN`/`MPP_LIB`/`MPP_REF`/`MPP_SRC` 覆盖；只有硬件本身不存在等平台
 边界才保留无条件 `SKIP`。
 
+`mpp_enc_ref_cfg_check()` 也已从“只验句柄”改成真实层级校验：16 项上限、
+LT index 唯一且小于 16、temporal id 0..3、LT/ST mode 分离、首尾 ST 必须为
+temporal-zero reference；负 repeat 按 vendor 行为归零。host/t6 各
+1167 个库测试通过。
+
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里
 累计整条码流；`/dev/null` 基准仍跳过文件写入。120 帧 720p 输出 SHA-256 保持
 `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`，

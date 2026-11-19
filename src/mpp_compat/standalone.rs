@@ -10,6 +10,7 @@ use crate::service::soc::{SocId, SocProfile};
 const MPP_OK: c_int = 0;
 const MPP_NOK: c_int = -1;
 const MPP_ERR_NULL_PTR: c_int = -3;
+const MPP_ERR_VALUE: c_int = -6;
 const DEC_CFG_MAGIC: u64 = 0x524b_4445_4343_4647;
 const ENC_CFG_MAGIC: u64 = 0x524b_454e_4343_4647;
 const REF_CFG_MAGIC: u64 = 0x524b_5245_4643_4647;
@@ -1156,6 +1157,62 @@ fn new_ref_cfg() -> RefCfg {
     }
 }
 
+fn validate_ref_cfg(config: &mut RefCfg) -> bool {
+    const MAX_REF_CFG: i32 = 16;
+    const MAX_TEMPORAL_LAYERS: i32 = 4;
+    const MAX_LT_INDEX: i32 = 16;
+    const REF_MODE_GLOBAL_BUTT: i32 = 8;
+    const REF_TO_ST_REF_SETUP: i32 = 25;
+    const REF_TO_LT_REF_SETUP: i32 = 29;
+
+    if !(0..=MAX_REF_CFG).contains(&config.lt_count)
+        || !(0..=MAX_REF_CFG).contains(&config.st_count)
+    {
+        return false;
+    }
+
+    let mut lt_used = 0u32;
+    for step in &config.lt[..config.lt_count as usize] {
+        if !(0..MAX_LT_INDEX).contains(&step.lt_idx) {
+            return false;
+        }
+        let bit = 1u32 << step.lt_idx;
+        if lt_used & bit != 0 {
+            return false;
+        }
+        lt_used |= bit;
+        if step.temporal_id != 0 {
+            return false;
+        }
+        if !(0..REF_MODE_GLOBAL_BUTT).contains(&step.ref_mode)
+            && step.ref_mode != REF_TO_ST_REF_SETUP
+        {
+            return false;
+        }
+    }
+
+    for (index, step) in config.st[..config.st_count as usize].iter_mut().enumerate() {
+        if !(0..MAX_TEMPORAL_LAYERS).contains(&step.temporal_id) {
+            return false;
+        }
+        if !(0..REF_MODE_GLOBAL_BUTT).contains(&step.ref_mode)
+            && step.ref_mode != REF_TO_LT_REF_SETUP
+        {
+            return false;
+        }
+        if step.repeat < 0 {
+            step.repeat = 0;
+        }
+        if (index == 0 || index + 1 == config.st_count as usize)
+            && (step.is_non_ref != 0 || step.temporal_id != 0)
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
 pub(super) fn reference_frame_pattern(config: *mut c_void) -> Option<Vec<ReferenceFrameStep>> {
     let config = ref_cfg_mut(config)?;
     let step_count = match config.st_count {
@@ -2092,7 +2149,14 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_add_st_cfg(
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_ref_cfg_check(ref_cfg: *mut c_void) -> i32 {
-    ref_cfg_mut(ref_cfg).map_or(MPP_ERR_NULL_PTR, |_| MPP_OK)
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_ERR_VALUE;
+    };
+    if validate_ref_cfg(config) {
+        MPP_OK
+    } else {
+        MPP_NOK
+    }
 }
 
 #[no_mangle]
@@ -2258,7 +2322,7 @@ mod tests {
             },
             RefStCfg {
                 is_non_ref: 0,
-                temporal_id: 1,
+                temporal_id: 0,
                 ref_mode: 0,
                 ref_arg: 0,
                 repeat: 0,
@@ -2275,6 +2339,42 @@ mod tests {
         assert_eq!(unsafe { mpp_enc_ref_cfg_check(cfg) }, MPP_OK);
         assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut cfg) }, MPP_OK);
         assert!(cfg.is_null());
+    }
+
+    #[test]
+    fn reference_cfg_check_applies_vendor_hierarchy_rules() {
+        let mut config = new_ref_cfg();
+        config.st_count = 2;
+        config.st[0] = RefStCfg {
+            is_non_ref: 0,
+            temporal_id: 0,
+            ref_mode: 0,
+            ref_arg: 0,
+            repeat: 0,
+        };
+        config.st[1] = RefStCfg {
+            is_non_ref: 0,
+            temporal_id: 0,
+            ref_mode: 0,
+            ref_arg: 0,
+            repeat: -2,
+        };
+        assert!(validate_ref_cfg(&mut config));
+        assert_eq!(config.st[1].repeat, 0);
+
+        config.st[0].is_non_ref = 1;
+        assert!(!validate_ref_cfg(&mut config));
+
+        config.st_count = 1;
+        config.st[0].is_non_ref = 0;
+        config.lt_count = 2;
+        config.lt[0].lt_idx = 0;
+        config.lt[1].lt_idx = 0;
+        assert!(!validate_ref_cfg(&mut config));
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_check(ptr::null_mut()) },
+            MPP_ERR_VALUE
+        );
     }
 
     #[test]

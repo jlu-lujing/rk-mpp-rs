@@ -23,6 +23,10 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   max dimensions 和上游 init keys；其余 kernel-only 键仍是 storage-only。
   unknown init key 会明确拒绝。非法句柄 type、未知 canonical name 和非
   CTRL_CFG flex 操作也会按 vendor 语义报错。完整审计见 [`KCFG.md`](KCFG.md)。
+- `MppEncRefCfg` 的 `check` 会执行实际层级校验：最多 16 个配置项、LT index
+  唯一且小于 16、temporal id 为 0..3、LT/ST mode 分离、首尾 ST 帧必须是
+  temporal-zero reference；负 repeat 会按 vendor 行为归零，非法配置返回
+  `MPP_NOK`。
 
 ## 1. 二进制 drop-in（不改代码）
 

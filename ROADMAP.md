@@ -4010,6 +4010,14 @@ pipeline uses.
   and `MPP_SRC` path overrides are preserved; hardware that genuinely does not
   exist remains an explicit platform `SKIP`.
 
+- **2026-11-19: MppEncRefCfg check validates the hierarchy.**
+  `mpp_enc_ref_cfg_check()` now applies the vendor structural rules instead of
+  only checking the handle: reference counts are bounded, LT indices are unique
+  and below 16, temporal IDs stay within four layers, LT/ST reference modes are
+  limited to their valid families, negative ST repeats clamp to zero, and
+  head/tail ST frames must be temporal-zero references. Invalid handles return
+  `MPP_ERR_VALUE`, matching the C entry point.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |
