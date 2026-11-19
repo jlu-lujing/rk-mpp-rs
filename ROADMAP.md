@@ -4057,8 +4057,16 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1348 passed / 45 ignored and t6 workspace tests are 1350 passed / 45 ignored,
+  1349 passed / 45 ignored and t6 workspace tests are 1351 passed / 45 ignored,
   with strict rustdoc clean.
+
+- **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
+  streams have no temporal-ID prefix, yet the layout path first copied the
+  hardware payload and then copied it again into the Annex-B frame. It now
+  returns a borrowed `Cow` for that case. On t6 at 80% OPP, seven interleaved
+  500-frame 720p runs moved the median from 1088 to 1073 ms (about 1.4%).
+  Both binaries produced the same 7,031,305-byte stream
+  (`68715bd450098e6559911a6e1fd9837fa142fd29df4ec8a3707932e2d5617c05`).
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

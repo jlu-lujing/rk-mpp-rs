@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1348 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1349 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1350 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1351 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -397,6 +397,9 @@ H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出
 7,031,305 bytes 完全一致
 （`68715bd450098e6559911a6e1fd9837fa142fd29df4ec8a3707932e2d5617c05`）。
+H.264 输出布局现在用 `Cow` 复用无 temporal prefix 的 hardware payload，
+省掉一整个码流的临时复制。同一 t6 80% OPP 条件、7 次交错 500 帧 720p
+中位数从 1088 ms 降到 1073 ms（约 1.4%），输出 SHA-256 不变。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全

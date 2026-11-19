@@ -15,6 +15,7 @@
 //! `enc_pic.pic_qp`, `rc_qp.rc_min_qp` and `rc_qp.rc_max_qp`, which is exactly
 //! what the reference writes there for fixed QP.
 
+use std::borrow::Cow;
 use std::io::Read;
 
 use crate::codec::h264::encoder::{self, EncoderConfig, GdrMode, RcMode, SplitMode};
@@ -165,19 +166,19 @@ fn output_packets(
     Ok(packets)
 }
 
-fn prefix_slices(
-    payload: &[u8],
+fn prefix_slices<'a>(
+    payload: &'a [u8],
     slice_lengths: &[usize],
     slice_prefix: &[u8],
-) -> Result<Vec<u8>, String> {
+) -> Result<Cow<'a, [u8]>, String> {
     if slice_prefix.is_empty() {
-        return Ok(payload.to_vec());
+        return Ok(Cow::Borrowed(payload));
     }
     if slice_lengths.is_empty() {
         let mut prefixed = Vec::with_capacity(slice_prefix.len() + payload.len());
         prefixed.extend_from_slice(slice_prefix);
         prefixed.extend_from_slice(payload);
-        return Ok(prefixed);
+        return Ok(Cow::Owned(prefixed));
     }
     let total = slice_lengths
         .iter()
@@ -205,7 +206,7 @@ fn prefix_slices(
             offset += *length;
         }
     }
-    Ok(prefixed)
+    Ok(Cow::Owned(prefixed))
 }
 
 /// One reconstruction slot. VEPU580 writes the FBC-compressed reconstruction and
@@ -1602,9 +1603,9 @@ impl Vepu580H264 {
             })
             .unwrap_or_default();
         let prefixed_payload = prefix_slices(&payload, &slice_lengths, &slice_prefix)?;
-        let mut annex_b = Vec::with_capacity(headers.len() + payload.len());
+        let mut annex_b = Vec::with_capacity(headers.len() + prefixed_payload.len());
         annex_b.extend_from_slice(&headers);
-        annex_b.extend_from_slice(&prefixed_payload);
+        annex_b.extend_from_slice(prefixed_payload.as_ref());
         let packets = output_packets(&headers, &slice_prefix, &payload, &slice_lengths)?;
         self.last_rate_control = external_rate_control.or_else(|| {
             self.rc.as_ref().map(|_| RateControl {
@@ -5637,7 +5638,15 @@ mod tests {
     #[test]
     fn slice_prefix_is_repeated_before_each_non_empty_low_delay_slice() {
         let prefixed = prefix_slices(&[1, 2, 3, 4, 5], &[2, 3, 0], &[0xaa]).unwrap();
-        assert_eq!(prefixed, [0xaa, 1, 2, 0xaa, 3, 4, 5]);
+        assert_eq!(prefixed.as_ref(), [0xaa, 1, 2, 0xaa, 3, 4, 5]);
+    }
+
+    #[test]
+    fn slice_prefix_avoids_copying_an_unprefixed_payload() {
+        let payload = [1, 2, 3, 4, 5];
+        let prefixed = prefix_slices(&payload, &[], &[]).unwrap();
+        assert!(matches!(prefixed, Cow::Borrowed(_)));
+        assert_eq!(prefixed.as_ref(), payload);
     }
 
     #[test]
