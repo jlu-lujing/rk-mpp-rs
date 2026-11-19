@@ -1529,6 +1529,11 @@ pipeline. At 80% OPP, five interleaved 120-frame 720p samples measured
 at 273 ms versus 384 ms. Their outputs were byte-identical between the two
 paths: `7c4e93db…c11f65` and `bb99af68…d7a6ad03`.
 
+VEPU580 H.264 now reuses its STATUS vector and Batch per session. At 80% OPP,
+seven interleaved 500-frame 720p samples moved from 1140 to 1055 ms while the
+7,031,305-byte stream remained identical
+(`68715bd4…e2d5617c05`).
+
 The H.264 and HEVC `/tmp` corpora were restored from
 `~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and
 the HEVC suite passed every available large-profile, tile, slice, open-GOP,

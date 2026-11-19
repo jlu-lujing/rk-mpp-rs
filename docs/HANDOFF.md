@@ -366,6 +366,11 @@ scheduler 也补上了上一 ST、指定 LT index、倒数第 N 个 ST 三种合
 host/t6 各 1172 个库测试通过；standalone 的 TSVC2/3/4 与 64 帧 IGOP 重启流继续逐
 NAL/重建一致。
 
+H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复用。
+t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出
+7,031,305 bytes 完全一致
+（`68715bd450098e6559911a6e1fd9837fa142fd29df4ec8a3707932e2d5617c05`）。
+
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里
 累计整条码流；`/dev/null` 基准仍跳过文件写入。120 帧 720p 输出 SHA-256 保持
 `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`，

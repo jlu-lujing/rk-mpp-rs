@@ -4029,6 +4029,13 @@ pipeline uses.
   of rejecting those valid modes. Existing six/12-frame TSVC2/3/4 and 64-frame
   IGOP restart board streams remain exact.
 
+- **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
+  VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a
+  request Batch. The session now reuses and clears both. Seven interleaved
+  500-frame 720p runs at 80% OPP moved the median from 1140 to 1055 ms, while
+  both binaries produced the same 7,031,305-byte stream
+  (`68715bd450098e6559911a6e1fd9837fa142fd29df4ec8a3707932e2d5617c05`).
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

@@ -67,6 +67,11 @@ For a steadier work region, one 500-frame 720p run measured H.264 at 1.022 s
 against C's 2.503 s, and H.265 at 1.047 s against C's 1.842 s. Those two
 figures include process setup and teardown, like the scripts above.
 
+H.264 now keeps its STATUS vector and `Batch` in the session instead of
+allocating both per picture. Seven interleaved 500-frame 720p samples at 80%
+OPP reduced the median from 1140 to 1055 ms. The 7,031,305-byte output stayed
+byte-identical (`68715bd4…e2d5617c05`).
+
 ## Earlier 60-frame single-stream baseline
 
 | codec | size | C MPP | this crate | Rust advantage |

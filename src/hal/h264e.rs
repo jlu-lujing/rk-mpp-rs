@@ -756,6 +756,8 @@ pub struct Vepu580H264 {
     rc_model_name: String,
     next_osd: Option<crate::hal::osd::Config>,
     active_osd: Option<crate::hal::osd::Config>,
+    status_scratch: Vec<u32>,
+    batch_scratch: Batch,
 }
 
 impl Vepu580H264 {
@@ -857,6 +859,8 @@ impl Vepu580H264 {
             rc_model_name: "default".to_string(),
             next_osd: None,
             active_osd: None,
+            status_scratch: vec![0; STATUS_WORDS],
+            batch_scratch: Batch::new(),
             state: FrameState::default(),
             slot: 0,
             next_slot_override: None,
@@ -1129,9 +1133,12 @@ impl Vepu580H264 {
         }
         dump_job_registers(&job, &registers);
 
-        let mut status = vec![0u32; STATUS_WORDS];
+        let mut status = std::mem::take(&mut self.status_scratch);
+        status.resize(STATUS_WORDS, 0);
+        status.fill(0);
         let mut hw_status = [0u32; 1];
-        let mut batch = Batch::new();
+        let mut batch = std::mem::take(&mut self.batch_scratch);
+        batch.clear();
         batch.reg_write(&registers.ctl, CTL_OFFSET);
         batch.reg_write(&registers.base, BASE_OFFSET);
         batch.reg_write(&registers.rc_klut, RCKLUT_OFFSET);
@@ -1145,9 +1152,9 @@ impl Vepu580H264 {
         }
         batch.reg_read(&mut hw_status, HW_STATUS_OFFSET);
         batch.reg_read(&mut status, STATUS_OFFSET);
-        self.svc
-            .submit_batch_recovering(&mut batch)
-            .map_err(|e| format!("H.264 register submit: {e}"))?;
+        let submitted = self.svc.submit_batch_recovering(&mut batch);
+        self.batch_scratch = batch;
+        submitted.map_err(|e| format!("H.264 register submit: {e}"))?;
         let mut slice_lengths = Vec::new();
         if self.config.split_out & encoder::MPP_ENC_SPLIT_OUT_LOWDELAY != 0 && !save_pass1 {
             let mut complete = false;
@@ -1229,6 +1236,7 @@ impl Vepu580H264 {
         let statistics = Statistics::from_words(&status);
         dump_statistics(&state, &status);
         self.tune.update(&statistics);
+        self.status_scratch = status;
         Ok((payload, slice_lengths, statistics))
     }
 
