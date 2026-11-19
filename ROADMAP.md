@@ -4041,7 +4041,10 @@ pipeline uses.
   (`rc:hier_qp_delta`, `rc:hier_frame_num`, `hw:aq_step_i`, `hw:qbias_arr`)
   round-trip through `set_st/get_st`; unknown-length arrays return `MPP_NOK`,
   and failed parses leave the config untouched. A shared C probe confirms
-  vendor and Rust accept each other's exports in all three formats.
+  vendor and Rust accept each other's exports in all three formats. The H.264
+  hierarchical controls now continue through
+  `MPP_ENC_SET_CFG -> RateControlConfig -> H264EncoderConfig`; a 33-frame CBR
+  probe is byte-identical to the stable `/tmp/mpp-old` oracle.
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

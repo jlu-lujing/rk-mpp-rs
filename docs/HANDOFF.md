@@ -371,6 +371,10 @@ mode。standalone 的 TSVC2/3/4 与 64 帧 IGOP 重启流继续逐 NAL/重建一
 `rc:hier_qp_delta`、`rc:hier_frame_num`、`hw:aq_step_i` 和 `hw:qbias_arr`
 四个已知长度数组。未知数组大小返回 `MPP_NOK`，解析失败不会部分写入。
 t6 原生 vendor 的完整配置与 Rust scalar/array 配置已做三格式双向读取验证。
+`rc:hier_qp_en/delta/frame_num` 也已沿
+`MppEncCfg -> MPP_ENC_SET_CFG -> RateControlConfig -> Vepu580H264` 真正进入
+RC 模型；`board_mpp_hier_qp.sh` 的 33 帧 CBR 流在剥离 version-SEI 后与
+`/tmp/mpp-old` 逐字节一致。
 
 H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出

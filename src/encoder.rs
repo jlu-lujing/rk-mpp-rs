@@ -99,6 +99,9 @@ pub struct RateControlConfig {
     initial_qp: u8,
     min_qp: u8,
     max_qp: u8,
+    hier_qp_enabled: bool,
+    hier_qp_delta: [i32; 4],
+    hier_frame_num: [i32; 4],
 }
 
 impl RateControlConfig {
@@ -123,6 +126,9 @@ impl RateControlConfig {
             initial_qp: 26,
             min_qp: 8,
             max_qp: 48,
+            hier_qp_enabled: false,
+            hier_qp_delta: [0; 4],
+            hier_frame_num: [0; 4],
         }
     }
 
@@ -154,6 +160,18 @@ impl RateControlConfig {
         self.max_qp
     }
 
+    pub const fn hier_qp_enabled(self) -> bool {
+        self.hier_qp_enabled
+    }
+
+    pub const fn hier_qp_delta(self) -> [i32; 4] {
+        self.hier_qp_delta
+    }
+
+    pub const fn hier_frame_num(self) -> [i32; 4] {
+        self.hier_frame_num
+    }
+
     pub const fn with_initial_qp(mut self, qp: u8) -> Self {
         self.initial_qp = qp;
         self
@@ -162,6 +180,13 @@ impl RateControlConfig {
     pub const fn with_qp_range(mut self, min_qp: u8, max_qp: u8) -> Self {
         self.min_qp = min_qp;
         self.max_qp = max_qp;
+        self
+    }
+
+    pub const fn with_hierarchical_qp(mut self, qp_delta: [i32; 4], frame_num: [i32; 4]) -> Self {
+        self.hier_qp_enabled = true;
+        self.hier_qp_delta = qp_delta;
+        self.hier_frame_num = frame_num;
         self
     }
 
@@ -1912,6 +1937,9 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
             h264.qp_init = rate_control.initial_qp;
             h264.rc_qp_min = u32::from(rate_control.min_qp);
             h264.rc_qp_max = u32::from(rate_control.max_qp);
+            h264.hier_qp_enabled = rate_control.hier_qp_enabled;
+            h264.hier_qp_delta = rate_control.hier_qp_delta;
+            h264.hier_frame_num = rate_control.hier_frame_num;
         }
     }
     if h264.rc_mode == h264_encoder::RcMode::FixedQp {
@@ -2365,7 +2393,8 @@ mod tests {
     fn encoder_builder_keeps_public_configuration() {
         let rate_control = RateControlConfig::vbr(2_000_000, 1_500_000, 2_500_000)
             .with_initial_qp(26)
-            .with_qp_range(10, 40);
+            .with_qp_range(10, 40)
+            .with_hierarchical_qp([1, 2, 3, 4], [1, 1, 1, 1]);
         let config = EncoderConfig::new(Codec::H264, 320, 240)
             .with_input_format(PixelFormat::I420)
             .with_profile(77)
@@ -2390,6 +2419,9 @@ mod tests {
         assert_eq!(config.jpeg_qfactor(), Some(80));
         assert_eq!(config.jpeg_restart_mcus(), 16);
         assert_eq!(config.rate_control(), Some(rate_control));
+        assert!(rate_control.hier_qp_enabled());
+        assert_eq!(rate_control.hier_qp_delta(), [1, 2, 3, 4]);
+        assert_eq!(rate_control.hier_frame_num(), [1, 1, 1, 1]);
     }
 
     #[test]

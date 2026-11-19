@@ -1379,6 +1379,11 @@ the other library applies that file and reads back mode, target bitrate, width
 and codec type. LOG, JSON and TOML all pass 1/1. The Rust parser also accepts
 the vendor's full nested config, including the four-element hierarchical-QP
 arrays.
+`scripts/board_mpp_hier_qp.sh` goes one step further and encodes 33 frames with
+CBR plus `hier 1:2:3:4:1:1:1:1`. The probe sets the hierarchical-QP scalar and
+both arrays through `MppEncCfg`; after `MPP_ENC_SET_CFG`, Rust must reproduce
+the VEPU580 stream. Against the stable `/tmp/mpp-old` encoder oracle, both
+streams are byte-identical after removing only the build-identity SEI.
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the

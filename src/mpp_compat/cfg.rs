@@ -15,10 +15,12 @@ const MPP_VIDEO_CODING_HEVC: c_int = 0x0100_0004;
 const MPP_VIDEO_CODING_AV1: c_int = 0x0100_0008;
 
 type GetS32 = unsafe extern "C" fn(*mut c_void, *const c_char, *mut i32) -> c_int;
+type GetSt = unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void) -> c_int;
 
 struct VendorEncCfg {
     config: *mut c_void,
     get_s32: GetS32,
+    get_st: GetSt,
 }
 
 impl VendorEncCfg {
@@ -33,7 +35,19 @@ impl VendorEncCfg {
             return None;
         }
         let get_s32 = unsafe { std::mem::transmute::<*mut c_void, GetS32>(pointer) };
-        Some(Self { config, get_s32 })
+        let symbol = CStr::from_bytes_with_nul(b"mpp_enc_cfg_get_st\0")
+            .ok()?
+            .as_ptr();
+        let pointer = unsafe { libc::dlsym(libc::RTLD_DEFAULT, symbol) };
+        if pointer.is_null() {
+            return None;
+        }
+        let get_st = unsafe { std::mem::transmute::<*mut c_void, GetSt>(pointer) };
+        Some(Self {
+            config,
+            get_s32,
+            get_st,
+        })
     }
 
     unsafe fn get(&self, name: &str) -> Option<i32> {
@@ -45,6 +59,14 @@ impl VendorEncCfg {
 
     unsafe fn get_or(&self, name: &str, default: i32) -> i32 {
         unsafe { self.get(name) }.unwrap_or(default)
+    }
+
+    unsafe fn get_i32_array4(&self, name: &str) -> Option<[i32; 4]> {
+        let name = CString::new(name).ok()?;
+        let mut value = [0i32; 4];
+        let result =
+            unsafe { (self.get_st)(self.config, name.as_ptr(), value.as_mut_ptr().cast()) };
+        (result == MPP_OK).then_some(value)
     }
 }
 
@@ -129,11 +151,16 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
             let qp_init = unsafe { cfg.get("rc:qp_init") }
                 .filter(|value| *value != 0)
                 .unwrap_or(26);
-            result = result.with_rate_control(
-                RateControlConfig::new(mode, target, min, max)
-                    .with_initial_qp(qp_init.clamp(qp_min as i32, qp_max as i32) as u8)
-                    .with_qp_range(qp_min, qp_max),
-            );
+            let mut rate_control = RateControlConfig::new(mode, target, min, max)
+                .with_initial_qp(qp_init.clamp(qp_min as i32, qp_max as i32) as u8)
+                .with_qp_range(qp_min, qp_max);
+            if codec == Codec::H264 && unsafe { cfg.get_or("rc:hier_qp_en", 0) } != 0 {
+                rate_control = rate_control.with_hierarchical_qp(
+                    unsafe { cfg.get_i32_array4("rc:hier_qp_delta") }.unwrap_or([0; 4]),
+                    unsafe { cfg.get_i32_array4("rc:hier_frame_num") }.unwrap_or([0; 4]),
+                );
+            }
+            result = result.with_rate_control(rate_control);
         }
     }
     Ok(result)
