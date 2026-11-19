@@ -111,8 +111,10 @@ int main(int argc, char **argv)
     MppMeta meta = NULL;
     FILE *output = NULL;
     MPP_RET ret = MPP_NOK;
-    int cabac = profile >= 77 ? 1 : 0;
-    int trans8x8 = profile >= 100 ? 1 : 0;
+    int cabac = getenv("H264_CABAC") ? atoi(getenv("H264_CABAC"))
+                                     : (profile >= 77 ? 1 : 0);
+    int trans8x8 = getenv("H264_TRANS8X8") ? atoi(getenv("H264_TRANS8X8"))
+                                           : (profile >= 100 ? 1 : 0);
 
     if (width < 16 || height < 16 || (width & 1) || (height & 1)) {
         fprintf(stderr, "invalid dimensions %dx%d\n", width, height);
