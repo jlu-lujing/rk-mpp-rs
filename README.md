@@ -354,13 +354,16 @@ rk-mpp-rs h264dec input.264 output.yuv
 RKMPP_DECODE_NV12=1 rk-mpp-rs h264dec input.264 output.nv12
 RKMPP_DECODE_DMABUF=1 rk-mpp-rs h264dec input.264 /dev/null
 RKMPP_DECODE_DMABUF=1 rk-mpp-rs hevcdec input.265 /dev/null
+RKMPP_DECODE_DMABUF=1 rk-mpp-rs vp9dec input.ivf /dev/null
+RKMPP_DECODE_DMABUF=1 rk-mpp-rs av1dec input.ivf /dev/null
 ```
 
 `RKMPP_POLL_US` controls the non-blocking hardware poll interval and defaults
 to 20 microseconds. `RKMPP_DECODE_DMABUF=1` is the zero-copy surface mode for
-an in-process consumer. H.264 and H.265 CLIs only permit it with `/dev/null`
-output; H.265 uses a bounded display-order reorder buffer so decoder surfaces
-return to the pool as each display frame is emitted.
+an in-process consumer. H.264/H.265/VP9/AV1 CLIs only permit it with
+`/dev/null` output; H.265 uses a bounded display-order reorder buffer so
+decoder surfaces return to the pool as each display frame is emitted. VP9/AV1
+10-bit surfaces remain CPU-only.
 
 VDPU383 now uses the same multi-job submission model as VDPU34x. H.264 and
 H.265 default to three in-flight jobs; `RKMPP_H264_PIPELINE=0` and

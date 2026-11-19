@@ -186,6 +186,13 @@ impl Av1CliDecoder {
             Self::Vdpu383(decoder) => decoder.recycle_output(buffer),
         }
     }
+
+    fn set_output_dmabuf(&mut self, enabled: bool) {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.set_output_dmabuf(enabled),
+            Self::Vdpu383(decoder) => decoder.set_output_dmabuf(enabled),
+        }
+    }
 }
 
 impl DmaInputPipeline {
@@ -3570,6 +3577,11 @@ fn main() {
             eprintln!("usage: rk-mpp-rs av1dec <in.ivf> <out.yuv>");
             std::process::exit(1);
         }
+        let dmabuf_output = std::env::var_os("RKMPP_DECODE_DMABUF").is_some();
+        if dmabuf_output && dst != "/dev/null" {
+            eprintln!("RKMPP_DECODE_DMABUF requires an output of /dev/null");
+            std::process::exit(2);
+        }
         let data = match std::fs::read(src) {
             Ok(data) => data,
             Err(error) => {
@@ -3591,6 +3603,9 @@ fn main() {
                 std::process::exit(1);
             }
         };
+        if dmabuf_output {
+            decoder.set_output_dmabuf(true);
+        }
         use std::io::Write;
         let mut output = std::io::BufWriter::new(match std::fs::File::create(dst) {
             Ok(file) => file,
@@ -3638,9 +3653,14 @@ fn main() {
         output.flush().ok();
         let elapsed = started.elapsed().as_secs_f64();
         println!(
-            "decoded {decoded} packets ({shown} output) in {:.1} ms ({:.1} fps)",
+            "decoded {decoded} packets ({shown} output) in {:.1} ms ({:.1} fps), {}",
             elapsed * 1000.0,
-            shown as f64 / elapsed.max(f64::EPSILON)
+            shown as f64 / elapsed.max(f64::EPSILON),
+            if dmabuf_output {
+                "DMA-BUF output"
+            } else {
+                "planar output"
+            }
         );
         if failed {
             std::process::exit(1);
@@ -3653,6 +3673,11 @@ fn main() {
         if src.is_empty() {
             eprintln!("usage: rk-mpp-rs vp9dec <in.ivf> <out.yuv>");
             std::process::exit(1);
+        }
+        let dmabuf_output = std::env::var_os("RKMPP_DECODE_DMABUF").is_some();
+        if dmabuf_output && dst != "/dev/null" {
+            eprintln!("RKMPP_DECODE_DMABUF requires an output of /dev/null");
+            std::process::exit(2);
         }
         let data = match std::fs::read(src) {
             Ok(data) => data,
@@ -3668,6 +3693,9 @@ fn main() {
                 std::process::exit(1);
             }
         };
+        if dmabuf_output {
+            decoder.set_output_dmabuf(true);
+        }
         use std::io::Write;
         let mut output = std::io::BufWriter::new(match std::fs::File::create(dst) {
             Ok(file) => file,
@@ -3737,13 +3765,18 @@ fn main() {
         output.flush().ok();
         let elapsed = started.elapsed().as_secs_f64();
         println!(
-            "decoded {} packets ({} output, {} packets dropped{}) in {:.1} ms ({:.1} fps)",
+            "decoded {} packets ({} output, {} packets dropped{}) in {:.1} ms ({:.1} fps), {}",
             shown + dropped.len(),
             shown,
             dropped.len(),
             if stopped_early { ", stopped early" } else { "" },
             elapsed * 1000.0,
-            shown as f64 / elapsed.max(f64::EPSILON)
+            shown as f64 / elapsed.max(f64::EPSILON),
+            if dmabuf_output {
+                "DMA-BUF output"
+            } else {
+                "planar output"
+            }
         );
         if stopped_early {
             std::process::exit(1);
