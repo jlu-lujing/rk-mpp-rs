@@ -509,7 +509,12 @@ impl Vp9d {
             None
         };
         let probe_kf_383 = if hal == VideoDecodeHal::Vdpu383 {
-            Some(DmaBuf::alloc("system", PROBE_KF_SIZE_383, false)?)
+            let mut probe = DmaBuf::alloc("system", PROBE_KF_SIZE_383, false)?;
+            let data = build_kf_probe_383();
+            probe.sync_write_begin()?;
+            probe.as_mut_slice()[..PROBE_KF_SIZE_383].copy_from_slice(&data);
+            probe.sync_write_end()?;
+            Some(probe)
         } else {
             None
         };
@@ -569,15 +574,6 @@ impl Vp9d {
         poc: u32,
     ) -> io::Result<()> {
         if self.hal == VideoDecodeHal::Vdpu383 {
-            let probe = self
-                .probe_kf_383
-                .as_mut()
-                .expect("VDPU383 probe buffer exists");
-            let probe_data = build_kf_probe_383();
-            probe.sync_write_begin()?;
-            probe.as_mut_slice().fill(0);
-            probe.as_mut_slice()[..PROBE_KF_SIZE_383].copy_from_slice(&probe_data);
-            probe.sync_write_end()?;
             if is_intra(header) {
                 let default = build_prob_default(header, compressed);
                 self.default_prob.sync_write_begin()?;
@@ -648,12 +644,11 @@ impl Vp9d {
         if self.hal == VideoDecodeHal::Vdpu383 {
             let rcb = RcbInfo383::compute(header);
             let total = rcb.total().max(4096);
-            for buffer in &mut self.rcbs {
-                if total > buffer.len() {
-                    *buffer = DmaBuf::alloc("system", align(total, 4096), false)?;
-                }
+            let next_rcb = (self.rcb_index + 1) % RCB_BUFFER_COUNT;
+            if total > self.rcbs[next_rcb].len() {
+                self.rcbs[next_rcb] = DmaBuf::alloc("system", align(total, 4096), false)?;
             }
-            self.rcb_index = (self.rcb_index + 1) % RCB_BUFFER_COUNT;
+            self.rcb_index = next_rcb;
             self.rcb_383 = rcb;
             self.fill_regs_383(
                 header, compressed, poc, current, references, stream, stream_len,
@@ -717,12 +712,11 @@ impl Vp9d {
 
         let rcb = RcbInfo::compute(header);
         let total = rcb.total().max(4096);
-        for buffer in &mut self.rcbs {
-            if total > buffer.len() {
-                *buffer = DmaBuf::alloc("system", align(total, 4096), false)?;
-            }
+        let next_rcb = (self.rcb_index + 1) % RCB_BUFFER_COUNT;
+        if total > self.rcbs[next_rcb].len() {
+            self.rcbs[next_rcb] = DmaBuf::alloc("system", align(total, 4096), false)?;
         }
-        self.rcb_index = (self.rcb_index + 1) % RCB_BUFFER_COUNT;
+        self.rcb_index = next_rcb;
         self.rcb_info = rcb;
 
         self.fill_regs(
