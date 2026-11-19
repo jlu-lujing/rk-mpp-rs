@@ -1550,9 +1550,11 @@ versus **968.188 ms** (-2.53%) and H.265 at 1043.576 ms versus **1018.445 ms**
 `0a039e02910169e9900349a16e676f580c3da9e265b154d15ebcbde3a2bc6a2e` and
 `ae613590ee5b546f89d76dad1ecaa1528da292abfbd4e92303cc84c93b469783`.
 H.264 low-delay output remained 5/5 exact. The H.265 low-delay comparison
-could not run because the on-board vendor headers lack
-`EncRcTaskInfo.bit_target_fix`; its complete 500-frame stream was verified
-directly instead.
+is also 4/4 exact. Its board script now detects whether the selected vendor
+headers have `EncRcTaskInfo.bit_target_fix`, passes the matching
+`CUSTOM_RC_HAS_BIT_TARGET_FIX` value to the C probe, and compares streams after
+removing only the build-identity SEI text. The cells cover BY_CTU, BY_BYTE,
+the 40-packet slice-FIFO case and a six-picture short-term GOP.
 
 The H.264 and HEVC `/tmp` corpora were restored from
 `~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and

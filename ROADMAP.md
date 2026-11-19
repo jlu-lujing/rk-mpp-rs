@@ -4083,6 +4083,14 @@ pipeline uses.
   `0a039e02…a2bc6a2e` and `ae613590…c93b469783`; H.264 low-delay output
   remained 5/5 exact.
 
+- **2026-11-19: H.265 low-delay gate follows vendor header revisions.**
+  `board_h265_lowdelay_vs_mpp.sh` now detects
+  `EncRcTaskInfo.bit_target_fix` in the selected reference headers and passes
+  `CUSTOM_RC_HAS_BIT_TARGET_FIX` to the probe. Stream comparison removes only
+  the build-identity SEI text before `cmp`, while packet-size validation still
+  receives the old C and current Rust prefix delta. BY_CTU 8, BY_BYTE 256,
+  the 640x480 40-packet FIFO case and a six-picture short-term GOP pass 4/4.
+
   **2026-11-17: streamed output for MPEG-2/MPEG-4/H.263.** These decoders and
   their CLIs now hand each picture to the writer instead of building a
   whole-stream `Vec`; `perf` put ~28 % of a 120-frame MPEG-4 run in page

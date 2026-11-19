@@ -87,8 +87,8 @@ packet. Seven interleaved 500-frame 720p A/B samples at 80% OPP moved H.264
 from 993.284 to **968.188 ms** (-2.53%) and H.265 from 1043.576 to
 **1018.445 ms** (-2.41%). The new outputs remained byte-identical to the
 recorded streams: `0a039e02…a2bc6a2e` for H.264 and
-`ae613590…c93b469783` for H.265. H.264 low-delay slice output also stayed 5/5
-exact.
+`ae613590…c93b469783` for H.265. H.264/H.265 low-delay output also stayed
+5/5 and 4/4 exact.
 
 ## Earlier 60-frame single-stream baseline
 

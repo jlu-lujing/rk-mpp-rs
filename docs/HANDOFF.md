@@ -384,9 +384,10 @@ VEPU580 输出 packet 改用 `system-uncached` DMA heap，CPU 读取前不再对
 H.264 从 993.284 ms 降到 968.188 ms（-2.53%），H.265 从 1043.576 ms 降到
 1018.445 ms（-2.41%）。两路输出分别保持
 `0a039e02…a2bc6a2e` 和 `ae613590…c93b469783`；H.264 low-delay 5/5 继续
-逐 packet 一致。本机 vendor 头文件没有 `EncRcTaskInfo.bit_target_fix`，
-导致 H.265 low-delay 对比脚本在编译 C probe 时失败，H.265 完整 500 帧流已
-单独校验。
+逐 packet 一致。H.265 low-delay 也已恢复为 4/4：脚本先探测所选 vendor
+头文件中是否存在 `EncRcTaskInfo.bit_target_fix`，再向 C probe 传入对应的
+`CUSTOM_RC_HAS_BIT_TARGET_FIX`；码流只剥离 build-identity SEI 文本后逐字节
+比较。BY_CTU、BY_BYTE、40-packet FIFO 与六帧 short-term 四格均通过。
 
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里
 累计整条码流；`/dev/null` 基准仍跳过文件写入。120 帧 720p 输出 SHA-256 保持

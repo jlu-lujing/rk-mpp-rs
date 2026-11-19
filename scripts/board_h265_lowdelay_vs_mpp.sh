@@ -25,10 +25,16 @@ if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/lib
     "H.265 lowdelay" "reference build missing at $mpp_ref"
 fi
 
+if ssh "$BOARD" "grep -q 'bit_target_fix' $mpp_ref/inc/mpp_rc_defs.h"; then
+  rc_has_bit_target_fix=1
+else
+  rc_has_bit_target_fix=0
+fi
+
 scp -q tools/h265e_probe.c "$BOARD":/tmp/h265e_probe_lowdelay.c
-ssh "$BOARD" "cc -O2 -w -pthread -I$mpp_ref/inc /tmp/h265e_probe_lowdelay.c \
+ssh "$BOARD" "cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I$mpp_ref/inc /tmp/h265e_probe_lowdelay.c \
         $mpp_lib/librockchip_mpp.so.1 -o /tmp/h265e_probe_lowdelay 2>/dev/null ||
-      cc -O2 -w -pthread -I$mpp_ref/inc /tmp/h265e_probe_lowdelay.c \
+      cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I$mpp_ref/inc /tmp/h265e_probe_lowdelay.c \
         $mpp_lib/librockchip_mpp.so.0 -o /tmp/h265e_probe_lowdelay"
 
 fail=0
@@ -81,14 +87,16 @@ run_cell() {
     return
   fi
 
-  scp -q "$BOARD":"$c_stream" "$BOARD":"$rust_stream" \
-    "$BOARD":"$c_log" "$BOARD":"$rust_log" /tmp/
-  if ! python3 scripts/compare_streams.py "/tmp/h265_lowdelay_c_$name.265" \
-      "/tmp/h265_lowdelay_rust_$name.265"; then
+  if ! ssh "$BOARD" "python3 ~/rk-mpp-rs/scripts/strip_version_sei.py \
+        $c_stream $c_stream.norm &&
+      python3 ~/rk-mpp-rs/scripts/strip_version_sei.py \
+        $rust_stream $rust_stream.norm &&
+      cmp -s $c_stream.norm $rust_stream.norm"; then
     printf 'FAIL h265-lowdelay/%s (bitstreams differ)\n' "$name"
     fail=1
     return
   fi
+  scp -q "$BOARD":"$c_log" "$BOARD":"$rust_log" /tmp/
   if ! python3 scripts/compare_packet_sizes.py "/tmp/h265_lowdelay_c_$name.log" \
       "/tmp/h265_lowdelay_rust_$name.log"; then
     printf 'FAIL h265-lowdelay/%s (packet boundaries differ)\n' "$name"
