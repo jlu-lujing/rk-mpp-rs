@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_uint;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
@@ -957,6 +957,7 @@ struct DecCfg {
 struct EncCfg {
     magic: u64,
     values: HashMap<CString, ConfigValue>,
+    arrays: HashMap<CString, Vec<i32>>,
 }
 
 #[repr(C)]
@@ -2278,7 +2279,471 @@ fn new_enc_cfg() -> EncCfg {
     EncCfg {
         magic: ENC_CFG_MAGIC,
         values: HashMap::new(),
+        arrays: HashMap::new(),
     }
+}
+
+fn config_scalar_text(value: ConfigValue) -> Option<String> {
+    match value {
+        ConfigValue::S32(value) => Some(value.to_string()),
+        ConfigValue::U32(value) => Some(value.to_string()),
+        ConfigValue::S64(value) => Some(value.to_string()),
+        ConfigValue::U64(value) => Some(value.to_string()),
+        ConfigValue::Ptr(_) => None,
+    }
+}
+
+fn parse_config_scalar(text: &str) -> Option<ConfigValue> {
+    let text = text.trim();
+    if let Ok(value) = text.parse::<i64>() {
+        if let Ok(value) = i32::try_from(value) {
+            return Some(ConfigValue::S32(value));
+        }
+        return Some(ConfigValue::S64(value));
+    }
+    let value = text.parse::<u64>().ok()?;
+    if let Ok(value) = i32::try_from(value) {
+        Some(ConfigValue::S32(value))
+    } else if let Ok(value) = u32::try_from(value) {
+        Some(ConfigValue::U32(value))
+    } else if let Ok(value) = i64::try_from(value) {
+        Some(ConfigValue::S64(value))
+    } else {
+        Some(ConfigValue::U64(value))
+    }
+}
+
+fn config_scalar_i32(value: ConfigValue) -> Option<i32> {
+    match value {
+        ConfigValue::S32(value) => Some(value),
+        ConfigValue::U32(value) => i32::try_from(value).ok(),
+        ConfigValue::S64(value) => i32::try_from(value).ok(),
+        ConfigValue::U64(value) => i32::try_from(value).ok(),
+        ConfigValue::Ptr(_) => None,
+    }
+}
+
+fn parse_config_array(text: &str) -> Option<Vec<i32>> {
+    let body = text.trim().strip_prefix('[')?.strip_suffix(']')?;
+    body.split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| config_scalar_i32(parse_config_scalar(item)?))
+        .collect()
+}
+
+#[derive(Default)]
+struct ParsedEncCfg {
+    values: HashMap<CString, ConfigValue>,
+    arrays: HashMap<CString, Vec<i32>>,
+}
+
+fn enc_cfg_groups(config: &EncCfg) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut groups = BTreeMap::new();
+    for (name, value) in &config.values {
+        let Some(value) = config_scalar_text(*value) else {
+            continue;
+        };
+        let name = name.to_string_lossy();
+        let (namespace, field) = name.split_once(':').unwrap_or(("", name.as_ref()));
+        groups
+            .entry(namespace.to_string())
+            .or_insert_with(BTreeMap::new)
+            .insert(field.to_string(), value);
+    }
+    for (name, values) in &config.arrays {
+        let text = format!(
+            "[{}]",
+            values
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let name = name.to_string_lossy();
+        let (namespace, field) = name.split_once(':').unwrap_or(("", name.as_ref()));
+        groups
+            .entry(namespace.to_string())
+            .or_insert_with(BTreeMap::new)
+            .insert(field.to_string(), text);
+    }
+    groups
+}
+
+fn extract_enc_json(config: &EncCfg) -> String {
+    let groups = enc_cfg_groups(config);
+    let mut out = String::from("{\n");
+    for (namespace_index, (namespace, fields)) in groups.iter().enumerate() {
+        if namespace_index != 0 {
+            out.push_str(",\n");
+        }
+        if namespace.is_empty() {
+            for (field_index, (field, value)) in fields.iter().enumerate() {
+                if field_index != 0 {
+                    out.push_str(",\n");
+                }
+                out.push_str(&format!("    \"{field}\" : {value}"));
+            }
+            continue;
+        }
+        out.push_str(&format!("    \"{namespace}\" : {{\n"));
+        for (field_index, (field, value)) in fields.iter().enumerate() {
+            if field_index != 0 {
+                out.push_str(",\n");
+            }
+            out.push_str(&format!("        \"{field}\" : {value}"));
+        }
+        out.push_str("\n    }");
+    }
+    if !groups.is_empty() {
+        out.push('\n');
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn extract_enc_log(config: &EncCfg) -> String {
+    let groups = enc_cfg_groups(config);
+    let mut out = String::from("{\n");
+    for (namespace, fields) in groups {
+        if namespace.is_empty() {
+            for (field, value) in fields {
+                out.push_str(&format!("    {field} : {value}\n"));
+            }
+            continue;
+        }
+        out.push_str(&format!("    {namespace} : {{\n"));
+        for (field, value) in fields {
+            out.push_str(&format!("        {field} : {value}\n"));
+        }
+        out.push_str("    }\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn extract_enc_toml(config: &EncCfg) -> String {
+    let groups = enc_cfg_groups(config);
+    let mut out = String::new();
+    for (namespace, fields) in groups {
+        if !namespace.is_empty() {
+            out.push_str(&format!("[{namespace}]\n"));
+        }
+        for (field, value) in fields {
+            out.push_str(&format!("{field} = {value}\n"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+struct JsonCfgParser<'a> {
+    text: &'a str,
+    pos: usize,
+}
+
+impl<'a> JsonCfgParser<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, pos: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while self
+            .text
+            .as_bytes()
+            .get(self.pos)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            self.pos += 1;
+        }
+    }
+
+    fn byte(&mut self) -> Option<u8> {
+        self.skip_ws();
+        self.text.as_bytes().get(self.pos).copied()
+    }
+
+    fn take(&mut self, expected: u8) -> Option<()> {
+        if self.byte()? != expected {
+            return None;
+        }
+        self.pos += 1;
+        Some(())
+    }
+
+    fn key(&mut self) -> Option<String> {
+        self.take(b'"')?;
+        let start = self.pos;
+        while self.text.as_bytes().get(self.pos).copied()? != b'"' {
+            if self.text.as_bytes()[self.pos] == b'\\' {
+                return None;
+            }
+            self.pos += 1;
+        }
+        let key = self.text[start..self.pos].to_string();
+        self.pos += 1;
+        Some(key)
+    }
+
+    fn number(&mut self) -> Option<ConfigValue> {
+        self.skip_ws();
+        let start = self.pos;
+        if self.text.as_bytes().get(self.pos) == Some(&b'-') {
+            self.pos += 1;
+        }
+        while self
+            .text
+            .as_bytes()
+            .get(self.pos)
+            .is_some_and(u8::is_ascii_digit)
+        {
+            self.pos += 1;
+        }
+        (self.pos > start)
+            .then(|| parse_config_scalar(&self.text[start..self.pos]))
+            .flatten()
+    }
+
+    fn array(&mut self) -> Option<Vec<i32>> {
+        self.take(b'[')?;
+        let mut values = Vec::new();
+        loop {
+            if self.byte()? == b']' {
+                self.pos += 1;
+                return Some(values);
+            }
+            values.push(config_scalar_i32(self.number()?)?);
+            match self.byte()? {
+                b',' => self.pos += 1,
+                b']' => {}
+                _ => return None,
+            }
+        }
+    }
+
+    fn object(&mut self, prefix: &str, output: &mut ParsedEncCfg) -> Option<()> {
+        self.take(b'{')?;
+        loop {
+            if self.byte()? == b'}' {
+                self.pos += 1;
+                return Some(());
+            }
+            let key = self.key()?;
+            self.take(b':')?;
+            let path = if prefix.is_empty() {
+                key
+            } else {
+                format!("{prefix}:{key}")
+            };
+            if self.byte()? == b'{' {
+                self.object(&path, output)?;
+            } else if self.byte()? == b'[' {
+                output
+                    .arrays
+                    .insert(CString::new(path).ok()?, self.array()?);
+            } else {
+                let value = self.number()?;
+                output.values.insert(CString::new(path).ok()?, value);
+            }
+            match self.byte()? {
+                b',' => self.pos += 1,
+                b'}' => {}
+                _ => return None,
+            }
+        }
+    }
+}
+
+fn parse_enc_json(text: &str) -> Option<ParsedEncCfg> {
+    let mut parser = JsonCfgParser::new(text);
+    let mut parsed = ParsedEncCfg::default();
+    parser.object("", &mut parsed)?;
+    parser.skip_ws();
+    (parser.pos == text.len()).then_some(parsed)
+}
+
+struct LogCfgParser<'a> {
+    text: &'a str,
+    pos: usize,
+}
+
+impl<'a> LogCfgParser<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, pos: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while self
+            .text
+            .as_bytes()
+            .get(self.pos)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            self.pos += 1;
+        }
+    }
+
+    fn byte(&mut self) -> Option<u8> {
+        self.skip_ws();
+        self.text.as_bytes().get(self.pos).copied()
+    }
+
+    fn take(&mut self, expected: u8) -> Option<()> {
+        if self.byte()? != expected {
+            return None;
+        }
+        self.pos += 1;
+        Some(())
+    }
+
+    fn ident(&mut self) -> Option<String> {
+        self.skip_ws();
+        let start = self.pos;
+        while self
+            .text
+            .as_bytes()
+            .get(self.pos)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            self.pos += 1;
+        }
+        (self.pos > start).then(|| self.text[start..self.pos].to_string())
+    }
+
+    fn number(&mut self) -> Option<ConfigValue> {
+        self.skip_ws();
+        let start = self.pos;
+        if self.text.as_bytes().get(self.pos) == Some(&b'-') {
+            self.pos += 1;
+        }
+        while self
+            .text
+            .as_bytes()
+            .get(self.pos)
+            .is_some_and(u8::is_ascii_digit)
+        {
+            self.pos += 1;
+        }
+        (self.pos > start)
+            .then(|| parse_config_scalar(&self.text[start..self.pos]))
+            .flatten()
+    }
+
+    fn array(&mut self) -> Option<Vec<i32>> {
+        self.take(b'[')?;
+        let mut values = Vec::new();
+        loop {
+            if self.byte()? == b']' {
+                self.pos += 1;
+                return Some(values);
+            }
+            values.push(config_scalar_i32(self.number()?)?);
+            if self.byte()? == b',' {
+                self.pos += 1;
+            }
+        }
+    }
+
+    fn object(&mut self, prefix: &str, output: &mut ParsedEncCfg) -> Option<()> {
+        self.take(b'{')?;
+        loop {
+            if self.byte()? == b'}' {
+                self.pos += 1;
+                return Some(());
+            }
+            let key = self.ident()?;
+            self.take(b':')?;
+            let path = if prefix.is_empty() {
+                key
+            } else {
+                format!("{prefix}:{key}")
+            };
+            if self.byte()? == b'{' {
+                self.object(&path, output)?;
+            } else if self.byte()? == b'[' {
+                output
+                    .arrays
+                    .insert(CString::new(path).ok()?, self.array()?);
+            } else {
+                let value = self.number()?;
+                output.values.insert(CString::new(path).ok()?, value);
+            }
+            if self.byte()? == b',' {
+                self.pos += 1;
+            }
+        }
+    }
+}
+
+fn parse_enc_log(text: &str) -> Option<ParsedEncCfg> {
+    let mut parser = LogCfgParser::new(text);
+    let mut parsed = ParsedEncCfg::default();
+    parser.object("", &mut parsed)?;
+    parser.skip_ws();
+    (parser.pos == text.len()).then_some(parsed)
+}
+
+fn parse_enc_toml(text: &str) -> Option<ParsedEncCfg> {
+    let mut parsed = ParsedEncCfg::default();
+    let mut namespace = "";
+    for raw in text.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(section) = line
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+        {
+            namespace = section
+                .trim()
+                .strip_prefix("mpp_enc_cfg.")
+                .unwrap_or(section.trim());
+            continue;
+        }
+        let (key, value) = line.split_once('=')?;
+        let key = key.trim();
+        if key == "mpp_enc_cfg" && value.trim().is_empty() {
+            continue;
+        }
+        let path = if key.contains('.') {
+            key.replace('.', ":")
+        } else if namespace.is_empty() {
+            key.to_string()
+        } else {
+            format!("{namespace}:{key}")
+        };
+        if value.trim().starts_with('[') {
+            parsed
+                .arrays
+                .insert(CString::new(path).ok()?, parse_config_array(value)?);
+        } else {
+            parsed
+                .values
+                .insert(CString::new(path).ok()?, parse_config_scalar(value)?);
+        }
+    }
+    Some(parsed)
+}
+
+fn apply_enc_text(config: &mut EncCfg, format: i32, text: &str) -> i32 {
+    let parsed = match format {
+        MPP_CFG_STR_FMT_LOG => parse_enc_log(text),
+        MPP_CFG_STR_FMT_JSON => parse_enc_json(text),
+        MPP_CFG_STR_FMT_TOML => parse_enc_toml(text),
+        _ => None,
+    };
+    let Some(parsed) = parsed else {
+        return MPP_NOK;
+    };
+    if parsed.arrays.iter().any(|(name, values)| {
+        enc_cfg_array_len(name).is_some_and(|expected| values.len() != expected)
+    }) {
+        return MPP_NOK;
+    }
+    config.values.extend(parsed.values);
+    config.arrays.extend(parsed.arrays);
+    MPP_OK
 }
 
 fn enc_set_value(config: *mut c_void, name: *const c_char, value: ConfigValue) -> i32 {
@@ -2291,6 +2756,15 @@ fn enc_set_value(config: *mut c_void, name: *const c_char, value: ConfigValue) -
     };
     config.values.insert(name.to_owned(), value);
     MPP_OK
+}
+
+fn enc_cfg_array_len(name: &CStr) -> Option<usize> {
+    match name.to_bytes() {
+        b"rc:hier_qp_delta" | b"rc:hier_frame_num" => Some(4),
+        b"hw:aq_step_i" => Some(16),
+        b"hw:qbias_arr" => Some(18),
+        _ => None,
+    }
 }
 
 unsafe fn enc_get_value<T: Default>(
@@ -2431,10 +2905,25 @@ pub unsafe extern "C" fn mpp_enc_cfg_set_ptr(
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_cfg_set_st(
-    _config: *mut c_void,
-    _name: *const c_char,
-    _value: *mut c_void,
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut c_void,
 ) -> i32 {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(config) = enc_cfg_mut(config) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let name = match c_name(name) {
+        Ok(name) => name,
+        Err(error) => return error,
+    };
+    let Some(len) = enc_cfg_array_len(name) else {
+        return MPP_NOK;
+    };
+    let values = unsafe { std::slice::from_raw_parts(value.cast::<i32>(), len) };
+    config.arrays.insert(name.to_owned(), values.to_vec());
     MPP_OK
 }
 
@@ -2582,10 +3071,32 @@ pub unsafe extern "C" fn mpp_enc_cfg_get_ptr(
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_cfg_get_st(
-    _config: *mut c_void,
-    _name: *const c_char,
-    _value: *mut c_void,
+    config: *mut c_void,
+    name: *const c_char,
+    value: *mut c_void,
 ) -> i32 {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(config) = enc_cfg_ref(config) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let name = match c_name(name) {
+        Ok(name) => name,
+        Err(error) => return error,
+    };
+    let Some(len) = enc_cfg_array_len(name) else {
+        return MPP_NOK;
+    };
+    let output = unsafe { std::slice::from_raw_parts_mut(value.cast::<i32>(), len) };
+    if let Some(values) = config.arrays.get(name) {
+        if values.len() != len {
+            return MPP_NOK;
+        }
+        output.copy_from_slice(values);
+    } else {
+        output.fill(0);
+    }
     MPP_OK
 }
 
@@ -2594,19 +3105,30 @@ pub unsafe extern "C" fn mpp_enc_cfg_show() {}
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_cfg_extract(
-    _config: *mut c_void,
-    _format: i32,
+    config: *mut c_void,
+    format: i32,
     buffer: *mut *mut c_char,
 ) -> i32 {
     if buffer.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let output = unsafe { libc::malloc(1) }.cast::<c_char>();
+    unsafe { buffer.write(ptr::null_mut()) };
+    let Some(config) = enc_cfg_ref(config) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let text = match format {
+        MPP_CFG_STR_FMT_LOG => extract_enc_log(config),
+        MPP_CFG_STR_FMT_JSON => extract_enc_json(config),
+        MPP_CFG_STR_FMT_TOML => extract_enc_toml(config),
+        _ => return MPP_NOK,
+    };
+    let output = unsafe { libc::malloc(text.len() + 1) }.cast::<c_char>();
     if output.is_null() {
         return MPP_NOK;
     }
     unsafe {
-        output.write(0);
+        std::ptr::copy_nonoverlapping(text.as_ptr(), output.cast::<u8>(), text.len());
+        output.add(text.len()).write(0);
         buffer.write(output);
     }
     MPP_OK
@@ -2614,20 +3136,43 @@ pub unsafe extern "C" fn mpp_enc_cfg_extract(
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_cfg_apply(
-    _config: *mut c_void,
-    _format: i32,
-    _buffer: *mut c_char,
+    config: *mut c_void,
+    format: i32,
+    buffer: *mut c_char,
 ) -> i32 {
-    MPP_OK
+    if buffer.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(config) = enc_cfg_mut(config) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let text = unsafe { CStr::from_ptr(buffer) };
+    let Ok(text) = text.to_str() else {
+        return MPP_NOK;
+    };
+    apply_enc_text(config, format, text)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_cfg_apply_file(
-    _config: *mut c_void,
-    _format: i32,
-    _path: *const c_char,
+    config: *mut c_void,
+    format: i32,
+    path: *const c_char,
 ) -> i32 {
-    MPP_OK
+    if path.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(config) = enc_cfg_mut(config) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let path = unsafe { CStr::from_ptr(path) };
+    let Ok(path) = path.to_str() else {
+        return MPP_NOK;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return MPP_NOK;
+    };
+    apply_enc_text(config, format, &text)
 }
 
 #[no_mangle]
@@ -2982,6 +3527,147 @@ mod tests {
         assert_eq!(codec, 0x0100_0004);
         assert_eq!(width, 320);
         assert_eq!(unsafe { mpp_enc_cfg_deinit(cfg) }, MPP_OK);
+    }
+
+    #[test]
+    fn encoder_cfg_applies_scalar_log_json_and_toml() {
+        let cases = [
+            (
+                MPP_CFG_STR_FMT_LOG,
+                r#"{
+                    rc : {
+                        mode : 2
+                        bps_target : 800000
+                    }
+                    prep : {
+                        width : 1920
+                    }
+                }"#,
+            ),
+            (
+                MPP_CFG_STR_FMT_JSON,
+                r#"{"rc":{"mode":2,"bps_target":800000},"prep":{"width":1920}}"#,
+            ),
+            (
+                MPP_CFG_STR_FMT_TOML,
+                "[rc]\nmode = 2\nbps_target = 800000\n[prep]\nwidth = 1920\n",
+            ),
+        ];
+        for (format, text) in cases {
+            let mut config = std::ptr::null_mut();
+            assert_eq!(unsafe { mpp_enc_cfg_init(&mut config) }, MPP_OK);
+            let text = CString::new(text).unwrap();
+            assert_eq!(
+                unsafe { mpp_enc_cfg_apply(config, format, text.as_ptr().cast_mut()) },
+                MPP_OK,
+                "format {format}"
+            );
+            let mut mode = 0;
+            let mut bps = 0;
+            let mut width = 0;
+            assert_eq!(
+                unsafe { mpp_enc_cfg_get_s32(config, c"rc:mode".as_ptr(), &mut mode) },
+                MPP_OK
+            );
+            assert_eq!(
+                unsafe { mpp_enc_cfg_get_s32(config, c"rc:bps_target".as_ptr(), &mut bps) },
+                MPP_OK
+            );
+            assert_eq!(
+                unsafe { mpp_enc_cfg_get_u32(config, c"prep:width".as_ptr(), &mut width) },
+                MPP_OK
+            );
+            assert_eq!((mode, bps, width), (2, 800_000, 1920));
+            assert_eq!(unsafe { mpp_enc_cfg_deinit(config) }, MPP_OK);
+        }
+    }
+
+    #[test]
+    fn encoder_cfg_extracts_and_reapplies_all_scalar_formats() {
+        let mut source = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_cfg_init(&mut source) }, MPP_OK);
+        assert_eq!(
+            unsafe { mpp_enc_cfg_set_s32(source, c"rc:mode".as_ptr(), 3) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_enc_cfg_set_u32(source, c"prep:width".as_ptr(), 1280) },
+            MPP_OK
+        );
+        let hierarchy = [1, 2, 3, 4];
+        assert_eq!(
+            unsafe {
+                mpp_enc_cfg_set_st(
+                    source,
+                    c"rc:hier_qp_delta".as_ptr(),
+                    hierarchy.as_ptr().cast_mut().cast(),
+                )
+            },
+            MPP_OK
+        );
+        for format in [
+            MPP_CFG_STR_FMT_LOG,
+            MPP_CFG_STR_FMT_JSON,
+            MPP_CFG_STR_FMT_TOML,
+        ] {
+            let mut text = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { mpp_enc_cfg_extract(source, format, &mut text) },
+                MPP_OK
+            );
+            assert!(!text.is_null());
+            let mut destination = std::ptr::null_mut();
+            assert_eq!(unsafe { mpp_enc_cfg_init(&mut destination) }, MPP_OK);
+            assert_eq!(
+                unsafe { mpp_enc_cfg_apply(destination, format, text) },
+                MPP_OK,
+                "format {format}"
+            );
+            let mut mode = 0;
+            let mut width = 0;
+            let mut applied_hierarchy = [0; 4];
+            assert_eq!(
+                unsafe { mpp_enc_cfg_get_s32(destination, c"rc:mode".as_ptr(), &mut mode) },
+                MPP_OK
+            );
+            assert_eq!(
+                unsafe { mpp_enc_cfg_get_u32(destination, c"prep:width".as_ptr(), &mut width) },
+                MPP_OK
+            );
+            assert_eq!((mode, width), (3, 1280));
+            assert_eq!(
+                unsafe {
+                    mpp_enc_cfg_get_st(
+                        destination,
+                        c"rc:hier_qp_delta".as_ptr(),
+                        applied_hierarchy.as_mut_ptr().cast(),
+                    )
+                },
+                MPP_OK
+            );
+            assert_eq!(applied_hierarchy, hierarchy);
+            unsafe { libc::free(text.cast()) };
+            assert_eq!(unsafe { mpp_enc_cfg_deinit(destination) }, MPP_OK);
+        }
+        assert_eq!(unsafe { mpp_enc_cfg_deinit(source) }, MPP_OK);
+    }
+
+    #[test]
+    fn encoder_cfg_string_apply_rejects_unsupported_arrays() {
+        let mut config = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_cfg_init(&mut config) }, MPP_OK);
+        let json = CString::new(r#"{"hw":{"aq_step_i":[1,2,3]}}"#).unwrap();
+        assert_eq!(
+            unsafe { mpp_enc_cfg_apply(config, MPP_CFG_STR_FMT_JSON, json.as_ptr().cast_mut(),) },
+            MPP_NOK
+        );
+        let mut mode = 0;
+        assert_eq!(
+            unsafe { mpp_enc_cfg_get_s32(config, c"hw:aq_step_i".as_ptr(), &mut mode) },
+            MPP_OK
+        );
+        assert_eq!(mode, 0, "failed apply must not partially mutate the cfg");
+        assert_eq!(unsafe { mpp_enc_cfg_deinit(config) }, MPP_OK);
     }
 
     #[test]

@@ -4033,6 +4033,16 @@ pipeline uses.
   of rejecting those valid modes. Existing six/12-frame TSVC2/3/4 and 64-frame
   IGOP restart board streams remain exact.
 
+- **2026-11-19: MppEncCfg string extraction and apply are real.** The
+  standalone object layer previously returned an empty string from
+  `mpp_enc_cfg_extract()` and reported success from `apply/apply_file` without
+  changing the config. LOG, JSON and TOML now serialize and parse all numeric
+  scalar entries in the local store. Known fixed arrays
+  (`rc:hier_qp_delta`, `rc:hier_frame_num`, `hw:aq_step_i`, `hw:qbias_arr`)
+  round-trip through `set_st/get_st`; unknown-length arrays return `MPP_NOK`,
+  and failed parses leave the config untouched. A shared C probe confirms
+  vendor and Rust accept each other's exports in all three formats.
+
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a
   request Batch. The session now reuses and clears both. Seven interleaved

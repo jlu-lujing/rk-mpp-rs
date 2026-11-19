@@ -36,6 +36,11 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   连自己导出的 TOML 也无法再次解析，该 C bug 记录在
   [`DIVERGENCES.md`](DIVERGENCES.md)。
   调度器已支持上一 ST、指定 LT index 和倒数第 N 个 ST 引用模式。
+- `MppEncCfg` 的 LOG/JSON/TOML `extract/apply/apply_file` 已从空字符串和
+  假成功替换为真实键值往返。标量覆盖本层 `HashMap` 中的所有数值类型；
+  `rc:hier_qp_delta`、`rc:hier_frame_num`、`hw:aq_step_i` 和
+  `hw:qbias_arr` 数值数组可由 `set_st/get_st` 保存并恢复。未知大小的数组键
+  会明确返回 `MPP_NOK`，失败的 apply 不会部分修改现有配置。
 
 ## 1. 二进制 drop-in（不改代码）
 

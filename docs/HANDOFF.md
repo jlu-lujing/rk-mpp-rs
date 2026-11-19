@@ -366,6 +366,12 @@ t6 上 LOG/JSON 与 vendor 双向解析一致；TOML 导出与 vendor 逐字节�
 reference scheduler 也补上了上一 ST、指定 LT index、倒数第 N 个 ST 三种合法
 mode。standalone 的 TSVC2/3/4 与 64 帧 IGOP 重启流继续逐 NAL/重建一致。
 
+`MppEncCfg` 的 LOG/JSON/TOML `extract/apply/apply_file` 也已从空字符串和
+假成功改为真实实现。本层保存的数值标量全部可往返；`set_st/get_st` 现在保存
+`rc:hier_qp_delta`、`rc:hier_frame_num`、`hw:aq_step_i` 和 `hw:qbias_arr`
+四个已知长度数组。未知数组大小返回 `MPP_NOK`，解析失败不会部分写入。
+t6 原生 vendor 的完整配置与 Rust scalar/array 配置已做三格式双向读取验证。
+
 H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出
 7,031,305 bytes 完全一致

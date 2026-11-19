@@ -1373,6 +1373,12 @@ byte-identical between vendor and Rust, and Rust accepts the vendor file, but
 the vendor rejects its own extracted TOML in `mpp_cfg_from_toml` with return
 `-40`; this is registered in `docs/DIVERGENCES.md`. Reproduce the format
 matrix with `BOARD=t6 MPP_REF=/tmp/mpp-develop scripts/board_mpp_ref_cpb.sh`.
+`scripts/board_mpp_enc_cfg_strings.sh` is the corresponding `MppEncCfg`
+scalar/array test. The vendor and Rust libraries each dump LOG, JSON and TOML;
+the other library applies that file and reads back mode, target bitrate, width
+and codec type. LOG, JSON and TOML all pass 1/1. The Rust parser also accepts
+the vendor's full nested config, including the four-element hierarchical-QP
+arrays.
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the
