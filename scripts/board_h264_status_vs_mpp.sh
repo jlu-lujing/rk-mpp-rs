@@ -25,8 +25,8 @@ mpp_lib="$mpp_ref/build/mpp"
 fixture=/tmp/rk-mpp-rs-status-2f.nv12
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f /tmp/mpp_trace.so"; then
-  printf 'SKIP STATUS (reference build or ioctl tracer missing)\n'
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.264 STATUS" "reference build or ioctl tracer missing"
 fi
 
 if ! ssh "$BOARD" 'set -e

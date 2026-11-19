@@ -343,6 +343,11 @@ kernel-only key，遇到未知 key 返回 `MPP_NOK`；type/coding mismatch 返�
 `set_flex` 同步写入 `flags=KMPP_CTRL_FLAG_FLEX` 与 size。t6 的扩展
 `mpp_kcfg_probe` 和只使用官方头文件的 `board_mpp_migration.sh` 均通过。
 
+H.264/H.265/JPEG 的独立 `*_vs_mpp.sh` 矩阵也统一走
+`scripts/board_dependency.sh`：缺 reference binary/library 或 ioctl tracer 时
+默认 `exit 2`，只有显式 `ALLOW_SKIPS=1` 才输出 `SKIP` 并返回成功。已用错误
+`MPP_REF` 验证失败路径，并验证显式允许后的跳过路径。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；

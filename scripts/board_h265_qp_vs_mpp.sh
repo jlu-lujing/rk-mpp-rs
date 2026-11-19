@@ -53,8 +53,8 @@ frame_h=240
 fail=0
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.1"; then
-  printf 'SKIP H.265 vs MPP (reference build missing at %s)\n' "$mpp_ref"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.265 vs MPP" "reference build missing at $mpp_ref"
 fi
 
 # Build the crate on the board (the header path is pure host code but the compare

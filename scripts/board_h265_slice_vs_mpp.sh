@@ -16,8 +16,8 @@ ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo buil
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
 if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
-  printf 'SKIP H.265 slice (reference build missing at %s)\n' "$mpp_ref"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.265 slice" "reference build missing at $mpp_ref"
 fi
 
 scp -q tools/h265e_probe.c "$BOARD":/tmp/h265e_probe_slice.c

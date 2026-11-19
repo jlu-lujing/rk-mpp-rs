@@ -27,8 +27,8 @@ qp_max=51
 fail=0
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.1"; then
-  printf 'SKIP H.265 CBR vs MPP (reference build missing at %s)\n' "$mpp_ref"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.265 CBR vs MPP" "reference build missing at $mpp_ref"
 fi
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |

@@ -35,6 +35,9 @@ codec or hardware block. Individual benchmark/gate scripts still expose their
 specific `MPP_REF`, `MPP_BIN`, `MPP_LIB`, `RUST_BIN` and corpus overrides.
 Decode/H.264 encode/H.265 encode benchmarks now fail when a binary, oracle or
 fixture is missing; `ALLOW_SKIPS=1` is the explicit partial-run escape hatch.
+Individual H.264, H.265 and JPEG comparison gates use
+`scripts/board_dependency.sh` for the same rule: a missing reference build is
+a failure by default, not a successful no-op.
 
 ---
 

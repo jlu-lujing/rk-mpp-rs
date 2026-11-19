@@ -21,8 +21,8 @@ mpp_lib="$mpp_ref/build/mpp"
 fixture=/tmp/rk-mpp-rs-smartp-320x240.nv12
 
 if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
-  printf 'SKIP SMART_P (reference build missing at %s)\n' "$mpp_ref"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.264 SMART_P" "reference build missing at $mpp_ref"
 fi
 
 scp -q tools/rc_probe.c "$BOARD":/tmp/

@@ -27,8 +27,8 @@ out=tests/data/vepu580_rc_c_move6_cbr.txt
 regs=tests/data/vepu580_rc_c_move6_cbr_regs.txt
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f /tmp/mpp_trace.so"; then
-  printf 'SKIP rate-control capture (reference build or ioctl tracer missing)\n'
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.264 rate-control capture" "reference build or ioctl tracer missing"
 fi
 
 # The moving fixture the GOP matrix already uses, so one source serves both.

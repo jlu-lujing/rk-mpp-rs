@@ -34,8 +34,8 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Car
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f $mpp_src"; then
-  printf 'SKIP level matrix (reference build missing at %s)\n' "$mpp_ref"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.264 level matrix" "reference build missing at $mpp_ref"
 fi
 ssh "$BOARD" "test -f /tmp/mpi_enc_test.c.orig || cp $mpp_src /tmp/mpi_enc_test.c.orig"
 

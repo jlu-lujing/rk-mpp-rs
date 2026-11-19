@@ -30,8 +30,8 @@ mpp_lib="$mpp_ref/build/mpp"
 fail=0
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f $mpp_lib/librockchip_mpp.so.1"; then
-  printf 'SKIP JPEG restart vs MPP (reference build missing at %s)\n' "$mpp_ref"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "JPEG restart vs MPP" "reference build missing at $mpp_ref"
 fi
 for size in 320x240 640x480; do
   width="${size%%x*}"; height="${size##*x}"

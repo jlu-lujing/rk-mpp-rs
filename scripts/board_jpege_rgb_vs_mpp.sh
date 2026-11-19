@@ -30,8 +30,8 @@ mpp_lib="$mpp_ref/build/mpp"
 fail=0
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0 && test -f $mpp_lib/librockchip_mpp.so.1"; then
-  printf 'SKIP JPEG RGB vs MPP (reference build missing at %s)\n' "$mpp_ref"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "JPEG RGB vs MPP" "reference build missing at $mpp_ref"
 fi
 
 # format token, -f argument (MppFrameFormat hex)

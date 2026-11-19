@@ -21,12 +21,12 @@ tracer="${TRACER:-/tmp/mpp_trace.so}"
 fixture=/tmp/rk-mpp-rs-reenc-320x240.nv12
 
 if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
-  printf 'SKIP reencode (reference build missing at %s)\n' "$mpp_ref"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.264 reencode" "reference build missing at $mpp_ref"
 fi
 if ! ssh "$BOARD" "test -f $tracer"; then
-  printf 'SKIP reencode (ioctl tracer missing at %s)\n' "$tracer"
-  exit 0
+  source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
+    "H.264 reencode" "ioctl tracer missing at $tracer"
 fi
 
 scp -q tools/rc_probe.c "$BOARD":/tmp/

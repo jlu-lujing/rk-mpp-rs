@@ -3968,6 +3968,13 @@ pipeline uses.
   size. The extended header probe and the official-header C migration
   consumer both pass on t6.
 
+- **2026-11-19: encoder board gates no longer treat missing oracles as
+  success.** The H.264, H.265 and JPEG `*_vs_mpp.sh` matrices now call the
+  shared `scripts/board_dependency.sh` gate when a reference binary/library or
+  ioctl tracer is absent. The default result is exit 2; `ALLOW_SKIPS=1` is the
+  only path that prints `SKIP` and returns success. Invalid `MPP_REF` and the
+  explicit partial-run path were both exercised on t6.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |
