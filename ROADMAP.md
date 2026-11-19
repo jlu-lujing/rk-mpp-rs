@@ -3926,7 +3926,8 @@ pipeline uses.
   archive when no `.so`/`.dylib` exists. The Linux-only native dynamic-library
   smoke test is gated to Linux. Clippy also exposed a duplicated
   `subsampling_y` check in the VDPU383 AV1 format selection; it now tests both
-  `subsampling_x` and `subsampling_y`.
+  `subsampling_x` and `subsampling_y`. The public repository roots now include
+  `CONTRIBUTING.md`, `SECURITY.md` and `CODE_OF_CONDUCT.md`.
 
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |

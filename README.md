@@ -595,6 +595,10 @@ every push and pull request. macOS is also supported for host compilation and
 tests; the Linux-only native dynamic-library smoke test is gated to Linux.
 Board evidence remains a separate gate:
 
+Contribution, security and conduct expectations are documented in
+[`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md) and
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
 ```bash
 cargo test --release --all-targets           # t6 当前全量门见 docs/HANDOFF.md
 ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
