@@ -1185,6 +1185,157 @@ fn ref_cfg_ref(config: *mut c_void) -> Option<&'static RefCfg> {
     (config.magic == REF_CFG_MAGIC).then_some(config)
 }
 
+fn json_i32(text: &str, key: &str) -> Option<i32> {
+    let key = format!("\"{key}\"");
+    let start = text.find(&key)? + key.len();
+    let colon = start + text[start..].find(':')?;
+    let value = text[colon + 1..].trim_start();
+    let end = value
+        .find(|ch: char| !(ch == '-' || ch.is_ascii_digit()))
+        .unwrap_or(value.len());
+    value[..end].parse().ok()
+}
+
+fn json_object_array<'a>(text: &'a str, key: &str) -> Option<Vec<&'a str>> {
+    let key = format!("\"{key}\"");
+    let start = text.find(&key)? + key.len();
+    let open = start + text[start..].find('[')?;
+    let mut depth = 0usize;
+    let mut object_start = None;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut objects = Vec::new();
+    for (offset, ch) in text[open + 1..].char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => quoted = true,
+            '{' => {
+                if depth == 0 {
+                    object_start = Some(open + 1 + offset);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    objects.push(&text[object_start?..=open + offset]);
+                    object_start = None;
+                }
+            }
+            ']' if depth == 0 => return Some(objects),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn apply_ref_json(config: &mut RefCfg, text: &str) -> i32 {
+    let Some(st_count) = json_i32(text, "st_cfg_cnt") else {
+        return MPP_NOK;
+    };
+    let Some(lt_count) = json_i32(text, "lt_cfg_cnt") else {
+        return MPP_NOK;
+    };
+    if !(0..=16).contains(&st_count) || !(0..=16).contains(&lt_count) {
+        return MPP_NOK;
+    }
+    let Some(st_objects) = json_object_array(text, "st_cfg") else {
+        return MPP_NOK;
+    };
+    let Some(lt_objects) = json_object_array(text, "lt_cfg") else {
+        return MPP_NOK;
+    };
+    if st_objects.len() < st_count as usize || lt_objects.len() < lt_count as usize {
+        return MPP_NOK;
+    }
+
+    *config = new_ref_cfg();
+    config.st_capacity = st_count;
+    config.lt_capacity = lt_count;
+    config.st_count = st_count;
+    config.lt_count = lt_count;
+    config.keep_cpb = json_i32(text, "keep_cpb").unwrap_or(0);
+    for (index, object) in st_objects[..st_count as usize].iter().enumerate() {
+        config.st[index] = RefStCfg {
+            is_non_ref: json_i32(object, "is_non_ref").unwrap_or(0),
+            temporal_id: json_i32(object, "temporal_id").unwrap_or(0),
+            ref_mode: json_i32(object, "ref_mode").unwrap_or(0),
+            ref_arg: json_i32(object, "ref_arg").unwrap_or(0),
+            repeat: json_i32(object, "repeat").unwrap_or(0),
+        };
+    }
+    for (index, object) in lt_objects[..lt_count as usize].iter().enumerate() {
+        config.lt[index] = RefLtCfg {
+            lt_idx: json_i32(object, "lt_idx").unwrap_or(0),
+            temporal_id: json_i32(object, "temporal_id").unwrap_or(0),
+            ref_mode: json_i32(object, "ref_mode").unwrap_or(0),
+            ref_arg: json_i32(object, "ref_arg").unwrap_or(0),
+            lt_gap: json_i32(object, "lt_gap").unwrap_or(0),
+            lt_delay: json_i32(object, "lt_delay").unwrap_or(0),
+        };
+    }
+    if validate_ref_cfg(config) {
+        MPP_OK
+    } else {
+        config.st_count = 0;
+        config.lt_count = 0;
+        MPP_NOK
+    }
+}
+
+fn extract_ref_json(config: &RefCfg) -> String {
+    let mut out = format!(
+        "{{\n    \"keep_cpb\" : {},\n    \"st_cfg_cnt\" : {},\n    \"lt_cfg_cnt\" : {},\n",
+        config.keep_cpb, config.st_count, config.lt_count
+    );
+    out.push_str("    \"st_cfg\" : [");
+    for (index, step) in config.st[..config.st_count as usize].iter().enumerate() {
+        if index != 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "\n        {{ \"is_non_ref\": {}, \"temporal_id\": {}, \"ref_mode\": {}, \"ref_arg\": {}, \"repeat\": {} }}",
+            step.is_non_ref,
+            step.temporal_id,
+            step.ref_mode,
+            step.ref_arg,
+            step.repeat
+        ));
+    }
+    if config.st_count != 0 {
+        out.push_str("\n    ");
+    }
+    out.push_str("],\n    \"lt_cfg\" : [");
+    for (index, step) in config.lt[..config.lt_count as usize].iter().enumerate() {
+        if index != 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "\n        {{ \"lt_idx\": {}, \"temporal_id\": {}, \"ref_mode\": {}, \"ref_arg\": {}, \"lt_gap\": {}, \"lt_delay\": {} }}",
+            step.lt_idx,
+            step.temporal_id,
+            step.ref_mode,
+            step.ref_arg,
+            step.lt_gap,
+            step.lt_delay
+        ));
+    }
+    if config.lt_count != 0 {
+        out.push_str("\n    ");
+    }
+    out.push_str("]\n}\n");
+    out
+}
+
 #[derive(Clone, Copy, Default)]
 struct CpbFrame {
     valid: bool,
@@ -2408,37 +2559,75 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_show() {}
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_ref_cfg_apply(
-    _ref_cfg: *mut c_void,
-    _format: i32,
-    _buffer: *mut c_char,
+    ref_cfg: *mut c_void,
+    format: i32,
+    buffer: *mut c_char,
 ) -> i32 {
-    MPP_OK
+    const MPP_CFG_STR_FMT_JSON: i32 = 1;
+    if format != MPP_CFG_STR_FMT_JSON || buffer.is_null() {
+        return MPP_NOK;
+    }
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_NOK;
+    };
+    let text = unsafe { CStr::from_ptr(buffer) };
+    let Ok(text) = text.to_str() else {
+        return MPP_NOK;
+    };
+    apply_ref_json(config, text)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_ref_cfg_apply_file(
-    _ref_cfg: *mut c_void,
-    _format: i32,
-    _path: *const c_char,
+    ref_cfg: *mut c_void,
+    format: i32,
+    path: *const c_char,
 ) -> i32 {
-    MPP_OK
+    const MPP_CFG_STR_FMT_JSON: i32 = 1;
+    if format != MPP_CFG_STR_FMT_JSON || path.is_null() {
+        return MPP_NOK;
+    }
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_NOK;
+    };
+    let path = unsafe { CStr::from_ptr(path) };
+    let Ok(path) = path.to_str() else {
+        return MPP_NOK;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return MPP_NOK;
+    };
+    apply_ref_json(config, &text)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_ref_cfg_extract(
-    _ref_cfg: *mut c_void,
-    _format: i32,
+    ref_cfg: *mut c_void,
+    format: i32,
     buffer: *mut *mut c_char,
 ) -> i32 {
+    const MPP_CFG_STR_FMT_JSON: i32 = 1;
     if buffer.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let output = unsafe { libc::malloc(1) }.cast::<c_char>();
+    unsafe { buffer.write(ptr::null_mut()) };
+    if format != MPP_CFG_STR_FMT_JSON {
+        return MPP_NOK;
+    }
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return MPP_NOK;
+    };
+    if !validate_ref_cfg(config) {
+        return MPP_NOK;
+    }
+    let text = extract_ref_json(config);
+    let output = unsafe { libc::malloc(text.len() + 1) }.cast::<c_char>();
     if output.is_null() {
         return MPP_NOK;
     }
     unsafe {
-        output.write(0);
+        std::ptr::copy_nonoverlapping(text.as_ptr(), output.cast::<u8>(), text.len());
+        output.add(text.len()).write(0);
         buffer.write(output);
     }
     MPP_OK
@@ -2785,6 +2974,51 @@ mod tests {
                 st_gop: 8,
             }
         );
+    }
+
+    #[test]
+    fn reference_cfg_json_round_trips_current_vendor_schema() {
+        let json = r#"{
+            "keep_cpb": 0,
+            "st_cfg_cnt": 3,
+            "lt_cfg_cnt": 0,
+            "st_cfg": [
+                {"is_non_ref":0,"temporal_id":0,"ref_mode":4,"ref_arg":0,"repeat":0},
+                {"is_non_ref":1,"temporal_id":1,"ref_mode":0,"ref_arg":0,"repeat":0},
+                {"is_non_ref":0,"temporal_id":0,"ref_mode":0,"ref_arg":0,"repeat":0}
+            ],
+            "lt_cfg": []
+        }"#;
+        let mut config = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_ref_cfg_init(&mut config) }, MPP_OK);
+        let text = CString::new(json).unwrap();
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_apply(config, 1, text.as_ptr().cast_mut()) },
+            MPP_OK
+        );
+        let info = unsafe { mpp_enc_ref_cfg_get_cpb_info(config) };
+        assert_eq!(
+            unsafe { *info },
+            MppEncCpbInfo {
+                dpb_size: 1,
+                max_st_cnt: 1,
+                max_st_tid: 1,
+                st_gop: 2,
+                ..MppEncCpbInfo::default()
+            }
+        );
+
+        let mut output = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_extract(config, 1, &mut output) },
+            MPP_OK
+        );
+        assert!(!output.is_null());
+        let output_text = unsafe { CStr::from_ptr(output) }.to_str().unwrap();
+        assert_eq!(json_i32(output_text, "st_cfg_cnt"), Some(3));
+        assert_eq!(json_object_array(output_text, "st_cfg").unwrap().len(), 3);
+        unsafe { libc::free(output.cast()) };
+        assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut config) }, MPP_OK);
     }
 
     #[test]

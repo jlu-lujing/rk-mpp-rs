@@ -60,4 +60,14 @@ sudo -n env LD_LIBRARY_PATH="$overlay" \
     /tmp/mpp_ref_cpb_rs > /tmp/mpp_ref_cpb_rs.txt
 diff -u /tmp/mpp_ref_cpb_vendor.txt /tmp/mpp_ref_cpb_rs.txt
 cat /tmp/mpp_ref_cpb_rs.txt
+
+json="$MPP_REF/test/cfg/enc/ref_cfg_gop3_tsvc4.json"
+if [ -f "$json" ]; then
+    sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" \
+        /tmp/mpp_ref_cpb_vendor "$json" > /tmp/mpp_ref_cpb_vendor_json.txt
+    sudo -n env LD_LIBRARY_PATH="$overlay" \
+        /tmp/mpp_ref_cpb_rs "$json" > /tmp/mpp_ref_cpb_rs_json.txt
+    diff -u /tmp/mpp_ref_cpb_vendor_json.txt /tmp/mpp_ref_cpb_rs_json.txt
+    cat /tmp/mpp_ref_cpb_rs_json.txt
+fi
 REMOTE

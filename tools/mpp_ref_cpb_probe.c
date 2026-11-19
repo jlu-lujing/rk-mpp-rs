@@ -36,7 +36,28 @@ static int run_case(const char *name, const MppEncRefStFrmCfg *st_cfg,
     return 0;
 }
 
-int main(void)
+static int run_json(const char *path)
+{
+    MppEncRefCfg ref = NULL;
+    MppEncCpbInfo *info;
+    int ret;
+
+    ret = mpp_enc_ref_cfg_init(&ref);
+    if (!ret)
+        ret = mpp_enc_ref_cfg_apply_file(ref, MPP_CFG_STR_FMT_JSON, path);
+    info = mpp_enc_ref_cfg_get_cpb_info(ref);
+    if (ret || !info) {
+        mpp_enc_ref_cfg_deinit(&ref);
+        return 2;
+    }
+    printf("json dpb=%d lt=%d st=%d lt_idx=%d tid=%d lt_gop=%d st_gop=%d\n",
+           info->dpb_size, info->max_lt_cnt, info->max_st_cnt,
+           info->max_lt_idx, info->max_st_tid, info->lt_gop, info->st_gop);
+    mpp_enc_ref_cfg_deinit(&ref);
+    return 0;
+}
+
+int main(int argc, char **argv)
 {
     const MppEncRefStFrmCfg ippp[] = {
         { .is_non_ref = 0, .temporal_id = 0, .ref_mode = REF_TO_PREV_REF_FRM },
@@ -76,7 +97,8 @@ int main(void)
     if (run_case("ippp", ippp, 1, NULL, 0) ||
         run_case("tsvc2", tsvc2, 3, NULL, 0) ||
         run_case("tsvc3", tsvc3, 5, NULL, 0) ||
-        run_case("tsvc4", tsvc4, 9, tsvc4_lt, 1))
+        run_case("tsvc4", tsvc4, 9, tsvc4_lt, 1) ||
+        (argc > 1 && run_json(argv[1])))
         return 1;
 
     return 0;

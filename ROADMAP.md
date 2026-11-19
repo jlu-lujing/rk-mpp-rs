@@ -4022,8 +4022,10 @@ pipeline uses.
   `mpp_enc_ref_cfg_get_cpb_info()` now runs the vendor virtual-CPB dryrun and
   reports matching DPB, LT/ST count, LT index, temporal ID, LT-GOP and ST-GOP
   fields for IPPP and TSVC2/3/4. Reset/init now restore the vendor default
-  one-frame forward-reference IPPP instead of an empty configuration. Existing
-  six/12-frame TSVC2/3/4 and 64-frame IGOP restart board streams remain exact.
+  one-frame forward-reference IPPP instead of an empty configuration.
+  `apply/apply_file/extract` now parse and emit the vendor JSON ref-cfg schema
+  without adding an external runtime dependency. Existing six/12-frame
+  TSVC2/3/4 and 64-frame IGOP restart board streams remain exact.
 
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
