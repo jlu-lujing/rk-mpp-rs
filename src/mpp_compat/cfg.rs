@@ -82,11 +82,11 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
         .ok_or_else(|| "MppEncCfg has no positive prep:height".to_string())?;
     let format = unsafe { cfg.get_or("prep:format", 0) };
     let input_format = match format {
-        0 => PixelFormat::Nv12,
+        0 | 5 => PixelFormat::Nv12,
         4 => PixelFormat::I420,
         _ => {
             return Err(format!(
-                "compatible encoder object path accepts NV12(0) or I420(4), got {format}"
+                "compatible encoder object path accepts NV12(0), I420(4) or NV21(5), got {format}"
             ))
         }
     };

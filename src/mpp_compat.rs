@@ -44,6 +44,7 @@ const MPP_VIDEO_CODING_HEVC: c_int = 0x0100_0004;
 const MPP_VIDEO_CODING_AV1: c_int = 0x0100_0008;
 const MPP_FMT_YUV420SP: u32 = 0;
 const MPP_FMT_YUV420P: u32 = 4;
+const MPP_FMT_YUV420SP_VU: u32 = 5;
 
 const MPP_DEC_SET_OUTPUT_FORMAT: c_int = 3_211_274;
 const MPP_DEC_SET_DISABLE_ERROR: c_int = 3_211_275;
@@ -609,6 +610,17 @@ fn video_input(frame: &objects::FrameInputView, format: u32) -> Result<Vec<u8>, 
                     .copy_from_slice(&bytes[v..v + chroma_width]);
             }
         }
+        MPP_FMT_YUV420SP_VU => {
+            let uv_source = luma_size;
+            for row in 0..frame.height / 2 {
+                let source = uv_source + row * frame.hor_stride;
+                let destination = chroma_destination + row * frame.width;
+                for column in (0..frame.width).step_by(2) {
+                    output[destination + column] = bytes[source + column + 1];
+                    output[destination + column + 1] = bytes[source + column];
+                }
+            }
+        }
         _ => return Err(MPP_ERR_VALUE),
     }
     Ok(output)
@@ -756,7 +768,10 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     }
     if frame.width == 0
         || frame.height == 0
-        || !matches!(frame.format, MPP_FMT_YUV420SP | MPP_FMT_YUV420P)
+        || !matches!(
+            frame.format,
+            MPP_FMT_YUV420SP | MPP_FMT_YUV420P | MPP_FMT_YUV420SP_VU
+        )
     {
         eprintln!(
             "rk-mpp-rs mpp: encode frame has invalid geometry/format {}x{} fmt {}",
@@ -1460,6 +1475,35 @@ mod tests {
             packed,
             [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 10, 10, 11, 11, 20, 20, 21, 21,]
         );
+    }
+
+    #[test]
+    fn nv21_frame_input_is_reordered_to_packed_nv12() {
+        let mut source = vec![0u8; 8 * 8 * 3 / 2];
+        for row in 0..2 {
+            source[64 + row * 8..64 + row * 8 + 4].copy_from_slice(&[
+                30 + row as u8,
+                40,
+                31 + row as u8,
+                41,
+            ]);
+        }
+        let frame = objects::FrameInputView {
+            data: source.as_ptr(),
+            len: source.len(),
+            width: 4,
+            height: 4,
+            hor_stride: 8,
+            ver_stride: 8,
+            format: MPP_FMT_YUV420SP_VU,
+            pts: 0,
+            dts: 0,
+            eos: false,
+            motion_info: ptr::null_mut(),
+            osd_data: ptr::null_mut(),
+        };
+        let packed = video_input(&frame, frame.format).unwrap();
+        assert_eq!(&packed[16..], &[40, 30, 41, 31, 40, 31, 41, 32]);
     }
 
     #[test]

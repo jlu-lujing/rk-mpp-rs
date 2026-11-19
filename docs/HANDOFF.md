@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1356 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1357 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1358 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1359 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -436,9 +436,9 @@ typed `SyntaxOptions`；VEPU510 对非默认 syntax 明确返回 unsupported。
 独立对象路径门的两格均与 typed CLI 逐字节一致：
 `1263cb1f…f647b4`（beta/tc + chroma SAO + loop filter）和
 `1cef6ee0…b8171d`（SAO luma/chroma off）。
-兼容对象现在也接受 `prep:format=MPP_FMT_YUV420P` 和 format-4 MppFrame。
-`board_mpp_enc_cfg_i420.sh` 用同一 `testsrc` 经 NV12/I420 两条对象路径编码，
-5 NAL 与 SHA-256 `073c6215…f00b435e` 完全一致。
+兼容对象现在也接受 `prep:format=MPP_FMT_YUV420P/NV21` 和 format-4/5
+MppFrame。`board_mpp_enc_cfg_i420.sh` 用同一 `testsrc` 经 NV12/I420/NV21
+三条对象路径编码，5 NAL 与 SHA-256 `073c6215…f00b435e` 完全一致。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全

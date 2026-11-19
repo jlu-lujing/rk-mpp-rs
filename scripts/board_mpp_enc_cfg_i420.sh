@@ -59,6 +59,9 @@ ffmpeg -nostdin -v error -y -f lavfi \
 ffmpeg -nostdin -v error -y -f lavfi \
     -i testsrc=size=320x240:rate=30 -frames:v 1 \
     -pix_fmt yuv420p -f rawvideo /tmp/rk_mpp_i420_planar.yuv
+ffmpeg -nostdin -v error -y -f lavfi \
+    -i testsrc=size=320x240:rate=30 -frames:v 1 \
+    -pix_fmt nv21 -f rawvideo /tmp/rk_mpp_i420_nv21.yuv
 
 sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=0 \
     /tmp/rk_mpp_h264_i420_probe /tmp/rk_mpp_i420_nv12.yuv \
@@ -68,8 +71,14 @@ sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=4 \
     /tmp/rk_mpp_h264_i420_probe /tmp/rk_mpp_i420_planar.yuv \
     /tmp/rk_mpp_i420_planar.264 320 240 1 0 26 288000:1500000:2500000 \
     >/tmp/rk_mpp_i420_planar.log 2>&1
+sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=5 \
+    /tmp/rk_mpp_h264_i420_probe /tmp/rk_mpp_i420_nv21.yuv \
+    /tmp/rk_mpp_i420_nv21.264 320 240 1 0 26 288000:1500000:2500000 \
+    >/tmp/rk_mpp_i420_nv21.log 2>&1
 python3 scripts/compare_streams.py \
     /tmp/rk_mpp_i420_nv12.264 /tmp/rk_mpp_i420_planar.264
-printf 'PASS H.264 MppEncCfg NV12/I420 produce identical stream (%s)\n' \
+python3 scripts/compare_streams.py \
+    /tmp/rk_mpp_i420_nv12.264 /tmp/rk_mpp_i420_nv21.264
+printf 'PASS H.264 MppEncCfg NV12/I420/NV21 produce identical stream (%s)\n' \
     "$(sha256sum /tmp/rk_mpp_i420_planar.264 | cut -d' ' -f1)"
 REMOTE

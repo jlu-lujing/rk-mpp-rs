@@ -4057,7 +4057,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1356 passed / 45 ignored and t6 workspace tests are 1358 passed / 45 ignored,
+  1357 passed / 45 ignored and t6 workspace tests are 1359 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
@@ -4126,12 +4126,12 @@ pipeline uses.
   disables; both streams are byte-identical (`1263cb1f…f647b4` and
   `1cef6ee0…b8171d`).
 
-- **2026-11-20: compatible encoder objects accept I420 frames.** The object
+- **2026-11-20: compatible encoder objects accept I420/NV21 frames.** The object
   path previously rejected any `prep:format` other than NV12 and
   `encode_put_frame` accepted only format 0. It now maps format 4 to the typed
-  I420 encoder and repacks planar U/V from `MppFrame` strides. A focused probe
-  encodes the same `testsrc` picture through NV12 and I420 object paths and gets
-  an identical five-NAL H.264 stream
+  I420 encoder, repacks planar U/V from `MppFrame` strides, and normalizes
+  format-5 NV21 VU pairs. A focused probe encodes the same `testsrc` picture
+  through all three object paths and gets an identical five-NAL H.264 stream
   (`073c6215…f00b435e`).
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
