@@ -5,6 +5,7 @@
 //! packed visible dimensions; this layer pads them to the encoder's coded
 //! geometry.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use crate::codec::h264::encoder::{
@@ -2403,16 +2404,16 @@ fn align_up(value: usize, alignment: usize) -> usize {
     value.div_ceil(alignment) * alignment
 }
 
-fn format_nv12_input(config: EncoderConfig, data: &[u8]) -> Result<Vec<u8>, Error> {
+fn format_nv12_input<'a>(config: EncoderConfig, data: &'a [u8]) -> Result<Cow<'a, [u8]>, Error> {
     format_nv12_padded(config, data, 16, 16)
 }
 
-fn format_nv12_padded(
+fn format_nv12_padded<'a>(
     config: EncoderConfig,
-    data: &[u8],
+    data: &'a [u8],
     width_alignment: usize,
     height_alignment: usize,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Cow<'a, [u8]>, Error> {
     let visible_luma = config
         .width
         .checked_mul(config.height)
@@ -2433,6 +2434,12 @@ fn format_nv12_padded(
         .checked_mul(coded_height)
         .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
         .ok_or_else(|| Error::InvalidInput("video coded size overflow".to_string()))?;
+    if config.input_format == PixelFormat::Nv12
+        && coded_width == config.width
+        && coded_height == config.height
+    {
+        return Ok(Cow::Borrowed(&data[..visible_nv12]));
+    }
     let mut output = vec![0u8; coded_size];
     for row in 0..config.height {
         let src = row * config.width;
@@ -2466,17 +2473,44 @@ fn format_nv12_padded(
         }
         _ => unreachable!("encoder constructor validated the input format"),
     }
-    Ok(output)
+    Ok(Cow::Owned(output))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode, H264RcTuning, PacketMeta,
-        PixelFormat, RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
-        SliceSplitConfig, SliceSplitMode,
+        format_nv12_input, BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode, H264RcTuning,
+        PacketMeta, PixelFormat, RateControlConfig, RateControlMode, RoiConfig, RoiRegion,
+        SliceOutputMode, SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
+    use std::borrow::Cow;
+
+    #[test]
+    fn aligned_nv12_input_is_borrowed_without_a_frame_copy() {
+        let config = EncoderConfig::new(Codec::H264, 16, 16);
+        let input = vec![7u8; 16 * 16 * 3 / 2];
+        let formatted = format_nv12_input(config, &input).unwrap();
+        assert!(matches!(formatted, Cow::Borrowed(_)));
+        assert_eq!(formatted.as_ref(), input);
+    }
+
+    #[test]
+    fn padded_or_i420_input_still_materializes_the_coded_layout() {
+        let nv12 = vec![7u8; 18 * 18 * 3 / 2];
+        let config = EncoderConfig::new(Codec::H264, 18, 18);
+        assert!(matches!(
+            format_nv12_input(config, &nv12).unwrap(),
+            Cow::Owned(_)
+        ));
+
+        let i420 = vec![7u8; 16 * 16 * 3 / 2];
+        let config = EncoderConfig::new(Codec::H264, 16, 16).with_input_format(PixelFormat::I420);
+        assert!(matches!(
+            format_nv12_input(config, &i420).unwrap(),
+            Cow::Owned(_)
+        ));
+    }
 
     #[test]
     fn vepu510_packet_meta_uses_the_status_histogram_and_sse_layout() {

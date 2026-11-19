@@ -4057,7 +4057,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1349 passed / 45 ignored and t6 workspace tests are 1351 passed / 45 ignored,
+  1351 passed / 45 ignored and t6 workspace tests are 1353 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
@@ -4076,6 +4076,16 @@ pipeline uses.
   `sdk_encode_stream` example drives the same public encoder API. On t6, the
   old and new binaries produced identical 500-frame H.264 and H.265 streams
   (`68715bd4…617c05` and `ae613590…469783`).
+
+- **2026-11-20: aligned NV12 skips the temporary coded-frame copy.** The public
+  encoder input formatter always allocated the complete coded geometry and
+  copied every row, even when the caller's NV12 was already 16-aligned. It now
+  returns a borrowed `Cow` for that case; padded dimensions and I420 still take
+  the materializing path. On t6 at 80% OPP, eleven interleaved 500-frame 720p
+  H.264 runs reduced median user CPU from 0.341 to 0.201 seconds (about 41%).
+  Hardware-wait wall time is bimodal, so it is not used as the claim. The
+  H.264/H.265 output hashes remain `68715bd4…617c05` and
+  `ae613590…469783`.
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

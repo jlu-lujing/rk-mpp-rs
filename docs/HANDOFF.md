@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1349 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1351 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1351 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1353 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -407,6 +407,11 @@ crate 内部 queue 路径，不再为每帧同时构造公开 `EncodedFrame::ann
 `sdk_encode` 各编码 500 帧 720p，H.264 SHA-256
 `68715bd4…617c05`、H.265 SHA-256 `ae613590…469783` 均完全一致。
 `examples/sdk_encode_stream` 同时提供固定内存的流式示例。
+尺寸已按编码器对齐要求的 NV12 输入现在直接借用调用方 slice；旧路径会先分配
+完整 coded frame 再逐行复制，随后 HAL 又复制进 DMA-BUF。t6、80% OPP、11 次
+交错 500 帧 720p H.264 高层 API 中，user CPU 中位数从 0.341 s 降到 0.201 s
+（约 41%）。wall time 受硬件等待波动影响，不作为该优化主指标；H.264/H.265
+输出 SHA-256 均保持不变。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
