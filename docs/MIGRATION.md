@@ -48,6 +48,8 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   `scripts/board_mpp_enc_cfg_gdr.sh` 验证未修改 vendor probe 与 Rust CLI 输出。
   H.264 的 `h264:dblk_disable/alpha/beta` 会映射到 typed deblock；
   `scripts/board_h264_deblock_vs_mpp.sh` 同时验证对象路径。
+  H.265 的 deblock/SAO/loop-filter/auto-tile 键映射到 typed syntax；
+  `scripts/board_mpp_enc_cfg_h265_syntax.sh` 验证对象路径。
 
 ## 1. 二进制 drop-in（不改代码）
 

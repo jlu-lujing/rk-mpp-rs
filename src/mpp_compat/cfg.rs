@@ -1,6 +1,7 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 
 use super::standalone;
+use crate::codec::h265::encoder::SyntaxOptions as H265SyntaxOptions;
 use crate::encoder::{
     EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning, RateControlConfig,
     RateControlMode,
@@ -135,6 +136,46 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
                 alpha.unwrap_or(0),
                 beta.unwrap_or(0),
             ));
+        }
+    }
+
+    if codec == Codec::H265 {
+        let mut syntax = H265SyntaxOptions::default();
+        let mut any = false;
+        if let Some(value) = unsafe { cfg.get("h265:dblk_disable") } {
+            syntax.deblock_disable = value != 0;
+            any = true;
+        }
+        if let Some(value) = unsafe { cfg.get("h265:dblk_alpha") } {
+            syntax.deblock_beta_offset_div2 = value;
+            any = true;
+        }
+        if let Some(value) = unsafe { cfg.get("h265:dblk_beta") } {
+            syntax.deblock_tc_offset_div2 = value;
+            any = true;
+        }
+        if let Some(value) = unsafe { cfg.get("h265:sao_luma_disable") } {
+            syntax.sao_luma_disable = value != 0;
+            any = true;
+        }
+        if let Some(value) = unsafe { cfg.get("h265:sao_chroma_disable") } {
+            syntax.sao_chroma_disable = value != 0;
+            any = true;
+        }
+        if let Some(value) = unsafe { cfg.get("h265:lpf_acs_sli_en") } {
+            syntax.loop_filter_across_slices = value != 0;
+            any = true;
+        }
+        if let Some(value) = unsafe { cfg.get("h265:lpf_acs_tile_disable") } {
+            syntax.loop_filter_across_tiles = value == 0;
+            any = true;
+        }
+        if let Some(value) = unsafe { cfg.get("h265:auto_tile") } {
+            syntax.auto_tile = value != 0;
+            any = true;
+        }
+        if any {
+            result = result.with_h265_syntax(syntax);
         }
     }
 

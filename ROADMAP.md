@@ -4057,7 +4057,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1354 passed / 45 ignored and t6 workspace tests are 1356 passed / 45 ignored,
+  1355 passed / 45 ignored and t6 workspace tests are 1357 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
@@ -4116,6 +4116,15 @@ pipeline uses.
   the Rust standalone library. Object-path alpha and disable cells both
   produce the same five NALs as the typed CLI under the version-SEI rule
   (`2730e887…10c697d4`).
+
+- **2026-11-20: MppEncCfg carries H.265 syntax controls.** The compatible
+  object path now maps `h265:dblk_*`, `sao_luma/chroma_disable`,
+  `lpf_acs_sli_en`, `lpf_acs_tile_disable` and `auto_tile` into typed
+  `SyntaxOptions`. Non-default syntax is rejected on VEPU510 rather than
+  silently dropped. A focused probe linked against the Rust standalone library
+  matches the typed CLI for beta/tc + chroma-SAO + loop-filter and for both SAO
+  disables; both streams are byte-identical (`1263cb1f…f647b4` and
+  `1cef6ee0…b8171d`).
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

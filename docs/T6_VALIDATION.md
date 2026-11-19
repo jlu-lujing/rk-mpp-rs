@@ -1402,8 +1402,8 @@ and TOML, and verifies that the vendor-compatible `mpp_enc_cfg_deinit()` path
 releases it. All three formats pass.
 The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 **3/3 PASS**. The same tree also passes the host workspace gate with
-**1354 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
-**1356 passed / 0 failed / 45 ignored** plus strict rustdoc.
+**1355 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
+**1357 passed / 0 failed / 45 ignored** plus strict rustdoc.
 `scripts/board_mpp_enc_cfg_gdr.sh` also maps the vendor probes'
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`) and H.265 is
@@ -1411,6 +1411,9 @@ byte-identical (`bc22eb33…454f035`) to the typed CLI path.
 `board_h264_deblock_vs_mpp.sh` now includes Rust-object cells for
 `h264:dblk_alpha` and `h264:dblk_disable`; both match the typed CLI's five
 NALs under the version-SEI rule (`2730e887…10c697d4`).
+`board_mpp_enc_cfg_h265_syntax.sh` maps H.265 deblock/SAO/loop-filter keys
+through the standalone object path; both object cells are byte-identical to
+the typed CLI (`1263cb1f…f647b4` and `1cef6ee0…b8171d`).
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the

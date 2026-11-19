@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1354 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1355 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1356 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1357 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -431,6 +431,11 @@ typed `H264DeblockConfig`，offset 限制为 `-6..=6`。同一 deblock 板级门
 Rust standalone 链接 vendor probe，alpha 与 disable 两个对象配置格均与 Rust
 CLI 的 5 NAL 一致（version-SEI 仅 framing 不同，
 `2730e887…10c697d4`）。
+H.265 `h265:dblk_*`、SAO、`lpf_acs_*` 与 `auto_tile` 也已映射到
+typed `SyntaxOptions`；VEPU510 对非默认 syntax 明确返回 unsupported。
+独立对象路径门的两格均与 typed CLI 逐字节一致：
+`1263cb1f…f647b4`（beta/tc + chroma SAO + loop filter）和
+`1cef6ee0…b8171d`（SAO luma/chroma off）。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全

@@ -424,6 +424,8 @@ vendor 自带的 `mpp_enc_cfg_test` 已可在 Rust standalone 库上通过 **9/9
 H.264 的 `h264:dblk_disable/alpha/beta`（以及兼容的 `h264:deblock_*`
 名称）同样进入 typed deblock 配置，并由 `board_h264_deblock_vs_mpp.sh`
 同时验证 vendor probe 对象路径。
+H.265 的 `h265:dblk_*`、`sao_*`、`lpf_acs_*` 和 `auto_tile` 会进入 typed
+`SyntaxOptions`，由 `board_mpp_enc_cfg_h265_syntax.sh` 验证对象路径。
 t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
 也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
 （`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则

@@ -14,7 +14,8 @@ use crate::codec::h264::encoder::{
 };
 use crate::codec::h264::encoder::{GdrMode as H264GdrMode, RoiRegion as H264RoiRegion};
 use crate::codec::h265::encoder::{
-    SliceSplit as H265SliceSplit, SplitMode as H265SplitMode, MPP_ENC_SPLIT_OUT_LOWDELAY,
+    SliceSplit as H265SliceSplit, SplitMode as H265SplitMode, SyntaxOptions as H265SyntaxOptions,
+    MPP_ENC_SPLIT_OUT_LOWDELAY,
 };
 use crate::codec::h265::roi::RoiRegion as H265RoiRegion;
 use crate::hal::h265e::RefreshMode as H265RefreshMode;
@@ -589,10 +590,22 @@ pub struct EncoderConfig {
     h264_rc_tuning: Option<H264RcTuning>,
     h264_aq_step_i: Option<[i8; 16]>,
     h264_deblock: Option<H264DeblockConfig>,
+    h265_syntax: H265SyntaxOptions,
     roi: Option<RoiConfig>,
     gdr: Option<GdrConfig>,
     slice_split: Option<SliceSplitConfig>,
 }
+
+const H265_SYNTAX_DEFAULT: H265SyntaxOptions = H265SyntaxOptions {
+    sao_luma_disable: false,
+    sao_chroma_disable: false,
+    deblock_disable: false,
+    deblock_beta_offset_div2: 0,
+    deblock_tc_offset_div2: 0,
+    loop_filter_across_slices: false,
+    loop_filter_across_tiles: true,
+    auto_tile: false,
+};
 
 impl EncoderConfig {
     pub const fn new(codec: Codec, width: usize, height: usize) -> Self {
@@ -615,6 +628,7 @@ impl EncoderConfig {
             h264_rc_tuning: None,
             h264_aq_step_i: None,
             h264_deblock: None,
+            h265_syntax: H265_SYNTAX_DEFAULT,
             roi: None,
             gdr: None,
             slice_split: None,
@@ -683,6 +697,10 @@ impl EncoderConfig {
 
     pub const fn h264_deblock(self) -> Option<H264DeblockConfig> {
         self.h264_deblock
+    }
+
+    pub const fn h265_syntax(self) -> H265SyntaxOptions {
+        self.h265_syntax
     }
 
     pub const fn h264_rc_tuning(self) -> Option<H264RcTuning> {
@@ -768,6 +786,11 @@ impl EncoderConfig {
         self
     }
 
+    pub const fn with_h265_syntax(mut self, syntax: H265SyntaxOptions) -> Self {
+        self.h265_syntax = syntax;
+        self
+    }
+
     pub const fn with_h264_rc_tuning(mut self, tuning: H264RcTuning) -> Self {
         self.h264_rc_tuning = Some(tuning);
         self
@@ -843,6 +866,13 @@ impl EncoderConfig {
         }
         if let Some(deblock) = self.h264_deblock {
             deblock.validate()?;
+        }
+        if !(-6..=6).contains(&self.h265_syntax.deblock_beta_offset_div2)
+            || !(-6..=6).contains(&self.h265_syntax.deblock_tc_offset_div2)
+        {
+            return Err(Error::InvalidInput(
+                "H.265 deblock offsets must be in -6..=6".to_string(),
+            ));
         }
         Ok(())
     }
@@ -2332,6 +2362,7 @@ fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265
     encoder
         .set_gop(config.gop.max(1))
         .map_err(|error| Error::Hardware(error.to_string()))?;
+    encoder.set_syntax_options(config.h265_syntax);
     if let Some(slice_split) = config.slice_split {
         encoder
             .set_slice_split(H265SliceSplit {
@@ -2383,6 +2414,11 @@ fn open_h265_vepu510(
     config: EncoderConfig,
     _mpi_compat: bool,
 ) -> Result<vepu510_h265::Vepu510H265, Error> {
+    if config.h265_syntax != H265SyntaxOptions::default() {
+        return Err(Error::Unsupported(
+            "RK3576 H.265 syntax tuning is not exposed yet".to_string(),
+        ));
+    }
     if config.roi.is_some() || config.gdr.is_some() || config.slice_split.is_some() {
         return Err(Error::Unsupported(
             "RK3576 H.265 streaming ROI/GDR/slice controls are not exposed yet".to_string(),
@@ -2587,8 +2623,9 @@ fn format_nv12_padded<'a>(
 mod tests {
     use super::{
         format_nv12_input, BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode,
-        H264DeblockConfig, H264RcTuning, PacketMeta, PixelFormat, RateControlConfig,
-        RateControlMode, RoiConfig, RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
+        H264DeblockConfig, H264RcTuning, H265SyntaxOptions, PacketMeta, PixelFormat,
+        RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
+        SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
     use std::borrow::Cow;
@@ -2731,6 +2768,33 @@ mod tests {
             assert_eq!(RateControlMode::from_c_value(mode.c_value()), Some(mode));
         }
         assert_eq!(RateControlMode::from_c_value(4), None);
+    }
+
+    #[test]
+    fn h265_syntax_is_typed_and_validated() {
+        let syntax = H265SyntaxOptions {
+            sao_luma_disable: true,
+            sao_chroma_disable: true,
+            deblock_disable: true,
+            deblock_beta_offset_div2: 3,
+            deblock_tc_offset_div2: -2,
+            loop_filter_across_slices: true,
+            loop_filter_across_tiles: false,
+            auto_tile: true,
+        };
+        let config = EncoderConfig::new(Codec::H265, 320, 240).with_h265_syntax(syntax);
+        assert_eq!(config.h265_syntax(), syntax);
+        assert!(config.validate_advanced_controls().is_ok());
+
+        let invalid =
+            EncoderConfig::new(Codec::H265, 320, 240).with_h265_syntax(H265SyntaxOptions {
+                deblock_beta_offset_div2: 7,
+                ..H265SyntaxOptions::default()
+            });
+        assert!(matches!(
+            invalid.validate_advanced_controls(),
+            Err(Error::InvalidInput(_))
+        ));
     }
 
     #[test]
