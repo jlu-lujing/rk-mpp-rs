@@ -26,7 +26,8 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
 - `MppEncRefCfg` 的 `check` 会执行实际层级校验：最多 16 个配置项、LT index
   唯一且小于 16、temporal id 为 0..3、LT/ST mode 分离、首尾 ST 帧必须是
   temporal-zero reference；负 repeat 会按 vendor 行为归零，非法配置返回
-  `MPP_NOK`。
+  `MPP_NOK`。`set_cfg_cnt` 设置容量并清零 live entry，`add_*` 逐项追加并
+  检查剩余容量，`mpp_enc_ref_cfg_copy` 复制完整层级。
 
 ## 1. 二进制 drop-in（不改代码）
 

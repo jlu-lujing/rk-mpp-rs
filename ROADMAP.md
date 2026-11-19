@@ -4016,7 +4016,10 @@ pipeline uses.
   and below 16, temporal IDs stay within four layers, LT/ST reference modes are
   limited to their valid families, negative ST repeats clamp to zero, and
   head/tail ST frames must be temporal-zero references. Invalid handles return
-  `MPP_ERR_VALUE`, matching the C entry point.
+  `MPP_ERR_VALUE`, matching the C entry point. `set_cfg_cnt` is now a capacity
+  operation with zero live entries, each `add_*` appends and checks remaining
+  capacity, and `mpp_enc_ref_cfg_copy()` copies the complete hierarchy. Existing
+  six/12-frame TSVC2/3/4 and 64-frame IGOP restart board streams remain exact.
 
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |

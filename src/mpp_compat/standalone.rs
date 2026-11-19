@@ -979,6 +979,8 @@ pub struct RefStCfg {
 
 struct RefCfg {
     magic: u64,
+    lt_capacity: i32,
+    st_capacity: i32,
     lt_count: i32,
     st_count: i32,
     keep_cpb: i32,
@@ -1149,12 +1151,22 @@ fn ref_cfg_mut(config: *mut c_void) -> Option<&'static mut RefCfg> {
 fn new_ref_cfg() -> RefCfg {
     RefCfg {
         magic: REF_CFG_MAGIC,
+        lt_capacity: 0,
+        st_capacity: 0,
         lt_count: 0,
         st_count: 0,
         keep_cpb: 0,
         lt: [RefLtCfg::default(); 16],
         st: [RefStCfg::default(); 16],
     }
+}
+
+fn ref_cfg_ref(config: *mut c_void) -> Option<&'static RefCfg> {
+    if config.is_null() {
+        return None;
+    }
+    let config = unsafe { &*config.cast::<RefCfg>() };
+    (config.magic == REF_CFG_MAGIC).then_some(config)
 }
 
 fn validate_ref_cfg(config: &mut RefCfg) -> bool {
@@ -2096,14 +2108,25 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_set_cfg_cnt(
     lt_count: i32,
     st_count: i32,
 ) -> i32 {
+    unsafe { mpp_enc_ref_cfg_setup(ref_cfg, lt_count, st_count) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_setup(
+    ref_cfg: *mut c_void,
+    lt_count: i32,
+    st_count: i32,
+) -> i32 {
     if !(0..=16).contains(&lt_count) || !(0..=16).contains(&st_count) {
         return MPP_NOK;
     }
     let Some(config) = ref_cfg_mut(ref_cfg) else {
         return MPP_ERR_NULL_PTR;
     };
-    config.lt_count = lt_count;
-    config.st_count = st_count;
+    config.lt_capacity = lt_count;
+    config.st_capacity = st_count;
+    config.lt_count = 0;
+    config.st_count = 0;
     MPP_OK
 }
 
@@ -2113,17 +2136,19 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_add_lt_cfg(
     count: i32,
     frames: *const RefLtCfg,
 ) -> i32 {
-    if frames.is_null() || count < 0 {
-        return MPP_ERR_NULL_PTR;
+    if frames.is_null() || count <= 0 {
+        return MPP_ERR_VALUE;
     }
     let Some(config) = ref_cfg_mut(ref_cfg) else {
         return MPP_ERR_NULL_PTR;
     };
-    if count > config.lt_count {
-        return MPP_NOK;
+    if count > config.lt_capacity.saturating_sub(config.lt_count) {
+        return MPP_ERR_VALUE;
     }
     let frames = unsafe { std::slice::from_raw_parts(frames, count as usize) };
-    config.lt[..frames.len()].copy_from_slice(frames);
+    let start = config.lt_count as usize;
+    config.lt[start..start + frames.len()].copy_from_slice(frames);
+    config.lt_count += count;
     MPP_OK
 }
 
@@ -2133,17 +2158,19 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_add_st_cfg(
     count: i32,
     frames: *const RefStCfg,
 ) -> i32 {
-    if frames.is_null() || count < 0 {
-        return MPP_ERR_NULL_PTR;
+    if frames.is_null() || count <= 0 {
+        return MPP_ERR_VALUE;
     }
     let Some(config) = ref_cfg_mut(ref_cfg) else {
         return MPP_ERR_NULL_PTR;
     };
-    if count > config.st_count {
-        return MPP_NOK;
+    if count > config.st_capacity.saturating_sub(config.st_count) {
+        return MPP_ERR_VALUE;
     }
     let frames = unsafe { std::slice::from_raw_parts(frames, count as usize) };
-    config.st[..frames.len()].copy_from_slice(frames);
+    let start = config.st_count as usize;
+    config.st[start..start + frames.len()].copy_from_slice(frames);
+    config.st_count += count;
     MPP_OK
 }
 
@@ -2157,6 +2184,25 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_check(ref_cfg: *mut c_void) -> i32 {
     } else {
         MPP_NOK
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_copy(dst: *mut c_void, src: *mut c_void) -> i32 {
+    if dst == src {
+        return if ref_cfg_ref(dst).is_some() {
+            MPP_OK
+        } else {
+            MPP_ERR_VALUE
+        };
+    }
+    let Some(source) = ref_cfg_ref(src) else {
+        return MPP_ERR_VALUE;
+    };
+    let Some(destination) = ref_cfg_mut(dst) else {
+        return MPP_ERR_VALUE;
+    };
+    *destination = unsafe { std::ptr::read(source) };
+    MPP_OK
 }
 
 #[no_mangle]
@@ -2375,6 +2421,63 @@ mod tests {
             unsafe { mpp_enc_ref_cfg_check(ptr::null_mut()) },
             MPP_ERR_VALUE
         );
+    }
+
+    #[test]
+    fn reference_cfg_capacity_add_and_copy_follow_the_vendor_lifecycle() {
+        let mut source = std::ptr::null_mut();
+        let mut destination = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_ref_cfg_init(&mut source) }, MPP_OK);
+        assert_eq!(unsafe { mpp_enc_ref_cfg_init(&mut destination) }, MPP_OK);
+        assert_eq!(unsafe { mpp_enc_ref_cfg_setup(source, 1, 2) }, MPP_OK);
+
+        let lt = [RefLtCfg {
+            lt_idx: 0,
+            temporal_id: 0,
+            ref_mode: 0,
+            ref_arg: 0,
+            lt_gap: 8,
+            lt_delay: 0,
+        }];
+        let st = [
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 0,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 0,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+        ];
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_add_lt_cfg(source, 1, lt.as_ptr()) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_add_st_cfg(source, 2, st.as_ptr()) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { mpp_enc_ref_cfg_add_st_cfg(source, 1, st.as_ptr()) },
+            MPP_ERR_VALUE
+        );
+        assert_eq!(unsafe { mpp_enc_ref_cfg_check(source) }, MPP_OK);
+        assert_eq!(unsafe { mpp_enc_ref_cfg_copy(destination, source) }, MPP_OK);
+        assert_eq!(
+            reference_frame_pattern(destination),
+            reference_frame_pattern(source)
+        );
+        assert_eq!(unsafe { mpp_enc_ref_cfg_setup(destination, 0, 0) }, MPP_OK);
+        assert!(reference_frame_pattern(destination).is_none());
+
+        assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut destination) }, MPP_OK);
+        assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut source) }, MPP_OK);
     }
 
     #[test]

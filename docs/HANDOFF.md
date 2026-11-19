@@ -356,8 +356,10 @@ H.264 edge corpus。相关脚本都支持
 
 `mpp_enc_ref_cfg_check()` 也已从“只验句柄”改成真实层级校验：16 项上限、
 LT index 唯一且小于 16、temporal id 0..3、LT/ST mode 分离、首尾 ST 必须为
-temporal-zero reference；负 repeat 按 vendor 行为归零。host/t6 各
-1167 个库测试通过。
+temporal-zero reference；负 repeat 按 vendor 行为归零。`set_cfg_cnt` 现在
+是容量设置并清空 live entry，`add_*` 从当前尾部追加，copy 复制完整层级。
+host/t6 各 1168 个库测试通过；standalone 的 TSVC2/3/4 与 64 帧 IGOP
+重启流继续逐 NAL/重建一致。
 
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里
 累计整条码流；`/dev/null` 基准仍跳过文件写入。120 帧 720p 输出 SHA-256 保持
