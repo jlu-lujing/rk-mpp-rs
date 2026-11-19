@@ -168,6 +168,30 @@ pub struct RcSei {
     pub i_quality_delta: i32,
 }
 
+impl RcSei {
+    /// The strategy line `mpi_enc_test` installs with its explicit `-qc` band.
+    pub const fn from_harness(
+        target: i64,
+        min: i64,
+        max: i64,
+        init_quality: i32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Self {
+        Self {
+            target,
+            min,
+            max,
+            init_quality,
+            qp_min,
+            qp_max,
+            qp_min_i: qp_min,
+            qp_max_i: qp_max,
+            i_quality_delta: 2,
+        }
+    }
+}
+
 pub struct Vepu580H265 {
     /// Present when the session runs rate control.
     rc_sei: Option<RcSei>,
@@ -268,17 +292,14 @@ impl Vepu580H265 {
         session.rc_mode = mode;
         session.rc = Some(rc_model::Model::new(config));
         session.rc_band = (qp_min, qp_max);
-        session.set_rate_control_sei(RcSei {
-            target: bps_target as i64,
-            min: bps_min as i64,
-            max: bps_max as i64,
-            init_quality: init_qp,
+        session.set_rate_control_sei(RcSei::from_harness(
+            bps_target as i64,
+            bps_min as i64,
+            bps_max as i64,
+            init_qp,
             qp_min,
             qp_max,
-            qp_min_i: qp_min,
-            qp_max_i: qp_max,
-            i_quality_delta: 2,
-        });
+        ));
         Ok(session)
     }
 
@@ -1413,6 +1434,15 @@ mod tests {
         assert_eq!(md_info_size(322, 242), (352 >> 5) * (256 >> 5) * 16);
         // 11x13 blocks = 143; 143*64 = 9152 -> 16384.
         assert_eq!(fbc_header_len(640, 736), 16384);
+    }
+
+    #[test]
+    fn harness_rate_control_reuses_the_caller_i_band_with_delta_two() {
+        let sei = RcSei::from_harness(300_000, 250_000, 350_000, 26, 10, 51);
+        assert_eq!(sei.init_quality, 26);
+        assert_eq!(sei.qp_min_i, 10);
+        assert_eq!(sei.qp_max_i, 51);
+        assert_eq!(sei.i_quality_delta, 2);
     }
 
     #[test]

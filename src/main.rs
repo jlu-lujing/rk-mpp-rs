@@ -3050,20 +3050,16 @@ fn main() {
             h265e_session::Vepu580H265::open_gop(width, height, max_qp).and_then(|mut encoder| {
                 encoder.set_syntax_options(syntax);
                 if let Some((target, min, max)) = bps {
-                    encoder.set_rate_control_sei(h265e_session::RcSei {
+                    encoder.set_rate_control_sei(h265e_session::RcSei::from_harness(
                         target,
                         min,
                         max,
-                        init_quality: args
-                            .get(10)
+                        args.get(10)
                             .and_then(|s| s.parse::<i32>().ok())
                             .unwrap_or(steps[0].0 as i32),
-                        qp_min: min_qp,
-                        qp_max: max_qp,
-                        qp_min_i: min_qp,
-                        qp_max_i: max_qp,
-                        i_quality_delta: 2,
-                    });
+                        min_qp,
+                        max_qp,
+                    ));
                 }
                 let input_parallelism = std::thread::available_parallelism()
                     .map(|parallelism| parallelism.get())
