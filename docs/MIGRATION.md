@@ -32,6 +32,7 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   dryrun 计算，并与 vendor 的 IPPP、TSVC2/3/4 probe 一致。`init/reset` 的
   默认值也恢复成 vendor 的单帧 forward-reference IPPP。JSON 格式的
   `apply/apply_file/extract` 已实现，可读取 vendor 的 ref-cfg schema。
+  调度器已支持上一 ST、指定 LT index 和倒数第 N 个 ST 引用模式。
 
 ## 1. 二进制 drop-in（不改代码）
 

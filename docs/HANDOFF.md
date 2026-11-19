@@ -361,8 +361,9 @@ temporal-zero reference；负 repeat 按 vendor 行为归零。`set_cfg_cnt` 现
 `get_cpb_info` 通过移植 vendor 的虚拟 CPB dryrun 计算 DPB/LT/ST/temporal/GOP，
 IPPP 与 TSVC2/3/4 的输出逐字段一致。`init/reset` 默认恢复为 vendor 的单帧
 forward-reference IPPP。JSON `apply/apply_file/extract` 也已实现，t6 直接读取
-vendor 的 `ref_cfg_gop3_tsvc4.json` 后 CPB 信息逐字段一致。host/t6 各
-1171 个库测试通过；standalone 的 TSVC2/3/4 与 64 帧 IGOP 重启流继续逐
+vendor 的 `ref_cfg_gop3_tsvc4.json` 后 CPB 信息逐字段一致。reference
+scheduler 也补上了上一 ST、指定 LT index、倒数第 N 个 ST 三种合法 mode。
+host/t6 各 1172 个库测试通过；standalone 的 TSVC2/3/4 与 64 帧 IGOP 重启流继续逐
 NAL/重建一致。
 
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里

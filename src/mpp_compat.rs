@@ -69,9 +69,12 @@ const MPP_SET_VENC_INIT_KCFG: c_int = 2_097_162;
 
 const CONTEXT_MAGIC: u64 = 0x4d50_5052_5343_5458;
 const REF_TO_PREV_REF_FRM: u8 = 0;
+const REF_TO_PREV_ST_REF: u8 = 1;
 const REF_TO_PREV_LT_REF: u8 = 2;
 const REF_TO_PREV_INTRA: u8 = 3;
 const REF_TO_TEMPORAL_LAYER: u8 = 4;
+const REF_TO_LT_REF_IDX: u8 = 5;
+const REF_TO_ST_PREV_N_REF: u8 = 6;
 const RECONSTRUCTION_SLOTS: usize = 3;
 const REFERENCE_DPB_SIZE: usize = 2;
 
@@ -441,6 +444,11 @@ impl ReferenceSchedule {
                 .active
                 .iter()
                 .max_by_key(|reference| reference.sequence),
+            REF_TO_PREV_ST_REF => self
+                .active
+                .iter()
+                .filter(|reference| reference.long_term.is_none())
+                .max_by_key(|reference| reference.sequence),
             REF_TO_PREV_LT_REF => self
                 .active
                 .iter()
@@ -454,6 +462,24 @@ impl ReferenceSchedule {
                     .iter()
                     .filter(|reference| reference.temporal_id == temporal_id)
                     .max_by_key(|reference| reference.sequence)
+            }
+            REF_TO_LT_REF_IDX => {
+                let index = u32::try_from(step.reference_argument)
+                    .map_err(|_| "H.264 long-term reference index is negative".to_string())?;
+                self.active
+                    .iter()
+                    .find(|reference| reference.long_term == Some(index))
+            }
+            REF_TO_ST_PREV_N_REF => {
+                let distance = usize::try_from(step.reference_argument)
+                    .map_err(|_| "H.264 short-term reference distance is negative".to_string())?;
+                let mut short_term: Vec<_> = self
+                    .active
+                    .iter()
+                    .filter(|reference| reference.long_term.is_none())
+                    .collect();
+                short_term.sort_by_key(|reference| std::cmp::Reverse(reference.sequence));
+                short_term.get(distance).copied()
             }
             mode => return Err(format!("H.264 reference mode {mode} is not implemented")),
         };
@@ -1459,6 +1485,54 @@ mod tests {
             assert_eq!(kcfg::mpp_venc_kcfg_deinit(valid), MPP_OK);
             assert_eq!(mpp_destroy(ctx), MPP_OK);
         }
+    }
+
+    #[test]
+    fn reference_resolution_supports_st_lt_index_and_nth_st_modes() {
+        let mut schedule =
+            ReferenceSchedule::new(vec![step(false, 0, REF_TO_PREV_REF_FRM)], None, 60);
+        schedule.active = vec![
+            ActiveReference {
+                sequence: 1,
+                slot: 1,
+                temporal_id: 0,
+                frame_num: 1,
+                intra: false,
+                long_term: None,
+            },
+            ActiveReference {
+                sequence: 3,
+                slot: 2,
+                temporal_id: 1,
+                frame_num: 3,
+                intra: false,
+                long_term: None,
+            },
+            ActiveReference {
+                sequence: 2,
+                slot: 0,
+                temporal_id: 0,
+                frame_num: 2,
+                intra: false,
+                long_term: Some(0),
+            },
+        ];
+
+        let latest_st = schedule
+            .resolve_reference(step(false, 0, REF_TO_PREV_ST_REF))
+            .unwrap();
+        assert_eq!(latest_st.sequence, 3);
+
+        let mut lt = step(false, 0, REF_TO_LT_REF_IDX);
+        lt.reference_argument = 0;
+        assert_eq!(schedule.resolve_reference(lt).unwrap().sequence, 2);
+
+        let mut previous_st = step(false, 0, REF_TO_ST_PREV_N_REF);
+        previous_st.reference_argument = 1;
+        assert_eq!(schedule.resolve_reference(previous_st).unwrap().sequence, 1);
+
+        previous_st.reference_argument = 2;
+        assert!(schedule.resolve_reference(previous_st).is_err());
     }
 
     #[test]
