@@ -3668,6 +3668,9 @@ fn main() {
                                 decoder.status().2,
                             );
                         }
+                        if picture.err_info == 0 {
+                            decoder.recycle_output(picture.yuv);
+                        }
                     }
                 }
                 Err(rk_mpp_rs::codec::vp9::decoder::PacketError::Syntax(error))

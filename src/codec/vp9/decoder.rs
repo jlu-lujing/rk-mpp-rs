@@ -85,6 +85,7 @@ pub struct Decoder {
     /// Packet staging buffer, reused and grown across pictures the way the
     /// VP8 decoder's stream buffer is.
     stream: Option<DmaBuf>,
+    output_recycle: Vec<Vec<u8>>,
     next_poc: u32,
     /// Packets ahead of the first key frame, dropped the way the C parser's
     /// "no found key frame" path drops them, rather than failed the way the
@@ -104,6 +105,7 @@ impl Decoder {
             output_injection: None,
             reference_map: [None; 8],
             stream: None,
+            output_recycle: Vec::new(),
             next_poc: 1,
             dropped_before_key_frame: 0,
             output_dmabuf: false,
@@ -303,6 +305,7 @@ impl Decoder {
         if !parsed.header.show_frame {
             return Ok(None);
         }
+        let reusable = (!self.output_dmabuf).then(|| self.output_recycle.pop().unwrap_or_default());
         let frame = self.frames[frame_index]
             .as_ref()
             .ok_or_else(|| PacketError::Internal("VP9 output frame disappeared".into()))?;
@@ -320,7 +323,11 @@ impl Decoder {
                     )),
                 )
             } else {
-                (copy_planar(frame).map_err(PacketError::Internal)?, None)
+                (
+                    copy_planar(frame, reusable.unwrap_or_default())
+                        .map_err(PacketError::Internal)?,
+                    None,
+                )
             }
         } else {
             (Vec::new(), None)
@@ -336,13 +343,14 @@ impl Decoder {
         }))
     }
 
-    fn show_existing(&self, header: &Header) -> Result<Picture, PacketError> {
+    fn show_existing(&mut self, header: &Header) -> Result<Picture, PacketError> {
         let map_index = header.frame_to_show_map_idx.ok_or_else(|| {
             PacketError::Internal("show-existing frame has no reference-map index".into())
         })?;
         let reference = self.reference_map[map_index as usize].ok_or_else(|| {
             PacketError::Internal(format!("show-existing reference slot {map_index} is empty"))
         })?;
+        let reusable = (!self.output_dmabuf).then(|| self.output_recycle.pop().unwrap_or_default());
         let frame = self
             .frames
             .get(reference.frame)
@@ -366,7 +374,11 @@ impl Decoder {
                     )),
                 )
             } else {
-                (copy_planar(frame).map_err(PacketError::Internal)?, None)
+                (
+                    copy_planar(frame, reusable.unwrap_or_default())
+                        .map_err(PacketError::Internal)?,
+                    None,
+                )
             }
         } else {
             (Vec::new(), None)
@@ -384,6 +396,12 @@ impl Decoder {
 
     pub fn set_output_dmabuf(&mut self, enabled: bool) {
         self.output_dmabuf = enabled;
+    }
+
+    pub fn recycle_output(&mut self, buffer: Vec<u8>) {
+        if buffer.capacity() != 0 && self.output_recycle.len() < 4 {
+            self.output_recycle.push(buffer);
+        }
     }
 
     pub fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), String> {
@@ -514,7 +532,7 @@ fn frame_error(reference_error: bool, hardware_error: bool) -> u32 {
     }
 }
 
-fn copy_planar(frame: &Frame) -> Result<Vec<u8>, String> {
+fn copy_planar(frame: &Frame, out: Vec<u8>) -> Result<Vec<u8>, String> {
     let video = frame
         .video
         .data()
@@ -528,6 +546,7 @@ fn copy_planar(frame: &Frame) -> Result<Vec<u8>, String> {
         frame.bit_depth,
         &video[..y_size],
         &video[y_size..y_size + y_size / 2],
+        out,
     );
     let _ = video.buffer().sync_read_end();
     Ok(out)
@@ -540,19 +559,21 @@ fn copy_planar_data(
     bit_depth: u32,
     y: &[u8],
     uv: &[u8],
+    mut out: Vec<u8>,
 ) -> Vec<u8> {
     // The shared readback covers the 8-bit 4:2:0 case with even dimensions, which
     // is the only shape where its truncated halves match the div_ceil chroma
     // size used here.
     if bit_depth == 8 && width % 2 == 0 && height % 2 == 0 {
-        return crate::codec::yuv::nv12_to_planar(y, uv, width, height, stride);
+        crate::codec::yuv::nv12_to_planar_into(&mut out, y, uv, width, height, stride);
+        return out;
     }
     let sample_bytes = if bit_depth > 8 { 2 } else { 1 };
     let luma_row = width * sample_bytes;
     let chroma_width = width.div_ceil(2);
     let chroma_height = height.div_ceil(2);
-    let mut out =
-        Vec::with_capacity((width * height + 2 * chroma_width * chroma_height) * sample_bytes);
+    out.clear();
+    out.reserve((width * height + 2 * chroma_width * chroma_height) * sample_bytes);
 
     if bit_depth > 8 {
         for row in 0..height {
@@ -633,7 +654,7 @@ mod tests {
                 data[start + column * 2 + 1] = 20 + column as u8;
             }
         }
-        let planar = copy_planar_data(4, 4, stride, 8, &data[..uv], &data[uv..]);
+        let planar = copy_planar_data(4, 4, stride, 8, &data[..uv], &data[uv..], Vec::new());
         assert_eq!(
             &planar[..16],
             &[0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
@@ -661,7 +682,7 @@ mod tests {
             }
         }
 
-        let planar = copy_planar_data(width, height, stride, 8, &data[..y], &data[y..]);
+        let planar = copy_planar_data(width, height, stride, 8, &data[..y], &data[y..], Vec::new());
         assert_eq!(planar.len(), (width * height + 2 * 3 * 2) as usize);
         assert_eq!(
             &planar[15..],
@@ -697,7 +718,15 @@ mod tests {
             &[100, 200, 101, 201, 102, 202, 103, 203],
         );
 
-        let planar = copy_planar_data(8, 2, stride, 10, &data[..stride * 2], &data[stride * 2..]);
+        let planar = copy_planar_data(
+            8,
+            2,
+            stride,
+            10,
+            &data[..stride * 2],
+            &data[stride * 2..],
+            Vec::new(),
+        );
         let expected: Vec<u16> = (0..16)
             .chain([100, 101, 102, 103])
             .chain([200, 201, 202, 203])
