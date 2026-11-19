@@ -14,13 +14,24 @@ BOARD="${BOARD:-t6}"
 # NV12 output, so the planar conversion counts against Rust and not against MPP.
 set -uo pipefail
 
-rust_bin="$HOME/rk-mpp-rs/target/release/rk-mpp-rs"
-mpp_bin="/tmp/mpp-develop/build/test/mpi_dec_test"
+rust_bin="${RUST_BIN:-$HOME/rk-mpp-rs/target/release/rk-mpp-rs}"
+mpp_bin="${MPP_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
 samples="${SAMPLES:-5}"
+allow_skips="${ALLOW_SKIPS:-0}"
+fail=0
 # mpi_dec_test defaults to 4 KiB reader packets. That causes repeated 1 ms
 # sleeps while the decoder drains 1080p frames and measures the harness, not
 # decoder throughput. 256 KiB is sufficient to keep the input queue fed.
 mpp_reader_buf_size="${MPP_READER_BUF_SIZE:-262144}"
+
+if [[ ! -x "$rust_bin" ]]; then
+  printf 'missing Rust decoder: %s (set RUST_BIN)\n' "$rust_bin" >&2
+  exit 2
+fi
+if [[ ! -x "$mpp_bin" ]]; then
+  printf 'missing C decoder: %s (set MPP_BIN or run setup_board_refs.sh)\n' "$mpp_bin" >&2
+  exit 2
+fi
 
 # stream : rust subcommand : MppCodingType : width : height : max frames (0 = all)
 streams=(
@@ -86,7 +97,13 @@ for entry in "${streams[@]}"; do
     continue
   fi
   if [[ ! -f "$stream" ]]; then
-    printf 'SKIP %-34s (stream missing)\n' "$(basename "$stream")"
+    if [ "$allow_skips" = 1 ]; then
+      printf 'SKIP %-34s (stream missing)\n' "$(basename "$stream")"
+    else
+      printf 'FAIL %-34s (stream missing; set ALLOW_SKIPS=1 for a partial pass)\n' \
+        "$(basename "$stream")"
+      fail=1
+    fi
     continue
   fi
 
@@ -99,8 +116,14 @@ for entry in "${streams[@]}"; do
   done
 
   if [[ ${#rust_ms[@]} -eq 0 || ${#mpp_ms[@]} -eq 0 ]]; then
-    printf 'SKIP %-34s (rust=%s mpp=%s samples, no measurement)\n' \
-      "$(basename "$stream")" "${#rust_ms[@]}" "${#mpp_ms[@]}"
+    if [ "$allow_skips" = 1 ]; then
+      printf 'SKIP %-34s (rust=%s mpp=%s samples, no measurement)\n' \
+        "$(basename "$stream")" "${#rust_ms[@]}" "${#mpp_ms[@]}"
+    else
+      printf 'FAIL %-34s (rust=%s mpp=%s samples)\n' \
+        "$(basename "$stream")" "${#rust_ms[@]}" "${#mpp_ms[@]}"
+      fail=1
+    fi
     continue
   fi
 
@@ -112,3 +135,5 @@ for entry in "${streams[@]}"; do
     "$r" "$(awk -v f="${rust_n:-1}" -v t="$r" 'BEGIN{print f*1000/t}')" \
     "$(awk -v r="$r" -v m="$m" 'BEGIN{print (m-r)/r*100}')"
 done
+
+exit "$fail"

@@ -8,14 +8,21 @@ set -uo pipefail
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
+rust_bin="${RUST_BIN:-~/rk-mpp-rs/target/release/rk-mpp-rs}"
 mpp_lib="$mpp_ref/build/mpp"
 samples="${SAMPLES:-5}"
 frames=12
+allow_skips="${ALLOW_SKIPS:-0}"
 sizes=(320x240 640x480 1280x720 1920x1088)
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.1"; then
-  printf 'SKIP H.265 encode bench (reference encoder missing at %s)\n' "$mpp_ref"
-  exit 0
+  printf 'missing H.265 reference encoder at %s (set MPP_REF or run setup_board_refs.sh)\n' \
+    "$mpp_ref" >&2
+  exit 2
+fi
+if ! ssh "$BOARD" "test -x $rust_bin"; then
+  printf 'missing Rust H.265 encoder at %s (set RUST_BIN)\n' "$rust_bin" >&2
+  exit 2
 fi
 
 median() {
@@ -43,8 +50,12 @@ for entry in "${sizes[@]}"; do
       -frames:v $frames -pix_fmt nv12 -f rawvideo $file" >/dev/null 2>&1
   fi
   if ! ssh "$BOARD" "test -s $file"; then
-    printf 'SKIP %-12s (no input frames)\n' "$entry"
-    fail=1
+    if [ "$allow_skips" = 1 ]; then
+      printf 'SKIP %-12s (no input frames)\n' "$entry"
+    else
+      printf 'FAIL %-12s (no input frames)\n' "$entry"
+      fail=1
+    fi
     continue
   fi
 
@@ -54,8 +65,8 @@ for entry in "${sizes[@]}"; do
     c=$(timed "sudo env LD_LIBRARY_PATH=$mpp_lib $mpp_bin \
       -i $file -o /dev/null -w $width -h $height -t 16777220 -f 0 \
       -n $frames -g 120 -rc 2 -qc 26:26:26:26:26")
-    r=$(timed "cd ~/rk-mpp-rs && sudo env H265_GOP=120 \
-      ./target/release/rk-mpp-rs h265-gop $file /dev/null \
+    r=$(timed "sudo env H265_GOP=120 \
+      $rust_bin h265-gop $file /dev/null \
       $width $height $frames 26")
     [[ -n "$c" ]] && c_times+=("$c")
     [[ -n "$r" ]] && rust_times+=("$r")

@@ -314,6 +314,11 @@ t6 的 `--check` 通过并看到 676 个 corpus stream；没有本地 oracle/cor
 的另一块板会明确退出非零。最低 Debian/kernel/device/sudo 要求和所有路径
 override 已写入 `docs/board.md`。
 
+性能脚本也遵循同一规则：decode/H.264 encode/H.265 encode benchmark 在
+`RUST_BIN`、C oracle 或 fixture 缺失时默认非零退出，路径均可用环境变量
+覆盖；只有显式 `ALLOW_SKIPS=1` 才允许部分测量。这样 `board_perf_gate.sh`
+不会把缺文件误判成“没有该行”的软跳过。
+
 上游 `mpi_enc_test` 的 `MPP_SET_VENC_INIT_KCFG` 已接通。兼容层复制
 type/coding/max dimensions 到 `mpp_init`/`MPP_ENC_SET_CFG`，保留所有已知
 kernel-only key，遇到未知 key 返回 `MPP_NOK`；type/coding mismatch 返回

@@ -28,19 +28,25 @@ BOARD="${BOARD:-t6}"
 #        SAMPLES=9 scripts/board_bench_encode_vs_mpp.sh
 set -uo pipefail
 
-rust_bin="$HOME/rk-mpp-rs/target/release/rk-mpp-rs"
+rust_bin="${RUST_BIN:-~/rk-mpp-rs/target/release/rk-mpp-rs}"
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
 mpp_lib="$mpp_ref/build/mpp"
 samples="${SAMPLES:-5}"
 frames=12
+allow_skips="${ALLOW_SKIPS:-0}"
+fail=0
 
 # width x height pairs, all multiples of 16
 sizes=(320x240 640x480 1280x720 1920x1088)
 
 if ! ssh "$BOARD" "test -x $mpp_bin && test -f $mpp_lib/librockchip_mpp.so.0"; then
-  printf 'SKIP encode bench (reference encoder missing at %s)\n' "$mpp_ref"
-  exit 0
+  printf 'missing reference encoder at %s (set MPP_REF or run setup_board_refs.sh)\n' "$mpp_ref" >&2
+  exit 2
+fi
+if ! ssh "$BOARD" "test -x $rust_bin"; then
+  printf 'missing Rust encoder at %s (set RUST_BIN)\n' "$rust_bin" >&2
+  exit 2
 fi
 
 median() {
@@ -68,20 +74,25 @@ run_mpp() { # width height file -> "frames ms"
 run_rust() { # width height file -> "frames ms"
   # The C harness uses its default GOP of 60; pass the same GOP so the
   # bitstreams differ only in the build-identity SEI text.
-  timed "$frames" "cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $3 \
+  timed "$frames" "sudo $rust_bin h264-enc $3 \
     /dev/null $1 $2 26 baseline $frames 60"
 }
 
 printf '%-12s %3s pics | %-22s | %-22s | rust\n' 'size' 'pics' 'C MPP' 'this crate'
 for entry in "${sizes[@]}"; do
-  width="${entry%%x*}"; height="${height#*}"; height="${entry##*x}"
+  width="${entry%%x*}"; height="${entry##*x}"
   file="/tmp/enc_${width}x${height}_${frames}.nv12"
   if ! ssh "$BOARD" "test -s $file"; then
     ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc2=size=${width}x${height}:rate=30 \
         -frames:v $frames -pix_fmt nv12 -f rawvideo $file" >/dev/null 2>&1
   fi
   if ! ssh "$BOARD" "test -s $file"; then
-    printf 'SKIP %-12s (no input frames)\n' "$entry"
+    if [ "$allow_skips" = 1 ]; then
+      printf 'SKIP %-12s (no input frames)\n' "$entry"
+    else
+      printf 'FAIL %-12s (no input frames)\n' "$entry"
+      fail=1
+    fi
     continue
   fi
 
@@ -93,7 +104,12 @@ for entry in "${sizes[@]}"; do
     [[ -n "${t:-}" ]] && rust_ms+=("$t")
   done
   if [[ ${#rust_ms[@]} -eq 0 || ${#mpp_ms[@]} -eq 0 ]]; then
-    printf 'SKIP %-12s (rust=%s mpp=%s samples)\n' "$entry" "${#rust_ms[@]}" "${#mpp_ms[@]}"
+    if [ "$allow_skips" = 1 ]; then
+      printf 'SKIP %-12s (rust=%s mpp=%s samples)\n' "$entry" "${#rust_ms[@]}" "${#mpp_ms[@]}"
+    else
+      printf 'FAIL %-12s (rust=%s mpp=%s samples)\n' "$entry" "${#rust_ms[@]}" "${#mpp_ms[@]}"
+      fail=1
+    fi
     continue
   fi
   r=$(median "${rust_ms[@]}"); m=$(median "${mpp_ms[@]}")
@@ -102,3 +118,5 @@ for entry in "${sizes[@]}"; do
     "$r" "$(awk -v f=$frames -v t="$r" 'BEGIN{print f*1000/t}')" \
     "$(awk -v r="$r" -v m="$m" 'BEGIN{print (m-r)/r*100}')"
 done
+
+exit "$fail"

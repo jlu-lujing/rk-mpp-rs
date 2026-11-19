@@ -32,7 +32,9 @@ scripts/setup_board_refs.sh
 `scripts/board_regress_all.sh` fails on unexpected `SKIP` lines by default.
 Use `ALLOW_SKIPS=1` only when running on a board that intentionally lacks a
 codec or hardware block. Individual benchmark/gate scripts still expose their
-specific `MPP_REF`, `MPP_BIN`, `MPP_LIB` and corpus overrides.
+specific `MPP_REF`, `MPP_BIN`, `MPP_LIB`, `RUST_BIN` and corpus overrides.
+Decode/H.264 encode/H.265 encode benchmarks now fail when a binary, oracle or
+fixture is missing; `ALLOW_SKIPS=1` is the explicit partial-run escape hatch.
 
 ---
 

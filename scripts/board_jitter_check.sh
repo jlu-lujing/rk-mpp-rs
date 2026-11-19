@@ -7,11 +7,11 @@
 set -euo pipefail
 
 BOARD="${BOARD:-t6}"
-DEC_BIN=/tmp/mpp-develop/build/test/mpi_dec_test
-DEC_LIB=/tmp/mpp-develop/build/mpp
-ENC_BIN=/tmp/mpp-old/build/test/mpi_enc_test
-ENC_LIB=/tmp/mpp-old/build/mpp
-SRC=/tmp/rk-mpp-jitter-320x240.nv12
+DEC_BIN="${DEC_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
+DEC_LIB="${DEC_LIB:-/tmp/mpp-develop/build/mpp}"
+ENC_BIN="${ENC_BIN:-/tmp/mpp-old/build/test/mpi_enc_test}"
+ENC_LIB="${ENC_LIB:-/tmp/mpp-old/build/mpp}"
+SRC="${JITTER_SRC:-/tmp/rk-mpp-jitter-320x240.nv12}"
 fail=0
 
 remote() {

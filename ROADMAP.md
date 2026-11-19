@@ -3936,7 +3936,8 @@ pipeline uses.
   unexpected `SKIP` lines unless `ALLOW_SKIPS=1` is explicit. t6 passes the
   preflight with 676 corpus streams; a board without local oracle/corpus exits
   non-zero. Minimum board requirements and path overrides are documented in
-  `docs/board.md`.
+  `docs/board.md`. Decode and encode benchmark scripts now fail on missing
+  binaries, oracles or fixtures unless `ALLOW_SKIPS=1` is explicit.
 
 - **2026-11-19: venc init kcfg is consumed.** The drop-in layer now handles
   `MPP_SET_VENC_INIT_KCFG`, mirrors the upstream init key set, rejects unknown
