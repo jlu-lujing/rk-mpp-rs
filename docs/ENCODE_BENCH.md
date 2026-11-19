@@ -72,6 +72,10 @@ allocating both per picture. Seven interleaved 500-frame 720p samples at 80%
 OPP reduced the median from 1140 to 1055 ms. The 7,031,305-byte output stayed
 byte-identical (`68715bd4…e2d5617c05`).
 
+H.265 similarly reuses aggregate/per-tile STATUS vectors and Batch storage.
+Seven interleaved 500-frame 720p samples moved from 1111 to 1069 ms with an
+identical stream (`ae613590…c93b469783`).
+
 ## Earlier 60-frame single-stream baseline
 
 | codec | size | C MPP | this crate | Rust advantage |

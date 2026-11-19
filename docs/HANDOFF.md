@@ -371,6 +371,10 @@ t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，�
 7,031,305 bytes 完全一致
 （`68715bd450098e6559911a6e1fd9837fa142fd29df4ec8a3707932e2d5617c05`）。
 
+H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
+t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
+一致（`ae613590ee5b546f89d76dad1ecaa1528da292abfbd4e92303cc84c93b469783`）。
+
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里
 累计整条码流；`/dev/null` 基准仍跳过文件写入。120 帧 720p 输出 SHA-256 保持
 `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`，

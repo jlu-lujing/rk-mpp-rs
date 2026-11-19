@@ -4036,6 +4036,13 @@ pipeline uses.
   both binaries produced the same 7,031,305-byte stream
   (`68715bd450098e6559911a6e1fd9837fa142fd29df4ec8a3707932e2d5617c05`).
 
+- **2026-11-19: H.265 reuses per-session hardware scratch.** Aggregate STATUS,
+  per-tile STATUS and request `Batch` storage now live with the session instead
+  of being allocated per picture or tile. Seven interleaved 500-frame 720p
+  samples at 80% OPP moved the median from 1111 to 1069 ms. Both binaries
+  produced the same stream
+  (`ae613590ee5b546f89d76dad1ecaa1528da292abfbd4e92303cc84c93b469783`).
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |
