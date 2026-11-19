@@ -2234,8 +2234,9 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_init(ref_cfg: *mut *mut c_void) -> i32 
     if ref_cfg.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    unsafe { ref_cfg.write(Box::into_raw(Box::new(new_ref_cfg())).cast()) };
-    MPP_OK
+    let object = Box::into_raw(Box::new(new_ref_cfg())).cast::<c_void>();
+    unsafe { ref_cfg.write(object) };
+    unsafe { mpp_enc_ref_cfg_reset(object) }
 }
 
 #[no_mangle]
@@ -2261,9 +2262,14 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_deinit(ref_cfg: *mut *mut c_void) -> i3
 #[no_mangle]
 pub unsafe extern "C" fn mpp_enc_ref_cfg_reset(ref_cfg: *mut c_void) -> i32 {
     let Some(config) = ref_cfg_mut(ref_cfg) else {
-        return MPP_ERR_NULL_PTR;
+        return MPP_ERR_VALUE;
     };
     *config = new_ref_cfg();
+    config.st_capacity = 1;
+    config.st_count = 1;
+    config.max_tlayers = 1;
+    config.cpb_info.dpb_size = 1;
+    config.cpb_info.max_st_cnt = 1;
     MPP_OK
 }
 
@@ -2292,6 +2298,8 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_setup(
     config.st_capacity = st_count;
     config.lt_count = 0;
     config.st_count = 0;
+    config.max_tlayers = 0;
+    config.cpb_info = MppEncCpbInfo::default();
     MPP_OK
 }
 
@@ -2654,6 +2662,36 @@ mod tests {
 
         assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut destination) }, MPP_OK);
         assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut source) }, MPP_OK);
+    }
+
+    #[test]
+    fn reference_cfg_reset_defaults_to_simple_ippp() {
+        let mut config = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_ref_cfg_init(&mut config) }, MPP_OK);
+        let store = ref_cfg_ref(config).unwrap();
+        assert_eq!((store.st_capacity, store.st_count), (1, 1));
+        assert_eq!(
+            (
+                store.st[0].is_non_ref,
+                store.st[0].temporal_id,
+                store.st[0].ref_mode,
+                store.st[0].ref_arg,
+                store.st[0].repeat,
+            ),
+            (0, 0, 0, 0, 0)
+        );
+        let info = unsafe { mpp_enc_ref_cfg_get_cpb_info(config) };
+        assert!(!info.is_null());
+        assert_eq!(
+            unsafe { *info },
+            MppEncCpbInfo {
+                dpb_size: 1,
+                max_st_cnt: 1,
+                ..MppEncCpbInfo::default()
+            }
+        );
+        assert_eq!(unsafe { mpp_enc_ref_cfg_check(config) }, MPP_OK);
+        assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut config) }, MPP_OK);
     }
 
     #[test]
