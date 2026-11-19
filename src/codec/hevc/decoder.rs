@@ -47,6 +47,7 @@ pub struct Decoder {
     video_pool: BufferPool<DmaBuf>,
     colmv_pool: BufferPool<DmaBuf>,
     output_injection: Option<DmaBuf>,
+    output_recycle: Vec<Vec<u8>>,
     /// Blocking decode can reuse its own payload and bitstream DMA mapping.
     payload: Vec<u8>,
     reusable_stream: Option<DmaBuf>,
@@ -218,6 +219,7 @@ impl Decoder {
             video_pool: BufferPool::new(17 + crate::hal::hevc::JOB_SLOTS),
             colmv_pool: BufferPool::new(17 + crate::hal::hevc::JOB_SLOTS),
             output_injection: None,
+            output_recycle: Vec::new(),
             payload: Vec::new(),
             reusable_stream: None,
             width: 0,
@@ -577,6 +579,7 @@ impl Decoder {
                     )),
                 )
             } else {
+                let recycled = self.output_recycle.pop().unwrap_or_default();
                 let video = frame
                     .video
                     .data()
@@ -592,6 +595,7 @@ impl Decoder {
                     frame.hor_stride,
                     frame.bit_depth,
                     frame.chroma_format,
+                    recycled,
                 );
                 let _ = video.buffer().sync_read_end();
                 (yuv, None)
@@ -712,7 +716,7 @@ impl Decoder {
     }
 
     /// Build the caller-facing picture for a drained job.
-    fn materialise(&self, pending: &PendingHevcFrame) -> Result<Picture, String> {
+    fn materialise(&mut self, pending: &PendingHevcFrame) -> Result<Picture, String> {
         let (yuv, dmabuf) = if pending.err_info == 0 {
             if self.output_dmabuf {
                 let lease = pending
@@ -743,6 +747,7 @@ impl Decoder {
                     pending.hor_stride,
                     pending.bit_depth,
                     pending.chroma_format,
+                    self.output_recycle.pop().unwrap_or_default(),
                 );
                 let _ = video.buffer().sync_read_end();
                 (yuv, None)
@@ -814,6 +819,13 @@ impl Decoder {
         self.output_injection = Some(buffer);
         Ok(())
     }
+
+    pub fn recycle_output(&mut self, buffer: Vec<u8>) {
+        let expected = self.width * self.height * 3 / 2;
+        if buffer.capacity() >= expected && self.output_recycle.len() < 4 {
+            self.output_recycle.push(buffer);
+        }
+    }
 }
 
 fn parse_picture_slices(
@@ -866,6 +878,7 @@ fn copy_planar(
     stride: usize,
     bit_depth: u32,
     chroma_format: ChromaFormat,
+    mut out: Vec<u8>,
 ) -> Vec<u8> {
     let sample_bytes = if bit_depth > 8 { 2 } else { 1 };
     let plane_size = width * height * sample_bytes;
@@ -875,10 +888,12 @@ fn copy_planar(
         ChromaFormat::Yuv422 => 2,
         ChromaFormat::Yuv444 => 4,
     };
-    let mut out = Vec::with_capacity(plane_size + plane_size * uv_factor / 2);
+    out.clear();
+    out.reserve(plane_size + plane_size * uv_factor / 2);
     if bit_depth == 8 && chroma_format == ChromaFormat::Yuv420 {
         // Hot path: the shared readback reads the uncached chroma plane once.
-        return crate::codec::yuv::nv12_to_planar(y, uv, width, height, stride);
+        crate::codec::yuv::nv12_to_planar_into(&mut out, y, uv, width, height, stride);
+        return out;
     }
     if bit_depth == 8 {
         for row in 0..height {
@@ -1312,7 +1327,7 @@ mod tests {
         let mut y = pack(&[1, 2, 3, 4]);
         y.extend_from_slice(&pack(&[9, 10, 11, 12]));
         let uv = pack(&[5, 6, 7, 8]);
-        let out = copy_planar(&y, &uv, 4, 2, 5, 10, ChromaFormat::Yuv420);
+        let out = copy_planar(&y, &uv, 4, 2, 5, 10, ChromaFormat::Yuv420, Vec::new());
         let samples: Vec<u16> = out
             .chunks_exact(2)
             .map(|sample| u16::from_le_bytes([sample[0], sample[1]]))
@@ -1325,7 +1340,7 @@ mod tests {
         let y = [1, 2, 3, 4, 5, 6, 7, 8];
         let uv = [10, 20, 11, 21, 12, 22, 13, 23];
 
-        let out = copy_planar(&y, &uv, 4, 2, 4, 8, ChromaFormat::Yuv422);
+        let out = copy_planar(&y, &uv, 4, 2, 4, 8, ChromaFormat::Yuv422, Vec::new());
 
         assert_eq!(
             out,
@@ -1340,7 +1355,7 @@ mod tests {
             10, 20, 11, 21, 12, 22, 13, 23, 14, 24, 15, 25, 16, 26, 17, 27,
         ];
 
-        let out = copy_planar(&y, &uv, 4, 2, 4, 8, ChromaFormat::Yuv444);
+        let out = copy_planar(&y, &uv, 4, 2, 4, 8, ChromaFormat::Yuv444, Vec::new());
 
         assert_eq!(
             out,

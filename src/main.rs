@@ -3378,12 +3378,17 @@ fn main() {
             let mut write_error = None;
             let mut decode_time = std::time::Duration::ZERO;
             let mut pocs = Vec::with_capacity(aus.len());
+            let recycle = std::cell::RefCell::new(Vec::new());
             let mut emit =
                 |picture: rk_mpp_rs::codec::hevc::Picture,
                  out: &mut std::io::BufWriter<std::fs::File>| {
+                    let mut reusable = None;
+                    let output = rk_mpp_rs::codec::hevc::picture_is_output(&picture);
                     if !dmabuf_output && write_error.is_none() {
                         if let Err(error) = out.write_all(&picture.yuv) {
                             write_error = Some(error);
+                        } else {
+                            reusable = Some(picture.yuv);
                         }
                     }
                     if write_error.is_none() {
@@ -3392,12 +3397,12 @@ fn main() {
                         if trace {
                             println!(
                                 "  picture {shown}: poc={} epoch={} err={:#x} output={}",
-                                picture.poc,
-                                picture.epoch,
-                                picture.err_info,
-                                rk_mpp_rs::codec::hevc::picture_is_output(&picture)
+                                picture.poc, picture.epoch, picture.err_info, output
                             );
                         }
+                    }
+                    if let Some(buffer) = reusable {
+                        recycle.borrow_mut().push(buffer);
                     }
                 };
             for (i, au) in aus.iter().enumerate() {
@@ -3434,6 +3439,9 @@ fn main() {
                         break;
                     }
                 }
+                for buffer in recycle.borrow_mut().drain(..) {
+                    dec.recycle_output(buffer);
+                }
             }
             let started = Instant::now();
             let flushed = dec.flush();
@@ -3452,6 +3460,9 @@ fn main() {
                 }
             }
             reorder.flush(|picture| emit(picture, out));
+            for buffer in recycle.borrow_mut().drain(..) {
+                dec.recycle_output(buffer);
+            }
             if let Some(error) = write_error {
                 eprintln!("write output: {error}");
                 failed = true;
@@ -3803,11 +3814,17 @@ fn main() {
                     }
                     reorder.push(pic, |pic| {
                         if write_error.is_none() {
-                            let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
+                            let rk_mpp_rs::codec::h264::decoder::Picture { yuv, nv12, .. } = pic;
+                            let bytes = nv12.as_deref().unwrap_or(&yuv);
                             if let Err(e) = out.write_all(bytes) {
                                 write_error = Some(e);
                             } else {
                                 written += 1;
+                                if let Some(buffer) = nv12 {
+                                    dec.recycle_output(buffer);
+                                } else {
+                                    dec.recycle_output(yuv);
+                                }
                             }
                         }
                     });
@@ -3826,11 +3843,17 @@ fn main() {
                     decoded += 1;
                     reorder.push(pic, |pic| {
                         if write_error.is_none() {
-                            let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
+                            let rk_mpp_rs::codec::h264::decoder::Picture { yuv, nv12, .. } = pic;
+                            let bytes = nv12.as_deref().unwrap_or(&yuv);
                             if let Err(e) = out.write_all(bytes) {
                                 write_error = Some(e);
                             } else {
                                 written += 1;
+                                if let Some(buffer) = nv12 {
+                                    dec.recycle_output(buffer);
+                                } else {
+                                    dec.recycle_output(yuv);
+                                }
                             }
                         }
                     });
@@ -3843,11 +3866,17 @@ fn main() {
         }
         reorder.flush(|pic| {
             if write_error.is_none() {
-                let bytes = pic.nv12.as_deref().unwrap_or(&pic.yuv);
+                let rk_mpp_rs::codec::h264::decoder::Picture { yuv, nv12, .. } = pic;
+                let bytes = nv12.as_deref().unwrap_or(&yuv);
                 if let Err(e) = out.write_all(bytes) {
                     write_error = Some(e);
                 } else {
                     written += 1;
+                    if let Some(buffer) = nv12 {
+                        dec.recycle_output(buffer);
+                    } else {
+                        dec.recycle_output(yuv);
+                    }
                 }
             }
         });

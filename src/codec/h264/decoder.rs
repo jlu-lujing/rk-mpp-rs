@@ -984,10 +984,13 @@ impl Decoder {
             crate::codec::yuv::nv12_to_packed_into(&mut buffer, y, uv, width, height, hor_stride);
             (Vec::new(), Some(buffer))
         } else {
-            (
-                crate::codec::yuv::nv12_to_planar(y, uv, width, height, hor_stride),
-                None,
-            )
+            let mut buffer = self
+                .output_recycle
+                .pop()
+                .filter(|buffer| buffer.capacity() >= width * height * 3 / 2)
+                .unwrap_or_default();
+            crate::codec::yuv::nv12_to_planar_into(&mut buffer, y, uv, width, height, hor_stride);
+            (buffer, None)
         };
         // The interleaved chroma is only ever dumped by the debug path; the
         // hardware wrote it into the same buffer the planar copy just read.
@@ -1104,7 +1107,7 @@ impl Decoder {
         self.output_nv12 = enabled;
     }
 
-    /// Hand a consumed host NV12 buffer back for reuse.
+    /// Hand a consumed packed or planar host buffer back for reuse.
     pub fn recycle_output(&mut self, buffer: Vec<u8>) {
         if buffer.capacity() >= self.width * self.height * 3 / 2 && self.output_recycle.len() < 4 {
             self.output_recycle.push(buffer);

@@ -53,6 +53,20 @@ pub fn nv12_to_packed_into(
 /// per-sample loops this replaced: an odd luma edge column is dropped rather
 /// than rounded up.
 pub fn nv12_to_planar(y: &[u8], uv: &[u8], width: usize, height: usize, stride: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    nv12_to_planar_into(&mut out, y, uv, width, height, stride);
+    out
+}
+
+/// Write a planar I420 frame into a caller-owned allocation.
+pub fn nv12_to_planar_into(
+    out: &mut Vec<u8>,
+    y: &[u8],
+    uv: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+) {
     let chroma_width = width / 2;
     let chroma_height = height / 2;
     let luma_size = width * height;
@@ -61,7 +75,8 @@ pub fn nv12_to_planar(y: &[u8], uv: &[u8], width: usize, height: usize, stride: 
     // Every byte of the buffer is written below (luma rows, then both chroma
     // planes), so the spare capacity never holds a readable initialisation
     // pass; a zeroing allocation would add a full frame of DRAM writes.
-    let mut out = Vec::with_capacity(size);
+    out.clear();
+    out.reserve(size);
     // SAFETY: the length is only grown over bytes this function then fills in
     // full; `out` is never read before that, and every element is a plain u8.
     unsafe { out.set_len(size) };
@@ -120,8 +135,6 @@ pub fn nv12_to_planar(y: &[u8], uv: &[u8], width: usize, height: usize, stride: 
             sample += 1;
         }
     }
-
-    out
 }
 
 /// Deinterleave `pairs` NV12 chroma samples into separate U and V rows.
@@ -324,6 +337,16 @@ mod tests {
                 "{width}x{height} stride {stride}"
             );
         }
+    }
+
+    #[test]
+    fn planar_copy_reuses_the_caller_allocation() {
+        let (y, uv) = frames(64, 8, 64);
+        let mut out = vec![0xaa; 4096];
+        let capacity = out.capacity();
+        nv12_to_planar_into(&mut out, &y, &uv, 64, 8, 64);
+        assert_eq!(out, reference(&y, &uv, 64, 8, 64));
+        assert!(out.capacity() >= capacity);
     }
 
     #[test]

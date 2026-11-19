@@ -1428,7 +1428,7 @@ impl Decoder {
         };
         match &mut self.backend {
             Backend::H264(backend) => backend.decoder.recycle_output(buffer),
-            Backend::H265(_) => {}
+            Backend::H265(backend) => backend.decoder.recycle_output(buffer),
             _ => {}
         }
     }
