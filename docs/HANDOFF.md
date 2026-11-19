@@ -412,11 +412,15 @@ crate 内部 queue 路径，不再为每帧同时构造公开 `EncodedFrame::ann
 交错 500 帧 720p H.264 高层 API 中，user CPU 中位数从 0.341 s 降到 0.201 s
 （约 41%）。wall time 受硬件等待波动影响，不作为该优化主指标；H.264/H.265
 输出 SHA-256 均保持不变。
-非 16 对齐的 NV12 也不再创建 padding staging frame。H.264 直接把 tightly
-packed 可见行写入现有 DMA 输入，padding 只在首次调用清零并在后续帧保持。
-t6、80% OPP、11 次交错 1920x1080 60 帧测试中，user CPU 中位数从 0.101 s
-降到 0.028 s（约 72%），3,212,736-byte 码流逐字节一致，SHA-256 为
-`81c37cd1ab6b6f750ff54476fbd6c523a3ce2dc45e91e32c8b0206c62167d7bb`。
+非 16 对齐的 NV12 也不再创建 padding staging frame。H.264/H.265 直接把
+tightly packed 可见行写入现有 DMA 输入，padding 只在首次调用清零并在后续帧
+保持；H.265 reencode 期间同一 prepared input 会跨所有硬件尝试复用。
+t6、80% OPP、11 次交错 1920x1080 60 帧测试中，H.264 user CPU 中位数从
+0.101 s 降到 0.028 s（约 72%），H.265 从 0.116 s 降到 0.046 s（约 60%）。
+两者旧/新码流均逐字节一致：H.264 为 3,212,736 bytes /
+`81c37cd1ab6b6f750ff54476fbd6c523a3ce2dc45e91e32c8b0206c62167d7bb`，
+H.265 为 2,517,365 bytes /
+`0b1104b9a347653b7310f00b20cf7bef81652cdbe7adf8be4e844bdcc8ccaad5`。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全

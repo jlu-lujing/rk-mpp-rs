@@ -1488,8 +1488,24 @@ impl Encoder {
             }
             Backend::H265Vepu580(encoder) => {
                 encoder.set_next_osd(osd.clone());
-                let input = format_nv12_input(self.config, frame.data)?;
-                let encoded = if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
+                let encoded = if needs_visible_nv12_copy(self.config) {
+                    if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
+                        encoder
+                            .encode_visible_frame_with_rc_packets_for_queue(
+                                frame.data,
+                                rc.bit_target,
+                                rc.qp_target,
+                                rc.qp_min,
+                                rc.qp_max,
+                            )
+                            .map_err(Error::Hardware)?
+                    } else {
+                        encoder
+                            .encode_visible_frame_packets_for_queue(frame.data)
+                            .map_err(Error::Hardware)?
+                    }
+                } else if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
+                    let input = format_nv12_input(self.config, frame.data)?;
                     encoder
                         .encode_frame_with_rc_packets_for_queue(
                             &input,
@@ -1500,6 +1516,7 @@ impl Encoder {
                         )
                         .map_err(|error| Error::Hardware(error))?
                 } else {
+                    let input = format_nv12_input(self.config, frame.data)?;
                     encoder
                         .encode_frame_packets_for_queue(&input)
                         .map_err(|error| Error::Hardware(error.to_string()))?
@@ -1702,10 +1719,20 @@ impl Encoder {
                 Ok(1)
             }
             Backend::H265Vepu580(encoder) => {
-                let input = format_nv12_input(self.config, frame.data)?;
-                let encoded = if use_rate_control_registers {
+                let encoded = if needs_visible_nv12_copy(self.config) && use_rate_control_registers
+                {
+                    encoder.encode_visible_frame_with_rc_reencode(
+                        frame.data,
+                        initial,
+                        &mut reencode,
+                    )
+                } else if needs_visible_nv12_copy(self.config) {
+                    encoder.encode_visible_frame_with_fixed_qp_reencode(frame.data, &mut reencode)
+                } else if use_rate_control_registers {
+                    let input = format_nv12_input(self.config, frame.data)?;
                     encoder.encode_frame_with_rc_reencode(&input, initial, &mut reencode)
                 } else {
+                    let input = format_nv12_input(self.config, frame.data)?;
                     encoder.encode_frame_with_fixed_qp_reencode(&input, &mut reencode)
                 }
                 .map_err(Error::Hardware)?;

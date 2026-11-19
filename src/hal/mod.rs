@@ -26,6 +26,68 @@ pub fn check_decode_geometry(width: usize, height: usize) -> std::io::Result<()>
     Ok(())
 }
 
+pub(crate) fn copy_visible_nv12_to_padded(
+    destination: &mut [u8],
+    source: &[u8],
+    width: usize,
+    height: usize,
+    coded_width: usize,
+    coded_height: usize,
+    initialize_padding: bool,
+) -> Result<(), String> {
+    if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
+        return Err("visible NV12 geometry must be non-zero and even".to_string());
+    }
+    if coded_width < width || coded_height < height {
+        return Err(format!(
+            "coded NV12 geometry {coded_width}x{coded_height} is smaller than {width}x{height}"
+        ));
+    }
+    let visible_luma = width
+        .checked_mul(height)
+        .ok_or_else(|| "visible NV12 size overflow".to_string())?;
+    let visible_size = visible_luma
+        .checked_mul(3)
+        .map(|bytes| bytes / 2)
+        .ok_or_else(|| "visible NV12 size overflow".to_string())?;
+    if source.len() < visible_size {
+        return Err(format!(
+            "visible NV12 source is {} bytes, needs {visible_size}",
+            source.len()
+        ));
+    }
+    let coded_luma = coded_width
+        .checked_mul(coded_height)
+        .ok_or_else(|| "coded NV12 size overflow".to_string())?;
+    let coded_size = coded_luma
+        .checked_mul(3)
+        .map(|bytes| bytes / 2)
+        .ok_or_else(|| "coded NV12 size overflow".to_string())?;
+    if destination.len() < coded_size {
+        return Err(format!(
+            "coded NV12 destination is {} bytes, needs {coded_size}",
+            destination.len()
+        ));
+    }
+
+    if initialize_padding {
+        destination[..coded_size].fill(0);
+    }
+    for row in 0..height {
+        let source_start = row * width;
+        let destination_start = row * coded_width;
+        destination[destination_start..destination_start + width]
+            .copy_from_slice(&source[source_start..source_start + width]);
+    }
+    for row in 0..height / 2 {
+        let source_start = visible_luma + row * width;
+        let destination_start = coded_luma + row * coded_width;
+        destination[destination_start..destination_start + width]
+            .copy_from_slice(&source[source_start..source_start + width]);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,6 +100,29 @@ mod tests {
         assert!(check_decode_geometry(320, 8193).is_err());
         let err = check_decode_geometry(65535, 2).unwrap_err();
         assert!(err.to_string().contains("8192"));
+    }
+
+    #[test]
+    fn visible_nv12_is_copied_without_disturbing_the_padding_after_init() {
+        let mut source = vec![0x11; 4 * 4];
+        source.extend([0x22; 4 * 2]);
+        let mut coded = vec![0xff; 16 * 16 * 3 / 2];
+        copy_visible_nv12_to_padded(&mut coded, &source, 4, 4, 16, 16, true).unwrap();
+        for row in 0..4 {
+            assert_eq!(&coded[row * 16..row * 16 + 4], &[0x11; 4]);
+            assert_eq!(&coded[row * 16 + 4..(row + 1) * 16], &[0; 12]);
+        }
+        for row in 0..2 {
+            let offset = 16 * 16 + row * 16;
+            assert_eq!(&coded[offset..offset + 4], &[0x22; 4]);
+            assert_eq!(&coded[offset + 4..offset + 16], &[0; 12]);
+        }
+        assert!(coded[4 * 16..16 * 16].iter().all(|value| *value == 0));
+        assert!(coded[16 * 16 + 2 * 16..].iter().all(|value| *value == 0));
+
+        let replacement = vec![0x33; source.len()];
+        copy_visible_nv12_to_padded(&mut coded, &replacement, 4, 4, 16, 16, false).unwrap();
+        assert_eq!(&coded[12..16], &[0; 4], "padding stays zero on reuse");
     }
 }
 

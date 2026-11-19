@@ -4087,14 +4087,16 @@ pipeline uses.
   H.264/H.265 output hashes remain `68715bd4…617c05` and
   `ae613590…469783`.
 
-- **2026-11-20: 1080p H.264 writes visible rows straight to DMA input.** The
+- **2026-11-20: 1080p H.264/H.265 write visible rows straight to DMA input.** The
   aligned-NV12 fast path does not cover 1920x1080 because 1080 pads to 1088.
-  H.264 now copies the tightly packed visible rows directly into the existing
-  DMA input when padding is required; the padding is zeroed once and preserved
-  across frames. On t6 at 80% OPP, eleven interleaved 60-frame 1080p runs
-  reduced median user CPU from 0.101 to 0.028 seconds (about 72%). The
-  3,212,736-byte old/new streams were byte-identical with SHA-256
-  `81c37cd1ab6b6f750ff54476fbd6c523a3ce2dc45e91e32c8b0206c62167d7bb`.
+  Both codecs now copy tightly packed visible rows directly into the existing
+  DMA input when padding is required; padding is zeroed once and preserved
+  across frames. H.265 keeps that prepared input live across every reencode
+  attempt. On t6 at 80% OPP, eleven interleaved 60-frame 1080p runs reduced
+  median user CPU from 0.101 to 0.028 seconds for H.264 (about 72%) and from
+  0.116 to 0.046 seconds for H.265 (about 60%). Old/new streams were
+  byte-identical: H.264 `81c37cd1…2167d7bb` and H.265
+  `0b1104b9…c8ccaad5`.
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

@@ -220,6 +220,8 @@ pub struct Vepu580H265 {
     /// produce P pictures.
     long_term: bool,
     input: DmaBuf,
+    input_padding_initialized: bool,
+    input_prepared: bool,
     output: DmaBuf,
     /// Two DPB slots. Slot 0 is the opening IDR's reconstruction; the next picture
     /// reconstructs into the other slot and reads slot 0 as its reference.
@@ -344,6 +346,8 @@ impl Vepu580H265 {
             syntax: SyntaxOptions::default(),
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
+            input_padding_initialized: false,
+            input_prepared: false,
             // The packet is only a few KiB. Keeping it uncached makes the
             // hardware result CPU-visible without two sync ioctls per picture.
             output: DmaBuf::alloc("system-uncached", output_size, false)
@@ -394,6 +398,16 @@ impl Vepu580H265 {
         nv12: &[u8],
     ) -> Result<EncodedFrame, String> {
         self.encode_frame_packets_inner(nv12, false)
+    }
+
+    pub(crate) fn encode_visible_frame_packets_for_queue(
+        &mut self,
+        nv12: &[u8],
+    ) -> Result<EncodedFrame, String> {
+        self.load_visible_input_frame(nv12)?;
+        let result = self.encode_frame_packets_inner(&[], false);
+        self.input_prepared = false;
+        result
     }
 
     fn encode_frame_packets_inner(
@@ -772,6 +786,27 @@ impl Vepu580H265 {
         self.encode_frame_with_rc_packets_inner(nv12, bit_target, qp_target, qp_min, qp_max, false)
     }
 
+    pub(crate) fn encode_visible_frame_with_rc_packets_for_queue(
+        &mut self,
+        nv12: &[u8],
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<EncodedFrame, String> {
+        self.load_visible_input_frame(nv12)?;
+        let result = self.encode_frame_with_rc_packets_inner(
+            &[],
+            bit_target,
+            qp_target,
+            qp_min,
+            qp_max,
+            false,
+        );
+        self.input_prepared = false;
+        result
+    }
+
     fn encode_frame_with_rc_packets_inner(
         &mut self,
         nv12: &[u8],
@@ -820,6 +855,20 @@ impl Vepu580H265 {
         self.encode_frame_with_rc_policy(nv12, Some(initial), Some(reencode), false)
     }
 
+    pub(crate) fn encode_visible_frame_with_rc_reencode(
+        &mut self,
+        nv12: &[u8],
+        initial: ExternalRateControl,
+        reencode: &mut dyn FnMut(
+            RateControlFeedback,
+        ) -> Result<Option<RateControlReencode>, String>,
+    ) -> Result<EncodedFrame, String> {
+        self.load_visible_input_frame(nv12)?;
+        let result = self.encode_frame_with_rc_policy(&[], Some(initial), Some(reencode), false);
+        self.input_prepared = false;
+        result
+    }
+
     pub(crate) fn encode_frame_with_fixed_qp_reencode(
         &mut self,
         nv12: &[u8],
@@ -828,6 +877,19 @@ impl Vepu580H265 {
         ) -> Result<Option<RateControlReencode>, String>,
     ) -> Result<EncodedFrame, String> {
         self.encode_frame_with_rc_policy(nv12, None, Some(reencode), false)
+    }
+
+    pub(crate) fn encode_visible_frame_with_fixed_qp_reencode(
+        &mut self,
+        nv12: &[u8],
+        reencode: &mut dyn FnMut(
+            RateControlFeedback,
+        ) -> Result<Option<RateControlReencode>, String>,
+    ) -> Result<EncodedFrame, String> {
+        self.load_visible_input_frame(nv12)?;
+        let result = self.encode_frame_with_rc_policy(&[], None, Some(reencode), false);
+        self.input_prepared = false;
+        result
     }
 
     fn encode_frame_with_rc_policy(
@@ -961,6 +1023,47 @@ impl Vepu580H265 {
         Ok(encoded)
     }
 
+    fn load_visible_input_frame(&mut self, nv12: &[u8]) -> Result<(), String> {
+        let coded_width = align(self.width, 16);
+        let coded_height = align(self.height, 16);
+        let visible_size = self
+            .width
+            .checked_mul(self.height)
+            .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
+            .ok_or_else(|| "H.265 visible input size overflow".to_string())?;
+        if nv12.len() < visible_size {
+            return Err(format!(
+                "H.265 input is {} bytes, the {}x{} picture needs {visible_size}",
+                nv12.len(),
+                self.width,
+                self.height
+            ));
+        }
+
+        self.input_prepared = false;
+        self.input
+            .sync_write_begin()
+            .map_err(|error| format!("H.265 input sync: {error}"))?;
+        let copied = super::copy_visible_nv12_to_padded(
+            self.input.as_mut_slice(),
+            &nv12[..visible_size],
+            self.width,
+            self.height,
+            coded_width,
+            coded_height,
+            !self.input_padding_initialized,
+        );
+        let synced = self
+            .input
+            .sync_write_end()
+            .map_err(|error| format!("H.265 input flush: {error}"));
+        copied?;
+        synced?;
+        self.input_padding_initialized = true;
+        self.input_prepared = true;
+        Ok(())
+    }
+
     fn encode_picture_rc(
         &mut self,
         nv12: &[u8],
@@ -971,8 +1074,11 @@ impl Vepu580H265 {
         include_annex_b: bool,
     ) -> Result<EncodedFrame, String> {
         self.active_osd = self.next_osd.take();
+        let input_prepared = self.input_prepared;
         let input_fd = if let Some(input_fd) = self.input_fd_override.take() {
             input_fd
+        } else if input_prepared {
+            self.input.fd()
         } else {
             // dma-heap rounds the allocation up to a page, so the usable picture is
             // the logical size, not `self.input.len()`.
@@ -986,6 +1092,7 @@ impl Vepu580H265 {
                     input_size
                 ));
             }
+            self.input_padding_initialized = false;
             self.input
                 .sync_write_begin()
                 .map_err(|e| format!("H.265 input sync: {e}"))?;
