@@ -3984,6 +3984,15 @@ pipeline uses.
   `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`;
   the 60-frame H.265 matrix remained 4/4 PASS.
 
+- **2026-11-19: H.265 rate-control paths use DMA input and streamed output.**
+  `h265-gop-rc` and `h265-rate` now use the same two-surface input pipeline as
+  fixed-QP GOP encoding and write each completed access unit through a
+  `BufWriter` instead of retaining the full stream. On t6 at 80% OPP, five
+  interleaved 120-frame 720p samples moved `h265-gop-rc` from 387 ms
+  single-core to 279 ms pipelined and `h265-rate` CBR from 384 to 273 ms.
+  Forced single-core and pipelined outputs were byte-identical:
+  `7c4e93db…c11f65` for GOP-RC and `bb99af68…d7a6ad03` for model CBR.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

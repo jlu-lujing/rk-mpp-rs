@@ -3009,13 +3009,6 @@ fn main() {
         // cache, and perf attributed most of the system time to those reads.
         let frame_size = width * height * 3 / 2;
         let needed = frame_size * steps.len();
-        let mut file = match std::fs::File::open(src) {
-            Ok(file) => file,
-            Err(e) => {
-                eprintln!("{src}: {e}");
-                std::process::exit(1);
-            }
-        };
         match std::fs::metadata(src) {
             Ok(meta) if meta.len() >= needed as u64 => {}
             Ok(meta) => {
@@ -3031,7 +3024,6 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        let mut frame = vec![0u8; frame_size];
         let bps: Option<(i64, i64, i64)> = args.get(9).and_then(|spec| {
             let f: Vec<i64> = spec.split(':').filter_map(|v| v.parse().ok()).collect();
             if f.len() == 3 {
@@ -3073,22 +3065,71 @@ fn main() {
                         i_quality_delta: 2,
                     });
                 }
-                let mut out = Vec::new();
+                let input_parallelism = std::thread::available_parallelism()
+                    .map(|parallelism| parallelism.get())
+                    .unwrap_or(1);
+                let pipeline = if input_parallelism > 1 {
+                    Some(DmaInputPipeline::start(src, frame_size, steps.len())?)
+                } else {
+                    None
+                };
+                let mut file = if pipeline.is_none() {
+                    Some(std::fs::File::open(src).map_err(|error| format!("{src}: {error}"))?)
+                } else {
+                    None
+                };
+                let mut frame = if pipeline.is_none() {
+                    vec![0u8; frame_size]
+                } else {
+                    Vec::new()
+                };
+                let mut output = if dst == "/dev/null" {
+                    None
+                } else {
+                    Some(std::io::BufWriter::with_capacity(
+                        1024 * 1024,
+                        std::fs::File::create(dst).map_err(|error| format!("{dst}: {error}"))?,
+                    ))
+                };
+                let mut total_bytes = 0usize;
                 for (index, (qp, bits)) in steps.iter().enumerate() {
-                    use std::io::Read as _;
-                    if let Err(e) = file.read_exact(&mut frame) {
-                        return Err(format!("{src}: frame {index}: {e}"));
+                    let encoded = if let Some(pipeline) = pipeline.as_ref() {
+                        let input = pipeline.next(index)?;
+                        let encoded = encoder.encode_frame_with_rc_packets_fd(
+                            input.fd(),
+                            *bits,
+                            *qp,
+                            min_qp,
+                            max_qp,
+                        )?;
+                        pipeline.recycle(input)?;
+                        encoded
+                    } else {
+                        use std::io::Read as _;
+                        file.as_mut()
+                            .expect("sequential H.265 RC input source")
+                            .read_exact(&mut frame)
+                            .map_err(|error| format!("{src}: frame {index}: {error}"))?;
+                        encoder.encode_frame_with_rc_packets(&frame, *bits, *qp, min_qp, max_qp)?
+                    };
+                    total_bytes += encoded.annex_b.len();
+                    if let Some(output) = output.as_mut() {
+                        use std::io::Write as _;
+                        output
+                            .write_all(&encoded.annex_b)
+                            .map_err(|error| format!("{dst}: {error}"))?;
                     }
-                    out.extend_from_slice(
-                        &encoder.encode_frame_with_rc(&frame, *bits, *qp, min_qp, max_qp)?,
-                    );
                 }
-                Ok(out)
+                if let Some(pipeline) = pipeline {
+                    pipeline.finish();
+                }
+                if let Some(output) = output.as_mut() {
+                    use std::io::Write as _;
+                    output.flush().map_err(|error| format!("{dst}: {error}"))?;
+                }
+                Ok(total_bytes)
             });
-        match result.and_then(|stream| {
-            std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
-            Ok(stream.len())
-        }) {
+        match result {
             Ok(bytes) => println!(
                 "h265-gop-rc {src} -> {dst}: {bytes} bytes, {} decided pictures",
                 steps.len()
@@ -3170,13 +3211,6 @@ fn main() {
         // hurts concurrent sessions.
         let frame_size = width * height * 3 / 2;
         let needed = frame_size * frames;
-        let mut file = match std::fs::File::open(src) {
-            Ok(file) => file,
-            Err(e) => {
-                eprintln!("{src}: {e}");
-                std::process::exit(1);
-            }
-        };
         match std::fs::metadata(src) {
             Ok(meta) if meta.len() >= needed as u64 => {}
             Ok(meta) => {
@@ -3191,22 +3225,55 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        let mut frame = vec![0u8; frame_size];
         let result = h265e_session::Vepu580H265::open_rate(
             width, height, mode, target, min, max, init_qp, qp_min, qp_max,
         )
         .and_then(|mut encoder| {
             encoder.set_syntax_options(syntax);
             encoder.set_slice_split(split)?;
-            let mut out = Vec::new();
+            let input_parallelism = std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get())
+                .unwrap_or(1);
+            let pipeline = if input_parallelism > 1 {
+                Some(DmaInputPipeline::start(src, frame_size, frames)?)
+            } else {
+                None
+            };
+            let mut file = if pipeline.is_none() {
+                Some(std::fs::File::open(src).map_err(|error| format!("{src}: {error}"))?)
+            } else {
+                None
+            };
+            let mut frame = if pipeline.is_none() {
+                vec![0u8; frame_size]
+            } else {
+                Vec::new()
+            };
+            let mut output = if dst == "/dev/null" {
+                None
+            } else {
+                Some(std::io::BufWriter::with_capacity(
+                    1024 * 1024,
+                    std::fs::File::create(dst).map_err(|error| format!("{dst}: {error}"))?,
+                ))
+            };
+            let mut total_bytes = 0usize;
             let mut packets = 0;
             let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
             for index in 0..frames {
-                use std::io::Read as _;
-                if let Err(e) = file.read_exact(&mut frame) {
-                    return Err(format!("{src}: frame {index}: {e}"));
-                }
-                let encoded = encoder.encode_frame_packets(&frame)?;
+                let encoded = if let Some(pipeline) = pipeline.as_ref() {
+                    let input = pipeline.next(index)?;
+                    let encoded = encoder.encode_frame_packets_fd(input.fd())?;
+                    pipeline.recycle(input)?;
+                    encoded
+                } else {
+                    use std::io::Read as _;
+                    file.as_mut()
+                        .expect("sequential H.265 rate input source")
+                        .read_exact(&mut frame)
+                        .map_err(|error| format!("{src}: frame {index}: {error}"))?;
+                    encoder.encode_frame_packets(&frame)?
+                };
                 packets += encoded.packets.len();
                 if trace_packets {
                     let sizes = encoded
@@ -3220,14 +3287,24 @@ fn main() {
                         encoded.packets.len()
                     );
                 }
-                out.extend_from_slice(&encoded.annex_b);
+                total_bytes += encoded.annex_b.len();
+                if let Some(output) = output.as_mut() {
+                    use std::io::Write as _;
+                    output
+                        .write_all(&encoded.annex_b)
+                        .map_err(|error| format!("{dst}: {error}"))?;
+                }
             }
-            Ok((out, packets))
+            if let Some(pipeline) = pipeline {
+                pipeline.finish();
+            }
+            if let Some(output) = output.as_mut() {
+                use std::io::Write as _;
+                output.flush().map_err(|error| format!("{dst}: {error}"))?;
+            }
+            Ok((total_bytes, packets))
         });
-        match result.and_then(|(stream, packets)| {
-            std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
-            Ok((stream.len(), packets))
-        }) {
+        match result {
             Ok((bytes, packets)) => println!(
                 "h265-cbr {src} -> {dst}: {bytes} bytes, {packets} packet(s), {frames} pictures"
             ),

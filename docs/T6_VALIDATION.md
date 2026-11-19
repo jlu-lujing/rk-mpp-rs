@@ -1521,6 +1521,12 @@ of accumulating the full stream. The 120-frame 720p output kept the same
 SHA-256 `a2865a07…88d20a`, and a subsequent 60-frame four-size benchmark
 remained 4/4 PASS.
 
+The rate-control CLI paths now use the same DMA input and streamed-output
+pipeline. At 80% OPP, five interleaved 120-frame 720p samples measured
+`h265-gop-rc` at 279 ms versus 387 ms forced-single-core and `h265-rate` CBR
+at 273 ms versus 384 ms. Their outputs were byte-identical between the two
+paths: `7c4e93db…c11f65` and `bb99af68…d7a6ad03`.
+
 The H.264 and HEVC `/tmp` corpora were restored from
 `~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and
 the HEVC suite passed every available large-profile, tile, slice, open-GOP,

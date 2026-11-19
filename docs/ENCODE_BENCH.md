@@ -42,6 +42,14 @@ instead of retaining the whole encoded sequence in one `Vec`. The 120-frame
 720p SHA remained identical, and `/dev/null` keeps its no-file-write benchmark
 path.
 
+The two rate-control paths now share the same input/output treatment.
+`h265-gop-rc` and `h265-rate` reuse the two-surface DMA input pipeline and
+stream each access unit through a 1 MiB writer. Five interleaved 120-frame
+720p samples moved GOP-RC from 387 ms forced-single-core to 279 ms pipelined,
+and model CBR from 384 to 273 ms. Their pipelined and single-core streams were
+byte-identical:
+`7c4e93db…c11f65` for GOP-RC and `bb99af68…d7a6ad03` for CBR.
+
 The current five-sample, 60-frame interleaved medians are:
 
 | codec | size | C MPP | this crate | Rust advantage |

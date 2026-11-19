@@ -702,6 +702,21 @@ impl Vepu580H265 {
         )
     }
 
+    pub fn encode_frame_with_rc_packets_fd(
+        &mut self,
+        input_fd: i32,
+        bit_target: i32,
+        qp_target: u32,
+        qp_min: u32,
+        qp_max: u32,
+    ) -> Result<EncodedFrame, String> {
+        if input_fd < 0 {
+            return Err("H.265 input fd is invalid".to_string());
+        }
+        self.input_fd_override = Some(input_fd);
+        self.encode_frame_with_rc_packets(&[], bit_target, qp_target, qp_min, qp_max)
+    }
+
     pub(crate) fn encode_frame_with_rc_reencode(
         &mut self,
         nv12: &[u8],

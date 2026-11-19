@@ -353,6 +353,11 @@ H.264/H.265/JPEG 的独立 `*_vs_mpp.sh` 矩阵也统一走
 `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`，
 60 帧 H.265 四尺寸吞吐门仍为 4/4 PASS。
 
+`h265-gop-rc` 与 `h265-rate` 也接入双 surface DMA 输入和逐 AU 输出。t6、
+80% OPP、120 帧 720p、五次交错采样中，GOP-RC 从单核 387 ms 降到 279 ms，
+模型 CBR 从 384 ms 降到 273 ms；两路 pipeline 与强制单核输出分别保持
+`7c4e93db…c11f65`、`bb99af68…d7a6ad03` 完全一致。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；
