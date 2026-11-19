@@ -104,6 +104,98 @@ pub struct RateControlConfig {
     hier_frame_num: [i32; 4],
 }
 
+/// Advanced H.264 rate-control policy fields carried by `MppEncCfg`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct H264RcTuning {
+    max_reencode_times: u32,
+    super_mode: u8,
+    super_i_thd: u32,
+    super_p_thd: u32,
+    rc_priority: u8,
+    debreath_enabled: bool,
+    debreath_strength: u8,
+    drop_mode: u8,
+    drop_threshold: u32,
+    drop_gap: u32,
+}
+
+impl H264RcTuning {
+    pub const fn new() -> Self {
+        Self {
+            max_reencode_times: 1,
+            super_mode: 0,
+            super_i_thd: 0,
+            super_p_thd: 0,
+            rc_priority: 0,
+            debreath_enabled: false,
+            debreath_strength: 0,
+            drop_mode: 0,
+            drop_threshold: 20,
+            drop_gap: 1,
+        }
+    }
+
+    pub const fn max_reencode_times(self) -> u32 {
+        self.max_reencode_times
+    }
+
+    pub const fn super_mode(self) -> u8 {
+        self.super_mode
+    }
+
+    pub const fn super_i_thd(self) -> u32 {
+        self.super_i_thd
+    }
+
+    pub const fn super_p_thd(self) -> u32 {
+        self.super_p_thd
+    }
+
+    pub const fn rc_priority(self) -> u8 {
+        self.rc_priority
+    }
+
+    pub const fn debreath(self) -> (bool, u8) {
+        (self.debreath_enabled, self.debreath_strength)
+    }
+
+    pub const fn drop_policy(self) -> (u8, u32, u32) {
+        (self.drop_mode, self.drop_threshold, self.drop_gap)
+    }
+
+    pub const fn with_max_reencode_times(mut self, times: u32) -> Self {
+        self.max_reencode_times = times;
+        self
+    }
+
+    pub const fn with_super_frame(
+        mut self,
+        mode: u8,
+        i_threshold: u32,
+        p_threshold: u32,
+        priority: u8,
+    ) -> Self {
+        self.super_mode = mode;
+        self.super_i_thd = i_threshold;
+        self.super_p_thd = p_threshold;
+        self.rc_priority = priority;
+        self
+    }
+
+    pub const fn with_debreath(mut self, enabled: bool, strength: u8) -> Self {
+        self.debreath_enabled = enabled;
+        self.debreath_strength = strength;
+        self
+    }
+
+    pub const fn with_drop_policy(mut self, mode: u8, threshold: u32, gap: u32) -> Self {
+        self.drop_mode = mode;
+        self.drop_threshold = threshold;
+        self.drop_gap = gap;
+        self
+    }
+}
+
 impl RateControlConfig {
     pub const fn cbr(bps_target: i64, bps_min: i64, bps_max: i64) -> Self {
         Self::new(RateControlMode::Cbr, bps_target, bps_min, bps_max)
@@ -453,6 +545,7 @@ pub struct EncoderConfig {
     jpeg_qfactor: Option<u32>,
     jpeg_restart_mcus: u32,
     rate_control: Option<RateControlConfig>,
+    h264_rc_tuning: Option<H264RcTuning>,
     h264_aq_step_i: Option<[i8; 16]>,
     roi: Option<RoiConfig>,
     gdr: Option<GdrConfig>,
@@ -477,6 +570,7 @@ impl EncoderConfig {
             jpeg_qfactor: None,
             jpeg_restart_mcus: 0,
             rate_control: None,
+            h264_rc_tuning: None,
             h264_aq_step_i: None,
             roi: None,
             gdr: None,
@@ -542,6 +636,10 @@ impl EncoderConfig {
 
     pub const fn h264_aq_step_i(self) -> Option<[i8; 16]> {
         self.h264_aq_step_i
+    }
+
+    pub const fn h264_rc_tuning(self) -> Option<H264RcTuning> {
+        self.h264_rc_tuning
     }
 
     pub const fn roi(self) -> Option<RoiConfig> {
@@ -615,6 +713,11 @@ impl EncoderConfig {
 
     pub const fn with_h264_aq_step_i(mut self, aq_step_i: [i8; 16]) -> Self {
         self.h264_aq_step_i = Some(aq_step_i);
+        self
+    }
+
+    pub const fn with_h264_rc_tuning(mut self, tuning: H264RcTuning) -> Self {
+        self.h264_rc_tuning = Some(tuning);
         self
     }
 
@@ -1933,6 +2036,18 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
     h264.fps_num = config.fps_num;
     h264.fps_den = config.fps_den;
     h264.aq_step_i = config.h264_aq_step_i;
+    if let Some(tuning) = config.h264_rc_tuning {
+        h264.max_reencode_times = tuning.max_reencode_times;
+        h264.super_mode = tuning.super_mode;
+        h264.super_i_thd = tuning.super_i_thd;
+        h264.super_p_thd = tuning.super_p_thd;
+        h264.rc_priority = tuning.rc_priority;
+        h264.debreath_en = tuning.debreath_enabled;
+        h264.debreath_strength = tuning.debreath_strength;
+        h264.drop_mode = tuning.drop_mode;
+        h264.drop_threshold = tuning.drop_threshold;
+        h264.drop_gap = tuning.drop_gap;
+    }
     h264.entropy_coding = profile >= PROFILE_MAIN;
     h264.transform_8x8 = profile >= PROFILE_HIGH;
     if let Some(rate_control) = config.rate_control {
@@ -2357,8 +2472,8 @@ fn format_nv12_padded(
 #[cfg(test)]
 mod tests {
     use super::{
-        BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode, PacketMeta, PixelFormat,
-        RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
+        BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode, H264RcTuning, PacketMeta,
+        PixelFormat, RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
         SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
@@ -2404,6 +2519,11 @@ mod tests {
     #[test]
     fn encoder_builder_keeps_public_configuration() {
         let aq_step_i = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let h264_tuning = H264RcTuning::new()
+            .with_max_reencode_times(0)
+            .with_super_frame(2, 10_000, 1_000, 1)
+            .with_debreath(true, 20)
+            .with_drop_policy(1, 12_000, 3);
         let rate_control = RateControlConfig::vbr(2_000_000, 1_500_000, 2_500_000)
             .with_initial_qp(26)
             .with_qp_range(10, 40)
@@ -2420,6 +2540,7 @@ mod tests {
             .with_jpeg_qfactor(80)
             .with_jpeg_restart_mcus(16)
             .with_h264_aq_step_i(aq_step_i)
+            .with_h264_rc_tuning(h264_tuning)
             .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
         assert_eq!(config.input_format(), PixelFormat::I420);
@@ -2433,6 +2554,7 @@ mod tests {
         assert_eq!(config.jpeg_qfactor(), Some(80));
         assert_eq!(config.jpeg_restart_mcus(), 16);
         assert_eq!(config.h264_aq_step_i(), Some(aq_step_i));
+        assert_eq!(config.h264_rc_tuning(), Some(h264_tuning));
         assert_eq!(config.rate_control(), Some(rate_control));
         assert!(rate_control.hier_qp_enabled());
         assert_eq!(rate_control.hier_qp_delta(), [1, 2, 3, 4]);

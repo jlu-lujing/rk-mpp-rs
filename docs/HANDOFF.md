@@ -379,6 +379,11 @@ RC 模型；`board_mpp_hier_qp.sh` 的 33 帧 CBR 流在剥离 version-SEI 后�
 `RCKLUT.aq_step`，P 帧继续使用参考的独立默认表。板级门增加自定义
 `0..15` AQ 表，33 帧 CBR 码流同样与 old oracle 逐字节一致。
 
+`rc:max_reenc_times`、`rc:super_*`、`rc:priority`、`rc:drop_*` 和
+`rc:debreath_*` 也已通过 `H264RcTuning` 进入 H.264 运行时配置。
+`board_mpp_rc_fields.sh` 用未修改的 `rc_probe` 验证两格：12 帧 debreath 与
+6 帧 super-frame reencode；剥离 version-SEI 后均与 `/tmp/mpp-old` 逐字节一致。
+
 H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出
 7,031,305 bytes 完全一致

@@ -1,7 +1,7 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 
 use super::standalone;
-use crate::encoder::{EncoderConfig, RateControlConfig, RateControlMode};
+use crate::encoder::{EncoderConfig, H264RcTuning, RateControlConfig, RateControlMode};
 use crate::sdk::Codec;
 
 const MPP_OK: c_int = 0;
@@ -153,6 +153,61 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
                 );
             }
             result = result.with_rate_control(rate_control);
+
+            if codec == Codec::H264 {
+                let max_reencode = unsafe { cfg.get("rc:max_reenc_times") };
+                let super_mode = unsafe { cfg.get("rc:super_mode") };
+                let super_i = unsafe { cfg.get("rc:super_i_thd") };
+                let super_p = unsafe { cfg.get("rc:super_p_thd") };
+                let priority = unsafe { cfg.get("rc:priority") };
+                let debreath_en = unsafe { cfg.get("rc:debreath_en") };
+                let debreath_strength = unsafe { cfg.get("rc:debreath_strength") };
+                let drop_mode = unsafe { cfg.get("rc:drop_mode") };
+                let drop_threshold = unsafe { cfg.get("rc:drop_thd") };
+                let drop_gap = unsafe { cfg.get("rc:drop_gap") };
+                let any_tuning = [
+                    max_reencode,
+                    super_mode,
+                    super_i,
+                    super_p,
+                    priority,
+                    debreath_en,
+                    debreath_strength,
+                    drop_mode,
+                    drop_threshold,
+                    drop_gap,
+                ]
+                .iter()
+                .any(Option::is_some);
+                if any_tuning {
+                    let mut tuning = H264RcTuning::new();
+                    if let Some(value) = max_reencode {
+                        tuning = tuning.with_max_reencode_times(value.max(0) as u32);
+                    }
+                    tuning = tuning.with_super_frame(
+                        super_mode.unwrap_or(i32::from(tuning.super_mode())).max(0) as u8,
+                        super_i.unwrap_or(tuning.super_i_thd() as i32).max(0) as u32,
+                        super_p.unwrap_or(tuning.super_p_thd() as i32).max(0) as u32,
+                        priority.unwrap_or(i32::from(tuning.rc_priority())).max(0) as u8,
+                    );
+                    tuning = tuning.with_debreath(
+                        debreath_en.unwrap_or(0) != 0,
+                        debreath_strength
+                            .unwrap_or(i32::from(tuning.debreath().1))
+                            .max(0) as u8,
+                    );
+                    tuning = tuning.with_drop_policy(
+                        drop_mode
+                            .unwrap_or(i32::from(tuning.drop_policy().0))
+                            .max(0) as u8,
+                        drop_threshold
+                            .unwrap_or(tuning.drop_policy().1 as i32)
+                            .max(0) as u32,
+                        drop_gap.unwrap_or(tuning.drop_policy().2 as i32).max(0) as u32,
+                    );
+                    result = result.with_h264_rc_tuning(tuning);
+                }
+            }
         }
     }
     Ok(result)

@@ -1387,6 +1387,10 @@ streams are byte-identical after removing only the build-identity SEI. A second
 cell supplies the 16-entry `hw:aq_step_i` table `0..15`; Rust replaces the
 I-picture `RCKLUT.aq_step` while preserving the distinct P-picture default, and
 the stream again matches the old oracle.
+`scripts/board_mpp_rc_fields.sh` uses the unmodified `rc_probe` to cover
+advanced scalar fields from `MppEncCfg`. A 12-frame CBR debreath run and a
+six-frame super-frame reencode run both match `/tmp/mpp-old` after removing the
+build-identity SEI.
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the
