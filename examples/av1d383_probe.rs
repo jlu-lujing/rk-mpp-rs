@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         0,
         u32::from(params.bitdepth),
     )?;
-    let yuv = session.decode(&params, stream, &mut frame, &[None; 8])?;
+    let yuv = session.decode(&params, stream, &mut frame, &[None; 8], Vec::new())?;
     std::fs::write(&args[2], yuv)?;
     println!(
         "decoded {}x{} status={:?} hardware_error={}",

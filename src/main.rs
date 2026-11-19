@@ -145,6 +145,49 @@ struct DmaInputPipeline {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+enum Av1CliDecoder {
+    Vdpu34x(rk_mpp_rs::codec::av1::decoder::Decoder),
+    Vdpu383(rk_mpp_rs::codec::av1::decoder383::Decoder),
+}
+
+impl Av1CliDecoder {
+    fn new() -> Result<Self, String> {
+        let profile = soc::SocProfile::detect().map_err(|error| error.to_string())?;
+        match profile.video_decode {
+            soc::VideoDecodeHal::Vdpu383 => Ok(Self::Vdpu383(
+                rk_mpp_rs::codec::av1::decoder383::Decoder::new(),
+            )),
+            _ => rk_mpp_rs::codec::av1::decoder::Decoder::new()
+                .map(Self::Vdpu34x)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    fn decode_packet(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<Vec<rk_mpp_rs::codec::av1::decoder::Picture>, String> {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.decode_packet(packet),
+            Self::Vdpu383(decoder) => decoder.decode_packet(packet),
+        }
+    }
+
+    fn status(&self) -> (u32, u32, u32) {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.status(),
+            Self::Vdpu383(decoder) => decoder.status(),
+        }
+    }
+
+    fn recycle_output(&mut self, buffer: Vec<u8>) {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.recycle_output(buffer),
+            Self::Vdpu383(decoder) => decoder.recycle_output(buffer),
+        }
+    }
+}
+
 impl DmaInputPipeline {
     fn start(path: &str, frame_bytes: usize, wanted: usize) -> Result<Self, String> {
         let (frame_tx, frames) = mpsc::sync_channel(1);
@@ -3541,10 +3584,10 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let mut decoder = match rk_mpp_rs::codec::av1::decoder::Decoder::new() {
+        let mut decoder = match Av1CliDecoder::new() {
             Ok(decoder) => decoder,
             Err(error) => {
-                eprintln!("open av1d failed: {error}");
+                eprintln!("open AV1 decoder failed: {error}");
                 std::process::exit(1);
             }
         };
@@ -3586,6 +3629,9 @@ fn main() {
                         decoder.status().1,
                         decoder.status().2,
                     );
+                }
+                if picture.err_info == 0 {
+                    decoder.recycle_output(picture.yuv);
                 }
             }
         }

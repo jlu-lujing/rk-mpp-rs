@@ -8,7 +8,6 @@
 use std::io;
 
 use crate::codec::av1::picparams::{Av1PicParams, PicReference};
-use crate::codec::yuv::nv12_to_planar;
 use crate::hal::vdpu383_regs::{self as reg, Field};
 use crate::service::buffer_pool::{BufferLease, BufferPool};
 use crate::service::dma_heap::DmaBuf;
@@ -96,8 +95,9 @@ impl Session {
         stream: &[u8],
         current: &mut Frame,
         references: &[Option<&Frame>; 8],
+        output: Vec<u8>,
     ) -> io::Result<Vec<u8>> {
-        self.decode_inner(params, stream, current, references, true)
+        self.decode_inner(params, stream, current, references, true, output)
     }
 
     /// Decode into the persistent surface without reading it back to the CPU.
@@ -108,7 +108,7 @@ impl Session {
         current: &mut Frame,
         references: &[Option<&Frame>; 8],
     ) -> io::Result<()> {
-        self.decode_inner(params, stream, current, references, false)
+        self.decode_inner(params, stream, current, references, false, Vec::new())
             .map(|_| ())
     }
 
@@ -119,6 +119,7 @@ impl Session {
         current: &mut Frame,
         references: &[Option<&Frame>; 8],
         cpu_readback: bool,
+        output: Vec<u8>,
     ) -> io::Result<Vec<u8>> {
         if params.width as usize != self.width || params.height as usize != self.height {
             return Err(io::Error::new(
@@ -236,7 +237,7 @@ impl Session {
 
         self.update_reference_cdf_state(params, coefficient_index);
         if cpu_readback {
-            current.read_planar()
+            current.read_planar(output)
         } else {
             Ok(Vec::new())
         }
@@ -409,7 +410,7 @@ impl Frame {
         zero(&mut self.cdf)
     }
 
-    pub fn read_planar(&mut self) -> io::Result<Vec<u8>> {
+    pub fn read_planar(&mut self, mut output: Vec<u8>) -> io::Result<Vec<u8>> {
         let luma_size = self.stride * self.ver_stride;
         let output_size = luma_size * 3 / 2;
         let view = self
@@ -420,13 +421,15 @@ impl Frame {
         let yuv = {
             let bytes = &view;
             if self.bit_depth == 8 {
-                nv12_to_planar(
+                crate::codec::yuv::nv12_to_planar_into(
+                    &mut output,
                     &bytes[..luma_size],
                     &bytes[luma_size..output_size],
                     self.width,
                     self.height,
                     self.stride,
-                )
+                );
+                output
             } else {
                 crate::codec::yuv::packed10_nv12_to_planar(
                     &bytes[..luma_size],

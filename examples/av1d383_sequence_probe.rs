@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let frame = frames[index]
                         .as_mut()
                         .ok_or("released show-existing frame")?;
-                    output.write_all(&frame.read_planar()?)?;
+                    output.write_all(&frame.read_planar(Vec::new())?)?;
                     output_frames += 1;
                     for slot in 0..8 {
                         if header.refresh_frame_flags & (1 << slot) != 0 {
@@ -94,7 +94,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let references: [Option<&Frame>; 8] = std::array::from_fn(|slot| {
                         reference_slots[slot].and_then(|index| frames[index].as_ref())
                     });
-                    let yuv = session_ref.decode(&params, stream, &mut current, &references)?;
+                    let yuv = session_ref.decode(
+                        &params,
+                        stream,
+                        &mut current,
+                        &references,
+                        Vec::new(),
+                    )?;
                     frames[current_index] = Some(current);
 
                     for slot in 0..8 {

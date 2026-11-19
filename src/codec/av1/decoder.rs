@@ -49,6 +49,7 @@ pub struct Decoder {
     next_poc: u32,
     output_dmabuf: bool,
     output_injection: Option<DmaBuf>,
+    output_recycle: Vec<Vec<u8>>,
 }
 
 impl Decoder {
@@ -64,6 +65,7 @@ impl Decoder {
             next_poc: 1,
             output_dmabuf: false,
             output_injection: None,
+            output_recycle: Vec::new(),
         })
     }
 
@@ -297,6 +299,7 @@ impl Decoder {
         if !coded.header.show_frame {
             return Ok(None);
         }
+        let reusable = (!self.output_dmabuf).then(|| self.output_recycle.pop().unwrap_or_default());
         let frame = self.frames[frame_index]
             .as_ref()
             .ok_or("AV1 output frame disappeared")?;
@@ -315,7 +318,7 @@ impl Decoder {
                     )),
                 )
             } else {
-                (copy_planar(frame)?, None)
+                (copy_planar(frame, reusable.unwrap_or_default())?, None)
             }
         } else {
             (Vec::new(), None)
@@ -479,7 +482,7 @@ impl Decoder {
         Ok((current_slot, physical_slots, hardware))
     }
 
-    fn show_existing(&self, slot: usize) -> Result<Picture, String> {
+    fn show_existing(&mut self, slot: usize) -> Result<Picture, String> {
         if self.output_dmabuf
             && self
                 .parser
@@ -493,6 +496,7 @@ impl Decoder {
             .get(slot)
             .and_then(|reference| *reference)
             .ok_or_else(|| format!("AV1 show-existing slot {slot} is empty"))?;
+        let reusable = (!self.output_dmabuf).then(|| self.output_recycle.pop().unwrap_or_default());
         let frame = self
             .frames
             .get(reference.frame)
@@ -513,7 +517,7 @@ impl Decoder {
                     )),
                 )
             } else {
-                (copy_planar(frame)?, None)
+                (copy_planar(frame, reusable.unwrap_or_default())?, None)
             }
         } else {
             (Vec::new(), None)
@@ -533,6 +537,12 @@ impl Decoder {
         self.output_dmabuf = enabled;
     }
 
+    pub fn recycle_output(&mut self, buffer: Vec<u8>) {
+        if buffer.capacity() != 0 && self.output_recycle.len() < 4 {
+            self.output_recycle.push(buffer);
+        }
+    }
+
     pub fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), String> {
         self.set_output_dmabuf(true);
         self.output_injection = Some(buffer);
@@ -540,7 +550,7 @@ impl Decoder {
     }
 }
 
-fn copy_planar(frame: &Frame) -> Result<Vec<u8>, String> {
+fn copy_planar(frame: &Frame, out: Vec<u8>) -> Result<Vec<u8>, String> {
     let traced = std::env::var_os("RK_MPP_AV1_TRACE").is_some();
     let start = Instant::now();
     let display = frame
@@ -556,6 +566,7 @@ fn copy_planar(frame: &Frame) -> Result<Vec<u8>, String> {
         frame.bit_depth,
         &display[..size],
         &display[size..size + size / 2],
+        out,
     );
     let _ = display.buffer().sync_read_end();
     if traced {
@@ -578,12 +589,14 @@ fn copy_planar_data(
     bit_depth: u32,
     y: &[u8],
     uv: &[u8],
+    mut out: Vec<u8>,
 ) -> Vec<u8> {
     // The shared readback covers the 8-bit 4:2:0 case with even dimensions, which
     // is the only shape where its truncated halves match the div_ceil chroma
     // size used here.
     if bit_depth == 8 && width % 2 == 0 && height % 2 == 0 {
-        return crate::codec::yuv::nv12_to_planar(y, uv, width, height, stride);
+        crate::codec::yuv::nv12_to_planar_into(&mut out, y, uv, width, height, stride);
+        return out;
     }
     if bit_depth == 10 {
         return crate::codec::yuv::packed10_nv12_to_planar(y, uv, width, height, stride);
@@ -591,23 +604,23 @@ fn copy_planar_data(
     let chroma_width = width.div_ceil(2);
     let chroma_height = height.div_ceil(2);
     let sample_bytes = if bit_depth > 8 { 2 } else { 1 };
-    let mut output =
-        Vec::with_capacity((width * height + 2 * chroma_width * chroma_height) * sample_bytes);
+    out.clear();
+    out.reserve((width * height + 2 * chroma_width * chroma_height) * sample_bytes);
     if bit_depth == 8 {
         for row in 0..height {
             let start = row * stride;
-            output.extend_from_slice(&y[start..start + width]);
+            out.extend_from_slice(&y[start..start + width]);
         }
         for component in 0..2 {
             for row in 0..chroma_height {
                 let start = row * stride + component;
                 for column in 0..chroma_width {
-                    output.push(uv[start + column * 2]);
+                    out.push(uv[start + column * 2]);
                 }
             }
         }
     }
-    output
+    out
 }
 
 fn cdf_hash(cdf: &crate::codec::av1::cdf::Av1Cdf) -> u64 {
@@ -653,7 +666,7 @@ mod tests {
                 data[uv + row * stride + column * 2 + 1] = 20 + column as u8;
             }
         }
-        let planar = copy_planar_data(4, 4, stride, 8, &data[..uv], &data[uv..]);
+        let planar = copy_planar_data(4, 4, stride, 8, &data[..uv], &data[uv..], Vec::new());
         assert_eq!(
             &planar[..16],
             &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -685,6 +698,7 @@ mod tests {
             10,
             &data[..stride * height],
             &data[stride * height..],
+            Vec::new(),
         );
         let samples: Vec<u16> = planar
             .chunks_exact(2)

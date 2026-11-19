@@ -40,8 +40,13 @@ fn decode_vdpu383_sequence(path: &str) -> (usize, u32, Vec<u8>, bool) {
                 Av1PacketEvent::ShowExisting(header) => {
                     let slot = header.frame_to_show_map_idx as usize;
                     let index = reference_slots[slot].unwrap();
-                    output
-                        .extend_from_slice(&frames[index].as_mut().unwrap().read_planar().unwrap());
+                    output.extend_from_slice(
+                        &frames[index]
+                            .as_mut()
+                            .unwrap()
+                            .read_planar(Vec::new())
+                            .unwrap(),
+                    );
                     output_frames += 1;
                     for slot in 0..8 {
                         if header.refresh_frame_flags & (1 << slot) != 0 {
@@ -101,7 +106,7 @@ fn decode_vdpu383_sequence(path: &str) -> (usize, u32, Vec<u8>, bool) {
                         reference_slots[slot].and_then(|index| frames[index].as_ref())
                     });
                     let yuv = session
-                        .decode(&params, stream, &mut current, &references)
+                        .decode(&params, stream, &mut current, &references, Vec::new())
                         .unwrap();
                     frames[current_index] = Some(current);
                     for slot in 0..8 {
@@ -166,7 +171,7 @@ fn first_vdpu383_av1_keyframe_matches_c_mpp() {
     )
     .unwrap();
     let actual = session
-        .decode(&params, stream, &mut output, &[None; 8])
+        .decode(&params, stream, &mut output, &[None; 8], Vec::new())
         .unwrap();
     let expected =
         std::fs::read(root().join("tests/data/av1_vdpu383_key_frame_320x240.yuv")).unwrap();

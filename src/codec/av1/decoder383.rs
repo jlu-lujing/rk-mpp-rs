@@ -35,6 +35,7 @@ pub struct Decoder {
     output_dmabuf: bool,
     output_pool: BufferPool<DmaBuf>,
     output_injection: Option<DmaBuf>,
+    output_recycle: Vec<Vec<u8>>,
 }
 
 impl Decoder {
@@ -51,6 +52,7 @@ impl Decoder {
             output_dmabuf: false,
             output_pool: BufferPool::new(MAX_FRAMES),
             output_injection: None,
+            output_recycle: Vec::new(),
         }
     }
 
@@ -209,13 +211,24 @@ impl Decoder {
         let references: [Option<&Frame>; 8] = std::array::from_fn(|slot| {
             self.references[slot].and_then(|reference| self.frames[reference.frame].as_ref())
         });
+        let reusable = if self.output_dmabuf {
+            Vec::new()
+        } else {
+            self.output_recycle.pop().unwrap_or_default()
+        };
         let session = self.session.as_mut().unwrap();
         let yuv = if self.output_dmabuf {
             session
                 .decode_surface(&params, &packet[start..end], &mut current, &references)
                 .map(|()| Vec::new())
         } else {
-            session.decode(&params, &packet[start..end], &mut current, &references)
+            session.decode(
+                &params,
+                &packet[start..end],
+                &mut current,
+                &references,
+                reusable,
+            )
         }
         .map_err(|error| error.to_string());
         self.frames[frame_index] = Some(current);
@@ -268,11 +281,12 @@ impl Decoder {
         let yuv = if self.output_dmabuf {
             Vec::new()
         } else {
+            let reusable = self.output_recycle.pop().unwrap_or_default();
             self.frames
                 .get_mut(reference.frame)
                 .and_then(Option::as_mut)
                 .ok_or("show-existing AV1 frame was released")?
-                .read_planar()
+                .read_planar(reusable)
                 .map_err(|error| error.to_string())?
         };
         let frame = self
@@ -308,6 +322,12 @@ impl Decoder {
 
     pub fn set_output_dmabuf(&mut self, enabled: bool) {
         self.output_dmabuf = enabled;
+    }
+
+    pub fn recycle_output(&mut self, buffer: Vec<u8>) {
+        if buffer.capacity() != 0 && self.output_recycle.len() < 4 {
+            self.output_recycle.push(buffer);
+        }
     }
 
     pub fn import_output_dmabuf(&mut self, buffer: DmaBuf) -> Result<(), String> {

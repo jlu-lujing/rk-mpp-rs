@@ -1362,6 +1362,13 @@ impl Av1Decoder {
             Self::Vdpu383(decoder) => decoder.import_output_dmabuf(buffer),
         }
     }
+
+    fn recycle_output(&mut self, buffer: Vec<u8>) {
+        match self {
+            Self::Vdpu34x(decoder) => decoder.recycle_output(buffer),
+            Self::Vdpu383(decoder) => decoder.recycle_output(buffer),
+        }
+    }
 }
 
 impl Decoder {
@@ -1430,6 +1437,7 @@ impl Decoder {
             Backend::H264(backend) => backend.decoder.recycle_output(buffer),
             Backend::H265(backend) => backend.decoder.recycle_output(buffer),
             Backend::Vp9(backend) => backend.decoder.recycle_output(buffer),
+            Backend::Av1(backend) => backend.decoder.recycle_output(buffer),
             _ => {}
         }
     }
