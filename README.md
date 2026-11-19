@@ -418,6 +418,9 @@ vendor 自带的 `mpp_enc_cfg_test` 已可在 Rust standalone 库上通过 **9/9
 同一套 scalar/array `get/set/extract/apply` 也工作在
 `MPP_VENC_KCFG_TYPE_ST_CFG` 句柄上，且 `mpp_enc_cfg_deinit()` 会按 vendor
 路径释放该句柄。
+`MppEncCfg` 的 `rc:refresh_en/mode/num` 也已映射到 typed
+`EncoderConfig::gdr`；H.264 和 H.265 的对象配置路径都可通过
+`scripts/board_mpp_enc_cfg_gdr.sh` 复验。
 t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
 也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
 （`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则

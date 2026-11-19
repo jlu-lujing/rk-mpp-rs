@@ -4057,7 +4057,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1352 passed / 45 ignored and t6 workspace tests are 1354 passed / 45 ignored,
+  1354 passed / 45 ignored and t6 workspace tests are 1356 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
@@ -4097,6 +4097,16 @@ pipeline uses.
   0.116 to 0.046 seconds for H.265 (about 60%). Old/new streams were
   byte-identical: H.264 `81c37cd1…2167d7bb` and H.265
   `0b1104b9…c8ccaad5`.
+
+- **2026-11-20: MppEncCfg carries GDR into the typed encoder.** The compatible
+  object path parsed `rc:refresh_en`, `rc:refresh_mode` and `rc:refresh_num`
+  as stored keys but did not forward them to `EncoderConfig`, so only the CLI
+  and typed API could start intra refresh. The keys now map to row/column
+  `GdrConfig` for H.264 and H.265, with invalid modes or zero widths rejected.
+  `scripts/board_mpp_enc_cfg_gdr.sh` compiles the unmodified vendor probes
+  against the Rust standalone library and compares them with the typed CLI:
+  H.264 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`), and
+  H.265 is byte-identical (`bc22eb33…454f035`).
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

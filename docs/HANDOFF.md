@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1352 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1354 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1354 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1356 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -421,6 +421,11 @@ t6、80% OPP、11 次交错 1920x1080 60 帧测试中，H.264 user CPU 中位数
 `81c37cd1ab6b6f750ff54476fbd6c523a3ce2dc45e91e32c8b0206c62167d7bb`，
 H.265 为 2,517,365 bytes /
 `0b1104b9a347653b7310f00b20cf7bef81652cdbe7adf8be4e844bdcc8ccaad5`。
+`MppEncCfg` 的 `rc:refresh_en/mode/num` 现已映射为 H.264/H.265 typed
+`GdrConfig`。`board_mpp_enc_cfg_gdr.sh` 用未修改的 vendor H.264/H.265 probe
+只设置这些对象键，并与 Rust CLI 比较：H.264 35 NAL 一致
+（version-SEI 仅 framing 不同，`09b7bc26…4367ca8`），H.265 stream 逐字节一致
+（`bc22eb33…454f035`）。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全

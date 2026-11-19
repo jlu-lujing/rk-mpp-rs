@@ -1,7 +1,9 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 
 use super::standalone;
-use crate::encoder::{EncoderConfig, H264RcTuning, RateControlConfig, RateControlMode};
+use crate::encoder::{
+    EncoderConfig, GdrConfig, GdrMode, H264RcTuning, RateControlConfig, RateControlMode,
+};
 use crate::sdk::Codec;
 
 const MPP_OK: c_int = 0;
@@ -112,6 +114,16 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
         }
     }
 
+    if matches!(codec, Codec::H264 | Codec::H265) {
+        if let Some(gdr) = gdr_config(
+            unsafe { cfg.get_or("rc:refresh_en", 0) },
+            unsafe { cfg.get_or("rc:refresh_mode", 0) },
+            unsafe { cfg.get_or("rc:refresh_num", 1) },
+        )? {
+            result = result.with_gdr(gdr);
+        }
+    }
+
     if codec == Codec::H264 || codec == Codec::H265 {
         if codec == Codec::H264 {
             result = result.with_num_ref_frames(2);
@@ -211,4 +223,45 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
         }
     }
     Ok(result)
+}
+
+fn gdr_config(enabled: i32, mode: i32, refresh_blocks: i32) -> Result<Option<GdrConfig>, String> {
+    if enabled == 0 {
+        return Ok(None);
+    }
+    let mode = match mode {
+        0 => GdrMode::Row,
+        1 => GdrMode::Col,
+        value => return Err(format!("unsupported GDR refresh mode {value}")),
+    };
+    if refresh_blocks <= 0 {
+        return Err(format!(
+            "GDR refresh_num must be positive, got {refresh_blocks}"
+        ));
+    }
+    Ok(Some(GdrConfig::new(mode, refresh_blocks as u32)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gdr_config;
+    use crate::encoder::GdrMode;
+
+    #[test]
+    fn gdr_keys_map_to_the_public_refresh_axis() {
+        let row = gdr_config(1, 0, 4).unwrap().unwrap();
+        assert_eq!(row.mode(), GdrMode::Row);
+        assert_eq!(row.refresh_blocks(), 4);
+        let col = gdr_config(1, 1, 8).unwrap().unwrap();
+        assert_eq!(col.mode(), GdrMode::Col);
+        assert!(gdr_config(0, 1, 8).unwrap().is_none());
+    }
+
+    #[test]
+    fn invalid_gdr_keys_are_named() {
+        assert!(gdr_config(1, 2, 4).unwrap_err().contains("mode 2"));
+        assert!(gdr_config(1, 0, 0)
+            .unwrap_err()
+            .contains("refresh_num must be positive"));
+    }
 }

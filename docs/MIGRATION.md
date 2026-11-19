@@ -44,6 +44,8 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   `MPP_VENC_KCFG_TYPE_ST_CFG` 句柄共享这些标量和数组访问器，
   `mpp_enc_cfg_deinit()` 也接受后者；vendor 自带的 `mpp_enc_cfg_test`
   可通过 `librk_mpp_rs.so` 运行 9/9。
+  `rc:refresh_en/mode/num` 会映射到 H.264/H.265 typed GDR；可用
+  `scripts/board_mpp_enc_cfg_gdr.sh` 验证未修改 vendor probe 与 Rust CLI 输出。
 
 ## 1. 二进制 drop-in（不改代码）
 
