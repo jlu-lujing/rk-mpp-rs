@@ -3929,6 +3929,15 @@ pipeline uses.
   `subsampling_x` and `subsampling_y`. The public repository roots now include
   `CONTRIBUTING.md`, `SECURITY.md` and `CODE_OF_CONDUCT.md`.
 
+- **2026-11-19: board reference setup has a read-only preflight.**
+  `setup_board_refs.sh --check` validates SSH, MPP/dma-heap devices,
+  passwordless sudo, both C oracles, the ioctl tracer and a non-empty corpus
+  without copying or building anything. `board_regress_all.sh` now fails on
+  unexpected `SKIP` lines unless `ALLOW_SKIPS=1` is explicit. t6 passes the
+  preflight with 676 corpus streams; a board without local oracle/corpus exits
+  non-zero. Minimum board requirements and path overrides are documented in
+  `docs/board.md`.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

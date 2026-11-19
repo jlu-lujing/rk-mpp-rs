@@ -306,6 +306,14 @@ Linux affinity API 的平台门，以及 `rk-mpp-rs-sys` 在只有 `.a` 时错�
 dylib 链接的问题。`native_smoke` 是 Linux 动态库门，在非 Linux host 上跳过。
 同轮 clippy 还发现 AV1 4:4:0 的 `subsampling_y` 重复判断，已改为同时检查 x/y。
 
+板级脚本的可移植性入口也已收紧。`setup_board_refs.sh --check` 只验证
+SSH、`/dev/mpp_service`、dma-heap、passwordless sudo、两套 C oracle、
+ioctl tracer 和 corpus，不再静默创建或复制；`board_regress_all.sh`
+默认把 unexpected `SKIP` 当作失败，只有显式 `ALLOW_SKIPS=1` 才接受。
+t6 的 `--check` 通过并看到 676 个 corpus stream；没有本地 oracle/corpus
+的另一块板会明确退出非零。最低 Debian/kernel/device/sudo 要求和所有路径
+override 已写入 `docs/board.md`。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；

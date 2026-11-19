@@ -16,6 +16,7 @@ BOARD="${BOARD:-t6}"
 #   SKIP=vp8,m2v scripts/board_regress_all.sh
 #   PERF_GATE=1 scripts/board_regress_all.sh  # also enforce t6 hot-path limits
 #   JITTER_CHECK=1 scripts/board_regress_all.sh  # rerun representative C oracles
+#   ALLOW_SKIPS=1 scripts/board_regress_all.sh   # accept missing fixtures/oracles
 set -uo pipefail
 
 logdir=/tmp/rk-mpp-rs-regress
@@ -44,8 +45,17 @@ run() { # <name> <script...>
   # this script's stdin is a pipe or a file it blocks there forever.
   if "$@" < /dev/null > "/tmp/rk-mpp-rs-regress/$name.log" 2>&1; then
     local passes
+    local skips
     passes=$(grep -cE '^(PASS|ok|7/7|[0-9]+/[0-9]+ )' "/tmp/rk-mpp-rs-regress/$name.log" || true)
-    summary+=("ok     $name  (${passes} line(s) of evidence, log: $logdir/$name.log)")
+    skips=$(grep -cE '^SKIP' "/tmp/rk-mpp-rs-regress/$name.log" || true)
+    if [ "$skips" -gt 0 ] && [ "${ALLOW_SKIPS:-0}" != 1 ]; then
+      summary+=("FAIL   $name  ($skips unexpected SKIP line(s), log: $logdir/$name.log)")
+      grep -E '^SKIP' "/tmp/rk-mpp-rs-regress/$name.log" | tail -20
+      printf 'Set ALLOW_SKIPS=1 only when the missing capability is expected on this board.\n' >&2
+      fail=1
+    else
+      summary+=("ok     $name  (${passes} line(s) of evidence, log: $logdir/$name.log)")
+    fi
   else
     summary+=("FAIL   $name  (log: $logdir/$name.log)")
     tail -25 "/tmp/rk-mpp-rs-regress/$name.log"
