@@ -1516,6 +1516,11 @@ rows. Rust versus C throughput is +39.1% at 320x240, +77.3% at 640x480,
 in 1.047 s against C's 1.842 s; H.264 completed in 1.022 s against C's
 2.503 s.
 
+The CLI now writes each H.265 access unit through a 1 MiB `BufWriter` instead
+of accumulating the full stream. The 120-frame 720p output kept the same
+SHA-256 `a2865a07…88d20a`, and a subsequent 60-frame four-size benchmark
+remained 4/4 PASS.
+
 The H.264 and HEVC `/tmp` corpora were restored from
 `~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and
 the HEVC suite passed every available large-profile, tile, slice, open-GOP,

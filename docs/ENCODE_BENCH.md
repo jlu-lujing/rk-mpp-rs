@@ -37,6 +37,11 @@ The before/after streams were byte-identical:
 `system-uncached` (275 ms median) over `system` (285 ms median), so the faster
 result is not an uncached-heap accident.
 
+`h265-gop` now writes each completed access unit through a 1 MiB `BufWriter`
+instead of retaining the whole encoded sequence in one `Vec`. The 120-frame
+720p SHA remained identical, and `/dev/null` keeps its no-file-write benchmark
+path.
+
 The current five-sample, 60-frame interleaved medians are:
 
 | codec | size | C MPP | this crate | Rust advantage |

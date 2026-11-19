@@ -3975,6 +3975,15 @@ pipeline uses.
   only path that prints `SKIP` and returns success. Invalid `MPP_REF` and the
   explicit partial-run path were both exercised on t6.
 
+- **2026-11-19: H.265 GOP output streams per access unit.** `h265-gop` no
+  longer retains the complete encoded sequence in a growing `Vec`; it writes
+  each access unit through a 1 MiB `BufWriter`, and the `/dev/null` benchmark
+  path still bypasses file I/O. Long encodes now keep only one AU plus the
+  writer buffer rather than the whole sequence. A 120-frame 720p output
+  remained byte-identical:
+  `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`;
+  the 60-frame H.265 matrix remained 4/4 PASS.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

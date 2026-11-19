@@ -2891,6 +2891,14 @@ fn main() {
             }
             encoder.set_slice_split(split)?;
             encoder.set_roi_regions(&rois)?;
+            let mut output = if dst == "/dev/null" {
+                None
+            } else {
+                Some(std::io::BufWriter::with_capacity(
+                    1024 * 1024,
+                    std::fs::File::create(dst).map_err(|error| format!("{dst}: {error}"))?,
+                ))
+            };
             let input_parallelism = std::thread::available_parallelism()
                 .map(|parallelism| parallelism.get())
                 .unwrap_or(1);
@@ -2909,7 +2917,7 @@ fn main() {
             } else {
                 Vec::new()
             };
-            let mut out = Vec::new();
+            let mut total_bytes = 0usize;
             let mut packets = 0;
             let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
             for index in 0..frames {
@@ -2939,17 +2947,23 @@ fn main() {
                         encoded.packets.len()
                     );
                 }
-                out.extend_from_slice(&encoded.annex_b);
+                total_bytes += encoded.annex_b.len();
+                if let Some(out) = output.as_mut() {
+                    use std::io::Write as _;
+                    out.write_all(&encoded.annex_b)
+                        .map_err(|error| format!("{dst}: {error}"))?;
+                }
             }
             if let Some(pipeline) = pipeline {
                 pipeline.finish();
             }
-            Ok((out, packets))
+            if let Some(out) = output.as_mut() {
+                use std::io::Write as _;
+                out.flush().map_err(|error| format!("{dst}: {error}"))?;
+            }
+            Ok((total_bytes, packets))
         });
-        match result.and_then(|(stream, packets)| {
-            std::fs::write(dst, &stream).map_err(|e| format!("{dst}: {e}"))?;
-            Ok((stream.len(), packets))
-        }) {
+        match result {
             Ok((bytes, packets)) => println!(
                 "h265-gop {src} -> {dst}: {bytes} bytes, {packets} packet(s), {frames} frames {width}x{height} fixed qp {qp}"
             ),
