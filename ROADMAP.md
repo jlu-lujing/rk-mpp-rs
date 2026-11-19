@@ -3910,6 +3910,15 @@ pipeline uses.
   as lower parse CPU/allocation cost. Seven H.265 streams remained
   byte-identical and the RK3576 corruption matrix remained 16/16.
 
+  **2026-11-19: H.265 gained a pre-scanned access-unit API.**
+  `split_parsed_access_units()` returns borrowed payload ranges and
+  access-unit-relative NAL offsets; `decode_parsed_access_unit()` consumes
+  them without scanning start codes again. The CLI now uses this path, while
+  the existing byte-slice API remains unchanged. Twenty-one interleaved
+  1200-frame samples differed by only about 0.1%, so this is functional API
+  symmetry with H.264 rather than a throughput claim. Seven stream outputs
+  stayed byte-identical and the RK3576 corruption matrix stayed 16/16.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

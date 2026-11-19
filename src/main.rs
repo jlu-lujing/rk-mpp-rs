@@ -3394,7 +3394,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let aus = rk_mpp_rs::codec::hevc::decoder::split_access_units(&data);
+        let aus = rk_mpp_rs::codec::hevc::decoder::split_parsed_access_units(&data);
         println!("{} access units", aus.len());
         if aus.is_empty() {
             eprintln!("{src}: no H.265 access units found");
@@ -3457,7 +3457,7 @@ fn main() {
                 };
             for (i, au) in aus.iter().enumerate() {
                 let started = Instant::now();
-                let result = dec.decode_access_unit(au);
+                let result = dec.decode_parsed_access_unit(au);
                 decode_time += started.elapsed();
                 match result {
                     Ok(Some(picture)) => {

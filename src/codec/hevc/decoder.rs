@@ -305,7 +305,35 @@ impl Decoder {
 
     /// Decode one access unit (all NAL units of one picture).
     pub fn decode_access_unit(&mut self, aub: &[u8]) -> Result<Option<Picture>, String> {
-        let nals = parser::split_annex_b(aub);
+        let headers = parser::split_annex_b_headers(aub);
+        self.decode_access_unit_headers(aub, &headers)
+    }
+
+    /// Decode an access unit whose Annex-B boundaries were scanned with the
+    /// surrounding stream.
+    pub fn decode_parsed_access_unit(
+        &mut self,
+        access_unit: &ParsedAccessUnit<'_>,
+    ) -> Result<Option<Picture>, String> {
+        self.decode_access_unit_headers(access_unit.data, &access_unit.nals)
+    }
+
+    fn decode_access_unit_headers(
+        &mut self,
+        aub: &[u8],
+        headers: &[parser::NalHeader<'_>],
+    ) -> Result<Option<Picture>, String> {
+        let nals: Vec<parser::NalUnit<'_>> = headers
+            .iter()
+            .map(|n| parser::NalUnit {
+                unit_type: n.unit_type,
+                layer_id: n.layer_id,
+                temporal_id_plus1: n.temporal_id_plus1,
+                rbsp: parser::ebsp_to_rbsp(n.payload),
+                offset: n.offset,
+                len: n.len,
+            })
+            .collect();
         if nals.is_empty() {
             return Ok(None);
         }
@@ -1130,44 +1158,85 @@ pub fn slice_pps_id(rbsp: &[u8], nal_type: u8) -> Result<u32, parser::HevcError>
     r.read_ue().map_err(|_| parser::HevcError::Truncated)
 }
 
-/// Split an Annex-B stream into access units at picture boundaries.
-pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
+/// One access unit with NAL header ranges borrowed from the original stream.
+pub struct ParsedAccessUnit<'a> {
+    /// Complete Annex-B access unit, including each start code.
+    pub data: &'a [u8],
+    /// NAL headers in this access unit. Offsets are relative to `data`;
+    /// payloads still borrow the original compressed stream.
+    pub nals: Vec<parser::NalHeader<'a>>,
+}
+
+/// Split a stream into access units while scanning Annex-B boundaries once.
+pub fn split_parsed_access_units(data: &[u8]) -> Vec<ParsedAccessUnit<'_>> {
     let nals = parser::split_annex_b_headers(data);
     let mut out = Vec::new();
-    let mut start: Option<usize> = None;
+    let mut start_index: Option<usize> = None;
+    let mut start_offset: Option<usize> = None;
     let mut has_vcl = false;
-    let mut trailing_non_vcl: Option<usize> = None;
-    for n in &nals {
+    let mut trailing_non_vcl: Option<(usize, usize)> = None;
+    for (index, n) in nals.iter().enumerate() {
         let boundary = match n.unit_type {
             parser::NAL_AUD => true,
             t if t <= 31 => first_slice(n.payload),
             _ => false,
         };
         if boundary && has_vcl {
-            let next_start = trailing_non_vcl.unwrap_or(n.offset);
-            out.push(&data[start.unwrap()..next_start]);
-            start = Some(next_start);
+            let (end, next_start) = trailing_non_vcl.unwrap_or((index, n.offset));
+            let first = start_index.expect("an access unit with VCL has a start");
+            out.push(ParsedAccessUnit {
+                data: &data[start_offset.expect("access unit start offset")..next_start],
+                nals: relative_headers(
+                    &nals[first..end],
+                    start_offset.expect("access unit start offset"),
+                ),
+            });
+            start_index = Some(end);
+            start_offset = Some(next_start);
             has_vcl = n.is_vcl();
             trailing_non_vcl = None;
             continue;
         }
-        if start.is_none() {
-            start = Some(n.offset);
+        if start_index.is_none() {
+            start_index = Some(index);
+            start_offset = Some(n.offset);
         }
         if n.is_vcl() {
             has_vcl = true;
             trailing_non_vcl = None;
         } else if has_vcl && trailing_non_vcl.is_none() {
-            trailing_non_vcl = Some(n.offset);
+            trailing_non_vcl = Some((index, n.offset));
         }
     }
 
-    if let Some(s) = start {
+    if let Some(first) = start_index {
         if has_vcl {
-            out.push(&data[s..]);
+            let start = start_offset.expect("access unit start offset");
+            out.push(ParsedAccessUnit {
+                data: &data[start..],
+                nals: relative_headers(&nals[first..], start),
+            });
         }
     }
     out
+}
+
+fn relative_headers<'a>(nals: &[parser::NalHeader<'a>], base: usize) -> Vec<parser::NalHeader<'a>> {
+    nals.iter()
+        .cloned()
+        .map(|mut nal| {
+            nal.offset -= base;
+            nal
+        })
+        .collect()
+}
+
+/// Split an Annex-B stream into access units at picture boundaries.
+pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
+    split_parsed_access_units(data)
+        .into_iter()
+        .map(|access_unit| access_unit.data)
+        .collect()
 }
 
 fn first_slice(rbsp: &[u8]) -> bool {
@@ -1178,8 +1247,8 @@ fn first_slice(rbsp: &[u8]) -> bool {
 mod tests {
     use super::{
         copy_planar, parse_picture_slices, read_packed_sample, resets_picture_order_count,
-        sort_pictures_for_display, split_access_units, starts_new_display_epoch, ChromaFormat,
-        DisplayReorder, Picture,
+        sort_pictures_for_display, split_access_units, split_parsed_access_units,
+        starts_new_display_epoch, ChromaFormat, DisplayReorder, Picture,
     };
     use crate::codec::hevc::parser::{NalUnit, Pps, Sps};
     use std::borrow::Cow;
@@ -1255,6 +1324,14 @@ mod tests {
         let aus = split_access_units(&data);
         assert_eq!(aus.len(), 2);
         assert!(aus[1].starts_with(&[0, 0, 0, 1, 0x44, 0x01]));
+        let parsed = split_parsed_access_units(&data);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].data, aus[0]);
+        assert_eq!(parsed[1].data, aus[1]);
+        assert_eq!(parsed[0].nals.len(), 2);
+        assert_eq!(parsed[1].nals.len(), 2);
+        assert_eq!(parsed[0].nals[0].offset, 0);
+        assert_eq!(parsed[1].nals[0].offset, 0);
     }
 
     #[test]

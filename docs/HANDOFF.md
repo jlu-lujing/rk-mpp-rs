@@ -293,6 +293,12 @@ slice header 的解转义语义不变。t6 80% OPP cap 下，1200 帧 task-clock
 `381.8 -> 368.1 ms`（-3.6%），instructions `836.3M -> 784.8M`（-6.2%）；
 并发墙钟持平，因此只按解析 CPU 成本记账。
 
+H.265 现在也提供与 H.264 对称的 parsed-AU 接口：
+`split_parsed_access_units()` 返回原流切片和相对 offset 的 NAL header，
+`Decoder::decode_parsed_access_unit()` 直接消费该结果，不再重扫 start
+code。CLI 已切到这个路径。输出与旧接口相同；1200 帧交错墙钟差异只有
+约 0.1%，因此这是 API/集成能力改进，不宣传为吞吐优化。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；
