@@ -1542,6 +1542,18 @@ Because `SET_REG_READ` overwrites the complete STATUS range, the 16 KiB clear
 was removed. H.264 moved from 1098 to 1052 ms and H.265 from 1129 to 1075 ms
 over seven interleaved 500-frame samples, with unchanged streams.
 
+The encoder output packet buffers now live in `system-uncached` DMA heaps. CPU
+reads therefore need no per-packet cache invalidate START/END ioctls. Seven
+interleaved 500-frame 720p A/B samples at 80% OPP measured H.264 at 993.284 ms
+versus **968.188 ms** (-2.53%) and H.265 at 1043.576 ms versus **1018.445 ms**
+(-2.41%). The outputs remained byte-identical:
+`0a039e02910169e9900349a16e676f580c3da9e265b154d15ebcbde3a2bc6a2e` and
+`ae613590ee5b546f89d76dad1ecaa1528da292abfbd4e92303cc84c93b469783`.
+H.264 low-delay output remained 5/5 exact. The H.265 low-delay comparison
+could not run because the on-board vendor headers lack
+`EncRcTaskInfo.bit_target_fix`; its complete 500-frame stream was verified
+directly instead.
+
 The H.264 and HEVC `/tmp` corpora were restored from
 `~/rk-mpp-oracles/corpus` after reboot. The H.264 decode suite passed 7/7 and
 the HEVC suite passed every available large-profile, tile, slice, open-GOP,

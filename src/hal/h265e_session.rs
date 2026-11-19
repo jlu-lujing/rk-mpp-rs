@@ -344,7 +344,9 @@ impl Vepu580H265 {
             syntax: SyntaxOptions::default(),
             input: DmaBuf::alloc("system", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
-            output: DmaBuf::alloc("system", output_size, false)
+            // The packet is only a few KiB. Keeping it uncached makes the
+            // hardware result CPU-visible without two sync ioctls per picture.
+            output: DmaBuf::alloc("system-uncached", output_size, false)
                 .map_err(|e| format!("allocate H.265 output: {e}"))?,
             surfaces: [Surface::alloc(sizes)?, Surface::alloc(sizes)?],
             slot: 0,
@@ -1168,14 +1170,8 @@ impl Vepu580H265 {
             }
             stream_len += length;
             payload.resize(stream_len, 0);
-            self.output
-                .sync_read_begin()
-                .map_err(|e| format!("H.265 output invalidate: {e}"))?;
             payload[stream_len - length..stream_len]
                 .copy_from_slice(&self.output.as_slice()[stream_len - length..stream_len]);
-            self.output
-                .sync_read_end()
-                .map_err(|e| format!("H.265 output sync end: {e}"))?;
             self.status_scratch = status;
         }
         let mut status = aggregate_status;

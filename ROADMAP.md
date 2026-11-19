@@ -4074,6 +4074,15 @@ pipeline uses.
   `board_regress_m2v` 3/3, `board_regress_mp4` 3/3, `board_regress_h263` 3/3,
   `board_vp9_matrix` fail=0. See `docs/T6_VALIDATION.md`.
 
+- **2026-11-19: encoder packets skip CPU cache-sync ioctls.** VEPU580 H.264 and
+  H.265 now put the output packet buffer in a `system-uncached` DMA heap, so
+  reading a completed picture no longer issues `DMA_BUF_SYNC` START/END
+  ioctls. Seven interleaved 500-frame 720p A/B samples at 80% OPP moved H.264
+  from 993.284 to 968.188 ms (-2.53%) and H.265 from 1043.576 to 1018.445 ms
+  (-2.41%). The H.264 and H.265 stream hashes stayed
+  `0a039e02…a2bc6a2e` and `ae613590…c93b469783`; H.264 low-delay output
+  remained 5/5 exact.
+
   **2026-11-17: streamed output for MPEG-2/MPEG-4/H.263.** These decoders and
   their CLIs now hand each picture to the writer instead of building a
   whole-stream `Vec`; `perf` put ~28 % of a 120-frame MPEG-4 run in page

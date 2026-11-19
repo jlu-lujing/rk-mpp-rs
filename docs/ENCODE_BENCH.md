@@ -81,6 +81,15 @@ per-frame 16 KiB clear was redundant. Removing it moved H.264 from 1098 to
 1052 ms and H.265 from 1129 to 1075 ms in seven interleaved 500-frame 720p
 samples, with unchanged stream hashes.
 
+The VEPU580 output surface now uses the `system-uncached` heap, so the encoder
+no longer issues `DMA_BUF_SYNC` START/END ioctls before reading each completed
+packet. Seven interleaved 500-frame 720p A/B samples at 80% OPP moved H.264
+from 993.284 to **968.188 ms** (-2.53%) and H.265 from 1043.576 to
+**1018.445 ms** (-2.41%). The new outputs remained byte-identical to the
+recorded streams: `0a039e02…a2bc6a2e` for H.264 and
+`ae613590…c93b469783` for H.265. H.264 low-delay slice output also stayed 5/5
+exact.
+
 ## Earlier 60-frame single-stream baseline
 
 | codec | size | C MPP | this crate | Rust advantage |

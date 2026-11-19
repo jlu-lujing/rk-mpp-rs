@@ -379,6 +379,15 @@ H.264/H.265 的 STATUS 全范围是内核 `SET_REG_READ` 目标，硬件会逐 w
 因此去掉了每帧 16 KiB 的清零。7 次交错 500 帧 720p 中，H.264 从 1098 ms
 降到 1052 ms，H.265 从 1129 ms 降到 1075 ms，码流哈希不变。
 
+VEPU580 输出 packet 改用 `system-uncached` DMA heap，CPU 读取前不再对每帧
+发 `DMA_BUF_SYNC` START/END。t6、80% OPP、7 次交错 500 帧 720p A/B 中，
+H.264 从 993.284 ms 降到 968.188 ms（-2.53%），H.265 从 1043.576 ms 降到
+1018.445 ms（-2.41%）。两路输出分别保持
+`0a039e02…a2bc6a2e` 和 `ae613590…c93b469783`；H.264 low-delay 5/5 继续
+逐 packet 一致。本机 vendor 头文件没有 `EncRcTaskInfo.bit_target_fix`，
+导致 H.265 low-delay 对比脚本在编译 C probe 时失败，H.265 完整 500 帧流已
+单独校验。
+
 `h265-gop` 的输出也改为逐 access unit 写 1 MiB `BufWriter`，不再在内存里
 累计整条码流；`/dev/null` 基准仍跳过文件写入。120 帧 720p 输出 SHA-256 保持
 `a2865a07a64d266073072d75eea21433e9e5ef09a76acd4034a146f38188d20a`，

@@ -808,7 +808,9 @@ impl Vepu580H264 {
             started: false,
             input: DmaBuf::alloc("system-uncached", input_size, false)
                 .map_err(|e| format!("allocate H.264 input: {e}"))?,
-            output: DmaBuf::alloc("system", output_size, false)
+            // The packet is only a few KiB. Keeping it uncached makes the
+            // hardware result CPU-visible without two sync ioctls per picture.
+            output: DmaBuf::alloc("system-uncached", output_size, false)
                 .map_err(|e| format!("allocate H.264 output: {e}"))?,
             recons: [
                 Recon::alloc(pixel_size, thumb_size)?,
@@ -1207,14 +1209,8 @@ impl Vepu580H264 {
                 self.output.len()
             ));
         }
-        self.output
-            .sync_read_begin()
-            .map_err(|e| format!("H.264 output invalidate: {e}"))?;
         let mut payload = self.output.as_slice()[..payload_len].to_vec();
         let nal_validation = validate_nal_bytes(&payload, if state.is_idr { 5 } else { 1 });
-        self.output
-            .sync_read_end()
-            .map_err(|e| format!("H.264 output sync end: {e}"))?;
         nal_validation?;
         if self.forced_reference_slot == Some(0) && !reference_pattern_active {
             payload = amend_default_reference_slice(
