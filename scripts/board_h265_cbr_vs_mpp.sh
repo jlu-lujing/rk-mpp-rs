@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 BOARD="${BOARD:-t6}"
-# H.265 rate-control board gate: the C encoder against the crate, whole streams.
+# H.265 rate-control board gate: the encoder build-identity SEI is removed from
+# both streams, then every remaining byte must match.
 #
 # Two kinds of cell:
 #   * explicit decisions  - the C's per-picture bit targets and QPs are fed into
@@ -35,6 +36,20 @@ COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Car
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
 
+normalized_cmp() {
+  local c_out="$1" rust_out="$2"
+  ssh "$BOARD" "python3 ~/rk-mpp-rs/scripts/strip_version_sei.py $c_out $c_out.norm &&
+    python3 ~/rk-mpp-rs/scripts/strip_version_sei.py $rust_out $rust_out.norm &&
+    cmp -s $c_out.norm $rust_out.norm"
+}
+
+normalized_difference() {
+  local c_out="$1" rust_out="$2"
+  ssh "$BOARD" "python3 ~/rk-mpp-rs/scripts/strip_version_sei.py $c_out $c_out.norm &&
+    python3 ~/rk-mpp-rs/scripts/strip_version_sei.py $rust_out $rust_out.norm &&
+    cmp -l $c_out.norm $rust_out.norm 2>/dev/null | head -1"
+}
+
 for size in $sizes; do
   width="${size%%x*}"
   height="${size##*x}"
@@ -56,11 +71,11 @@ for size in $sizes; do
         $seq $rust_out $width $height $steps $qp_min $qp_max $bps 26" >/tmp/h265-cbr-${size}.log 2>&1; then
       printf 'FAIL %-12s (our encode failed: %s)\n' "$size" "$(tail -1 /tmp/h265-cbr-${size}.log)"
       fail=1
-    elif ssh "$BOARD" "cmp -s $c_out $rust_out"; then
-      printf 'PASS %-12s (%s bytes, CBR stream byte-identical with the C decisions)\n' \
+    elif normalized_cmp "$c_out" "$rust_out"; then
+      printf 'PASS %-12s (%s bytes, normalized CBR stream identical with the C decisions)\n' \
         "$size" "$(ssh "$BOARD" "stat -c%s $c_out")"
     else
-      first=$(ssh "$BOARD" "cmp -l $c_out $rust_out 2>/dev/null | head -1")
+      first=$(normalized_difference "$c_out" "$rust_out")
       printf 'FAIL %-12s (first difference: %s)\n' "$size" "${first:-length}"
       fail=1
     fi
@@ -89,11 +104,11 @@ for size in $sizes; do
       printf 'FAIL %-12s %-4s (our encode failed: %s)\n' "$size" "$mode" \
         "$(tail -1 /tmp/h265-${mode}-${size}.log)"; fail=1; continue
     fi
-    if ssh "$BOARD" "cmp -s $model_c $model_r"; then
-      printf 'PASS %-12s %-4s (%s bytes, the model picked both QPs)\n' \
+    if normalized_cmp "$model_c" "$model_r"; then
+      printf 'PASS %-12s %-4s (%s bytes, normalized model stream identical)\n' \
         "$size" "$mode" "$(ssh "$BOARD" "stat -c%s $model_c")"
     else
-      first=$(ssh "$BOARD" "cmp -l $model_c $model_r 2>/dev/null | head -1")
+      first=$(normalized_difference "$model_c" "$model_r")
       printf 'FAIL %-12s %-4s (first difference: %s)\n' "$size" "$mode" "${first:-length}"
       fail=1
     fi
@@ -111,11 +126,11 @@ for size in $sizes; do
       $seq $vi_r $width $height 2 $bps 26 $qp_min $qp_max cbr" >/tmp/h265-vi-${size}.log 2>&1; then
     printf 'FAIL %-12s vi   (our encode failed: %s)\n' "$size" "$(tail -1 /tmp/h265-vi-${size}.log)"
     fail=1
-  elif ssh "$BOARD" "cmp -s $vi_c $vi_r"; then
-    printf 'PASS %-12s vi   (%s bytes, smart GOP, model picked both QPs)\n' \
+  elif normalized_cmp "$vi_c" "$vi_r"; then
+    printf 'PASS %-12s vi   (%s bytes, normalized smart-GOP stream identical)\n' \
       "$size" "$(ssh "$BOARD" "stat -c%s $vi_c")"
   else
-    first=$(ssh "$BOARD" "cmp -l $vi_c $vi_r 2>/dev/null | head -1")
+    first=$(normalized_difference "$vi_c" "$vi_r")
     printf 'FAIL %-12s vi   (first difference: %s)\n' "$size" "${first:-length}"
     fail=1
   fi

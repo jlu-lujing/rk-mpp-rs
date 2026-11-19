@@ -857,15 +857,19 @@ H.264/VEPU580 编码已做到：
   `lamd_modb_qp` 写进 `iprd_wgt_qp_hevc_0_51`，IDR 保留 intra 表。
   `scripts/board_h265_gop_vs_mpp.sh`：2/3/5 帧在 320x240，以及 2 帧的 640x480、
   1280x720 **整条码流与 C 逐字节相同**；横移 8 像素的动画面（1032 字节）也逐字节。
-- CBR 通路也已逐字节：`h265-gop-rc` 喂 C 的逐帧决策（IDR 26/86955、P 25/582）后，
-  含 CBR PPS、`cbr` SEI 行与两个 slice NAL 的 1169 字节流与 C 完全一致
-  （`scripts/board_h265_cbr_vs_mpp.sh`）。注意 GOP 的 LT 寄存器状态对 IDR 也要置位。
+- CBR 通路在剥离双方构建身份 version-SEI 后逐字节：`h265-gop-rc` 喂 C 的逐帧
+  决策（IDR 26/86955、P 25/582）后，CBR PPS、`cbr` SEI 行与两个 slice NAL
+  与 C 完全一致（`scripts/board_h265_cbr_vs_mpp.sh`）。扫描版曾把策略 SEI
+  错写成 `[15:51]:4`，现改为 harness 实际使用的 `[10:51]:2`。注意 GOP 的 LT
+  寄存器状态对 IDR 也要置位。
   STATUS 测量已移植（`measured_from_status`：`quality = qp_sum/(mb64<<6)`、
   `madi/num_b16`、`madp/num_ctu`），CBR 模型环也接上了：首帧决策与 C 一致，
   前缀与 IDR NAL 逐字节。第二帧仍不同（我们 9320 bits/QP27，C 582/QP25）；
   测量 bits 与 C 只差 24，所以问题在模型的 VBV/`calc_ratio` 状态折叠，不在测量。
 - 三种码控都已逐字节（纯 GOP、模型自选 QP）：CBR/VBR 1163 字节、AVBR 1164；
   显式决策格 1169 字节。`-rc` 编号以 SEI 实测为准：0:vbr 1:cbr 2:fixqp 3:avbr。
+  当前脚本先剥离 version-SEI，因此规范化后 320x240 模型三模式为
+  1109/1109/1110 字节；320x240、640x480、720p 共 13/13 格通过。
 - H.265 GDR 已闭合：C probe 通过显式 short-term ref cfg 真正触发 `is_i_refresh`；
   Rust 按 IGOP 边界调度 refresh、交替双 DPB、在边界重发 VPS/SPS/PPS +
   recovery-point SEI。320x240/640x480 × row/column 为 **4/4 整条逐字节**。

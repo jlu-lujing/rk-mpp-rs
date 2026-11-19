@@ -3993,6 +3993,14 @@ pipeline uses.
   Forced single-core and pipelined outputs were byte-identical:
   `7c4e93db…c11f65` for GOP-RC and `bb99af68…d7a6ad03` for model CBR.
 
+- **2026-11-19: H.265 CBR I-QP metadata matches the harness.** The rate-control
+  strategy SEI now carries the caller's I band unchanged and
+  `i_quality_delta=2`, instead of the stale `[15:51]:4` port. The CBR gate now
+  removes only the build-identity SEI from both sides, so toolchain version
+  text cannot hide a codec mismatch. The 320x240 explicit-decision cell and
+  640x480/720p model CBR, VBR, AVBR and smart-GOP cells pass 13/13 with
+  normalized stream equality.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

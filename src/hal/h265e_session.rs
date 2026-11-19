@@ -260,9 +260,9 @@ impl Vepu580H265 {
         config.quality_init = init_qp;
         config.quality_min = qp_min as i32;
         config.quality_max = qp_max as i32;
-        // `h265e_init`'s rate-control default. The next P picture therefore rises
-        // four QPs above the IDR target, matching the strategy SEI's I delta.
-        config.i_quality_delta = 4;
+        // `mpi_enc_test` sets the I and P quality bands to the same caller range
+        // and uses the harness I delta of two in the strategy SEI.
+        config.i_quality_delta = 2;
         config.total_mb = (mb64 << 6) as i32;
         config.mode = mode.model();
         session.rc_mode = mode;
@@ -275,9 +275,9 @@ impl Vepu580H265 {
             init_quality: init_qp,
             qp_min,
             qp_max,
-            qp_min_i: 15,
-            qp_max_i: 51,
-            i_quality_delta: 4,
+            qp_min_i: qp_min,
+            qp_max_i: qp_max,
+            i_quality_delta: 2,
         });
         Ok(session)
     }

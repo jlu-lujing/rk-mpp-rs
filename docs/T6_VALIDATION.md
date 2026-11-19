@@ -408,10 +408,12 @@ on both sides), so its 15-sample median is quoted.
   q-factor 80 and no `KEY_OUTPUT_INTRA`; Rust now emits the same metadata and
   byte-identical JPEG. On lf1 the VPU720 reference adds `intra=0`; the split
   formatter writes that field only for VPU720.
-- The CBR matrix exposed two existing H.265 rate-control bugs. The model used
-  an I-QP delta of 2 instead of the H.265 default 4, and the SEI-disabled path
-  built a fixed-QP PPS instead of the rate-controlled `cu_qp_delta_enabled=1`
-  form. Both are fixed; CBR stream and decoded YUV are byte-identical.
+- The CBR matrix exposed H.265 rate-control metadata drift too. The strategy SEI
+  must carry the caller's I band unchanged and `i_quality_delta=2`; the stale
+  port emitted `[15:51]:4`. The fixed metadata, rate-controlled
+  `cu_qp_delta_enabled=1` PPS and normalized stream now match C across
+  320x240, 640x480 and 720p. The gate removes only the build-version SEI from
+  each side and passes 13/13 cells.
 - The current t6 crate `--all-targets` gate is **1279 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
   `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1283 passed /
