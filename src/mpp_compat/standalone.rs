@@ -984,8 +984,22 @@ struct RefCfg {
     lt_count: i32,
     st_count: i32,
     keep_cpb: i32,
+    max_tlayers: i32,
+    cpb_info: MppEncCpbInfo,
     lt: [RefLtCfg; 16],
     st: [RefStCfg; 16],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MppEncCpbInfo {
+    pub dpb_size: i32,
+    pub max_lt_cnt: i32,
+    pub max_st_cnt: i32,
+    pub max_lt_idx: i32,
+    pub max_st_tid: i32,
+    pub lt_gop: i32,
+    pub st_gop: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1156,6 +1170,8 @@ fn new_ref_cfg() -> RefCfg {
         lt_count: 0,
         st_count: 0,
         keep_cpb: 0,
+        max_tlayers: 0,
+        cpb_info: MppEncCpbInfo::default(),
         lt: [RefLtCfg::default(); 16],
         st: [RefStCfg::default(); 16],
     }
@@ -1167,6 +1183,130 @@ fn ref_cfg_ref(config: *mut c_void) -> Option<&'static RefCfg> {
     }
     let config = unsafe { &*config.cast::<RefCfg>() };
     (config.magic == REF_CFG_MAGIC).then_some(config)
+}
+
+#[derive(Clone, Copy, Default)]
+struct CpbFrame {
+    valid: bool,
+    sequence: i32,
+    long_term: bool,
+    long_term_index: i32,
+}
+
+fn dryrun_st_cpb_count(config: &RefCfg) -> i32 {
+    const CPB_SIZE: usize = 16;
+    const TEMPORAL_LAYERS: usize = 4;
+
+    let mut mode_refs = [CpbFrame::default(); 8];
+    let mut st_tid_refs = [CpbFrame::default(); TEMPORAL_LAYERS];
+    let mut lt_idx_refs = [CpbFrame::default(); CPB_SIZE];
+    let mut st_refs = [CpbFrame::default(); CPB_SIZE];
+    let mut lt_refs = [CpbFrame::default(); CPB_SIZE];
+    let mut lt_counters: Vec<(i32, i32, i32, i32)> = config.lt[..config.lt_count as usize]
+        .iter()
+        .map(|lt| (lt.lt_delay, 0, 0, lt.lt_gap))
+        .collect();
+    if config.st_count == 0 {
+        return 1;
+    }
+    let walk_len = config.st_count.max(config.lt_count);
+    let mut used_size = 0;
+    let mut sequence = 0;
+
+    for step_index in 0..walk_len {
+        let step = config.st[(step_index % config.st_count) as usize];
+        let repeat = if step.repeat == 0 { 1 } else { step.repeat };
+        for _ in 0..repeat {
+            let mut frame = CpbFrame {
+                valid: true,
+                sequence,
+                long_term: false,
+                long_term_index: 0,
+            };
+            let is_intra = sequence == 0;
+            let mut is_non_reference = step.is_non_ref != 0;
+            let mut temporal_id = step.temporal_id;
+            let mut reference_mode = step.ref_mode;
+            let mut reference_argument = step.ref_arg;
+            let mut current_lt = None;
+
+            let mut set_long_term = false;
+            for (index, (delay, count, _, len)) in lt_counters.iter_mut().enumerate() {
+                if *delay > 0 {
+                    *delay -= 1;
+                    continue;
+                }
+                if !set_long_term && *count == 0 {
+                    set_long_term = true;
+                    current_lt = Some(index);
+                }
+                *count += 1;
+                if *count >= *len {
+                    if *len > 0 {
+                        *count = 0;
+                    } else {
+                        *count = 1;
+                    }
+                }
+            }
+            if let Some(index) = current_lt {
+                let lt = config.lt[index];
+                is_non_reference = false;
+                frame.long_term = true;
+                frame.long_term_index = lt.lt_idx;
+                temporal_id = lt.temporal_id;
+                if lt.ref_mode != 25 {
+                    reference_mode = lt.ref_mode;
+                    reference_argument = lt.ref_arg;
+                }
+            }
+
+            if sequence != 0 {
+                let reference = match reference_mode {
+                    0..=3 => mode_refs[reference_mode as usize],
+                    4 => st_tid_refs[reference_argument.clamp(0, 3) as usize],
+                    5 => lt_idx_refs[reference_argument.clamp(0, 15) as usize],
+                    6 => st_refs[reference_argument.clamp(0, 15) as usize],
+                    _ => CpbFrame::default(),
+                };
+                if reference.valid && !reference.long_term {
+                    if let Some(position) = st_refs[..CPB_SIZE]
+                        .iter()
+                        .position(|item| item.valid && item.sequence == reference.sequence)
+                    {
+                        used_size = used_size.max(position as i32 + 1);
+                    }
+                }
+            }
+
+            if !is_non_reference {
+                if is_intra {
+                    mode_refs[3] = frame;
+                }
+                if frame.long_term {
+                    mode_refs[0] = frame;
+                    mode_refs[2] = frame;
+                    st_tid_refs[temporal_id.clamp(0, 3) as usize] = frame;
+                    lt_idx_refs[frame.long_term_index.clamp(0, 15) as usize] = frame;
+                    if let Some(slot) = lt_refs[..CPB_SIZE].iter_mut().find(|item| {
+                        !item.valid
+                            || (item.long_term && item.long_term_index == frame.long_term_index)
+                    }) {
+                        *slot = frame;
+                    }
+                } else {
+                    mode_refs[0] = frame;
+                    mode_refs[1] = frame;
+                    st_tid_refs[temporal_id.clamp(0, 3) as usize] = frame;
+                    st_refs.copy_within(0..CPB_SIZE - 1, 1);
+                    st_refs[0] = frame;
+                }
+            }
+            sequence += 1;
+        }
+    }
+
+    used_size.max(1)
 }
 
 fn validate_ref_cfg(config: &mut RefCfg) -> bool {
@@ -1184,6 +1324,9 @@ fn validate_ref_cfg(config: &mut RefCfg) -> bool {
     }
 
     let mut lt_used = 0u32;
+    let mut max_lt_cnt = 0;
+    let mut max_lt_idx = 0;
+    let mut lt_gop = 0;
     for step in &config.lt[..config.lt_count as usize] {
         if !(0..MAX_LT_INDEX).contains(&step.lt_idx) {
             return false;
@@ -1193,6 +1336,8 @@ fn validate_ref_cfg(config: &mut RefCfg) -> bool {
             return false;
         }
         lt_used |= bit;
+        max_lt_cnt += 1;
+        max_lt_idx = max_lt_idx.max(step.lt_idx);
         if step.temporal_id != 0 {
             return false;
         }
@@ -1201,8 +1346,11 @@ fn validate_ref_cfg(config: &mut RefCfg) -> bool {
         {
             return false;
         }
+        lt_gop = lt_gop.max(step.lt_gap.saturating_add(step.lt_delay));
     }
 
+    let mut max_st_tid = 0;
+    let mut st_dryrun_length = 0;
     for (index, step) in config.st[..config.st_count as usize].iter_mut().enumerate() {
         if !(0..MAX_TEMPORAL_LAYERS).contains(&step.temporal_id) {
             return false;
@@ -1220,8 +1368,25 @@ fn validate_ref_cfg(config: &mut RefCfg) -> bool {
         {
             return false;
         }
+        max_st_tid = max_st_tid.max(step.temporal_id);
+        st_dryrun_length += 1 + step.repeat;
     }
 
+    let max_st_cnt = dryrun_st_cpb_count(config);
+    config.max_tlayers = if config.st_count == 0 {
+        0
+    } else {
+        max_st_tid + 1
+    };
+    config.cpb_info = MppEncCpbInfo {
+        dpb_size: (max_lt_cnt + max_st_cnt).max(1),
+        max_lt_cnt,
+        max_st_cnt,
+        max_lt_idx,
+        max_st_tid,
+        lt_gop,
+        st_gop: st_dryrun_length.saturating_sub(1),
+    };
     true
 }
 
@@ -2206,6 +2371,17 @@ pub unsafe extern "C" fn mpp_enc_ref_cfg_copy(dst: *mut c_void, src: *mut c_void
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn mpp_enc_ref_cfg_get_cpb_info(ref_cfg: *mut c_void) -> *mut MppEncCpbInfo {
+    let Some(config) = ref_cfg_mut(ref_cfg) else {
+        return ptr::null_mut();
+    };
+    if !validate_ref_cfg(config) {
+        return ptr::null_mut();
+    }
+    std::ptr::addr_of_mut!(config.cpb_info)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn mpp_enc_ref_cfg_set_keep_cpb(ref_cfg: *mut c_void, keep: i32) -> i32 {
     let Some(config) = ref_cfg_mut(ref_cfg) else {
         return MPP_ERR_NULL_PTR;
@@ -2478,6 +2654,99 @@ mod tests {
 
         assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut destination) }, MPP_OK);
         assert_eq!(unsafe { mpp_enc_ref_cfg_deinit(&mut source) }, MPP_OK);
+    }
+
+    #[test]
+    fn reference_cfg_reports_the_vendor_cpb_metadata() {
+        let mut config = new_ref_cfg();
+        config.st_count = 9;
+        config.lt_count = 1;
+        config.st[..9].copy_from_slice(&[
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 0,
+                ref_mode: 4,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 3,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 2,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 3,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 1,
+                ref_mode: 2,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 3,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 2,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 1,
+                temporal_id: 3,
+                ref_mode: 0,
+                ref_arg: 0,
+                repeat: 0,
+            },
+            RefStCfg {
+                is_non_ref: 0,
+                temporal_id: 0,
+                ref_mode: 4,
+                ref_arg: 0,
+                repeat: 0,
+            },
+        ]);
+        config.lt[0] = RefLtCfg {
+            lt_idx: 0,
+            temporal_id: 0,
+            ref_mode: 2,
+            ref_arg: 0,
+            lt_gap: 8,
+            lt_delay: 0,
+        };
+        assert!(validate_ref_cfg(&mut config));
+        assert_eq!(
+            config.cpb_info,
+            MppEncCpbInfo {
+                dpb_size: 2,
+                max_lt_cnt: 1,
+                max_st_cnt: 1,
+                max_lt_idx: 0,
+                max_st_tid: 3,
+                lt_gop: 8,
+                st_gop: 8,
+            }
+        );
     }
 
     #[test]

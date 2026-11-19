@@ -44,6 +44,9 @@ skips explicit; missing configured paths are failures.
 An oracle that exists but exits non-zero is always a test failure, including
 under `ALLOW_SKIPS=1`; that switch accepts missing capabilities, not failed
 execution.
+`scripts/board_mpp_ref_cpb.sh` compiles `tools/mpp_ref_cpb_probe.c` against
+both the vendor and Rust libraries and compares IPPP/TSVC2/TSVC3/TSVC4 CPB
+metadata field by field.
 
 ---
 

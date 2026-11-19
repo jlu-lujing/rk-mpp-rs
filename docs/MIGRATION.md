@@ -27,7 +27,9 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   唯一且小于 16、temporal id 为 0..3、LT/ST mode 分离、首尾 ST 帧必须是
   temporal-zero reference；负 repeat 会按 vendor 行为归零，非法配置返回
   `MPP_NOK`。`set_cfg_cnt` 设置容量并清零 live entry，`add_*` 逐项追加并
-  检查剩余容量，`mpp_enc_ref_cfg_copy` 复制完整层级。
+  检查剩余容量，`mpp_enc_ref_cfg_copy` 复制完整层级；
+  `mpp_enc_ref_cfg_get_cpb_info` 的 DPB/LT/ST/temporal/GOP 字段由虚拟 CPB
+  dryrun 计算，并与 vendor 的 IPPP、TSVC2/3/4 probe 一致。
 
 ## 1. 二进制 drop-in（不改代码）
 
