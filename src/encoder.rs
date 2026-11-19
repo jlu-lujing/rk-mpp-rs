@@ -1421,10 +1421,19 @@ impl Encoder {
                         qp_delta_row_i: 2,
                     });
                 }
-                let input = format_nv12_input(self.config, frame.data)?;
-                let encoded = encoder
-                    .encode_frame_for_queue(&input)
-                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                let encoded = if needs_visible_nv12_copy(self.config) {
+                    encoder
+                        .load_visible_input_frame(frame.data)
+                        .map_err(Error::Hardware)?;
+                    encoder
+                        .encode_frame_for_queue(&[])
+                        .map_err(|error| Error::Hardware(error.to_string()))?
+                } else {
+                    let input = format_nv12_input(self.config, frame.data)?;
+                    encoder
+                        .encode_frame_for_queue(&input)
+                        .map_err(|error| Error::Hardware(error.to_string()))?
+                };
                 let count = encoded.packets.len();
                 let coded_width = self.config.width().div_ceil(16) * 16;
                 let coded_height = self.config.height().div_ceil(16) * 16;
@@ -1640,11 +1649,19 @@ impl Encoder {
             .is_some_and(|rate_control| rate_control.mode() != RateControlMode::FixedQp);
         let submitted = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
-                let input = format_nv12_input(self.config, frame.data)?;
-                let encoded = if use_rate_control_registers {
-                    encoder.encode_frame_with_rc_reencode(&input, initial, &mut reencode)
+                let input = if needs_visible_nv12_copy(self.config) {
+                    encoder
+                        .load_visible_input_frame(frame.data)
+                        .map_err(Error::Hardware)?;
+                    None
                 } else {
-                    encoder.encode_frame_with_fixed_qp_reencode(&input, &mut reencode)
+                    Some(format_nv12_input(self.config, frame.data)?)
+                };
+                let input = input.as_deref().unwrap_or(&[]);
+                let encoded = if use_rate_control_registers {
+                    encoder.encode_frame_with_rc_reencode(input, initial, &mut reencode)
+                } else {
+                    encoder.encode_frame_with_fixed_qp_reencode(input, &mut reencode)
                 }
                 .map_err(Error::Hardware)?;
                 let count = encoded.packets.len();
@@ -2406,6 +2423,10 @@ fn align_up(value: usize, alignment: usize) -> usize {
 
 fn format_nv12_input<'a>(config: EncoderConfig, data: &'a [u8]) -> Result<Cow<'a, [u8]>, Error> {
     format_nv12_padded(config, data, 16, 16)
+}
+
+fn needs_visible_nv12_copy(config: EncoderConfig) -> bool {
+    config.input_format == PixelFormat::Nv12 && (config.width % 16 != 0 || config.height % 16 != 0)
 }
 
 fn format_nv12_padded<'a>(

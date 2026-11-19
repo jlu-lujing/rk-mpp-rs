@@ -4057,7 +4057,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1351 passed / 45 ignored and t6 workspace tests are 1353 passed / 45 ignored,
+  1352 passed / 45 ignored and t6 workspace tests are 1354 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
@@ -4086,6 +4086,15 @@ pipeline uses.
   Hardware-wait wall time is bimodal, so it is not used as the claim. The
   H.264/H.265 output hashes remain `68715bd4…617c05` and
   `ae613590…469783`.
+
+- **2026-11-20: 1080p H.264 writes visible rows straight to DMA input.** The
+  aligned-NV12 fast path does not cover 1920x1080 because 1080 pads to 1088.
+  H.264 now copies the tightly packed visible rows directly into the existing
+  DMA input when padding is required; the padding is zeroed once and preserved
+  across frames. On t6 at 80% OPP, eleven interleaved 60-frame 1080p runs
+  reduced median user CPU from 0.101 to 0.028 seconds (about 72%). The
+  3,212,736-byte old/new streams were byte-identical with SHA-256
+  `81c37cd1ab6b6f750ff54476fbd6c523a3ce2dc45e91e32c8b0206c62167d7bb`.
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a
