@@ -3879,6 +3879,19 @@ pipeline uses.
   depth 3 +29.9 %/+36.9 %. `board_vp9_matrix.sh` and
   `board_vp_corrupt_vs_mpp.sh` stay green.
 
+  **2026-11-19: steady-state decode resources are reused.** H.265's ring
+  previously allocated, zero-filled, mmap'ed and munmap'ed a padded bitstream
+  dma-buf for every picture. A reaped job now returns that mapping to the
+  decoder for the next submission while pending frames still own it until the
+  driver reports completion. H.264 IDR continues to drop every DPB lease but
+  no longer calls `BufferPool::clear()` on the now-idle surfaces. On t6 at the
+  persistent 80% OPP cap, ten concatenated 720p streams gave H.265 medians
+  463.8 -> **453.2 ms** and task-clock 467.7 -> **419.9 ms** (10.2% less CPU);
+  H.264 was 705.9 -> **703.1 ms** and 414.4 -> **393.6 ms** task-clock (5.0%
+  less). H.264's repeated-stream SHA-256 and H.265's 120-frame SHA-256 were
+  unchanged. On RK3576 the available VDPU383 H.264 edge row passed and the
+  H.265 corruption matrix remained 16/16.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

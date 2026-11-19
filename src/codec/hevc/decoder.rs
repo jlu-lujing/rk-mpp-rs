@@ -51,6 +51,11 @@ pub struct Decoder {
     /// Blocking decode can reuse its own payload and bitstream DMA mapping.
     payload: Vec<u8>,
     reusable_stream: Option<DmaBuf>,
+    /// Reaped pipeline jobs return their bitstream mappings here. A queued
+    /// job owns its mapping until the driver reports completion, so keeping
+    /// one idle mapping per ring slot removes the per-picture dma-heap
+    /// allocation, zero-fill, mmap and munmap from steady-state decode.
+    pipeline_stream_recycle: Vec<DmaBuf>,
     width: usize,
     height: usize,
     bit_depth: u32,
@@ -85,7 +90,7 @@ struct PendingHevcFrame {
     _colmv: crate::service::buffer_pool::BufferLease<DmaBuf>,
     _refs: Vec<crate::service::buffer_pool::BufferLease<DmaBuf>>,
     /// The video block reads the bitstream for the whole job.
-    _stream: DmaBuf,
+    stream: DmaBuf,
     width: usize,
     height: usize,
     hor_stride: usize,
@@ -222,6 +227,7 @@ impl Decoder {
             output_recycle: Vec::new(),
             payload: Vec::new(),
             reusable_stream: None,
+            pipeline_stream_recycle: Vec::new(),
             width: 0,
             height: 0,
             bit_depth: 8,
@@ -389,7 +395,7 @@ impl Decoder {
                         if failed {
                             picture.err_info |= FRAME_ERR_DEC_HW_ERR;
                         }
-                        let picture = self.materialise(&picture)?;
+                        let picture = self.materialise(picture)?;
                         self.ready.push_back(picture);
                     }
                 }
@@ -468,15 +474,12 @@ impl Decoder {
             let raw_len = self.payload.len();
             let pad16 = (16 - raw_len % 16) % 16;
             self.payload.resize(raw_len + pad16 + 64, 0);
-            let mut stream = if self.pipeline {
-                DmaBuf::alloc("system", self.payload.len(), false).map_err(|e| e.to_string())?
-            } else {
-                match self.reusable_stream.take() {
-                    Some(buffer) if buffer.len() >= self.payload.len() => buffer,
-                    _ => DmaBuf::alloc("system", self.payload.len(), false)
-                        .map_err(|e| e.to_string())?,
-                }
-            };
+            let mut stream = acquire_stream_buffer(
+                self.pipeline,
+                self.payload.len(),
+                &mut self.pipeline_stream_recycle,
+                &mut self.reusable_stream,
+            )?;
             stream.sync_write_begin().map_err(|e| e.to_string())?;
             stream.as_mut_slice()[..self.payload.len()].copy_from_slice(&self.payload);
             stream.sync_write_end().map_err(|e| e.to_string())?;
@@ -660,7 +663,7 @@ impl Decoder {
                 .try_clone()
                 .map_err(|error| format!("HEVC pipeline colmv lease: {error}"))?,
             _refs: held,
-            _stream: stream.expect("submitted job owns its bitstream"),
+            stream: stream.expect("submitted job owns its bitstream"),
             width: frame.width,
             height: frame.height,
             hor_stride: frame.hor_stride,
@@ -697,7 +700,7 @@ impl Decoder {
                         }
                     }
                 }
-                let picture = self.materialise(&picture)?;
+                let picture = self.materialise(picture)?;
                 self.ready.push_back(picture);
             }
         }
@@ -716,7 +719,7 @@ impl Decoder {
     }
 
     /// Build the caller-facing picture for a drained job.
-    fn materialise(&mut self, pending: &PendingHevcFrame) -> Result<Picture, String> {
+    fn materialise(&mut self, pending: PendingHevcFrame) -> Result<Picture, String> {
         let (yuv, dmabuf) = if pending.err_info == 0 {
             if self.output_dmabuf {
                 let lease = pending
@@ -755,6 +758,7 @@ impl Decoder {
         } else {
             (Vec::new(), None)
         };
+        self.recycle_stream_buffer(pending.stream);
         Ok(Picture {
             width: pending.width,
             height: pending.height,
@@ -766,6 +770,12 @@ impl Decoder {
             bit_depth: pending.bit_depth,
             err_info: pending.err_info,
         })
+    }
+
+    fn recycle_stream_buffer(&mut self, buffer: DmaBuf) {
+        if self.pipeline && self.pipeline_stream_recycle.len() < self.depth.saturating_add(1) {
+            self.pipeline_stream_recycle.push(buffer);
+        }
     }
 
     /// Keep `depth` jobs in the submission ring. Returns false on hardware
@@ -792,7 +802,7 @@ impl Decoder {
                         self.pipeline_failed = true;
                         self.dpb.mark_error(picture.slot);
                     }
-                    let picture = self.materialise(&picture)?;
+                    let picture = self.materialise(picture)?;
                     self.ready.push_back(picture);
                 }
             }
@@ -825,6 +835,27 @@ impl Decoder {
         if buffer.capacity() >= expected && self.output_recycle.len() < 4 {
             self.output_recycle.push(buffer);
         }
+    }
+}
+
+fn acquire_stream_buffer(
+    pipeline: bool,
+    needed: usize,
+    pipeline_recycle: &mut Vec<DmaBuf>,
+    reusable_stream: &mut Option<DmaBuf>,
+) -> Result<DmaBuf, String> {
+    if pipeline {
+        if let Some(index) = pipeline_recycle
+            .iter()
+            .position(|buffer| buffer.len() >= needed)
+        {
+            return Ok(pipeline_recycle.swap_remove(index));
+        }
+        return DmaBuf::alloc("system", needed, false).map_err(|e| e.to_string());
+    }
+    match reusable_stream.take() {
+        Some(buffer) if buffer.len() >= needed => Ok(buffer),
+        _ => DmaBuf::alloc("system", needed, false).map_err(|e| e.to_string()),
     }
 }
 

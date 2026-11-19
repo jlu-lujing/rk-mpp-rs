@@ -471,8 +471,6 @@ impl Decoder {
         if idr && paired_top.is_none() {
             self.dpb.clear();
             self.frames = (0..17).map(|_| None).collect();
-            self.nv12_pool.clear();
-            self.colmv_pool.clear();
         }
         let fno = self.dpb.frame_num_offset(&sh, &sps, idr, false);
         let order = self.dpb.compute_picture_order(&sh, &sps, idr, fno);

@@ -270,6 +270,13 @@ DMA-BUF frame 模式不需要 CPU 生成 planar YUV，CLI 现在通过
 6/8 路与 C 基本持平，24 路每路仍有 65.7 FPS。固定 200 µs 非阻塞 poll
 改成 `yield_now()` 的单次实验反而把单路降到 305 FPS，已回退。
 
+多 job 提交环的稳态资源也已收紧。H.265 解码以前对每个画面重新
+`dma_heap_alloc + mmap` 一块 padded bitstream buffer；现在 job 被 reap 后
+把映射放回 decoder，下一次 submit 直接复用，仍由 pending frame 持有到驱动
+报告完成。H.264 IDR 仍清空 DPB 和所有 slot，但不再调用 `BufferPool::clear()`
+提前释放空闲 surface；“新鲜 IDR”由最后一个 lease 的引用计数保证，而不是
+靠重新分配。两者都不改变输出语义，只移除 CPU/内核固定成本。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；

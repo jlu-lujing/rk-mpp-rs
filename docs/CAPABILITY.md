@@ -18,8 +18,8 @@
 | 能力 | 状态 | 证据 / 边界 |
 |---|---|---|
 | JPEG（jpegd，RGB888/NV12，1/2–1/8 缩放） | 完成 | 与 `mpi_dec_test` 逐字节；比 C 快约 30% |
-| H.264（rkvdec） | 完成 | frame/MBAFF/PAFF/长参考/错误路径逐字节 |
-| H.265（rkvdec） | 完成 | Main/Main10/tiles/WPP/DSLICE/LTR/scaling list 逐字节；RK3576 的 16 格损坏矩阵中 14 格输出计数和 YUV 逐字节一致，损坏 SPS 与首个 IDR slice 起点两格由 Rust 及时拒绝而 C harness 超时；4:2:2/4:4:4 被硬件拒收（平台边界） |
+| H.264（rkvdec） | 完成 | frame/MBAFF/PAFF/长参考/错误路径逐字节；IDR 丢弃 DPB 引用但保留空闲帧池复用 |
+| H.265（rkvdec） | 完成 | Main/Main10/tiles/WPP/DSLICE/LTR/scaling list 逐字节；RK3576 的 16 格损坏矩阵中 14 格输出计数和 YUV 逐字节一致，损坏 SPS 与首个 IDR slice 起点两格由 Rust 及时拒绝而 C harness 超时；4:2:2/4:4:4 被硬件拒收（平台边界）；多 job ring 在 job 回收后复用 bitstream dma-buf |
 | VP9（rkvdec） | 完成 | profile 0/2、10-bit、lossless、tiles、errres、resize、show-existing、hidden alt-ref；边界两格由 libvpx 判定为 C bug |
 | AV1（av1d） | 完成 | Main 8/10-bit、film grain、2x2 tile、96×96–1920×1080、长 GOP、多 sequence、320↔640 切换；C/Rust/libaom 三方逐字节；64×64 为 C bug |
 | MPEG-2 / MPEG-4 / H.263 / VP8 | 完成 | 逐字节；隔行 MPEG-2 用 FFmpeg 作 oracle（C 会错误回绕输入）；VP8 profile 1/3 为派生流验证 |
