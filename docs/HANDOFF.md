@@ -383,6 +383,7 @@ RC 模型；`board_mpp_hier_qp.sh` 的 33 帧 CBR 流在剥离 version-SEI 后�
 `rc:debreath_*` 也已通过 `H264RcTuning` 进入 H.264 运行时配置。
 `board_mpp_rc_fields.sh` 用未修改的 `rc_probe` 验证两格：12 帧 debreath 与
 6 帧 super-frame reencode；剥离 version-SEI 后均与 `/tmp/mpp-old` 逐字节一致。
+同一门再加低码率 `DROP_MODE=2` 的六帧 PSKIP 格，也已逐字节通过。
 
 H.264 每帧的 4,160-word STATUS 数组和 Batch 请求链改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1140 ms 降到 1055 ms，输出

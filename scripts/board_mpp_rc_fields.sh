@@ -56,13 +56,18 @@ run_case() {
     shift 2
     local vendor="/tmp/rk_mpp_${label}_vendor.264"
     local rust="/tmp/rk_mpp_${label}_rust.264"
+    local bps_target="${BPS_TARGET:-300000}"
+    local bps_min="${BPS_MIN:-250000}"
+    local bps_max="${BPS_MAX:-350000}"
     sudo -n rm -f "$vendor" "$rust"
     sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" "$@" \
         /tmp/mpp_rc_fields_probe "$raw12" "$vendor" 320 240 "$frames" \
-        300000 250000 350000 1 30 0 >"/tmp/${label}_vendor.log" 2>&1
+        "$bps_target" "$bps_min" "$bps_max" 1 30 0 \
+        >"/tmp/${label}_vendor.log" 2>&1
     sudo -n env LD_LIBRARY_PATH="$overlay" "$@" \
         /tmp/mpp_rc_fields_probe "$raw12" "$rust" 320 240 "$frames" \
-        300000 250000 350000 1 30 0 >"/tmp/${label}_rust.log" 2>&1
+        "$bps_target" "$bps_min" "$bps_max" 1 30 0 \
+        >"/tmp/${label}_rust.log" 2>&1
     sudo -n python3 /tmp/strip_version_sei.py "$vendor" "$vendor.norm"
     sudo -n python3 /tmp/strip_version_sei.py "$rust" "$rust.norm"
     sudo -n cmp -s "$vendor.norm" "$rust.norm"
@@ -73,4 +78,6 @@ run_case() {
 run_case debreath 12 DEBREATH_EN=1 DEBREATH_STRENGTH=20 MAX_REENC=0
 run_case super-reenc 6 MAX_REENC=1 SUPER_MODE=2 SUPER_I_THD=10000 \
     SUPER_P_THD=1000 RC_PRIORITY=0
+BPS_TARGET=10000 BPS_MIN=8333 BPS_MAX=11666 \
+    run_case drop-pskip 6 MAX_REENC=1 DROP_MODE=2 DROP_THD=0 DROP_GAP=1
 REMOTE

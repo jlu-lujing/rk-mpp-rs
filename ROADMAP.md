@@ -4049,7 +4049,8 @@ pipeline uses.
   I-picture `RCKLUT.aq_step` while P keeps its separate default curve.
   `H264RcTuning` now forwards max-reencode, super-frame, priority, drop and
   debreath fields from the same object into the H.264 configuration; the
-  debreath and super-reencode board cells also match the old oracle.
+  debreath, super-reencode and low-bitrate drop/PSKIP board cells also match the
+  old oracle.
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

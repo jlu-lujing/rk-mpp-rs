@@ -1390,7 +1390,8 @@ the stream again matches the old oracle.
 `scripts/board_mpp_rc_fields.sh` uses the unmodified `rc_probe` to cover
 advanced scalar fields from `MppEncCfg`. A 12-frame CBR debreath run and a
 six-frame super-frame reencode run both match `/tmp/mpp-old` after removing the
-build-identity SEI.
+build-identity SEI. A third low-bitrate six-frame `DROP_MODE=2` cell exercises
+the software PSKIP replacement and is byte-identical as well.
 The legacy utility does not call `MPP_ENC_SET_REF_CFG` directly on the
 multi-frame path: it stores the object at `"rc:ref_cfg"` inside `MppEncCfg`.
 The bridge now reads that pointer before constructing the encoder and maps the
