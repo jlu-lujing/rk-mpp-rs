@@ -19,8 +19,9 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
 - `mpp_sys_cfg_*`（19）：句柄 + 按名称的类型化存储/回显；
 - `mpp_task_meta_*`（12）：映射到 `mpp_meta_*`，保留 default_value 语义；
 - `mpp_vdec_kcfg_*`（16）与 `mpp_venc_kcfg_*`/`mpp_venc_ctrl_*`（26）：句柄 +
-  类型化存储 + 4 KiB flex 区。**它们只做存储，不向 kernel 下发 kcfg**，高级
-  kernel 侧配置不会改变本 HAL 的行为。
+  类型化存储 + 4 KiB flex 区。`MPP_SET_VENC_INIT_KCFG` 已消费 type/coding、
+  max dimensions 和上游 init keys；其余 kernel-only 键仍是 storage-only。
+  unknown init key 会明确拒绝。完整审计见 [`KCFG.md`](KCFG.md)。
 
 ## 1. 二进制 drop-in（不改代码）
 
@@ -130,7 +131,7 @@ for picture in dec.flush()? { use_picture(picture); }
 | --- | --- | --- |
 | `mpp_sys_cfg_*` 只有存储/回显 | `mpp_sys_cfg_ioctl` 与 `st_get_*` 返回 `MPP_NOK`，不计算 dec_buf_chk 的 stride/size | 需要真实 buffer 检查时保留厂商库，或直接用本库的 frame layout |
 | `mpp_task_meta_*` 接受 meta 句柄 | 没有公开 task 对象；传入别的 runtime 的 task 指针会返回 `MPP_NOK` | 用 `mpp_meta_get_with_tag()` 创建句柄后直接传给它 |
-| `mpp_*_kcfg_*` 只存储不下发 | 高级 kernel-side cfg 不生效 | 需要真实生效时用 `MppDecCfg/MppEncCfg` 或新 SDK；其余场景可原样迁移 |
+| venc init kcfg 已映射；其余 kcfg storage-only | init type/coding/max dimensions 生效，kernel-only 高级 cfg 不生效 | 完整 KMPP object 调用面仍需厂商库；普通 `mpi_enc_test` 可迁移 |
 | 不调用 `MPP_CMD_RESET_SESSION` | 板上会导致后续解码卡死 | 本库统一 close-before-open 恢复；不要手工 reset |
 | 不包含厂商二进制/固件 | 需要 `/dev/mpp_service` 与内核驱动 | 依赖系统内核，不需要 `librockchip_mpp` |
 | 板级脚本假设 `t6`/`lf1` 主机别名 | 仅影响 `scripts/board_*.sh` | 使用前设置 `BOARD=<ssh alias>` |

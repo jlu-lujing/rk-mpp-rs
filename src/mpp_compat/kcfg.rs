@@ -33,6 +33,13 @@ struct Flex {
     buffer: Vec<u8>,
 }
 
+pub(super) struct VencInitConfig {
+    pub ctx_type: c_int,
+    pub coding: c_int,
+    pub max_width: u32,
+    pub max_height: u32,
+}
+
 pub(super) struct KcfgStore {
     magic: u64,
     kind: &'static str,
@@ -300,6 +307,53 @@ fn show_store(kind: &str, cfg: *mut c_void) {
         store.name,
         store.values.len()
     );
+}
+
+pub(super) fn venc_init_config(cfg: *mut c_void) -> Result<VencInitConfig, String> {
+    let store = store_mut(cfg).ok_or("invalid venc init kcfg handle")?;
+    const KNOWN_KEYS: &[&str] = &[
+        "type",
+        "coding",
+        "chan_id",
+        "online",
+        "buf_size",
+        "max_strm_cnt",
+        "shared_buf_en",
+        "smart_en",
+        "max_width",
+        "max_height",
+        "max_lt_cnt",
+        "qpmap_en",
+        "chan_dup",
+        "tmvp_enable",
+        "only_smartp",
+        "ntfy_mode",
+        "input_timeout",
+    ];
+    if let Some(unknown) = store
+        .values
+        .keys()
+        .find(|key| !KNOWN_KEYS.contains(&key.as_str()))
+    {
+        return Err(format!("unsupported venc init kcfg key {unknown:?}"));
+    }
+    Ok(VencInitConfig {
+        ctx_type: required_u32(store, "type")? as c_int,
+        coding: required_u32(store, "coding")? as c_int,
+        max_width: required_u32(store, "max_width")?,
+        max_height: required_u32(store, "max_height")?,
+    })
+}
+
+fn required_u32(store: &KcfgStore, name: &str) -> Result<u32, String> {
+    match store.values.get(name) {
+        Some(Val::U32(value)) => Ok(*value),
+        Some(Val::S32(value)) if *value >= 0 => Ok(*value as u32),
+        Some(_) => Err(format!(
+            "venc init kcfg {name:?} must be an unsigned integer"
+        )),
+        None => Err(format!("venc init kcfg is missing {name:?}")),
+    }
 }
 
 const _: () = {

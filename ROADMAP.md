@@ -3938,6 +3938,15 @@ pipeline uses.
   non-zero. Minimum board requirements and path overrides are documented in
   `docs/board.md`.
 
+- **2026-11-19: venc init kcfg is consumed.** The drop-in layer now handles
+  `MPP_SET_VENC_INIT_KCFG`, mirrors the upstream init key set, rejects unknown
+  keys, maps type/coding and maximum dimensions into `mpp_init` /
+  `MPP_ENC_SET_CFG`, and keeps kernel-only keys explicitly storage-only.
+  Audited against Rockchip MPP `9b56348`. `scripts/board_mpp_kcfg.sh` compiles
+  `tools/mpp_kcfg_probe.c` against upstream headers and passes on t6.
+  Full `mpi_enc_test -kmpp_mode=1` still requires the wider KMPP object ABI;
+  that boundary is documented in `docs/KCFG.md`.
+
   | `mp4_320x240_12_ip.m4v` (MPEG-4 320x240) | 12 | 522 fps | 1333 fps | +156 % |
   | `mp4_320x240_12_ibpb.m4v` (MPEG-4 IPBB) | 12 | 571 fps | 1212 fps | +112 % |
   | `mp4_150x100_9_ip.m4v` (MPEG-4 150x100) | 9 | 692 fps | 3214 fps | +364 % |

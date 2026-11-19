@@ -314,6 +314,15 @@ t6 的 `--check` 通过并看到 676 个 corpus stream；没有本地 oracle/cor
 的另一块板会明确退出非零。最低 Debian/kernel/device/sudo 要求和所有路径
 override 已写入 `docs/board.md`。
 
+上游 `mpi_enc_test` 的 `MPP_SET_VENC_INIT_KCFG` 已接通。兼容层复制
+type/coding/max dimensions 到 `mpp_init`/`MPP_ENC_SET_CFG`，保留所有已知
+kernel-only key，遇到未知 key 返回 `MPP_NOK`；type/coding mismatch 返回
+`MPP_ERR_VALUE` 且不丢弃待用配置。`scripts/board_mpp_kcfg.sh` 用上游头文件
+编译 `tools/mpp_kcfg_probe.c`，在 t6 以 `librk_mpp_rs.so` 作
+`librockchip_mpp.so.1` 完成 mapping/mismatch/unknown-key 三组验证。完整
+`mpi_enc_test -kmpp_mode=1` 仍需要更大的 KMPP object ABI，边界与 key 审计
+写在 `docs/KCFG.md`。
+
 第十二个 slice 去掉未修改 `mpi_dec_test` 对 vendor MPP 库的依赖。
 `librk_mpp_rs.so` 现在同时导出 `mpp_debug`、日志入口、环境/时间/OSAL、
 SoC 识别、自旋锁、`MppDecCfg`、singleton、trie、kmpp objdef 和 cfg 兼容对象；

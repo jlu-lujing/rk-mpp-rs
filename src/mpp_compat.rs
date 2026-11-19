@@ -65,6 +65,7 @@ const MPP_ENC_GET_RC_API_CURRENT: c_int = 3_277_316;
 const MPP_ENC_SET_RC_API_CURRENT: c_int = 3_277_317;
 const MPP_ENC_SET_REF_CFG: c_int = 3_310_081;
 const MPP_SET_OUTPUT_TIMEOUT: c_int = 2_097_159;
+const MPP_SET_VENC_INIT_KCFG: c_int = 2_097_162;
 
 const CONTEXT_MAGIC: u64 = 0x4d50_5052_5343_5458;
 const REF_TO_PREV_REF_FRM: u8 = 0;
@@ -152,6 +153,9 @@ struct CompatContext {
     custom_rc_sequence: u32,
     custom_force_idr: bool,
     osd_palette: osd::PaletteState,
+    venc_init_kcfg: Option<kcfg::VencInitConfig>,
+    encoder_max_width: u32,
+    encoder_max_height: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -867,6 +871,7 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.custom_rc_max_reencodes = 0;
     context.custom_rc_sequence = 0;
     context.custom_force_idr = false;
+    context.venc_init_kcfg = None;
     MPP_OK
 }
 
@@ -910,6 +915,19 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                     return MPP_NOK;
                 }
             };
+            if context.encoder_max_width != 0
+                && (config.width() > context.encoder_max_width as usize
+                    || config.height() > context.encoder_max_height as usize)
+            {
+                eprintln!(
+                    "rk-mpp-rs mpp: encoder config {}x{} exceeds init kcfg maximum {}x{}",
+                    config.width(),
+                    config.height(),
+                    context.encoder_max_width,
+                    context.encoder_max_height
+                );
+                return MPP_NOK;
+            }
             match context.encoder_ref_pattern.len() {
                 // mpp_enc_ref_cfg_check publishes the short-term CPB depth
                 // into h264e_sps_init.
@@ -1021,6 +1039,35 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             }
         }
         MPP_ENC_GET_CFG | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
+        MPP_SET_VENC_INIT_KCFG => {
+            if param.is_null() {
+                return MPP_ERR_NULL_PTR;
+            }
+            match kcfg::venc_init_config(param) {
+                Ok(config) => {
+                    if config.ctx_type != MPP_CTX_ENC {
+                        eprintln!("rk-mpp-rs mpp: venc init kcfg type is not MPP_CTX_ENC");
+                        MPP_NOK
+                    } else if !coding_supported(MPP_CTX_ENC, config.coding) {
+                        eprintln!(
+                            "rk-mpp-rs mpp: venc init kcfg coding {} is unsupported",
+                            config.coding
+                        );
+                        MPP_NOK
+                    } else if config.max_width == 0 || config.max_height == 0 {
+                        eprintln!("rk-mpp-rs mpp: venc init kcfg has zero dimensions");
+                        MPP_NOK
+                    } else {
+                        context.venc_init_kcfg = Some(config);
+                        MPP_OK
+                    }
+                }
+                Err(error) => {
+                    eprintln!("rk-mpp-rs mpp: venc init kcfg rejected: {error}");
+                    MPP_NOK
+                }
+            }
+        }
         MPP_ENC_SET_OSD_PLT_CFG => {
             if context.ctx_type != MPP_CTX_ENC {
                 return MPP_ERR_VALUE;
@@ -1214,6 +1261,9 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             custom_rc_sequence: 0,
             custom_force_idr: false,
             osd_palette: osd::PaletteState::new(),
+            venc_init_kcfg: None,
+            encoder_max_width: 0,
+            encoder_max_height: 0,
         });
         *ctx = Box::into_raw(context).cast();
         *mpi = std::ptr::addr_of!(MPP_API).cast_mut();
@@ -1232,6 +1282,21 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     if ctx_type == MPP_CTX_ISP {
         return MPP_NOK;
     }
+    if let Some(init) = context.venc_init_kcfg.as_ref() {
+        if init.ctx_type != ctx_type || init.coding != coding {
+            eprintln!(
+                "rk-mpp-rs mpp: init type/coding {ctx_type}/{coding} disagrees with venc kcfg {}/{}",
+                init.ctx_type, init.coding
+            );
+            return MPP_ERR_VALUE;
+        }
+        context.encoder_max_width = init.max_width;
+        context.encoder_max_height = init.max_height;
+    } else {
+        context.encoder_max_width = 0;
+        context.encoder_max_height = 0;
+    }
+    context.venc_init_kcfg = None;
     let decoder = if ctx_type == MPP_CTX_DEC {
         let Some(codec) = sdk_codec(coding) else {
             return MPP_NOK;
@@ -1285,6 +1350,8 @@ fn sdk_codec(coding: c_int) -> Option<sdk::Codec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+    use std::ptr;
 
     fn step(
         non_reference: bool,
@@ -1296,6 +1363,101 @@ mod tests {
             temporal_id,
             reference_mode,
             reference_argument: 0,
+        }
+    }
+
+    #[test]
+    fn venc_init_kcfg_is_consumed_by_mpp_init() {
+        unsafe {
+            let mut ctx = ptr::null_mut();
+            let mut api = ptr::null_mut();
+            assert_eq!(mpp_create(&mut ctx, &mut api), MPP_OK);
+            let mut cfg = ptr::null_mut();
+            assert_eq!(kcfg::mpp_venc_kcfg_init(&mut cfg, 0), MPP_OK);
+            for (name, value) in [
+                ("type", MPP_CTX_ENC as u32),
+                ("coding", MPP_VIDEO_CODING_AVC as u32),
+                ("max_width", 640),
+                ("max_height", 480),
+            ] {
+                let name = CString::new(name).unwrap();
+                assert_eq!(
+                    kcfg::mpp_venc_kcfg_set_u32(cfg, name.as_ptr(), value),
+                    MPP_OK
+                );
+            }
+            let input_timeout = CString::new("input_timeout").unwrap();
+            assert_eq!(
+                kcfg::mpp_venc_kcfg_set_s32(cfg, input_timeout.as_ptr(), -1),
+                MPP_OK
+            );
+            assert_eq!(compat_control(ctx, MPP_SET_VENC_INIT_KCFG, cfg), MPP_OK);
+            assert_eq!(mpp_init(ctx, MPP_CTX_ENC, MPP_VIDEO_CODING_AVC), MPP_OK);
+            let context = context_mut(ctx).unwrap();
+            assert_eq!(context.encoder_max_width, 640);
+            assert_eq!(context.encoder_max_height, 480);
+            assert_eq!(compat_reset(ctx), MPP_OK);
+            let context = context_mut(ctx).unwrap();
+            assert_eq!(context.encoder_max_width, 640);
+            assert_eq!(context.encoder_max_height, 480);
+            assert_eq!(mpp_destroy(ctx), MPP_OK);
+            assert_eq!(kcfg::mpp_venc_kcfg_deinit(cfg), MPP_OK);
+        }
+    }
+
+    #[test]
+    fn venc_init_kcfg_rejects_unknown_keys_and_mismatched_init() {
+        unsafe {
+            let mut ctx = ptr::null_mut();
+            let mut api = ptr::null_mut();
+            assert_eq!(mpp_create(&mut ctx, &mut api), MPP_OK);
+            let mut cfg = ptr::null_mut();
+            assert_eq!(kcfg::mpp_venc_kcfg_init(&mut cfg, 0), MPP_OK);
+            let name = CString::new("type").unwrap();
+            assert_eq!(
+                kcfg::mpp_venc_kcfg_set_u32(cfg, name.as_ptr(), MPP_CTX_ENC as u32),
+                MPP_OK
+            );
+            let name = CString::new("coding").unwrap();
+            assert_eq!(
+                kcfg::mpp_venc_kcfg_set_u32(cfg, name.as_ptr(), MPP_VIDEO_CODING_AVC as u32),
+                MPP_OK
+            );
+            let name = CString::new("max_width").unwrap();
+            assert_eq!(kcfg::mpp_venc_kcfg_set_u32(cfg, name.as_ptr(), 640), MPP_OK);
+            let name = CString::new("max_height").unwrap();
+            assert_eq!(kcfg::mpp_venc_kcfg_set_u32(cfg, name.as_ptr(), 480), MPP_OK);
+            let unknown = CString::new("not_a_vendor_key").unwrap();
+            assert_eq!(
+                kcfg::mpp_venc_kcfg_set_u32(cfg, unknown.as_ptr(), 1),
+                MPP_OK
+            );
+            assert_eq!(compat_control(ctx, MPP_SET_VENC_INIT_KCFG, cfg), MPP_NOK);
+
+            assert_eq!(kcfg::mpp_venc_kcfg_deinit(cfg), MPP_OK);
+
+            let mut valid = ptr::null_mut();
+            assert_eq!(kcfg::mpp_venc_kcfg_init(&mut valid, 0), MPP_OK);
+            for (name, value) in [
+                ("type", MPP_CTX_ENC as u32),
+                ("coding", MPP_VIDEO_CODING_AVC as u32),
+                ("max_width", 640),
+                ("max_height", 480),
+            ] {
+                let name = CString::new(name).unwrap();
+                assert_eq!(
+                    kcfg::mpp_venc_kcfg_set_u32(valid, name.as_ptr(), value),
+                    MPP_OK
+                );
+            }
+            assert_eq!(compat_control(ctx, MPP_SET_VENC_INIT_KCFG, valid), MPP_OK);
+            assert_eq!(
+                mpp_init(ctx, MPP_CTX_ENC, MPP_VIDEO_CODING_HEVC),
+                MPP_ERR_VALUE
+            );
+            assert_eq!(mpp_init(ctx, MPP_CTX_ENC, MPP_VIDEO_CODING_AVC), MPP_OK);
+            assert_eq!(kcfg::mpp_venc_kcfg_deinit(valid), MPP_OK);
+            assert_eq!(mpp_destroy(ctx), MPP_OK);
         }
     }
 
