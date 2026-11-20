@@ -4087,7 +4087,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1361 passed / 46 ignored and t6 workspace tests are 1363 passed / 46 ignored,
+  1362 passed / 46 ignored and t6 workspace tests are 1364 passed / 46 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
@@ -4154,6 +4154,13 @@ pipeline uses.
   and Rust object probes match for Main-CAVLC without 8x8
   (`5c83b5e8…85e8c1ff`) and High-CABAC without 8x8
   (`349ac658…d4d2a5`).
+
+- **2026-11-20: H.264 `cabac_init_idc` is configurable.** `h264:cabac_idc`
+  now maps through `H264SyntaxConfig`, the VEPU580 slice register and the
+  software P_SKIP CABAC context table. The typed CLI accepts
+  `cabac_idc:0..2`. Two-frame Main-CABAC object probes match the vendor
+  byte-for-byte for idc 1 (`47e28d89…3862a80`) and idc 2
+  (`85087619…5c76b6c99`).
 
 - **2026-11-20: MppEncCfg carries H.265 syntax controls.** The compatible
   object path now maps `h265:dblk_*`, `sao_luma/chroma_disable`,

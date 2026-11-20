@@ -99,6 +99,15 @@ interleaved 500-frame 720p samples moved wall median from 1.412 to **1.318 s**
 (-6.7%) and user+sys from 0.455 to **0.366 s** (-19.6%). The stream hash stayed
 identical.
 
+### H.264 CABAC initialization models
+
+`h264:cabac_idc` now reaches `H264SyntaxConfig`, the VEPU580 slice register and
+the software P_SKIP context initializer. The latter uses the same
+`skip_init_state[3][2]` rows as C. Two-frame Main-CABAC vendor/Rust object
+probes are six-NAL byte-identical for idc 1
+(`47e28d89…3862a80`) and idc 2 (`85087619…5c76b6c99`). Model 3 is rejected
+before hardware submission.
+
 ## 2026-11-17 SDK / C API now use the submission ring
 
 - `SdkSession` enables the ring at depth 3 for H.264 and H.265 by default
@@ -1498,8 +1507,8 @@ and TOML, and verifies that the vendor-compatible `mpp_enc_cfg_deinit()` path
 releases it. All three formats pass.
 The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 **3/3 PASS**. The same tree also passes the host workspace gate with
-**1361 passed / 0 failed / 46 ignored**, and the t6 workspace gate with
-**1363 passed / 0 failed / 46 ignored** plus strict rustdoc.
+**1362 passed / 0 failed / 46 ignored**, and the t6 workspace gate with
+**1364 passed / 0 failed / 46 ignored** plus strict rustdoc.
 `scripts/board_mpp_enc_cfg_gdr.sh` also maps the vendor probes'
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`) and H.265 is

@@ -372,6 +372,7 @@ fn encode_h264(
     drop_frame: Option<(u8, u32, u32)>,
     debreath_strength: Option<u8>,
     deblock: Option<(u32, i32, i32)>,
+    cabac_init_idc: Option<u8>,
     rois: Vec<h264_syntax::RoiRegion>,
     gdr: Option<(h264_syntax::GdrMode, u32)>,
     split: Option<(h264_syntax::SplitMode, u32)>,
@@ -473,6 +474,9 @@ fn encode_h264(
         config.deblock_disable = disable;
         config.deblock_offset_alpha = alpha;
         config.deblock_offset_beta = beta;
+    }
+    if let Some(cabac_init_idc) = cabac_init_idc {
+        config.cabac_init_idc = cabac_init_idc;
     }
     config.rois = rois;
     if let Some((mode, num)) = gdr {
@@ -2257,7 +2261,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [drop:mode:threshold:gap] [debreath:strength] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [drop:mode:threshold:gap] [debreath:strength] [dblk:disable:alpha:beta] [cabac_idc:0..2] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -2297,6 +2301,7 @@ fn main() {
         let mut drop_frame: Option<(u8, u32, u32)> = None;
         let mut debreath_strength: Option<u8> = None;
         let mut deblock: Option<(u32, i32, i32)> = None;
+        let mut cabac_init_idc: Option<u8> = None;
         // The `RoiRegionCfg` list `mpi_enc_test` adds per frame, in the same
         // add order.
         let mut rois: Vec<h264_syntax::RoiRegion> = Vec::new();
@@ -2307,7 +2312,15 @@ fn main() {
         let mut split: Option<(h264_syntax::SplitMode, u32)> = None;
         let mut split_out = 0u32;
         for text in args.iter().skip(10) {
-            if let Some(rest) = text.strip_prefix("dblk:") {
+            if let Some(value) = text.strip_prefix("cabac_idc:") {
+                match value.parse::<u8>() {
+                    Ok(value @ 0..=2) => cabac_init_idc = Some(value),
+                    _ => {
+                        eprintln!("bad cabac_idc; expected cabac_idc:0..=2");
+                        std::process::exit(2);
+                    }
+                }
+            } else if let Some(rest) = text.strip_prefix("dblk:") {
                 // `dblk:disable:alpha:beta`, the three `MppEncH264Cfg` deblocking
                 // fields. The reference range-checks none of them and VEPU580's
                 // register fields are two and four bits wide, so the truncation
@@ -2519,7 +2532,7 @@ fn main() {
             }
         }
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [drop:mode:threshold:gap] [debreath:strength] [dblk:disable:alpha:beta] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [drop:mode:threshold:gap] [debreath:strength] [dblk:disable:alpha:beta] [cabac_idc:0..2] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -2546,6 +2559,7 @@ fn main() {
             drop_frame,
             debreath_strength,
             deblock,
+            cabac_init_idc,
             rois,
             gdr,
             split,

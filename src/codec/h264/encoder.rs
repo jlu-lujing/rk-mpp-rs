@@ -49,6 +49,7 @@ pub struct EncoderConfig {
     pub qp_init: u8,
     pub entropy_coding: bool,
     pub transform_8x8: bool,
+    pub cabac_init_idc: u8,
     pub chroma_qp_index_offset: i8,
     pub second_chroma_qp_index_offset: i8,
     /// Bit rate figures, carried into the `uuid_rc_cfg` SEI today and into the
@@ -268,6 +269,7 @@ impl EncoderConfig {
             qp_init: 26,
             entropy_coding: false,
             transform_8x8: false,
+            cabac_init_idc: 0,
             chroma_qp_index_offset: -6,
             second_chroma_qp_index_offset: -6,
             rc_mode: RcMode::FixedQp,
@@ -372,6 +374,9 @@ impl EncoderConfig {
         }
         if self.profile <= PROFILE_BASELINE && self.entropy_coding {
             return Err(Error("baseline profile cannot use CABAC".into()));
+        }
+        if self.cabac_init_idc > 2 {
+            return Err(Error("cabac_init_idc must be in 0..=2".into()));
         }
         if self.profile < PROFILE_HIGH && self.transform_8x8 {
             return Err(Error(

@@ -144,11 +144,17 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
         }
         let cabac = unsafe { cfg.get("h264:cabac_en") };
         let transform_8x8 = unsafe { cfg.get("h264:trans8x8") };
-        if cabac.is_some() || transform_8x8.is_some() {
-            result = result.with_h264_syntax(H264SyntaxConfig::new(
-                cabac.unwrap_or(0) != 0,
-                transform_8x8.unwrap_or(0) != 0,
-            ));
+        let cabac_init_idc = unsafe { cfg.get("h264:cabac_idc") };
+        if cabac.is_some() || transform_8x8.is_some() || cabac_init_idc.is_some() {
+            let syntax =
+                H264SyntaxConfig::new(cabac.unwrap_or(0) != 0, transform_8x8.unwrap_or(0) != 0);
+            result = result.with_h264_syntax(match cabac_init_idc {
+                Some(value) => syntax.with_cabac_init_idc(
+                    u8::try_from(value)
+                        .map_err(|_| format!("h264:cabac_idc {value} is outside 0..=2"))?,
+                ),
+                None => syntax,
+            });
         }
     }
 

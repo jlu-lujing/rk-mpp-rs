@@ -565,6 +565,9 @@ int main(int argc, char **argv)
         cfg, "h264:trans8x8",
         getenv("H264_TRANS8X8") ? atoi(getenv("H264_TRANS8X8"))
                                 : (profile >= 100 ? 1 : 0)));
+    if (getenv("H264_CABAC_IDC"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h264:cabac_idc",
+                                  atoi(getenv("H264_CABAC_IDC"))));
     if (have_dblk)
         CHECK(set_deblock(cfg, dblk_disable, dblk_alpha, dblk_beta));
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));

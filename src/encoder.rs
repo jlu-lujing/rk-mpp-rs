@@ -505,6 +505,7 @@ impl H264DeblockConfig {
 pub struct H264SyntaxConfig {
     entropy_coding: bool,
     transform_8x8: bool,
+    cabac_init_idc: u8,
 }
 
 impl H264SyntaxConfig {
@@ -512,6 +513,7 @@ impl H264SyntaxConfig {
         Self {
             entropy_coding,
             transform_8x8,
+            cabac_init_idc: 0,
         }
     }
 
@@ -521,6 +523,15 @@ impl H264SyntaxConfig {
 
     pub const fn transform_8x8(self) -> bool {
         self.transform_8x8
+    }
+
+    pub const fn with_cabac_init_idc(mut self, cabac_init_idc: u8) -> Self {
+        self.cabac_init_idc = cabac_init_idc;
+        self
+    }
+
+    pub const fn cabac_init_idc(self) -> u8 {
+        self.cabac_init_idc
     }
 }
 
@@ -901,6 +912,14 @@ impl EncoderConfig {
         }
         if let Some(deblock) = self.h264_deblock {
             deblock.validate()?;
+        }
+        if self
+            .h264_syntax
+            .is_some_and(|syntax| syntax.cabac_init_idc > 2)
+        {
+            return Err(Error::InvalidInput(
+                "H.264 cabac_init_idc must be in 0..=2".to_string(),
+            ));
         }
         if !(-6..=6).contains(&self.h265_syntax.deblock_beta_offset_div2)
             || !(-6..=6).contains(&self.h265_syntax.deblock_tc_offset_div2)
@@ -2325,6 +2344,7 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
     if let Some(syntax) = config.h264_syntax {
         h264.entropy_coding = syntax.entropy_coding;
         h264.transform_8x8 = syntax.transform_8x8;
+        h264.cabac_init_idc = syntax.cabac_init_idc;
     }
     if let Some(rate_control) = config.rate_control {
         match rate_control.mode {
@@ -2838,6 +2858,16 @@ mod tests {
             .unwrap()
             .with_osd(osd);
         assert!(input.into_submission().osd.is_some());
+    }
+
+    #[test]
+    fn h264_cabac_init_idc_is_bounded_to_the_three_models() {
+        let syntax = H264SyntaxConfig::new(true, false).with_cabac_init_idc(2);
+        assert_eq!(syntax.cabac_init_idc(), 2);
+        let invalid = EncoderConfig::new(Codec::H264, 320, 240)
+            .with_profile(77)
+            .with_h264_syntax(H264SyntaxConfig::new(true, false).with_cabac_init_idc(3));
+        assert!(invalid.validate_advanced_controls().is_err());
     }
 
     #[test]

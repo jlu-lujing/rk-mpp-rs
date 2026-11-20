@@ -48,8 +48,8 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   `scripts/board_mpp_enc_cfg_gdr.sh` 验证未修改 vendor probe 与 Rust CLI 输出。
   H.264 的 `h264:dblk_disable/alpha/beta` 会映射到 typed deblock；
   `scripts/board_h264_deblock_vs_mpp.sh` 同时验证对象路径。
-  `h264:cabac_en/trans8x8` 会覆盖 profile 推导的 typed H.264 syntax；
-  `scripts/board_mpp_enc_cfg_h264_syntax.sh` 覆盖两个非默认组合。
+  `h264:cabac_en/trans8x8/cabac_idc` 会覆盖 profile 推导的 typed H.264 syntax；
+  `scripts/board_mpp_enc_cfg_h264_syntax.sh` 覆盖非默认组合及 CABAC idc 1/2。
   H.265 的 deblock/SAO/loop-filter/auto-tile 键映射到 typed syntax；
   `scripts/board_mpp_enc_cfg_h265_syntax.sh` 验证对象路径。
   `prep:format=MPP_FMT_YUV420P/NV21` 会进入 I420 planar 或 NV21 转换路径；

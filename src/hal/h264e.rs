@@ -514,7 +514,11 @@ impl RegisterFile {
         )?;
         self.set(
             &vepu580_regs::H264_SYNT_SLI0_CBC_INIT_IDC,
-            if config.entropy_coding { 0 } else { 3 },
+            if config.entropy_coding {
+                u32::from(config.cabac_init_idc)
+            } else {
+                3
+            },
         )?;
         self.set(
             &vepu580_regs::H264_RDO_CFG_RECT_SIZE,
@@ -1836,8 +1840,10 @@ struct SkipCabac {
 }
 
 impl SkipCabac {
-    fn new(qp: u8, bits: Vec<bool>) -> Self {
-        let state = 23 * i32::from(qp) / 16 + 33;
+    fn new(qp: u8, cabac_init_idc: u8, bits: Vec<bool>) -> Self {
+        const SKIP_INIT: [[i32; 2]; 3] = [[23, 33], [22, 25], [29, 16]];
+        let [m, n] = SKIP_INIT[cabac_init_idc as usize];
+        let state = (m * i32::from(qp) >> 4) + n;
         let state = state.clamp(1, 126) as u8;
         Self {
             context: Context::new(63 - state.min(127 - state), state >> 6),
@@ -1925,8 +1931,8 @@ impl SkipCabac {
     }
 }
 
-fn write_skip_cabac(bits: Vec<bool>, qp: u8, mb_count: usize) -> Vec<bool> {
-    let mut cabac = SkipCabac::new(qp, bits);
+fn write_skip_cabac(bits: Vec<bool>, qp: u8, cabac_init_idc: u8, mb_count: usize) -> Vec<bool> {
+    let mut cabac = SkipCabac::new(qp, cabac_init_idc, bits);
     for index in 0..mb_count {
         if index != 0 {
             cabac.terminal();
@@ -1959,7 +1965,7 @@ fn pskip_nal(config: &EncoderConfig, state: &FrameState) -> Result<Vec<u8>, Stri
     put_bits(&mut bits, 0, 1); // num_ref_idx_active_override_flag
     put_bits(&mut bits, 0, 1); // ref_pic_list_modification_flag_l0
     if config.entropy_coding {
-        put_ue(&mut bits, 0); // cabac_init_idc
+        put_ue(&mut bits, u32::from(config.cabac_init_idc));
     }
     put_se(&mut bits, 0); // slice_qp_delta
     put_ue(&mut bits, 0); // disable_deblocking_filter_idc
@@ -1971,7 +1977,7 @@ fn pskip_nal(config: &EncoderConfig, state: &FrameState) -> Result<Vec<u8>, Stri
         while bits.len() % 8 != 0 {
             bits.push(true); // cabac_alignment_one_bit
         }
-        bits = write_skip_cabac(bits, config.qp_init, mb_count);
+        bits = write_skip_cabac(bits, config.qp_init, config.cabac_init_idc, mb_count);
     } else {
         put_ue(&mut bits, mb_count as u32);
         bits.push(true); // rbsp_stop_one_bit
@@ -4770,6 +4776,13 @@ mod tests {
         assert_eq!(read(&main, &vepu580_regs::H264_RDO_CFG_RECT_SIZE), 0);
         assert_eq!(read(&main, &vepu580_regs::H264_SYNT_SLI0_CBC_INIT_IDC), 0);
         assert_eq!(read(&main, &vepu580_regs::H264_SYNT_PPS_TRNS_8X8), 0);
+
+        let mut cabac2 = config();
+        cabac2.profile = encoder::PROFILE_MAIN;
+        cabac2.entropy_coding = true;
+        cabac2.cabac_init_idc = 2;
+        let cabac2 = registers_at(&cabac2, FrameState::default());
+        assert_eq!(read(&cabac2, &vepu580_regs::H264_SYNT_SLI0_CBC_INIT_IDC), 2);
 
         let mut high = config();
         high.profile = encoder::PROFILE_HIGH;
