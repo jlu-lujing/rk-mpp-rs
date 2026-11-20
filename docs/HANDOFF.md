@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1359 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1360 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1361 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1362 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -333,6 +333,10 @@ H.265 session 的 CPU fallback 输入原先仍是 `system` 并在每帧 copy 前
 从 2.379 s 降到 1.412 s，user+sys 从 1.287 s 降到 0.455 s；只切 heap
 时是 2.006 s，说明主要收益来自去掉 ioctl。旧/新码流均为
 `6fea6748…da157dc`。H.264 做同类删除没有稳定收益，已撤回，不能机械套用。
+H.265 aggregate feedback 又收紧了清零范围：`Statistics::from_words` 只读取
+word 0/1/2/3 和 64..75，原先每帧 `fill(0)` 整个 180-word STATUS。现在共享
+索引表只清零并累加 0、3、64..75 共 14 words，word 1/2 随后由 SSE 覆盖；
+500 帧 wall median 再降到 1.318 s，user+sys 0.366 s，码流哈希不变。
 
 上游 `mpi_enc_test` 的 `MPP_SET_VENC_INIT_KCFG` 已接通。兼容层复制
 type/coding/max dimensions 到 `mpp_init`/`MPP_ENC_SET_CFG`，保留所有已知
@@ -739,7 +743,7 @@ dma-buf lease 归还前关闭；旧顺序曾让驱动在 `mpp_dma_find_buffer_fd
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --workspace --all-targets --offline   # host：1359 passed / 0 failed / 45 ignored（59 suites）
+cargo test --workspace --all-targets --offline   # host：1360 passed / 0 failed / 45 ignored（59 suites）
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json

@@ -83,6 +83,14 @@ The old and new outputs are byte-identical:
 The identical H.264 sync removal was tested and reverted because it produced
 no stable gain on the same workload.
 
+The aggregate H.265 feedback buffer was still clearing all 180 STATUS words
+every picture, although `Statistics::from_words` only consumes words 0, 1, 2,
+3 and 64-75. The session now clears and accumulates only the 14 words that are
+actually feedback; words 1/2 are then overwritten by the summed SSE. Seven
+interleaved 500-frame 720p samples moved wall median from 1.412 to **1.318 s**
+(-6.7%) and user+sys from 0.455 to **0.366 s** (-19.6%). The stream hash stayed
+identical.
+
 ## 2026-11-17 SDK / C API now use the submission ring
 
 - `SdkSession` enables the ring at depth 3 for H.264 and H.265 by default
@@ -1482,8 +1490,8 @@ and TOML, and verifies that the vendor-compatible `mpp_enc_cfg_deinit()` path
 releases it. All three formats pass.
 The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 **3/3 PASS**. The same tree also passes the host workspace gate with
-**1359 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
-**1361 passed / 0 failed / 45 ignored** plus strict rustdoc.
+**1360 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
+**1362 passed / 0 failed / 45 ignored** plus strict rustdoc.
 `scripts/board_mpp_enc_cfg_gdr.sh` also maps the vendor probes'
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`) and H.265 is

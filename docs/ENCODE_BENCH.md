@@ -54,6 +54,11 @@ The stream stayed byte-identical
 (`6fea6748…da157dc`). Applying the same sync removal to H.264 was not kept:
 the interleaved A/B did not show a stable improvement.
 
+H.265 aggregate feedback also cleared all 180 STATUS words per frame even
+though only 14 are consumed. Resetting and summing just words 0/3 and 64-75
+moved the same seven-sample wall median from 1.412 to **1.318 s** and
+user+sys from 0.455 to **0.366 s**, with the same stream hash.
+
 `h265-gop` now writes each completed access unit through a 1 MiB `BufWriter`
 instead of retaining the whole encoded sequence in one `Vec`. The 120-frame
 720p SHA remained identical, and `/dev/null` keeps its no-file-write benchmark

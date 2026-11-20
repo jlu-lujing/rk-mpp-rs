@@ -93,6 +93,11 @@
 | 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；strided NV12 直缩直接从 CPU/DMA Frame 读取 Y/UV 并转换 RGB，不生成整帧中间副本。1080p→640 在 t6/lf1 为 4.93/5.95 ms。IEP2 PD/DECT、9/9 模式与 6/6 格式矩阵均与 C probe 逐字节；解码 NV12 dma-buf 可通过 `import_src_frame()` 直接进入 IEP2，不经 CPU 拷贝，源/目标分配和 Y/UV 地址现在同时按 horizontal/vertical stride 计算；50×34、H=64/V=48 的 rkvdec padded-frame 与显式 strided source 两路输出逐字节一致。`Frame::convert_format()` 完成 NV12/I420↔I420P10 的 8/10-bit 双向转换、chroma 解交织/回打包及元数据保留。RK3576 VDPP2 client 29 已用 Luckfox SDK 250301 的精确 6.1.75 vendor 内核真机验收：板 config 只改成 `CONFIG_ROCKCHIP_MPP_VDPP=y`，`mpp_vdpp 27961000.vdpp` 成功绑定，C/Rust 的 scale-only、默认 enhancement、YUV420 split、YUV444 split 和 10240-byte packed histogram **5/5 逐字节**；histogram 解析为 4096 local + 256 global bin，mean luma U10 为 513。FIT 保留原 FDT/resource、external-data 布局、load/entry、rollback index 和 vendor 签名声明。client 28 只有 deinterlace，legacy `/dev/iep` scale 和 VDPP/HDR/CSC 硬件在 t6 不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件、排队/执行/端到端耗时与成功/失败/取消累计统计）、引用计数 dma-heap 缓冲池；pooled JPEG 保证先关闭 MPP service 再归还共享 dma-buf，t6 连续 3000 jobs 压测通过；VP8 与 H.264/HEVC/AV1/VP9 的 DPB surface 已持有 RAII lease，四类解码边界回归在 t6 通过。submit/poll 硬件错误走 close-before-open 会话替换；真实 `int_sta=0` STATUS 注入后，H.265 tile 会话会清空 line buffer、重新丢弃预跑，并把下一帧升级为带参数集的 IDR，最终码流与全新会话逐字节一致。CCU 路径会探测 vdec/venc/jpeg 设备树节点，用 `SET_SESSION_FD` 把最多 8 个独立 session 合成一个提交批次；t6 两个 VEPU2 JPEG session、lf1 两个 VEPU510 H.264 session 的批量输出都与各自单会话逐字节一致，无 CCU/命令时自动回退。`board_framework_recovery.sh` 4/4，`board_framework_ccu.sh` 两板各 3/3；fence/secure 仍受内核/TA 限制（见 docs/framework-m10.md） |
 
+H.265 aggregate feedback 原先每帧清零完整 180-word STATUS，实际只消费 14
+words。改为只重置并累加 word 0、3 和 64–75 后，500 帧 720p 的 wall median
+从 1.412s 降到 1.318s，user+sys 从 0.455s 降到 0.366s，码流 SHA-256 仍为
+`6fea6748…da157dc`。
+
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
 125 项完成、5 项未完成（含缩进子项为 165 / 9）；未完成项里有硬件不存在、无 conformance

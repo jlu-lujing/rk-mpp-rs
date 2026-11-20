@@ -3963,6 +3963,15 @@ pipeline uses.
   change was 2.006 s, so most of the CPU gain comes from eliminating the
   per-frame syncs.
 
+- **2026-11-20: H.265 feedback resets only the words it accumulates.**
+  Aggregate H.265 STATUS was cleared as a full 180-word, 16.5 KiB vector every
+  frame although feedback only reads and accumulates 14 words (0, 3 and 64-75).
+  A shared index list now resets and sums exactly those entries. The 500-frame
+  720p stream remains
+  `6fea674832963f18b0b7f2fe0a41421471ea7bfcb6d36d59ebf2720a0da157dc`;
+  seven samples moved wall median from 1.412 to 1.318 s (-6.7%) and user+sys
+  from 0.455 to 0.366 s (-19.6%).
+
 - **2026-11-19: venc init kcfg is consumed.** The drop-in layer now handles
   `MPP_SET_VENC_INIT_KCFG`, mirrors the upstream init key set, rejects unknown
   keys, maps type/coding and maximum dimensions into `mpp_init` /
@@ -4069,7 +4078,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1359 passed / 45 ignored and t6 workspace tests are 1361 passed / 45 ignored,
+  1360 passed / 45 ignored and t6 workspace tests are 1362 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal

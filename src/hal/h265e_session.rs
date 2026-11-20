@@ -35,6 +35,7 @@ const STATUS_OFFSET: u32 = 16384;
 /// `VEPU580_REG_BASE_HW_STATUS` = 0x2c bytes.
 const HW_STATUS_OFFSET: u32 = 44;
 const STATUS_WORDS: usize = 180;
+const AGGREGATE_STATUS_WORDS: [usize; 14] = [0, 3, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75];
 const HW_ERROR_MASK: u32 = 0x3f0;
 const OUTPUT_MARGIN: usize = 4096;
 /// `h265e_init`'s intra GOP default, which the harness keeps. The rate-control SEI
@@ -1162,7 +1163,9 @@ impl Vepu580H265 {
         let mut slice_lengths = Vec::new();
         let mut aggregate_status = std::mem::take(&mut self.aggregate_status_scratch);
         aggregate_status.resize(STATUS_WORDS, 0);
-        aggregate_status.fill(0);
+        for &word in &AGGREGATE_STATUS_WORDS {
+            aggregate_status[word] = 0;
+        }
         let mut sse_sum = 0u64;
         let mut stream_len = 0usize;
 
@@ -1319,10 +1322,7 @@ impl Vepu580H265 {
                 ));
             }
             sse_sum += (u64::from(status[2]) << 16) | u64::from((status[1] >> 16) & 0xffff);
-            for word in std::iter::once(0)
-                .chain(3..=3)
-                .chain(4160 - 4096..=4171 - 4096)
-            {
+            for &word in &AGGREGATE_STATUS_WORDS {
                 aggregate_status[word] = aggregate_status[word].wrapping_add(status[word]);
             }
             stream_len += length;
@@ -1547,6 +1547,13 @@ fn validate_recovery_reencode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aggregate_status_resets_only_feedback_words() {
+        assert_eq!(AGGREGATE_STATUS_WORDS.len(), 14);
+        assert_eq!(AGGREGATE_STATUS_WORDS[..2], [0, 3]);
+        assert_eq!(AGGREGATE_STATUS_WORDS[2..], (64..=75).collect::<Vec<_>>());
+    }
 
     #[test]
     fn the_captured_geometry_gets_the_caps_sizes() {
