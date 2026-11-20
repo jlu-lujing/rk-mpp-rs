@@ -344,7 +344,7 @@ impl Vepu580H265 {
             split: SliceSplit::default(),
             roi: None,
             syntax: SyntaxOptions::default(),
-            input: DmaBuf::alloc("system", input_size, false)
+            input: DmaBuf::alloc("system-uncached", input_size, false)
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
             input_padding_initialized: false,
             input_prepared: false,
@@ -1041,10 +1041,7 @@ impl Vepu580H265 {
         }
 
         self.input_prepared = false;
-        self.input
-            .sync_write_begin()
-            .map_err(|error| format!("H.265 input sync: {error}"))?;
-        let copied = super::copy_visible_nv12_to_padded(
+        super::copy_visible_nv12_to_padded(
             self.input.as_mut_slice(),
             &nv12[..visible_size],
             self.width,
@@ -1052,13 +1049,7 @@ impl Vepu580H265 {
             coded_width,
             coded_height,
             !self.input_padding_initialized,
-        );
-        let synced = self
-            .input
-            .sync_write_end()
-            .map_err(|error| format!("H.265 input flush: {error}"));
-        copied?;
-        synced?;
+        )?;
         self.input_padding_initialized = true;
         self.input_prepared = true;
         Ok(())
@@ -1094,16 +1085,10 @@ impl Vepu580H265 {
             }
             self.input_padding_initialized = false;
             self.input
-                .sync_write_begin()
-                .map_err(|e| format!("H.265 input sync: {e}"))?;
-            self.input
                 .as_mut_slice()
                 .get_mut(..input_size)
                 .ok_or_else(|| "H.265 input buffer shorter than the picture".to_string())?
                 .copy_from_slice(&nv12[..input_size]);
-            self.input
-                .sync_write_end()
-                .map_err(|e| format!("H.265 input flush: {e}"))?;
             self.input.fd()
         };
         // The VEPU580 carries dual-core handshake state between processes, and

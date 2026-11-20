@@ -327,6 +327,13 @@ H.265 文件输入也改成与 H.264 相同的双 surface DMA 管线：reader �
 五次交错 60 帧矩阵中，H.265 在 320x240、640x480、720p、1080p 分别比 C 快
 39.1%、77.3%、27.1%、35.7%。
 
+H.265 session 的 CPU fallback 输入原先仍是 `system` 并在每帧 copy 前后发
+两次 `DMA_BUF_SYNC`。现在与 CLI 一样使用 `system-uncached`，uncached mapping
+上的两次 sync 也删除。t6 80% OPP、500 帧 720p 七次采样的 wall median
+从 2.379 s 降到 1.412 s，user+sys 从 1.287 s 降到 0.455 s；只切 heap
+时是 2.006 s，说明主要收益来自去掉 ioctl。旧/新码流均为
+`6fea6748…da157dc`。H.264 做同类删除没有稳定收益，已撤回，不能机械套用。
+
 上游 `mpi_enc_test` 的 `MPP_SET_VENC_INIT_KCFG` 已接通。兼容层复制
 type/coding/max dimensions 到 `mpp_init`/`MPP_ENC_SET_CFG`，保留所有已知
 kernel-only key，遇到未知 key 返回 `MPP_NOK`；type/coding mismatch 返回

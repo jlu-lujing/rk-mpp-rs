@@ -3951,6 +3951,18 @@ pipeline uses.
   The five-sample 60-frame H.265 matrix is +39.1%, +77.3%, +27.1% and
   +35.7% faster than C at 320x240, 640x480, 720p and 1080p respectively.
 
+- **2026-11-20: H.265 session CPU input uses uncached DMA without redundant
+  syncs.** The VEPU580 session still allocated its internal input on `system`
+  and issued `DMA_BUF_SYNC` START/END around every CPU copy, unlike the CLI's
+  established `system-uncached` pipeline. Switching the session input to
+  `system-uncached` and removing the two no-op sync ioctls kept the 500-frame
+  720p stream byte-identical
+  (`6fea674832963f18b0b7f2fe0a41421471ea7bfcb6d36d59ebf2720a0da157dc`).
+  Seven samples moved wall median from 2.379 to 1.412 s (-40.7%) and
+  user+sys median from 1.287 to 0.455 s (-64.7%). The intermediate heap-only
+  change was 2.006 s, so most of the CPU gain comes from eliminating the
+  per-frame syncs.
+
 - **2026-11-19: venc init kcfg is consumed.** The drop-in layer now handles
   `MPP_SET_VENC_INIT_KCFG`, mirrors the upstream init key set, rejects unknown
   keys, maps type/coding and maximum dimensions into `mpp_init` /

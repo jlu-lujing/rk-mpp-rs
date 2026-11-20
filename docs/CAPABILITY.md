@@ -36,7 +36,7 @@
 | 能力 | 状态 | 证据 / 边界 |
 |---|---|---|
 | H.264（VEPU580） | 完成 | 固定 QP 24 格、P 帧 11 尺寸（含 FBC 阈值两侧）、CBR/VBR/AVBR、hier QP、SMART_P、two-pass deflicker、level、deblock、ROI/QP map、GDR 4/4、slice split 4/4、逐 slice 输出 5/5，全部逐字节或逐 job STATUS。GDR 用确定性 ROI 表对照：stock C 的未初始化栈字段会导致跨进程输出不同，修表后 C/Rust 35 NAL 全一致。输出 packet 使用 uncached DMA heap，省掉逐帧 cache-sync ioctl；500 帧 720p A/B 快 2.53%，码流不变 |
-| H.265（VEPU580） | 完成 | IDR/P GOP、CBR/VBR/AVBR、GDR 4/4、ROI 4/4、deblock/SAO 4/4、BY_CTU/BY_BYTE 3/3、low-delay 4/4、水平 tiles 2/2。输出 packet 使用 uncached DMA heap；500 帧 720p A/B 快 2.41%，码流不变 |
+| H.265（VEPU580） | 完成 | IDR/P GOP、CBR/VBR/AVBR、GDR 4/4、ROI 4/4、deblock/SAO 4/4、BY_CTU/BY_BYTE 3/3、low-delay 4/4、水平 tiles 2/2。输出 packet 和 session CPU 输入都使用 uncached DMA heap；输入路径不再发每帧两次无效 sync。500 帧 720p 的 wall median 2.379s→1.412s，user+sys 1.287s→0.455s，码流哈希不变；输出 packet 的既有 A/B 仍快 2.41% |
 | JPEG（vepu） | 完成 | baseline 4:2:0、restart、90/270 旋转、RGB/YUV 输入、低延迟 slices、RK3588 四 band 多核，逐字节/逐 packet |
 | WPP / B 帧 / 多参考 | 不存在 | C 参考没有实现（标志恒 0、无 entry point、无 B_FRAME、`num_ref = 1`），不是本 crate 的缺口 |
 | harness `-g 60` | BY-DESIGN | harness 解析成 `gop_len=0` 的病态 smart-GOP；本 crate 拒绝 `gop=0`，有效形式逐字节 |

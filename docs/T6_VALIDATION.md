@@ -62,6 +62,27 @@ median 1.428 s. `RKMPP_COMPAT_OSD_DMABUF=1` enables direct submission for
 surfaces whose cache policy is known suitable; `RKMPP_COMPAT_CPU_INPUT=1`
 forces the fallback.
 
+### H.265 session CPU input becomes uncached
+
+The VEPU580 H.265 session still copied CPU input into a cached `system`
+allocation and issued `DMA_BUF_SYNC` START/END around every picture, even
+though the file pipeline already used `system-uncached` surfaces. The session
+now matches that pipeline and omits the two redundant sync ioctls.
+
+Seven interleaved 500-frame 720p samples through the compatible encoder
+fallback measured:
+
+| change | wall median | user+sys median |
+| --- | ---: | ---: |
+| `system` + sync | 2.379 s | 1.287 s |
+| `system-uncached` + sync | 2.006 s | 1.011 s |
+| `system-uncached`, no sync | **1.412 s** | **0.455 s** |
+
+The old and new outputs are byte-identical:
+`6fea674832963f18b0b7f2fe0a41421471ea7bfcb6d36d59ebf2720a0da157dc`.
+The identical H.264 sync removal was tested and reverted because it produced
+no stable gain on the same workload.
+
 ## 2026-11-17 SDK / C API now use the submission ring
 
 - `SdkSession` enables the ring at depth 3 for H.264 and H.265 by default

@@ -37,6 +37,23 @@ The before/after streams were byte-identical:
 `system-uncached` (275 ms median) over `system` (285 ms median), so the faster
 result is not an uncached-heap accident.
 
+## 2026-11-20: H.265 session CPU fallback drops cached-input syncs
+
+The object/compat fallback still used the session's cached `system` input and
+two `DMA_BUF_SYNC` ioctls per picture. It now uses `system-uncached`, matching
+the file pipeline, and omits those syncs. On t6 at 80% OPP, seven interleaved
+500-frame 720p samples gave:
+
+| change | wall median | user+sys median |
+| --- | ---: | ---: |
+| cached + sync | 2.379 s | 1.287 s |
+| uncached + sync | 2.006 s | 1.011 s |
+| uncached, no sync | **1.412 s** | **0.455 s** |
+
+The stream stayed byte-identical
+(`6fea6748…da157dc`). Applying the same sync removal to H.264 was not kept:
+the interleaved A/B did not show a stable improvement.
+
 `h265-gop` now writes each completed access unit through a 1 MiB `BufWriter`
 instead of retaining the whole encoded sequence in one `Vec`. The 120-frame
 720p SHA remained identical, and `/dev/null` keeps its no-file-write benchmark
