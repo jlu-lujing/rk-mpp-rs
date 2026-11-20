@@ -335,6 +335,15 @@ callers.
 - [x] Update docs and commit only if output remains byte-identical.
 - **Status:** complete; RSS 55.9 -> 17.0 MiB with flat warm wall time.
 
+### Phase 25: Bounded-Memory Main `h264dec`
+- Goal: remove the whole-file read from the primary H.264 CLI while retaining
+  its depth-3 submission ring, output recycling and byte identity.
+- [x] Drive `h264dec` from 4 MiB chunks and the shared access-unit scanner.
+- [x] Preserve the current display reorder and output hashes.
+- [x] Measure the 50 MiB / 742-frame wall time, RSS and output count.
+- [x] Update docs and commit.
+- **Status:** complete; 742/742, flat wall time, RSS 59.5 -> 20.4 MiB.
+
 ## Decisions Made
 
 | Decision | Rationale |

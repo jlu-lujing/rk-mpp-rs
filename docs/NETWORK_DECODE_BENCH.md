@@ -342,6 +342,19 @@ The first bounded run was cold at 2.226 s. The bounded version emits the same
 This change also fixed the stable SDK's H.264 reorder refresh: before the fix
 the SDK could retain its initial depth 16 even after SPS parsing declared 2.
 
+### Main `h264dec` bounded input
+
+The primary CLI now uses the same scanner and keeps the existing three-job
+submission ring. Three interleaved old/new pairs:
+
+| Version | wall samples | median | peak RSS |
+| --- | --- | ---: | ---: |
+| whole-file `h264dec` | 0.665, 0.664, 0.677 s | **0.665 s** | **59.5 MiB** |
+| bounded `h264dec` | 0.666, 0.677, 0.665 s | **0.665 s** | **20.4 MiB** |
+
+The bounded path reports `742 access units`, `742 frames / 742 output`, and
+retains the same 720p planar/NV12 SHA-256 hashes shown above.
+
 ## Correctness check
 
 The first 20 compressed frames were decoded by both implementations to planar

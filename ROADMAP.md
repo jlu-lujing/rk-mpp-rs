@@ -4433,6 +4433,10 @@ pipeline uses.
   All 742 frames remain, and 720p planar and NV12 SHA-256 values are
   unchanged. The same work fixes SDK H.264 reorder refresh, which previously
   could stay at the pre-SPS value 16 instead of 2.
+- The main `h264dec` path now uses the same 4 MiB scanner while retaining its
+  depth-3 submission ring. Three interleaved 50 MiB / 742-frame pairs are
+  `0.665 -> 0.665 s` wall median with peak RSS `59.5 -> 20.4 MiB`; output
+  counts and planar/NV12 hashes remain unchanged.
 
 - The board memory ledger now separates process RSS from dma-buf usage. On RK3588,
   six-frame H.264/H.265 encodes peak at 3,712/10,436 KiB RSS and

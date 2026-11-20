@@ -174,6 +174,10 @@
   1.576 s / 55.9 MiB (whole file) versus 1.595 s / 17.0 MiB (bounded). The
   first bounded run is cold at 2.226 s, so the warm comparison is recorded
   separately.
+- The main `h264dec` path has the same bounded-input result while retaining
+  its depth-3 ring: three interleaved pairs are 0.665 s / 59.5 MiB (whole
+  file) versus 0.665 s / 20.4 MiB (bounded), with 742/742 output and unchanged
+  720p planar/NV12 hashes.
 
 - `src/lib.rs` currently exports only `rk_jpeg_*`; it is path-based, single-image,
   RGB-letterbox oriented, and does not expose H.264.

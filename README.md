@@ -727,6 +727,8 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 scanner。50 MiB、742 帧的 1920x800 网络流在 RK3588 热态 wall median
 约 1.60 s，与整文件版约 1.58 s 基本持平；峰值 RSS 从约 55.9 MiB 降到
 约 17 MiB，仍输出 742/742 帧。720p planar/NV12 输出哈希与旧路径完全一致。
+主 `h264dec` 也切换到同一切块 scanner，并保留 depth-3 submission ring：
+同一长流 wall median `0.665 -> 0.665 s`，峰值 RSS `59.5 -> 20.4 MiB`。
 
 ```bash
 # 丢弃输出，测流式解码

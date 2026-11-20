@@ -209,6 +209,8 @@ deblock disable/beta/tc、跨 slice/tile loop-filter 和 auto-tile；布尔值�
 的峰值 RSS 从约 55.9 MiB 降到约 17 MiB，热态 wall median 1.576 -> 1.595 s，
 输出仍为 742 帧；720p planar/NV12 哈希不变。同一改动让 SDK 在 SPS 到达后
 刷新 H.264 reorder depth，并暴露 `Decoder::max_num_reorder_frames()`。
+主 `h264dec` 也改用该 scanner，并保留 depth-3 ring：同一长流 wall median
+0.665 -> 0.665 s，峰值 RSS 59.5 -> 20.4 MiB，742 帧输出不变。
 
 官方 MPP drop-in 兼容层的第一个 slice 已落地：`mpp_create/init/destroy`、
 格式查询和官方 `MppApi` 函数表布局已通过 vendor `rk_mpi.h` consumer。

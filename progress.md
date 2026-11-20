@@ -58,6 +58,16 @@
 - Final host workspace gate: `1366 passed / 0 failed / 47 ignored`; rustfmt,
   diff check and strict rustdoc pass.
 
+### Phase 25: Bounded-Memory Main `h264dec`
+- **Status:** complete on RK3588.
+- The primary CLI now uses the shared 4 MiB scanner while keeping its depth-3
+  submission ring.
+- Three interleaved 50 MiB / 742-frame pairs: wall median 0.665 -> 0.665 s,
+  peak RSS 59.5 -> 20.4 MiB. The command reports 742 access units and
+  742/742 output; 720p planar/NV12 hashes are unchanged.
+- Final host workspace gate: `1366 passed / 0 failed / 47 ignored`; rustfmt,
+  diff check and strict rustdoc pass.
+
 ## Session: 2026-11-09
 
 ### Phase 20: Official `mpi_enc_test` Object Bridge

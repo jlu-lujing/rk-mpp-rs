@@ -3991,26 +3991,19 @@ fn main() {
             std::process::exit(2);
         }
         let nv12_output = std::env::var_os("RKMPP_DECODE_NV12").is_some();
-        let data = match std::fs::read(src) {
-            Ok(data) => data,
+        let input_file = match std::fs::File::open(src) {
+            Ok(file) => file,
             Err(e) => {
                 eprintln!("{src}: {e}");
                 std::process::exit(1);
             }
         };
-        let split_started = Instant::now();
-        let aus = rk_mpp_rs::codec::h264::decoder::split_parsed_access_units(&data);
-        if std::env::var_os("RKMPP_TRACE").is_some() {
-            println!(
-                "access-unit split: {:.2} ms",
-                split_started.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-        println!("{} access units", aus.len());
-        if aus.is_empty() {
-            eprintln!("{src}: no H.264 access units found");
-            std::process::exit(1);
-        }
+        let mut input = std::io::BufReader::with_capacity(4 * 1024 * 1024, input_file);
+        let mut scanner = rk_mpp_rs::codec::h264::decoder::AccessUnitScanner::default();
+        let mut scan_buffer = Vec::new();
+        let mut scan_chunk = vec![0u8; 4 * 1024 * 1024];
+        let mut split_time = std::time::Duration::ZERO;
+        let mut access_units = 0usize;
         let mut dec = match rk_mpp_rs::codec::h264::Decoder::new() {
             Ok(d) => d,
             Err(e) => {
@@ -4035,7 +4028,7 @@ fn main() {
         if depth != 0 && !dec.set_pipeline_depth(true, depth) {
             eprintln!("H.264 pipelining unavailable on this SoC; using blocking decode");
         }
-        use std::io::Write;
+        use std::io::{Read, Write};
         let mut out = std::io::BufWriter::new(std::fs::File::create(dst).expect("create out"));
         let mut reorder = rk_mpp_rs::codec::h264::DisplayReorder::new(dec.max_num_reorder_frames());
         let mut decode_time = std::time::Duration::ZERO;
@@ -4043,22 +4036,23 @@ fn main() {
         let mut written = 0usize;
         let mut write_error = None;
         let mut failed = false;
-        for (i, au) in aus.iter().enumerate() {
+        let trace = std::env::var_os("RKMPP_TRACE").is_some();
+        let capture_raw_uv = std::env::var("RFI_DUMP_UV").is_ok();
+        let mut process_au = |i: usize, au: &[u8]| -> bool {
             let t0 = Instant::now();
-            let decoded_picture = dec.decode_parsed_access_unit(au);
+            let decoded_picture = dec.decode_access_unit(au);
             decode_time += t0.elapsed();
             reorder.set_max_reorder(dec.max_num_reorder_frames());
             match decoded_picture {
-                _ if false => {}
                 Ok(Some(pic)) => {
                     decoded += 1;
-                    if i < 3 && std::env::var_os("RKMPP_TRACE").is_some() {
+                    if i < 3 && trace {
                         println!(
                             "    frame {i} submit+poll: {:.2} ms",
                             t0.elapsed().as_secs_f64() * 1000.0
                         );
                     }
-                    if std::env::var("RFI_DUMP_UV").is_ok() {
+                    if capture_raw_uv {
                         std::fs::write("/tmp/raw_uv.bin", &pic.raw_uv).ok();
                     }
                     if i < 3 && pic.yuv.len() >= pic.width * pic.height {
@@ -4105,14 +4099,66 @@ fn main() {
                             }
                         }
                     });
+                    true
                 }
-                Ok(None) => {}
+                Ok(None) => true,
                 Err(e) => {
                     eprintln!("frame {i}: decode error: {e}");
+                    false
+                }
+            }
+        };
+        loop {
+            let read = match input.read(&mut scan_chunk) {
+                Ok(read) => read,
+                Err(error) => {
+                    eprintln!("{src}: {error}");
+                    failed = true;
+                    break;
+                }
+            };
+            if read == 0 {
+                break;
+            }
+            scan_buffer.extend_from_slice(&scan_chunk[..read]);
+            let started = Instant::now();
+            scanner.push(&scan_buffer);
+            let units = scanner.take(&mut scan_buffer, false);
+            split_time += started.elapsed();
+            for au in units {
+                access_units += 1;
+                if !process_au(access_units - 1, &au) {
                     failed = true;
                     break;
                 }
             }
+            if failed {
+                break;
+            }
+        }
+        if !failed {
+            let started = Instant::now();
+            scanner.push(&scan_buffer);
+            let units = scanner.take(&mut scan_buffer, true);
+            split_time += started.elapsed();
+            for au in units {
+                access_units += 1;
+                if !process_au(access_units - 1, &au) {
+                    failed = true;
+                    break;
+                }
+            }
+        }
+        if trace {
+            println!(
+                "access-unit split: {:.2} ms",
+                split_time.as_secs_f64() * 1000.0
+            );
+        }
+        println!("{access_units} access units");
+        if access_units == 0 {
+            eprintln!("{src}: no H.264 access units found");
+            failed = true;
         }
         match dec.flush() {
             Ok(pictures) => {
