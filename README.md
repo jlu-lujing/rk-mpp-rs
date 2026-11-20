@@ -316,6 +316,7 @@ STREAM_COUNTS="1 2 4 6 8" RUST_DMABUF=1 ./scripts/board_multistream_bench.sh
 ./scripts/board_mpp_standalone.sh
 ./scripts/board_mpp_standalone_encode.sh
 ./scripts/board_ffmpeg_rkmpp.sh
+SAMPLES=7 ./scripts/board_ffmpeg_rkmpp_bench.sh
 ```
 
 RK3576 和 RK3588 已验证共享库和静态库链接、全部公开符号、生命周期错误路径，以及 H.264
@@ -416,6 +417,7 @@ standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 带 `--enable-rkmpp` 的 FFmpeg 同样可用 `LD_LIBRARY_PATH` 把
 `librockchip_mpp.so.1` 指向本库；RK3588 已通过 H.264/H.265/VP9 解码和
 H.264/H.265/MJPEG 编码 FFmpeg 门，复验见 `scripts/board_ffmpeg_rkmpp.sh`。
+三路径编解码性能见 `docs/FFMPEG_BENCH.md`。
 需要重新编译 FFmpeg 时，使用
 `scripts/install_sdk.sh --prefix PATH --mpp-compat` 安装兼容
 `librockchip_mpp.so{,.1}`、vendor 头和 `rockchip_mpp.pc`。

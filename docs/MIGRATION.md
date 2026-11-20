@@ -106,6 +106,14 @@ LD_LIBRARY_PATH="$overlay" ffmpeg -c:v h264_rkmpp -i input.264 \
 ssh my-rk3588-host 'cd ~/rk-mpp-rs && ./scripts/board_ffmpeg_rkmpp.sh'
 ```
 
+三路径性能复验：
+
+```bash
+SAMPLES=7 scripts/board_ffmpeg_rkmpp_bench.sh
+```
+
+当前 RK3588 结果见 `docs/FFMPEG_BENCH.md`。
+
 已在 FFmpeg `c5e745e3c1`（Rockchip `--enable-rkmpp` 构建）验证：
 
 - H.264、H.265、VP9 CPU NV12 解码与 vendor `ffmpeg ..._rkmpp` 逐字节一致；
