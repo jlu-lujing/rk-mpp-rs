@@ -1,6 +1,6 @@
 # Encoder throughput against C MPP
 
-Board: NanoPC-T6-LTS (RK3588), CPU and DDR governors pinned to `performance`.
+Board: RK3588, CPU and DDR governors pinned to `performance`.
 
 ## Method
 
@@ -23,7 +23,7 @@ used two reusable `system-uncached` surfaces: a reader thread filled the next
 surface while the encoder drove VEPU580 on the current one. H.265 now uses the
 same bounded two-surface pipeline and submits the surface fd directly.
 
-On t6 at the persistent 80% OPP cap, 120 frames of 720p H.265 gave:
+On RK3588 at the persistent 80% OPP cap, 120 frames of 720p H.265 gave:
 
 | metric | before | after | change |
 | --- | ---: | ---: | ---: |
@@ -41,7 +41,7 @@ result is not an uncached-heap accident.
 
 The object/compat fallback still used the session's cached `system` input and
 two `DMA_BUF_SYNC` ioctls per picture. It now uses `system-uncached`, matching
-the file pipeline, and omits those syncs. On t6 at 80% OPP, seven interleaved
+the file pipeline, and omits those syncs. On RK3588 at 80% OPP, seven interleaved
 500-frame 720p samples gave:
 
 | change | wall median | user+sys median |

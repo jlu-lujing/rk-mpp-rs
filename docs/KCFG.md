@@ -28,7 +28,7 @@ can still use it.
 The board gate is:
 
 ```bash
-BOARD=t6 scripts/board_mpp_kcfg.sh
+BOARD=my-rk3588-host scripts/board_mpp_kcfg.sh
 ```
 
 It compiles `tools/mpp_kcfg_probe.c` against the upstream vendor headers,

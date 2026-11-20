@@ -15,14 +15,14 @@ cargo test --test fixture_manifest
   `libaom-av1`, `libvpx`, `libvpx-vp9`, `mpeg2video`, `mpeg4` and `h263`
   encoders.
 - `av1_inter_444_320x240.ivf` is three frames of 320x240 `testsrc2` converted
-  to `yuv444p` and encoded on t6 by libaom `aomenc` profile 1 at CQ 30 with
+  to `yuv444p` and encoded on RK3588 by libaom `aomenc` profile 1 at CQ 30 with
   zero lag, while palette, intra-BC, delta-q, CDEF, loop restoration and the
   loop filter were disabled. The default inter feature set is otherwise
   retained, so the stream exercises one-sided compound references,
   inter-intra, interintra/masked/warped/OBMC candidates and nearby
   `NEWMV` context. Its three displayed frames match stock `aomdec` with FNV-1a
   `3a3ac8702504f818`, `feb795c9af578d86` and `3fa247cf03083531`.
-- `av1_b_pyramid_320x240_20.ivf` is 20 frames of `testsrc2` encoded on t6 by
+- `av1_b_pyramid_320x240_20.ivf` is 20 frames of `testsrc2` encoded on RK3588 by
   libaom 3.6.0 `aomenc` with `--lag-in-frames=19 --auto-alt-ref=1`. It contains
   hidden showable pictures, order-hint reordering and `show_existing_frame`
   output across multiple reference slots. Intra-only optional tools, CDEF,
@@ -36,7 +36,7 @@ cargo test --test fixture_manifest
   advanced-inter/reordering path. All 20 displayed Y/U/V frames match stock
   `aomdec` sample-exactly.
 - `av1_b_pyramid_10bit_320x240_12.ivf` is 12 frames of 10-bit 320x240
-  `testsrc2` encoded on t6 by libaom 3.6.0 `aomenc` with
+  `testsrc2` encoded on RK3588 by libaom 3.6.0 `aomenc` with
   `--lag-in-frames=11 --auto-alt-ref=1`. All 12 coded frames are showable, and
   the order-hint history reaches seven non-zero slots while prediction remains
   single-reference. It combines that multi-slot schedule with the 10-bit
@@ -49,7 +49,7 @@ cargo test --test fixture_manifest
   `0606d5627ca3ede6`, `1abd2b921beef8b6`, `9de73f8cac3ec0cd`,
   `1833f502f09341b9`, `d03d07b88ab0699e` and `27f49b4d058db9d0`.
 - `av1_b_pyramid_10bit_advanced_320x240_20.ivf` is 20 frames of 10-bit
-  320x240 `testsrc2` encoded on t6 by libaom 3.6.0 `aomenc` with
+  320x240 `testsrc2` encoded on RK3588 by libaom 3.6.0 `aomenc` with
   `--lag-in-frames=19 --auto-alt-ref=1`. The hidden/showable reorder schedule
   and `show_existing_frame` output retain global/warped motion, OBMC,
   inter-intra, masked/distance-weighted compound and reference-frame MVs.
@@ -76,7 +76,7 @@ cargo test --test fixture_manifest
   `3e7128c543279b42`, `6158908403f110a9`, `c0f4d5512b2986d7`,
   `0a195b7dcb09fc0b` and `cfb7535f8ed14278`.
 - `av1_b_pyramid_10bit_444_advanced_320x240_20.ivf` is 20 frames of
-  `testsrc2` converted to `yuv444p10le` and encoded on t6 by libaom 3.6.0
+  `testsrc2` converted to `yuv444p10le` and encoded on RK3588 by libaom 3.6.0
   `aomenc` profile 1 with `--good --cpu-used=6 --lag-in-frames=19
   --auto-alt-ref=1 --sb-size=64`. Hidden showable frames,
   `show_existing_frame`, global/warped motion, OBMC, inter-intra,
@@ -91,7 +91,7 @@ cargo test --test fixture_manifest
   `250fccf4ebb8a568`, `5ed647a905c826d8`, `cac6fc2bf4ca02bd`,
   `6399703171b219a8` and `4b493d1951b0d8e6`.
 - `av1_b_pyramid_10bit_lr_320x240_20.ivf` is 20 frames of 10-bit 320x240
-  `testsrc2` encoded on t6 by libaom 3.6.0 `aomenc` with
+  `testsrc2` encoded on RK3588 by libaom 3.6.0 `aomenc` with
   `--cpu-used=0 --cq-level=20 --sb-size=64 --lag-in-frames=19
   --auto-alt-ref=1 --enable-restoration=1 --enable-cdef=1`. It combines the
   advanced B reorder schedule with an inter frame that actually selects
@@ -114,7 +114,7 @@ cargo test --test fixture_manifest
   `beee2dc6561fce58/1770358636fc0196/f3a48d8c4bfcab5c` and
   `3942d84cd4654ccf/770a06024e21a8e3/73bebeea68714a5d`.
 - `av1_tile_rows_320x320.ivf` is three frames of 320x320 `testsrc2` encoded
-  on t6 by libaom 3.6.0 `aomenc` at CQ 32 with
+  on RK3588 by libaom 3.6.0 `aomenc` at CQ 32 with
   `--tile-columns=0 --tile-rows=1 --row-mt=0 --lag-in-frames=0`,
   with IntraBC, palette, CDEF, loop restoration and the loop filter disabled
   to isolate the tile-row entropy and reconstruction path.
@@ -129,7 +129,7 @@ cargo test --test fixture_manifest
 - `av1_vdpu383_global_key_320x240.bin` is the first 672-byte VDPU383 AV1
   global-header record emitted by the official C HAL after applying
   `scripts/av1_vdpu383_dump.patch` and decoding the first keyframe of
-  `av1_tiles_320x240_10.ivf` on lf1.
+  `av1_tiles_320x240_10.ivf` on RK3576.
 - `av1_vdpu383_regs_key_320x240.bin` is the matching 848-byte serialized
   `Vdpu383RegSet` from the same C job.
 - `av1_vdpu383_key_frame_320x240.yuv` is the first displayed 320x240 YUV420p
@@ -137,7 +137,7 @@ cargo test --test fixture_manifest
 - `av1_vdpu383_regs_inter_320x240.bin` is the 848-byte serialized
   `Vdpu383RegSet` for the first inter-coded job in the same fixture.
 - `av1_vdpu383_sequence_320x240.yuv` is the complete ten-frame, 1,152,000-byte
-  planar output emitted by stock C MPP for `av1_tiles_320x240_10.ivf` on lf1.
+  planar output emitted by stock C MPP for `av1_tiles_320x240_10.ivf` on RK3576.
   Rust VDPU383 output is byte-identical and has SHA-256
   `9d339ae3c5b270ac9059548da0d3ff5ef6cb0c94a9bcb11f5bfc93783e868138`.
 - `av1_lr_320x240.ivf` is two frames of FFmpeg `testsrc2` encoded by libaom

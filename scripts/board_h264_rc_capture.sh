@@ -52,7 +52,7 @@ report() { python3 tools/rc_trace_report.py "/tmp/rc_$1.log" "${@:2}"; }
 
 {
   printf '# What the C encoder'\''s rate control writes for the same six frames it\n'
-  printf '# encodes at fixed QP, captured on t6 with tools/mpp_ioctl_trace.c.\n'
+  printf '# encodes at fixed QP, captured on RK3588 with tools/mpp_ioctl_trace.c.\n'
   printf '# Regenerate with: REFRESH=1 scripts/board_h264_rc_capture.sh\n'
   printf '# The CBR stream those jobs produced is 6283 bytes, md5\n'
   printf '# c34eba92a3196865d04ac23253b2f7af, and both it and this report repeat\n'

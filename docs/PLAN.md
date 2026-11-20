@@ -119,7 +119,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 - [x] W0-1 `/tmp/mpp-old`（`80957d266`）与 `/tmp/mpp-develop` 已固化到
       `~/rk-mpp-oracles`（66M / 54M），`scripts/setup_board_refs.sh` 先检查后回填，
-      两边都缺才 clone + cmake 重建。实测更正：t6 的 `/tmp` **不是 tmpfs**
+      两边都缺才 clone + cmake 重建。实测更正：RK3588 的 `/tmp` **不是 tmpfs**
       （根为 overlay，`upperdir=/data/root`），但 `D /tmp 1777 root root -`
       与 `systemd-tmpfiles-clean.timer` 说明它是会被清的位置——原文"重启即失"的
       机理判断是错的，风险结论不变。
@@ -132,13 +132,13 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [~] W0-4 fixture 管理：**板上语料与参考输出**已入 `corpus/`（438 个文件、1.3G 含 oracle）；
       `tests/data/` 的来源头与 `refresh_fixtures.sh` 仍待做。
 - [x] W0-5 抖动检查：`scripts/board_jitter_check.sh` 对 H.264/H.265 C decode
-      和 H.264 C encode 各跑两次，同时比较输出字节与 SHA-256。t6 首轮得到
+      和 H.264 C encode 各跑两次，同时比较输出字节与 SHA-256。RK3588 首轮得到
       H.264 decode `e72eeb14…b5d11`、H.265 decode
       `87375cba…119f74`、H.264 encode `8ef4f37b…9c86d`，两次均一致。
       `JITTER_CHECK=1 scripts/board_regress_all.sh` 已接入。
 - [x] W0-6 板子信息采集脚本：`scripts/board_info.sh` 采集 OS/kernel、设备树、
       CPU/内存/thermal/governor、mpp/dma-heap 节点、platform driver、hw_support
-      mask 和逐 client 绑定结果，生成 [`docs/board.md`](board.md)。脚本已在 t6
+      mask 和逐 client 绑定结果，生成 [`docs/board.md`](board.md)。脚本已在 RK3588
       实跑，并用 release binary 避免编译 warning 污染报告。
 
 验收：断网/重启后照脚本可在 15 分钟内恢复全部 oracle 并跑通 `board_regress_all.sh`。
@@ -257,7 +257,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       smart GOP 均逐字节
 - [~] W2-7 slice 切分与逐 slice 输出已闭合（BY_CTU/BY_BYTE、32 项 FIFO 跨越、
       6 帧 IDR+P；普通整 AU 3/3，low-delay 4/4）；WPP 未做（水平 tiles 见 W2-11）
-- [x] W2-8 10-bit 编码探针 —— t6 的 VEPU580 接受 MPP 的 10-bit prep/frame
+- [x] W2-8 10-bit 编码探针 —— RK3588 的 VEPU580 接受 MPP 的 10-bit prep/frame
       配置，但硬件 job 返回 `int_sta=0x100` 且不产生 packet；Rust 配置层据此
       显式拒绝非 8-bit，`board_h265_10bit_probe.sh` 固化这条拒绝证据。
 - [x] W2-9 GDR / intra refresh —— C ref-cfg oracle 已建立；
@@ -311,7 +311,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `board_iep_dect_vs_probe.sh` 5/5 逐字节且逐帧状态相同，含 322x242/722x482/
       1366x768 等非 16 对齐尺寸）。
       client 28 的 `iep2_params` 只有 deinterlace，没有 YUV scale/crop 字段；
-      legacy `/dev/iep` scale 后端在 t6 无节点、driver 不绑定，因此板上无法实现或验证。
+      legacy `/dev/iep` scale 后端在 RK3588 无节点、driver 不绑定，因此板上无法实现或验证。
 - [x] W4-2 IEP 与解码器联动（NV12 直通、零拷贝）：
       `IepDeinterlace::import_src_frame()` 直接 dup 解码 Frame 的 dma-buf，
       校验 NV12 单 fd、Y/UV plane offset、horizontal/vertical stride 后作为
@@ -324,7 +324,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `Frame::convert_format()` 支持 NV12/I420 ↔ I420P10，8→10 用位复制，
       10→8 用右移；转换保留 PTS/DTS/POC/error info。宿主单测覆盖
       I420 可逆转和 NV12 解交织/回打包。
-- [x] W4-4 HDR tone mapping 判定为平台不可用：t6 没有 VDPP，当前解码帧
+- [x] W4-4 HDR tone mapping 判定为平台不可用：RK3588 没有 VDPP，当前解码帧
       也没有可验证的 HDR metadata/oracle；不提供伪装成硬件等价的软件 HDR。
 - [x] W4-5 RGA3 为可选路径：现有 NEON 缩放覆盖推理链路且更快，不引入
       第二个不可控硬件依赖。
@@ -334,17 +334,17 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       和 YUV420/YUV444 split Y/UV 输出也已接通；`board_vdpp2_regs_vs_c.sh`
       通过 fake-service C trace 十一格逐字比较；
       packed histogram 的 4096 local /
-      256 global bin 与 U10 平均亮度解析已完成，`vdpp-hist` 可供 lf1 做原始
+      256 global bin 与 U10 平均亮度解析已完成，`vdpp-hist` 可供 RK3576 做原始
       packed/local/global 对比。可撤销的 configfs DTB overlay 和
-      `board_vdpp2_hw_vs_c.sh` 已准备好；t6 没有 client 29，lf1 的 DT status
+      `board_vdpp2_hw_vs_c.sh` 已准备好；RK3588 没有 client 29，RK3576 的 DT status
       虽为 `okay`，但内核 `CONFIG_ROCKCHIP_MPP_VDPP` 未开启且无 configfs
       overlay，平台驱动没有绑定，client-29 init 返回 `EINVAL`；真实硬件像素和
       histogram 仍需重编包含 `mpp_vdpp` 的内核。该驱动是 built-in bool，不能
-      作为 `.ko` 加载；`build_lf1_vdpp2_kernel.sh` 已可离线生成并校验替换 FIT，
+      作为 `.ko` 加载；`build_rk3576_vdpp2_kernel.sh` 已可离线生成并校验替换 FIT，
       并要求源码同时匹配 Linux 6.1.75 且包含 RK3576 VDPP。Armbian
       `rk-6.1-rkr3` commit `00b325014004cf22a27fc67762fe2ff09163cec3`
       已生成 42,991,057-byte 替换 FIT（sha256 `afe90fcc…c548f37a`），
-      FDT/resource 保持不变。首次受控刷写和回读校验成功，但 lf1 180 秒内
+      FDT/resource 保持不变。首次受控刷写和回读校验成功，但 RK3576 180 秒内
       未恢复 LAN/SSH，boot attempt 判定失败。随后已通过 Rockchip Loader
       写回原 p3，前 16 MiB 哈希校验一致，原 6.1.75 内核和网络恢复。
       pstore/journal 没有失败内核日志；rkr3 FIT 标记 rejected，下一次必须
@@ -371,13 +371,13 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `previous/last` colmv fd。pooled JPEG 现在先关闭
       `MppService` 再归还共享
       dma-buf，修复旧 drop 顺序把 fd 过早暴露给其他 worker 的内核 import 竞态；
-      t6 连续 3000 jobs 压测无 lockup/reset。
+      RK3588 连续 3000 jobs 压测无 lockup/reset。
 - [x] W5-5 多实例：H.264 的 CIME extension 与 H.265 tile line buffer 都是
-      session-owned；t6 上 1/2/3 线程在 64x64/320x240/640x480 产出一致且
+      session-owned；RK3588 上 1/2/3 线程在 64x64/320x240/640x480 产出一致且
       与 C 参考相同，旧的“每进程单会话”结论已撤回
 - [x] W5-6 多核 CCU：设备树探测 vdec/venc/jpeg，`BatchServer` 用
-      `SET_SESSION_FD` 把最多 8 个 session 合成一个提交批次；t6 两个独立
-      VEPU2 JPEG session 和 lf1 两个独立 VEPU510 H.264 session 的批量结果都
+      `SET_SESSION_FD` 把最多 8 个 session 合成一个提交批次；RK3588 两个独立
+      VEPU2 JPEG session 和 RK3576 两个独立 VEPU510 H.264 session 的批量结果都
       与各自单会话逐字节一致，两块板各 3/3。6.1 内核的批量 wait 不填
       `mpp_bat_msg.ret`，因此提交后回退到每个真实 session 的 poll；无 CCU
       或 `SET_SESSION_FD` 不支持时自动走单会话路径。
@@ -385,14 +385,14 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       返回 `Unsupported`，但仍需真实 TA/kernel 提供能力探测接口后才能实现安全路径
 - [x] W5-8 错误恢复：HW timeout 进入 close/reopen recovery，legacy VDPU2
       IRQ 错误可恢复，session replacement/fd 生命周期、真实 VP8 STATUS 错误和
-      H.265 tile recovery 板级 4/4；invalid input fd 在 t6 触发真实
+      H.265 tile recovery 板级 4/4；invalid input fd 在 RK3588 触发真实
       `int_sta=0`，重开后清空 tile line buffer、重新执行丢弃预跑，并把下一帧
       强制成带参数集的 IDR，输出与全新会话逐字节一致。RESET_SESSION 仅保留
       显式破坏性诊断。
 - [x] W5-9 统计与追踪：`TaskTiming` 记录排队、执行和端到端耗时；
       `TaskMetrics` 累计 submitted/done/failed/cancelled、总耗时和
       max queued/running；现有 bounded event channel 同步携带每任务 timing。
-      host 单测与 t6 async-demo 同路径验证。
+      host 单测与 RK3588 async-demo 同路径验证。
 
 验收：并发多任务/多实例压测无泄漏（valgrind/asan 或 fd 计数）、fence 顺序正确、
 与我方同步路径输出一致；与 C MPP 的同场景行为对照（不要求逐字节，要求语义等价）。
@@ -441,7 +441,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W7-2 C ABI：`mpp_create/mpp_init/mpp_destroy`、`MppApi` 函数表子集、
       `mpp_frame/mpp_packet/mpp_buffer` 最小实现
       **Foundation landed:** official-header lifecycle and support-query
-      symbols plus the complete 184-byte `MppApi` table layout pass on t6/lf1.
+      symbols plus the complete 184-byte `MppApi` table layout pass on RK3588/RK3576.
       **Decode slice landed:** packet/frame/buffer ownership and CPU NV12
       `decode_put_packet/decode_get_frame` pass H.264, H.265 and MJPEG against
       C MPP on both boards. Local `MppMeta` now covers scalar/pointer/object
@@ -451,10 +451,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [ ] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
       **Decode partial landed:** the unchanged vendor `mpi_dec_test` runs
       H.264/H.265/MJPEG under `LD_PRELOAD` with byte-identical output on
-      t6/lf1. Vendor log/cfg/OSAL helpers remain linked from the native MPP;
+      RK3588/RK3576. Vendor log/cfg/OSAL helpers remain linked from the native MPP;
       standalone linking and `mpi_enc_test` remain.
       **Encoder partial landed:** vendor `MppEncCfg`, `MppFrame` input and
-      `MppPacket` output are bridged into `encoder::Encoder`. t6/lf1 H.265 and
+      `MppPacket` output are bridged into `encoder::Encoder`. RK3588/RK3576 H.265 and
       MJPEG one/six-frame streams are byte-identical; H.264 one/six-frame
       VCL/reconstruction matches C MPP with only version-SEI framing differing.
       RK3576 High CABAC/8x8, MEIW and its object-specific H.265 header/register
@@ -473,14 +473,14 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 - [x] W8-1 NEON 缩放内核：一般比例 bilinear 行现在预计算每四个输出像素的
       gather index/weight，NEON 横向插值后直接纵向合并，尾部回退标量。
-      t6 `60` 次交错采样中，非整数 `1930x1080→640x640` 从 `2.804` ms
+      RK3588 `60` 次交错采样中，非整数 `1930x1080→640x640` 从 `2.804` ms
       降到 `1.321` ms（约 `2.12x`），全部 General/int ratio 样例与标量输出
       逐字节相同。
 - [x] W8-2 零拷贝链路：解码→缩放→推理输入，减少 DMA_BUF sync 次数。
       `Frame::letterbox_nv12()` 直接读取 CPU 或 DMA-BUF frame 的 strided
       Y/UV planes，在缩放时完成 BT.601 RGB 转换，不生成整帧 NV12/RGB 中间副本。
-      H.264 1280x720→640x360 在 t6/lf1 的 CPU/DMA 路径 RGB 输出逐字节一致；
-      1080p→640x640 在 t6 为 4.93 ms、lf1 为 5.95 ms，相比
+      H.264 1280x720→640x360 在 RK3588/RK3576 的 CPU/DMA 路径 RGB 输出逐字节一致；
+      1080p→640x640 在 RK3588 为 4.93 ms、RK3576 为 5.95 ms，相比
       “整帧 NV12→RGB + RGB scale”的 20.32/24.36 ms 分别减少约 76%/76%。
 - [x] W8-3 编码器缓冲复用：`Vepu580H264::open` 一次性分配 input、output、
       两个 recon 的 FBC pixel/thumb、motion-info、ROI、GDR 和 CIME extension
@@ -488,15 +488,15 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       路径内没有 `DmaBuf::alloc`/`mmap`。H.265 session 同样在 `open_inner`
       完成 input/output/two surfaces/motion-info 的固定分配。
 - [ ] W8-4 1088 行编码的抖动定位（当前与 C 平手、双峰 ~110/~140ms）
-- [x] W8-5 基准门槛化：`scripts/board_perf_gate.sh` 运行 t6 的交错
+- [x] W8-5 基准门槛化：`scripts/board_perf_gate.sh` 运行 RK3588 的交错
       `test720` decode 与四条 NEON scale 基准，读取
       `scripts/perf_baseline.tsv` 的相对吞吐/毫秒上限；任一关键行缺失或超限
       即失败。`PERF_GATE=1 scripts/board_regress_all.sh` 已接入，默认关闭以
       保持普通正确性回归的速度。
-- [x] W8-6 内存占用报告：`scripts/board_memory_profile.sh` 在 t6 采样
+- [x] W8-6 内存占用报告：`scripts/board_memory_profile.sh` 在 RK3588 采样
       `/proc/*/status` 的 `VmHWM` 和 debugfs dma-buf 总量，生成
       [`docs/memory.md`](memory.md)。八种 decode 和六帧 H.264/H.265 encode
-      已有 t6 基线；CPU RSS 与 dma-buf 分列，避免重复计算。编码器每帧
+      已有 RK3588 基线；CPU RSS 与 dma-buf 分列，避免重复计算。编码器每帧
       alloc/mmap 已由 W8-3 消除。极短 320x240 decoder 的 dma-buf 事件快于
       采样窗口，报告明确标记为未观测而不是伪报为零。
 
@@ -565,7 +565,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       （FNV `0x8da389d2e180d680`）和 212-word register struct image；
       default CDF、segmentation/colmv/RCB sizing 已对齐，首 keyframe 已真实
       提交并输出与 C 逐字节；multi-frame/inter/10-bit/film grain 仍待实现。
-      VEPU510 H.264 已从 C struct 生成 645-field/6-window 寄存器表，并与 lf1
+      VEPU510 H.264 已从 C struct 生成 645-field/6-window 寄存器表，并与 RK3576
       IDR trace 的 section/STATUS 尺寸对齐；首个 320x240 QP26 Baseline IDR、
       GOP2、GOP6、CBR6、VBR6 和 AVBR6 已与 C 全流逐字节
       （6479 / 8671 / 18225 / 14187 / 15616 / 12313 bytes）；ROI 两帧格
@@ -608,7 +608,7 @@ W5 可以与 W1/W2 并行（不同人/不同上下文），但 W7 必须等 W5�
 | R3 | H.265 编码规模被低估 | 主线延期 | 先做固定 QP 的 I 帧最小闭环，再逐特性；用寄存器 diff 驱动 |
 | R4 | framework 无 C 侧语义文档 | 行为偏差 | 以 `mpi_*_test` 行为为 oracle；写对照测试 |
 | R5 | secure/TA 无设备支持 | 无法验证 | 能力探测 + 明确拒绝；文档标注"未验证" |
-| R6 | 多实例共享行缓冲 | 并发不可用 | **已处置（W5-5）**：行缓冲为 session-owned，t6 多线程编码验证通过；锁/`SessionGate` 仅保留为显式共享单会话时的可选策略 |
+| R6 | 多实例共享行缓冲 | 并发不可用 | **已处置（W5-5）**：行缓冲为 session-owned，RK3588 多线程编码验证通过；锁/`SessionGate` 仅保留为显式共享单会话时的可选策略 |
 | R7 | conformance 流不可得（AVS） | 无法证明 | 明确记录"无流不可验"，不伪造证据 |
 | R8 | 性能回归悄悄发生 | 违反目标 | W8-5 把吞吐门槛纳入回归脚本 |
 

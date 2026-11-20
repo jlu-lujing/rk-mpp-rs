@@ -17,7 +17,7 @@ BOARD="${BOARD:-t6}"
 # a failure but a recorded "waiting for the template".
 #
 # The reference is the same source-compiled MPP the H.264 comparison uses
-# (MPP_REF, /tmp/mpp-old on t6). Its mpi_enc_test hard-codes profile/level for
+# (MPP_REF, /tmp/mpp-old on RK3588). Its mpi_enc_test hard-codes profile/level for
 # HEVC in this vintage, so where the harness cannot be made to leave them at the
 # library defaults, fall back to tools/h265e_probe.c (same cell, defaults intact).
 #
@@ -35,7 +35,7 @@ BOARD="${BOARD:-t6}"
 # VP8 9, VP9 10, then VC1 = 0x01000000, FLV1, DIVX3, VP6 and **HEVC =
 # 0x01000004 = 16777220**. `-t 9` is VP8, not HEVC - the first version of this
 # script carried 9 and would have compared an H.265 file against a refused VP8
-# encode. Confirmed on t6: 320x240, -n 1, -rc 2, -qc 26:26:26:26:26 writes 860
+# encode. Confirmed on RK3588: 320x240, -n 1, -rc 2, -qc 26:26:26:26:26 writes 860
 # bytes whose NAL types are 32 (VPS), 33 (SPS), 34 (PPS), 39, 39 (SEI) and 19
 # (IDR_W_RADL).
 set -uo pipefail

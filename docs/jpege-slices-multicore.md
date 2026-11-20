@@ -136,7 +136,7 @@ C and 60.7 ms for Rust; this is a regression guard, not a stable microbenchmark.
 The companion W5-6 path batches two *independent encoder sessions*, rather
 than four bands of one picture. `BatchServer` prefixes each session's request
 list with `MPP_CMD_SET_SESSION_FD`, leaves `LAST_MSG` only on the final task,
-and polls each real session after the shared submission. On t6 the two
+and polls each real session after the shared submission. On RK3588 the two
 640x480 outputs are byte-identical to standalone encodes. This 6.1 kernel
 triggers both sessions but leaves every `mpp_bat_msg.ret` at `EAGAIN`, which
 is why the implementation deliberately separates batched submit from

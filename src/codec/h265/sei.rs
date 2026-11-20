@@ -5,7 +5,7 @@
 //! output - `mpp_enc_impl.cpp` adds them before the hardware's slice NAL - so the
 //! stream cannot match the C encoder without them even when the IDR itself does.
 //!
-//! The bytes here come from the oracle's own stream (t6, `mpi_enc_test -t 16777220
+//! The bytes here come from the oracle's own stream (RK3588, `mpi_enc_test -t 16777220
 //! -f 0 -n 1 -rc 2 -qc 26:...`), which is why `VERSION_TEXT` names the vintage's
 //! commit: it is a build fact of that library, not a parameter of the picture.
 

@@ -3609,7 +3609,7 @@ mod tests {
     }
 
     #[test]
-    fn kmpp_objdef_get_and_register_clear_the_current_lf1_abi_output() {
+    fn kmpp_objdef_get_and_register_clear_the_current_rk3576_abi_output() {
         let mut def = 1usize as *mut c_void;
         assert_eq!(
             unsafe { kmpp_objdef_get(&mut def, c"kmpp_frame".as_ptr()) },

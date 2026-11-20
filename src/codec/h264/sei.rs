@@ -297,7 +297,7 @@ mod tests {
             .collect()
     }
 
-    /// The `uuid_rc_cfg` SEI of a `mpi_enc_test -rc 2 -qc 26:...` run on t6,
+    /// The `uuid_rc_cfg` SEI of a `mpi_enc_test -rc 2 -qc 26:...` run on RK3588,
     /// captured with `tools/mpp_ioctl_trace.c` and read back out of the C
     /// encoder's own output file.
     const C_RC_CFG_SEI: &str = "00000001060554d7dc03c3c56f40e08ea9171ad2ef5e2364656661756c743a\
@@ -345,7 +345,7 @@ mod tests {
 
     /// The derived target is per picture size, so it is the part of the SEI that a
     /// single hard-coded fixture would have frozen wrongly. Both numbers are what
-    /// the C encoder wrote on t6, not what the formula is guessed to say.
+    /// the C encoder wrote on RK3588, not what the formula is guessed to say.
     #[test]
     fn the_derived_bit_rate_target_reaches_the_sei() {
         use super::super::encoder::default_bps_target;

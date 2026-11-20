@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 BOARD="${BOARD:-t6}"
 # Generate VDPP2 scale register images with the vendor C builder and compare
-# them against the Rust HAL. A fake mpp_service ioctl shim lets this run on t6,
+# them against the Rust HAL. A fake mpp_service ioctl shim lets this run on RK3588,
 # which has no client 29 hardware.
 set -uo pipefail
 

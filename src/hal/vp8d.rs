@@ -771,7 +771,7 @@ mod tests {
     ];
 
     /// The C HAL's own register image for the key frame of
-    /// `tests/data/vp8_320x240_12_ip.ivf`, dumped on t6 with `hal_vp8d_debug=4`.
+    /// `tests/data/vp8_320x240_12_ip.ivf`, dumped on RK3588 with `hal_vp8d_debug=4`.
     fn c_registers() -> [u32; REG_NUM] {
         let text = std::fs::read_to_string("tests/data/vp8/c_keyframe_registers.txt")
             .expect("C register dump");

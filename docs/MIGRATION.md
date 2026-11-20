@@ -48,9 +48,9 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
   `scripts/board_mpp_enc_cfg_gdr.sh` 验证未修改 vendor probe 与 Rust CLI 输出。
   H.264 的 `h264:dblk_disable/alpha/beta` 会映射到 typed deblock；
   `scripts/board_h264_deblock_vs_mpp.sh` 同时验证对象路径。
-  `h264:cabac_en/trans8x8/cabac_idc/constraint_set` 会覆盖 profile 推导的
+  `h264:cabac_en/trans8x8/cabac_idc/constraint_set/base_layer_pid` 会覆盖 profile 推导的
   typed H.264 syntax；`scripts/board_mpp_enc_cfg_h264_syntax.sh` 覆盖非默认组合、
-  CABAC idc 1/2 和 constraint force/value。
+  CABAC idc 1/2、constraint force/value；base pid 由硬件 prefix 门验证。
   H.265 的 deblock/SAO/loop-filter/auto-tile 键映射到 typed syntax；
   `scripts/board_mpp_enc_cfg_h265_syntax.sh` 验证对象路径。
   `prep:format=MPP_FMT_YUV420P/NV21` 会进入 I420 planar 或 NV21 转换路径；
@@ -63,9 +63,9 @@ python3 tools/check_mpp_api_coverage.py --headers ../refs/mpp/inc --symbols /tmp
 自研播放器等）。
 
 ```bash
-BOARD=t6 scripts/board_mpp_standalone.sh          # 构建并验证只加载 librk_mpp_rs.so
-BOARD=t6 scripts/board_mpp_official_dec_test.sh   # 未修改的官方解码测试
-BOARD=t6 scripts/board_mpp_official_enc_test.sh   # 未修改的官方编码测试
+BOARD=my-rk3588-host scripts/board_mpp_standalone.sh          # 构建并验证只加载 librk_mpp_rs.so
+BOARD=my-rk3588-host scripts/board_mpp_official_dec_test.sh   # 未修改的官方解码测试
+BOARD=my-rk3588-host scripts/board_mpp_official_enc_test.sh   # 未修改的官方编码测试
 ```
 
 部署时让动态链接器优先找到本库：
@@ -79,7 +79,7 @@ LD_LIBRARY_PATH=/opt/rk-mpp-rs/lib ./mpi_dec_test -i in.h264 -t 7 -o out.yuv
 LD_PRELOAD=/opt/rk-mpp-rs/lib/librk_mpp_rs.so.1 ./mpi_dec_test ...
 ```
 
-已验证：t6/lf1 上 H.264/H.265/VP9/AV1/MJPEG 的官方 `mpi_dec_test` 输出与
+已验证：RK3588/RK3576 上 H.264/H.265/VP9/AV1/MJPEG 的官方 `mpi_dec_test` 输出与
 vendor 库逐字节一致；`mpi_enc_test` 可完成 H.264/H.265/MJPEG 单帧编码。
 
 安装 SDK（含 SONAME、pkg-config、CMake config）：
@@ -128,17 +128,17 @@ MppPacket/MppBuffer/MppMeta/MppApi` 的布局与调用序列按官方 ABI 实现
 这些符号在板上有一个独立的 C consumer 冒烟门（只包含官方 `inc/` 头文件）：
 
 ```bash
-BOARD=t6 scripts/board_mpp_migration.sh
+BOARD=my-rk3588-host scripts/board_mpp_migration.sh
 ```
 
 覆盖日志级别与回调、`mpp_frame` 的 SAR/内容亮度/母版显示、compat 查询与更新。
 编码输入直交与回退可单独复验：
 
 ```bash
-BOARD=t6 scripts/board_mpp_enc_cfg_dma_input.sh
+BOARD=my-rk3588-host scripts/board_mpp_enc_cfg_dma_input.sh
 ```
 
-t6 的 120 帧 720p 门要求 H.264/H.265 两条路径分别保持 126/125 NAL 一致；
+RK3588 的 120 帧 720p 门要求 H.264/H.265 两条路径分别保持 126/125 NAL 一致；
 OSD、custom RC 和 I420/NV21 仍需由各自的现有专项门继续覆盖其 CPU staging
 行为。
 
@@ -189,13 +189,13 @@ for picture in dec.flush()? { use_picture(picture); }
 | venc init kcfg 已映射；其余 kcfg storage-only | init type/coding/max dimensions 生效，kernel-only 高级 cfg 不生效 | 完整 KMPP object 调用面仍需厂商库；普通 `mpi_enc_test` 可迁移 |
 | 不调用 `MPP_CMD_RESET_SESSION` | 板上会导致后续解码卡死 | 本库统一 close-before-open 恢复；不要手工 reset |
 | 不包含厂商二进制/固件 | 需要 `/dev/mpp_service` 与内核驱动 | 依赖系统内核，不需要 `librockchip_mpp` |
-| 板级脚本假设 `t6`/`lf1` 主机别名 | 仅影响 `scripts/board_*.sh` | 使用前设置 `BOARD=<ssh alias>` |
+| 板级脚本带有开发机默认 SSH 别名 | 仅影响 `scripts/board_*.sh` | 使用前设置 `BOARD=<ssh alias>`；别名不必与 SoC 同名 |
 
 ## 5. 迁移后验证
 
 ```bash
 cargo test --workspace --all-targets --offline     # 主机侧
-BOARD=t6 scripts/board_regress_all.sh              # 板级逐字节回归
-BOARD=t6 scripts/board_mpp_official_dec_test.sh    # 官方工具 drop-in
-BOARD=t6 scripts/board_mpp_compat_data.sh          # 官方头文件 C consumer
+BOARD=my-rk3588-host scripts/board_regress_all.sh              # 板级逐字节回归
+BOARD=my-rk3588-host scripts/board_mpp_official_dec_test.sh    # 官方工具 drop-in
+BOARD=my-rk3588-host scripts/board_mpp_compat_data.sh          # 官方头文件 C consumer
 ```

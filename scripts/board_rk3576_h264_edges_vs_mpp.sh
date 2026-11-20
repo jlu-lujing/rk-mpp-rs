@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # RK3576 VDPU383 H.264 edge matrix. The three normal rows use the installed C
-# MPP as oracle; PAFF uses FFmpeg because the stock lf1 C harness produces a
+# MPP as oracle; PAFF uses FFmpeg because the stock RK3576 C harness produces a
 # field-order output that differs from both FFmpeg and the Rust path.
 
 set -euo pipefail

@@ -3,7 +3,7 @@
 //!
 //! These run on the host - the parameter sets are pure software output and the
 //! register image is pure derivation. The parameter sets are compared byte for
-//! byte against streams the C encoder wrote on t6
+//! byte against streams the C encoder wrote on RK3588
 //! (`tests/data/h265e_c_fixqp_qp26_*.265`); the board test that reproduces the
 //! same comparison live is ignored and runs via `scripts/board_h265_qp_vs_mpp.sh`.
 
@@ -51,7 +51,7 @@ fn default_idr_parameter_sets_parse_back() {
 }
 
 /// The PPS byte golden for the default (fixed-QP) configuration, taken from the
-/// oracle's own stream on t6 rather than hand-derived: `mpi_enc_test -t 16777220
+/// oracle's own stream on RK3588 rather than hand-derived: `mpi_enc_test -t 16777220
 /// -n 1 -rc 2 -qc 26:...` writes `44 01 c0 f1 80 9b 20`. The `f1` is
 /// `cabac_init 1, ref_idx 1/1, init_qp 1, constrained 0, transform_skip 0,
 /// cu_qp_delta 0` - the last field is the one a hard-wired `m_useDQP = 1` got
@@ -91,7 +91,7 @@ fn parameter_set_prefix(stream: &[u8]) -> &[u8] {
 }
 
 /// The complete parameter-set gate, on the host, against oracle streams recorded
-/// on t6: `mpi_enc_test -i probe.nv12 -o out.265 -w W -h H -t 16777220 -f 0 -n 1
+/// on RK3588: `mpi_enc_test -i probe.nv12 -o out.265 -w W -h H -t 16777220 -f 0 -n 1
 /// -rc 2 -qc 26:26:26:26:26 -v q`. Each fixture is the full 860/1618/3585-byte
 /// stream (VPS, SPS, PPS, two SEIs and the IDR); only the prefix is compared here,
 /// because the IDR payload needs the register-job template.
@@ -202,7 +202,7 @@ fn derived_registers_carry_the_qp() {
 /// `scripts/h265_hdr_cmp.py`; the IDR payload stays PENDING until the recorded VEPU580
 /// job template lands.
 #[test]
-#[ignore = "board-only: needs t6 and the source-compiled MPP reference"]
+#[ignore = "board-only: needs RK3588 and the source-compiled MPP reference"]
 fn board_parameter_sets_match_the_c_encoder() {
     let status = std::process::Command::new("scripts/board_h265_qp_vs_mpp.sh")
         .status()
@@ -213,7 +213,7 @@ fn board_parameter_sets_match_the_c_encoder() {
 /// The submitted-IDR gate: runs `h265-idr` on the board against `mpi_enc_test` and
 /// compares whole streams - parameter sets, both SEIs and the hardware's slice NAL.
 #[test]
-#[ignore = "board-only: needs t6, the MPP reference and /dev/mpp_service"]
+#[ignore = "board-only: needs RK3588, the MPP reference and /dev/mpp_service"]
 fn board_idr_matches_the_c_encoder() {
     let status = std::process::Command::new("scripts/board_h265_idr_vs_mpp.sh")
         .env("ONLY", "320x240 640x480 1280x720")
@@ -224,7 +224,7 @@ fn board_idr_matches_the_c_encoder() {
 
 /// The GOP gate: an opening IDR plus P pictures, whole streams byte for byte.
 #[test]
-#[ignore = "board-only: needs t6, the MPP reference and /dev/mpp_service"]
+#[ignore = "board-only: needs RK3588, the MPP reference and /dev/mpp_service"]
 fn board_gop_matches_the_c_encoder() {
     let status = std::process::Command::new("scripts/board_h265_gop_vs_mpp.sh")
         .env("ONLY", "320x240 640x480 1280x720")
@@ -236,7 +236,7 @@ fn board_gop_matches_the_c_encoder() {
 
 /// The CBR path with the C's own per-picture decisions.
 #[test]
-#[ignore = "board-only: needs t6, the MPP reference and /dev/mpp_service"]
+#[ignore = "board-only: needs RK3588, the MPP reference and /dev/mpp_service"]
 fn board_cbr_path_matches_the_c_encoder() {
     let status = std::process::Command::new("scripts/board_h265_cbr_vs_mpp.sh")
         .env("SIZES", "320x240 640x480 1280x720")

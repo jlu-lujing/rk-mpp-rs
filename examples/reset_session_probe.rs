@@ -1,6 +1,6 @@
 //! Destructive RK3588 reset diagnostic.
 //!
-//! On t6, `MPP_CMD_RESET_SESSION` can return success and leave the driver in a
+//! On RK3588, `MPP_CMD_RESET_SESSION` can return success and leave the driver in a
 //! state that wedges the next decode job. This probe therefore deliberately
 //! lives outside the integration-test binary: running all ignored hardware
 //! tests must never execute it before another decoder test.
@@ -16,7 +16,7 @@ fn fd_count() -> io::Result<usize> {
 }
 
 fn main() -> io::Result<()> {
-    eprintln!("WARNING: destructive RESET_SESSION probe; reboot t6 before decoding again");
+    eprintln!("WARNING: destructive RESET_SESSION probe; reboot RK3588 before decoding again");
 
     let before = fd_count()?;
     for iteration in 0..32 {

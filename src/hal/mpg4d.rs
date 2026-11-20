@@ -364,7 +364,7 @@ mod tests {
     use super::*;
 
     /// The values below come from `hal_mpg4d_debug=1` register dumps of
-    /// `tests/data/mp4_320x240_12_ip.m4v` and `mp4_320x240_12_ibpb.m4v` on t6,
+    /// `tests/data/mp4_320x240_12_ip.m4v` and `mp4_320x240_12_ibpb.m4v` on RK3588,
     /// with the fd words replaced by stand-ins. They pin every field the C HAL
     /// writes for the three picture types.
     fn job(coding: u32, start_bit: u32, stream_len: u32, fcode: [u32; 2]) -> PictureJob {

@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn rk3588_keeps_the_existing_hal_family() {
-        let profile = SocProfile::from_device_tree("rockchip,rk3588\0", "NanoPC-T6");
+        let profile = SocProfile::from_device_tree("rockchip,rk3588\0", "RK3588");
         assert_eq!(profile.id, SocId::Rk3588);
         assert_eq!(profile.video_decode, VideoDecodeHal::Vdpu34x);
         assert_eq!(profile.video_encode, VideoEncodeHal::Vepu580);

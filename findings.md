@@ -15,8 +15,8 @@
 ## Packaging Findings
 
 - Both validation boards provide `pkg-config`, CMake and `readelf`.
-- lf1 has pkg-config 1.8.1 / CMake 3.25.1 / binutils 2.40.
-- t6 has pkg-config 0.29.2 / CMake 3.18.4 / binutils 2.35.2.
+- RK3576 has pkg-config 1.8.1 / CMake 3.25.1 / binutils 2.40.
+- RK3588 has pkg-config 0.29.2 / CMake 3.18.4 / binutils 2.35.2.
 - The repository currently has no LICENSE, NOTICE, CHANGELOG or build script.
 - Cargo already exports `cdylib`, `staticlib` and `rlib`, but the shared object
   has no embedded SONAME and there is no install/package metadata.
@@ -38,7 +38,7 @@
 - The RK3576 VEPU510 streaming wrappers currently expose only their captured
   fixed-QP paths. Non-fixed-QP configuration must be rejected explicitly until
   the per-picture VEPU510 RC session is wired and board-validated.
-- The V1.9 advanced ABI passed byte-for-byte against the validated CLI for t6
+- The V1.9 advanced ABI passed byte-for-byte against the validated CLI for RK3588
   VEPU580 H.264/H.265 in all three CBR/VBR/AVBR modes. Sizes were H.264
   CBR/VBR/AVBR `10848/12191/10476` bytes and H.265
   `11049/11335/9249` bytes.
@@ -52,7 +52,7 @@
 - V1.10 C layouts are 40 bytes per ROI, 16 bytes for GDR, 24 bytes for slice
   split and 472 bytes for the total V2 advanced config. ROI storage is embedded
   for up to eight regions, so no caller pointer has to outlive create.
-- t6 control byte sizes matched the CLI exactly: H.264
+- RK3588 control byte sizes matched the CLI exactly: H.264
   slice/ROI/GDR `21148/26266/23445`; H.265 `16391/16022/17104`.
 - The sys crate will use checked-in hand-written declarations rather than
   bindgen: the public header is already fixed-width C, CI is offline, and exact
@@ -95,7 +95,7 @@
 - Scaling H.264/H.265 decoder NV12 through a materialised RGB frame is the
   dominant avoidable copy on large inputs. Sampling the strided Y/UV planes
   directly in the output-pixel loop avoids both full-frame copies. On the
-  1080p→640 path this reduced t6/lf1 work from 20.32/24.36 ms to 4.93/5.95 ms,
+  1080p→640 path this reduced RK3588/RK3576 work from 20.32/24.36 ms to 4.93/5.95 ms,
   while the real 720p CPU/DMA decode output remained byte-identical after
   scaling.
 - The official `MppApi` table is 184 bytes on aarch64: two 32-bit header words,
@@ -106,7 +106,7 @@
   exposing the SDK's Rust frame type. Packing decoded NV12 into
   `hor_stride = align16(width)` and `ver_stride = align16(height)` preserves
   byte identity with `dump_mpp_frame_to_file`; H.264, H.265 and MJPEG all pass
-  the same official-header C consumer on t6 and lf1.
+  the same official-header C consumer on RK3588 and RK3576.
 - Replacing all of `librockchip_mpp` directly is not the first useful W7-3
   gate: the vendor test utilities also call internal log, cfg, meta and OSAL
   symbols. `LD_PRELOAD` cleanly interposes the public MPP entry points while
@@ -154,14 +154,14 @@
   value to bound live playback latency instead of waiting until EOS.
 - H.265 10-bit output is already planar little-endian 16-bit. Add an explicit
   `I420P10` pixel format rather than silently treating it as 8-bit I420.
-- The H.265/HEVC C consumer passes on lf1 and t6 for 8-bit NV12/I420 and
+- The H.265/HEVC C consumer passes on RK3576 and RK3588 for 8-bit NV12/I420 and
   Main10 I420P10. The Main10 fixture has six frames with B-pyramid reordering,
   so SPS-bounded display ordering is exercised rather than only IDR output.
 - VP9 already emits displayed pictures directly from `decode_packet`, including
   `show_existing_frame` and hidden-alt-ref superframes, so the SDK does not add
   another reorder queue. VP9 byte-stream packet boundaries are normative; IVF
   demux remains a caller/container responsibility.
-- The VP9 C gate passes on lf1 and t6: profile 0 12-frame NV12/I420 and profile
+- The VP9 C gate passes on RK3576 and RK3588: profile 0 12-frame NV12/I420 and profile
   2 10-bit 12-frame I420P10 outputs are byte-identical to C MPP. The test feeds
   each IVF frame as one packet and exercises decoder reset/reuse.
 - `codec::av1::Decoder::decode_packet` already accepts one temporal unit and
@@ -173,8 +173,8 @@
 - RK3576 AV1 requires a separate VDPU383 hardware path. `decoder383.rs` shares
   the AV1 packet parser while maintaining its own Session, texture slots,
   reference CDF state and planar readback.
-- Verified AV1 8-bit key+P SHA-256 is `7f4a0c9e…4020f`. On lf1 VDPU383
-  10-bit output matches C at `f3b69b61…49b8`; on t6 grain-applied output is
+- Verified AV1 8-bit key+P SHA-256 is `7f4a0c9e…4020f`. On RK3576 VDPU383
+  10-bit output matches C at `f3b69b61…49b8`; on RK3588 grain-applied output is
   `b75e6172…904d`, matching the Rust/libaom result while C retains its known
   missing-film-grain bug.
 - `hal::h264e::Vepu580H264::encode_frame` is already synchronous: it copies the
@@ -184,36 +184,36 @@
 - RK3576's captured VEPU510 H.264 path is fixed at 320x240, Baseline QP26,
   one IDR plus P pictures and 30 fps. The public API exposes only that validated
   path instead of pretending the VEPU580 configuration surface transfers.
-- The public H.264 encoder's 6-frame output matches the VEPU580 CLI on t6
-  (SHA-256 `aa6276ba…173d1`) and `h264e510-gop6` on lf1
+- The public H.264 encoder's 6-frame output matches the VEPU580 CLI on RK3588
+  (SHA-256 `aa6276ba…173d1`) and `h264e510-gop6` on RK3576
   (`0e65b51a…81f33`). NV12 and converted I420 inputs match each other on each
   board; the two SoCs use different hardware bitstreams by design.
 - VEPU580 H.265 already exposes a frame-level fixed-QP session, so the public
   encoder can queue one parsed packet per picture. RK3576's captured VEPU510
   path remains limited to 320x240 QP26 GOP6 but now emits one picture per
   submit through a small streaming wrapper.
-- Verified H.265 hashes are `6c285115…979e9` on t6 VEPU580 and
-  `8088e821…7fe397` on lf1 VEPU510; NV12 and I420 match on each platform.
+- Verified H.265 hashes are `6c285115…979e9` on RK3588 VEPU580 and
+  `8088e821…7fe397` on RK3576 VEPU510; NV12 and I420 match on each platform.
 - The existing `jpege720::JpegEncoder` already selects VEPU2 or VPU720 and
   returns a packet-range view, so JPEG needed no new hardware wrapper. The
   public layer pads visible NV12/I420 input to the JPEG stride rules and queues
   the returned packet ranges.
-- Verified JPEG hashes are `4f571054…7db1e` on t6 VEPU2 and
-  `64153672…7ac69` on lf1 VPU720; NV12 and I420 match on each platform.
+- Verified JPEG hashes are `4f571054…7db1e` on RK3588 VEPU2 and
+  `64153672…7ac69` on RK3576 VPU720; NV12 and I420 match on each platform.
 - VP8's decoder already returns display-ready `Picture` values per IVF packet,
   including hidden-alt-ref handling. Unlike VP9/AV1 it has no register status
   accessor, so the shared decoder status call must return unsupported.
-- VP8 API hashes on t6 are `1f07acf5…4c9c2` (NV12) and
+- VP8 API hashes on RK3588 are `1f07acf5…4c9c2` (NV12) and
   `0a6bbff3…326096` (I420). RK3576 C MPP reports "unable to create dec vp8
-  ... unsupported"; the Rust handle also rejects create, so lf1 is a hardware
+  ... unsupported"; the Rust handle also rejects create, so RK3576 is a hardware
   SKIP rather than a masked failure.
 - The legacy MPEG-2/MPEG-4/H.263 front ends only expose whole-stream decode, so
   the shared API buffers arbitrary chunks and emits all display frames at
   EOS/flush. This is an explicit latency boundary, not packet-level decode.
-- Verified legacy NV12 hashes on t6 are MPEG-2 `2dc97045…6371e`, MPEG-4
+- Verified legacy NV12 hashes on RK3588 are MPEG-2 `2dc97045…6371e`, MPEG-4
   `33cde882…64580`, H.263 `4a2a9312…c2f45e`; I420 equivalents also match.
-- JPEG restart interval 20 matches the CLI output at lf1
-  `0ccf41ea…82997` and t6 `25254033…df748a`.
+- JPEG restart interval 20 matches the CLI output at RK3576
+  `0ccf41ea…82997` and RK3588 `25254033…df748a`.
 - Verified VP9 SHA-256 values are
   `c5381bbf…3949a` (profile 0 NV12),
   `53bc3dd4…0abea69` (profile 0 I420), and

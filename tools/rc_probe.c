@@ -9,7 +9,7 @@
  * `mpi_enc_test` from this vintage prints nothing at all - not even its usage -
  * so the debug lines have to be coaxed out through a caller that does talk.
  *
- * Build on t6 against the reference build, not the installed library:
+ * Build on RK3588 against the reference build, not the installed library:
  *   cc -O2 -Wall -I/tmp/mpp-old/inc /tmp/rc_probe.c \
  *      /tmp/mpp-old/build/mpp/librockchip_mpp.so.0 -o /tmp/rc_probe
  * Run with the model's debug bit set:

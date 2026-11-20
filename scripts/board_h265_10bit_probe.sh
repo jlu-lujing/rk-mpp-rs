@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 BOARD="${BOARD:-t6}"
 # Probe the advertised H.265 10-bit encode path. VEPU580 accepts the MPP config
-# and the 10-bit frame format, but the hardware job on t6 terminates with
+# and the 10-bit frame format, but the hardware job on RK3588 terminates with
 # int_sta=0x100 and writes no packet. The Rust API therefore rejects non-8-bit
 # configurations instead of silently reading a 10-bit file as 8-bit.
 set -uo pipefail

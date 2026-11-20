@@ -2917,7 +2917,7 @@ mod tests {
         assert!(!inter_frames[0].is_empty());
         assert!(!inter_frames[1].is_empty());
 
-        // Locked against stock aomdec at 80% OPP on t6.
+        // Locked against stock aomdec at 80% OPP on RK3588.
         let expected: [(u64, u64, u64); 3] = [
             (0x6eca3ac0d4243aad, 0x14e1c277af328064, 0x4c069b480fd0eb6b),
             (0xec5884cb134c1dd8, 0x00676cb66148b3f7, 0xcbf13b2bd14a4669),

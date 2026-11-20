@@ -272,7 +272,7 @@ mod tests {
     use crate::codec::h263::parser::VOP_I;
 
     /// The words below come from `hal_h263d_debug=1` dumps of
-    /// `tests/data/h263_cif_12_ip.263` on t6, with the fd words replaced by
+    /// `tests/data/h263_cif_12_ip.263` on RK3588, with the fd words replaced by
     /// stand-ins. They pin every field the C HAL writes, for the I picture that
     /// opens the stream and the P picture that follows it.
     fn job(coding_type: u32, quant: u32, start_bit: u32, stream_len: u32) -> PictureJob {

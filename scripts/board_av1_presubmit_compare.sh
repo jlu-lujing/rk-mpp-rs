@@ -4,7 +4,7 @@
 # CPU-only Rust image exporter; it never runs `rk-mpp-rs av1dec`.
 #
 # Usage:
-#   BOARD=t62 scripts/board_av1_presubmit_compare.sh
+#   BOARD=my-rk3588-host scripts/board_av1_presubmit_compare.sh
 #
 # The C side is built in a separate shared clone at
 # ~/rk-mpp-oracles/mpp-av1-dump so the normal mpp-develop oracle is left

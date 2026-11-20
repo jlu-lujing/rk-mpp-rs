@@ -5,7 +5,7 @@
 
 ## 1. 目标
 
-用纯 Rust 直接驱动 Rockchip `mpp_service`，覆盖 NanoPC-T6（RK3588）上**实际存在**的全部硬件块，
+用纯 Rust 直接驱动 Rockchip `mpp_service`，覆盖 RK3588 上**实际存在**的全部硬件块，
 不链接 `librockchip_mpp` / `librga`：
 
 | 硬件块 | client type | 覆盖能力 |
@@ -135,7 +135,7 @@ BufferPool 与 fence 抽象。
 /Users/user/workspace/rknn-test/refs/mpp            官方 MPP 源码（只读对照）
 ```
 
-板子（NanoPC-T6，`ssh t6`）：
+板子（RK3588，`ssh my-rk3588-host`）：
 
 ```
 ~/rk-mpp-rs                    同步后的工作副本
@@ -148,9 +148,9 @@ BufferPool 与 fence 抽象。
 ### 循环
 
 ```
-rsync -a --exclude target rk-mpp-rs/ t6:~/rk-mpp-rs/
-ssh t6 'cd ~/rk-mpp-rs && cargo build --release'
-ssh t6 'cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264dec /tmp/test720.264 /tmp/o_rust.yuv'
+rsync -a --exclude target rk-mpp-rs/ my-rk3588-host:~/rk-mpp-rs/
+ssh my-rk3588-host 'cd ~/rk-mpp-rs && cargo build --release'
+ssh my-rk3588-host 'cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264dec /tmp/test720.264 /tmp/o_rust.yuv'
 ```
 
 封装为 `scripts/board.sh {sync|build|run|test}`。

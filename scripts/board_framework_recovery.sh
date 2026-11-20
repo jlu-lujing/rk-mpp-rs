@@ -3,7 +3,7 @@ BOARD="${BOARD:-t6}"
 # W5-8 recovery gate: failed session replacement, fd lifecycle, H.264 reuse
 # after recovery, and the legacy VDPU2 STATUS-error path.
 #
-# The reset-only probe is intentionally not repeated: on t6 it returned success
+# The reset-only probe is intentionally not repeated: on RK3588 it returned success
 # but poisoned the old fd for the next decode job. This gate exercises the
 # replacement-session implementation instead.
 #

@@ -1,7 +1,7 @@
 # rkvdec H.264 (vdpu34x) hardware contract — ported spec
 
 > **状态（2026-11-01）**：本文是从官方 C 源码提取的硬件契约，作为实现说明保留。
-> 对应实现在 `src/hal/h264d.rs` + `src/codec/h264/`，已在 t6 上与 C MPP 逐字节验证
+> 对应实现在 `src/hal/h264d.rs` + `src/codec/h264/`，已在 RK3588 上与 C MPP 逐字节验证
 > （frame、MBAFF、PAFF、多 slice、长参考、缺失参考的错误路径；见 `ROADMAP.md` M2）。
 > 寄存器字段以生成的 `src/hal/vdpu34x_regs.rs` 为准，本文用于解释布局与语义。
 
@@ -235,7 +235,7 @@ plane slicing, register stride setup and semi-planar-to-planar conversion all
 use that value instead of assuming NV12. Parser tests cover 8/10-bit 4:2:2 and
 4:4:4, mismatched depths, 12-bit rejection and separate colour planes.
 
-The NanoPC-T6 `rkvdec` does not decode 4:2:2 or 4:4:4 HEVC, even though the C
+The RK3588 `rkvdec` does not decode 4:2:2 or 4:4:4 HEVC, even though the C
 MPP source contains those branches. Ten-frame x265 fixtures at 256x256 were
 tested in 8-bit and 10-bit forms:
 

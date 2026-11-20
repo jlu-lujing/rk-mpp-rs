@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Opt-in t6 hot-path performance gate.
+# Opt-in RK3588 hot-path performance gate.
 #
 # Usage:
 #   scripts/board_perf_gate.sh
-#   BOARD=t6 PERF_SAMPLES=15 scripts/board_perf_gate.sh
+#   BOARD=my-rk3588-host PERF_SAMPLES=15 scripts/board_perf_gate.sh
 #
 # The checked rows and limits live in scripts/perf_baseline.tsv. Decode rows
 # use the interleaved Rust-vs-C percentage from board_bench_vs_mpp.sh; scale

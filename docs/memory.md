@@ -1,6 +1,6 @@
-# t6 memory ledger
+# RK3588 memory ledger
 
-Generated from `scripts/board_memory_profile.sh` on NanoPC-T6-LTS, kernel
+Generated from `scripts/board_memory_profile.sh` on RK3588, kernel
 6.1.57. Each row is the maximum of three runs.
 
 | codec | fixture | peak process RSS | peak new dma-buf |

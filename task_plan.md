@@ -41,7 +41,7 @@ callers.
 - [x] Compile and run a C harness against the shared library/header.
 - [x] Compile and run linked C++ smoke tests for shared and static libraries.
 - [x] Verify H.264 and MJPEG outputs against existing board goldens.
-- **Status:** complete on lf1 and t6.
+- **Status:** complete on RK3576 and RK3588.
 
 ### Phase 6: Other Codec Interfaces
 - [ ] Extend the decoder contract to HEVC, VP9, AV1, VP8, MPEG-2, MPEG-4, H.263.
@@ -54,19 +54,19 @@ callers.
 - [x] Implement arbitrary-chunk Annex-B framing with parameter-set carryover.
 - [x] Track SPS reorder depth and emit display order across epochs.
 - [x] Verify 8-bit NV12/I420 and Main10 I420P10 output against C MPP.
-- **Status:** complete on lf1 and t6.
+- **Status:** complete on RK3576 and RK3588.
 
 ### Phase 6.2: VP9 Decode Backend
 - [x] Add the VP9 codec ID and packet-oriented input rules.
 - [x] Expose 8-bit NV12/I420 and 10-bit I420P10 output.
 - [x] Verify profile 0/2, inter and hidden-alt-ref packets against C MPP.
-- **Status:** complete on lf1 and t6.
+- **Status:** complete on RK3576 and RK3588.
 
 ### Phase 6.3: AV1 Decode Backend
 - [x] Add the AV1 codec ID and temporal-unit packet input rules.
 - [x] Expose planar 8-bit NV12/I420 and 10-bit I420P10 output.
 - [x] Verify RK3588 and RK3576 VDPU383 key/inter/show-existing packets.
-- **Status:** complete on lf1 and t6.
+- **Status:** complete on RK3576 and RK3588.
 
 ### Phase 6.4: Encoder API Contract
 - [x] Define frame input ownership, packet output and EOS/flush rules.
@@ -77,19 +77,19 @@ callers.
 ### Phase 6.4.1: H.264 Encoder API
 - [x] Expose synchronous submit/receive with copied NV12/I420 input.
 - [x] Add fixed-QP profile, level, GOP, QP and frame-rate configuration.
-- [x] Verify multi-frame GOP byte equality on lf1 and t6.
+- [x] Verify multi-frame GOP byte equality on RK3576 and RK3588.
 - **Status:** complete for VEPU580 and the currently captured VEPU510 path.
 
 ### Phase 6.4.2: H.265 Encoder API
 - [x] Select VEPU580 or VEPU510 from the configured SoC.
 - [x] Expose copied NV12/I420 input and owned Annex-B packet output.
-- [x] Verify fixed-QP IDR/GOP output on lf1 and t6.
+- [x] Verify fixed-QP IDR/GOP output on RK3576 and RK3588.
 - **Status:** complete for VEPU580 and the captured VEPU510 path.
 
 ### Phase 6.4.3: JPEG Encoder API
 - [x] Add deterministic NV12/I420 input and JPEG packet output.
 - [x] Expose quality and restart configuration for 4:2:0.
-- [x] Verify byte equality on lf1 and t6.
+- [x] Verify byte equality on RK3576 and RK3588.
 - **Status:** complete.
 
 ### Phase 6.5: Legacy Decoder Interfaces
@@ -101,38 +101,38 @@ callers.
 ### Phase 6.5.1: VP8 Decode Backend
 - [x] Add the VP8 codec ID and IVF packet rules.
 - [x] Expose NV12/I420 output with the shared decoder lifecycle.
-- [x] Verify key/inter/alt-ref packets against C MPP on t6; lf1 is a hardware
+- [x] Verify key/inter/alt-ref packets against C MPP on RK3588; RK3576 is a hardware
       platform SKIP.
-- **Status:** complete on t6; lf1 is a hardware platform SKIP.
+- **Status:** complete on RK3588; RK3576 is a hardware platform SKIP.
 
 ### Phase 6.5.2: MPEG-2 / MPEG-4 / H.263 Decoder Backends
 - [x] Add the three codec IDs and elementary-stream framing rules.
 - [x] Expose NV12/I420 output with reset/release lifecycle.
-- [x] Verify one representative stream per codec on t6; lf1 is a VDPU2
+- [x] Verify one representative stream per codec on RK3588; RK3576 is a VDPU2
       hardware SKIP.
 - **Status:** complete.
 
 ### Phase 7: Full Verification and Handoff
-- [x] Run host-independent gates on lf1 and t6.
-- [x] Run H.264/MJPEG C/C++ consumer tests on lf1.
-- [x] Run the complete suite on lf1 and the 80% OPP-capped t6 gate.
-- [x] Re-run the H.264/MJPEG C/C++ consumer test on t6.
+- [x] Run host-independent gates on RK3576 and RK3588.
+- [x] Run H.264/MJPEG C/C++ consumer tests on RK3576.
+- [x] Run the complete suite on RK3576 and the 80% OPP-capped RK3588 gate.
+- [x] Re-run the H.264/MJPEG C/C++ consumer test on RK3588.
 - [x] Update and commit the H.264/MJPEG SDK slice.
-- [x] Run lf1/t6 full gates and both C/C++ boards for H.265.
+- [x] Run RK3576/RK3588 full gates and both C/C++ boards for H.265.
 - [x] Update and commit the H.265/API 1.1 slice.
-- [x] Run lf1/t6 C/C++ gates for VP9 profile 0 and profile 2.
+- [x] Run RK3576/RK3588 C/C++ gates for VP9 profile 0 and profile 2.
 - [x] Run final VP9 full suite and commit the API 1.2 slice.
-- [x] Run lf1/t6 C/C++ gates for AV1 8-bit and 10-bit.
+- [x] Run RK3576/RK3588 C/C++ gates for AV1 8-bit and 10-bit.
 - [x] Run final AV1 full suite and commit the API 1.3 slice.
-- [x] Run lf1/t6 H.264 encoder API gates and full suites.
+- [x] Run RK3576/RK3588 H.264 encoder API gates and full suites.
 - [x] Commit the H.264 encoder/API 1.4 slice.
-- [x] Run lf1/t6 H.265 encoder API gates.
+- [x] Run RK3576/RK3588 H.265 encoder API gates.
 - [x] Run final H.265 encoder full suite and commit the API 1.5 slice.
-- [x] Run lf1/t6 JPEG encoder API gates including restart MCU.
+- [x] Run RK3576/RK3588 JPEG encoder API gates including restart MCU.
 - [x] Run final JPEG encoder full suite and commit the API 1.6 slice.
-- [x] Run t6 VP8 C API gate and lf1 platform-SKIP audit.
+- [x] Run RK3588 VP8 C API gate and RK3576 platform-SKIP audit.
 - [x] Run final VP8 full suite and commit the API 1.7 slice.
-- [x] Run t6 MPEG-2/MPEG-4/H.263 C API gates and lf1 platform audit.
+- [x] Run RK3588 MPEG-2/MPEG-4/H.263 C API gates and RK3576 platform audit.
 - [x] Run final legacy-decoder full suite and commit the API 1.8 slice.
 - **Status:** complete
 
@@ -141,12 +141,12 @@ callers.
 - [x] Add relocatable pkg-config and CMake package files.
 - [x] Add ABI symbol/layout snapshots and a clean consumer check.
 - [x] Add minimal Rust and C/C++ consumer examples, CHANGELOG and license files.
-- **Status:** complete on lf1 and t6.
+- **Status:** complete on RK3576 and RK3588.
 
 ### Phase 8.1: Build and Install
 - [x] Embed `librk_mpp_rs.so.1` as the Linux SONAME.
 - [x] Install header, static/shared libraries and symlinks under a configurable prefix.
-- [x] Support `DESTDIR` and verify from t6 and lf1.
+- [x] Support `DESTDIR` and verify from RK3588 and RK3576.
 - **Status:** complete.
 
 ### Phase 8.2: Package Metadata
@@ -158,7 +158,7 @@ callers.
 ### Phase 8.3: ABI Freeze
 - [x] Snapshot exported `rk_mpp_*` and legacy `rk_jpeg_*` symbols.
 - [x] Add C11 static assertions for enum values, struct sizes and field offsets.
-- [x] Verify SONAME, symbols and layout on lf1 and t6.
+- [x] Verify SONAME, symbols and layout on RK3576 and RK3588.
 - **Status:** complete.
 
 ### Phase 8.4: Distribution
@@ -181,33 +181,33 @@ callers.
 - [x] Map Fixed-QP/CBR/VBR/AVBR, bitrate bounds and QP bounds into Rust.
 - [x] Verify VEPU580 H.264/H.265 ABI output against the validated CLI paths.
 - [x] Re-run old V1.8 C consumers against the V1.9 library.
-- **Status:** complete on t6 for VEPU580; RK3576 streaming RC is an explicit
+- **Status:** complete on RK3588 for VEPU580; RK3576 streaming RC is an explicit
   unsupported boundary.
 
 ### Phase 9.2: ROI, GDR and Slice Controls
 - [x] Add a separately versioned advanced-config v2 ABI.
 - [x] Add typed Rust ROI, GDR and slice configuration.
 - [x] Wire H.264/H.265 VEPU580 controls to the existing byte-exact paths.
-- [x] Verify every control against its validated CLI path on t6.
+- [x] Verify every control against its validated CLI path on RK3588.
 - [x] Re-run V1.9 advanced and V1.8 base consumers against V1.10.
-- **Status:** complete on t6/VEPU580; RK3576 streaming controls are an explicit
+- **Status:** complete on RK3588/VEPU580; RK3576 streaming controls are an explicit
   platform SKIP.
 
 ### Phase 10: rk-mpp-rs-sys Raw Bindings
 - [x] Add a workspace member crate with complete V1.10 raw declarations.
 - [x] Discover explicit, pkg-config and in-tree native libraries.
 - [x] Verify every public C struct size/offset and function link.
-- [x] Run version/init smoke consumers on t6 and lf1.
+- [x] Run version/init smoke consumers on RK3588 and RK3576.
 - [x] Document shared/static linking for downstream Rust projects.
-- **Status:** complete on t6 and lf1.
+- **Status:** complete on RK3588 and RK3576.
 
 ### Phase 11: DMA-BUF Frame Export
 - [x] Add imported dma-buf ownership and safe fd duplication.
 - [x] Preserve MJPEG hardware output as frame-owned DMA-BUF.
 - [x] Expose Rust and C plane fd/offset/size/stride metadata.
 - [x] Keep CPU frames and frame lifetime semantics backward compatible.
-- [x] Verify fd export and byte-identical visible planes on t6/lf1.
-- **Status:** complete on t6 and lf1 for MJPEG NV12; CPU-backed codecs remain an
+- [x] Verify fd export and byte-identical visible planes on RK3588/RK3576.
+- **Status:** complete on RK3588 and RK3576 for MJPEG NV12; CPU-backed codecs remain an
   explicit unsupported boundary.
 
 ### Phase 12: H.264 DMA-BUF Frame Output
@@ -215,26 +215,26 @@ callers.
 - [x] Export strided H.264 NV12 Y/UV planes without CPU repacking.
 - [x] Preserve default CPU/POC-reordered output exactly.
 - [x] Verify H.264 visible bytes and fd metadata against the C oracle.
-- [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
-- **Status:** complete on t6 and lf1.
+- [x] Re-run package, workspace and DMA-BUF gates on RK3588/RK3576.
+- **Status:** complete on RK3588 and RK3576.
 
 ### Phase 13: H.265 DMA-BUF Frame Output
 - [x] Share the pooled decoded-surface type between H.264 and H.265.
 - [x] Retain the H.265 video lease through picture reordering.
 - [x] Export 8-bit 4:2:0 H.265 as strided NV12 Y/UV planes.
 - [x] Preserve default CPU/planar and H.265 Main10 behavior.
-- [x] Verify t6 against the C oracle and lf1 VDPU383 DMA against CPU output.
-- [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
-- **Status:** complete on t6 and lf1 for 8-bit 4:2:0 NV12.
+- [x] Verify RK3588 against the C oracle and RK3576 VDPU383 DMA against CPU output.
+- [x] Re-run package, workspace and DMA-BUF gates on RK3588/RK3576.
+- **Status:** complete on RK3588 and RK3576 for 8-bit 4:2:0 NV12.
 
 ### Phase 14: VP9 DMA-BUF Frame Output
 - [x] Retain the VP9 video lease for ordinary and show-existing pictures.
 - [x] Export 8-bit 4:2:0 VP9 as strided NV12 Y/UV planes.
 - [x] Preserve default CPU/planar and VP9 10-bit behavior.
 - [x] Write only visible rows in the IVF consumer instead of strided padding.
-- [x] Verify t6 against the C oracle and lf1 DMA against CPU output.
-- [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
-- **Status:** complete on t6 and lf1 for 8-bit NV12.
+- [x] Verify RK3588 against the C oracle and RK3576 DMA against CPU output.
+- [x] Re-run package, workspace and DMA-BUF gates on RK3588/RK3576.
+- **Status:** complete on RK3588 and RK3576 for 8-bit NV12.
 
 ### Phase 15: AV1 DMA-BUF Frame Output
 - [x] Export the VDPU34x post-processed display lease as AV1 NV12.
@@ -242,10 +242,10 @@ callers.
 - [x] Prevent VDPU383 slot reuse while an SDK frame still owns the surface.
 - [x] Skip CPU planar readback when VDPU383 DMA output is requested.
 - [x] Preserve default CPU output and AV1 10-bit behavior.
-- [x] Verify t6 against the C oracle and lf1 VDPU383 DMA against CPU output.
-- [x] Re-run the lf1 full 8-bit and 10-bit VDPU383 reference sequences.
-- [x] Re-run package, workspace and DMA-BUF gates on t6/lf1.
-- **Status:** complete on t6 and lf1 for 8-bit NV12.
+- [x] Verify RK3588 against the C oracle and RK3576 VDPU383 DMA against CPU output.
+- [x] Re-run the RK3576 full 8-bit and 10-bit VDPU383 reference sequences.
+- [x] Re-run package, workspace and DMA-BUF gates on RK3588/RK3576.
+- **Status:** complete on RK3588 and RK3576 for 8-bit NV12.
 
 ### Phase 16: Encoder DMA-BUF Input API V1.12
 - [x] Add Rust `DmaBufInput` with fd import and NV12 stride validation.
@@ -253,23 +253,23 @@ callers.
 - [x] Wire VEPU580 and VEPU510 H.264/H.265 jobs to an external input fd.
 - [x] Wire VEPU2 and VPU720 JPEG jobs to an external input fd.
 - [x] Preserve all copied-input APIs and outputs.
-- [x] Verify copied and DMA input are byte-identical on t6/lf1.
-- [x] Re-run package, workspace and ABI gates on t6/lf1.
-- **Status:** complete on t6 and lf1 for NV12 H.264/H.265/JPEG.
+- [x] Verify copied and DMA input are byte-identical on RK3588/RK3576.
+- [x] Re-run package, workspace and ABI gates on RK3588/RK3576.
+- **Status:** complete on RK3588 and RK3576 for NV12 H.264/H.265/JPEG.
 
 ### Phase 17: W8-2 Decode-to-Model-Input Direct Scaling
 - [x] Add strided NV12 bilinear resize and BT.601 RGB conversion to `Scaler`.
 - [x] Add `Frame::letterbox_nv12()` for CPU and DMA-BUF SDK frames.
 - [x] Avoid full-frame NV12 or RGB intermediate copies.
-- [x] Verify H.264 CPU and DMA frame output is byte-identical on t6/lf1.
+- [x] Verify H.264 CPU and DMA frame output is byte-identical on RK3588/RK3576.
 - [x] Benchmark direct scaling against the full-frame conversion path.
 - [x] Re-run workspace gates after adding NV12 scale tests.
-- **Status:** complete on t6 and lf1; 1201/0/38 workspace gate.
+- **Status:** complete on RK3588 and RK3576; 1201/0/38 workspace gate.
 
 ### Phase 18: Official MPP Drop-in Lifecycle Foundation
 - [x] Export `mpp_create`, `mpp_init`, `mpp_destroy`, support and show-format.
 - [x] Match the official 184-byte `MppApi` function-table layout.
-- [x] Compile a C consumer against the vendor `rk_mpi.h` and run on t6/lf1.
+- [x] Compile a C consumer against the vendor `rk_mpi.h` and run on RK3588/RK3576.
 - [x] Add deterministic null/value/init/reset/control lifecycle checks.
 - [x] Implement MppFrame/MppPacket/MppBuffer ownership and H.264/H.265/MJPEG
       CPU NV12 decode put/get data flow.
@@ -280,7 +280,7 @@ callers.
 ### Phase 19: Official `mpi_dec_test` Compatibility
 - [x] Interpose public MPP symbols into unchanged vendor `mpi_dec_test`.
 - [x] Preserve advanced MJPEG `KEY_OUTPUT_FRAME` through packet `MppMeta`.
-- [x] Validate H.264/H.265/MJPEG against native outputs on t6 and lf1.
+- [x] Validate H.264/H.265/MJPEG against native outputs on RK3588 and RK3576.
 - [ ] Remove the remaining dependency on vendor log/cfg/OSAL helper symbols.
 - [ ] Pass unchanged `mpi_enc_test`.
 - **Status:** decoder path complete under vendor-helper preload.
@@ -288,12 +288,12 @@ callers.
 ### Phase 20: Official `mpi_enc_test` Object Bridge
 - [x] Parse vendor `MppEncCfg` into the stable encoder configuration.
 - [x] Bridge opaque `MppFrame` input and owned `MppPacket` output.
-- [x] Validate t6 H.265/MJPEG byte identity and H.264 one-frame reconstruction.
+- [x] Validate RK3588 H.265/MJPEG byte identity and H.264 one-frame reconstruction.
 - [x] Implement the default IDR-only CPB reference schedule and slice amendment
-      for exact t6 H.264 six-frame VCL/reconstruction.
-- [ ] Close lf1 H.264/H.265 parameter gaps.
+      for exact RK3588 H.264 six-frame VCL/reconstruction.
+- [ ] Close RK3576 H.264/H.265 parameter gaps.
 - [ ] Remove vendor helper dependency and pass standalone `mpi_enc_test`.
-- **Status:** t6 encoder object bridge complete; lf1 codec matrix remains.
+- **Status:** RK3588 encoder object bridge complete; RK3576 codec matrix remains.
 
 ## Decisions Made
 

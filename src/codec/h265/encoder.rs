@@ -121,7 +121,7 @@ pub struct EncoderConfig {
     /// RK3576/RV1126B/RK3572 add one to `tuQTMaxLog2Size`.
     pub tu_log2_max_extra: u32,
     /// Sample bit depth. VEPU580 accepts the 10-bit prep/frame format but its
-    /// H.265 hardware job returns `int_sta=0x100` without a bitstream on t6, so
+    /// H.265 hardware job returns `int_sta=0x100` without a bitstream on RK3588, so
     /// this port only advertises the supported 8-bit path.
     pub bit_depth: u8,
     pub sao_enable: bool,
@@ -242,7 +242,7 @@ impl EncoderConfig {
         }
         if self.bit_depth != 8 {
             return Err(Error(format!(
-                "VEPU580 H.265 does not support {}-bit encoding on t6",
+                "VEPU580 H.265 does not support {}-bit encoding on RK3588",
                 self.bit_depth
             )));
         }
@@ -288,7 +288,7 @@ impl EncoderConfig {
     /// (`log2_min_cb = 3`), `log2_diff_max_min_cb = 3`, and a transform range of 4
     /// through 32 (`log2_min_tb = 2`, `log2_diff_max_min_tb = 3`). `tuQTMaxLog2Size`
     /// gets a +1 only on the RK3576/RV1126B/RK3572 parts, which the byte oracle is
-    /// not (t6 is an RK3588), so that branch is out of scope here and asserted as
+    /// not (RK3588 is an RK3588), so that branch is out of scope here and asserted as
     /// such.
     pub fn geometry(&self) -> Geometry {
         let max_cud = log2(self.max_cu_size) - 2; // convertToBit[64] = 4, [32] = 3
@@ -990,7 +990,7 @@ mod tests {
         assert_eq!(&vps[4..6], &[NAL_VPS << 1, 0x01]);
         assert_eq!(&vps[6..12], &[0x0c, 0x01, 0xff, 0xff, 0x01, 0x60]);
         // The tail is the oracle's own bytes, from `mpi_enc_test -t 16777220 -n 1
-        // -rc 2 -qc 26:26:26:26:26` on t6 at 320x240: the 44 reserved PTL bits are
+        // -rc 2 -qc 26:26:26:26:26` on RK3588 at 320x240: the 44 reserved PTL bits are
         // zero, so the formatter inserts `03` before the `00`s and the `80`, and
         // level 120 (`0x78`) lands right after them.
         assert_eq!(

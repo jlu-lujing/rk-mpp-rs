@@ -4,7 +4,7 @@ reads from both of them.
 `tools/gen_vepu580_regs.py --hevc` builds the H.265 field map from *two* sources:
 the shared CTL, BASE and RC_KLUT windows come from `refs/mpp` (master) and the
 H.265-only windows come from the vendored 2024-04 vintage under `refs/`, because
-the board oracle - `~/rk-mpp-oracles/mpp-old` on t6, commit 80957d266 - is built
+the board oracle - `~/rk-mpp-oracles/mpp-old` on RK3588, commit 80957d266 - is built
 from the vintage and every byte comparison is against it.
 
 That mix is only sound while the two vintages lay the shared windows out

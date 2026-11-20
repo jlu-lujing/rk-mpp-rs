@@ -11,7 +11,7 @@ BOARD="${BOARD:-t6}"
 # The C probe reads packets on a worker thread. That avoids MPP's fixed output
 # task-pool self-lock when one picture emits more packets than the pool holds.
 #
-# Usage: BOARD=t6 scripts/board_h265_lowdelay_vs_mpp.sh
+# Usage: BOARD=my-rk3588-host scripts/board_h265_lowdelay_vs_mpp.sh
 set -uo pipefail
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |

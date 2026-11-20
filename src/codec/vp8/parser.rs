@@ -965,7 +965,7 @@ mod tests {
     }
 
     /// `sw51` and `sw124` of the key frame in `vp8_320x240_12_ip.ivf`, read out of
-    /// the C HAL's own register dump on t6: the primary stream is 7161 bytes from
+    /// the C HAL's own register dump on RK3588: the primary stream is 7161 bytes from
     /// the aligned base and the first partition 465, with no extra partitions.
     /// Those two lengths are made of `stream_end_pos`, `offset_to_dct_parts`, the
     /// frame tag, the seven key-frame header bytes and the aligned base, so they

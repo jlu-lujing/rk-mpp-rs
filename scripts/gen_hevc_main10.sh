@@ -4,7 +4,7 @@ BOARD="${BOARD:-t6}"
 set -euo pipefail
 
 if ! ssh "$BOARD" 'command -v ffmpeg >/dev/null'; then
-  printf 'ffmpeg is unavailable on t6\n' >&2
+  printf 'ffmpeg is unavailable on RK3588\n' >&2
   exit 1
 fi
 

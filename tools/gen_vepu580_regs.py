@@ -82,7 +82,7 @@ STRUCTS = [
 # syntax block from `reg0221_me_cfg` onwards) without colliding with the common
 # fields. The `RC` prefix names the shared RC lookup table. h265e.rs reads the
 # QP/ROI rows through RC and the syntax registers through H265.
-# The H.265 job writes six windows, not seven: the trace of a fixed-QP IDR on t6
+# The H.265 job writes six windows, not seven: the trace of a fixed-QP IDR on RK3588
 # shows CTL 24, BASE 94, RC_KLUT 57, WGT 374 at word 1472, RDO 807 at word 2048
 # and OSD 288 at word 3072 - and no SCL write at all. The sizes are the
 # `H265eV580RegSet` struct list in the vintage header; the word counts of the

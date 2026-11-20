@@ -291,7 +291,7 @@ mod tests {
     }
 
     /// The header values of the CIF fixture, against the `hal_h263d_debug=1`
-    /// register dumps of the same stream on t6: `sw51` carries the stream
+    /// register dumps of the same stream on RK3588: `sw51` carries the stream
     /// length and the quantiser of every picture.
     #[test]
     fn cif_fixture_headers_match_the_c_hal() {

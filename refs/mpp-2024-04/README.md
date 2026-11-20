@@ -2,7 +2,7 @@
 
 `rkenc/h265e/hal_h265e_vepu580_reg.h` is a verbatim copy of the H.265 VEPU580
 register header from Rockchip MPP commit `80957d266` (2024-04-24) - the same
-commit the board's byte-level encoder oracle (`~/rk-mpp-oracles/mpp-old` on t6,
+commit the board's byte-level encoder oracle (`~/rk-mpp-oracles/mpp-old` on RK3588,
 see `scripts/setup_board_refs.sh`) is built from.
 
 * md5 `c3ea6482ea1801226a61eb00c2278ae6`, byte-identical to the oracle's copy

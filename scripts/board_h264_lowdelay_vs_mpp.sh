@@ -12,7 +12,7 @@ BOARD="${BOARD:-t6}"
 # more packets than that pool can hold. The 38-slice cell exercises this path
 # and also crosses VEPU580's 32-entry slice FIFO.
 #
-# Usage: BOARD=t6 scripts/board_h264_lowdelay_vs_mpp.sh
+# Usage: BOARD=my-rk3588-host scripts/board_h264_lowdelay_vs_mpp.sh
 set -uo pipefail
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |

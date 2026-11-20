@@ -596,7 +596,7 @@ impl MppService {
 
     /// Issue `MPP_CMD_RESET_SESSION`.
     ///
-    /// This clears the kernel job, but on t6 it is not sufficient to make an
+    /// This clears the kernel job, but on RK3588 it is not sufficient to make an
     /// already-used fd reusable: submitting the next job to that fd can block
     /// forever. A replacement opened before the reset fd was closed also
     /// wedged the next H.264 submit. Normal error recovery therefore never
@@ -624,7 +624,7 @@ impl MppService {
 
     /// Replace a failed client session without issuing `RESET_SESSION`.
     ///
-    /// t6 proved that reset poisons the hardware even when a replacement fd is
+    /// RK3588 proved that reset poisons the hardware even when a replacement fd is
     /// opened first: the next H.264 submit blocks the whole driver. The safe
     /// recovery path therefore closes the failed descriptor before opening the
     /// replacement, then verifies the replacement with `QUERY_HW_ID`.

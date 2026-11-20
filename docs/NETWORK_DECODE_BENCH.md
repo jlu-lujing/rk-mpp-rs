@@ -1,13 +1,13 @@
 # Network H.264 decode benchmark
 
 Date: 2026-11-15  
-Board: NanoPC-T6-LTS / RK3588  
+Board: RK3588
 CPU policy: persistent 80% OPP cap (`1.416 / 1.8 / 1.8 GHz`)
 
 ## Input
 
 - `s2` hosts a 30-second HLS stream (`192.0.2.10:18081`).
-- t6 pulls the HLS stream over its normal LAN.
+- RK3588 pulls the HLS stream over its normal LAN.
 - The stream is demuxed once to H.264 Annex-B, then both decoders consume the
   exact same file.
 - H.264: 1920x800, 742 frames, 50 MiB.
@@ -324,7 +324,7 @@ The first 20 compressed frames were decoded by both implementations to planar
 YUV. The first 18 frames are byte-identical. The final two frames differ only
 at the truncated-stream flush boundary, where the extracted fixture ends
 before the decoder has the same future-reference context. The full-stream
-correctness gates in the normal t6/t62 suites remain authoritative.
+correctness gates in the normal RK3588 suites remain authoritative.
 
 ## Interpretation
 

@@ -342,7 +342,7 @@ mod tests {
     use super::*;
 
     /// The values below are `hal_m2vd_debug=2` register dumps of
-    /// `tests/data/m2v_320x240_12.m2v` on t6, with the fd words replaced by
+    /// `tests/data/m2v_320x240_12.m2v` on RK3588, with the fd words replaced by
     /// stand-ins. They pin every field the C HAL writes.
     fn job(coding: u32, stream_len: u32, start_bit: u32, f: [[u32; 2]; 2]) -> PictureJob {
         PictureJob {

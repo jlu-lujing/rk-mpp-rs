@@ -6,7 +6,7 @@ BOARD="${BOARD:-t6}"
 # hardware writes every slice contiguously into one access unit, slen_fifo stays
 # off, and the caller polls normal completion instead of the slice FIFO.
 #
-# Usage: BOARD=t6 scripts/board_h265_slice_vs_mpp.sh
+# Usage: BOARD=my-rk3588-host scripts/board_h265_slice_vs_mpp.sh
 set -uo pipefail
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |

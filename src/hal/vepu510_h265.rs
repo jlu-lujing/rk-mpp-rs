@@ -51,7 +51,7 @@ const SCL_OFFSET: u32 = 8704;
 const HW_STATUS_OFFSET: u32 = 0x2c;
 const STATUS_OFFSET: u32 = 16 * 1024;
 
-const LF1_VERSION_TEXT: &[u8] =
+const RK3576_VERSION_TEXT: &[u8] =
     b"4ed4f778 author: Herman Chen   2025-09-10 docs: Update 1.0.11 CHANGELOG.md";
 
 struct RateControlPlan {
@@ -689,7 +689,7 @@ impl Vepu510H265 {
     }
 
     fn open_mode(bit_depth: u8, mpi_compat: bool) -> Result<Self, String> {
-        let config = lf1_h265_config()?;
+        let config = rk3576_h265_config()?;
         Self::open_mode_with_config(bit_depth, mpi_compat, config, None)
     }
 
@@ -754,7 +754,7 @@ impl Vepu510H265 {
     ) -> Result<Self, String> {
         if bit_depth != 8 {
             return Err(format!(
-                "VEPU510 H.265 {bit_depth}-bit input is unsupported; lf1 C MPP fails format/color-space allocation and returns no packet"
+                "VEPU510 H.265 {bit_depth}-bit input is unsupported; RK3576 C MPP fails format/color-space allocation and returns no packet"
             ));
         }
         require_video_encode(VideoEncodeHal::Vepu510)?;
@@ -850,7 +850,7 @@ impl Vepu510H265 {
         }
         let force_idr = std::mem::take(&mut self.force_next_idr);
         let is_idr = !self.idr_done || force_idr;
-        let mut config = lf1_h265_config()?;
+        let mut config = rk3576_h265_config()?;
         if self.mpi_compat {
             config.video_format = Some(5);
             config.video_full_range = true;
@@ -859,7 +859,7 @@ impl Vepu510H265 {
         let prefix = if !with_headers {
             Vec::new()
         } else if self.sei_enabled {
-            lf1_fixed_qp_prefix(&config, QP, GOP)?
+            rk3576_fixed_qp_prefix(&config, QP, GOP)?
         } else {
             encoder::build_headers(&config).map_err(|e| e.to_string())?
         };
@@ -1011,7 +1011,7 @@ impl Vepu510H265 {
         let gop = self.rate_control.as_ref().map_or(GOP, |rate| rate.gop);
         let prefix = if is_idr {
             if self.sei_enabled {
-                lf1_rate_prefix_values(
+                rk3576_rate_prefix_values(
                     &self.config,
                     &self.rc_model_name,
                     gop,
@@ -1184,7 +1184,7 @@ impl Vepu510H265 {
         };
         let prefix = if is_idr {
             if self.sei_enabled {
-                lf1_rate_prefix_values(
+                rk3576_rate_prefix_values(
                     &self.config,
                     &self.rc_model_name,
                     gop,
@@ -1378,8 +1378,8 @@ impl Vepu510H265 {
                 nv12.len()
             ));
         }
-        let config = lf1_h265_config()?;
-        let prefix = lf1_fixed_qp_prefix(&config, QP, GOP)?;
+        let config = rk3576_h265_config()?;
+        let prefix = rk3576_fixed_qp_prefix(&config, QP, GOP)?;
         let registers = RegisterFile::captured_fixqp_idr_320x240(
             self.input.fd() as u32,
             self.output.fd() as u32,
@@ -1456,8 +1456,8 @@ impl Vepu510H265 {
             crate::hal::h265e::RefreshMode::Col => WIDTH.div_ceil(64),
         } as u32;
         let refresh_length = axis_lines.div_ceil(refresh_num).min(gop);
-        let config = lf1_h265_config()?;
-        let prefix = lf1_fixed_qp_prefix(&config, QP, gop)?;
+        let config = rk3576_h265_config()?;
+        let prefix = rk3576_fixed_qp_prefix(&config, QP, gop)?;
         let mut recovery_prefix = encoder::build_headers(&config).map_err(|e| e.to_string())?;
         recovery_prefix.extend(sei::recovery_point(refresh_length as i32 - 1));
 
@@ -1530,12 +1530,12 @@ impl Vepu510H265 {
                 nv12.len()
             ));
         }
-        let mut config = lf1_h265_config()?;
+        let mut config = rk3576_h265_config()?;
         config.rc_mode = match rc_mode {
             RcMode::Cbr => encoder::RateControl::Cbr,
             RcMode::Vbr | RcMode::Avbr => encoder::RateControl::Vbr,
         };
-        let prefix = lf1_rate_prefix(&config, GOP, rc_mode)?;
+        let prefix = rk3576_rate_prefix(&config, GOP, rc_mode)?;
         let mut model_config = rc_model::Config::cbr(CBR_TARGET, CBR_MIN, CBR_MAX, GOP as i32);
         model_config.quality_init = QP as i32;
         model_config.quality_min = 10;
@@ -1633,8 +1633,8 @@ impl Vepu510H265 {
                 expected
             ));
         }
-        let config = lf1_h265_config()?;
-        let prefix = lf1_fixed_qp_prefix(&config, QP, GOP)?;
+        let config = rk3576_h265_config()?;
+        let prefix = rk3576_fixed_qp_prefix(&config, QP, GOP)?;
         let mut idr = RegisterFile::captured_fixqp_idr_320x240(
             self.input.fd() as u32,
             self.output.fd() as u32,
@@ -1848,7 +1848,7 @@ impl Vepu510H265 {
     }
 }
 
-fn lf1_fixed_qp_prefix(config: &EncoderConfig, qp: u32, gop: u32) -> Result<Vec<u8>, String> {
+fn rk3576_fixed_qp_prefix(config: &EncoderConfig, qp: u32, gop: u32) -> Result<Vec<u8>, String> {
     let line = sei::RcCfgLine {
         model_name: "default",
         mode_name: "fixqp",
@@ -1863,17 +1863,17 @@ fn lf1_fixed_qp_prefix(config: &EncoderConfig, qp: u32, gop: u32) -> Result<Vec<
         max_i_quality: qp as i32,
         i_quality_delta: 0,
     };
-    lf1_prefix(config, &line)
+    rk3576_prefix(config, &line)
 }
 
-fn lf1_rate_prefix(config: &EncoderConfig, gop: u32, mode: RcMode) -> Result<Vec<u8>, String> {
-    lf1_rate_prefix_values(
+fn rk3576_rate_prefix(config: &EncoderConfig, gop: u32, mode: RcMode) -> Result<Vec<u8>, String> {
+    rk3576_rate_prefix_values(
         config, "default", gop, mode, CBR_TARGET, CBR_MIN, CBR_MAX, QP as i32, 10, 51,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lf1_rate_prefix_values(
+fn rk3576_rate_prefix_values(
     config: &EncoderConfig,
     model_name: &str,
     gop: u32,
@@ -1903,14 +1903,14 @@ fn lf1_rate_prefix_values(
         max_i_quality: 51,
         i_quality_delta: 4,
     };
-    lf1_prefix(config, &line)
+    rk3576_prefix(config, &line)
 }
 
-fn lf1_prefix(config: &EncoderConfig, line: &sei::RcCfgLine<'_>) -> Result<Vec<u8>, String> {
+fn rk3576_prefix(config: &EncoderConfig, line: &sei::RcCfgLine<'_>) -> Result<Vec<u8>, String> {
     let mut out = encoder::build_headers(config).map_err(|e| e.to_string())?;
     out.extend(sei::user_data_unregistered(
         &sei::VERSION_UUID,
-        LF1_VERSION_TEXT,
+        RK3576_VERSION_TEXT,
     ));
     out.extend(sei::user_data_unregistered(
         &sei::RC_UUID,
@@ -1919,7 +1919,7 @@ fn lf1_prefix(config: &EncoderConfig, line: &sei::RcCfgLine<'_>) -> Result<Vec<u
     Ok(out)
 }
 
-fn lf1_h265_config() -> Result<EncoderConfig, String> {
+fn rk3576_h265_config() -> Result<EncoderConfig, String> {
     let mut config = EncoderConfig::new(WIDTH, HEIGHT);
     config.max_cu_size = 32;
     config.tu_log2_max_extra = 1;
@@ -1983,7 +1983,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sections_match_the_lf1_h265_trace() {
+    fn sections_match_the_rk3576_h265_trace() {
         assert_eq!(template::CTL.len(), CTL_WORDS);
         assert_eq!(template::FRAME.len(), FRAME_WORDS);
         assert_eq!(template::RC.len(), RC_WORDS);
@@ -2036,7 +2036,7 @@ mod tests {
     }
 
     #[test]
-    fn mpi_object_templates_match_the_lf1_tool_jobs() {
+    fn mpi_object_templates_match_the_rk3576_tool_jobs() {
         assert_eq!(mpi_template::CTL.len(), CTL_WORDS);
         assert_eq!(mpi_template::FRAME.len(), FRAME_WORDS);
         assert_eq!(mpi_template::RC.len(), RC_WORDS);
@@ -2062,7 +2062,7 @@ mod tests {
     }
 
     #[test]
-    fn p_builder_reproduces_the_lf1_job() {
+    fn p_builder_reproduces_the_rk3576_job() {
         let regs =
             RegisterFile::captured_fixqp_p_320x240(9, 10, 18, 14, 20, 16, 19, 15, 21, 17, 11, 1)
                 .unwrap();
@@ -2084,7 +2084,7 @@ mod tests {
     }
 
     #[test]
-    fn cbr_plan_matches_the_lf1_idr_rc_words() {
+    fn cbr_plan_matches_the_rk3576_idr_rc_words() {
         let mut regs = RegisterFile::captured_fixqp_idr_320x240(9, 10, 14, 16, 15, 17, 11).unwrap();
         regs.apply_rate_control(
             &RateControlPlan {
@@ -2156,7 +2156,7 @@ mod tests {
                 store
             );
         }
-        let mut prefix = encoder::build_headers(&lf1_h265_config().unwrap()).unwrap();
+        let mut prefix = encoder::build_headers(&rk3576_h265_config().unwrap()).unwrap();
         prefix.extend(sei::recovery_point(1));
         assert_eq!(prefix.len(), 89);
     }
@@ -2180,8 +2180,8 @@ mod tests {
     }
 
     #[test]
-    fn lf1_prefix_has_the_c_packet_prefix_length() {
-        let prefix = lf1_fixed_qp_prefix(&lf1_h265_config().unwrap(), QP, GOP).unwrap();
+    fn rk3576_prefix_has_the_c_packet_prefix_length() {
+        let prefix = rk3576_fixed_qp_prefix(&rk3576_h265_config().unwrap(), QP, GOP).unwrap();
         assert_eq!(prefix.len(), 270);
     }
 

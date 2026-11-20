@@ -5,7 +5,7 @@ BOARD="${BOARD:-t6}"
 # The same format and swap are configured as both source and destination. Raw
 # dst0/dst1 are compared, including the unused zero slot for single-output modes.
 #
-# Usage: BOARD=t6 scripts/board_iep_formats_vs_probe.sh
+# Usage: BOARD=my-rk3588-host scripts/board_iep_formats_vs_probe.sh
 set -uo pipefail
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |
@@ -14,7 +14,7 @@ ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo buil
 
 remote_home=$(ssh "$BOARD" 'printf %s "$HOME"')
 mpp_ref="${MPP_REF:-$remote_home/rk-mpp-rs/refs/mpp}"
-mpp_lib="${MPP_LIB:-$mpp_ref/build-t6/mpp}"
+mpp_lib="${MPP_LIB:-$mpp_ref/build/mpp}"
 if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
   source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
     "IEP formats" "reference build missing at $mpp_lib"

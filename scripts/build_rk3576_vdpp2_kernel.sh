@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
-# Build a VDPP-enabled RK3576 kernel and repack the current lf1 U-Boot FIT.
+# Build a VDPP-enabled RK3576 kernel and repack the current RK3576 U-Boot FIT.
 # This script never writes to the board or boot partition.
 set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: build_lf1_vdpp2_kernel.sh \
+usage: build_rk3576_vdpp2_kernel.sh \
   <kernel-source-or-tarball> <board-config> <current-boot.img> <output-dir>
 
 The build host must be x86_64 Linux with:
@@ -50,7 +50,7 @@ expected_version=$(sed -n \
     exit 1
 }
 
-work_dir=$(mktemp -d "${TMPDIR:-/tmp}/lf1-vdpp2-kernel.XXXXXX")
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/rk3576-vdpp2-kernel.XXXXXX")
 cleanup() {
     if [ "${KEEP_WORK:-0}" != 1 ]; then
         rm -rf "$work_dir"
@@ -173,7 +173,7 @@ cp "$kernel_config" "$output_dir/kernel.config"
 
 fit_data_dir="$work_dir/fit"
 fit_template="$work_dir/current-fit.dtb"
-fit_its="$fit_data_dir/lf1-vdpp2-boot.its"
+fit_its="$fit_data_dir/rk3576-vdpp2-boot.its"
 mkdir -p "$fit_data_dir"
 cp "$current_boot" "$fit_template"
 
@@ -218,19 +218,19 @@ sed -i \
     -e '/signer-version/d' \
     -e '/signer-name/d' \
     "$fit_its"
-cp "$fit_its" "$output_dir/lf1-vdpp2-boot.its"
+cp "$fit_its" "$output_dir/rk3576-vdpp2-boot.its"
 
 mkimage_args=(-E -p 0x800)
 mkimage_help=$(mkimage 2>&1 || true)
 if grep -q '\[-B size\]' <<< "$mkimage_help"; then
     mkimage_args+=(-B 0x200)
 fi
-boot_output="$output_dir/lf1-vdpp2-boot.img"
+boot_output="$output_dir/rk3576-vdpp2-boot.img"
 (
     cd "$fit_data_dir"
     mkimage "${mkimage_args[@]}" -f "$fit_its" "$boot_output"
 ) > "$output_dir/mkimage.log" 2>&1
-dumpimage -l "$boot_output" > "$output_dir/lf1-vdpp2-boot.manifest.txt"
+dumpimage -l "$boot_output" > "$output_dir/rk3576-vdpp2-boot.manifest.txt"
 
 sign_algo=$(fdtget -t s "$boot_output" \
     /configurations/conf/signature algo)
@@ -255,12 +255,12 @@ fi
 (
     cd "$output_dir"
     sha256sum Image board.dtb resource.bin kernel.config \
-        lf1-vdpp2-boot.its lf1-vdpp2-boot.img mpp_vdpp-symbols.txt \
+        rk3576-vdpp2-boot.its rk3576-vdpp2-boot.img mpp_vdpp-symbols.txt \
         > SHA256SUMS
 )
 
-printf 'PASS lf1 VDPP2 kernel artifact: %s\n' "$boot_output"
+printf 'PASS RK3576 VDPP2 kernel artifact: %s\n' "$boot_output"
 printf 'size=%s/%s bytes\n' "$output_size" "$current_size"
 printf 'kernel=%s\n' "$actual_version"
 grep -E '^(Image|fdt|resource|kernel):|Hash value:|Data Size:' \
-    "$output_dir/lf1-vdpp2-boot.manifest.txt"
+    "$output_dir/rk3576-vdpp2-boot.manifest.txt"

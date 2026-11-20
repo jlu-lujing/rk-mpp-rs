@@ -4,7 +4,7 @@ BOARD="${BOARD:-t6}"
 #
 # The oracles - the 2024-04 MPP the encoder is byte-compared against, the master
 # build the decoders are compared against, and the ioctl tracer - were built into
-# /tmp. `/tmp` on t6 is not a tmpfs (the root filesystem is an overlay with
+# /tmp. `/tmp` on RK3588 is not a tmpfs (the root filesystem is an overlay with
 # upperdir=/data/root), but Debian's tmpfiles policy ships `D /tmp 1777 root root -`
 # and `systemd-tmpfiles-clean.timer` is active, and the reference trees live no
 # protection there. Rebuilding the 2024-04 library costs the most of anything on

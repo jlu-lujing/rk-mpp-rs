@@ -22,7 +22,7 @@
 //! The golden test replays a scripted sequence against
 //! [`DataV2`]'s public surface and compares the whole transcript with
 //! `tests/data/rc_data_c_probe.txt`, which is the same sequence run against
-//! `librockchip_mpp.so.0` built from the source on t6 that the encoder is
+//! `librockchip_mpp.so.0` built from the source on RK3588 that the encoder is
 //! byte-compared against (`tools/rc_data_probe.c`).
 
 /// The sum rounding `DIV(a, b)` of `rc_base.c` performs: divide with the

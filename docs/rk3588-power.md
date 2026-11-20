@@ -1,6 +1,6 @@
-# t6 sustained CPU frequency cap
+# RK3588 sustained CPU frequency cap
 
-The t6 board runs RK3588 with three cpufreq policies:
+The RK3588 board runs RK3588 with three cpufreq policies:
 
 | policy | CPUs | governor | maximum |
 | --- | --- | --- | ---: |

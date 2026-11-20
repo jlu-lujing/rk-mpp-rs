@@ -5,7 +5,7 @@
 #
 #   OUT=~/rk-mpp-oracles/corpus-gen ~/rk-mpp-rs/scripts/gen_corpus.sh
 #
-# The original t6 corpus contained third-party conformance streams that cannot be
+# The original RK3588 corpus contained third-party conformance streams that cannot be
 # regenerated; this script replaces coverage, not bytes: every decoder gets
 # several sizes, both entropy modes/profiles where they exist, B pictures, tiles
 # or slices, and 8/10-bit. The repo's own edge fixtures are copied in alongside.

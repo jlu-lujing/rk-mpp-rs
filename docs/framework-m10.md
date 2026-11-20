@@ -1,7 +1,7 @@
 # M10 framework: task queue, buffer pool, dma-fence survey (W5 subset)
 
 Status: the queue, timing/metrics, pool, hardware recovery and cross-session
-CCU submission are implemented and verified on host and t6. The fence entry
+CCU submission are implemented and verified on host and RK3588. The fence entry
 below remains a protocol survey, not an implementation.
 ROADMAP draft entries live at the bottom; the ledger itself is updated by
 whoever lands the board evidence.
@@ -75,7 +75,7 @@ Refcounted dma-heap group mirroring `mpp/base/mpp_buffer.c`:
   previous/last colmv fds.
 - Pooled JPEG jobs declare `MppService` after all buffer leases, so reverse
   drop order closes the kernel client before a shared dma-buf can return to
-  the pool, including every early-error path. The t6 driver retains DMA import
+  the pool, including every early-error path. The RK3588 driver retains DMA import
   state until client close; releasing the leases first allowed another worker
   to reuse those fds while the old service still owned the import. A prior
   boot ended in a CPU6 soft lockup at `mpp_dma_find_buffer_fd()`. After this
@@ -133,7 +133,7 @@ state machine change.
   rkvenc. The earlier one-session-per-process claim came from stale H.264
   goldens that also failed when run serially and is retracted. H.264's
   `ext_line_buf` and H.265's tile line buffers are members of their encoder
-  sessions, not process globals. On t6, two and three live VEPU580 H.264
+  sessions, not process globals. On RK3588, two and three live VEPU580 H.264
   sessions at 64x64, 320x240 and 640x480 produced one distinct stream each,
   equal to the serial result and the C reference. `task_queue::SessionGate`
   remains available when callers deliberately share one session, but it is
@@ -146,9 +146,9 @@ state machine change.
   does not populate each `mpp_bat_msg.ret`; completion therefore falls back to
   the real session's `POLL_HW_FINISH`. `CcuTopology` records the vdec/venc/JPEG
   device-tree nodes, and callers fall back to sequential jobs when neither the
-  CCU nor `SET_SESSION_FD` is available. On t6, two independent VEPU2 JPEG
+  CCU nor `SET_SESSION_FD` is available. On RK3588, two independent VEPU2 JPEG
   sessions submitted together match their standalone streams byte for byte;
-  on lf1, two independent VEPU510 H.264 IDRs do the same. Each board passes
+  on RK3576, two independent VEPU510 H.264 IDRs do the same. Each board passes
   three repeated runs.
 - **Secure (W5-7)**: `MPP_FLAGS_SECURE_MODE` (0x10000) is exposed as a
   constant for protocol completeness. Every batch submit rejects a request
@@ -160,7 +160,7 @@ state machine change.
 
 `POLL_HW_FINISH` timeouts and abnormal STATUS now enter a shared recovery
 path. A direct `MPP_CMD_RESET_SESSION` is deliberately *not* considered
-sufficient: t6 accepted 16 idle resets and reported the client alive, but the
+sufficient: RK3588 accepted 16 idle resets and reported the client alive, but the
 next H.264 job submitted to the same fd wedged the driver and required a board
 reboot. Opening a replacement fd before closing the reset fd was also unsafe:
 the next decode blocked the entire driver. Normal recovery therefore never
@@ -194,7 +194,7 @@ Draft — mirrored here for context; the authoritative ledger is `ROADMAP.md`.
       completion callback + waiter + bounded event trace. Scheduler
       state machine unit-tested (FIFO service, out-of-order completion,
       slot reuse, id monotonicity, capacity pinning). 18 unit tests.
-      Board: scripts/board_framework_async_vs_sync.sh passes on t6.
+      Board: scripts/board_framework_async_vs_sync.sh passes on RK3588.
 - [x] W5 buffer pool (M10): refcounted dma-heap group with a
       Queued/Cached/Live{refs} state machine; double release and
       use-after-release reported instead of C's assert/UB; limit policy
@@ -209,8 +209,8 @@ Draft — mirrored here for context; the authoritative ledger is `ROADMAP.md`.
 - [x] W5 CCU batching (M10): device-tree CCU detection, one
       `SET_SESSION_FD` submission for up to eight sessions, and
       per-session poll fallback on the 6.1 batch-result limitation.
-      Two independent VEPU2 JPEG sessions match standalone output on t6,
-      and two VEPU510 H.264 sessions do the same on lf1, 3/3 each.
+      Two independent VEPU2 JPEG sessions match standalone output on RK3588,
+      and two VEPU510 H.264 sessions do the same on RK3576, 3/3 each.
 ```
 
 ## 7. Commands for the orchestrator (board)
@@ -219,7 +219,7 @@ Draft — mirrored here for context; the authoritative ledger is `ROADMAP.md`.
 # 1. build + async==sync byte check + pool tallies (the new suite)
 ./scripts/board_framework_async_vs_sync.sh
 # 2. the four ignored integration tests (jpegd + three dma-heap/IOVA):
-ssh -n t6 'export PATH=$HOME/.cargo/bin:$PATH; cd ~/rk-mpp-rs && \
+ssh -n RK3588 'export PATH=$HOME/.cargo/bin:$PATH; cd ~/rk-mpp-rs && \
   cargo test --test framework_async_hw --test framework_pool_hw -- --ignored --test-threads=1'
 # 3. regression gate - sync path must be unmoved:
 ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
@@ -227,7 +227,7 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 # 4. W5-8 recovery (replaces a failed session and then decodes a clean stream):
 ./scripts/board_framework_recovery.sh
 # 5. W5-5 multi-instance encoder matrix:
-ssh -n t6 'export PATH=$HOME/.cargo/bin:$PATH; cd ~/rk-mpp-rs && \
+ssh -n RK3588 'export PATH=$HOME/.cargo/bin:$PATH; cd ~/rk-mpp-rs && \
   cargo test --test h264_encoder_hw \
   concurrent_live_sessions_match_the_serial_reference \
   -- --ignored --nocapture --test-threads=1'

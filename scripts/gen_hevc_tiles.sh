@@ -9,7 +9,7 @@ enc=/tmp/mpp-develop/build/test/mpi_enc_test
 libdir=/tmp/mpp-develop/build/mpp
 
 if ! ssh "$BOARD" "test -f $base_cfg && test -x $enc"; then
-  printf 'MPP H.265 encoder is unavailable on t6\n' >&2
+  printf 'MPP H.265 encoder is unavailable on RK3588\n' >&2
   exit 1
 fi
 

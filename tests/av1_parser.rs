@@ -279,7 +279,7 @@ fn consumes_the_same_uncompressed_header_bits_as_c_mpp() {
         }
     }
 
-    // Captured from the official MPP on t6 with av1d_debug=2. These are the
+    // Captured from the official MPP on RK3588 with av1d_debug=2. These are the
     // "film_grain out" bit counts for each non-show-existing frame header.
     assert_eq!(
         header_bits,
@@ -873,7 +873,7 @@ fn multi_tile_stream_matches_c_mpp_tile_byte_ranges() {
         }
     }
 
-    // Captured from get_tiles_info() in the official MPP on t6. These are
+    // Captured from get_tiles_info() in the official MPP on RK3588. These are
     // offsets from the first tile byte; the last tile consumes the remainder.
     assert_eq!(
         ranges,

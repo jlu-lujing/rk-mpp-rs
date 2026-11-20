@@ -343,7 +343,7 @@ mod tests {
     /// Per picture, in decode order: the `sw122` start word and `sw51` stream
     /// length the registers would carry, plus the quantiser, forward fcode and
     /// the B interpolation counters. Checked against the `hal_mpg4d_debug=1`
-    /// dumps of the same streams on t6.
+    /// dumps of the same streams on RK3588.
     ///
     /// The one deliberate difference from C is the first picture: the C splitter
     /// leaves the VOS, VOL and GOP headers in front of that access unit, which

@@ -3,7 +3,7 @@
  *
  * Buffer allocation and address translation still go through the vendor MPP
  * library. Only mpp_service control ioctls are accepted locally so the register
- * builder can run on t6, which has no VDPP client.
+ * builder can run on RK3588, which has no VDPP client.
  */
 
 #define _GNU_SOURCE

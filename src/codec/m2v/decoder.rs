@@ -554,7 +554,7 @@ mod tests {
     use super::{parser, slice_start_of, stream_position};
 
     /// `sw122.stream_start_bit` and `sw51.stream_len` per submitted picture, in
-    /// group order, as `hal_m2vd_debug=2` printed them on t6.
+    /// group order, as `hal_m2vd_debug=2` printed them on RK3588.
     fn positions(path: &str) -> Vec<(u32, u32)> {
         let data = std::fs::read(path).expect("test fixture");
         parser::picture_groups(&data)

@@ -3,7 +3,7 @@ BOARD="${BOARD:-t6}"
 # H.264: our VEPU580 driver vs the C encoder, NAL by NAL, over QP and profile.
 #
 # The reference is MPP built from source at the vintage of the library installed
-# on t6 (`MPP_REF_SRC`), with the harness' hard-coded profile rewritten per run -
+# on RK3588 (`MPP_REF_SRC`), with the harness' hard-coded profile rewritten per run -
 # `mpi_enc_test` fixes High profile + CABAC + transform-8x8 in both that vintage
 # and master and applies it after `-cfg`, so a cfg file cannot change it. See
 # tools/patches/mpi_enc_test-constrained-baseline.patch for the four lines and

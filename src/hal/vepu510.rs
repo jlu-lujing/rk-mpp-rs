@@ -576,7 +576,7 @@ mod tests {
     use crate::hal::vepu510_p_template;
 
     #[test]
-    fn sections_match_the_lf1_ioctl_trace() {
+    fn sections_match_the_rk3576_ioctl_trace() {
         assert_eq!(
             vepu510_regs::SECTIONS,
             [
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_high_profile_templates_match_the_lf1_windows() {
+    fn captured_high_profile_templates_match_the_rk3576_windows() {
         assert_eq!(vepu510_high_idr_template::CTL.len(), CTL_WORDS);
         assert_eq!(vepu510_high_idr_template::FRAME.len(), FRAME_WORDS);
         assert_eq!(vepu510_high_idr_template::RC.len(), RC_WORDS);

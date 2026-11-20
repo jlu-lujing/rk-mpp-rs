@@ -6,7 +6,7 @@ BOARD="${BOARD:-t6}"
 # CTU marking, CU64/CU32/CU16/CU8 expansion, force-split and both QP tables are
 # all produced by the source under comparison.
 #
-# Usage: BOARD=t6 scripts/board_h265_roi_vs_mpp.sh
+# Usage: BOARD=my-rk3588-host scripts/board_h265_roi_vs_mpp.sh
 set -uo pipefail
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |

@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 
-# Safely stage or apply a replacement lf1 boot FIT.
+# Safely stage or apply a replacement RK3576 boot FIT.
 # Dry-run is the default. Set APPLY=1 to write /dev/mmcblk2p3 and REBOOT=1 to
 # reboot after the write has been read back and verified.
 set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: flash_lf1_vdpp2_boot.sh <boot.img> <expected-sha256>
+usage: flash_rk3576_vdpp2_boot.sh <boot.img> <expected-sha256>
 
 Dry-run:
-  BOARD=luck2 ./scripts/flash_lf1_vdpp2_boot.sh <image> <sha256>
+  BOARD=my-rk3576-host ./scripts/flash_rk3576_vdpp2_boot.sh <image> <sha256>
 
 Apply and reboot:
-  BOARD=luck2 APPLY=1 REBOOT=1 \
-    ./scripts/flash_lf1_vdpp2_boot.sh <image> <sha256>
+  BOARD=my-rk3576-host APPLY=1 REBOOT=1 \
+    ./scripts/flash_rk3576_vdpp2_boot.sh <image> <sha256>
 EOF
     exit 2
 }
@@ -60,7 +60,7 @@ partition_bytes=$(sed -n 's/^partition_bytes=//p' <<<"$remote")
 dt_status=$(sed -n 's/^dt_status=//p' <<<"$remote")
 
 if [ "$remote_kernel" != 6.1.75 ] && [ "$allow_other_kernel" != 1 ]; then
-    echo "expected lf1 kernel 6.1.75, got $remote_kernel" >&2
+    echo "expected RK3576 kernel 6.1.75, got $remote_kernel" >&2
     echo "set ALLOW_OTHER_KERNEL=1 only after reviewing the target board" >&2
     exit 1
 fi
@@ -82,9 +82,9 @@ if [ "$apply" != 1 ]; then
 fi
 
 timestamp=$(date +%Y%m%d-%H%M%S)
-remote_image="/tmp/lf1-vdpp2-boot-$timestamp.img"
-remote_readback="/tmp/lf1-vdpp2-readback-$timestamp.img"
-local_backup="$repo/target/lf1-vdpp2/lf1-p3-backup-$timestamp.img"
+remote_image="/tmp/rk3576-vdpp2-boot-$timestamp.img"
+remote_readback="/tmp/rk3576-vdpp2-readback-$timestamp.img"
+local_backup="$repo/target/rk3576-vdpp2/rk3576-p3-backup-$timestamp.img"
 
 cleanup_remote() {
     ssh "$board" "sudo rm -f '$remote_image' '$remote_readback'" ||

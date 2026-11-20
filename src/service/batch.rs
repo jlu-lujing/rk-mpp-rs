@@ -134,7 +134,7 @@ impl BatchServer {
         ioctl_mpp(self.fd, send.as_mut_ptr())?;
 
         // The kernel's `mpp_dev_ioctl` triggers every external session before
-        // waiting. t6's 6.1 MPP service does not populate `mpp_bat_msg.ret`
+        // waiting. RK3588's 6.1 MPP service does not populate `mpp_bat_msg.ret`
         // for this path, so use each real session's supported poll ioctl as the
         // completion channel. All jobs are already pending in the hardware
         // queues before the first wait.

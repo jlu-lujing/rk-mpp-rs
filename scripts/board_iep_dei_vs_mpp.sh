@@ -17,7 +17,7 @@ BOARD="${BOARD:-t6}"
 # does not, that is a real finding for the ROADMAP, not a script bug.
 #
 # This script is provided for on-board use and is NEVER run from CI or a host:
-# it sshes to t6 and needs /dev/mpp_service + /dev/dma_heap + the IEP2 driver.
+# it sshes to RK3588 and needs /dev/mpp_service + /dev/dma_heap + the IEP2 driver.
 #
 # Usage: scripts/board_iep_dei_vs_mpp.sh [WIDTH HEIGHT]
 set -uo pipefail

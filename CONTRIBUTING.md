@@ -35,7 +35,7 @@ wrong.
 
 ## Performance claims
 
-- Pin the CPU and DDR governors; t6 measurements use the 80% OPP cap.
+- Pin the CPU and DDR governors; RK3588 measurements use the 80% OPP cap.
 - Verify both implementations produce identical output before timing them.
 - Interleave samples from both implementations and report the median.
 - State stream, resolution, frame count, board and kernel.

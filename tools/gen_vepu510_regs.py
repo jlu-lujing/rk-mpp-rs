@@ -4,7 +4,7 @@
 The parser is shared with `gen_vepu580_regs.py`: the two register maps use the
 same anonymous-bitfield declaration convention, where fields are allocated from
 the low bit in declaration order. Section ranges and word counts come from
-`vepu510_common.h` and are cross-checked against an lf1 ioctl trace.
+`vepu510_common.h` and are cross-checked against an RK3576 ioctl trace.
 """
 
 from pathlib import Path

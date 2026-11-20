@@ -4,7 +4,7 @@
 # built without LTO and no throughput claim is made.
 #
 # Usage:
-#   BOARD=luck2 scripts/board_rk3576_h265_vs_mpp.sh
+#   BOARD=my-rk3576-host scripts/board_rk3576_h265_vs_mpp.sh
 
 set -euo pipefail
 

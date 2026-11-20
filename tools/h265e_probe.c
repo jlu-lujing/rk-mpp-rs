@@ -6,7 +6,7 @@
  * defaults h265e_init sets (Main / level 120 / tier 0 / max_cu 64 / tiles off),
  * not by a harness that rewrites them after -cfg.
  *
- * Build on t6 against the reference build, not the installed library:
+ * Build on RK3588 against the reference build, not the installed library:
  *   cc -O2 -w -I$MPP/inc /tmp/h265e_probe.c \
  *      $MPP/build/mpp/librockchip_mpp.so.1 -o /tmp/h265e_probe
  *

@@ -1,7 +1,7 @@
-# t6 validation — 2026-11-20
+# RK3588 validation — 2026-11-20
 
-This is the current integrated validation checkpoint after moving work from
-t62 back to the RK3588 reference board.
+This is the current integrated validation checkpoint after moving work from a
+second RK3588 validation system back to the primary RK3588 board.
 
 ## 2026-11-20 Compatible encoder input submits dma-buf directly
 
@@ -112,6 +112,11 @@ before hardware submission.
 instead of overwriting the whole SPS byte. Forcing set1=0 (`0x020000`) and
 set0=1 (`0x010001`) produce five-NAL streams identical across vendor, Rust
 object and typed CLI paths (`78e1057c…d2e1584`, `f60db229…4abcdee`).
+
+`h264:base_layer_pid` feeds the type-14 SVC prefix as
+`priority_id = base_layer_pid + temporal_id`. The hardware gate forces base 5
+and temporal id 3 on a VEPU580 frame and requires the prefix to carry
+priority id 8. Values above 56 are rejected before submission.
 
 ## 2026-11-17 SDK / C API now use the submission ring
 
@@ -336,7 +341,7 @@ on both sides), so its 15-sample median is quoted.
   picture and the hardware poll 1761 us. Both `rkvdec-core` instances get
   equal interrupt counts, so the remaining C/Rust gap is queue depth — see the
   concurrency table in `docs/NETWORK_DECODE_BENCH.md`.
-- `scripts/board_regress.sh` had been silently skipping on t6 because its
+- `scripts/board_regress.sh` had been silently skipping on RK3588 because its
   fixtures live in `~/rk-mpp-oracles/corpus`, not `/tmp`. Run against the real
   corpus it is now **7/7 byte-exact**. The `test720` reference in the corpus
   was a 25-frame clip of a 120-frame stream; it was regenerated with
@@ -346,7 +351,7 @@ on both sides), so its 15-sample median is quoted.
 
 ## 2026-11-12 VDPP2 register bring-up
 
-- t6 `vdpp-probe` confirms client 29 is absent: hardware bit 29 is false,
+- RK3588 `vdpp-probe` confirms client 29 is absent: hardware bit 29 is false,
   `INIT_CLIENT_TYPE` returns `EINVAL`, and neither register offsets nor polling
   are available.
 - RK3576 VDPP2 parameter generation is now hardware-independent in
@@ -354,7 +359,7 @@ on both sides), so its 15-sample median is quoted.
   factors, all four 17x8 coefficient banks, DCI histogram words, and validated
   geometry limits.
 - `scripts/board_vdpp2_regs_vs_c.sh` runs the unchanged C builder under a
-  fake `mpp_service` ioctl shim on t6. Eleven cells pass: 720x480 to 1920x1080
+  fake `mpp_service` ioctl shim on RK3588. Eleven cells pass: 720x480 to 1920x1080
   YUV444, 1920x1080 to 640x640 YUV420, 640x480 identity, histogram mode, and
   full default enhancement (DMSR/ES/sharp), a custom DMSR/ES profile and a
   custom SHARP profile, YUV420/YUV444 split Y/UV output and a custom ZME
@@ -366,13 +371,13 @@ on both sides), so its 15-sample median is quoted.
   completion, and combines or exposes split Y/UV output. The packed DCI buffer is
   decoded into the vendor 4096-local-bin / 256-global-bin layout, and the U10
   mean-luma helper follows `get_avg_luma_from_hist()`.
-- The targeted t6 library gate for VDPP2 is **21 passed / 0 failed / 0 ignored**
+- The targeted RK3588 library gate for VDPP2 is **21 passed / 0 failed / 0 ignored**
   after adding exact 9-byte local-bin packing, little-endian global bins, mean
   luma, truncated-input, legal histogram geometry, hardware-status, default
   DMSR/ES/SHARP golden-trace, ZME configurability, custom tap-bank selection,
   custom parameter-packing and split-output geometry tests. `vdpp-scale` and
   `vdpp-hist` have since passed on an RK3576 boot image that binds client 29.
-- The VDPP2 hardware assets also compile on t6: the C probe builds against the
+- The VDPP2 hardware assets also compile on RK3588: the C probe builds against the
   2024-04 C source/library, the RK3576 overlay compiles to a 267-byte DTBO, and
   the independent packed-histogram checker passes synthetic
   `4096 local / 256 global / mean=511` data. The legacy fake-service matrix is
@@ -380,13 +385,13 @@ on both sides), so its 15-sample median is quoted.
   while the current hardware target uses the newer source's supplied chroma
   dimensions directly. `board_vdpp2_hw_vs_c.sh` now validates both split420 and
   split444 against the newer C source on real hardware.
-- lf1 now boots the exact official SDK 250301 6.1.75 kernel with
+- RK3576 now boots the exact official SDK 250301 6.1.75 kernel with
   `CONFIG_ROCKCHIP_MPP_VDPP=y`. `/vdpp@27961000` remains `okay`,
   `mpp_vdpp 27961000.vdpp` probes successfully, `probe_hw_support` bit 29 is
   set, and client 29 binds. `CONFIG_OF_OVERLAY` remains unset but is no longer
   needed because the driver is built in.
 
-### lf1 kernel enablement investigation
+### RK3576 kernel enablement investigation
 
 - `mpp_vdpp` is a built-in `bool` driver in the Rockchip Kconfig, not a loadable
   module, and it calls non-exported MPP core symbols. A standalone
@@ -401,7 +406,7 @@ on both sides), so its 15-sample median is quoted.
   `b16c5d1a69947ec66726165407a8aa75368def53`. It reports Linux 6.1.75,
   contains `rockchip,vdpp-rk3576`, and matches the board's compiler string exactly:
   `aarch64-none-linux-gnu-gcc 10.3.1 20210621`.
-- `scripts/build_lf1_vdpp2_kernel.sh` accepts that source and an alternate
+- `scripts/build_rk3576_vdpp2_kernel.sh` accepts that source and an alternate
   `CROSS_COMPILE`. It enables only `CONFIG_ROCKCHIP_MPP_VDPP`; the extracted
   Image config differs from the stock board config by exactly that one line.
   The original FDT/resource hashes, `rollback-index=0`, load/entry addresses and
@@ -411,21 +416,21 @@ on both sides), so its 15-sample median is quoted.
   Its Image is 41,069,056 bytes, SHA-256
   `84efdaed44fcea0f799125e94be1071be7b6418d84b32d39b06e5ff08d2f239a`,
   and vmlinux exports `rockchip_vdpp_driver`, `vdpp_probe` and `vdpp_remove`.
-- `scripts/flash_lf1_vdpp2_boot.sh` defaults to a dry run. Its applied path
+- `scripts/flash_rk3576_vdpp2_boot.sh` defaults to a dry run. Its applied path
   verifies kernel 6.1.75, VDPP DTB status, p3 capacity, the local image hash and
   passwordless sudo; backs up p3; writes with `dd conv=fsync`; reads the exact
   image span back and verifies SHA-256 before an optional reboot. Both dry run
   and applied readback passed for the accepted image.
 
-### 2026-11-13 first lf1 VDPP boot attempt
+### 2026-11-13 first RK3576 VDPP boot attempt
 
 - With explicit authorization, the staged FIT was written to `mmcblk2p3`.
   The write completed in 0.39 seconds and readback matched SHA-256
   `afe90fcc8c5dbc4223321158021ee860e233b770ae8d6da5c37bcb86c548f37a`.
 - The original p3 was backed up before writing as
-  `target/lf1-vdpp2/lf1-p3-backup-20261113-014828.img`, 64 MiB, SHA-256
+  `target/rk3576-vdpp2/rk3576-p3-backup-20261113-014828.img`, 64 MiB, SHA-256
   `11ccf48e1bb04cdf21318d72ce29da57123c6c70d5139d2ca711d2a553317d30`.
-- lf1 rebooted but did not return on `192.0.2.148` within 180 seconds. A full
+- RK3576 rebooted but did not return on `192.0.2.148` within 180 seconds. A full
   `192.0.2.0/24` ICMP sweep found no board address, and no Rockchip USB loader
   device appeared on the host. The EasyTier `198.18.0.31` route accepts TCP
   locally but returns no SSH banner, so it cannot be used as a recovery shell.
@@ -447,10 +452,10 @@ on both sides), so its 15-sample median is quoted.
 
 - The official Luckfox SDK 250301 `.repo` locks the exact vendor kernel source;
   the 1.5 GB expanded tree and SDK GCC 10.3.1 were staged through s2 on the same
-  LAN as t6/lf1. The accepted build completed on s2 in about two minutes.
+  LAN as RK3588/RK3576. The accepted build completed on s2 in about two minutes.
 - The 43,024,896-byte FIT was backed up, written and read back at SHA-256
   `90649e7d6da5ea889c1c82ed43b135582e1e7d9c59c88e8977bc4938194888df`,
-  then rebooted. lf1 returned as kernel 6.1.75 with a new boot ID.
+  then rebooted. RK3576 returned as kernel 6.1.75 with a new boot ID.
 - A second ordinary reboot also returned as kernel 6.1.75 with another new boot
   ID; client 29 and the complete 5/5 hardware gate passed again.
 - Boot log: `mpp_vdpp 27961000.vdpp: probe device`, `probing finish`; sysfs binds
@@ -495,7 +500,7 @@ on both sides), so its 15-sample median is quoted.
 - IEP2 full matrices remain **9/9** modes, **6/6** formats and **5/5** PD/DECT
   cells; telecine, progressive content and 322x242/722x482/1366x768 geometry
   all match the C probe's pixels and per-frame state.
-- Final t6 gate: `board_workspace_gate.sh` reports **1317 passed / 0 failed /
+- Final RK3588 gate: `board_workspace_gate.sh` reports **1317 passed / 0 failed /
   45 ignored** across 59 suites, `cargo fmt --check` is clean, and workspace
   rustdoc passes with `-D warnings`. `cargo test --release --lib --offline`
   reports **1147 passed / 0 failed / 0 ignored**.
@@ -516,7 +521,7 @@ on both sides), so its 15-sample median is quoted.
   `106c00c09eaed691` for the moving P picture.
 - JPEG is **1/1 packet** exact: vendor reports `start_qp=80`, `avg_qp=80` for
   q-factor 80 and no `KEY_OUTPUT_INTRA`; Rust now emits the same metadata and
-  byte-identical JPEG. On lf1 the VPU720 reference adds `intra=0`; the split
+  byte-identical JPEG. On RK3576 the VPU720 reference adds `intra=0`; the split
   formatter writes that field only for VPU720.
 - The CBR matrix exposed H.265 rate-control metadata drift too. The strategy SEI
   must carry the caller's I band unchanged and `i_quality_delta=2`; the stale
@@ -524,21 +529,21 @@ on both sides), so its 15-sample median is quoted.
   `cu_qp_delta_enabled=1` PPS and normalized stream now match C across
   320x240, 640x480 and 720p. The gate removes only the build-version SEI from
   each side and passes 13/13 cells.
-- The current t6 crate `--all-targets` gate is **1279 passed / 0 failed /
+- The current RK3588 crate `--all-targets` gate is **1279 passed / 0 failed /
   41 ignored**. `scripts/board_workspace_gate.sh`, which also runs the
   `rk-mpp-rs-sys` tests and strict workspace rustdoc, reports **1283 passed /
   0 failed / 41 ignored**. `cargo fmt --all --check` and `git diff --check`
   are clean.
-- The lf1 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
+- The RK3576 reduced gate is **1090 library tests passed / 0 failed** plus JPEG
   packet metadata **1/1**. VEPU510 H.264/H.265 fixed-QP moving and still
   matrices are both **2/2** per codec. Built-in CBR/VBR/AVBR are also connected:
   both codecs pass 2-frame metadata and 6-frame stream/YUV/rt_bits matrices.
   The reduced scope avoids LTO-linking 253 independent `--all-targets` test
   binaries one at a time under `CARGO_BUILD_JOBS=1`.
 - `scripts/board_sdk_encoder_rc.sh` now passes all six V1.9 H.264/H.265 RC
-  combinations on lf1 against the vendor probe. H.264 CBR/VBR/AVBR are 9,426 /
+  combinations on RK3576 against the vendor probe. H.264 CBR/VBR/AVBR are 9,426 /
   10,283 / 8,660 bytes; H.265 are 11,192 / 11,795 / 9,676 bytes, all
-  byte-identical. The t6 VEPU580 command remains part of the same script.
+  byte-identical. The RK3588 VEPU580 command remains part of the same script.
 
 ## 2026-11-11 AV1 software film-grain synthesis
 
@@ -551,7 +556,7 @@ on both sides), so its 15-sample median is quoted.
   pre-grain frames** and **10/10 grain-applied frames**; all thirty frame
   projections are sample-exact after accounting for aomdec's 16-bit container
   alignment.
-- The complete AV1 software-reference suite passes **359/359** on t6 at the
+- The complete AV1 software-reference suite passes **359/359** on RK3588 at the
   persistent 80 % OPP cap.
 
 ## 2026-11-11 AV1 multi-size and 4:4:4 inter conformance
@@ -1058,7 +1063,7 @@ on both sides), so its 15-sample median is quoted.
   matrices (show-existing, error-resilient segmentation, lossless/tiled/odd
   sizes) passed.
 
-## 2026-11-08 RK3576 / lf1 H.264 bring-up
+## 2026-11-08 RK3576 / RK3576 H.264 bring-up
 
 - Board: Luckfox Omni3576, RK3576, Linux 6.1.75, C MPP 1.0.11.
 - 640×480 High profile, 12 moving frames: Rust VDPU383 and stock C MPP both
@@ -1066,17 +1071,17 @@ on both sides), so its 15-sample median is quoted.
   `615ee129c46e10f7fb4cb2cf8af3cb370523f7605abee7e7315e073a4421b112`.
 - VDPU383 `global_cfg` and `rps` for the first two frames match the patched C
   dumps word-for-word.
-- t6 RK3588 fallback from the same branch: all seven H.264 decoder fixtures
+- RK3588 RK3588 fallback from the same branch: all seven H.264 decoder fixtures
   passed, proving the VDPU34x path remains intact.
-- The RK3576 H.264 edge matrix is **5/5** on lf1: 720p/B 30 frames, 1080p
+- The RK3576 H.264 edge matrix is **5/5** on RK3576: 720p/B 30 frames, 1080p
   hard 90 frames, PAFF 15 frames, LTR 62 frames and a 61-AU missing-reference
   stream producing 22 output frames. The first, second, LTR and missing-
   reference rows are byte-identical to C MPP; PAFF matches FFmpeg, with the C
   harness retaining its known field-order difference.
 
-## 2026-11-08 RK3576 / lf1 H.265 bring-up
+## 2026-11-08 RK3576 / RK3576 H.265 bring-up
 
-- The VDPU383 hardware matrix is **12/12** on lf1: 320x240 single IDR, 640x480
+- The VDPU383 hardware matrix is **12/12** on RK3576: 320x240 single IDR, 640x480
   IPPP and B-pyramid, Main10, 2x2 tiles, real WPP at 640x360 and WPP at
   1280x720, JCT-VC DSLICE, explicit SPS/PPS scaling-list streams, a 500-frame
   LTR SPS stream, and a missing-reference stream. Every planar YUV output
@@ -1109,7 +1114,7 @@ on both sides), so its 15-sample median is quoted.
   a two-column request before DMA or hardware allocation. Tiles are therefore
   a platform boundary rather than an unimplemented register path.
 
-## 2026-11-08 RK3576 / lf1 VDPU383 AV1 bring-up
+## 2026-11-08 RK3576 / RK3576 VDPU383 AV1 bring-up
 
 - The official C HAL was built with `scripts/av1_vdpu383_dump.patch`; it dumped
   thirteen 672-byte global headers for the ten displayed frames of
@@ -1166,7 +1171,7 @@ on both sides), so its 15-sample median is quoted.
   The reproducible gate is
   `scripts/board_rk3576_h265_corrupt_vs_mpp.sh`.
 
-## 2026-11-08 RK3576 / lf1 VP9 bring-up
+## 2026-11-08 RK3576 / RK3576 VP9 bring-up
 
 - The VDPU383 VP9 matrix is **7/7**: profile 0/2 64x64, 10-bit 64x64,
   lossless 320x240, 10-bit lossless 320x240, error-resilient tiles at
@@ -1177,12 +1182,12 @@ on both sides), so its 15-sample median is quoted.
 - VDPU383 uses a separate 168-byte global header, 1312-byte key-frame probe
   FIFO, eleven refined RCB regions and uncompressed `width * height / 2`
   colmv. Tile-width fields are CTU counts. The new
-  `scripts/board_rk3576_vp9_vs_mpp.sh` gate passed on lf1.
-- The lf1 release LTO compiler currently SIGSEGVs in LLVM during the VP9
+  `scripts/board_rk3576_vp9_vs_mpp.sh` gate passed on RK3576.
+- The RK3576 release LTO compiler currently SIGSEGVs in LLVM during the VP9
   build; the functional matrix uses the debug binary, so no throughput claim
   is made from this run.
 
-## 2026-11-08 RK3576 / lf1 VPU720 JPEG bring-up
+## 2026-11-08 RK3576 / RK3576 VPU720 JPEG bring-up
 
 - The VPU720 qfactor-50 matrix is **19/19**. NV12 passes at 320x240, 640x480,
   1280x720 and with a 320x240 60-MCU restart; 320x240 NV16, I420, NV21,
@@ -1194,7 +1199,7 @@ on both sides), so its 15-sample median is quoted.
   are 4,967 bytes. The Rust path uses client 20, the VPU720 43-word register
   window, a 384-byte transformed Q-table and the hardware status length as a
   byte count.
-- `scripts/board_rk3576_jpege_vs_mpp.sh` is the reproducible lf1 gate. A shared
+- `scripts/board_rk3576_jpege_vs_mpp.sh` is the reproducible RK3576 gate. A shared
   layout model derives storage size, U/V offsets, chroma stride and UV-swap.
   Tile input remains. C's 422/444 outputs are only 623 bytes for the NV12
   fixture, and Rust matches those bytes. Low-delay is an explicit reject
@@ -1204,10 +1209,10 @@ on both sides), so its 15-sample median is quoted.
 
 ## Environment
 
-- NanoPC-T6-LTS, RK3588, Debian 11.11, kernel 6.1.57
+- RK3588, Debian 11.11, kernel 6.1.57
 - `librknnrt` 2.3.2, Rust 1.88.0
 - sustained 80% OPP cap enabled: little `performance` @1.416 GHz, big
-  `performance` @1.8 GHz (see `docs/t6-power.md`)
+  `performance` @1.8 GHz (see `docs/rk3588-power.md`)
 - Source worktree synced from the local Mac checkout; `.git`, `refs`, `target`,
   model directories and existing board data were preserved
 - `/tmp/mpp-old`, `/tmp/mpp-develop` and `/tmp/mpp_trace.so` restored from
@@ -1216,12 +1221,12 @@ on both sides), so its 15-sample median is quoted.
 ## Tests
 
 `cargo test --release --all-targets` currently enumerates **1295 tests**. The
-regular suite passes **1254 / 0 failed / 41 ignored** on t6. The four ignored
+regular suite passes **1254 / 0 failed / 41 ignored** on RK3588. The four ignored
 JPEG encoder hardware tests relevant to this slice were rerun separately and
 pass **4/4** under the current 80% OPP cap. The two JPEG restart/rotate cases
 share a temporary input name and therefore need `--test-threads=1`.
 
-The H.264/MJPEG public SDK gate also passes on t6: C and C++ consumers link
+The H.264/MJPEG public SDK gate also passes on RK3588: C and C++ consumers link
 against both the shared and static libraries, every exported API symbol is
 present, lifecycle/error checks pass, and H.264 (7/127/313-byte chunks and
 whole-stream input) plus MJPEG (97/211-byte chunks and four JPEGs in one packet)
@@ -1237,7 +1242,7 @@ Fixes required by the validation:
   dropped parser packet.
 - Pooled JPEG workers now close their `MppService` before any shared dma-buf
   lease can return to the pool. The declaration order makes this hold on every
-  early `?` path too. This targets the t6 kernel list corruption observed in
+  early `?` path too. This targets the RK3588 kernel list corruption observed in
   `mpp_dma_find_buffer_fd()`.
 - H.264 NV12 and colmv frame storage now uses separate counted pools. IDR and
   geometry changes drop all old reference surfaces before clearing idle cache,
@@ -1247,18 +1252,18 @@ Fixes required by the validation:
   dropping the frame returns `in_use` to zero and the next acquire reuses the
   same fds without another allocation.
 
-The W5-8 recovery gate exposed a stronger t6 driver failure on 2026-11-07.
+The W5-8 recovery gate exposed a stronger RK3588 driver failure on 2026-11-07.
 `RESET_SESSION` followed by an H.264 decode still blocked the whole board even
 when a replacement fd was opened before closing the old one. Normal recovery
 therefore no longer issues reset: it closes the failed fd first and then opens
 and health-checks a fresh session. The reset-only diagnostic passes 32
 open/reset/query/drop cycles, but it is now an explicitly destructive example
 rather than part of the ignored-test suite. The close-before-open decode gate
-passes on the current t6 boot.
+passes on the current RK3588 boot.
 
 W5-8 gained the missing real-STATUS combination on 2026-11-11. A positive but
 unmapped input fd drives an H.265 320x240 auto-tile session through the real
-submit path; t6 completes the job without `enc_done` (`int_sta=0x00000000`),
+submit path; RK3588 completes the job without `enc_done` (`int_sta=0x00000000`),
 so the service closes and reopens the client fd. The encoder then zeroes the
 tile line buffers, invalidates the warm-up marker, and makes the next picture
 a parameter-set IDR instead of a P frame against an unknown reference epoch.
@@ -1267,7 +1272,7 @@ That recovered IDR is byte-identical to a newly opened encoder. The complete
 checks, the H.265 tile recovery case, and the real VP8 damaged-packet STATUS
 case.
 
-W5-6 cross-session CCU submission is now board-verified as well. The t6 device
+W5-6 cross-session CCU submission is now board-verified as well. The RK3588 device
 tree exposes vdec/venc/jpeg `rockchip,ccu` topology, and `BatchServer` emits one
 `SET_SESSION_FD` chain for multiple real session fds. The kernel source's
 `mpp_collect_msgs()` ends a task at the next delimiter and accepts `LAST_MSG`
@@ -1277,7 +1282,7 @@ the Rust path therefore polls each real session after the shared submit.
 `tests/framework_ccu_hw.rs` opens two independent VEPU2 JPEG sessions and
 encodes different 640x480 NV12 pictures through one batch. Both JPEG streams
 match standalone references byte for byte. `scripts/board_framework_ccu.sh`
-passes **3/3** repeated runs. The same script selects lf1's VEPU510 path; two
+passes **3/3** repeated runs. The same script selects RK3576's VEPU510 path; two
 independent 320x240 fixed-QP IDR sessions also match their standalone streams
 and pass **3/3**.
 
@@ -1285,7 +1290,7 @@ The previous board disappearance was not thermal: package readings were
 38–39°C. The prior boot log ends with CPU6 soft-lockup and RCU stall while
 `rk-mpp-rs` is inside the vendor JPEG driver's
 `mpp_dma_find_buffer_fd()`/`mpp_dma_import_fd()` path. After fixing the
-service-before-lease lifetime, t6 completed **500 consecutive async demos**
+service-before-lease lifetime, RK3588 completed **500 consecutive async demos**
 (3000 pooled JPEG jobs, three workers) without a lockup or MPP reset. The
 current 80% CPU cap reduces timing/current stress; it does not replace the
 lifetime fix and is not claimed as the root-cause fix by itself.
@@ -1323,7 +1328,7 @@ executable without modifying or relinking the test source. `LD_PRELOAD` routes
 `decode_put_packet/decode_get_frame` to rk-mpp-rs, while the native library
 continues to provide its test-only log, cfg and OSAL helpers.
 
-| case | t6 | lf1 |
+| case | RK3588 | RK3576 |
 |---|---|---|
 | H.264 640x480, 6 B-frame pictures | PASS, byte-identical | PASS, byte-identical |
 | H.265 320x240, 1 picture | PASS, byte-identical | PASS, byte-identical |
@@ -1334,8 +1339,8 @@ the official object API: s32/s64/ptr, frame/packet/buffer, default getters,
 duplicate/ref/lifetime and deep copies for `KEY_USER_DATA`/
 `KEY_USER_DATAS`. Advanced decode consumes packet `KEY_OUTPUT_FRAME` and
 publishes `KEY_INPUT_PACKET` on the returned frame, so the preallocated frame
-identity remains unchanged. `scripts/board_mpp_compat_meta.sh` passes on t6
-and lf1; on t6 the unchanged native `mpp_meta_test` also passes with two
+identity remains unchanged. `scripts/board_mpp_compat_meta.sh` passes on RK3588
+and RK3576; on RK3588 the unchanged native `mpp_meta_test` also passes with two
 threads and ten loops. A returned frame-identity mismatch is a hard test
 failure. This is a real official decoder-tool gate. The VEPU580
 H.264/H.265 encoder packet kernel metadata was subsequently closed on
@@ -1346,8 +1351,8 @@ user-defined streaming RC callbacks both use the same per-frame session.
 vendor encoder tool. It reads `MppEncCfg` from the vendor helper object, submits
 the test's NV12 `MppFrame`, and drains owned `MppPacket` objects:
 
-The 2024 t6 harness is run with `ENC_GOP_SPEC=60` to preserve its captured
-reference schedule. The 2025 lf1 harness uses the script default `0:60`, which
+The 2024 RK3588 harness is run with `ENC_GOP_SPEC=60` to preserve its captured
+reference schedule. The 2025 RK3576 harness uses the script default `0:60`, which
 sets an ordinary 60-picture GOP without the absent smart-GOP ref config.
 
 - H.265 320x240 one picture: byte-identical, SHA
@@ -1362,7 +1367,7 @@ sets an ordinary 60-picture GOP without the absent smart-GOP ref config.
   MPP; all six decoded YUV pictures are byte-identical. Only the version-SEI
   build text differs, which the stream comparator checks for framing only.
 
-On lf1 the unchanged official encoder tool now also passes all exposed codecs:
+On RK3576 the unchanged official encoder tool now also passes all exposed codecs:
 H.264 High one picture and a real six-picture stream compare identical NAL
 sequences and decoded reconstruction (version-SEI framing only); H.265 one and
 six pictures are byte-identical (`8c693d15…1efa97a7`,
@@ -1380,7 +1385,7 @@ through a memfd-backed mapping, `MppBufferInfo` round-trip, index propagation,
 and pointer/read/write behavior. Internal buffers now carry a real dma-heap fd
 and are recycled from the group's unused list; usage and count limits are
 updated on actual allocations. These checks run as part of
-`board_mpp_compat_data.sh` on lf1.
+`board_mpp_compat_data.sh` on RK3576.
 
 H.264/H.265/VP9/AV1/MJPEG compatibility decoders now request DMA-BUF SDK
 frames. Advanced `KEY_OUTPUT_FRAME` fills the caller frame directly from the
@@ -1389,13 +1394,13 @@ copying twice. The unchanged `mpi_dec_test` suite still matches native MPP
 byte-for-byte for H.264, H.265 and MJPEG on both boards.
 
 H.264/H.265/VP9 and MJPEG also accept the caller frame's dma-buf as the next
-hardware output surface. On lf1, the focused C advanced test verifies frame and
+hardware output surface. On RK3576, the focused C advanced test verifies frame and
 buffer identity plus byte-identical H.265/MJPEG output; H.264 640x480 six-frame
 advanced output is byte-identical to the native C golden
 (`338214ea…374b815`). The VP9 consumer now splits IVF packets one frame per
 submit, keeps output surfaces alive across the reference DPB, and reserves the
 caller frame only for `show_frame`. Its direct DMA-BUF path preserves the
-256-odd hardware stride and 9/5 frame allocation. On both t6 and lf1, all 12
+256-odd hardware stride and 9/5 frame allocation. On both RK3588 and RK3576, all 12
 frames of `vp9_p0_lossless_320x240_12.ivf` match C MPP byte for byte
 (`c5381bbf…3949a`). AV1 uses the same packet-level output contract: VDPU34x
 imports the caller buffer into its display pool, while VDPU383 replaces the
@@ -1456,7 +1461,7 @@ Standalone drop-in decode is also closed. `scripts/board_mpp_standalone.sh`
 creates an overlay directory whose only `librockchip_mpp.so.1` is a symlink to
 `librk_mpp_rs.so`, verifies the unchanged vendor `mpi_dec_test` resolves that
 symlink through `ldd`, and compares its output against a second run using the
-real vendor library. On both t6 and lf1 all five cases match byte-for-byte:
+real vendor library. On both RK3588 and RK3576 all five cases match byte-for-byte:
 H.264 640x480/6 frames (`338214ea…f815`), H.265 (`fcedb435…05e0`), VP9
 12 frames (`c5381bbf…3949a`), AV1 10 frames (`88f34ea5…c5f8e`) and MJPEG
 (`98c5f9cc…a689f8`). The local shim covers log/data symbols, environment and
@@ -1470,7 +1475,7 @@ than unexpanded `%d` placeholders.
 `scripts/board_mpp_standalone_encode.sh` exercises the same replacement on
 the encoder side. The unchanged `mpi_enc_test` resolves `librockchip_mpp.so.1`
 to `librk_mpp_rs.so`, creates a local key/value `MppEncCfg`, and runs
-`MPP_ENC_SET_CFG` through the existing encoder bridge. On t6, H.264 and H.265
+`MPP_ENC_SET_CFG` through the existing encoder bridge. On RK3588, H.264 and H.265
 standalone streams decode byte-identically to the vendor streams
 (`9d8c6f54…24ac6fc` and `c7c74e0c…eb03643`), while MJPEG is stream-identical
 (`08eb7c6f…b5388623`). This closes the one-frame object path; reference-cfg
@@ -1482,7 +1487,7 @@ accepted by the other with matching CPB fields. TOML extraction is
 byte-identical between vendor and Rust, and Rust accepts the vendor file, but
 the vendor rejects its own extracted TOML in `mpp_cfg_from_toml` with return
 `-40`; this is registered in `docs/DIVERGENCES.md`. Reproduce the format
-matrix with `BOARD=t6 MPP_REF=/tmp/mpp-develop scripts/board_mpp_ref_cpb.sh`.
+matrix with `BOARD=my-rk3588-host MPP_REF=/tmp/mpp-develop scripts/board_mpp_ref_cpb.sh`.
 `scripts/board_mpp_enc_cfg_strings.sh` is the corresponding `MppEncCfg`
 scalar/array test. The vendor and Rust libraries each dump LOG, JSON and TOML;
 the other library applies that file and reads back mode, target bitrate, width
@@ -1512,7 +1517,7 @@ and TOML, and verifies that the vendor-compatible `mpp_enc_cfg_deinit()` path
 releases it. All three formats pass.
 The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 **3/3 PASS**. The same tree also passes the host workspace gate with
-**1364 passed / 0 failed / 46 ignored**, and the t6 workspace gate with
+**1364 passed / 0 failed / 46 ignored**, and the RK3588 workspace gate with
 **1366 passed / 0 failed / 46 ignored** plus strict rustdoc.
 `scripts/board_mpp_enc_cfg_gdr.sh` also maps the vendor probes'
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
@@ -1562,13 +1567,13 @@ YUV output has SHA-256
 `MPP_ENC_SET_IDR_FRAME` is now executable rather than a no-op. With forced IDRs
 before input frames 2 and 4, `HEADER_MODE_EACH_IDR` enabled and SEI disabled,
 the official-path probe emits three IDR sections, four pictures each
-(`12` NALs total). t6 and lf1 both match the C stream and decode to the same
-691,200-byte YUV (`05901761…f71159` on t6). The H.265 VEPU580 probe runs the
+(`12` NALs total). RK3588 and RK3576 both match the C stream and decode to the same
+691,200-byte YUV (`05901761…f71159` on RK3588). The H.265 VEPU580 probe runs the
 same schedule and matches 15 NALs; its YUV SHA-256 is
 `b2765277b355c52eae77bae10997ec4284c03b20d76f2b1cadfeacf0f3c56607`.
 POC restarts at 1 after each forced IDR. Other encoder controls remain open.
 
-On lf1, VEPU510 now executes the same controls. The MPP object path matches
+On RK3576, VEPU510 now executes the same controls. The MPP object path matches
 the vendor's complete 15-NAL stream and 691,200-byte decoded YUV
 (`7f3d4664…841231`). `MPP_ENC_GET_HDR_SYNC` now selects the direct
 `h265e_probe` template or the `mpi_enc_test` template exactly as the caller
@@ -1577,7 +1582,7 @@ bytes for the probe and 1280 bytes for unchanged `mpi_enc_test`, and the
 corrected `kmpp_objdef_get/register` ABI lets the preload path initialize
 without a segfault.
 
-The RC API control-plane probe matches vendor output on t6 and lf1. Both list
+The RC API control-plane probe matches vendor output on RK3588 and RK3576. Both list
 the same six built-in strategies (`default` for AVC/HEVC/MJPEG/VP8 and `smart`
 for AVC/HEVC), filter AVC to two entries, report the initial
 `default,type=0` selection, append a registered `test_h264e_rc`, select and
@@ -1588,27 +1593,27 @@ are compared in a separate process and match vendor output as well.
 
 `board_mpp_custom_rc.sh` registers a C-defined strategy and runs the complete
 callback lifecycle through both encoders. The matrix covers H.264/H.265 x
-fixed-QP/CBR/VBR/AVBR on t6 VEPU580 and lf1 VEPU510, 8/8 on each board,
+fixed-QP/CBR/VBR/AVBR on RK3588 VEPU580 and RK3576 VEPU510, 8/8 on each board,
 plus same-frame-type and frame-type-changing reencode, 12/12 total.
-On t6, H.264 fixed is YUV `6d1e7dc9…b90cd3`; H.265 fixed is
+On RK3588, H.264 fixed is YUV `6d1e7dc9…b90cd3`; H.265 fixed is
 `53bf281b…ad9789e`. Their CBR/VBR/AVBR outputs are respectively
-`3f34100a…f7023e` and `cad3894e…a2384e`. On lf1, the corresponding hashes
+`3f34100a…f7023e` and `cad3894e…a2384e`. On RK3576, the corresponding hashes
 are H.264 `955dc593…f49a71` / `54d0d202…bda0` and H.265
 `c27657d4…e67e` / `39c1fc34…fe8b`. Streams, decoded YUV, init configuration,
 full callback field lines and hardware `bit_real/quality_real` all match the
 ABI-compatible vendor library. The same-frame-type reencode case requests a
-second attempt at QP30 from `check_reenc`: t6 outputs H.264 YUV `60fe9815…8ad0` and H.265
-`f618041a…1246f`; lf1 outputs H.264 `771a0735…fee70` and H.265
+second attempt at QP30 from `check_reenc`: RK3588 outputs H.264 YUV `60fe9815…8ad0` and H.265
+`f618041a…1246f`; RK3576 outputs H.264 `771a0735…fee70` and H.265
 `9fd432ba…8171`. The first hardware packet is discarded, while the same
 input/reference surfaces are rerun before `frame_end`.
 The frame-type-changing case starts from a P picture and requests a non-IDR
 intra/IDR update. H.265 matches the vendor's hybrid P-syntax/INTRA-config/IDR-NAL
 template, but that stream is a C-BUG: FFmpeg emits the first two frames
-(t6 YUV `fffd339a…009d`, lf1 `ba4b21e9…5343`) and then stops with
+(RK3588 YUV `fffd339a…009d`, RK3576 `ba4b21e9…5343`) and then stops with
 `Could not find ref with POC 1`; the full three-frame stream remains
 byte-identical to vendor. H.264 preserves the vendor's actual P slice while
 the callback state reports the requested type and decodes all three frames:
-t6 YUV `d2b11845…d4ac`, lf1 `0191b6b5…dc56`. Combining reencode with drop/PSKIP
+RK3588 YUV `d2b11845…d4ac`, RK3576 `0191b6b5…dc56`. Combining reencode with drop/PSKIP
 remains outside this verified matrix.
 
 `board_mpp_osd.sh` uses unchanged `mpi_enc_test` with `osd_enable=1`, a custom
@@ -1656,7 +1661,7 @@ the same 2,995,229-byte bitstream with SHA-256
 The 691,200,000-byte input fixture is the byte-exact C `fill_image()` output
 with SHA-256
 `db3d065df8ea78f9068aa397dfc6ed3bcd404d27df85b772c307d58aff556546`.
-`scripts/board_t6_h264_encode_pipeline.sh` regenerates the fixture from
+`scripts/board_rk3588_h264_encode_pipeline.sh` regenerates the fixture from
 `tools/mpp_nv12_fill.c`, checks both hashes and repeats the interleaved
 benchmark.
 
@@ -1728,7 +1733,7 @@ gate.
 
 The async framework gate also reports per-job queue wait, execution and
 turnaround time plus cumulative submitted/done/failed/cancelled counters.
-On t6, six JPEG decode jobs across three workers were byte-identical to the
+On RK3588, six JPEG decode jobs across three workers were byte-identical to the
 sync path with `submitted=6 done=6 failed=0 cancelled=0`.
 
 ## H.264 streaming output
@@ -1759,10 +1764,10 @@ compound round offset and final rounding.
 
 The checked-in fixture
 `tests/data/av1_inter_distance_weighted_320x240.ivf` contains one 32x16 and one
-8x8 distance block with weights `[11,5]` and `[13,3]`. On t6, all five visible
+8x8 distance block with weights `[11,5]` and `[13,3]`. On RK3588, all five visible
 Y/U/V frames are byte-identical between this decoder and the unmodified libaom
 decoder. The targeted unit test, all 12 inter-frame tests, and the complete
-fixture manifest pass locally and on t6.
+fixture manifest pass locally and on RK3588.
 
 Inter-intra is also complete. Two isolated five-frame fixtures cover 15 smooth
 inter-intra blocks and nine wedge inter-intra blocks; together they exercise
@@ -1830,9 +1835,9 @@ single-plane deblock grid.
 `yolov8s.rknn`, 768×432 H.264 people video, 40 timed frames after 5 warmups,
 three interleaved rounds:
 
-The model file was not present under the t6 home after this reboot, so the
+The model file was not present under the RK3588 home after this reboot, so the
 end-to-end table below was not regenerated in this validation pass. Both CLIs
-were rebuilt successfully; the measurement is the last t6 result from the same
+were rebuilt successfully; the measurement is the last RK3588 result from the same
 source tree.
 
 | path | median latency | median throughput | detections |
@@ -1851,7 +1856,7 @@ Rust is 2.34% faster and the detection statistics match in every round.
 - Rust completes 8 streams in 12.36 s; 12 streams take 12.90 s and 16 streams
   take 17.27 s.
 
-Thus the current t6 playback guidance is: C up to about 16 near-real-time
+Thus the current RK3588 playback guidance is: C up to about 16 near-real-time
 streams, Rust up to 8 stable streams with 12 streams borderline. The remaining
 Rust playback cost is the user-space NV12 pipe; direct DMABUF scanout is still
 the next performance step.
@@ -1873,13 +1878,13 @@ Re-run against the committed tree:
 |---|---|
 | host `cargo test --all-targets --offline` | 1149 enumerated: 1118 passed, 0 failed, 31 ignored |
 | `cargo fmt --all --check`, `git diff --check` | clean |
-| t6 `cargo test --release --all-targets -- --ignored --test-threads=1` | all 31 board-only tests executed, 0 failed |
+| RK3588 `cargo test --release --all-targets -- --ignored --test-threads=1` | all 31 board-only tests executed, 0 failed |
 | `scripts/board_regress.sh` | H.264 7/7 byte-exact |
 | `scripts/board_regress_hevc.sh` | 13 PASS, 1 SKIP (`/tmp/t720.hevc` C reference output absent on this boot) |
 | `scripts/board_framework_recovery.sh` | 4/4 (two close-before-open replacements, H.265 tile recovery after real `int_sta=0`, one VDPU2 damaged-packet gate) |
 | `scripts/board_framework_async_vs_sync.sh` | ALL PASS: 6/6 jobs identical, `submitted=6 done=6 failed=0 cancelled=0`, avg wait 2.134 ms, avg run 4.937 ms, 9 pool allocations under a cap of 10 |
 | `scripts/board_iep_modes_vs_probe.sh` | 9 PASS, 0 FAIL |
-| `scripts/board_mpp_packet_meta.sh` | t6 VEPU580 H.264/H.265 fixed-QP/CBR still+moving 8/8; lf1 VEPU510 fixed-QP/CBR/VBR/AVBR 2-frame matrix plus 6-frame RC stream/YUV; JPEG 2/2; H.265 motion-info hashes exact |
+| `scripts/board_mpp_packet_meta.sh` | RK3588 VEPU580 H.264/H.265 fixed-QP/CBR still+moving 8/8; RK3576 VEPU510 fixed-QP/CBR/VBR/AVBR 2-frame matrix plus 6-frame RC stream/YUV; JPEG 2/2; H.265 motion-info hashes exact |
 
 Environment for this run: kernel 6.1.57 with the persistent cap service active
 (`policy0` 1,416,000 kHz, `policy4`/`policy6` 1,800,000 kHz). Two
@@ -1891,7 +1896,7 @@ entered history.
 ## Multi-tile inter re-verification (2026-11-08)
 
 The 2x2-tile inter fixture now has a non-ignored ten-picture Y/U/V gate.  On
-t6 under the persistent 80 % OPP cap, the targeted release test passed
+RK3588 under the persistent 80 % OPP cap, the targeted release test passed
 (`1 passed`, `0 failed`) and the complete release library suite passed
 (`978 passed`, `0 failed`, `0 ignored`).  The host all-target suite enumerated
 1151 tests and finished with `1120 passed`, `0 failed`, `31 ignored`.

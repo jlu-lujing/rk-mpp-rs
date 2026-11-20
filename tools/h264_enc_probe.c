@@ -2,7 +2,7 @@
  * Minimal official-MPP H.264 encoder used only to produce board-local
  * golden streams and register dumps for the Rust implementation.
  *
- * Build on t6:
+ * Build on RK3588:
  *   cc -O0 -g -Wall -Wextra -o /tmp/h264_enc_probe h264_enc_probe.c \
  *      $(pkg-config --cflags --libs rockchip_mpp)
  *

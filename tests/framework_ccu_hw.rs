@@ -28,7 +28,7 @@ fn input_buffer(config: EncoderConfig, bytes: &[u8]) -> DmaBuf {
 fn two_jpeg_sessions_submit_through_one_ccu_batch() {
     assert!(
         CcuTopology::detect().jpeg_encode,
-        "t6 device tree must advertise the JPEG CCU"
+        "RK3588 device tree must advertise the JPEG CCU"
     );
     let config = EncoderConfig::new(640, 480);
     let left_frame = nv12_input(config.width, config.height, 17);
@@ -57,7 +57,7 @@ fn two_jpeg_sessions_submit_through_one_ccu_batch() {
     )
     .unwrap();
 
-    assert!(actual.batched, "t6 must expose SET_SESSION_FD");
+    assert!(actual.batched, "RK3588 must expose SET_SESSION_FD");
     assert_eq!(actual.left.bytes, expected_left);
     assert_eq!(actual.right.bytes, expected_right);
     assert_eq!(actual.left.packets, vec![0..actual.left.bytes.len()]);
@@ -69,7 +69,7 @@ fn two_jpeg_sessions_submit_through_one_ccu_batch() {
 fn two_vepu510_sessions_submit_through_one_ccu_batch() {
     assert!(
         CcuTopology::detect().video_encode,
-        "lf1 device tree must advertise the VEPU510 CCU"
+        "RK3576 device tree must advertise the VEPU510 CCU"
     );
     let left_frame = nv12_input(320, 240, 29);
     let right_frame = nv12_input(320, 240, 211);
@@ -92,7 +92,7 @@ fn two_vepu510_sessions_submit_through_one_ccu_batch() {
     )
     .unwrap();
 
-    assert!(actual.batched, "lf1 must expose SET_SESSION_FD");
+    assert!(actual.batched, "RK3576 must expose SET_SESSION_FD");
     assert_eq!(actual.left, expected_left);
     assert_eq!(actual.right, expected_right);
 }

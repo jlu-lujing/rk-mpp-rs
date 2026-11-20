@@ -17,7 +17,7 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 - Added the RK3576 VDPP2 client-29 common/ZME scale and DCI histogram register
   builders, DMA-BUF session plumbing, and `vdpp-probe`/`vdpp-scale` entry
   points. The register images match the vendor C builder through a fake-service
-  trace; lf1 hardware validation remains pending.
+  trace; RK3576 hardware validation remains pending.
 
 ## [1.12] - 2026-11-09
 
@@ -26,7 +26,7 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 - Added `rk_mpp_encoder_submit_frame_dmabuf()` with fd, allocation size and
   coded Y/UV stride metadata.
 - Copied-input APIs remain unchanged. H.264, H.265 and JPEG DMA input produce
-  byte-identical packets on t6/VEPU580 and lf1/VEPU510+VPU720.
+  byte-identical packets on RK3588/VEPU580 and RK3576/VEPU510+VPU720.
 - `Frame::letterbox_nv12()` and the scaler can read strided NV12 CPU/DMA frames
   directly into RGB model input without a whole-frame intermediate copy.
 - Added the first official-MPP compatibility symbols:
@@ -38,7 +38,7 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   `mpi_dec_test` binary also passes H.264/H.265/MJPEG when `LD_PRELOAD` routes
   the public MPP entry points to this crate while vendor helper symbols remain
   available. The same object bridge now accepts vendor `MppEncCfg`, submits
-  `MppFrame` pictures and returns encoded `MppPacket`s; t6 H.265/MJPEG streams
+  `MppFrame` pictures and returns encoded `MppPacket`s; RK3588 H.265/MJPEG streams
   are byte-identical and H.264 six-frame VCL output/reconstruction matches C
   MPP, with only the build-identity version SEI text differing. Imported
   DMA-BUF objects and the RK3576 H.264/H.265 matrix remain reserved.
@@ -51,7 +51,7 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 - Added Rust `DmaBufPlane` and owned fd duplication for decoded frames.
 - Added `rk_mpp_decoder_export_frame_dmabuf()` for isolated plane
   offset/size/stride export. CPU-backed codecs return `UNSUPPORTED`.
-- Added dma-buf import/duplication primitives and board tests on t6 and lf1.
+- Added dma-buf import/duplication primitives and board tests on RK3588 and RK3576.
 - Default H.264/H.265/VP9/AV1/MJPEG frames remain contiguous CPU storage for V1
   compatibility.
 
@@ -62,7 +62,7 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 - Exposed up to eight ROI regions, GDR/intra-refresh and slice splitting with
   low-delay packet output through typed Rust and C configuration.
 - Verified H.264 and H.265 VEPU580 ROI, GDR and slice controls against their
-  validated CLI paths on t6.
+  validated CLI paths on RK3588.
 - Added the raw `rk-mpp-rs-sys` workspace crate with all 34 V1.10 exports,
   exact C layouts, explicit-path/pkg-config discovery and dynamic/static tests.
 

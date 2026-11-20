@@ -14,7 +14,7 @@ BOARD="${BOARD:-t6}"
 #   scripts/board_regress_all.sh              # quick fixed-QP matrix (6 GOP cells)
 #   FULL_QP=1 scripts/board_regress_all.sh    # the whole 24-cell size x profile x QP matrix
 #   SKIP=vp8,m2v scripts/board_regress_all.sh
-#   PERF_GATE=1 scripts/board_regress_all.sh  # also enforce t6 hot-path limits
+#   PERF_GATE=1 scripts/board_regress_all.sh  # also enforce RK3588 hot-path limits
 #   JITTER_CHECK=1 scripts/board_regress_all.sh  # rerun representative C oracles
 #   ALLOW_SKIPS=1 scripts/board_regress_all.sh   # accept missing fixtures/oracles
 set -uo pipefail

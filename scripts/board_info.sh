@@ -3,7 +3,7 @@
 #
 # Usage:
 #   scripts/board_info.sh [output.md]
-#   BOARD=t62 scripts/board_info.sh docs/board-t62.md
+#   BOARD=my-rk3588-host scripts/board_info.sh docs/board.md
 set -euo pipefail
 
 BOARD="${BOARD:-t6}"

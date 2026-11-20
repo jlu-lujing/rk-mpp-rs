@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reproduce the 1280x720 H.264 end-to-end throughput comparison used by the
-# V1.12 DMA-input pipeline work. Run this script on t6 with the 80% OPP cap.
+# V1.12 DMA-input pipeline work. Run this script on RK3588 with the 80% OPP cap.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,7 +23,7 @@ fps_from_ms() {
 }
 
 if [ "$(uname -m)" != aarch64 ] || [ ! -e /dev/mpp_service ]; then
-    echo "run this benchmark on t6" >&2
+    echo "run this benchmark on RK3588" >&2
     exit 2
 fi
 for path in "$rust_bin" "$mpp_bin" "$mpp_lib/librockchip_mpp.so.0"; do
