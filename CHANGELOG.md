@@ -19,6 +19,18 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   points. The register images match the vendor C builder through a fake-service
   trace; RK3576 hardware validation remains pending.
 
+## [1.14] - 2026-11-20
+
+- Extended the V3 advanced encoder configuration's trailing 32 bytes with a
+  field-selective H.265 syntax descriptor without changing the 552-byte layout
+  or any V1.13 field offset.
+- Exposed SAO luma/chroma disable, deblock disable and beta/tc offsets,
+  loop-filter across slices/tiles and auto-tile through C and
+  `rk-mpp-rs-sys`, bringing the ABI snapshot to 41 exports.
+- RK3588 C V3 output is byte-identical to the CLI for SAO disable
+  (15,618 bytes), deblock beta/tc (15,878) and loop-filter across
+  slices/tiles (15,829).
+
 ## [1.13] - 2026-11-20
 
 - Added an independently sized V3 advanced encoder configuration and preserved

@@ -280,7 +280,7 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.13 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.14 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
@@ -335,8 +335,8 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 安装布局：
 
 - `include/rk_mpp_rs.h`
-- `lib/librk_mpp_rs.so.1.13.0`
-- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.13.0`
+- `lib/librk_mpp_rs.so.1.14.0`
+- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.14.0`
 - `lib/librk_mpp_rs.so -> librk_mpp_rs.so.1`
 - `lib/librk_mpp_rs.a`
 - `lib/pkgconfig/rk-mpp-rs.pc`
@@ -382,7 +382,7 @@ the next submission, so steady-state decode no longer performs a dma-heap
 allocation, mmap and munmap per picture. H.264 IDR still drops every DPB frame
 lease, but leaves the now-idle pool storage available for reuse.
 
-`rk-mpp-rs-sys` 暴露 V1.13 的全部 40 个 C 导出、enum、struct 和不透明句柄。
+`rk-mpp-rs-sys` 暴露 V1.14 的全部 41 个 C 导出、enum、struct 和不透明句柄。
 
 另有进行中的官方 MPP drop-in ABI 基础层：`mpp_create`、`mpp_init`、
 `mpp_destroy`、格式查询和官方 `MppApi` 184-byte 函数表。当前只保证生命周期
@@ -629,6 +629,11 @@ CABAC、transform-8x8、`cabac_init_idc`、constraint-set force/value 和
 ```bash
 ./scripts/board_sdk_encoder_controls.sh
 ```
+
+V1.14 在不扩大 V3 552-byte layout 的前提下，把末尾 32-byte reserve 升级为
+H.265 syntax descriptor。C 调用方可以逐字段覆盖 SAO luma/chroma、deblock
+disable 与 beta/tc、跨 slice/tile loop-filter 和 auto-tile；未选择项保留
+默认值。V1.13 的 H.264 字段 offset 完全不变。
 
 JPEG 编码沿用同一 encoder handle，支持 NV12/I420、0–10 内置量化档和可选
 restart MCU 间隔。RK3576/RK3588 单帧 JPEG 与现有 `jpeg-enc` CLI 输出逐字节一致。

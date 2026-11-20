@@ -44,6 +44,7 @@ for symbol in \
     rk_mpp_encoder_advanced_config_v3_init \
     rk_mpp_encoder_h264_deblock_init \
     rk_mpp_encoder_h264_syntax_init \
+    rk_mpp_encoder_h265_syntax_init \
     rk_mpp_encoded_packet_init \
     rk_mpp_encoder_create \
     rk_mpp_encoder_create_advanced_v3 \

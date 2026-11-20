@@ -526,6 +526,13 @@ in what order the evidence gets produced.
       deblock `1:-2:3` (18,098), plus Main forced to CAVLC (20,263) and High
       with transform-8x8 disabled (17,979). The existing V1.9 consumer and six
       V1.10 ROI/GDR/slice cells remain green.
+- [x] Public H.265 syntax API V1.14: V3's trailing 32-byte reserve is now a
+      field-selective H.265 descriptor with unchanged 552-byte size and
+      unchanged V1.13 offsets. SAO luma/chroma disable, deblock disable and
+      beta/tc, loop-filter across slices/tiles and auto-tile are available to
+      C and raw Rust consumers. RK3588 C V3 matches CLI for SAO disable
+      (15,618 bytes), deblock beta/tc (15,878) and loop-filter across
+      slices/tiles (15,829); the ABI snapshot grows to 41 exports.
 - [x] Public H.265 encoder API V1.5: the same owned packet/release and
       synchronous submit path with NV12/I420 input. RK3588 VEPU580 exposes
       width/height, QP and GOP; RK3576 VEPU510 exposes the captured

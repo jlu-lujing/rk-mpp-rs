@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 13u
+#define RK_MPP_API_VERSION_MINOR 14u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -324,6 +324,40 @@ typedef struct rk_mpp_encoder_h264_syntax {
     uint32_t reserved[4];
 } rk_mpp_encoder_h264_syntax_t;
 
+enum rk_mpp_h265_syntax_flags {
+    RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE = 1u << 0,
+    RK_MPP_H265_SYNTAX_SAO_CHROMA_DISABLE = 1u << 1,
+    RK_MPP_H265_SYNTAX_DEBLOCK_DISABLE = 1u << 2,
+    RK_MPP_H265_SYNTAX_DEBLOCK_BETA = 1u << 3,
+    RK_MPP_H265_SYNTAX_DEBLOCK_TC = 1u << 4,
+    RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_SLICES = 1u << 5,
+    RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES = 1u << 6,
+    RK_MPP_H265_SYNTAX_AUTO_TILE = 1u << 7
+};
+
+enum rk_mpp_h265_syntax_values {
+    RK_MPP_H265_VALUE_SAO_LUMA_DISABLE = 1u << 0,
+    RK_MPP_H265_VALUE_SAO_CHROMA_DISABLE = 1u << 1,
+    RK_MPP_H265_VALUE_DEBLOCK_DISABLE = 1u << 2,
+    RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_SLICES = 1u << 3,
+    RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_TILES = 1u << 4,
+    RK_MPP_H265_VALUE_AUTO_TILE = 1u << 5
+};
+
+/*
+ * Field-selective H.265 syntax overrides. `flags` chooses which controls are
+ * overridden; boolean values are carried in `values`, where an absent bit means
+ * false. Beta/tc use the -6..=6 range and are read only when selected.
+ */
+typedef struct rk_mpp_encoder_h265_syntax {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint32_t values;
+    int32_t deblock_beta_offset_div2;
+    int32_t deblock_tc_offset_div2;
+    uint32_t reserved[3];
+} rk_mpp_encoder_h265_syntax_t;
+
 /*
  * V1.10 advanced configuration. This separate full-size type avoids changing
  * the 104-byte V1.9 initializer. ROI regions are copied during create.
@@ -341,9 +375,9 @@ typedef struct rk_mpp_encoder_advanced_config_v2 {
 } rk_mpp_encoder_advanced_config_v2_t;
 
 /*
- * V1.13 advanced configuration. The V1.10 fields remain at their original
- * offsets through `rois`; the V2 trailing reserved words are replaced by the
- * typed H.264 descriptors and a fresh reserve.
+ * V1.13 advanced configuration, extended in V1.14. The V1.10 fields remain at
+ * their original offsets through `rois`; the V2 trailing reserved words are
+ * replaced by typed H.264 and H.265 descriptors.
  */
 typedef struct rk_mpp_encoder_advanced_config_v3 {
     uint32_t struct_size;
@@ -356,7 +390,7 @@ typedef struct rk_mpp_encoder_advanced_config_v3 {
     rk_mpp_encoder_roi_region_t rois[RK_MPP_MAX_ROI_REGIONS];
     rk_mpp_encoder_h264_deblock_t h264_deblock;
     rk_mpp_encoder_h264_syntax_t h264_syntax;
-    uint32_t reserved[8];
+    rk_mpp_encoder_h265_syntax_t h265_syntax;
 } rk_mpp_encoder_advanced_config_v3_t;
 
 enum rk_mpp_encoded_packet_flags {
@@ -402,6 +436,8 @@ int rk_mpp_encoder_h264_deblock_init(
     rk_mpp_encoder_h264_deblock_t *deblock);
 int rk_mpp_encoder_h264_syntax_init(
     rk_mpp_encoder_h264_syntax_t *syntax);
+int rk_mpp_encoder_h265_syntax_init(
+    rk_mpp_encoder_h265_syntax_t *syntax);
 int rk_mpp_encoder_advanced_config_v2_init(
     rk_mpp_encoder_advanced_config_v2_t *config,
     uint32_t rate_control_mode);

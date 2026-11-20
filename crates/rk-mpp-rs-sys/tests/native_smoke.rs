@@ -11,7 +11,7 @@ fn version_and_initializers_match_the_native_library() {
         let version = CStr::from_ptr(rk_mpp_api_version_string())
             .to_str()
             .unwrap();
-        assert_eq!(version, "1.13");
+        assert_eq!(version, "1.14");
         assert!(!rk_mpp_strerror(RK_MPP_OK).is_null());
 
         let mut decoder = rk_mpp_decoder_config_t::default();
@@ -91,6 +91,13 @@ fn version_and_initializers_match_the_native_library() {
             size_of::<rk_mpp_encoder_h264_syntax_t>()
         );
 
+        let mut h265_syntax = rk_mpp_encoder_h265_syntax_t::default();
+        assert_eq!(rk_mpp_encoder_h265_syntax_init(&mut h265_syntax), RK_MPP_OK);
+        assert_eq!(
+            h265_syntax.struct_size as usize,
+            size_of::<rk_mpp_encoder_h265_syntax_t>()
+        );
+
         let mut roi = rk_mpp_encoder_roi_region_t::default();
         assert_eq!(rk_mpp_encoder_roi_region_init(&mut roi), RK_MPP_OK);
         assert_eq!(
@@ -125,7 +132,7 @@ fn version_and_initializers_match_the_native_library() {
 
 #[test]
 fn every_public_symbol_is_linkable() {
-    let symbols: [usize; 40] = [
+    let symbols: [usize; 41] = [
         rk_mpp_api_version as usize,
         rk_mpp_api_version_string as usize,
         rk_mpp_strerror as usize,
@@ -149,6 +156,7 @@ fn every_public_symbol_is_linkable() {
         rk_mpp_encoder_slice_split_init as usize,
         rk_mpp_encoder_h264_deblock_init as usize,
         rk_mpp_encoder_h264_syntax_init as usize,
+        rk_mpp_encoder_h265_syntax_init as usize,
         rk_mpp_encoder_advanced_config_v2_init as usize,
         rk_mpp_encoder_advanced_config_v3_init as usize,
         rk_mpp_encoded_packet_init as usize,

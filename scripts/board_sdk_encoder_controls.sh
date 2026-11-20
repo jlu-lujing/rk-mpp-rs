@@ -159,6 +159,41 @@ compare_h264_syntax() {
         "$name" "$(wc -c < "$c_api_out")"
 }
 
+compare_h265_syntax() {
+    local name=$1
+    local c_api_out="/tmp/rk_mpp_sdk_h265_syntax_${name}.265"
+    local cli_out="/tmp/rk_mpp_cli_h265_syntax_${name}.265"
+    local -a c_env cli_options
+
+    case "$name" in
+        sao)
+            c_env=(H265_SAO_LUMA_DISABLE=1 H265_SAO_CHROMA_DISABLE=1)
+            cli_options=(sao:1:1)
+            ;;
+        deblock)
+            c_env=(H265_DBLK_DISABLE=0 H265_DBLK_BETA=3 H265_DBLK_TC=-2)
+            cli_options=(dblk:0:3:-2)
+            ;;
+        loop-filter)
+            c_env=(H265_LPF_ACS_SLI=1 H265_LPF_ACS_TILE_DISABLE=1)
+            cli_options=(lpf:1:1)
+            ;;
+        *)
+            printf 'unknown H.265 syntax case: %s\n' "$name" >&2
+            exit 2
+            ;;
+    esac
+
+    env CONTROL_MODE=h265-syntax "${c_env[@]}" \
+        /tmp/rk_mpp_encoder_controls \
+            h265 nv12 "$c_api_out" 320 240 26 6 6 "$fixture"
+    H265_GOP=6 target/release/rk-mpp-rs h265-gop \
+        "$fixture" "$cli_out" 320 240 6 26 "${cli_options[@]}"
+    cmp "$c_api_out" "$cli_out"
+    printf 'PASS H.265 syntax %s C V3 == CLI (%s bytes)\n' \
+        "$name" "$(wc -c < "$c_api_out")"
+}
+
 for codec in h264 h265; do
     compare_control "$codec" slice 6
     compare_control "$codec" roi 6
@@ -167,5 +202,8 @@ done
 for syntax in cabac constraint base-pid main-cavlc high-no-8x8 deblock; do
     compare_h264_syntax "$syntax"
 done
+for syntax in sao deblock loop-filter; do
+    compare_h265_syntax "$syntax"
+done
 
-printf 'PASS rk-mpp-rs V1.13 ROI/GDR/slice/H.264 syntax controls\n'
+printf 'PASS rk-mpp-rs V1.14 ROI/GDR/slice/H.264+H.265 syntax controls\n'

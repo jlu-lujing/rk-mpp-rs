@@ -148,6 +148,16 @@
 - RK3588 V1.13 C V3 output is byte-identical to the CLI for CABAC idc 2
   (18,046 bytes), constraint `0x003f0025` (17,977), base PID 5 (17,977) and
   deblock `1:-2:3` (18,098).
+- V1.13's V3 advanced config ends with 32 reserved bytes. Replacing that reserve
+  with a same-size H.265 syntax descriptor keeps the total 552-byte layout and
+  every earlier field offset unchanged. H.265 booleans can be encoded as
+  selected-field flags plus a value bitmask, so defaults such as
+  `loop_filter_across_tiles=true` remain intact when a caller changes only one
+  unrelated control.
+- V1.14 RK3588 C V3 output matches the CLI for H.265 SAO disable (15,618
+  bytes), deblock beta/tc 3/-2 (15,878) and loop-filter across slices with
+  tiles disabled (15,829). The V3 size remains 552 and the ABI grows from 40
+  to 41 exports.
 
 - `src/lib.rs` currently exports only `rk_jpeg_*`; it is path-based, single-image,
   RGB-letterbox oriented, and does not expose H.264.

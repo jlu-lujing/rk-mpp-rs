@@ -24,6 +24,18 @@
   `rk_mpprs_internal_*` so they no longer leak into the public `rk_mpp_*`
   symbol namespace.
 
+### Phase 22: Public H.265 Syntax ABI
+- **Status:** complete on RK3588.
+- Reusing the V1.13 V3 trailing reserve for a 32-byte H.265 syntax descriptor
+  preserves the 552-byte structure and all V1.13 offsets.
+- Added field-selective SAO luma/chroma, deblock disable/beta/tc,
+  loop-filter across slices/tiles and auto-tile controls to C and raw Rust.
+- RK3588 passes the old V1.9/V1.10 gates plus six H.264 and three H.265
+  C V3 == CLI cells. H.265 sizes are 15,618 (SAO), 15,878 (deblock) and
+  15,829 (loop-filter).
+- V1.14 ABI/package passes with 41 symbols and installs `.so.1.14.0`;
+  `rk-mpp-rs-sys` native smoke passes.
+
 ## Session: 2026-11-09
 
 ### Phase 20: Official `mpi_enc_test` Object Bridge

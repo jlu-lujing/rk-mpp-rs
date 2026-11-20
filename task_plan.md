@@ -305,6 +305,16 @@ callers.
 - [x] Update README, CAPABILITY, HANDOFF, CHANGELOG and progress evidence.
 - **Status:** complete on RK3588; full host workspace gate green.
 
+### Phase 22: Public H.265 Syntax ABI
+- Goal: expose the existing typed H.265 SAO/deblock/loop-filter/tile controls
+  through V3 without changing its size or any V1.13 field offset.
+- [x] Replace the V3 trailing reserve with a 32-byte H.265 syntax descriptor.
+- [x] Map field-selective H.265 syntax values into `EncoderConfig`.
+- [x] Add C/system ABI coverage and the 41st ABI export.
+- [x] Verify SAO, deblock and loop-filter cells against the CLI on RK3588.
+- [x] Update API version, packaging default and all evidence docs.
+- **Status:** complete on RK3588; final host workspace and SDK package gates run.
+
 ## Decisions Made
 
 | Decision | Rationale |

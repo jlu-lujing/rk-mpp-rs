@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-_Static_assert(RK_MPP_API_VERSION == 0x1000du, "API version changed");
+_Static_assert(RK_MPP_API_VERSION == 0x1000eu, "API version changed");
 
 _Static_assert(RK_MPP_CODEC_H264 == 1, "codec id changed");
 _Static_assert(RK_MPP_CODEC_MJPEG == 2, "codec id changed");
@@ -82,11 +82,17 @@ _Static_assert(offsetof(rk_mpp_encoder_h264_syntax_t, cabac_init_idc) == 16,
                "H.264 syntax layout changed");
 _Static_assert(offsetof(rk_mpp_encoder_h264_syntax_t, base_layer_pid) == 28,
                "H.264 syntax layout changed");
+_Static_assert(sizeof(rk_mpp_encoder_h265_syntax_t) == 32,
+               "H.265 syntax layout changed");
+_Static_assert(offsetof(rk_mpp_encoder_h265_syntax_t, deblock_beta_offset_div2) == 12,
+               "H.265 syntax layout changed");
 _Static_assert(sizeof(rk_mpp_encoder_advanced_config_v3_t) == 552,
                "V3 advanced encoder config layout changed");
 _Static_assert(offsetof(rk_mpp_encoder_advanced_config_v3_t, h264_deblock) == 440,
                "V3 advanced encoder config layout changed");
 _Static_assert(offsetof(rk_mpp_encoder_advanced_config_v3_t, h264_syntax) == 472,
+               "V3 advanced encoder config layout changed");
+_Static_assert(offsetof(rk_mpp_encoder_advanced_config_v3_t, h265_syntax) == 520,
                "V3 advanced encoder config layout changed");
 
 _Static_assert(sizeof(rk_mpp_encoded_packet_t) == 72,
@@ -105,6 +111,7 @@ int main(void) {
     rk_mpp_encoder_advanced_config_v3_t advanced_v3;
     rk_mpp_encoder_h264_deblock_t h264_deblock;
     rk_mpp_encoder_h264_syntax_t h264_syntax;
+    rk_mpp_encoder_h265_syntax_t h265_syntax;
     rk_mpp_encoder_roi_region_t roi;
     rk_mpp_encoder_gdr_t gdr;
     rk_mpp_encoder_slice_split_t split;
@@ -143,9 +150,12 @@ int main(void) {
             &advanced_v3, RK_MPP_RATE_CONTROL_FIXED_QP) != RK_MPP_OK ||
         rk_mpp_encoder_h264_deblock_init(&h264_deblock) != RK_MPP_OK ||
         rk_mpp_encoder_h264_syntax_init(&h264_syntax) != RK_MPP_OK ||
+        rk_mpp_encoder_h265_syntax_init(&h265_syntax) != RK_MPP_OK ||
         h264_deblock.present != 0 || h264_syntax.flags != 0 ||
+        h265_syntax.flags != 0 || h265_syntax.values != 0 ||
         advanced_v3.h264_deblock.struct_size != sizeof(h264_deblock) ||
-        advanced_v3.h264_syntax.struct_size != sizeof(h264_syntax)) {
+        advanced_v3.h264_syntax.struct_size != sizeof(h264_syntax) ||
+        advanced_v3.h265_syntax.struct_size != sizeof(h265_syntax)) {
         return 6;
     }
     if (rk_mpp_decoder_export_frame_dmabuf(NULL, 0, NULL, NULL, NULL, NULL) !=

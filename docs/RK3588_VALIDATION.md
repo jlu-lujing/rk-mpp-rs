@@ -3,7 +3,7 @@
 This is the current integrated validation checkpoint after moving work from a
 second RK3588 validation system back to the primary RK3588 board.
 
-## 2026-11-20 Public H.264 syntax/deblock API V1.13
+## 2026-11-20 Public H.264/H.265 syntax API V1.13/V1.14
 
 `scripts/board_sdk_encoder_controls.sh` now creates the encoder through the
 new V3 advanced configuration and compares its output with the validated CLI
@@ -19,9 +19,21 @@ path. All four cells are byte-identical:
 | deblock disable with alpha/beta `-2/3` | 18,098 |
 
 The same run retains the existing V1.9 compatibility consumer and all six
-V1.10 ROI/GDR/slice cells. `scripts/check_sdk_abi.sh` passes with the V1.13
-40-symbol snapshot, and `scripts/board_sdk_package.sh` installs
-`.so.1.13.0` and passes pkg-config, CMake shared/static and external consumers.
+V1.10 ROI/GDR/slice cells. `scripts/check_sdk_abi.sh` passes with the V1.14
+41-symbol snapshot, and `scripts/board_sdk_package.sh` installs
+`.so.1.14.0` and passes pkg-config, CMake shared/static and external consumers.
+
+The V1.14 H.265 descriptor reuses V3's final 32-byte reserve and remains
+byte-identical to the CLI in three more cells:
+
+| V3 H.265 control | bytes |
+|---|---:|
+| SAO luma/chroma disabled | 15,618 |
+| deblock beta/tc `3/-2` | 15,878 |
+| loop filter across slices, disabled across tiles | 15,829 |
+
+The V3 size remains 552 bytes. ABI/package gates now use V1.14 and 41 symbols,
+and the default install artifact is `.so.1.14.0`.
 
 ## 2026-11-20 Compatible encoder input submits dma-buf directly
 

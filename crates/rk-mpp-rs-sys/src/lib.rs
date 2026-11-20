@@ -1,4 +1,4 @@
-//! Raw FFI declarations for the `rk-mpp-rs` V1.13 C ABI.
+//! Raw FFI declarations for the `rk-mpp-rs` V1.14 C ABI.
 //!
 //! Every function in this crate is unsafe: callers must follow the ownership,
 //! struct-size, threading and lifetime rules documented in
@@ -10,7 +10,7 @@
 use core::ffi::{c_char, c_int};
 
 pub const RK_MPP_API_VERSION_MAJOR: u32 = 1;
-pub const RK_MPP_API_VERSION_MINOR: u32 = 13;
+pub const RK_MPP_API_VERSION_MINOR: u32 = 14;
 pub const RK_MPP_API_VERSION: u32 = (RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR;
 
 pub const RK_MPP_OK: c_int = 0;
@@ -69,6 +69,22 @@ pub const RK_MPP_H264_SYNTAX_TRANSFORM_8X8: u32 = 1 << 1;
 pub const RK_MPP_H264_SYNTAX_CABAC_INIT_IDC: u32 = 1 << 2;
 pub const RK_MPP_H264_SYNTAX_CONSTRAINT_SET: u32 = 1 << 3;
 pub const RK_MPP_H264_SYNTAX_BASE_LAYER_PID: u32 = 1 << 4;
+
+pub const RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE: u32 = 1 << 0;
+pub const RK_MPP_H265_SYNTAX_SAO_CHROMA_DISABLE: u32 = 1 << 1;
+pub const RK_MPP_H265_SYNTAX_DEBLOCK_DISABLE: u32 = 1 << 2;
+pub const RK_MPP_H265_SYNTAX_DEBLOCK_BETA: u32 = 1 << 3;
+pub const RK_MPP_H265_SYNTAX_DEBLOCK_TC: u32 = 1 << 4;
+pub const RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_SLICES: u32 = 1 << 5;
+pub const RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES: u32 = 1 << 6;
+pub const RK_MPP_H265_SYNTAX_AUTO_TILE: u32 = 1 << 7;
+
+pub const RK_MPP_H265_VALUE_SAO_LUMA_DISABLE: u32 = 1 << 0;
+pub const RK_MPP_H265_VALUE_SAO_CHROMA_DISABLE: u32 = 1 << 1;
+pub const RK_MPP_H265_VALUE_DEBLOCK_DISABLE: u32 = 1 << 2;
+pub const RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_SLICES: u32 = 1 << 3;
+pub const RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_TILES: u32 = 1 << 4;
+pub const RK_MPP_H265_VALUE_AUTO_TILE: u32 = 1 << 5;
 
 pub const RK_MPP_ENCODED_PACKET_FLAG_KEYFRAME: u32 = 1 << 0;
 
@@ -349,6 +365,18 @@ pub struct rk_mpp_encoder_h264_syntax {
 pub type rk_mpp_encoder_h264_syntax_t = rk_mpp_encoder_h264_syntax;
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct rk_mpp_encoder_h265_syntax {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub values: u32,
+    pub deblock_beta_offset_div2: i32,
+    pub deblock_tc_offset_div2: i32,
+    pub reserved: [u32; 3],
+}
+pub type rk_mpp_encoder_h265_syntax_t = rk_mpp_encoder_h265_syntax;
+
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct rk_mpp_encoder_advanced_config_v2 {
     pub struct_size: u32,
@@ -392,7 +420,7 @@ pub struct rk_mpp_encoder_advanced_config_v3 {
     pub rois: [rk_mpp_encoder_roi_region; RK_MPP_MAX_ROI_REGIONS],
     pub h264_deblock: rk_mpp_encoder_h264_deblock,
     pub h264_syntax: rk_mpp_encoder_h264_syntax,
-    pub reserved: [u32; 8],
+    pub h265_syntax: rk_mpp_encoder_h265_syntax,
 }
 pub type rk_mpp_encoder_advanced_config_v3_t = rk_mpp_encoder_advanced_config_v3;
 
@@ -409,7 +437,7 @@ impl Default for rk_mpp_encoder_advanced_config_v3 {
             rois: [rk_mpp_encoder_roi_region::default(); RK_MPP_MAX_ROI_REGIONS],
             h264_deblock: rk_mpp_encoder_h264_deblock::default(),
             h264_syntax: rk_mpp_encoder_h264_syntax::default(),
-            reserved: [0; 8],
+            h265_syntax: rk_mpp_encoder_h265_syntax::default(),
         }
     }
 }
@@ -525,6 +553,7 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn rk_mpp_encoder_h264_deblock_init(deblock: *mut rk_mpp_encoder_h264_deblock_t) -> c_int;
     pub fn rk_mpp_encoder_h264_syntax_init(syntax: *mut rk_mpp_encoder_h264_syntax_t) -> c_int;
+    pub fn rk_mpp_encoder_h265_syntax_init(syntax: *mut rk_mpp_encoder_h265_syntax_t) -> c_int;
     pub fn rk_mpp_encoder_advanced_config_v2_init(
         config: *mut rk_mpp_encoder_advanced_config_v2_t,
         rate_control_mode: u32,

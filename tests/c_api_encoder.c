@@ -422,6 +422,63 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "h264-syntax mode needs at least one option\n");
                 goto done;
             }
+        } else if (!strcmp(control_mode, "h265-syntax")) {
+            const char *sao_luma = getenv("H265_SAO_LUMA_DISABLE");
+            const char *sao_chroma = getenv("H265_SAO_CHROMA_DISABLE");
+            const char *deblock_disable = getenv("H265_DBLK_DISABLE");
+            const char *deblock_beta = getenv("H265_DBLK_BETA");
+            const char *deblock_tc = getenv("H265_DBLK_TC");
+            const char *lpf_slices = getenv("H265_LPF_ACS_SLI");
+            const char *lpf_tiles_disable = getenv("H265_LPF_ACS_TILE_DISABLE");
+            rk_mpp_encoder_h265_syntax_t *syntax = &advanced_v3.h265_syntax;
+
+            if (codec != RK_MPP_CODEC_H265 ||
+                rk_mpp_encoder_h265_syntax_init(syntax) != RK_MPP_OK) {
+                goto done;
+            }
+            if (sao_luma) {
+                syntax->flags |= RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE;
+                if (strtoul(sao_luma, NULL, 0))
+                    syntax->values |= RK_MPP_H265_VALUE_SAO_LUMA_DISABLE;
+            }
+            if (sao_chroma) {
+                syntax->flags |= RK_MPP_H265_SYNTAX_SAO_CHROMA_DISABLE;
+                if (strtoul(sao_chroma, NULL, 0))
+                    syntax->values |= RK_MPP_H265_VALUE_SAO_CHROMA_DISABLE;
+            }
+            if (deblock_disable) {
+                syntax->flags |= RK_MPP_H265_SYNTAX_DEBLOCK_DISABLE;
+                if (strtoul(deblock_disable, NULL, 0))
+                    syntax->values |= RK_MPP_H265_VALUE_DEBLOCK_DISABLE;
+            }
+            if (deblock_beta) {
+                syntax->flags |= RK_MPP_H265_SYNTAX_DEBLOCK_BETA;
+                syntax->deblock_beta_offset_div2 =
+                    (int32_t)strtol(deblock_beta, NULL, 0);
+            }
+            if (deblock_tc) {
+                syntax->flags |= RK_MPP_H265_SYNTAX_DEBLOCK_TC;
+                syntax->deblock_tc_offset_div2 =
+                    (int32_t)strtol(deblock_tc, NULL, 0);
+            }
+            if (lpf_slices) {
+                syntax->flags |=
+                    RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_SLICES;
+                if (strtoul(lpf_slices, NULL, 0))
+                    syntax->values |=
+                        RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_SLICES;
+            }
+            if (lpf_tiles_disable) {
+                syntax->flags |=
+                    RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES;
+                if (!strtoul(lpf_tiles_disable, NULL, 0))
+                    syntax->values |=
+                        RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_TILES;
+            }
+            if (!syntax->flags) {
+                fprintf(stderr, "h265-syntax mode needs at least one option\n");
+                goto done;
+            }
         } else {
             fprintf(stderr, "unknown CONTROL_MODE=%s\n", control_mode);
             goto done;

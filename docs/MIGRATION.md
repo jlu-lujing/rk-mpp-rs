@@ -196,6 +196,14 @@ rk_mpp_encoder_create_advanced_v3(&config, &advanced, &encoder);
 Only fields named in `h264_syntax.flags` override profile defaults. The V1,
 V1.9 and V1.10 structs and create functions remain unchanged.
 
+H.265 uses the same V3 config. The descriptor occupies the former trailing
+reserve, so the total size and every earlier offset stay unchanged:
+
+```c
+advanced.h265_syntax.flags |= RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE;
+advanced.h265_syntax.values |= RK_MPP_H265_VALUE_SAO_LUMA_DISABLE;
+```
+
 ## 4. 已知差异与建议
 
 | 差异 | 影响 | 建议 |

@@ -1,6 +1,6 @@
 # rk-mpp-rs-sys
 
-Raw Rust FFI declarations for the `rk-mpp-rs` V1.13 C ABI. This crate exposes
+Raw Rust FFI declarations for the `rk-mpp-rs` V1.14 C ABI. This crate exposes
 the exact C layouts, constants and functions; callers must uphold the lifetime
 and threading rules from `rk_mpp_rs.h`.
 

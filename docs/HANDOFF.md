@@ -151,7 +151,7 @@ MCU 间隔；VEPU2/VPU720 自动选择。RK3576/RK3588 单帧 JPEG 与 `jpeg-enc
 
 SDK 安装入口为 `scripts/install_sdk.sh --prefix ... [--destdir ...]`。
 Linux cdylib 的 SONAME 为 `librk_mpp_rs.so.1`，实际文件按 API 版本命名为
-`.so.1.13.0`。`scripts/check_sdk_abi.sh` 固定导出符号、C11 enum/struct
+`.so.1.14.0`。`scripts/check_sdk_abi.sh` 固定导出符号、C11 enum/struct
 size/offset 与 SONAME；`scripts/board_sdk_package.sh` 会用临时 prefix 编译并
 运行 pkg-config、CMake shared、CMake static consumer。
 
@@ -163,10 +163,10 @@ RK3588 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 RK3588/RK3576 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1366 passed / 0 failed / 47 ignored`。V1.13
-切片的 RK3588 门包括 V1.9/V1.10 兼容 consumer、四组 C V3/CLI 逐字节、
-40-symbol ABI、SDK install/pkg-config/CMake 和 `rk-mpp-rs-sys` native smoke，
-均通过。此前的完整 RK3588 workspace gate 为
+当前 host workspace gate 为 `1366 passed / 0 failed / 47 ignored`。V1.14
+切片的 RK3588 门包括 V1.9/V1.10 兼容 consumer、六组 H.264 与三组 H.265
+C V3/CLI 逐字节、41-symbol ABI、SDK install/pkg-config/CMake 和
+`rk-mpp-rs-sys` native smoke，均通过。此前的完整 RK3588 workspace gate 为
 `1366 passed / 0 failed / 46 ignored`，严格 rustdoc 同时通过。RK3576 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
@@ -176,7 +176,7 @@ V1.10 用新的 `rk_mpp_encoder_advanced_config_v2_t` 扩展 ROI、GDR 与 slice
 slice-lowdelay 和 GDR 共六组 C API 输出与各自 CLI 逐字节一致；V1.9 advanced
 consumer 直接链接 V1.10。
 
-`crates/rk-mpp-rs-sys` 是独立的 workspace crate，手写覆盖 V1.13 的全部 40 个
+`crates/rk-mpp-rs-sys` 是独立的 workspace crate，手写覆盖 V1.14 的全部 41 个
 C 导出和固定布局。`scripts/board_sys_crate.sh` 验证显式路径 dynamic、
 static 和安装后 pkg-config 三种链接方式；在 RK3588/RK3576 均通过。release static
 consumer 需设置 `CARGO_PROFILE_RELEASE_LTO=false`。
@@ -199,6 +199,11 @@ ROI/GDR/slice 布局和全部旧初始化函数。V3 增加 typed H.264 deblock 
 syntax：CABAC、transform-8x8、`cabac_init_idc`、constraint-set force/value
 和 `base_layer_pid`。syntax 通过逐字段 flags 生效，未设置项继续使用
 Main/High profile 推导值。`rk-mpp-rs-sys` 与 C11 ABI 快照已扩到 40 个导出。
+
+V1.14 把 V3 末尾 32-byte reserve 改为同尺寸 H.265 syntax descriptor，因此
+结构仍是 552 bytes，V1.13 字段 offset 不变。C 路径可覆盖 SAO luma/chroma、
+deblock disable/beta/tc、跨 slice/tile loop-filter 和 auto-tile；布尔值由
+`flags` + `values` 表达，未选字段继续使用默认。ABI 快照增至 41 个导出。
 
 官方 MPP drop-in 兼容层的第一个 slice 已落地：`mpp_create/init/destroy`、
 格式查询和官方 `MppApi` 函数表布局已通过 vendor `rk_mpi.h` consumer。

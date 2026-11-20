@@ -3,6 +3,7 @@
 use std::ffi::c_int;
 use std::mem::size_of;
 
+use crate::codec::h265::encoder::SyntaxOptions as H265SyntaxOptions;
 use crate::encoder;
 use crate::sdk;
 
@@ -105,6 +106,36 @@ const RK_MPP_H264_SYNTAX_ALL: u32 = RK_MPP_H264_SYNTAX_ENTROPY_CODING
     | RK_MPP_H264_SYNTAX_CONSTRAINT_SET
     | RK_MPP_H264_SYNTAX_BASE_LAYER_PID;
 
+pub const RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE: u32 = 1 << 0;
+pub const RK_MPP_H265_SYNTAX_SAO_CHROMA_DISABLE: u32 = 1 << 1;
+pub const RK_MPP_H265_SYNTAX_DEBLOCK_DISABLE: u32 = 1 << 2;
+pub const RK_MPP_H265_SYNTAX_DEBLOCK_BETA: u32 = 1 << 3;
+pub const RK_MPP_H265_SYNTAX_DEBLOCK_TC: u32 = 1 << 4;
+pub const RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_SLICES: u32 = 1 << 5;
+pub const RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES: u32 = 1 << 6;
+pub const RK_MPP_H265_SYNTAX_AUTO_TILE: u32 = 1 << 7;
+const RK_MPP_H265_SYNTAX_ALL: u32 = RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE
+    | RK_MPP_H265_SYNTAX_SAO_CHROMA_DISABLE
+    | RK_MPP_H265_SYNTAX_DEBLOCK_DISABLE
+    | RK_MPP_H265_SYNTAX_DEBLOCK_BETA
+    | RK_MPP_H265_SYNTAX_DEBLOCK_TC
+    | RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_SLICES
+    | RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES
+    | RK_MPP_H265_SYNTAX_AUTO_TILE;
+
+pub const RK_MPP_H265_VALUE_SAO_LUMA_DISABLE: u32 = 1 << 0;
+pub const RK_MPP_H265_VALUE_SAO_CHROMA_DISABLE: u32 = 1 << 1;
+pub const RK_MPP_H265_VALUE_DEBLOCK_DISABLE: u32 = 1 << 2;
+pub const RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_SLICES: u32 = 1 << 3;
+pub const RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_TILES: u32 = 1 << 4;
+pub const RK_MPP_H265_VALUE_AUTO_TILE: u32 = 1 << 5;
+const RK_MPP_H265_VALUE_ALL: u32 = RK_MPP_H265_VALUE_SAO_LUMA_DISABLE
+    | RK_MPP_H265_VALUE_SAO_CHROMA_DISABLE
+    | RK_MPP_H265_VALUE_DEBLOCK_DISABLE
+    | RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_SLICES
+    | RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_TILES
+    | RK_MPP_H265_VALUE_AUTO_TILE;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RkMppEncoderH264Deblock {
@@ -128,6 +159,17 @@ pub struct RkMppEncoderH264Syntax {
     pub constraint_set_value: u32,
     pub base_layer_pid: u32,
     pub reserved: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderH265Syntax {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub values: u32,
+    pub deblock_beta_offset_div2: i32,
+    pub deblock_tc_offset_div2: i32,
+    pub reserved: [u32; 3],
 }
 
 const MAX_ROI_REGIONS: usize = 8;
@@ -159,7 +201,7 @@ pub struct RkMppEncoderAdvancedConfigV3 {
     pub rois: [RkMppEncoderRoiRegion; MAX_ROI_REGIONS],
     pub h264_deblock: RkMppEncoderH264Deblock,
     pub h264_syntax: RkMppEncoderH264Syntax,
-    pub reserved: [u32; 8],
+    pub h265_syntax: RkMppEncoderH265Syntax,
 }
 
 #[repr(C)]
@@ -190,6 +232,7 @@ struct AdvancedOptions {
     slice_split: Option<encoder::SliceSplitConfig>,
     h264_deblock: Option<encoder::H264DeblockConfig>,
     h264_syntax: Option<encoder::H264SyntaxConfig>,
+    h265_syntax: Option<H265SyntaxOptions>,
 }
 
 fn error_code(error: &sdk::Error) -> c_int {
@@ -431,6 +474,81 @@ fn parse_h264_syntax(
     Ok(Some(config))
 }
 
+fn parse_h265_syntax(
+    syntax: &RkMppEncoderH265Syntax,
+    codec: sdk::Codec,
+) -> Result<Option<H265SyntaxOptions>, c_int> {
+    if syntax.struct_size < size_of::<RkMppEncoderH265Syntax>() as u32
+        || syntax.flags & !RK_MPP_H265_SYNTAX_ALL != 0
+        || syntax.values & !RK_MPP_H265_VALUE_ALL != 0
+        || syntax.reserved != [0; 3]
+        || !(-6..=6).contains(&syntax.deblock_beta_offset_div2)
+        || !(-6..=6).contains(&syntax.deblock_tc_offset_div2)
+    {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    if syntax.flags == 0 {
+        return if syntax.values == 0
+            && syntax.deblock_beta_offset_div2 == 0
+            && syntax.deblock_tc_offset_div2 == 0
+        {
+            Ok(None)
+        } else {
+            Err(RK_MPP_ERR_INVALID)
+        };
+    }
+    if codec != sdk::Codec::H265 {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    if syntax.flags & RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE == 0
+        && syntax.values & RK_MPP_H265_VALUE_SAO_LUMA_DISABLE != 0
+        || syntax.flags & RK_MPP_H265_SYNTAX_SAO_CHROMA_DISABLE == 0
+            && syntax.values & RK_MPP_H265_VALUE_SAO_CHROMA_DISABLE != 0
+        || syntax.flags & RK_MPP_H265_SYNTAX_DEBLOCK_DISABLE == 0
+            && syntax.values & RK_MPP_H265_VALUE_DEBLOCK_DISABLE != 0
+        || syntax.flags & RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_SLICES == 0
+            && syntax.values & RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_SLICES != 0
+        || syntax.flags & RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES == 0
+            && syntax.values & RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_TILES != 0
+        || syntax.flags & RK_MPP_H265_SYNTAX_AUTO_TILE == 0
+            && syntax.values & RK_MPP_H265_VALUE_AUTO_TILE != 0
+        || syntax.flags & RK_MPP_H265_SYNTAX_DEBLOCK_BETA == 0
+            && syntax.deblock_beta_offset_div2 != 0
+        || syntax.flags & RK_MPP_H265_SYNTAX_DEBLOCK_TC == 0 && syntax.deblock_tc_offset_div2 != 0
+    {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+
+    let mut config = H265SyntaxOptions::default();
+    if syntax.flags & RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE != 0 {
+        config.sao_luma_disable = syntax.values & RK_MPP_H265_VALUE_SAO_LUMA_DISABLE != 0;
+    }
+    if syntax.flags & RK_MPP_H265_SYNTAX_SAO_CHROMA_DISABLE != 0 {
+        config.sao_chroma_disable = syntax.values & RK_MPP_H265_VALUE_SAO_CHROMA_DISABLE != 0;
+    }
+    if syntax.flags & RK_MPP_H265_SYNTAX_DEBLOCK_DISABLE != 0 {
+        config.deblock_disable = syntax.values & RK_MPP_H265_VALUE_DEBLOCK_DISABLE != 0;
+    }
+    if syntax.flags & RK_MPP_H265_SYNTAX_DEBLOCK_BETA != 0 {
+        config.deblock_beta_offset_div2 = syntax.deblock_beta_offset_div2;
+    }
+    if syntax.flags & RK_MPP_H265_SYNTAX_DEBLOCK_TC != 0 {
+        config.deblock_tc_offset_div2 = syntax.deblock_tc_offset_div2;
+    }
+    if syntax.flags & RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_SLICES != 0 {
+        config.loop_filter_across_slices =
+            syntax.values & RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_SLICES != 0;
+    }
+    if syntax.flags & RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES != 0 {
+        config.loop_filter_across_tiles =
+            syntax.values & RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_TILES != 0;
+    }
+    if syntax.flags & RK_MPP_H265_SYNTAX_AUTO_TILE != 0 {
+        config.auto_tile = syntax.values & RK_MPP_H265_VALUE_AUTO_TILE != 0;
+    }
+    Ok(Some(config))
+}
+
 fn parse_advanced_v2(advanced: &RkMppEncoderAdvancedConfigV2) -> Result<AdvancedOptions, c_int> {
     if advanced.struct_size < size_of::<RkMppEncoderAdvancedConfigV2>() as u32
         || advanced.flags != 0
@@ -446,6 +564,7 @@ fn parse_advanced_v2(advanced: &RkMppEncoderAdvancedConfigV2) -> Result<Advanced
         slice_split: parse_slice_config(&advanced.slice_split)?,
         h264_deblock: None,
         h264_syntax: None,
+        h265_syntax: None,
     })
 }
 
@@ -457,7 +576,6 @@ fn parse_advanced_v3(
     if advanced.struct_size < size_of::<RkMppEncoderAdvancedConfigV3>() as u32
         || advanced.flags != 0
         || advanced.reserved0 != 0
-        || advanced.reserved != [0; 8]
     {
         return Err(RK_MPP_ERR_INVALID);
     }
@@ -468,6 +586,7 @@ fn parse_advanced_v3(
         slice_split: parse_slice_config(&advanced.slice_split)?,
         h264_deblock: parse_h264_deblock(&advanced.h264_deblock, codec)?,
         h264_syntax: parse_h264_syntax(&advanced.h264_syntax, codec, profile)?,
+        h265_syntax: parse_h265_syntax(&advanced.h265_syntax, codec)?,
     })
 }
 
@@ -711,6 +830,31 @@ pub unsafe extern "C" fn rk_mpp_encoder_h264_syntax_init(
     RK_MPP_OK
 }
 
+/// Initialize optional H.265 syntax overrides.
+///
+/// # Safety
+/// `syntax` must point to writable descriptor storage.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_h265_syntax_init(
+    syntax: *mut RkMppEncoderH265Syntax,
+) -> c_int {
+    if syntax.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: the caller guarantees writable descriptor storage.
+    unsafe {
+        syntax.write(RkMppEncoderH265Syntax {
+            struct_size: size_of::<RkMppEncoderH265Syntax>() as u32,
+            flags: 0,
+            values: 0,
+            deblock_beta_offset_div2: 0,
+            deblock_tc_offset_div2: 0,
+            reserved: [0; 3],
+        });
+    }
+    RK_MPP_OK
+}
+
 /// Initialize the V1.10 advanced encoder configuration.
 ///
 /// # Safety
@@ -775,7 +919,7 @@ pub unsafe extern "C" fn rk_mpp_encoder_advanced_config_v2_init(
     RK_MPP_OK
 }
 
-/// Initialize the V1.13 advanced encoder configuration.
+/// Initialize the V1.14 advanced encoder configuration.
 ///
 /// # Safety
 /// `config` must point to writable storage for one V3 configuration.
@@ -852,7 +996,14 @@ pub unsafe extern "C" fn rk_mpp_encoder_advanced_config_v3_init(
                 base_layer_pid: 0,
                 reserved: [0; 4],
             },
-            reserved: [0; 8],
+            h265_syntax: RkMppEncoderH265Syntax {
+                struct_size: size_of::<RkMppEncoderH265Syntax>() as u32,
+                flags: 0,
+                values: 0,
+                deblock_beta_offset_div2: 0,
+                deblock_tc_offset_div2: 0,
+                reserved: [0; 3],
+            },
         });
     }
     RK_MPP_OK
@@ -932,6 +1083,9 @@ unsafe fn create_encoder(
         }
         if let Some(syntax) = advanced.h264_syntax {
             encoder_config = encoder_config.with_h264_syntax(syntax);
+        }
+        if let Some(syntax) = advanced.h265_syntax {
+            encoder_config = encoder_config.with_h265_syntax(syntax);
         }
         match encoder::Encoder::new(encoder_config) {
             Ok(inner) => {
@@ -1023,7 +1177,7 @@ pub unsafe extern "C" fn rk_mpp_encoder_create_advanced_v2(
     }
 }
 
-/// Create an encoder using the V1.13 advanced configuration.
+/// Create an encoder using the V1.14 advanced configuration.
 ///
 /// # Safety
 /// `config` and `advanced_config` must point to valid descriptors and
@@ -1230,9 +1384,12 @@ mod tests {
     use super::{
         RkMppEncodedPacket, RkMppEncoderAdvancedConfig, RkMppEncoderAdvancedConfigV2,
         RkMppEncoderAdvancedConfigV3, RkMppEncoderConfig, RkMppEncoderGdr, RkMppEncoderH264Deblock,
-        RkMppEncoderH264Syntax, RkMppEncoderRateControl, RkMppEncoderRoiRegion,
-        RkMppEncoderSliceSplit, RK_MPP_H264_SYNTAX_BASE_LAYER_PID,
-        RK_MPP_H264_SYNTAX_CABAC_INIT_IDC,
+        RkMppEncoderH264Syntax, RkMppEncoderH265Syntax, RkMppEncoderRateControl,
+        RkMppEncoderRoiRegion, RkMppEncoderSliceSplit, RK_MPP_H264_SYNTAX_BASE_LAYER_PID,
+        RK_MPP_H264_SYNTAX_CABAC_INIT_IDC, RK_MPP_H265_SYNTAX_AUTO_TILE,
+        RK_MPP_H265_SYNTAX_DEBLOCK_BETA, RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES,
+        RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE, RK_MPP_H265_VALUE_AUTO_TILE,
+        RK_MPP_H265_VALUE_SAO_LUMA_DISABLE,
     };
     use std::mem::size_of;
 
@@ -1247,6 +1404,7 @@ mod tests {
         assert_eq!(size_of::<RkMppEncoderAdvancedConfigV2>(), 472);
         assert_eq!(size_of::<RkMppEncoderH264Deblock>(), 32);
         assert_eq!(size_of::<RkMppEncoderH264Syntax>(), 48);
+        assert_eq!(size_of::<RkMppEncoderH265Syntax>(), 32);
         assert_eq!(size_of::<RkMppEncoderAdvancedConfigV3>(), 552);
         assert_eq!(size_of::<RkMppEncodedPacket>(), 72);
     }
@@ -1299,5 +1457,26 @@ mod tests {
             super::parse_h264_syntax(&invalid, crate::sdk::Codec::H265, 77),
             Err(crate::c_api_encoder::RK_MPP_ERR_INVALID)
         );
+
+        let h265 = RkMppEncoderH265Syntax {
+            struct_size: size_of::<RkMppEncoderH265Syntax>() as u32,
+            flags: RK_MPP_H265_SYNTAX_SAO_LUMA_DISABLE
+                | RK_MPP_H265_SYNTAX_DEBLOCK_BETA
+                | RK_MPP_H265_SYNTAX_LOOP_FILTER_ACROSS_TILES
+                | RK_MPP_H265_SYNTAX_AUTO_TILE,
+            values: RK_MPP_H265_VALUE_SAO_LUMA_DISABLE | RK_MPP_H265_VALUE_AUTO_TILE,
+            deblock_beta_offset_div2: 3,
+            deblock_tc_offset_div2: 0,
+            reserved: [0; 3],
+        };
+        let parsed = super::parse_h265_syntax(&h265, crate::sdk::Codec::H265)
+            .unwrap()
+            .unwrap();
+        assert!(parsed.sao_luma_disable);
+        assert!(!parsed.sao_chroma_disable);
+        assert_eq!(parsed.deblock_beta_offset_div2, 3);
+        assert_eq!(parsed.deblock_tc_offset_div2, 0);
+        assert!(!parsed.loop_filter_across_tiles);
+        assert!(parsed.auto_tile);
     }
 }
