@@ -29,7 +29,8 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   `rk-mpp-rs-sys`, bringing the ABI snapshot to 41 exports.
 - RK3588 C V3 output is byte-identical to the CLI for SAO disable
   (15,618 bytes), deblock beta/tc (15,878) and loop-filter across
-  slices/tiles (15,829).
+  slices/tiles (15,829). The 4608x64 auto-tile path also matches at
+  8,876 bytes.
 
 ## [1.13] - 2026-11-20
 

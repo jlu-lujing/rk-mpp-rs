@@ -36,6 +36,13 @@
 - V1.14 ABI/package passes with 41 symbols and installs `.so.1.14.0`;
   `rk-mpp-rs-sys` native smoke passes.
 
+### Phase 23: H.265 Auto-Tile Hardware Closure
+- **Status:** complete on RK3588.
+- A 320x240 fixture cannot exercise the VEPU580 auto-tile decision. Use the
+  existing 4608x64 two-column shape and compare C V3 against CLI.
+- The 4608x64 one-frame C V3 and CLI outputs are byte-identical: 8,876 bytes,
+  two packets.
+
 ## Session: 2026-11-09
 
 ### Phase 20: Official `mpi_enc_test` Object Bridge

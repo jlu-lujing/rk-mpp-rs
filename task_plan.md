@@ -315,6 +315,16 @@ callers.
 - [x] Update API version, packaging default and all evidence docs.
 - **Status:** complete on RK3588; final host workspace and SDK package gates run.
 
+### Phase 23: H.265 Auto-Tile Hardware Closure
+- Goal: prove the V1.14 auto-tile bit reaches the real VEPU580 tile path and
+  remains byte-identical to the CLI, rather than relying on descriptor mapping
+  tests alone.
+- [x] Generate a one-frame 4608x64 NV12 wide fixture.
+- [x] Add C harness parsing for `H265_AUTO_TILE`.
+- [x] Compare V3 auto-tile against `h265-gop ... tile:auto` on RK3588.
+- [x] Record packet/byte evidence and update docs.
+- **Status:** complete on RK3588; 8,876 bytes / 2 packets byte-identical.
+
 ## Decisions Made
 
 | Decision | Rationale |

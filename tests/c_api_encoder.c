@@ -430,6 +430,7 @@ int main(int argc, char **argv) {
             const char *deblock_tc = getenv("H265_DBLK_TC");
             const char *lpf_slices = getenv("H265_LPF_ACS_SLI");
             const char *lpf_tiles_disable = getenv("H265_LPF_ACS_TILE_DISABLE");
+            const char *auto_tile = getenv("H265_AUTO_TILE");
             rk_mpp_encoder_h265_syntax_t *syntax = &advanced_v3.h265_syntax;
 
             if (codec != RK_MPP_CODEC_H265 ||
@@ -474,6 +475,11 @@ int main(int argc, char **argv) {
                 if (!strtoul(lpf_tiles_disable, NULL, 0))
                     syntax->values |=
                         RK_MPP_H265_VALUE_LOOP_FILTER_ACROSS_TILES;
+            }
+            if (auto_tile) {
+                syntax->flags |= RK_MPP_H265_SYNTAX_AUTO_TILE;
+                if (strtoul(auto_tile, NULL, 0))
+                    syntax->values |= RK_MPP_H265_VALUE_AUTO_TILE;
             }
             if (!syntax->flags) {
                 fprintf(stderr, "h265-syntax mode needs at least one option\n");

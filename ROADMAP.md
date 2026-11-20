@@ -532,7 +532,8 @@ in what order the evidence gets produced.
       beta/tc, loop-filter across slices/tiles and auto-tile are available to
       C and raw Rust consumers. RK3588 C V3 matches CLI for SAO disable
       (15,618 bytes), deblock beta/tc (15,878) and loop-filter across
-      slices/tiles (15,829); the ABI snapshot grows to 41 exports.
+      slices/tiles (15,829). The 4608x64 auto-tile path also matches
+      (8,876 bytes); the ABI snapshot grows to 41 exports.
 - [x] Public H.265 encoder API V1.5: the same owned packet/release and
       synchronous submit path with NV12/I420 input. RK3588 VEPU580 exposes
       width/height, QP and GOP; RK3576 VEPU510 exposes the captured

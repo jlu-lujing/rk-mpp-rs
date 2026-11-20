@@ -10,6 +10,7 @@ cargo build --release --offline --lib --bin rk-mpp-rs
 
 library="$repo/target/release/librk_mpp_rs.so"
 fixture=/tmp/rk_mpp_sdk_controls_6.nv12
+wide_fixture=/tmp/rk_mpp_sdk_controls_4608x64.nv12
 libdir=$(mktemp -d)
 trap 'rm -rf "$libdir"' EXIT
 ln -sfn "$library" "$libdir/librk_mpp_rs.so"
@@ -18,6 +19,9 @@ ln -sfn "$library" "$libdir/librk_mpp_rs.so.1"
 ffmpeg -nostdin -y -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
     -pix_fmt nv12 -f rawvideo "$fixture"
+ffmpeg -nostdin -y -hide_banner -loglevel error \
+    -f lavfi -i "testsrc2=size=4608x64:rate=30" -frames:v 1 \
+    -pix_fmt nv12 -f rawvideo "$wide_fixture"
 
 gcc -std=c11 -Wall -Wextra -Werror \
     -I"$repo/include" "$repo/tests/c_api_encoder.c" \
@@ -164,6 +168,7 @@ compare_h265_syntax() {
     local c_api_out="/tmp/rk_mpp_sdk_h265_syntax_${name}.265"
     local cli_out="/tmp/rk_mpp_cli_h265_syntax_${name}.265"
     local -a c_env cli_options
+    local width=320 height=240 frames=6 gop=6 input_fixture=$fixture
 
     case "$name" in
         sao)
@@ -178,6 +183,15 @@ compare_h265_syntax() {
             c_env=(H265_LPF_ACS_SLI=1 H265_LPF_ACS_TILE_DISABLE=1)
             cli_options=(lpf:1:1)
             ;;
+        auto-tile)
+            width=4608
+            height=64
+            frames=1
+            gop=1
+            input_fixture=$wide_fixture
+            c_env=(H265_AUTO_TILE=1)
+            cli_options=(tile:auto)
+            ;;
         *)
             printf 'unknown H.265 syntax case: %s\n' "$name" >&2
             exit 2
@@ -186,9 +200,11 @@ compare_h265_syntax() {
 
     env CONTROL_MODE=h265-syntax "${c_env[@]}" \
         /tmp/rk_mpp_encoder_controls \
-            h265 nv12 "$c_api_out" 320 240 26 6 6 "$fixture"
-    H265_GOP=6 target/release/rk-mpp-rs h265-gop \
-        "$fixture" "$cli_out" 320 240 6 26 "${cli_options[@]}"
+            h265 nv12 "$c_api_out" "$width" "$height" 26 "$frames" "$gop" \
+            "$input_fixture"
+    H265_GOP="$gop" target/release/rk-mpp-rs h265-gop \
+        "$input_fixture" "$cli_out" "$width" "$height" "$frames" 26 \
+        "${cli_options[@]}"
     cmp "$c_api_out" "$cli_out"
     printf 'PASS H.265 syntax %s C V3 == CLI (%s bytes)\n' \
         "$name" "$(wc -c < "$c_api_out")"
@@ -202,7 +218,7 @@ done
 for syntax in cabac constraint base-pid main-cavlc high-no-8x8 deblock; do
     compare_h264_syntax "$syntax"
 done
-for syntax in sao deblock loop-filter; do
+for syntax in sao deblock loop-filter auto-tile; do
     compare_h265_syntax "$syntax"
 done
 

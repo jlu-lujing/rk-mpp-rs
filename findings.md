@@ -158,6 +158,12 @@
   bytes), deblock beta/tc 3/-2 (15,878) and loop-filter across slices with
   tiles disabled (15,829). The V3 size remains 552 and the ABI grows from 40
   to 41 exports.
+- The V1.14 `auto_tile` bit is mapped into `H265SyntaxOptions`, but a 320x240
+  stream cannot distinguish the VEPU580 auto-tile branch. The existing
+  validated wide case is 4608x64, where the CLI switches to two horizontal
+  tiles, so the C V3 gate needs that shape rather than another small fixture.
+- V1.14 RK3588 auto-tile now passes on the 4608x64 one-frame shape: C V3 and
+  CLI both emit 8,876 bytes and two packets.
 
 - `src/lib.rs` currently exports only `rk_jpeg_*`; it is path-based, single-image,
   RGB-letterbox oriented, and does not expose H.264.

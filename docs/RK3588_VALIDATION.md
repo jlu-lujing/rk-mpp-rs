@@ -31,6 +31,7 @@ byte-identical to the CLI in three more cells:
 | SAO luma/chroma disabled | 15,618 |
 | deblock beta/tc `3/-2` | 15,878 |
 | loop filter across slices, disabled across tiles | 15,829 |
+| auto-tile, 4608x64 one frame | 8,876 |
 
 The V3 size remains 552 bytes. ABI/package gates now use V1.14 and 41 symbols,
 and the default install artifact is `.so.1.14.0`.
