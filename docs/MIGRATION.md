@@ -180,6 +180,22 @@ for au in rk_mpp_rs::codec::h264::decoder::split_parsed_access_units(&bytes) {
 for picture in dec.flush()? { use_picture(picture); }
 ```
 
+Stable C H.264 syntax/deblock configuration is available through
+`rk_mpp_encoder_advanced_config_v3_t`. It preserves the V1.10 ROI/GDR/slice
+fields and adds typed H.264 deblock plus field-selective syntax overrides:
+
+```c
+rk_mpp_encoder_advanced_config_v3_t advanced;
+rk_mpp_encoder_advanced_config_v3_init(
+    &advanced, RK_MPP_RATE_CONTROL_FIXED_QP);
+advanced.h264_syntax.flags |= RK_MPP_H264_SYNTAX_CABAC_INIT_IDC;
+advanced.h264_syntax.cabac_init_idc = 2;
+rk_mpp_encoder_create_advanced_v3(&config, &advanced, &encoder);
+```
+
+Only fields named in `h264_syntax.flags` override profile defaults. The V1,
+V1.9 and V1.10 structs and create functions remain unchanged.
+
 ## 4. 已知差异与建议
 
 | 差异 | 影响 | 建议 |

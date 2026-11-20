@@ -11,7 +11,7 @@ fn version_and_initializers_match_the_native_library() {
         let version = CStr::from_ptr(rk_mpp_api_version_string())
             .to_str()
             .unwrap();
-        assert_eq!(version, "1.12");
+        assert_eq!(version, "1.13");
         assert!(!rk_mpp_strerror(RK_MPP_OK).is_null());
 
         let mut decoder = rk_mpp_decoder_config_t::default();
@@ -64,6 +64,33 @@ fn version_and_initializers_match_the_native_library() {
             size_of::<rk_mpp_encoder_advanced_config_v2_t>()
         );
 
+        let mut advanced_v3 = rk_mpp_encoder_advanced_config_v3_t::default();
+        assert_eq!(
+            rk_mpp_encoder_advanced_config_v3_init(&mut advanced_v3, RK_MPP_RATE_CONTROL_FIXED_QP,),
+            RK_MPP_OK
+        );
+        assert_eq!(
+            advanced_v3.struct_size as usize,
+            size_of::<rk_mpp_encoder_advanced_config_v3_t>()
+        );
+
+        let mut h264_deblock = rk_mpp_encoder_h264_deblock_t::default();
+        assert_eq!(
+            rk_mpp_encoder_h264_deblock_init(&mut h264_deblock),
+            RK_MPP_OK
+        );
+        assert_eq!(
+            h264_deblock.struct_size as usize,
+            size_of::<rk_mpp_encoder_h264_deblock_t>()
+        );
+
+        let mut h264_syntax = rk_mpp_encoder_h264_syntax_t::default();
+        assert_eq!(rk_mpp_encoder_h264_syntax_init(&mut h264_syntax), RK_MPP_OK);
+        assert_eq!(
+            h264_syntax.struct_size as usize,
+            size_of::<rk_mpp_encoder_h264_syntax_t>()
+        );
+
         let mut roi = rk_mpp_encoder_roi_region_t::default();
         assert_eq!(rk_mpp_encoder_roi_region_init(&mut roi), RK_MPP_OK);
         assert_eq!(
@@ -98,7 +125,7 @@ fn version_and_initializers_match_the_native_library() {
 
 #[test]
 fn every_public_symbol_is_linkable() {
-    let symbols: [usize; 36] = [
+    let symbols: [usize; 40] = [
         rk_mpp_api_version as usize,
         rk_mpp_api_version_string as usize,
         rk_mpp_strerror as usize,
@@ -120,11 +147,15 @@ fn every_public_symbol_is_linkable() {
         rk_mpp_encoder_roi_region_init as usize,
         rk_mpp_encoder_gdr_init as usize,
         rk_mpp_encoder_slice_split_init as usize,
+        rk_mpp_encoder_h264_deblock_init as usize,
+        rk_mpp_encoder_h264_syntax_init as usize,
         rk_mpp_encoder_advanced_config_v2_init as usize,
+        rk_mpp_encoder_advanced_config_v3_init as usize,
         rk_mpp_encoded_packet_init as usize,
         rk_mpp_encoder_create as usize,
         rk_mpp_encoder_create_advanced as usize,
         rk_mpp_encoder_create_advanced_v2 as usize,
+        rk_mpp_encoder_create_advanced_v3 as usize,
         rk_mpp_encoder_submit_frame as usize,
         rk_mpp_encoder_submit_frame_dmabuf as usize,
         rk_mpp_encoder_receive_packet as usize,

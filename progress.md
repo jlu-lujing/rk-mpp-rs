@@ -1,5 +1,29 @@
 # Progress Log
 
+## Session: 2026-11-20
+
+### Phase 21: Public H.264 Syntax and Deblock ABI
+- **Status:** complete on RK3588.
+- Audited the existing stable C encoder surface. `H264DeblockConfig` and
+  `H264SyntaxConfig` already exist in Rust and feed validated VEPU580/VEPU510
+  paths, but there is no `rk_mpp_*` C descriptor or create entry point for them.
+- Chosen direction: add an independently sized V1.13 advanced config V3,
+  preserving every prior struct and initializer.
+- Added field-selective H.264 syntax flags, a deblock descriptor, V3
+  initialization/create functions, C11 layout tests, raw sys bindings and the
+  40-symbol ABI snapshot.
+- `board_sdk_encoder_controls.sh` on RK3588 passes the existing V1.9 consumer,
+  six V1.10 ROI/GDR/slice cells and six new C V3 == CLI cells:
+  CABAC idc 2 18,046 bytes; constraint `0x003f0025` 17,977; base PID 5
+  17,977; Main forced to CAVLC 20,263; High without 8x8 17,979; deblock
+  `1:-2:3` 18,098.
+- RK3588 ABI, install/package, pkg-config, CMake shared/static and
+  `rk-mpp-rs-sys` native smoke all pass. Host workspace gate is
+  `1366 passed / 0 failed / 47 ignored`.
+- The internal variadic logger accessors were renamed to
+  `rk_mpprs_internal_*` so they no longer leak into the public `rk_mpp_*`
+  symbol namespace.
+
 ## Session: 2026-11-09
 
 ### Phase 20: Official `mpi_enc_test` Object Bridge

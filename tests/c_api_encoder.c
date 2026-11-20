@@ -227,7 +227,7 @@ static int drain_packets(rk_mpp_encoder_t *encoder,
 int main(int argc, char **argv) {
     rk_mpp_encoder_config_t config;
     rk_mpp_encoder_advanced_config_t advanced;
-    rk_mpp_encoder_advanced_config_v2_t advanced_v2;
+    rk_mpp_encoder_advanced_config_v3_t advanced_v3;
     rk_mpp_encoder_t *encoder = NULL;
     rk_mpp_encoded_packet_t packet;
     uint8_t *input = NULL;
@@ -295,11 +295,11 @@ int main(int argc, char **argv) {
     if (control_mode) {
         int advanced_status;
 
-        if (rk_mpp_encoder_advanced_config_v2_init(
-                &advanced_v2, RK_MPP_RATE_CONTROL_FIXED_QP) != RK_MPP_OK ||
-            configure_rate_control(&advanced_v2.rate_control,
+        if (rk_mpp_encoder_advanced_config_v3_init(
+                &advanced_v3, RK_MPP_RATE_CONTROL_FIXED_QP) != RK_MPP_OK ||
+            configure_rate_control(&advanced_v3.rate_control,
                                    rate_mode_name)) {
-            fprintf(stderr, "invalid V2 advanced config\n");
+            fprintf(stderr, "invalid V3 advanced config\n");
             goto done;
         }
         if (!strcmp(control_mode, "slice")) {
@@ -316,7 +316,7 @@ int main(int argc, char **argv) {
 
             if (!argument ||
                 rk_mpp_encoder_slice_split_init(
-                    &advanced_v2.slice_split, slice_mode,
+                    &advanced_v3.slice_split, slice_mode,
                     (uint32_t)strtoul(argument, NULL, 0),
                     output_mode) != RK_MPP_OK) {
                 goto done;
@@ -329,7 +329,7 @@ int main(int argc, char **argv) {
             const char *roi_qp = getenv("ROI_QP");
             const char *force_intra = getenv("ROI_FORCE_INTRA");
             const char *absolute = getenv("ROI_ABSOLUTE_QP");
-            rk_mpp_encoder_roi_region_t *roi = &advanced_v2.rois[0];
+            rk_mpp_encoder_roi_region_t *roi = &advanced_v3.rois[0];
 
             if (!x || !y || !roi_width || !roi_height || !roi_qp ||
                 rk_mpp_encoder_roi_region_init(roi) != RK_MPP_OK) {
@@ -344,7 +344,7 @@ int main(int argc, char **argv) {
                 roi->flags |= RK_MPP_ROI_FLAG_FORCE_INTRA;
             if (absolute && strtoul(absolute, NULL, 0))
                 roi->flags |= RK_MPP_ROI_FLAG_ABSOLUTE_QP;
-            advanced_v2.roi_count = 1;
+            advanced_v3.roi_count = 1;
         } else if (!strcmp(control_mode, "gdr")) {
             const char *mode = getenv("GDR_MODE");
             const char *refresh = getenv("GDR_REFRESH");
@@ -354,8 +354,72 @@ int main(int argc, char **argv) {
 
             if (!refresh ||
                 rk_mpp_encoder_gdr_init(
-                    &advanced_v2.gdr, gdr_mode,
+                    &advanced_v3.gdr, gdr_mode,
                     (uint32_t)strtoul(refresh, NULL, 0)) != RK_MPP_OK) {
+                goto done;
+            }
+        } else if (!strcmp(control_mode, "h264-syntax")) {
+            const char *profile = getenv("H264_PROFILE");
+            const char *cabac = getenv("H264_CABAC");
+            const char *transform = getenv("H264_TRANS8X8");
+            const char *cabac_idc = getenv("H264_CABAC_IDC");
+            const char *constraint = getenv("H264_CONSTRAINT_SET");
+            const char *base_layer_pid = getenv("H264_BASE_LAYER_PID");
+            const char *dblk_disable = getenv("DBLK_DISABLE");
+            const char *dblk_alpha = getenv("DBLK_ALPHA");
+            const char *dblk_beta = getenv("DBLK_BETA");
+            rk_mpp_encoder_h264_syntax_t *syntax = &advanced_v3.h264_syntax;
+            rk_mpp_encoder_h264_deblock_t *deblock =
+                &advanced_v3.h264_deblock;
+            uint32_t constraint_raw;
+
+            if (codec != RK_MPP_CODEC_H264 ||
+                rk_mpp_encoder_h264_syntax_init(syntax) != RK_MPP_OK ||
+                rk_mpp_encoder_h264_deblock_init(deblock) != RK_MPP_OK) {
+                goto done;
+            }
+            if (profile)
+                config.profile = (uint32_t)strtoul(profile, NULL, 0);
+            if (cabac) {
+                syntax->flags |= RK_MPP_H264_SYNTAX_ENTROPY_CODING;
+                syntax->entropy_coding =
+                    (uint32_t)(strtoul(cabac, NULL, 0) != 0);
+            }
+            if (transform) {
+                syntax->flags |= RK_MPP_H264_SYNTAX_TRANSFORM_8X8;
+                syntax->transform_8x8 =
+                    (uint32_t)(strtoul(transform, NULL, 0) != 0);
+            }
+            if (cabac_idc) {
+                syntax->flags |= RK_MPP_H264_SYNTAX_CABAC_INIT_IDC;
+                syntax->cabac_init_idc =
+                    (uint32_t)strtoul(cabac_idc, NULL, 0);
+            }
+            if (constraint) {
+                constraint_raw = (uint32_t)strtoul(constraint, NULL, 0);
+                syntax->flags |= RK_MPP_H264_SYNTAX_CONSTRAINT_SET;
+                syntax->constraint_set_force = constraint_raw >> 16;
+                syntax->constraint_set_value = constraint_raw & 0x3fu;
+            }
+            if (base_layer_pid) {
+                syntax->flags |= RK_MPP_H264_SYNTAX_BASE_LAYER_PID;
+                syntax->base_layer_pid =
+                    (uint32_t)strtoul(base_layer_pid, NULL, 0);
+            }
+            if (dblk_disable || dblk_alpha || dblk_beta) {
+                deblock->present = 1;
+                if (dblk_disable)
+                    deblock->disable =
+                        (uint32_t)strtoul(dblk_disable, NULL, 0);
+                if (dblk_alpha)
+                    deblock->alpha_offset_div2 =
+                        (int32_t)strtol(dblk_alpha, NULL, 0);
+                if (dblk_beta)
+                    deblock->beta_offset_div2 =
+                        (int32_t)strtol(dblk_beta, NULL, 0);
+            }
+            if (!syntax->flags && !deblock->present) {
+                fprintf(stderr, "h264-syntax mode needs at least one option\n");
                 goto done;
             }
         } else {
@@ -363,9 +427,9 @@ int main(int argc, char **argv) {
             goto done;
         }
         advanced_status =
-            rk_mpp_encoder_create_advanced_v2(&config, &advanced_v2, &encoder);
+            rk_mpp_encoder_create_advanced_v3(&config, &advanced_v3, &encoder);
         if (advanced_status != RK_MPP_OK || !encoder) {
-            fprintf(stderr, "V2 encoder create failed: %s\n",
+            fprintf(stderr, "V3 encoder create failed: %s\n",
                     rk_mpp_strerror(advanced_status));
             goto done;
         }

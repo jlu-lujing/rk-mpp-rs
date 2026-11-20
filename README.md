@@ -280,7 +280,7 @@ partition/mode/skip/tx_depth、
 
 ## 对外 API
 
-当前已有可链接的 **RK MPP Rust V1.12 编解码 SDK**：
+当前已有可链接的 **RK MPP Rust V1.13 编解码 SDK**：
 
 - C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
 - Rust 接口：`rk_mpp_rs::sdk`
@@ -335,8 +335,8 @@ Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
 安装布局：
 
 - `include/rk_mpp_rs.h`
-- `lib/librk_mpp_rs.so.1.12.0`
-- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.12.0`
+- `lib/librk_mpp_rs.so.1.13.0`
+- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.13.0`
 - `lib/librk_mpp_rs.so -> librk_mpp_rs.so.1`
 - `lib/librk_mpp_rs.a`
 - `lib/pkgconfig/rk-mpp-rs.pc`
@@ -382,7 +382,7 @@ the next submission, so steady-state decode no longer performs a dma-heap
 allocation, mmap and munmap per picture. H.264 IDR still drops every DPB frame
 lease, but leaves the now-idle pool storage available for reuse.
 
-`rk-mpp-rs-sys` 暴露 V1.12 的全部 36 个 C 导出、enum、struct 和不透明句柄。
+`rk-mpp-rs-sys` 暴露 V1.13 的全部 40 个 C 导出、enum、struct 和不透明句柄。
 
 另有进行中的官方 MPP drop-in ABI 基础层：`mpp_create`、`mpp_init`、
 `mpp_destroy`、格式查询和官方 `MppApi` 184-byte 函数表。当前只保证生命周期
@@ -620,6 +620,16 @@ RK3576/RK3588 上 H.264、H.265、JPEG 的 fd 输入输出与 copied-input 输�
 ./scripts/board_sdk_encoder_dmabuf.sh
 ```
 
+V1.13 新增独立的 `rk_mpp_encoder_advanced_config_v3_t`，不改变旧版 advanced
+config。C 调用方现在可把 H.264 deblock 与 syntax 覆盖传给同一 encoder：
+CABAC、transform-8x8、`cabac_init_idc`、constraint-set force/value 和
+`base_layer_pid`。syntax 使用逐字段 flags；未选择的字段保持 profile 默认值，
+因此只设置 base priority 不会意外改变 Main/High 的 CABAC 或 8x8 默认。
+
+```bash
+./scripts/board_sdk_encoder_controls.sh
+```
+
 JPEG 编码沿用同一 encoder handle，支持 NV12/I420、0–10 内置量化档和可选
 restart MCU 间隔。RK3576/RK3588 单帧 JPEG 与现有 `jpeg-enc` CLI 输出逐字节一致。
 
@@ -738,7 +748,7 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 | `hevc` / `hevcdec <in.265> <out.yuv>` / `hevcpps` / `hevcdpb` | H.265 语法、PPS、DPB 打印与解码 |
 | `av1dec <in.ivf> <out.yuv>` / `vp9dec <in.ivf> <out.yuv>` / `vp8dec <in.ivf> <out.yuv>` / `vp8` | AV1、VP9、VP8 |
 | `m2v` / `m2vdec <in.m2v> <out.yuv>` / `mp4dec <in.m4v> <out.yuv>` / `h263dec <in.263> <out.yuv>` | MPEG-2 / MPEG-4 / H.263 |
-| `h264-enc <in.nv12> <out.264> <w> <h> [qp] [profile] [frames] [gop] [cbr:\|vbr:bps:min:max] ... [splitout:lowdelay]` | H.264 编码；给码率三元组即进入码率控制，低延迟模式逐 slice 输出 packet |
+| `h264-enc <in.nv12> <out.264> <w> <h> [qp] [profile] [frames] [gop] [cbr:\|vbr:bps:min:max] ... [cabac:0\|1] [trans8x8:0\|1] [splitout:lowdelay]` | H.264 编码；给码率三元组即进入码率控制，syntax 可显式覆盖 profile 默认，低延迟模式逐 slice 输出 packet |
 | `h265-idr ... [roi:x:y:w:h:intra:abs:qp]... [split:ctu:\|split:byte:arg] [splitout:lowdelay]` / `h265-gop ... [shortterm] ...` | H.265 固定 QP IDR/GOP、GDR、ROI/QP map 与逐 slice packet 输出 |
 | `h264e510-split2 <in.2x320x240.nv12> <out.264> <mb:N\|byte:N> [lowdelay]` | RK3576 VEPU510 BY_CTU/BY_BYTE 两帧编码与逐 slice packet 输出 |
 | `h264e510-gdr <in.Nx320x240.nv12> <out.264> <row\|col:num:gop:frames>` | RK3576 VEPU510 固定 QP GDR / intra refresh |

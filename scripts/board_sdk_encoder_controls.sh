@@ -100,10 +100,72 @@ compare_control() {
         "$codec" "$control" "$(wc -c < "$c_api_out")"
 }
 
+compare_h264_syntax() {
+    local name=$1
+    local c_api_out="/tmp/rk_mpp_sdk_h264_syntax_${name}.264"
+    local cli_out="/tmp/rk_mpp_cli_h264_syntax_${name}.264"
+    local -a c_env cli_options
+    local profile=main
+
+    case "$name" in
+        cabac)
+            c_env=(
+                H264_PROFILE=77
+                H264_CABAC=1
+                H264_TRANS8X8=0
+                H264_CABAC_IDC=2
+            )
+            cli_options=(cabac_idc:2)
+            ;;
+        constraint)
+            c_env=(
+                H264_PROFILE=77
+                H264_CABAC=1
+                H264_TRANS8X8=0
+                H264_CONSTRAINT_SET=0x003f0025
+            )
+            cli_options=(constraint_set:0x003f0025)
+            ;;
+        base-pid)
+            c_env=(H264_PROFILE=77 H264_BASE_LAYER_PID=5)
+            cli_options=(base_layer_pid:5)
+            ;;
+        main-cavlc)
+            c_env=(H264_PROFILE=77 H264_CABAC=0 H264_TRANS8X8=0)
+            cli_options=(cabac:0 trans8x8:0)
+            ;;
+        high-no-8x8)
+            profile=high
+            c_env=(H264_PROFILE=100 H264_CABAC=1 H264_TRANS8X8=0)
+            cli_options=(trans8x8:0)
+            ;;
+        deblock)
+            c_env=(H264_PROFILE=77 DBLK_DISABLE=1 DBLK_ALPHA=-2 DBLK_BETA=3)
+            cli_options=(dblk:1:-2:3)
+            ;;
+        *)
+            printf 'unknown H.264 syntax case: %s\n' "$name" >&2
+            exit 2
+            ;;
+    esac
+
+    env CONTROL_MODE=h264-syntax "${c_env[@]}" \
+        /tmp/rk_mpp_encoder_controls \
+            h264 nv12 "$c_api_out" 320 240 26 6 6 "$fixture"
+    target/release/rk-mpp-rs h264-enc \
+        "$fixture" "$cli_out" 320 240 26 "$profile" 6 6 "${cli_options[@]}"
+    cmp "$c_api_out" "$cli_out"
+    printf 'PASS H.264 syntax %s C V3 == CLI (%s bytes)\n' \
+        "$name" "$(wc -c < "$c_api_out")"
+}
+
 for codec in h264 h265; do
     compare_control "$codec" slice 6
     compare_control "$codec" roi 6
     compare_control "$codec" gdr 4
 done
+for syntax in cabac constraint base-pid main-cavlc high-no-8x8 deblock; do
+    compare_h264_syntax "$syntax"
+done
 
-printf 'PASS rk-mpp-rs V1.10 ROI/GDR/slice controls\n'
+printf 'PASS rk-mpp-rs V1.13 ROI/GDR/slice/H.264 syntax controls\n'

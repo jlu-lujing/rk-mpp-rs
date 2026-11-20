@@ -45,9 +45,12 @@ trap 'rm -rf "$stage"' EXIT
     --no-build
 
 installed="$stage/usr/local"
+api_minor=$(awk '
+    /#define RK_MPP_API_VERSION_MINOR/ { gsub(/u/, "", $3); print $3 }
+' "$installed/include/rk_mpp_rs.h")
 test -L "$installed/lib/librk_mpp_rs.so"
 test -L "$installed/lib/librk_mpp_rs.so.1"
-test -f "$installed/lib/librk_mpp_rs.so.1.12.0"
+test -f "$installed/lib/librk_mpp_rs.so.1.$api_minor.0"
 test -f "$installed/lib/librk_mpp_rs.a"
 test -f "$installed/include/rk_mpp_rs.h"
 test -f "$installed/lib/pkgconfig/rk-mpp-rs.pc"

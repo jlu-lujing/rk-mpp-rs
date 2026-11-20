@@ -94,6 +94,42 @@ pub struct RkMppEncoderSliceSplit {
     pub reserved: [u32; 2],
 }
 
+pub const RK_MPP_H264_SYNTAX_ENTROPY_CODING: u32 = 1 << 0;
+pub const RK_MPP_H264_SYNTAX_TRANSFORM_8X8: u32 = 1 << 1;
+pub const RK_MPP_H264_SYNTAX_CABAC_INIT_IDC: u32 = 1 << 2;
+pub const RK_MPP_H264_SYNTAX_CONSTRAINT_SET: u32 = 1 << 3;
+pub const RK_MPP_H264_SYNTAX_BASE_LAYER_PID: u32 = 1 << 4;
+const RK_MPP_H264_SYNTAX_ALL: u32 = RK_MPP_H264_SYNTAX_ENTROPY_CODING
+    | RK_MPP_H264_SYNTAX_TRANSFORM_8X8
+    | RK_MPP_H264_SYNTAX_CABAC_INIT_IDC
+    | RK_MPP_H264_SYNTAX_CONSTRAINT_SET
+    | RK_MPP_H264_SYNTAX_BASE_LAYER_PID;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderH264Deblock {
+    pub struct_size: u32,
+    pub present: u32,
+    pub disable: u32,
+    pub alpha_offset_div2: i32,
+    pub beta_offset_div2: i32,
+    pub reserved: [u32; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderH264Syntax {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub entropy_coding: u32,
+    pub transform_8x8: u32,
+    pub cabac_init_idc: u32,
+    pub constraint_set_force: u32,
+    pub constraint_set_value: u32,
+    pub base_layer_pid: u32,
+    pub reserved: [u32; 4],
+}
+
 const MAX_ROI_REGIONS: usize = 8;
 
 #[repr(C)]
@@ -107,6 +143,22 @@ pub struct RkMppEncoderAdvancedConfigV2 {
     pub roi_count: u32,
     pub reserved0: u32,
     pub rois: [RkMppEncoderRoiRegion; MAX_ROI_REGIONS],
+    pub reserved: [u32; 8],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RkMppEncoderAdvancedConfigV3 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub rate_control: RkMppEncoderRateControl,
+    pub gdr: RkMppEncoderGdr,
+    pub slice_split: RkMppEncoderSliceSplit,
+    pub roi_count: u32,
+    pub reserved0: u32,
+    pub rois: [RkMppEncoderRoiRegion; MAX_ROI_REGIONS],
+    pub h264_deblock: RkMppEncoderH264Deblock,
+    pub h264_syntax: RkMppEncoderH264Syntax,
     pub reserved: [u32; 8],
 }
 
@@ -136,6 +188,8 @@ struct AdvancedOptions {
     roi: Option<encoder::RoiConfig>,
     gdr: Option<encoder::GdrConfig>,
     slice_split: Option<encoder::SliceSplitConfig>,
+    h264_deblock: Option<encoder::H264DeblockConfig>,
+    h264_syntax: Option<encoder::H264SyntaxConfig>,
 }
 
 fn error_code(error: &sdk::Error) -> c_int {
@@ -285,6 +339,98 @@ fn parse_slice_config(
     ))
 }
 
+fn parse_h264_deblock(
+    deblock: &RkMppEncoderH264Deblock,
+    codec: sdk::Codec,
+) -> Result<Option<encoder::H264DeblockConfig>, c_int> {
+    if deblock.struct_size < size_of::<RkMppEncoderH264Deblock>() as u32
+        || deblock.reserved != [0; 3]
+    {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    match deblock.present {
+        0 if deblock.disable == 0
+            && deblock.alpha_offset_div2 == 0
+            && deblock.beta_offset_div2 == 0 =>
+        {
+            Ok(None)
+        }
+        0 => Err(RK_MPP_ERR_INVALID),
+        1 if codec == sdk::Codec::H264 => Ok(Some(encoder::H264DeblockConfig::new(
+            deblock.disable,
+            deblock.alpha_offset_div2,
+            deblock.beta_offset_div2,
+        ))),
+        1 => Err(RK_MPP_ERR_INVALID),
+        _ => Err(RK_MPP_ERR_INVALID),
+    }
+}
+
+fn parse_h264_syntax(
+    syntax: &RkMppEncoderH264Syntax,
+    codec: sdk::Codec,
+    profile: u8,
+) -> Result<Option<encoder::H264SyntaxConfig>, c_int> {
+    if syntax.struct_size < size_of::<RkMppEncoderH264Syntax>() as u32
+        || syntax.flags & !RK_MPP_H264_SYNTAX_ALL != 0
+        || syntax.reserved != [0; 4]
+        || syntax.entropy_coding > 1
+        || syntax.transform_8x8 > 1
+        || syntax.cabac_init_idc > 2
+        || syntax.constraint_set_force > 0x3f
+        || syntax.constraint_set_value > 0x3f
+        || syntax.base_layer_pid > 56
+    {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    if syntax.flags == 0 {
+        return if syntax.entropy_coding == 0
+            && syntax.transform_8x8 == 0
+            && syntax.cabac_init_idc == 0
+            && syntax.constraint_set_force == 0
+            && syntax.constraint_set_value == 0
+            && syntax.base_layer_pid == 0
+        {
+            Ok(None)
+        } else {
+            Err(RK_MPP_ERR_INVALID)
+        };
+    }
+    if codec != sdk::Codec::H264 {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    if syntax.flags & RK_MPP_H264_SYNTAX_ENTROPY_CODING == 0 && syntax.entropy_coding != 0
+        || syntax.flags & RK_MPP_H264_SYNTAX_TRANSFORM_8X8 == 0 && syntax.transform_8x8 != 0
+        || syntax.flags & RK_MPP_H264_SYNTAX_CABAC_INIT_IDC == 0 && syntax.cabac_init_idc != 0
+        || syntax.flags & RK_MPP_H264_SYNTAX_CONSTRAINT_SET == 0
+            && (syntax.constraint_set_force != 0 || syntax.constraint_set_value != 0)
+        || syntax.flags & RK_MPP_H264_SYNTAX_BASE_LAYER_PID == 0 && syntax.base_layer_pid != 0
+    {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+
+    let entropy_coding = if syntax.flags & RK_MPP_H264_SYNTAX_ENTROPY_CODING != 0 {
+        syntax.entropy_coding != 0
+    } else {
+        profile >= 77
+    };
+    let transform_8x8 = if syntax.flags & RK_MPP_H264_SYNTAX_TRANSFORM_8X8 != 0 {
+        syntax.transform_8x8 != 0
+    } else {
+        profile >= 100
+    };
+    let mut config = encoder::H264SyntaxConfig::new(entropy_coding, transform_8x8)
+        .with_cabac_init_idc(syntax.cabac_init_idc as u8);
+    if syntax.flags & RK_MPP_H264_SYNTAX_CONSTRAINT_SET != 0 {
+        config = config
+            .with_constraint_set((syntax.constraint_set_force << 16) | syntax.constraint_set_value);
+    }
+    if syntax.flags & RK_MPP_H264_SYNTAX_BASE_LAYER_PID != 0 {
+        config = config.with_base_layer_pid(syntax.base_layer_pid as u8);
+    }
+    Ok(Some(config))
+}
+
 fn parse_advanced_v2(advanced: &RkMppEncoderAdvancedConfigV2) -> Result<AdvancedOptions, c_int> {
     if advanced.struct_size < size_of::<RkMppEncoderAdvancedConfigV2>() as u32
         || advanced.flags != 0
@@ -298,6 +444,30 @@ fn parse_advanced_v2(advanced: &RkMppEncoderAdvancedConfigV2) -> Result<Advanced
         roi: parse_roi_config(advanced.roi_count, &advanced.rois)?,
         gdr: parse_gdr_config(&advanced.gdr)?,
         slice_split: parse_slice_config(&advanced.slice_split)?,
+        h264_deblock: None,
+        h264_syntax: None,
+    })
+}
+
+fn parse_advanced_v3(
+    advanced: &RkMppEncoderAdvancedConfigV3,
+    codec: sdk::Codec,
+    profile: u8,
+) -> Result<AdvancedOptions, c_int> {
+    if advanced.struct_size < size_of::<RkMppEncoderAdvancedConfigV3>() as u32
+        || advanced.flags != 0
+        || advanced.reserved0 != 0
+        || advanced.reserved != [0; 8]
+    {
+        return Err(RK_MPP_ERR_INVALID);
+    }
+    Ok(AdvancedOptions {
+        rate_control: Some(parse_rate_control(&advanced.rate_control)?),
+        roi: parse_roi_config(advanced.roi_count, &advanced.rois)?,
+        gdr: parse_gdr_config(&advanced.gdr)?,
+        slice_split: parse_slice_config(&advanced.slice_split)?,
+        h264_deblock: parse_h264_deblock(&advanced.h264_deblock, codec)?,
+        h264_syntax: parse_h264_syntax(&advanced.h264_syntax, codec, profile)?,
     })
 }
 
@@ -488,6 +658,59 @@ pub unsafe extern "C" fn rk_mpp_encoder_slice_split_init(
     RK_MPP_OK
 }
 
+/// Initialize an optional H.264 deblock override.
+///
+/// # Safety
+/// `deblock` must point to writable descriptor storage.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_h264_deblock_init(
+    deblock: *mut RkMppEncoderH264Deblock,
+) -> c_int {
+    if deblock.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: the caller guarantees writable descriptor storage.
+    unsafe {
+        deblock.write(RkMppEncoderH264Deblock {
+            struct_size: size_of::<RkMppEncoderH264Deblock>() as u32,
+            present: 0,
+            disable: 0,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
+            reserved: [0; 3],
+        });
+    }
+    RK_MPP_OK
+}
+
+/// Initialize optional H.264 syntax overrides.
+///
+/// # Safety
+/// `syntax` must point to writable descriptor storage.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_h264_syntax_init(
+    syntax: *mut RkMppEncoderH264Syntax,
+) -> c_int {
+    if syntax.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: the caller guarantees writable descriptor storage.
+    unsafe {
+        syntax.write(RkMppEncoderH264Syntax {
+            struct_size: size_of::<RkMppEncoderH264Syntax>() as u32,
+            flags: 0,
+            entropy_coding: 0,
+            transform_8x8: 0,
+            cabac_init_idc: 0,
+            constraint_set_force: 0,
+            constraint_set_value: 0,
+            base_layer_pid: 0,
+            reserved: [0; 4],
+        });
+    }
+    RK_MPP_OK
+}
+
 /// Initialize the V1.10 advanced encoder configuration.
 ///
 /// # Safety
@@ -546,6 +769,89 @@ pub unsafe extern "C" fn rk_mpp_encoder_advanced_config_v2_init(
             roi_count: 0,
             reserved0: 0,
             rois: [roi; MAX_ROI_REGIONS],
+            reserved: [0; 8],
+        });
+    }
+    RK_MPP_OK
+}
+
+/// Initialize the V1.13 advanced encoder configuration.
+///
+/// # Safety
+/// `config` must point to writable storage for one V3 configuration.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_advanced_config_v3_init(
+    config: *mut RkMppEncoderAdvancedConfigV3,
+    rate_control_mode: u32,
+) -> c_int {
+    if config.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    let mut rate_control = RkMppEncoderRateControl {
+        struct_size: 0,
+        mode: 0,
+        bps_target: 0,
+        bps_min: 0,
+        bps_max: 0,
+        initial_qp: 0,
+        min_qp: 0,
+        max_qp: 0,
+        reserved: [0; 5],
+    };
+    if let Err(code) = init_rate_control(&mut rate_control, rate_control_mode) {
+        return code;
+    }
+    let roi = RkMppEncoderRoiRegion {
+        struct_size: size_of::<RkMppEncoderRoiRegion>() as u32,
+        flags: 0,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        qp: 0,
+        reserved: [0; 3],
+    };
+    // SAFETY: the caller guarantees writable V3 configuration storage.
+    unsafe {
+        config.write(RkMppEncoderAdvancedConfigV3 {
+            struct_size: size_of::<RkMppEncoderAdvancedConfigV3>() as u32,
+            flags: 0,
+            rate_control,
+            gdr: RkMppEncoderGdr {
+                struct_size: size_of::<RkMppEncoderGdr>() as u32,
+                mode: 0,
+                refresh_blocks: 0,
+                reserved: 0,
+            },
+            slice_split: RkMppEncoderSliceSplit {
+                struct_size: size_of::<RkMppEncoderSliceSplit>() as u32,
+                mode: 0,
+                argument: 0,
+                output_mode: 0,
+                reserved: [0; 2],
+            },
+            roi_count: 0,
+            reserved0: 0,
+            rois: [roi; MAX_ROI_REGIONS],
+            h264_deblock: RkMppEncoderH264Deblock {
+                struct_size: size_of::<RkMppEncoderH264Deblock>() as u32,
+                present: 0,
+                disable: 0,
+                alpha_offset_div2: 0,
+                beta_offset_div2: 0,
+                reserved: [0; 3],
+            },
+            h264_syntax: RkMppEncoderH264Syntax {
+                struct_size: size_of::<RkMppEncoderH264Syntax>() as u32,
+                flags: 0,
+                entropy_coding: 0,
+                transform_8x8: 0,
+                cabac_init_idc: 0,
+                constraint_set_force: 0,
+                constraint_set_value: 0,
+                base_layer_pid: 0,
+                reserved: [0; 4],
+            },
             reserved: [0; 8],
         });
     }
@@ -620,6 +926,12 @@ unsafe fn create_encoder(
         }
         if let Some(slice_split) = advanced.slice_split {
             encoder_config = encoder_config.with_slice_split(slice_split);
+        }
+        if let Some(deblock) = advanced.h264_deblock {
+            encoder_config = encoder_config.with_h264_deblock(deblock);
+        }
+        if let Some(syntax) = advanced.h264_syntax {
+            encoder_config = encoder_config.with_h264_syntax(syntax);
         }
         match encoder::Encoder::new(encoder_config) {
             Ok(inner) => {
@@ -704,6 +1016,38 @@ pub unsafe extern "C" fn rk_mpp_encoder_create_advanced_v2(
     // SAFETY: all pointers were validated and the caller owns their storage.
     unsafe {
         let advanced = match parse_advanced_v2(&*advanced_config) {
+            Ok(advanced) => advanced,
+            Err(code) => return code,
+        };
+        create_encoder(config, &advanced, out_encoder)
+    }
+}
+
+/// Create an encoder using the V1.13 advanced configuration.
+///
+/// # Safety
+/// `config` and `advanced_config` must point to valid descriptors and
+/// `out_encoder` to writable pointer storage.
+#[no_mangle]
+pub unsafe extern "C" fn rk_mpp_encoder_create_advanced_v3(
+    config: *const RkMppEncoderConfig,
+    advanced_config: *const RkMppEncoderAdvancedConfigV3,
+    out_encoder: *mut *mut RkMppEncoder,
+) -> c_int {
+    if config.is_null() || advanced_config.is_null() || out_encoder.is_null() {
+        return RK_MPP_ERR_INVALID;
+    }
+    // SAFETY: all pointers were validated and the caller owns their storage.
+    unsafe {
+        let config_ref = &*config;
+        let Some(codec) = sdk::Codec::from_c_value(config_ref.codec) else {
+            return RK_MPP_ERR_INVALID;
+        };
+        let profile = match u8::try_from(config_ref.profile) {
+            Ok(profile) => profile,
+            Err(_) => return RK_MPP_ERR_INVALID,
+        };
+        let advanced = match parse_advanced_v3(&*advanced_config, codec, profile) {
             Ok(advanced) => advanced,
             Err(code) => return code,
         };
@@ -885,8 +1229,10 @@ pub unsafe extern "C" fn rk_mpp_encoder_close(encoder: *mut RkMppEncoder) {
 mod tests {
     use super::{
         RkMppEncodedPacket, RkMppEncoderAdvancedConfig, RkMppEncoderAdvancedConfigV2,
-        RkMppEncoderConfig, RkMppEncoderGdr, RkMppEncoderRateControl, RkMppEncoderRoiRegion,
-        RkMppEncoderSliceSplit,
+        RkMppEncoderAdvancedConfigV3, RkMppEncoderConfig, RkMppEncoderGdr, RkMppEncoderH264Deblock,
+        RkMppEncoderH264Syntax, RkMppEncoderRateControl, RkMppEncoderRoiRegion,
+        RkMppEncoderSliceSplit, RK_MPP_H264_SYNTAX_BASE_LAYER_PID,
+        RK_MPP_H264_SYNTAX_CABAC_INIT_IDC,
     };
     use std::mem::size_of;
 
@@ -899,6 +1245,59 @@ mod tests {
         assert_eq!(size_of::<RkMppEncoderGdr>(), 16);
         assert_eq!(size_of::<RkMppEncoderSliceSplit>(), 24);
         assert_eq!(size_of::<RkMppEncoderAdvancedConfigV2>(), 472);
+        assert_eq!(size_of::<RkMppEncoderH264Deblock>(), 32);
+        assert_eq!(size_of::<RkMppEncoderH264Syntax>(), 48);
+        assert_eq!(size_of::<RkMppEncoderAdvancedConfigV3>(), 552);
         assert_eq!(size_of::<RkMppEncodedPacket>(), 72);
+    }
+
+    #[test]
+    fn h264_v3_descriptors_preserve_profile_defaults_and_apply_selected_fields() {
+        let syntax = RkMppEncoderH264Syntax {
+            struct_size: size_of::<RkMppEncoderH264Syntax>() as u32,
+            flags: RK_MPP_H264_SYNTAX_CABAC_INIT_IDC | RK_MPP_H264_SYNTAX_BASE_LAYER_PID,
+            entropy_coding: 0,
+            transform_8x8: 0,
+            cabac_init_idc: 2,
+            constraint_set_force: 0,
+            constraint_set_value: 0,
+            base_layer_pid: 5,
+            reserved: [0; 4],
+        };
+        let parsed = super::parse_h264_syntax(&syntax, crate::sdk::Codec::H264, 77)
+            .unwrap()
+            .unwrap();
+        assert!(parsed.entropy_coding());
+        assert!(!parsed.transform_8x8());
+        assert_eq!(parsed.cabac_init_idc(), 2);
+        assert_eq!(parsed.constraint_set(), None);
+        assert_eq!(parsed.base_layer_pid(), Some(5));
+
+        let deblock = RkMppEncoderH264Deblock {
+            struct_size: size_of::<RkMppEncoderH264Deblock>() as u32,
+            present: 1,
+            disable: 0,
+            alpha_offset_div2: -2,
+            beta_offset_div2: 3,
+            reserved: [0; 3],
+        };
+        let parsed = super::parse_h264_deblock(&deblock, crate::sdk::Codec::H264)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.disable(), 0);
+        assert_eq!(parsed.alpha_offset_div2(), -2);
+        assert_eq!(parsed.beta_offset_div2(), 3);
+
+        let mut invalid = syntax;
+        invalid.flags = 0;
+        assert_eq!(
+            super::parse_h264_syntax(&invalid, crate::sdk::Codec::H264, 77),
+            Err(crate::c_api_encoder::RK_MPP_ERR_INVALID)
+        );
+        invalid.flags = RK_MPP_H264_SYNTAX_BASE_LAYER_PID;
+        assert_eq!(
+            super::parse_h264_syntax(&invalid, crate::sdk::Codec::H265, 77),
+            Err(crate::c_api_encoder::RK_MPP_ERR_INVALID)
+        );
     }
 }

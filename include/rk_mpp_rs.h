@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 #define RK_MPP_API_VERSION_MAJOR 1u
-#define RK_MPP_API_VERSION_MINOR 12u
+#define RK_MPP_API_VERSION_MINOR 13u
 #define RK_MPP_API_VERSION \
     ((RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR)
 
@@ -286,6 +286,45 @@ typedef struct rk_mpp_encoder_slice_split {
 } rk_mpp_encoder_slice_split_t;
 
 /*
+ * Optional H.264 deblocking override. `present == 0` keeps the encoder's
+ * existing deblock configuration, so an initializer can be embedded in V3
+ * without changing output. Offsets use the H.264 -6..=6 range.
+ */
+typedef struct rk_mpp_encoder_h264_deblock {
+    uint32_t struct_size;
+    uint32_t present;
+    uint32_t disable;
+    int32_t alpha_offset_div2;
+    int32_t beta_offset_div2;
+    uint32_t reserved[3];
+} rk_mpp_encoder_h264_deblock_t;
+
+enum rk_mpp_h264_syntax_flags {
+    RK_MPP_H264_SYNTAX_ENTROPY_CODING = 1u << 0,
+    RK_MPP_H264_SYNTAX_TRANSFORM_8X8 = 1u << 1,
+    RK_MPP_H264_SYNTAX_CABAC_INIT_IDC = 1u << 2,
+    RK_MPP_H264_SYNTAX_CONSTRAINT_SET = 1u << 3,
+    RK_MPP_H264_SYNTAX_BASE_LAYER_PID = 1u << 4
+};
+
+/*
+ * H.264 entropy/transform overrides. Each field is applied only when its flag
+ * is set; unset fields retain the profile-derived encoder default.
+ * `constraint_set_force` and `constraint_set_value` are six-bit values.
+ */
+typedef struct rk_mpp_encoder_h264_syntax {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint32_t entropy_coding;
+    uint32_t transform_8x8;
+    uint32_t cabac_init_idc;
+    uint32_t constraint_set_force;
+    uint32_t constraint_set_value;
+    uint32_t base_layer_pid;
+    uint32_t reserved[4];
+} rk_mpp_encoder_h264_syntax_t;
+
+/*
  * V1.10 advanced configuration. This separate full-size type avoids changing
  * the 104-byte V1.9 initializer. ROI regions are copied during create.
  */
@@ -300,6 +339,25 @@ typedef struct rk_mpp_encoder_advanced_config_v2 {
     rk_mpp_encoder_roi_region_t rois[RK_MPP_MAX_ROI_REGIONS];
     uint32_t reserved[8];
 } rk_mpp_encoder_advanced_config_v2_t;
+
+/*
+ * V1.13 advanced configuration. The V1.10 fields remain at their original
+ * offsets through `rois`; the V2 trailing reserved words are replaced by the
+ * typed H.264 descriptors and a fresh reserve.
+ */
+typedef struct rk_mpp_encoder_advanced_config_v3 {
+    uint32_t struct_size;
+    uint32_t flags;
+    rk_mpp_encoder_rate_control_t rate_control;
+    rk_mpp_encoder_gdr_t gdr;
+    rk_mpp_encoder_slice_split_t slice_split;
+    uint32_t roi_count;
+    uint32_t reserved0;
+    rk_mpp_encoder_roi_region_t rois[RK_MPP_MAX_ROI_REGIONS];
+    rk_mpp_encoder_h264_deblock_t h264_deblock;
+    rk_mpp_encoder_h264_syntax_t h264_syntax;
+    uint32_t reserved[8];
+} rk_mpp_encoder_advanced_config_v3_t;
 
 enum rk_mpp_encoded_packet_flags {
     RK_MPP_ENCODED_PACKET_FLAG_KEYFRAME = 1u << 0
@@ -340,8 +398,15 @@ int rk_mpp_encoder_slice_split_init(rk_mpp_encoder_slice_split_t *split,
                                     uint32_t mode,
                                     uint32_t argument,
                                     uint32_t output_mode);
+int rk_mpp_encoder_h264_deblock_init(
+    rk_mpp_encoder_h264_deblock_t *deblock);
+int rk_mpp_encoder_h264_syntax_init(
+    rk_mpp_encoder_h264_syntax_t *syntax);
 int rk_mpp_encoder_advanced_config_v2_init(
     rk_mpp_encoder_advanced_config_v2_t *config,
+    uint32_t rate_control_mode);
+int rk_mpp_encoder_advanced_config_v3_init(
+    rk_mpp_encoder_advanced_config_v3_t *config,
     uint32_t rate_control_mode);
 int rk_mpp_encoded_packet_init(rk_mpp_encoded_packet_t *packet);
 int rk_mpp_encoder_create(const rk_mpp_encoder_config_t *config,
@@ -353,6 +418,10 @@ int rk_mpp_encoder_create_advanced(
 int rk_mpp_encoder_create_advanced_v2(
     const rk_mpp_encoder_config_t *config,
     const rk_mpp_encoder_advanced_config_v2_t *advanced_config,
+    rk_mpp_encoder_t **out_encoder);
+int rk_mpp_encoder_create_advanced_v3(
+    const rk_mpp_encoder_config_t *config,
+    const rk_mpp_encoder_advanced_config_v3_t *advanced_config,
     rk_mpp_encoder_t **out_encoder);
 int rk_mpp_encoder_submit_frame(rk_mpp_encoder_t *encoder,
                                 const uint8_t *data,

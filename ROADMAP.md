@@ -514,6 +514,18 @@ in what order the evidence gets produced.
       length and coded strides. H.264/H.265 use 16-aligned geometry and JPEG
       uses its 8x2 alignment. RK3588 VEPU580 and RK3576 VEPU510/VPU720 all produce
       byte-identical H.264/H.265/JPEG packets for fd and copied input.
+- [x] Public H.264 syntax/deblock API V1.13: a separately sized V3 advanced
+      config preserves V1.10's ROI/GDR/slice layout while exposing deblock,
+      CABAC, transform-8x8, `cabac_init_idc`, constraint-set force/value and
+      `base_layer_pid`. Syntax flags apply each field independently so
+      profile-derived defaults remain unchanged unless explicitly selected.
+      C layout checks, raw sys bindings and the 40-symbol ABI snapshot include
+      the new descriptors and create path. On RK3588, the C V3 path is
+      byte-identical to the validated CLI for CABAC idc 2 (18,046 bytes),
+      constraint-set `0x003f0025` (17,977), base priority 5 (17,977) and
+      deblock `1:-2:3` (18,098), plus Main forced to CAVLC (20,263) and High
+      with transform-8x8 disabled (17,979). The existing V1.9 consumer and six
+      V1.10 ROI/GDR/slice cells remain green.
 - [x] Public H.265 encoder API V1.5: the same owned packet/release and
       synchronous submit path with NV12/I420 input. RK3588 VEPU580 exposes
       width/height, QP and GOP; RK3576 VEPU510 exposes the captured

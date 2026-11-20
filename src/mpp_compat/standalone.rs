@@ -4752,16 +4752,16 @@ pub unsafe extern "C" fn mpp_set_log_callback(ctx: *mut c_void, cb: *mut c_void)
 
 /// Accessors used by the C variadic trampoline in `standalone_log.c`.
 #[no_mangle]
-pub extern "C" fn rk_mpp_log_level_value() -> c_int {
+pub extern "C" fn rk_mpprs_internal_log_level_value() -> c_int {
     resolved_log_level()
 }
 
 #[no_mangle]
-pub extern "C" fn rk_mpp_log_cb_ctx() -> *mut c_void {
+pub extern "C" fn rk_mpprs_internal_log_cb_ctx() -> *mut c_void {
     LOG_CB_CTX.load(Ordering::Relaxed)
 }
 
 #[no_mangle]
-pub extern "C" fn rk_mpp_log_cb_fn() -> *mut c_void {
+pub extern "C" fn rk_mpprs_internal_log_cb_fn() -> *mut c_void {
     LOG_CB_FN.load(Ordering::Relaxed)
 }

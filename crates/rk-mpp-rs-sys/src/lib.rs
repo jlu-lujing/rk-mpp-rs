@@ -1,4 +1,4 @@
-//! Raw FFI declarations for the `rk-mpp-rs` V1.12 C ABI.
+//! Raw FFI declarations for the `rk-mpp-rs` V1.13 C ABI.
 //!
 //! Every function in this crate is unsafe: callers must follow the ownership,
 //! struct-size, threading and lifetime rules documented in
@@ -10,7 +10,7 @@
 use core::ffi::{c_char, c_int};
 
 pub const RK_MPP_API_VERSION_MAJOR: u32 = 1;
-pub const RK_MPP_API_VERSION_MINOR: u32 = 12;
+pub const RK_MPP_API_VERSION_MINOR: u32 = 13;
 pub const RK_MPP_API_VERSION: u32 = (RK_MPP_API_VERSION_MAJOR << 16) | RK_MPP_API_VERSION_MINOR;
 
 pub const RK_MPP_OK: c_int = 0;
@@ -63,6 +63,12 @@ pub const RK_MPP_SLICE_SPLIT_BY_BYTE: u32 = 2;
 
 pub const RK_MPP_SLICE_OUTPUT_COMPLETE_ACCESS_UNIT: u32 = 0;
 pub const RK_MPP_SLICE_OUTPUT_LOW_DELAY_PACKETS: u32 = 1;
+
+pub const RK_MPP_H264_SYNTAX_ENTROPY_CODING: u32 = 1 << 0;
+pub const RK_MPP_H264_SYNTAX_TRANSFORM_8X8: u32 = 1 << 1;
+pub const RK_MPP_H264_SYNTAX_CABAC_INIT_IDC: u32 = 1 << 2;
+pub const RK_MPP_H264_SYNTAX_CONSTRAINT_SET: u32 = 1 << 3;
+pub const RK_MPP_H264_SYNTAX_BASE_LAYER_PID: u32 = 1 << 4;
 
 pub const RK_MPP_ENCODED_PACKET_FLAG_KEYFRAME: u32 = 1 << 0;
 
@@ -316,6 +322,33 @@ impl Default for rk_mpp_encoder_slice_split {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct rk_mpp_encoder_h264_deblock {
+    pub struct_size: u32,
+    pub present: u32,
+    pub disable: u32,
+    pub alpha_offset_div2: i32,
+    pub beta_offset_div2: i32,
+    pub reserved: [u32; 3],
+}
+pub type rk_mpp_encoder_h264_deblock_t = rk_mpp_encoder_h264_deblock;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct rk_mpp_encoder_h264_syntax {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub entropy_coding: u32,
+    pub transform_8x8: u32,
+    pub cabac_init_idc: u32,
+    pub constraint_set_force: u32,
+    pub constraint_set_value: u32,
+    pub base_layer_pid: u32,
+    pub reserved: [u32; 4],
+}
+pub type rk_mpp_encoder_h264_syntax_t = rk_mpp_encoder_h264_syntax;
+
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct rk_mpp_encoder_advanced_config_v2 {
     pub struct_size: u32,
@@ -341,6 +374,41 @@ impl Default for rk_mpp_encoder_advanced_config_v2 {
             roi_count: 0,
             reserved0: 0,
             rois: [rk_mpp_encoder_roi_region::default(); RK_MPP_MAX_ROI_REGIONS],
+            reserved: [0; 8],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct rk_mpp_encoder_advanced_config_v3 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub rate_control: rk_mpp_encoder_rate_control,
+    pub gdr: rk_mpp_encoder_gdr,
+    pub slice_split: rk_mpp_encoder_slice_split,
+    pub roi_count: u32,
+    pub reserved0: u32,
+    pub rois: [rk_mpp_encoder_roi_region; RK_MPP_MAX_ROI_REGIONS],
+    pub h264_deblock: rk_mpp_encoder_h264_deblock,
+    pub h264_syntax: rk_mpp_encoder_h264_syntax,
+    pub reserved: [u32; 8],
+}
+pub type rk_mpp_encoder_advanced_config_v3_t = rk_mpp_encoder_advanced_config_v3;
+
+impl Default for rk_mpp_encoder_advanced_config_v3 {
+    fn default() -> Self {
+        Self {
+            struct_size: 0,
+            flags: 0,
+            rate_control: rk_mpp_encoder_rate_control::default(),
+            gdr: rk_mpp_encoder_gdr::default(),
+            slice_split: rk_mpp_encoder_slice_split::default(),
+            roi_count: 0,
+            reserved0: 0,
+            rois: [rk_mpp_encoder_roi_region::default(); RK_MPP_MAX_ROI_REGIONS],
+            h264_deblock: rk_mpp_encoder_h264_deblock::default(),
+            h264_syntax: rk_mpp_encoder_h264_syntax::default(),
             reserved: [0; 8],
         }
     }
@@ -455,8 +523,14 @@ unsafe extern "C" {
         argument: u32,
         output_mode: u32,
     ) -> c_int;
+    pub fn rk_mpp_encoder_h264_deblock_init(deblock: *mut rk_mpp_encoder_h264_deblock_t) -> c_int;
+    pub fn rk_mpp_encoder_h264_syntax_init(syntax: *mut rk_mpp_encoder_h264_syntax_t) -> c_int;
     pub fn rk_mpp_encoder_advanced_config_v2_init(
         config: *mut rk_mpp_encoder_advanced_config_v2_t,
+        rate_control_mode: u32,
+    ) -> c_int;
+    pub fn rk_mpp_encoder_advanced_config_v3_init(
+        config: *mut rk_mpp_encoder_advanced_config_v3_t,
         rate_control_mode: u32,
     ) -> c_int;
     pub fn rk_mpp_encoded_packet_init(packet: *mut rk_mpp_encoded_packet_t) -> c_int;
@@ -472,6 +546,11 @@ unsafe extern "C" {
     pub fn rk_mpp_encoder_create_advanced_v2(
         config: *const rk_mpp_encoder_config_t,
         advanced_config: *const rk_mpp_encoder_advanced_config_v2_t,
+        out_encoder: *mut *mut rk_mpp_encoder_t,
+    ) -> c_int;
+    pub fn rk_mpp_encoder_create_advanced_v3(
+        config: *const rk_mpp_encoder_config_t,
+        advanced_config: *const rk_mpp_encoder_advanced_config_v3_t,
         out_encoder: *mut *mut rk_mpp_encoder_t,
     ) -> c_int;
     pub fn rk_mpp_encoder_submit_frame(

@@ -41,8 +41,12 @@ for symbol in \
     rk_mpp_decoder_status \
     rk_mpp_decoder_close \
     rk_mpp_encoder_config_init \
+    rk_mpp_encoder_advanced_config_v3_init \
+    rk_mpp_encoder_h264_deblock_init \
+    rk_mpp_encoder_h264_syntax_init \
     rk_mpp_encoded_packet_init \
     rk_mpp_encoder_create \
+    rk_mpp_encoder_create_advanced_v3 \
     rk_mpp_encoder_submit_frame \
     rk_mpp_encoder_submit_frame_dmabuf \
     rk_mpp_encoder_receive_packet \

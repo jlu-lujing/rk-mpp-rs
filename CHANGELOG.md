@@ -19,6 +19,22 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   points. The register images match the vendor C builder through a fake-service
   trace; RK3576 hardware validation remains pending.
 
+## [1.13] - 2026-11-20
+
+- Added an independently sized V3 advanced encoder configuration and preserved
+  all V1/V1.9/V1.10 layouts and create entry points.
+- Exposed H.264 deblocking and entropy/transform syntax through typed C
+  descriptors: CABAC, transform-8x8, `cabac_init_idc`, constraint-set
+  force/value and base-layer priority ID.
+- H.264 syntax flags apply fields independently, so changing
+  `base_layer_pid` does not silently alter profile-derived CABAC or 8x8
+  transform defaults.
+- The H.264 CLI now accepts `cabac:0|1` and `trans8x8:0|1`, allowing
+  profile defaults to be overridden explicitly and tested against the C V3
+  path.
+- Added C layout, Rust FFI and sys-crate coverage for the two new initializers
+  and the V3 create path, bringing the ABI snapshot to 40 exports.
+
 ## [1.12] - 2026-11-09
 
 - Added `DmaBufInput` and `Encoder::submit_dmabuf_frame()` for NV12 encoder

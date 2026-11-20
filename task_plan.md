@@ -295,6 +295,16 @@ callers.
 - [ ] Remove vendor helper dependency and pass standalone `mpi_enc_test`.
 - **Status:** RK3588 encoder object bridge complete; RK3576 codec matrix remains.
 
+### Phase 21: Public H.264 Syntax and Deblock ABI
+- Goal: expose the already board-validated typed H.264 syntax/deblock controls
+  through the stable C SDK without changing V1, V1.9 or V1.10 layouts.
+- [x] Add H.264 deblock and syntax descriptors plus V1.13 advanced config V3.
+- [x] Map V3 descriptors into `EncoderConfig` with codec/range validation.
+- [x] Add C, Rust FFI, sys-crate and ABI snapshot coverage.
+- [x] Verify the C V3 output against the validated CLI path on RK3588.
+- [x] Update README, CAPABILITY, HANDOFF, CHANGELOG and progress evidence.
+- **Status:** complete on RK3588; full host workspace gate green.
+
 ## Decisions Made
 
 | Decision | Rationale |

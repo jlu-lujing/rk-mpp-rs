@@ -128,6 +128,27 @@
 
 ## Research Findings
 
+- The Rust `EncoderConfig` already exposes `H264DeblockConfig` and
+  `H264SyntaxConfig`, including CABAC initialization, transform-8x8,
+  constraint-set force/value and base-layer priority ID. The stable C SDK only
+  exposes rate control, ROI, GDR and slice split, so C consumers cannot reach
+  controls whose hardware paths are already byte-validated by the CLI tests.
+- H.264 defaults are profile-derived: VEPU580 starts CABAC at Main and
+  transform-8x8 at High. A C syntax descriptor therefore needs field-selection
+  flags rather than blindly overriding both booleans; otherwise setting only
+  `base_layer_pid` would silently change entropy coding or transform defaults.
+- The V1.13 ABI adds four public symbols, not two:
+  `rk_mpp_encoder_h264_deblock_init`, `rk_mpp_encoder_h264_syntax_init`,
+  `rk_mpp_encoder_advanced_config_v3_init` and
+  `rk_mpp_encoder_create_advanced_v3`. The frozen V1 snapshot therefore grows
+  from 36 to 40 exports.
+- The internal C variadic logger previously leaked three `rk_mpp_log_*`
+  accessors into the public symbol table even though they are not in the public
+  header. They are now named with the non-ABI `rk_mpprs_internal_*` prefix.
+- RK3588 V1.13 C V3 output is byte-identical to the CLI for CABAC idc 2
+  (18,046 bytes), constraint `0x003f0025` (17,977), base PID 5 (17,977) and
+  deblock `1:-2:3` (18,098).
+
 - `src/lib.rs` currently exports only `rk_jpeg_*`; it is path-based, single-image,
   RGB-letterbox oriented, and does not expose H.264.
 - `codec::h264::Decoder` already provides `new`, `decode_access_unit`,

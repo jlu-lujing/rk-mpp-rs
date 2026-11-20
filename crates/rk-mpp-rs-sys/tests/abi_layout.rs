@@ -13,8 +13,8 @@ macro_rules! assert_layout {
 }
 
 #[test]
-fn types_match_the_v1_12_c_header() {
-    assert_eq!(RK_MPP_API_VERSION, 0x1000c);
+fn types_match_the_v1_13_c_header() {
+    assert_eq!(RK_MPP_API_VERSION, 0x1000d);
     assert_eq!(RK_MPP_MAX_ROI_REGIONS, 8);
     assert_eq!(RK_MPP_DECODER_FLAG_DMABUF_OUTPUT, 1);
 
@@ -27,6 +27,9 @@ fn types_match_the_v1_12_c_header() {
     assert_layout!(rk_mpp_encoder_gdr_t, 16);
     assert_layout!(rk_mpp_encoder_slice_split_t, 24);
     assert_layout!(rk_mpp_encoder_advanced_config_v2_t, 472);
+    assert_layout!(rk_mpp_encoder_h264_deblock_t, 32);
+    assert_layout!(rk_mpp_encoder_h264_syntax_t, 48);
+    assert_layout!(rk_mpp_encoder_advanced_config_v3_t, 552);
     assert_layout!(rk_mpp_encoded_packet_t, 72);
 }
 
@@ -56,6 +59,14 @@ fn critical_field_offsets_match_the_c_header() {
     assert_eq!(offset_of!(rk_mpp_encoder_roi_region_t, width), 16);
     assert_eq!(offset_of!(rk_mpp_encoder_advanced_config_v2_t, gdr), 72);
     assert_eq!(offset_of!(rk_mpp_encoder_advanced_config_v2_t, rois), 120);
+    assert_eq!(
+        offset_of!(rk_mpp_encoder_advanced_config_v3_t, h264_deblock),
+        440
+    );
+    assert_eq!(
+        offset_of!(rk_mpp_encoder_advanced_config_v3_t, h264_syntax),
+        472
+    );
 
     assert_eq!(offset_of!(rk_mpp_encoded_packet_t, pts), 16);
     assert_eq!(offset_of!(rk_mpp_encoded_packet_t, data), 40);

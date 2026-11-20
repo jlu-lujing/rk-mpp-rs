@@ -3,6 +3,26 @@
 This is the current integrated validation checkpoint after moving work from a
 second RK3588 validation system back to the primary RK3588 board.
 
+## 2026-11-20 Public H.264 syntax/deblock API V1.13
+
+`scripts/board_sdk_encoder_controls.sh` now creates the encoder through the
+new V3 advanced configuration and compares its output with the validated CLI
+path. All four cells are byte-identical:
+
+| V3 control | bytes |
+|---|---:|
+| Main CABAC, `cabac_init_idc=2` | 18,046 |
+| constraint-set force/value `0x003f0025` | 17,977 |
+| `base_layer_pid=5` with Main defaults retained | 17,977 |
+| Main forced to CAVLC and no 8x8 transform | 20,263 |
+| High forced to disable 8x8 transform | 17,979 |
+| deblock disable with alpha/beta `-2/3` | 18,098 |
+
+The same run retains the existing V1.9 compatibility consumer and all six
+V1.10 ROI/GDR/slice cells. `scripts/check_sdk_abi.sh` passes with the V1.13
+40-symbol snapshot, and `scripts/board_sdk_package.sh` installs
+`.so.1.13.0` and passes pkg-config, CMake shared/static and external consumers.
+
 ## 2026-11-20 Compatible encoder input submits dma-buf directly
 
 The official `MppFrame` compatibility path previously packed every NV12 input
