@@ -4087,7 +4087,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1362 passed / 46 ignored and t6 workspace tests are 1364 passed / 46 ignored,
+  1364 passed / 46 ignored and t6 workspace tests are 1366 passed / 46 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
@@ -4161,6 +4161,13 @@ pipeline uses.
   `cabac_idc:0..2`. Two-frame Main-CABAC object probes match the vendor
   byte-for-byte for idc 1 (`47e28d89…3862a80`) and idc 2
   (`85087619…5c76b6c99`).
+
+- **2026-11-20: H.264 constraint-set force/value is configurable.**
+  `h264:constraint_set` now preserves C's `(force_mask << 16) | value` shape
+  and applies only the selected SPS constraint bits over the profile defaults.
+  The same force/value fields are exposed by `H264SyntaxConfig` and the typed
+  CLI. Object and typed CLI streams match the vendor for set1=0
+  (`78e1057c…d2e1584`) and set0=1 (`f60db229…4abcdee`).
 
 - **2026-11-20: MppEncCfg carries H.265 syntax controls.** The compatible
   object path now maps `h265:dblk_*`, `sao_luma/chroma_disable`,

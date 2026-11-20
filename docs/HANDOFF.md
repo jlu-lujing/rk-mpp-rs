@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1362 passed / 0 failed / 46 ignored`；t6
+当前 host workspace gate 为 `1364 passed / 0 failed / 46 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1364 passed / 0 failed / 46 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1366 passed / 0 failed / 46 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -448,6 +448,10 @@ Main-CAVLC/no8x8 `5c83b5e8…85e8c1ff`，High-CABAC/no8x8
 `349ac658…d4d2a5`。两帧 Main-CABAC 的 idc1/idc2 也为 6 NAL 逐字节，
 分别为 `47e28d89…3862a80` 和 `85087619…5c76b6c99`；软件 P_SKIP CABAC
 上下文同步采用 C 的 `skip_init_state[3][2]`。
+`h264:constraint_set` 也已按 C 的 `(force_mask << 16) | value` 语义实现：
+只覆盖 force mask 指定的 SPS constraint 位，其他 profile 默认位保留。
+set1=0 `0x020000` 和 set0=1 `0x010001` 两格的 vendor、对象和 typed CLI
+均逐字节一致。
 H.265 `h265:dblk_*`、SAO、`lpf_acs_*` 与 `auto_tile` 也已映射到
 typed `SyntaxOptions`；VEPU510 对非默认 syntax 明确返回 unsupported。
 独立对象路径门的两格均与 typed CLI 逐字节一致：
@@ -748,7 +752,7 @@ dma-buf lease 归还前关闭；旧顺序曾让驱动在 `mpp_dma_find_buffer_fd
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --workspace --all-targets --offline   # host：1362 passed / 0 failed / 46 ignored（59 suites）
+cargo test --workspace --all-targets --offline   # host：1364 passed / 0 failed / 46 ignored（59 suites）
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json

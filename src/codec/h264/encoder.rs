@@ -39,6 +39,8 @@ pub struct EncoderConfig {
     /// profile. `None` selects the 2024 RK3588 rules; RK3576's 2025 encoder is
     /// captured explicitly with zero constraint flags.
     pub constraint_set: Option<u8>,
+    pub constraint_set_force: u8,
+    pub constraint_set_value: u8,
     pub level_idc: u8,
     pub gop: u32,
     pub gaps_in_frame_num_allowed: bool,
@@ -259,6 +261,8 @@ impl EncoderConfig {
             height,
             profile: PROFILE_BASELINE,
             constraint_set: None,
+            constraint_set_force: 0,
+            constraint_set_value: 0,
             level_idc: 30,
             gop: 1,
             gaps_in_frame_num_allowed: true,
@@ -559,15 +563,23 @@ impl EncoderConfig {
     /// forces them (`constraint_set` stays zero, so the force path in the
     /// reference never fires).
     fn constraints(&self) -> u8 {
-        if let Some(constraint_set) = self.constraint_set {
-            return constraint_set;
-        }
-        match self.profile {
+        let mut constraints = self.constraint_set.unwrap_or(match self.profile {
             PROFILE_BASELINE => 0b1100_0000,
             PROFILE_MAIN => 0b0100_0000,
             PROFILE_HIGH => 0b0001_0000,
             _ => 0,
+        });
+        for bit in 0..6 {
+            if self.constraint_set_force & (1 << bit) != 0 {
+                let mask = 1 << (7 - bit);
+                if self.constraint_set_value & (1 << bit) != 0 {
+                    constraints |= mask;
+                } else {
+                    constraints &= !mask;
+                }
+            }
         }
+        constraints
     }
 }
 
@@ -899,6 +911,23 @@ mod tests {
                 "PPS must not move with QP {qp}"
             );
         }
+    }
+
+    #[test]
+    fn constraint_force_applies_only_selected_bits() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.profile = PROFILE_MAIN;
+        assert_eq!(config.constraints(), 0b0100_0000);
+
+        // Force constraint_set1=0 while preserving the other profile bits.
+        config.constraint_set_force = 0b000010;
+        config.constraint_set_value = 0;
+        assert_eq!(config.constraints(), 0);
+
+        // Force constraint_set0=1 and leave set1 at its profile default.
+        config.constraint_set_force = 0b000001;
+        config.constraint_set_value = 0b000001;
+        assert_eq!(config.constraints(), 0b1100_0000);
     }
 
     #[test]

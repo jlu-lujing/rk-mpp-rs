@@ -108,6 +108,11 @@ probes are six-NAL byte-identical for idc 1
 (`47e28d89…3862a80`) and idc 2 (`85087619…5c76b6c99`). Model 3 is rejected
 before hardware submission.
 
+`h264:constraint_set` now retains C's `(force_mask << 16) | value` semantics
+instead of overwriting the whole SPS byte. Forcing set1=0 (`0x020000`) and
+set0=1 (`0x010001`) produce five-NAL streams identical across vendor, Rust
+object and typed CLI paths (`78e1057c…d2e1584`, `f60db229…4abcdee`).
+
 ## 2026-11-17 SDK / C API now use the submission ring
 
 - `SdkSession` enables the ring at depth 3 for H.264 and H.265 by default
@@ -1507,8 +1512,8 @@ and TOML, and verifies that the vendor-compatible `mpp_enc_cfg_deinit()` path
 releases it. All three formats pass.
 The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 **3/3 PASS**. The same tree also passes the host workspace gate with
-**1362 passed / 0 failed / 46 ignored**, and the t6 workspace gate with
-**1364 passed / 0 failed / 46 ignored** plus strict rustdoc.
+**1364 passed / 0 failed / 46 ignored**, and the t6 workspace gate with
+**1366 passed / 0 failed / 46 ignored** plus strict rustdoc.
 `scripts/board_mpp_enc_cfg_gdr.sh` also maps the vendor probes'
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`) and H.265 is

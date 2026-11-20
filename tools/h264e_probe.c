@@ -568,6 +568,9 @@ int main(int argc, char **argv)
     if (getenv("H264_CABAC_IDC"))
         CHECK(mpp_enc_cfg_set_s32(cfg, "h264:cabac_idc",
                                   atoi(getenv("H264_CABAC_IDC"))));
+    if (getenv("H264_CONSTRAINT_SET"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h264:constraint_set",
+                                  strtol(getenv("H264_CONSTRAINT_SET"), NULL, 0)));
     if (have_dblk)
         CHECK(set_deblock(cfg, dblk_disable, dblk_alpha, dblk_beta));
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));

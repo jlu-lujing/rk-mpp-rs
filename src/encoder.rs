@@ -506,6 +506,7 @@ pub struct H264SyntaxConfig {
     entropy_coding: bool,
     transform_8x8: bool,
     cabac_init_idc: u8,
+    constraint_set: Option<u32>,
 }
 
 impl H264SyntaxConfig {
@@ -514,6 +515,7 @@ impl H264SyntaxConfig {
             entropy_coding,
             transform_8x8,
             cabac_init_idc: 0,
+            constraint_set: None,
         }
     }
 
@@ -532,6 +534,15 @@ impl H264SyntaxConfig {
 
     pub const fn cabac_init_idc(self) -> u8 {
         self.cabac_init_idc
+    }
+
+    pub const fn with_constraint_set(mut self, constraint_set: u32) -> Self {
+        self.constraint_set = Some(constraint_set);
+        self
+    }
+
+    pub const fn constraint_set(self) -> Option<u32> {
+        self.constraint_set
     }
 }
 
@@ -919,6 +930,15 @@ impl EncoderConfig {
         {
             return Err(Error::InvalidInput(
                 "H.264 cabac_init_idc must be in 0..=2".to_string(),
+            ));
+        }
+        if self
+            .h264_syntax
+            .and_then(H264SyntaxConfig::constraint_set)
+            .is_some_and(|value| value & !0x003f_003f != 0)
+        {
+            return Err(Error::InvalidInput(
+                "H.264 constraint_set uses only bits 0..=5 and 16..=21".to_string(),
             ));
         }
         if !(-6..=6).contains(&self.h265_syntax.deblock_beta_offset_div2)
@@ -2345,6 +2365,8 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
         h264.entropy_coding = syntax.entropy_coding;
         h264.transform_8x8 = syntax.transform_8x8;
         h264.cabac_init_idc = syntax.cabac_init_idc;
+        h264.constraint_set_force = ((syntax.constraint_set.unwrap_or(0) >> 16) & 0x3f) as u8;
+        h264.constraint_set_value = (syntax.constraint_set.unwrap_or(0) & 0x3f) as u8;
     }
     if let Some(rate_control) = config.rate_control {
         match rate_control.mode {
@@ -2868,6 +2890,19 @@ mod tests {
             .with_profile(77)
             .with_h264_syntax(H264SyntaxConfig::new(true, false).with_cabac_init_idc(3));
         assert!(invalid.validate_advanced_controls().is_err());
+    }
+
+    #[test]
+    fn h264_constraint_set_uses_only_force_and_value_fields() {
+        let syntax = H264SyntaxConfig::new(true, false).with_constraint_set(0x003f_0025);
+        assert_eq!(syntax.constraint_set(), Some(0x003f_0025));
+
+        for invalid in [0x0040_0000, 0x0000_0040, 0x0100_0000] {
+            let config = EncoderConfig::new(Codec::H264, 320, 240)
+                .with_profile(77)
+                .with_h264_syntax(H264SyntaxConfig::new(true, false).with_constraint_set(invalid));
+            assert!(config.validate_advanced_controls().is_err());
+        }
     }
 
     #[test]

@@ -115,4 +115,32 @@ run_cabac_idc() {
 
 run_cabac_idc 1
 run_cabac_idc 2
+
+run_constraint_set() {
+    local raw="$1"
+    local name="${raw#0x}"
+    local vendor=/tmp/rk_mpp_h264_constraint_${name}_vendor.264
+    local rust=/tmp/rk_mpp_h264_constraint_${name}_rust.264
+    local cli=/tmp/rk_mpp_h264_constraint_${name}_cli.264
+    sudo -n env LD_LIBRARY_PATH="$MPP_REF/build/mpp" \
+        H264_PROFILE=77 H264_CABAC=1 H264_TRANS8X8=0 H264_CONSTRAINT_SET="$raw" \
+        /tmp/rk_mpp_h264e_syntax_vendor \
+        /tmp/rk_mpp_enc_cfg_h264_syntax.nv12 "$vendor" \
+        320 240 1 0 26 288000:1500000:2500000 >/dev/null 2>&1
+    sudo -n env LD_LIBRARY_PATH="$overlay" \
+        H264_PROFILE=77 H264_CABAC=1 H264_TRANS8X8=0 H264_CONSTRAINT_SET="$raw" \
+        /tmp/rk_mpp_h264e_syntax_rust \
+        /tmp/rk_mpp_enc_cfg_h264_syntax.nv12 "$rust" \
+        320 240 1 0 26 288000:1500000:2500000 >/dev/null 2>&1
+    sudo -n env H264_GOP=60 ./target/release/rk-mpp-rs h264-enc \
+        /tmp/rk_mpp_enc_cfg_h264_syntax.nv12 "$cli" \
+        320 240 26 main 1 60 "constraint_set:$raw" >/dev/null
+    python3 scripts/compare_streams.py "$vendor" "$rust"
+    python3 scripts/compare_streams.py "$rust" "$cli"
+    printf 'PASS H.264 MppEncCfg constraint_set=%s -> typed syntax (%s)\n' \
+        "$raw" "$(sha256sum "$rust" | cut -d' ' -f1)"
+}
+
+run_constraint_set 0x020000
+run_constraint_set 0x010001
 REMOTE
