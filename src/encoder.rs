@@ -960,6 +960,7 @@ pub struct DmaBufInput {
     ver_stride: usize,
     pts: i64,
     dts: i64,
+    osd: Option<osd::Config>,
 }
 
 impl DmaBufInput {
@@ -976,6 +977,7 @@ impl DmaBufInput {
             ver_stride,
             pts: 0,
             dts: 0,
+            osd: None,
         })
     }
 
@@ -989,7 +991,13 @@ impl DmaBufInput {
         self
     }
 
-    fn submission(&self) -> DmaBufSubmission {
+    /// Attach a VEPU580 OSD configuration to this picture.
+    pub fn with_osd(mut self, osd: osd::Config) -> Self {
+        self.osd = Some(osd);
+        self
+    }
+
+    fn into_submission(self) -> DmaBufSubmission {
         DmaBufSubmission {
             fd: self.fd.as_raw_fd(),
             size: self.size,
@@ -997,7 +1005,7 @@ impl DmaBufInput {
             ver_stride: self.ver_stride,
             pts: self.pts,
             dts: self.dts,
-            osd: None,
+            osd: self.osd,
         }
     }
 }
@@ -1947,7 +1955,7 @@ impl Encoder {
     }
 
     pub fn submit_dmabuf_frame(&mut self, frame: DmaBufInput) -> Result<usize, Error> {
-        self.submit_dmabuf_submission(frame.submission())
+        self.submit_dmabuf_submission(frame.into_submission())
     }
 
     /// Return whether these DMA-BUF geometry parameters are accepted without
@@ -2807,7 +2815,25 @@ mod tests {
     fn dmabuf_input_duplicates_the_fd_without_mapping_it() {
         let file = std::fs::File::open("/dev/null").unwrap();
         let input = DmaBufInput::new(file.as_raw_fd(), 4096, 1920, 1088).unwrap();
-        assert!(input.submission().fd >= 0);
+        assert!(input.into_submission().fd >= 0);
+    }
+
+    #[test]
+    fn dmabuf_input_carries_osd_only_when_requested() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let input = DmaBufInput::new(file.as_raw_fd(), 4096, 1920, 1088).unwrap();
+        assert!(input.into_submission().osd.is_none());
+
+        let osd = crate::hal::osd::Config {
+            buffer_fd: file.as_raw_fd(),
+            buffer_size: 256,
+            regions: Vec::new(),
+            user_palette: None,
+        };
+        let input = DmaBufInput::new(file.as_raw_fd(), 4096, 1920, 1088)
+            .unwrap()
+            .with_osd(osd);
+        assert!(input.into_submission().osd.is_some());
     }
 
     #[test]

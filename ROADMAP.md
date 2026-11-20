@@ -3972,6 +3972,13 @@ pipeline uses.
   seven samples moved wall median from 1.412 to 1.318 s (-6.7%) and user+sys
   from 0.455 to 0.366 s (-19.6%).
 
+- **2026-11-20: Rust `DmaBufInput` carries per-picture OSD.** The owned Rust
+  dma-buf API now exposes `DmaBufInput::with_osd()`, matching the already
+  verified VEPU580 compatibility-path OSD submission. VEPU510 and JPEG reject
+  OSD instead of dropping it. A unit test locks both the absent and attached
+  forms; existing t6 H.264/H.265 OSD direct/fallback stream and YUV gates cover
+  the hardware path.
+
 - **2026-11-19: venc init kcfg is consumed.** The drop-in layer now handles
   `MPP_SET_VENC_INIT_KCFG`, mirrors the upstream init key set, rejects unknown
   keys, maps type/coding and maximum dimensions into `mpp_init` /
@@ -4078,7 +4085,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1360 passed / 45 ignored and t6 workspace tests are 1362 passed / 45 ignored,
+  1361 passed / 45 ignored and t6 workspace tests are 1363 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal

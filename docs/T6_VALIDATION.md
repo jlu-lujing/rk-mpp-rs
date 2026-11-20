@@ -62,6 +62,11 @@ median 1.428 s. `RKMPP_COMPAT_OSD_DMABUF=1` enables direct submission for
 surfaces whose cache policy is known suitable; `RKMPP_COMPAT_CPU_INPUT=1`
 forces the fallback.
 
+The owned Rust API now exposes the same hardware capability through
+`DmaBufInput::with_osd(config)`. The existing direct/fallback hardware gate is
+the OSD-path evidence; a unit test separately verifies that submission carries
+the OSD only when attached. VEPU510 and JPEG still reject OSD explicitly.
+
 ### H.265 session CPU input becomes uncached
 
 The VEPU580 H.265 session still copied CPU input into a cached `system`
@@ -1490,8 +1495,8 @@ and TOML, and verifies that the vendor-compatible `mpp_enc_cfg_deinit()` path
 releases it. All three formats pass.
 The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 **3/3 PASS**. The same tree also passes the host workspace gate with
-**1360 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
-**1362 passed / 0 failed / 45 ignored** plus strict rustdoc.
+**1361 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
+**1363 passed / 0 failed / 45 ignored** plus strict rustdoc.
 `scripts/board_mpp_enc_cfg_gdr.sh` also maps the vendor probes'
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`) and H.265 is

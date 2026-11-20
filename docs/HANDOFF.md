@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1360 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1361 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1362 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1363 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -480,6 +480,9 @@ PREFIX_SEI，避免把两路版本文本当数据差异。实测 cached DRM 输�
 720p OSD direct 为双峰且 median 1.795 s，fallback 1.428 s，因此 OSD direct
 只通过 `RKMPP_COMPAT_OSD_DMABUF=1` opt-in；默认仍是 CPU fallback。
 `RKMPP_COMPAT_CPU_INPUT=1` 用于强制 fallback A/B。
+Rust owned API 同步补齐 `DmaBufInput::with_osd(config)`：VEPU580 H.264/H.265
+会把 OSD 表随 fd 帧提交，VEPU510/JPEG 返回 unsupported。单测同时覆盖无 OSD
+和附带 OSD 的 submission。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
@@ -743,7 +746,7 @@ dma-buf lease 归还前关闭；旧顺序曾让驱动在 `mpp_dma_find_buffer_fd
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --workspace --all-targets --offline   # host：1360 passed / 0 failed / 45 ignored（59 suites）
+cargo test --workspace --all-targets --offline   # host：1361 passed / 0 failed / 45 ignored（59 suites）
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json

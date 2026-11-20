@@ -113,6 +113,8 @@ MppPacket/MppBuffer/MppMeta/MppApi` 的布局与调用序列按官方 ABI 实现
 - 显式 `DmaBufInput` 只 dup fd 保持生命周期，不再建立 CPU mapping；
   `rk_mpp_encoder_submit_frame_dmabuf()` 的同步 C ABI 直接借用调用方 fd，
   逐帧 dup 和 mmap 都为零；
+- Rust owned dma-buf 路径可用 `DmaBufInput::with_osd(config)` 随帧提交
+  VEPU580 OSD；该能力不扩大到不支持的 VEPU510/JPEG backend；
 - `MppPacket/MppFrame/MppBuffer/MppMeta` 的 get/set 与生命周期；
 - `MPP_DEC_SET_CFG/MPP_ENC_SET_CFG`、`MppEncCfg` 键值读写
   （`mpp_enc_cfg_get_*/set_*` 等），包括 `rc:ref_cfg`、`MPP_ENC_SET_IDR_FRAME`、
