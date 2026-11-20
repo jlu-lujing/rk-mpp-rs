@@ -325,6 +325,16 @@ callers.
 - [x] Record packet/byte evidence and update docs.
 - **Status:** complete on RK3588; 8,876 bytes / 2 packets byte-identical.
 
+### Phase 24: Bounded-Memory H.264 Stream CLI
+- Goal: remove the whole-file read from `h264_stream` while preserving its
+  bounded display reorder and output bytes.
+- [x] Reuse the SDK's incremental H.264 access-unit scanner for file chunks.
+- [x] Add a public SDK reorder-depth accessor for status output.
+- [x] Verify planar and NV12 hashes against the current whole-file CLI.
+- [x] Measure wall time and peak RSS on the 50 MiB / 742-frame network stream.
+- [x] Update docs and commit only if output remains byte-identical.
+- **Status:** complete; RSS 55.9 -> 17.0 MiB with flat warm wall time.
+
 ## Decisions Made
 
 | Decision | Rationale |

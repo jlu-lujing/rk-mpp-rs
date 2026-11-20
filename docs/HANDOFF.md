@@ -205,6 +205,11 @@ V1.14 把 V3 末尾 32-byte reserve 改为同尺寸 H.265 syntax descriptor，�
 deblock disable/beta/tc、跨 slice/tile loop-filter 和 auto-tile；布尔值由
 `flags` + `values` 表达，未选字段继续使用默认。ABI 快照增至 41 个导出。
 
+`h264_stream` 已改为 4 MiB 分块输入和增量 AU scanner。50 MiB/742 帧网络流
+的峰值 RSS 从约 55.9 MiB 降到约 17 MiB，热态 wall median 1.576 -> 1.595 s，
+输出仍为 742 帧；720p planar/NV12 哈希不变。同一改动让 SDK 在 SPS 到达后
+刷新 H.264 reorder depth，并暴露 `Decoder::max_num_reorder_frames()`。
+
 官方 MPP drop-in 兼容层的第一个 slice 已落地：`mpp_create/init/destroy`、
 格式查询和官方 `MppApi` 函数表布局已通过 vendor `rk_mpi.h` consumer。
 第二个 slice 已接入 packet、frame、buffer 所有权和 H.264/H.265/MJPEG

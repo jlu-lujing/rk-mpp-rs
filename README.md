@@ -723,6 +723,11 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 需要约 279 MB RSS，流式路径约 17 MB；输出 planar YUV 与旧全文件排序结果
 逐字节一致。同一测试中解码循环由约 955 ms 降到 545 ms。
 
+输入本身也不再整文件读取：`h264_stream` 以 4 MiB 块复用增量 Annex-B/AU
+scanner。50 MiB、742 帧的 1920x800 网络流在 RK3588 热态 wall median
+约 1.60 s，与整文件版约 1.58 s 基本持平；峰值 RSS 从约 55.9 MiB 降到
+约 17 MiB，仍输出 742/742 帧。720p planar/NV12 输出哈希与旧路径完全一致。
+
 ```bash
 # 丢弃输出，测流式解码
 ./target/release/h264_stream in.264

@@ -1283,6 +1283,131 @@ pub fn split_access_units(data: &[u8]) -> Vec<&[u8]> {
     out
 }
 
+/// Incremental Annex-B access-unit scanner for chunked file or socket input.
+///
+/// Only newly appended bytes are searched for start codes. `take()` rebuilds
+/// complete access units using the same boundary rules as
+/// [`split_access_units`], copies them out, and retains only the incomplete
+/// tail for the next chunk.
+#[derive(Default)]
+pub struct AccessUnitScanner {
+    /// Bytes of the current buffer already searched for a start code.
+    scan: usize,
+    /// `(start-code offset, payload offset, NAL type)` in current-buffer bytes.
+    nals: Vec<(usize, usize, u8)>,
+}
+
+impl AccessUnitScanner {
+    fn reset(&mut self) {
+        self.scan = 0;
+        self.nals.clear();
+    }
+
+    /// Scan bytes appended since the previous call.
+    pub fn push(&mut self, buffer: &[u8]) {
+        let start = self.scan.saturating_sub(2);
+        let mut search = start;
+        while let Some(i) = parser::next_zero(buffer, search) {
+            if i + 3 > buffer.len() {
+                break;
+            }
+            if buffer[i + 1] != 0 {
+                search = i + 1;
+                continue;
+            }
+            if buffer[i + 2] == 1 {
+                // A four-byte start code starts one byte earlier; retaining that
+                // byte keeps slice boundaries identical to the one-shot path.
+                let offset = if i > 0 && buffer[i - 1] == 0 {
+                    i - 1
+                } else {
+                    i
+                };
+                let payload = i + 3;
+                if payload >= buffer.len() {
+                    break;
+                }
+                if self.nals.last().map(|nal| nal.0) != Some(offset) {
+                    self.nals.push((offset, payload, buffer[payload] & 0x1f));
+                }
+                search = payload;
+                continue;
+            }
+            if i + 4 < buffer.len() && buffer[i + 2] == 0 && buffer[i + 3] == 1 {
+                let payload = i + 4;
+                if self.nals.last().map(|nal| nal.0) != Some(i) {
+                    self.nals.push((i, payload, buffer[payload] & 0x1f));
+                }
+                search = payload;
+                continue;
+            }
+            search = i + 1;
+        }
+        // A start code or NAL header may straddle the next append.
+        self.scan = buffer.len().saturating_sub(2);
+    }
+
+    /// Return complete access units and retain the incomplete tail.
+    pub fn take(&mut self, buffer: &mut Vec<u8>, flush: bool) -> Vec<Vec<u8>> {
+        let mut start = None;
+        let mut has_vcl = false;
+        let mut trailing_non_vcl = None;
+        let mut ranges = Vec::new();
+        for &(offset, payload, unit_type) in &self.nals {
+            let vcl = (1..=5).contains(&unit_type);
+            let first_mb_zero = buffer.get(payload + 1).is_some_and(|byte| byte & 0x80 != 0);
+            let boundary =
+                unit_type == crate::codec::h264::parser::NAL_AUD || (vcl && first_mb_zero);
+            if boundary && has_vcl {
+                let next_start = trailing_non_vcl.unwrap_or(offset);
+                ranges.push((start.unwrap(), next_start));
+                start = Some(next_start);
+                has_vcl = vcl;
+                trailing_non_vcl = None;
+                continue;
+            }
+            if start.is_none() {
+                start = Some(offset);
+            }
+            if vcl {
+                has_vcl = true;
+                trailing_non_vcl = None;
+            } else if has_vcl && trailing_non_vcl.is_none() {
+                trailing_non_vcl = Some(offset);
+            }
+        }
+        let keep = start.unwrap_or(buffer.len());
+        if flush && has_vcl && start.is_some() {
+            ranges.push((start.unwrap(), buffer.len()));
+        }
+        let output = ranges
+            .into_iter()
+            .map(|(begin, end)| buffer[begin..end].to_vec())
+            .collect();
+        if flush {
+            buffer.clear();
+            self.reset();
+        } else if keep >= buffer.len() {
+            // No complete NAL yet. Keep enough bytes for a split start code or
+            // a still-missing NAL header.
+            if buffer.len() > 3 {
+                let drop = buffer.len() - 3;
+                buffer.drain(..drop);
+                self.scan = self.scan.saturating_sub(drop);
+            }
+        } else {
+            buffer.drain(..keep);
+            self.scan = self.scan.saturating_sub(keep);
+            self.nals.retain(|(offset, _, _)| *offset >= keep);
+            for nal in &mut self.nals {
+                nal.0 -= keep;
+                nal.1 -= keep;
+            }
+        }
+        output
+    }
+}
+
 /// One access unit with NAL header ranges borrowed from the original stream.
 pub struct ParsedAccessUnit<'a> {
     pub data: &'a [u8],

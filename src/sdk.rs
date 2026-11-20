@@ -13,7 +13,7 @@ use crate::codec::av1;
 use crate::codec::h263;
 use crate::codec::h264::{
     self,
-    decoder::{picture_is_output as h264_picture_is_output, split_access_units},
+    decoder::{picture_is_output as h264_picture_is_output, split_access_units, AccessUnitScanner},
 };
 use crate::codec::hevc;
 use crate::codec::jpeg::{parser as jpeg_parser, tables as jpeg_tables};
@@ -1246,8 +1246,9 @@ struct H264Backend {
     decoder: h264::Decoder,
     pending: VecDeque<PendingH264>,
     input: Vec<u8>,
-    scanner: H264NalScanner,
+    scanner: AccessUnitScanner,
     output_format: PixelFormat,
+    max_reorder_override: usize,
     max_reorder: usize,
     pending_pts: i64,
     pending_dts: i64,
@@ -1427,6 +1428,21 @@ impl Decoder {
         self.frames.pop_front()
     }
 
+    /// Current SPS-derived display reorder depth once the stream has declared
+    /// it. H.264/H.265 return their bounded reorder size; other codecs return
+    /// zero because they emit display-ready frames directly.
+    pub fn max_num_reorder_frames(&self) -> usize {
+        match &self.backend {
+            Backend::H264(backend) => backend.max_reorder,
+            Backend::H265(backend) => backend.max_reorder,
+            Backend::Mjpeg(_)
+            | Backend::Vp9(_)
+            | Backend::Av1(_)
+            | Backend::Vp8(_)
+            | Backend::Legacy(_) => 0,
+        }
+    }
+
     /// Return a consumed frame's host buffer to the decoder that produced it.
     pub fn recycle_frame(&mut self, frame: Frame) {
         let buffer = match frame.into_cpu_storage() {
@@ -1554,17 +1570,19 @@ impl H264Backend {
         }
         decoder.set_output_nv12(config.output_format == PixelFormat::Nv12);
         decoder.set_output_dmabuf(config.dmabuf_output);
-        let reorder_frames = if config.max_reorder_frames == 0 {
+        let max_reorder_override = (config.max_reorder_frames as usize).min(16);
+        let reorder_frames = if max_reorder_override == 0 {
             decoder.max_num_reorder_frames()
         } else {
-            (config.max_reorder_frames as usize).min(16)
+            max_reorder_override
         };
         Ok(Self {
             decoder,
             pending: VecDeque::new(),
             input: Vec::new(),
-            scanner: H264NalScanner::default(),
+            scanner: AccessUnitScanner::default(),
             output_format: config.output_format,
+            max_reorder_override,
             max_reorder: reorder_frames,
             pending_pts: 0,
             pending_dts: 0,
@@ -1596,6 +1614,7 @@ impl H264Backend {
                 .map_err(classify_video_error)?;
             if let Some(picture) = picture {
                 decoded += 1;
+                self.refresh_reorder();
                 self.push_pending(
                     PendingH264 {
                         picture,
@@ -1654,6 +1673,12 @@ impl H264Backend {
         Ok(())
     }
 
+    fn refresh_reorder(&mut self) {
+        if self.max_reorder_override == 0 {
+            self.max_reorder = self.decoder.max_num_reorder_frames();
+        }
+    }
+
     fn flush_reorder(&mut self, output: &mut VecDeque<Frame>) -> Result<(), Error> {
         self.pending
             .make_contiguous()
@@ -1683,6 +1708,7 @@ impl H264Backend {
                 .map_err(classify_video_error)?
             {
                 decoded += 1;
+                self.refresh_reorder();
                 self.push_pending(
                     PendingH264 {
                         picture,
@@ -2357,119 +2383,6 @@ fn classify_video_error(message: String) -> Error {
     }
 }
 
-/// Incremental Annex-B NAL tracker for the SDK's chunked input. Only the
-/// newly appended bytes are scanned, and the AU rules from
-/// [`take_h264_access_units`] run over the recorded NAL headers instead of a
-/// freshly split buffer. `perf` put the per-chunk rescan at ~14 % of a 720p
-/// C-API run.
-#[derive(Default)]
-struct H264NalScanner {
-    /// Bytes of the current input buffer already searched for a start code.
-    scan: usize,
-    /// (start-code offset, payload offset, NAL type) in current-buffer bytes.
-    nals: Vec<(usize, usize, u8)>,
-}
-
-impl H264NalScanner {
-    fn reset(&mut self) {
-        self.scan = 0;
-        self.nals.clear();
-    }
-
-    /// Scan the bytes appended since the last call. A three-byte start code is
-    /// detected incrementally; the two-byte overlap covers codes that straddle
-    /// a chunk boundary.
-    fn push(&mut self, buffer: &[u8]) {
-        let start = self.scan.saturating_sub(2);
-        let mut i = start;
-        while i + 3 < buffer.len() {
-            if buffer[i] == 0 && buffer[i + 1] == 0 && buffer[i + 2] == 1 {
-                // A four-byte start code starts one byte earlier; keeping that
-                // byte makes the slice boundaries identical to the one-shot
-                // splitter.
-                let offset = if i > 0 && buffer[i - 1] == 0 {
-                    i - 1
-                } else {
-                    i
-                };
-                let payload = i + 3;
-                if self.nals.last().map(|nal| nal.0) != Some(offset) {
-                    self.nals.push((offset, payload, buffer[payload] & 0x1f));
-                }
-                i = payload;
-            } else {
-                i += 1;
-            }
-        }
-        // Keep two bytes of look-back: a start code whose third byte or NAL
-        // header straddles the chunk boundary is only complete on the next
-        // append.
-        self.scan = buffer.len().saturating_sub(2);
-    }
-
-    /// Rebuild the AU ranges using the same rules as the one-shot splitter.
-    fn take(&mut self, buffer: &mut Vec<u8>, flush: bool) -> Vec<Vec<u8>> {
-        let mut start = None;
-        let mut has_vcl = false;
-        let mut trailing_non_vcl = None;
-        let mut ranges = Vec::new();
-        for &(offset, payload, unit_type) in &self.nals {
-            let vcl = (1..=5).contains(&unit_type);
-            // `payload` addresses the NAL header byte; first_mb_in_slice is
-            // the first bit of the byte after it.
-            let first_mb_zero = buffer.get(payload + 1).is_some_and(|byte| byte & 0x80 != 0);
-            let boundary = unit_type == h264::parser::NAL_AUD || (vcl && first_mb_zero);
-            if boundary && has_vcl {
-                let next_start = trailing_non_vcl.unwrap_or(offset);
-                ranges.push((start.unwrap(), next_start));
-                start = Some(next_start);
-                has_vcl = vcl;
-                trailing_non_vcl = None;
-                continue;
-            }
-            if start.is_none() {
-                start = Some(offset);
-            }
-            if vcl {
-                has_vcl = true;
-                trailing_non_vcl = None;
-            } else if has_vcl && trailing_non_vcl.is_none() {
-                trailing_non_vcl = Some(offset);
-            }
-        }
-        let keep = start.unwrap_or(buffer.len());
-        if flush && has_vcl && start.is_some() {
-            ranges.push((start.unwrap(), buffer.len()));
-        }
-        let output = ranges
-            .into_iter()
-            .map(|(begin, end)| buffer[begin..end].to_vec())
-            .collect();
-        if flush {
-            buffer.clear();
-            self.reset();
-        } else if keep >= buffer.len() {
-            // No complete NAL yet. Keep the last three bytes so a start code
-            // split across chunks (00 00 | 01) or one that is complete but
-            // still missing its NAL header byte is not discarded.
-            if buffer.len() > 3 {
-                let drop = buffer.len() - 3;
-                buffer.drain(..drop);
-                self.scan = self.scan.saturating_sub(drop);
-            }
-        } else {
-            buffer.drain(..keep);
-            self.scan = self.scan.saturating_sub(keep);
-            self.nals.retain(|(offset, _, _)| *offset >= keep);
-            for nal in &mut self.nals {
-                nal.0 -= keep;
-                nal.1 -= keep;
-            }
-        }
-        output
-    }
-}
-
 fn take_h264_access_units(buffer: &mut Vec<u8>, flush: bool) -> Vec<Vec<u8>> {
     // Header-only split: access-unit boundaries need the NAL type and the
     // first payload byte, not a de-escaped RBSP. The full split de-escaped
@@ -2881,7 +2794,7 @@ mod tests {
 
         for chunk in [1usize, 2, 3, 5, 7, 313] {
             let mut buffer = Vec::new();
-            let mut scanner = super::H264NalScanner::default();
+            let mut scanner = super::AccessUnitScanner::default();
             let mut got = Vec::new();
             for piece in stream.chunks(chunk) {
                 buffer.extend_from_slice(piece);
@@ -2903,7 +2816,7 @@ mod tests {
         let expected = super::take_h264_access_units(&mut one_shot, true);
         for chunk in [313usize, 4096] {
             let mut buffer = Vec::new();
-            let mut scanner = super::H264NalScanner::default();
+            let mut scanner = super::AccessUnitScanner::default();
             let mut got = Vec::new();
             for piece in stream.chunks(chunk) {
                 buffer.extend_from_slice(piece);

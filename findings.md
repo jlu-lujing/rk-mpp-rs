@@ -164,6 +164,16 @@
   tiles, so the C V3 gate needs that shape rather than another small fixture.
 - V1.14 RK3588 auto-tile now passes on the 4608x64 one-frame shape: C V3 and
   CLI both emit 8,876 bytes and two packets.
+- `h264_stream` still used `std::fs::read()` and `split_access_units()` even
+  though the SDK already has an incremental Annex-B/AU scanner. On the 50 MiB
+  network stream the current process peaks at about 55.8 MiB RSS and takes
+  about 1.57 s for 742 frames. Reusing the chunk scanner can remove the
+  file-sized allocation without changing decoder/reorder semantics.
+- The bounded scanner initially regressed 50 MiB wall time until the chunk
+  size was raised to 4 MiB. The final three interleaved warm pairs are
+  1.576 s / 55.9 MiB (whole file) versus 1.595 s / 17.0 MiB (bounded). The
+  first bounded run is cold at 2.226 s, so the warm comparison is recorded
+  separately.
 
 - `src/lib.rs` currently exports only `rk_jpeg_*`; it is path-based, single-image,
   RGB-letterbox oriented, and does not expose H.264.

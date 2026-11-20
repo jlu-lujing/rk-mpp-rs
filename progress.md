@@ -43,6 +43,21 @@
 - The 4608x64 one-frame C V3 and CLI outputs are byte-identical: 8,876 bytes,
   two packets.
 
+### Phase 24: Bounded-Memory H.264 Stream CLI
+- **Status:** complete on RK3588.
+- Current 50 MiB / 742-frame baseline: about 55.8 MiB peak RSS and
+  1.57 s wall time over three samples.
+- Current `test720.264` output hashes are planar
+  `f31d2c0321ed82f6f2d4da5fed36bdce53ee355773879877de93138bf1500582`
+  and NV12 `f14c7ca6b599c8930fab66f5fb4e4656e488b608bfc583aaeba919d1681cd6e2`.
+- Final 4 MiB-chunk result: 742/742 frames; warm wall median
+  1.576 -> 1.595 s; peak RSS 55.9 -> 17.0 MiB; planar/NV12 hashes unchanged.
+- Moved the incremental scanner next to `split_access_units`, refreshed SDK
+  H.264 reorder depth after SPS parsing and exposed the current depth through
+  `Decoder::max_num_reorder_frames()`.
+- Final host workspace gate: `1366 passed / 0 failed / 47 ignored`; rustfmt,
+  diff check and strict rustdoc pass.
+
 ## Session: 2026-11-09
 
 ### Phase 20: Official `mpi_enc_test` Object Bridge

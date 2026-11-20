@@ -6,6 +6,13 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 
 ## [Unreleased]
 
+- `h264_stream` now reads input in bounded 4 MiB chunks through a reusable
+  incremental access-unit scanner instead of loading the complete Annex-B file.
+  On a 50 MiB / 742-frame RK3588 stream, warm wall time remains effectively
+  unchanged while peak RSS falls from about 55.9 MiB to 17 MiB.
+- The stable SDK refreshes H.264 display reorder depth as SPS values arrive and
+  exposes `Decoder::max_num_reorder_frames()`. Previously the initial depth
+  could remain 16 even when the SPS declared 2.
 - Added `Frame::convert_format()` for NV12/I420/I420P10 conversion while
   preserving PTS, DTS, POC and error metadata.
 - `IepDeinterlace::import_src_frame()` can now consume decoder-owned NV12

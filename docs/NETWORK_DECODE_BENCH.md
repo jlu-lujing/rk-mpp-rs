@@ -318,6 +318,30 @@ measurement and must not be used as the C hardware ceiling.
 `scripts/board_bench_vs_mpp.sh` now defaults `reader_buf_size=262144` for the
 vendor tool.
 
+## Bounded-memory `h264_stream` (2026-11-21)
+
+The streaming CLI previously kept bounded display reorder but still called
+`std::fs::read()` on the complete Annex-B input. It now reuses the incremental
+H.264 access-unit scanner with a 4 MiB read chunk.
+
+Three interleaved old/new pairs on the 50 MiB, 742-frame 1920x800 stream:
+
+| Version | warm wall samples | warm median | peak RSS |
+| --- | --- | ---: | ---: |
+| whole-file splitter | 1.575, 1.562, 1.576 s | **1.576 s** | **55.9 MiB** |
+| bounded scanner | 1.582, 1.595, 1.597 s | **1.595 s** | **17.0 MiB** |
+
+The first bounded run was cold at 2.226 s. The bounded version emits the same
+742 output frames. `test720.264` output remains byte-identical:
+
+- planar:
+  `f31d2c0321ed82f6f2d4da5fed36bdce53ee355773879877de93138bf1500582`
+- NV12:
+  `f14c7ca6b599c8930fab66f5fb4e4656e488b608bfc583aaeba919d1681cd6e2`
+
+This change also fixed the stable SDK's H.264 reorder refresh: before the fix
+the SDK could retain its initial depth 16 even after SPS parsing declared 2.
+
 ## Correctness check
 
 The first 20 compressed frames were decoded by both implementations to planar

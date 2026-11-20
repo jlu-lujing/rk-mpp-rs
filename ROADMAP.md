@@ -4426,6 +4426,14 @@ pipeline uses.
   `+49.9%` versus the C decoder and scale rows at `0.482`, `0.927`, `0.382`
   and `1.303` ms.
 
+- `h264_stream` now reads Annex-B input in 4 MiB chunks through the same
+  incremental access-unit scanner used by the SDK. Three interleaved RK3588
+  pairs over the 50 MiB / 742-frame 1920x800 stream kept warm wall time at
+  **1.576 -> 1.595 s** while peak RSS fell from **55.9 MiB to 17.0 MiB**.
+  All 742 frames remain, and 720p planar and NV12 SHA-256 values are
+  unchanged. The same work fixes SDK H.264 reorder refresh, which previously
+  could stay at the pre-SPS value 16 instead of 2.
+
 - The board memory ledger now separates process RSS from dma-buf usage. On RK3588,
   six-frame H.264/H.265 encodes peak at 3,712/10,436 KiB RSS and
   82,176/86,570 KiB new dma-buf respectively; 720p H.264/H.265/VP9 decodes

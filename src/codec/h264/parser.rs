@@ -251,7 +251,7 @@ pub(crate) fn annex_b_start_codes(data: &[u8]) -> Vec<(usize, usize)> {
 }
 
 #[inline]
-fn next_zero(data: &[u8], i: usize) -> Option<usize> {
+pub(crate) fn next_zero(data: &[u8], i: usize) -> Option<usize> {
     let base = data.as_ptr();
     // SAFETY: `i <= data.len()`, the search length stays inside the allocation,
     // and libc::memchr does not retain the pointer after returning.

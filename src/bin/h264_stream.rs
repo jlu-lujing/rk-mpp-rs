@@ -3,12 +3,18 @@
 //! Usage: `h264_stream <in.264> [out.yuv|-] [nv12|planar]`
 //! With no output path, decoded pictures are counted and released. With an
 //! output path, frames are written as soon as each picture is display-ready.
-//! `-` writes the frame stream to stdout for a downstream player.
+//! `-` writes the frame stream to stdout for a downstream player. Input is read
+//! in bounded chunks; only the incomplete access unit and the display reorder
+//! window stay resident.
 
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
 use std::time::Instant;
 
+use rk_mpp_rs::codec::h264::decoder::AccessUnitScanner;
 use rk_mpp_rs::codec::h264::{Decoder, DisplayReorder, Picture};
+
+const INPUT_CHUNK: usize = 4 * 1024 * 1024;
 
 fn write_picture(
     picture: Picture,
@@ -29,6 +35,29 @@ fn write_picture(
     *written += 1;
 }
 
+#[allow(clippy::too_many_arguments)]
+fn decode_units(
+    decoder: &mut Decoder,
+    reorder: &mut DisplayReorder,
+    units: Vec<Vec<u8>>,
+    out: &mut Option<std::io::BufWriter<Box<dyn Write>>>,
+    written: &mut usize,
+    write_error: &mut Option<std::io::Error>,
+) -> Result<(), String> {
+    for unit in units {
+        if let Some(picture) = decoder
+            .decode_access_unit(&unit)
+            .map_err(|e| format!("decode: {e}"))?
+        {
+            reorder.set_max_reorder(decoder.max_num_reorder_frames());
+            reorder.push(picture, |picture| {
+                write_picture(picture, out, written, write_error);
+            });
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let path = args
@@ -40,8 +69,6 @@ fn main() -> Result<(), String> {
         Some("planar") => true,
         Some(other) => return Err(format!("unknown output format: {other}")),
     };
-    let data = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
-    let aus = rk_mpp_rs::codec::h264::decoder::split_access_units(&data);
     let mut decoder = Decoder::new().map_err(|e| format!("open decoder: {e}"))?;
     decoder.set_output_nv12(!planar);
     let mut out = dst
@@ -62,17 +89,40 @@ fn main() -> Result<(), String> {
     let mut written = 0usize;
     let mut write_error = None;
     let mut reorder = DisplayReorder::new(decoder.max_num_reorder_frames());
-    for au in aus {
-        if let Some(picture) = decoder
-            .decode_access_unit(au)
-            .map_err(|e| format!("decode: {e}"))?
-        {
-            reorder.set_max_reorder(decoder.max_num_reorder_frames());
-            reorder.push(picture, |picture| {
-                write_picture(picture, &mut out, &mut written, &mut write_error);
-            });
+    let mut scanner = AccessUnitScanner::default();
+    let mut input = Vec::new();
+    let mut chunk = vec![0u8; INPUT_CHUNK];
+    let file = File::open(&path).map_err(|e| format!("{path}: {e}"))?;
+    let mut reader = BufReader::with_capacity(INPUT_CHUNK, file);
+    loop {
+        let read = reader
+            .read(&mut chunk)
+            .map_err(|e| format!("{path}: {e}"))?;
+        if read == 0 {
+            break;
         }
+        input.extend_from_slice(&chunk[..read]);
+        scanner.push(&input);
+        let units = scanner.take(&mut input, false);
+        decode_units(
+            &mut decoder,
+            &mut reorder,
+            units,
+            &mut out,
+            &mut written,
+            &mut write_error,
+        )?;
     }
+    scanner.push(&input);
+    let units = scanner.take(&mut input, true);
+    decode_units(
+        &mut decoder,
+        &mut reorder,
+        units,
+        &mut out,
+        &mut written,
+        &mut write_error,
+    )?;
     reorder.flush(|picture| {
         write_picture(picture, &mut out, &mut written, &mut write_error);
     });
