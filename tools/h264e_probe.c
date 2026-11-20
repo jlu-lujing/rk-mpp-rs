@@ -13,7 +13,7 @@
  *   * ROI regions, through the same `mpp_enc_roi_*` helpers `mpi_enc_test`
  *     links, so the region-to-CU-map conversion is the reference's own.
  *
- * Build on t6 against the reference build, not the installed library, and link
+ * Build on RK3588 against the reference build, not the installed library, and link
  * the reference's own ROI helper:
  *   cc -O2 -w -I$MPP/inc $MPP/utils/mpp_enc_roi_utils.c /tmp/h264e_probe.c \
  *      $MPP/build/mpp/librockchip_mpp.so.1 -o /tmp/h264e_probe
@@ -571,6 +571,9 @@ int main(int argc, char **argv)
     if (getenv("H264_CONSTRAINT_SET"))
         CHECK(mpp_enc_cfg_set_s32(cfg, "h264:constraint_set",
                                   strtol(getenv("H264_CONSTRAINT_SET"), NULL, 0)));
+    if (getenv("H264_BASE_LAYER_PID"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "h264:base_layer_pid",
+                                  atoi(getenv("H264_BASE_LAYER_PID"))));
     if (have_dblk)
         CHECK(set_deblock(cfg, dblk_disable, dblk_alpha, dblk_beta));
     CHECK(mpi->control(ctx, MPP_ENC_SET_CFG, cfg));

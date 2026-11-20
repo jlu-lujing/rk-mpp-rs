@@ -507,6 +507,7 @@ pub struct H264SyntaxConfig {
     transform_8x8: bool,
     cabac_init_idc: u8,
     constraint_set: Option<u32>,
+    base_layer_pid: Option<u8>,
 }
 
 impl H264SyntaxConfig {
@@ -516,6 +517,7 @@ impl H264SyntaxConfig {
             transform_8x8,
             cabac_init_idc: 0,
             constraint_set: None,
+            base_layer_pid: None,
         }
     }
 
@@ -543,6 +545,15 @@ impl H264SyntaxConfig {
 
     pub const fn constraint_set(self) -> Option<u32> {
         self.constraint_set
+    }
+
+    pub const fn with_base_layer_pid(mut self, base_layer_pid: u8) -> Self {
+        self.base_layer_pid = Some(base_layer_pid);
+        self
+    }
+
+    pub const fn base_layer_pid(self) -> Option<u8> {
+        self.base_layer_pid
     }
 }
 
@@ -939,6 +950,15 @@ impl EncoderConfig {
         {
             return Err(Error::InvalidInput(
                 "H.264 constraint_set uses only bits 0..=5 and 16..=21".to_string(),
+            ));
+        }
+        if self
+            .h264_syntax
+            .and_then(H264SyntaxConfig::base_layer_pid)
+            .is_some_and(|value| value > 56)
+        {
+            return Err(Error::InvalidInput(
+                "H.264 base_layer_pid must be in 0..=56".to_string(),
             ));
         }
         if !(-6..=6).contains(&self.h265_syntax.deblock_beta_offset_div2)
@@ -2367,6 +2387,7 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
         h264.cabac_init_idc = syntax.cabac_init_idc;
         h264.constraint_set_force = ((syntax.constraint_set.unwrap_or(0) >> 16) & 0x3f) as u8;
         h264.constraint_set_value = (syntax.constraint_set.unwrap_or(0) & 0x3f) as u8;
+        h264.base_layer_pid = syntax.base_layer_pid.unwrap_or(0);
     }
     if let Some(rate_control) = config.rate_control {
         match rate_control.mode {
@@ -2903,6 +2924,44 @@ mod tests {
                 .with_h264_syntax(H264SyntaxConfig::new(true, false).with_constraint_set(invalid));
             assert!(config.validate_advanced_controls().is_err());
         }
+    }
+
+    #[test]
+    fn h264_base_layer_pid_is_bounded_to_the_six_bit_priority_space() {
+        let syntax = H264SyntaxConfig::new(true, false).with_base_layer_pid(56);
+        assert_eq!(syntax.base_layer_pid(), Some(56));
+        let invalid = EncoderConfig::new(Codec::H264, 320, 240)
+            .with_h264_syntax(H264SyntaxConfig::new(true, false).with_base_layer_pid(57));
+        assert!(invalid.validate_advanced_controls().is_err());
+    }
+
+    #[test]
+    #[ignore = "requires an RK3588 VEPU580 and /dev/mpp_service"]
+    fn h264_base_layer_pid_reaches_the_type14_prefix() {
+        let syntax = H264SyntaxConfig::new(true, false).with_base_layer_pid(5);
+        let config = EncoderConfig::new(Codec::H264, 320, 240)
+            .with_profile(77)
+            .with_gop(60)
+            .with_h264_syntax(syntax);
+        let mut encoder = super::Encoder::new(config).unwrap();
+        encoder
+            .force_next_picture_layout(0, 0, false, Some(3), 0, 0, None, None)
+            .unwrap();
+        let frame = crate::hal::h264e::probe_nv12(320, 240);
+        encoder
+            .submit_frame(super::InputFrame::new(&frame))
+            .unwrap();
+        let mut stream = Vec::new();
+        while let Some(packet) = encoder.receive_packet() {
+            stream.extend_from_slice(packet.data());
+        }
+        let expected = [0, 0, 0, 1, 0x6e, 0xc8, 0x80, 0x67, 0x20];
+        assert!(
+            stream
+                .windows(expected.len())
+                .any(|bytes| bytes == expected),
+            "base_layer_pid 5 + temporal_id 3 must produce priority_id 8"
+        );
     }
 
     #[test]

@@ -1015,6 +1015,7 @@ impl Vepu510H264 {
                 true,
                 if layout.non_reference { 0 } else { 3 },
                 layout.temporal_id,
+                self.config.base_layer_pid + layout.temporal_id,
             ));
         }
         let output = self.run_job_with_status(nv12, &registers, &prefix, split_out)?;
@@ -1127,6 +1128,7 @@ impl Vepu510H264 {
                 false,
                 if layout.non_reference { 0 } else { 2 },
                 layout.temporal_id,
+                self.config.base_layer_pid + layout.temporal_id,
             ));
         }
         let output = self.run_job_with_status(nv12, &registers, &slice_prefix, split_out)?;

@@ -374,6 +374,7 @@ fn encode_h264(
     deblock: Option<(u32, i32, i32)>,
     cabac_init_idc: Option<u8>,
     constraint_set: Option<u32>,
+    base_layer_pid: Option<u8>,
     rois: Vec<h264_syntax::RoiRegion>,
     gdr: Option<(h264_syntax::GdrMode, u32)>,
     split: Option<(h264_syntax::SplitMode, u32)>,
@@ -482,6 +483,9 @@ fn encode_h264(
     if let Some(constraint_set) = constraint_set {
         config.constraint_set_force = ((constraint_set >> 16) & 0x3f) as u8;
         config.constraint_set_value = (constraint_set & 0x3f) as u8;
+    }
+    if let Some(base_layer_pid) = base_layer_pid {
+        config.base_layer_pid = base_layer_pid;
     }
     config.rois = rois;
     if let Some((mode, num)) = gdr {
@@ -1168,7 +1172,7 @@ fn decode_job_pooled(
             .map_err(|e| format!("dma-buf read sync end: {e}"))?;
         frame
     };
-    // The t6 driver keeps the service's DMA imports alive until its client fd
+    // The RK3588 driver keeps the service's DMA imports alive until its client fd
     // closes. Releasing pooled dma-buf leases first lets another worker reuse
     // the same fds while the old service still owns kernel-side import state;
     // that path has previously ended in `mpp_dma_find_buffer_fd()` spinning on
@@ -2266,7 +2270,7 @@ fn main() {
         let width = args.get(4).and_then(|s| s.parse::<usize>().ok());
         let height = args.get(5).and_then(|s| s.parse::<usize>().ok());
         let (Some(width), Some(height)) = (width, height) else {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [drop:mode:threshold:gap] [debreath:strength] [dblk:disable:alpha:beta] [cabac_idc:0..2] [constraint_set:0xforcevalue] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [drop:mode:threshold:gap] [debreath:strength] [dblk:disable:alpha:beta] [cabac_idc:0..2] [constraint_set:0xforcevalue] [base_layer_pid:0..56] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         };
         // QP defaults to the value the recorded VEPU580 register image carries, so
@@ -2308,6 +2312,7 @@ fn main() {
         let mut deblock: Option<(u32, i32, i32)> = None;
         let mut cabac_init_idc: Option<u8> = None;
         let mut constraint_set: Option<u32> = None;
+        let mut base_layer_pid: Option<u8> = None;
         // The `RoiRegionCfg` list `mpi_enc_test` adds per frame, in the same
         // add order.
         let mut rois: Vec<h264_syntax::RoiRegion> = Vec::new();
@@ -2335,6 +2340,14 @@ fn main() {
                     Ok(value @ ..=0x003f_003f) => constraint_set = Some(value),
                     _ => {
                         eprintln!("bad constraint_set; expected constraint_set:0x000000..0x3f003f");
+                        std::process::exit(2);
+                    }
+                }
+            } else if let Some(value) = text.strip_prefix("base_layer_pid:") {
+                match value.parse::<u8>() {
+                    Ok(value @ ..=56) => base_layer_pid = Some(value),
+                    _ => {
+                        eprintln!("bad base_layer_pid; expected base_layer_pid:0..=56");
                         std::process::exit(2);
                     }
                 }
@@ -2550,7 +2563,7 @@ fn main() {
             }
         }
         if src.is_empty() || dst.is_empty() {
-            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [drop:mode:threshold:gap] [debreath:strength] [dblk:disable:alpha:beta] [cabac_idc:0..2] [constraint_set:0xforcevalue] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
+            eprintln!("usage: rk-mpp-rs h264-enc <in.nv12> <out.264> <width> <height> [qp|auto] [profile] [frames] [gop] [cbr:|vbr:|avbr:target:min:max] [qprc:min:max] [hierq:d0:d1:d2:d3:n0:n1:n2:n3] [smartp:vi_len] [reenc:n] [super:mode:i_thd:p_thd:priority] [drop:mode:threshold:gap] [debreath:strength] [dblk:disable:alpha:beta] [cabac_idc:0..2] [constraint_set:0xforcevalue] [base_layer_pid:0..56] [roi:x:y:w:h:intra:abs:qp]... [gdr:row:|gdr:col:]num [split:mb:|split:byte:]arg [splitout:lowdelay]");
             std::process::exit(2);
         }
         let qp_desc = if quality_auto {
@@ -2579,6 +2592,7 @@ fn main() {
             deblock,
             cabac_init_idc,
             constraint_set,
+            base_layer_pid,
             rois,
             gdr,
             split,

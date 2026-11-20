@@ -41,6 +41,7 @@ pub struct EncoderConfig {
     pub constraint_set: Option<u8>,
     pub constraint_set_force: u8,
     pub constraint_set_value: u8,
+    pub base_layer_pid: u8,
     pub level_idc: u8,
     pub gop: u32,
     pub gaps_in_frame_num_allowed: bool,
@@ -263,6 +264,7 @@ impl EncoderConfig {
             constraint_set: None,
             constraint_set_force: 0,
             constraint_set_value: 0,
+            base_layer_pid: 0,
             level_idc: 30,
             gop: 1,
             gaps_in_frame_num_allowed: true,
@@ -381,6 +383,9 @@ impl EncoderConfig {
         }
         if self.cabac_init_idc > 2 {
             return Err(Error("cabac_init_idc must be in 0..=2".into()));
+        }
+        if self.base_layer_pid > 56 {
+            return Err(Error("base_layer_pid must be in 0..=56".into()));
         }
         if self.profile < PROFILE_HIGH && self.transform_8x8 {
             return Err(Error(
@@ -819,7 +824,7 @@ mod tests {
     /// `pic_init_qp` at 26 and the hardware derives `slice_qp_delta` from that, so
     /// writing qp_init here would apply it twice. On the board this showed up as a
     /// 6-byte PPS against the reference's 4 at every QP but 26.
-    /// SPS and PPS bytes taken from the C encoder on t6 at 320x240 QP 26 for each
+    /// SPS and PPS bytes taken from the C encoder on RK3588 at 320x240 QP 26 for each
     /// profile it can be pinned to (`mpi_enc_test` has to be patched, see
     /// tools/patches). These are the headers our own writer must reproduce, byte
     /// for byte, before the hardware ever sees a picture.

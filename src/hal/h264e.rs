@@ -2,7 +2,7 @@
 //!
 //! The first supported job is one IDR picture from the board reference
 //! configuration: Constrained Baseline, CAVLC, GOP 1, level 3.0. Its register and
-//! DMA layout starts from a captured VEPU580 job from the installed t6 MPP
+//! DMA layout starts from a captured VEPU580 job from the installed RK3588 MPP
 //! library, and the fields that a second configuration changes are regenerated
 //! over that image - so far the addresses, the picture geometry and the QP words
 //! of `setup_vepu580_rc_base`. Keeping the rest behind
@@ -1656,6 +1656,7 @@ impl Vepu580H264 {
         };
         let slice_prefix = prefix_temporal_id
             .map(|temporal_id| {
+                let priority_id = self.config.base_layer_pid + temporal_id;
                 svc_prefix_nal(
                     initial_state.is_idr,
                     if initial_state.is_idr {
@@ -1666,6 +1667,7 @@ impl Vepu580H264 {
                         2
                     },
                     temporal_id,
+                    priority_id,
                 )
             })
             .unwrap_or_default();
@@ -1775,13 +1777,19 @@ fn picture_frame_type(state: &FrameState) -> rc_model::FrameType {
     }
 }
 
-pub(super) fn svc_prefix_nal(is_idr: bool, nal_ref_idc: u8, temporal_id: u8) -> Vec<u8> {
+pub(super) fn svc_prefix_nal(
+    is_idr: bool,
+    nal_ref_idc: u8,
+    temporal_id: u8,
+    priority_id: u8,
+) -> Vec<u8> {
     debug_assert!(nal_ref_idc <= 3);
     debug_assert!(temporal_id <= 7);
+    debug_assert!(priority_id <= 63);
     let mut prefix = Vec::with_capacity(if nal_ref_idc == 0 { 4 } else { 5 });
     prefix.extend_from_slice(&[0, 0, 0, 1]);
     prefix.push((nal_ref_idc << 5) | 14);
-    prefix.push(0x80 | (u8::from(is_idr) << 6) | temporal_id);
+    prefix.push(0x80 | (u8::from(is_idr) << 6) | priority_id);
     prefix.push(0x80);
     prefix.push((temporal_id << 5) | 0x07);
     if nal_ref_idc != 0 {
@@ -2313,7 +2321,7 @@ pub struct Statistics {
     /// `madp`, reg4168 - mean absolute difference of the inter prediction.
     pub madp: u32,
     /// `st_bnum_cme.num_ctu`, reg4169 - the CME block count `madp` averages over.
-    /// Zero on t6's block, which is why the motion level never leaves "still".
+    /// Zero on RK3588's block, which is why the motion level never leaves "still".
     pub num_ctu: u32,
     /// `md_sad_b16num0..3`, reg4173..4176.
     pub md_sad_b16num: [u32; 4],
@@ -2531,7 +2539,7 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
         },
         RegOffsetInfo {
             reg_idx: REG_BSBT_END,
-            // The installed t6 MPP traces the logical packet size here
+            // The installed RK3588 MPP traces the logical packet size here
             // (119296 for the 320x240 reference), not dma-heap's rounded size.
             offset: output_capacity as u32,
         },
@@ -3461,7 +3469,7 @@ fn roi_tables(config: &EncoderConfig) -> (Vec<u8>, Vec<u8>) {
 /// `roi_en`, not `roi_qp_en`, so no QP surface is read. The stock
 /// `vepu580_h264_set_one_roi` initialises neither its local band record nor
 /// `base_cfg`; every field except the assigned flags becomes stack garbage.
-/// Two stock C runs on t6 therefore produce different streams. We use the
+/// Two stock C runs on RK3588 therefore produce different streams. We use the
 /// deterministic intended record here: zero every undeclared bit, keep
 /// `qp_adj_en` for the base records, and keep only `force_intra` for the band.
 fn gdr_base_table(config: &EncoderConfig, refresh_idx: u32) -> Vec<u8> {
@@ -4171,7 +4179,7 @@ mod tests {
     }
 
     #[test]
-    fn dimension_fields_match_the_t6_mpp_traces() {
+    fn dimension_fields_match_the_rk3588_mpp_traces() {
         for (width, height, expected) in [
             (64, 64, [0x07_0007, 64, 64, 0, 0x0000_2f02, 0x0004_1002]),
             (320, 240, [0x1d_0027, 320, 320, 0, 0x0000_2f7a, 0x0014_784b]),
@@ -4403,7 +4411,7 @@ mod tests {
 
     /// The STATUS field positions come from `Vepu580Status_t`, but what makes them
     /// trustworthy is the C encoder's own read-back of the same window, captured on
-    /// t6 and kept as a fixture. A wrong offset here would hand the motion and rate
+    /// RK3588 and kept as a fixture. A wrong offset here would hand the motion and rate
     /// control logic a silent zero instead of failing this test.
     #[test]
     fn statistics_match_the_c_encoders_readback() {
@@ -4424,7 +4432,7 @@ mod tests {
             .collect();
         assert_eq!(jobs.len(), 2, "the IDR job and the P job");
 
-        // Values read straight from the C encoder's own read-back on t6: 20x15
+        // Values read straight from the C encoder's own read-back on RK3588: 20x15
         // macroblocks, QP 26 over 300 blocks, and the second picture being a repeat
         // of the first.
         assert_eq!(jobs[0].bitstream_bytes, 825, "the IDR the C encoder wrote");
@@ -5703,16 +5711,20 @@ mod tests {
     #[test]
     fn tsvc_prefix_matches_the_reference_bit_layout() {
         assert_eq!(
-            svc_prefix_nal(true, 3, 0),
+            svc_prefix_nal(true, 3, 0, 0),
             [0, 0, 0, 1, 0x6e, 0xc0, 0x80, 0x07, 0x20]
         );
         assert_eq!(
-            svc_prefix_nal(false, 0, 1),
+            svc_prefix_nal(false, 0, 1, 1),
             [0, 0, 0, 1, 0x0e, 0x81, 0x80, 0x27]
         );
         assert_eq!(
-            svc_prefix_nal(false, 2, 0),
+            svc_prefix_nal(false, 2, 0, 0),
             [0, 0, 0, 1, 0x4e, 0x80, 0x80, 0x07, 0x20]
+        );
+        assert_eq!(
+            svc_prefix_nal(false, 2, 3, 8),
+            [0, 0, 0, 1, 0x4e, 0x88, 0x80, 0x67, 0x20]
         );
     }
 

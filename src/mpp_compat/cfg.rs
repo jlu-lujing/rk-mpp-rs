@@ -146,10 +146,12 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
         let transform_8x8 = unsafe { cfg.get("h264:trans8x8") };
         let cabac_init_idc = unsafe { cfg.get("h264:cabac_idc") };
         let constraint_set = unsafe { cfg.get("h264:constraint_set") };
+        let base_layer_pid = unsafe { cfg.get("h264:base_layer_pid") };
         if cabac.is_some()
             || transform_8x8.is_some()
             || cabac_init_idc.is_some()
             || constraint_set.is_some()
+            || base_layer_pid.is_some()
         {
             let mut syntax =
                 H264SyntaxConfig::new(cabac.unwrap_or(0) != 0, transform_8x8.unwrap_or(0) != 0);
@@ -164,6 +166,12 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
                 syntax = syntax.with_constraint_set(u32::try_from(value).map_err(|_| {
                     format!("h264:constraint_set {value} is outside the 32-bit mask")
                 })?);
+            }
+            if let Some(value) = base_layer_pid {
+                syntax = syntax.with_base_layer_pid(
+                    u8::try_from(value)
+                        .map_err(|_| format!("h264:base_layer_pid {value} is outside 0..=56"))?,
+                );
             }
             result = result.with_h264_syntax(syntax);
         }
