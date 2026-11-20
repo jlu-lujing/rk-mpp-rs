@@ -440,6 +440,10 @@ custom RC 或 stride/size 不匹配时，兼容层现在直接把现有 fd 交�
 SHA-256 分别为 `2fdcd6ed…bcbb2c3` 和 `1865f014…f7af84b`。9 次交错采样中，
 dma-heap 路径 wall median 273 ms，CPU fallback 为 311 ms（范围 306–449 ms）；
 user+sys median 从 95 ms 降到 59 ms（-37.9%）。
+OSD 的 direct dma-buf 路径已在 VEPU580 H.264/H.265 接通，但
+`mpi_enc_test` 的 cached DRM 输入在 500 帧 OSD 压测中反而双峰变慢，因此
+默认仍走 CPU fallback；确认输入 surface 为非 cached 或已完成 cache 管理时，
+可设置 `RKMPP_COMPAT_OSD_DMABUF=1` opt-in。
 t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
 也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
 （`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则

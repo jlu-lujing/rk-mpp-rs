@@ -46,6 +46,22 @@ The direct path therefore removes the staging copy and fd-import overhead
 without changing a NAL. The 12.2% median wall improvement understates the
 lower 306 ms mode; total CPU is consistently about 38% lower.
 
+VEPU580 H.264/H.265 OSD tables are independent of the source surface, so the
+same fd path can carry OSD without copying the picture. `board_mpp_osd.sh`
+now encodes the vendor library, Rust with
+`RKMPP_COMPAT_OSD_DMABUF=1`, and Rust with forced fallback, then compares
+streams and decoded YUV. H.264 produces 6 identical NALs with YUV
+`1055ca00…73b22a`; H.265 produces 7 identical NALs with YUV
+`6f44da15…e5b176`. The comparator now recognises H.265's build-identity
+PREFIX_SEI, matching its existing H.264 version-SEI exception.
+
+OSD direct is opt-in rather than default. Seven interleaved 500-frame 720p
+samples through `mpi_enc_test`'s cached DRM input were bimodal on the direct
+path (1.295-2.114 s, median 1.795 s), while fallback stayed at 1.413-1.576 s,
+median 1.428 s. `RKMPP_COMPAT_OSD_DMABUF=1` enables direct submission for
+surfaces whose cache policy is known suitable; `RKMPP_COMPAT_CPU_INPUT=1`
+forces the fallback.
+
 ## 2026-11-17 SDK / C API now use the submission ring
 
 - `SdkSession` enables the ring at depth 3 for H.264 and H.265 by default

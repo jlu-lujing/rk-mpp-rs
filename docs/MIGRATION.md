@@ -139,6 +139,10 @@ t6 的 120 帧 720p 门要求 H.264/H.265 两条路径分别保持 126/125 NAL �
 OSD、custom RC 和 I420/NV21 仍需由各自的现有专项门继续覆盖其 CPU staging
 行为。
 
+OSD 默认继续走 CPU staging。VEPU580 上确认源 surface 的 cache 语义适合
+硬件直读时，可设置 `RKMPP_COMPAT_OSD_DMABUF=1` 启用 direct fd；设置
+`RKMPP_COMPAT_CPU_INPUT=1` 可强制普通路径回退用于 A/B。
+
 ## 3. 新 C API / Rust crate（推荐新代码）
 
 `include/rk_mpp_rs.h` 是本仓库自己的稳定 API，语义比官方 MPI 简单：

@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
 use std::mem::size_of;
+use std::sync::OnceLock;
 
 use crate::{encoder, sdk};
 
@@ -638,6 +639,16 @@ fn video_input(frame: &objects::FrameInputView, format: u32) -> Result<Vec<u8>, 
     Ok(output)
 }
 
+fn force_cpu_encoder_input() -> bool {
+    static FORCE: OnceLock<bool> = OnceLock::new();
+    *FORCE.get_or_init(|| std::env::var_os("RKMPP_COMPAT_CPU_INPUT").is_some())
+}
+
+fn osd_dmabuf_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("RKMPP_COMPAT_OSD_DMABUF").is_some())
+}
+
 unsafe extern "C" fn compat_decode(ctx: MppCtx, packet: MppPacket, frame: *mut MppFrame) -> c_int {
     let put = unsafe { compat_decode_put_packet(ctx, packet) };
     if put != MPP_OK {
@@ -800,11 +811,17 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     };
     let use_dmabuf = if frame.format == MPP_FMT_YUV420SP
         && frame.dma_fd >= 0
-        && osd.is_none()
+        && !force_cpu_encoder_input()
+        && (!osd.is_some() || osd_dmabuf_enabled())
         && context.custom_rc.is_none()
         && context.encoder.as_ref().is_some_and(|encoder| {
             encoder.config().input_format() == sdk::PixelFormat::Nv12
-                && encoder.accepts_dmabuf_frame(frame.len, frame.hor_stride, frame.ver_stride)
+                && encoder.accepts_dmabuf_frame(
+                    frame.len,
+                    frame.hor_stride,
+                    frame.ver_stride,
+                    osd.is_some(),
+                )
         }) {
         true
     } else {
@@ -859,6 +876,7 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
                             frame.ver_stride,
                             frame.pts,
                             frame.dts,
+                            osd,
                         )
                     }
                 }

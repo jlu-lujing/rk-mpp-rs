@@ -775,7 +775,7 @@ pub unsafe extern "C" fn rk_mpp_encoder_submit_frame_dmabuf(
     match unsafe {
         (&mut *encoder)
             .inner
-            .submit_dmabuf_frame_borrowed(fd, size, hor_stride, ver_stride, pts, dts)
+            .submit_dmabuf_frame_borrowed(fd, size, hor_stride, ver_stride, pts, dts, None)
     } {
         Ok(_) => RK_MPP_OK,
         Err(error) => error_code(&error),

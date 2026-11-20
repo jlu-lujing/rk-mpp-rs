@@ -461,6 +461,15 @@ trace=fcntl` 中 `F_DUPFD_CLOEXEC` 为 0，`board_sdk_encoder_dmabuf.sh`
 wall median 为 273 ms 对 CPU fallback 311 ms（fallback 呈 306–449 ms 双峰），
 user+sys median 从 95 ms 降到 59 ms。
 
+VEPU580 H.264/H.265 OSD 也支持 direct fd：OSD table 与源画面独立，寄存器
+会同时带上 OSD offset。`board_mpp_osd.sh` 现在跑 vendor、direct 和 forced
+fallback 三路；H.264 6 NAL/YUV `1055ca00…73b22a`、H.265 7 NAL/YUV
+`6f44da15…e5b176`。通用 `compare_streams.py` 已能识别 H.265 的 build-identity
+PREFIX_SEI，避免把两路版本文本当数据差异。实测 cached DRM 输入的 500 帧
+720p OSD direct 为双峰且 median 1.795 s，fallback 1.428 s，因此 OSD direct
+只通过 `RKMPP_COMPAT_OSD_DMABUF=1` opt-in；默认仍是 CPU fallback。
+`RKMPP_COMPAT_CPU_INPUT=1` 用于强制 fallback A/B。
+
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
 一致（`ae613590ee5b546f89d76dad1ecaa1528da292abfbd4e92303cc84c93b469783`）。

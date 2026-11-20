@@ -19,8 +19,9 @@ else
     exit 2
 fi
 
-raw=/tmp/rk_mpp_osd_2.nv12
 overlay=$(mktemp -d /tmp/rk_mpp_osd.XXXXXX)
+frames="${FRAMES:-2}"
+raw="/tmp/rk_mpp_osd_${frames}.nv12"
 trap 'rm -rf "$overlay"' EXIT
 
 if grep -qi rk3576 /proc/device-tree/compatible 2>/dev/null; then
@@ -32,7 +33,7 @@ cargo build --release --offline --lib --bin rk-mpp-rs
 ln -s "$repo/target/release/librk_mpp_rs.so" \
     "$overlay/librockchip_mpp.so.1"
 ffmpeg -nostdin -y -hide_banner -loglevel error \
-    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 2 \
+    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v "$frames" \
     -pix_fmt nv12 -f rawvideo "$raw"
 
 run_encoder() {
@@ -41,12 +42,20 @@ run_encoder() {
     local output="$3"
     local type="$4"
     local decoder="$5"
+    local force_cpu="$6"
     local yuv="${output}.yuv"
+    local input_mode=()
 
+    if [ "$force_cpu" = direct ]; then
+        input_mode=(RKMPP_COMPAT_OSD_DMABUF=1)
+    elif [ "$force_cpu" = fallback ]; then
+        input_mode=(RKMPP_COMPAT_CPU_INPUT=1)
+    fi
     sudo -n rm -f "$output" "$yuv"
-    sudo -n env osd_enable=1 LD_PRELOAD="$preload" LD_LIBRARY_PATH="$library" \
+    sudo -n env osd_enable=1 "${input_mode[@]}" \
+        LD_PRELOAD="$preload" LD_LIBRARY_PATH="$library" \
         timeout 60 "$enc_test" -i "$raw" -o "$output" \
-        -w 320 -h 240 -n 2 -rc 2 -fps 30 -g 0:60 -t "$type" -qc 26 \
+        -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g 0:60 -t "$type" -qc 26 \
         < /dev/null > "$output.log" 2>&1
     sudo -n "$repo/target/release/rk-mpp-rs" "$decoder" "$output" "$yuv" \
         > /dev/null
@@ -58,12 +67,17 @@ for case in "h264 7 h264dec" "h265 16777220 hevcdec"; do
     type="$2"
     decoder="$3"
     vendor="/tmp/rk_mpp_osd_${name}_vendor.stream"
-    ours="/tmp/rk_mpp_osd_${name}_ours.stream"
-    run_encoder "$lib" "" "$vendor" "$type" "$decoder"
+    direct="/tmp/rk_mpp_osd_${name}_direct.stream"
+    fallback="/tmp/rk_mpp_osd_${name}_fallback.stream"
+    run_encoder "$lib" "" "$vendor" "$type" "$decoder" 0
     run_encoder "$overlay" "$overlay/librockchip_mpp.so.1" \
-        "$ours" "$type" "$decoder"
-    python3 "$repo/scripts/compare_streams.py" "$vendor" "$ours"
-    cmp "$vendor.yuv" "$ours.yuv"
-    printf 'PASS %s OSD stream/reconstruction (%s)\n' \
-        "$name" "$(sha256sum "$ours.yuv" | cut -d' ' -f1)"
+        "$direct" "$type" "$decoder" direct
+    run_encoder "$overlay" "$overlay/librockchip_mpp.so.1" \
+        "$fallback" "$type" "$decoder" fallback
+    python3 "$repo/scripts/compare_streams.py" "$vendor" "$direct"
+    python3 "$repo/scripts/compare_streams.py" "$direct" "$fallback"
+    cmp "$vendor.yuv" "$direct.yuv"
+    cmp "$direct.yuv" "$fallback.yuv"
+    printf 'PASS %s OSD direct/fallback stream+reconstruction (%s frames, %s)\n' \
+        "$name" "$frames" "$(sha256sum "$direct.yuv" | cut -d' ' -f1)"
 done

@@ -997,11 +997,11 @@ impl DmaBufInput {
             ver_stride: self.ver_stride,
             pts: self.pts,
             dts: self.dts,
+            osd: None,
         }
     }
 }
 
-#[derive(Clone, Copy)]
 struct DmaBufSubmission {
     fd: i32,
     size: usize,
@@ -1009,6 +1009,7 @@ struct DmaBufSubmission {
     ver_stride: usize,
     pts: i64,
     dts: i64,
+    osd: Option<osd::Config>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1956,8 +1957,15 @@ impl Encoder {
         size: usize,
         hor_stride: usize,
         ver_stride: usize,
+        osd: bool,
     ) -> bool {
-        !self.eos && validate_dmabuf_layout(self.config, size, hor_stride, ver_stride).is_ok()
+        !self.eos
+            && validate_dmabuf_layout(self.config, size, hor_stride, ver_stride).is_ok()
+            && (!osd
+                || matches!(
+                    self.backend,
+                    Backend::H264Vepu580(_) | Backend::H265Vepu580(_)
+                ))
     }
 
     /// Submit a DMA-BUF that remains owned by the caller for the duration of
@@ -1974,6 +1982,7 @@ impl Encoder {
         ver_stride: usize,
         pts: i64,
         dts: i64,
+        osd: Option<osd::Config>,
     ) -> Result<usize, Error> {
         self.submit_dmabuf_submission(DmaBufSubmission {
             fd,
@@ -1982,6 +1991,7 @@ impl Encoder {
             ver_stride,
             pts,
             dts,
+            osd,
         })
     }
 
@@ -1996,8 +2006,10 @@ impl Encoder {
             .config
             .rate_control
             .is_some_and(|rate_control| rate_control.mode() != RateControlMode::FixedQp);
+        let osd = frame.osd;
         let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
+                encoder.set_next_osd(osd);
                 if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
                     encoder.force_next_rate_control(h264e::RateControl {
                         bit_target: rc.bit_target,
@@ -2030,6 +2042,11 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H264Vepu510(encoder) => {
+                if osd.is_some() {
+                    return Err(Error::Unsupported(
+                        "RK3576 H.264 OSD is not available".to_string(),
+                    ));
+                }
                 let encoded = if let Some(rc) = external_rc {
                     encoder.encode_next_with_rate_320x240_fd(
                         input_fd,
@@ -2058,6 +2075,7 @@ impl Encoder {
                 Ok(1)
             }
             Backend::H265Vepu580(encoder) => {
+                encoder.set_next_osd(osd);
                 if use_rate_control_registers && external_rc.is_some() {
                     return Err(Error::Unsupported(
                         "H.265 DMA-BUF custom RC is not available".to_string(),
@@ -2083,6 +2101,11 @@ impl Encoder {
                 Ok(count)
             }
             Backend::H265Vepu510(encoder) => {
+                if osd.is_some() {
+                    return Err(Error::Unsupported(
+                        "RK3576 H.265 OSD is not available".to_string(),
+                    ));
+                }
                 let encoded = if let Some(rc) = external_rc {
                     encoder.encode_next_with_rate_320x240_fd(
                         input_fd,
@@ -2114,6 +2137,11 @@ impl Encoder {
                 encoder,
                 frame_number,
             } => {
+                if osd.is_some() {
+                    return Err(Error::Unsupported(
+                        "JPEG encoder OSD is not available".to_string(),
+                    ));
+                }
                 if external_rc.is_some() {
                     return Err(Error::Unsupported(
                         "JPEG custom RC is not available".to_string(),

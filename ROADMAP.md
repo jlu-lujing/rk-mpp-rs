@@ -4169,6 +4169,18 @@ pipeline uses.
   fallback is bimodal at 306–449 ms), while median user+sys time fell from 95
   to 59 ms (-37.9%); per-sample CPU totals were 90–232 ms versus 59–60 ms.
 
+- **2026-11-20: VEPU580 compat OSD can submit dma-buf input opt-in.** OSD
+  tables were already independent of the source picture, and the VEPU580
+  H.264/H.265 fd path now accepts them. `board_mpp_osd.sh` runs vendor, direct
+  and forced-CPU fallback encoder streams and requires identical stream rules
+  and decoded YUV: H.264 is 6 NAL (`1055ca00…73b22a`) and H.265 is 7 NAL
+  (`6f44da15…e5b176`). The shared comparator now recognises the H.265
+  build-identity SEI instead of treating it as a normal PREFIX_SEI. A 500-frame
+  720p run on `mpi_enc_test`'s cached DRM surface was bimodal and slower on the
+  direct path (median 1.795 s versus 1.428 s), so OSD direct submission remains
+  opt-in through `RKMPP_COMPAT_OSD_DMABUF=1`; default behavior stays on the CPU
+  fallback. `RKMPP_COMPAT_CPU_INPUT=1` forces the fallback for A/B gates.
+
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a
   request Batch. The session now reuses and clears both. Seven interleaved
