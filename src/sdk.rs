@@ -456,6 +456,36 @@ impl Frame {
         }
     }
 
+    /// Transfer the canonical NV12 DMA-BUF storage out of this frame.
+    ///
+    /// The compatibility layer uses this to expose a decoded hardware surface
+    /// through the legacy MPP object API without copying a full picture.
+    pub(crate) fn into_nv12_dmabuf(self) -> Result<(DmaBuf, usize, usize), Self> {
+        let first = self.planes[0];
+        let second = self.planes[1];
+        let canonical = self.format == PixelFormat::Nv12
+            && first.offset == 0
+            && first.stride != 0
+            && first.len % first.stride == 0
+            && second.offset == first.len
+            && second.stride == first.stride;
+        if !canonical {
+            return Err(self);
+        }
+        if !matches!(
+            self.storage,
+            FrameStorage::DmaBuf(_) | FrameStorage::DecodedDmaBuf { .. }
+        ) {
+            return Err(self);
+        }
+        let mapping = match self.storage {
+            FrameStorage::DmaBuf(buffer) => buffer,
+            FrameStorage::DecodedDmaBuf { mapping, .. } => mapping,
+            FrameStorage::Cpu(_) => unreachable!("DMA-BUF storage was checked above"),
+        };
+        Ok((mapping, first.stride, first.len / first.stride))
+    }
+
     /// Convert between the supported 8-bit NV12/I420 layouts and planar
     /// 10-bit I420 using CPU-accessible storage.
     ///

@@ -2030,6 +2030,13 @@ impl Encoder {
         osd: bool,
     ) -> bool {
         !self.eos
+            && matches!(
+                self.backend,
+                Backend::H264Vepu580(_)
+                    | Backend::H264Vepu510(_)
+                    | Backend::H265Vepu580(_)
+                    | Backend::H265Vepu510(_)
+            )
             && validate_dmabuf_layout(self.config, size, hor_stride, ver_stride).is_ok()
             && (!osd
                 || matches!(

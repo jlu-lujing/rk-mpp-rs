@@ -603,7 +603,7 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
     Some(FrameInputView {
         data,
         len,
-        dma_fd: buffer.dma.as_ref().map(DmaBuf::fd).unwrap_or(-1),
+        dma_fd: buffer_dma_fd(buffer),
         width: frame.width as usize,
         height: frame.height as usize,
         hor_stride: frame.hor_stride as usize,
@@ -614,6 +614,15 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
         motion_info,
         osd_data,
     })
+}
+
+fn buffer_dma_fd(buffer: &CompatBuffer) -> c_int {
+    buffer
+        .dma
+        .as_ref()
+        .map(DmaBuf::fd)
+        .or_else(|| (buffer.fd >= 0).then_some(buffer.fd))
+        .unwrap_or(-1)
 }
 
 pub(super) unsafe fn frame_is_eos(frame: MppFrame) -> bool {
@@ -984,6 +993,62 @@ unsafe fn new_external_buffer(
 pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()> {
     let width = u32::try_from(decoded.width()).map_err(|_| ())?;
     let height = u32::try_from(decoded.height()).map_err(|_| ())?;
+    let pts = decoded.pts();
+    let dts = decoded.dts();
+    let poc = decoded.poc().max(0) as u32;
+    let errinfo = decoded.err_info();
+    let decoded = match decoded.into_nv12_dmabuf() {
+        Ok((mapping, hor_stride, ver_stride)) => {
+            let buffer_size = mapping.len();
+            let fd = mapping.fd();
+            let buffer = Box::into_raw(Box::new(CompatBuffer {
+                magic: BUFFER_MAGIC,
+                size: buffer_size,
+                data: Vec::new(),
+                dma: Some(mapping),
+                external_ptr: std::ptr::null_mut(),
+                external_size: 0,
+                mapped: false,
+                type_: MPP_BUFFER_TYPE_DMA_HEAP,
+                hnd: std::ptr::null_mut(),
+                group: std::ptr::null_mut(),
+                fd,
+                index: 0,
+                offset: 0,
+                refs: 1,
+            }))
+            .cast();
+            return Ok(Box::into_raw(Box::new(CompatFrame {
+                magic: FRAME_MAGIC,
+                width,
+                height,
+                hor_stride: u32::try_from(hor_stride).map_err(|_| ())?,
+                ver_stride: u32::try_from(ver_stride).map_err(|_| ())?,
+                format: MPP_FMT_YUV420SP,
+                offset_x: 0,
+                offset_y: 0,
+                mode: 0,
+                discard: 0,
+                viewid: 0,
+                poc,
+                pts,
+                dts,
+                errinfo,
+                buffer_size,
+                eos: 0,
+                info_change: 0,
+                thumbnail: 0,
+                buffer,
+                meta: std::ptr::null_mut(),
+                sar: MppFrameRational::default(),
+                mastering: MppFrameMasteringDisplayMetadata::default(),
+                content_light: MppFrameContentLightMetadata::default(),
+                hdr_dynamic_meta: std::ptr::null_mut(),
+            }))
+            .cast());
+        }
+        Err(decoded) => decoded,
+    };
     let hor_stride = align(width, 16);
     let ver_stride = align(height, 16);
     let luma_size = usize::try_from(hor_stride)
@@ -1071,10 +1136,10 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
         mode: 0,
         discard: 0,
         viewid: 0,
-        poc: decoded.poc().max(0) as u32,
-        pts: decoded.pts(),
-        dts: decoded.dts(),
-        errinfo: decoded.err_info(),
+        poc,
+        pts,
+        dts,
+        errinfo,
         buffer_size,
         eos: 0,
         info_change: 0,
