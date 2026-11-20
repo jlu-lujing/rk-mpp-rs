@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: rockchip_mpp
+Description: Rockchip Media Process Platform compatibility provided by rk-mpp-rs
+Version: @VERSION@
+Libs: -L${libdir} -lrockchip_mpp
+Libs.private: -ldl -lpthread -lm
+Cflags: -I${includedir}

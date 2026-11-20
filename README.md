@@ -315,6 +315,7 @@ BOARD=my-rk3588-host ./scripts/board_c_api_h264_mjpeg.sh
 STREAM_COUNTS="1 2 4 6 8" RUST_DMABUF=1 ./scripts/board_multistream_bench.sh
 ./scripts/board_mpp_standalone.sh
 ./scripts/board_mpp_standalone_encode.sh
+./scripts/board_ffmpeg_rkmpp.sh
 ```
 
 RK3576 和 RK3588 已验证共享库和静态库链接、全部公开符号、生命周期错误路径，以及 H.264
@@ -412,6 +413,12 @@ standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 `vfprintf` helper，实际展开 printf 变参；
 未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG
 单帧编码：H.264/H.265 重建逐字节一致，MJPEG stream 逐字节一致。
+带 `--enable-rkmpp` 的 FFmpeg 同样可用 `LD_LIBRARY_PATH` 把
+`librockchip_mpp.so.1` 指向本库；RK3588 已通过 H.264/H.265/VP9 解码和
+H.264/H.265/MJPEG 编码 FFmpeg 门，复验见 `scripts/board_ffmpeg_rkmpp.sh`。
+需要重新编译 FFmpeg 时，使用
+`scripts/install_sdk.sh --prefix PATH --mpp-compat` 安装兼容
+`librockchip_mpp.so{,.1}`、vendor 头和 `rockchip_mpp.pc`。
 `MppEncRefCfg` 的 create/reset/LT/ST add/check 与
 `MPP_ENC_SET_REF_CFG` 已接通，LOG/JSON/TOML 三种 cfg-string
 `apply/apply_file/extract` 也已实现；LOG/JSON 与 vendor 双向通过，TOML 提取

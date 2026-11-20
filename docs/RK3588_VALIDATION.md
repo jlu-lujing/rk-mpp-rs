@@ -1933,3 +1933,45 @@ RK3588 under the persistent 80 % OPP cap, the targeted release test passed
 (`1 passed`, `0 failed`) and the complete release library suite passed
 (`978 passed`, `0 failed`, `0 ignored`).  The host all-target suite enumerated
 1151 tests and finished with `1120 passed`, `0 failed`, `31 ignored`.
+
+## FFmpeg RKMPP drop-in (2026-11-21)
+
+The installed Rockchip FFmpeg frontend is `c5e745e3c1` with
+`--enable-rkmpp`. `scripts/board_ffmpeg_rkmpp.sh` overrides only
+`librockchip_mpp.so.1` with `librk_mpp_rs.so`; the FFmpeg binary and its
+`*_rkmpp` wrappers are unchanged.
+
+| path | result |
+|---|---|
+| H.264 decode, 12×1280×720 NV12 | byte-identical, `eed99af9…ae50ae7c` |
+| H.265 decode, 1×320×240 NV12 | byte-identical, `fcedb435…1d805e0` |
+| VP9 decode, 12×320×240 NV12 | byte-identical, `c5381bbf…e3949a` |
+| H.264 encode, 12×320×240 CQP26 | valid 12-frame bitstream; differs from vendor wrapper output |
+| H.265 encode, 12×320×240 CQP26 | valid 12-frame bitstream; differs from vendor wrapper output |
+| MJPEG encode, 12×320×240 | byte-identical, `5a0ccd0a…92c7873` |
+
+Final gate: `SUMMARY passed=6 skipped=0 failed=0`.
+
+The FFmpeg wrapper uses its newer info-change/external-buffer/control sequence,
+not only the official `mpi_dec_test` path. The compatibility layer now returns
+an info-change frame before the first picture, accepts the external group and
+parser controls, returns the held first picture after `INFO_CHANGE_READY`,
+attaches `KEY_INPUT_FRAME` to every encoded packet, and emits an EOS packet.
+CPU NV12 copy-out is verified. The deinterlace command is accepted for this
+progressive matrix, but real deinterlacing is not implemented.
+
+The compatibility SDK path was also tested directly. A staged install produced
+`librockchip_mpp.so`, `librockchip_mpp.so.1`, vendor `rockchip/*.h`, and
+`rockchip_mpp.pc` version `1.14.0`. A C consumer linked through
+`pkg-config rockchip_mpp` and ran with `librk_mpp_rs.so.1`. FFmpeg source
+`c5e745e3c1` then configured successfully with:
+
+```bash
+PKG_CONFIG_PATH=/tmp/rk-mpp-ffmpeg-prefix/lib/pkgconfig \
+./configure --enable-version3 --enable-rkmpp --enable-libdrm \
+    --disable-everything --disable-doc --disable-programs --disable-network \
+    --enable-decoder=h264_rkmpp --enable-encoder=h264_rkmpp
+```
+
+The minimal source build completed with `make -j8` exit 0 and produced
+`libavcodec.a`.

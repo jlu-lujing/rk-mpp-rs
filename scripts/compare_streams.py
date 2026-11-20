@@ -36,12 +36,15 @@ def nals(path):
 
 
 def stream_codec(units):
-    if any(
-        len(body) >= 2
-        and (body[0] & 1) == 0
-        and ((body[0] >> 1) & 0x3F)
+    # H.264 type-14 prefix NALs can decode to an HEVC-looking 39 when the same
+    # bits are interpreted with HEVC's layer-id layout. Annex-B encoders both
+    # start with a parameter-set VPS/SPS, so classify from the first unit only.
+    first = units[0] if units else b""
+    if (
+        len(first) >= 2
+        and (first[0] & 1) == 0
+        and ((first[0] >> 1) & 0x3F)
         in (HEVC_VPS, HEVC_SPS, HEVC_PPS, HEVC_PREFIX_SEI)
-        for body in units
     ):
         return "hevc"
     return "h264"

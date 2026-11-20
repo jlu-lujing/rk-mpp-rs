@@ -82,6 +82,66 @@ LD_PRELOAD=/opt/rk-mpp-rs/lib/librk_mpp_rs.so.1 ./mpi_dec_test ...
 已验证：RK3588/RK3576 上 H.264/H.265/VP9/AV1/MJPEG 的官方 `mpi_dec_test` 输出与
 vendor 库逐字节一致；`mpi_enc_test` 可完成 H.264/H.265/MJPEG 单帧编码。
 
+### FFmpeg
+
+FFmpeg 不需要改源码也可以使用本库。带 `--enable-rkmpp` 的 FFmpeg 通过
+`librockchip_mpp.so.1` 调用 Rockchip MPP C API，因此可以把本库放到
+`LD_LIBRARY_PATH` 前方直接替换：
+
+```bash
+overlay=$(mktemp -d)
+ln -s /opt/rk-mpp-rs/lib/librk_mpp_rs.so.1 \
+    "$overlay/librockchip_mpp.so.1"
+
+LD_LIBRARY_PATH="$overlay" ldd "$(command -v ffmpeg)" |
+    grep rockchip_mpp
+
+LD_LIBRARY_PATH="$overlay" ffmpeg -c:v h264_rkmpp -i input.264 \
+    -fps_mode passthrough -pix_fmt nv12 -f rawvideo output.yuv
+```
+
+板级复验入口：
+
+```bash
+ssh my-rk3588-host 'cd ~/rk-mpp-rs && ./scripts/board_ffmpeg_rkmpp.sh'
+```
+
+已在 FFmpeg `c5e745e3c1`（Rockchip `--enable-rkmpp` 构建）验证：
+
+- H.264、H.265、VP9 CPU NV12 解码与 vendor `ffmpeg ..._rkmpp` 逐字节一致；
+- H.264、H.265、MJPEG 编码均完成 12 帧闭环；MJPEG 码流逐字节一致；
+- H.264/H.265 编码码流可用，但当前 RC/profile 默认映射与 vendor wrapper
+  仍可能产生不同码流，不能宣称逐字节一致。
+
+本板 FFmpeg 没有构建 MJPEG RKMPP decoder；AV1 10-bit fixture 在该 vendor
+FFmpeg 前端也会先失败，因此这两项没有作为 FFmpeg 结果计入。
+
+FFmpeg 的新的 wrapper 会依次使用 `MPP_DEC_SET_ENABLE_DEINTERLACE`、
+info-change frame、外部 buffer group、`MPP_DEC_SET_PARSER_FAST_MODE` 和
+`MPP_DEC_SET_INFO_CHANGE_READY`。兼容层现已覆盖该调用序列，也会在编码 packet
+meta 中回传 `KEY_INPUT_FRAME` 并发送 EOS packet。当前验证的是 progressive
+路径；deinterlace 控制会被接受，但尚未实现实际硬件去隔行。
+
+重新编译 FFmpeg 时仍使用 vendor 的 `rockchip/rk_mpi.h` 等头文件，只把链接阶段
+的 `librockchip_mpp` 指向本库。安装兼容 prefix：
+
+```bash
+scripts/install_sdk.sh --prefix /opt/rk-mpp-ffmpeg --mpp-compat
+# vendor 头文件不在默认搜索路径时：
+scripts/install_sdk.sh --prefix /opt/rk-mpp-ffmpeg --mpp-compat \
+    --mpp-include /path/to/vendor/include
+```
+
+该选项会安装 `lib/librockchip_mpp.so`、`lib/librockchip_mpp.so.1`、
+vendor `rockchip/*.h`，以及 FFmpeg configure 所需的
+`lib/pkgconfig/rockchip_mpp.pc`。随后按原 Rockchip 构建参数执行：
+
+```bash
+PKG_CONFIG_PATH=/opt/rk-mpp-ffmpeg/lib/pkgconfig \
+./configure --enable-version3 --enable-rkmpp --enable-libdrm ... # 保留本机原有其余参数
+make -j"$(nproc)"
+```
+
 安装 SDK（含 SONAME、pkg-config、CMake config）：
 
 ```bash

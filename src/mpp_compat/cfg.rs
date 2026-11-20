@@ -106,7 +106,22 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
         "h264:level"
     };
     let profile = unsafe { cfg.get_or(profile_key, 0) }.clamp(0, u8::MAX as i32) as u8;
-    let level = unsafe { cfg.get_or(level_key, 30) }.clamp(0, u8::MAX as i32) as u8;
+    // MPP uses one for HEVC Main; the typed encoder uses zero for its
+    // currently supported Main-only backend.
+    let profile = if codec == Codec::H265 && profile == 1 {
+        0
+    } else {
+        profile
+    };
+    let level = unsafe { cfg.get_or(level_key, 0) }.clamp(0, u8::MAX as i32) as u8;
+    // FFmpeg uses zero for "let MPP choose". H.264's SPS builder raises this
+    // initial 1.0 level to the lowest level that fits the coded picture.
+    let level = match (codec, level) {
+        (Codec::H264, 0) => 10,
+        (Codec::H265, 0) => 30,
+        (_, 0) => 0,
+        (_, value) => value,
+    };
     let jpeg_qfactor = unsafe { cfg.get_or("jpeg:q_factor", 80) }.clamp(1, 100) as u32;
 
     let mut result = EncoderConfig::new(codec, width as usize, height as usize)
@@ -246,11 +261,9 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
             let default_qp_min = if codec == Codec::H264 { 8 } else { 10 };
             let default_qp_max = if codec == Codec::H264 { 48 } else { 51 };
             let qp_min = unsafe { cfg.get("rc:qp_min") }
-                .filter(|value| *value > 0)
                 .unwrap_or(default_qp_min)
                 .clamp(0, 51) as u8;
             let qp_max = unsafe { cfg.get("rc:qp_max") }
-                .filter(|value| *value > 0)
                 .unwrap_or(default_qp_max)
                 .clamp(qp_min as i32, default_qp_max) as u8;
             let qp_init = unsafe { cfg.get("rc:qp_init") }

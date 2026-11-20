@@ -47,9 +47,13 @@ const MPP_FMT_YUV420SP: u32 = 0;
 const MPP_FMT_YUV420P: u32 = 4;
 const MPP_FMT_YUV420SP_VU: u32 = 5;
 
+const MPP_DEC_SET_EXT_BUF_GROUP: c_int = 3_211_266;
+const MPP_DEC_SET_INFO_CHANGE_READY: c_int = 3_211_267;
+const MPP_DEC_SET_PARSER_FAST_MODE: c_int = 3_211_270;
 const MPP_DEC_SET_OUTPUT_FORMAT: c_int = 3_211_274;
 const MPP_DEC_SET_DISABLE_ERROR: c_int = 3_211_275;
 const MPP_DEC_SET_IMMEDIATE_OUT: c_int = 3_211_276;
+const MPP_DEC_SET_ENABLE_DEINTERLACE: c_int = 3_211_277;
 const MPP_DEC_SET_CFG: c_int = 3_211_777;
 const MPP_DEC_GET_CFG: c_int = 3_211_778;
 
@@ -68,6 +72,7 @@ const MPP_ENC_SET_RC_API_CFG: c_int = 3_277_315;
 const MPP_ENC_GET_RC_API_CURRENT: c_int = 3_277_316;
 const MPP_ENC_SET_RC_API_CURRENT: c_int = 3_277_317;
 const MPP_ENC_SET_REF_CFG: c_int = 3_310_081;
+const MPP_SET_INPUT_TIMEOUT: c_int = 2_097_158;
 const MPP_SET_OUTPUT_TIMEOUT: c_int = 2_097_159;
 const MPP_SET_VENC_INIT_KCFG: c_int = 2_097_162;
 
@@ -149,7 +154,13 @@ struct CompatContext {
     eos_delivered: bool,
     pending_output_frame: MppFrame,
     pending_input_packet: MppPacket,
+    pending_decoded_frame: Option<sdk::Frame>,
+    decoder_output_info: Option<(u32, u32, u32)>,
+    decoder_info_change_enabled: bool,
     pending_packet_motion_info: VecDeque<MppBuffer>,
+    pending_packet_input_frames: VecDeque<MppFrame>,
+    encoder_eos_submitted: bool,
+    encoder_eos_delivered: bool,
     encoder_ref_pattern: Vec<standalone::ReferenceFrameStep>,
     encoder_ref_schedule: Option<ReferenceSchedule>,
     rc_api: rc_api::Selection,
@@ -727,7 +738,29 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
         return MPP_ERR_VALUE;
     };
     unsafe { *frame = std::ptr::null_mut() };
-    if let Some(decoded) = decoder.receive_frame() {
+    let decoded = context
+        .pending_decoded_frame
+        .take()
+        .or_else(|| decoder.receive_frame());
+    if let Some(decoded) = decoded {
+        let width = u32::try_from(decoded.width()).unwrap_or(0);
+        let height = u32::try_from(decoded.height()).unwrap_or(0);
+        let format = match decoded.format() {
+            sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
+            sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
+            sdk::PixelFormat::I420P10 => return MPP_NOK,
+        };
+        let output_info = (width, height, format);
+        if context.decoder_info_change_enabled && context.decoder_output_info != Some(output_info) {
+            context.decoder_output_info = Some(output_info);
+            context.pending_decoded_frame = Some(decoded);
+            let Ok(info_change) = (unsafe { objects::frame_info_change(width, height, format) })
+            else {
+                return MPP_NOK;
+            };
+            unsafe { *frame = info_change };
+            return MPP_OK;
+        }
         let frame_object = if context.pending_output_frame.is_null() {
             let Ok(frame) = (unsafe { objects::frame_from_sdk(decoded) }) else {
                 return MPP_NOK;
@@ -771,6 +804,15 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     if context.ctx_type != MPP_CTX_ENC {
         return MPP_ERR_VALUE;
     }
+    if unsafe { objects::frame_is_eos(frame) } {
+        let Some(encoder) = context.encoder.as_mut() else {
+            return MPP_ERR_VALUE;
+        };
+        encoder.flush();
+        context.encoder_eos_submitted = true;
+        return MPP_OK;
+    }
+    let input_frame = frame;
     let picture_layout = match context.encoder_ref_schedule.as_ref() {
         Some(schedule) => match schedule.prepare() {
             Ok(frame) => Some(frame),
@@ -786,9 +828,6 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         return MPP_ERR_NULL_PTR;
     };
     let motion_info = frame.motion_info;
-    if frame.eos {
-        return MPP_OK;
-    }
     if frame.width == 0
         || frame.height == 0
         || !matches!(
@@ -917,6 +956,7 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
                 }
                 for _ in 0..count {
                     context.pending_packet_motion_info.push_back(motion_info);
+                    context.pending_packet_input_frames.push_back(input_frame);
                 }
                 Ok(())
             }
@@ -957,8 +997,12 @@ unsafe extern "C" fn compat_encode_get_packet(ctx: MppCtx, packet: *mut MppPacke
             .pending_packet_motion_info
             .pop_front()
             .unwrap_or(std::ptr::null_mut());
+        let input_frame = context
+            .pending_packet_input_frames
+            .pop_front()
+            .unwrap_or(std::ptr::null_mut());
         let output = unsafe { objects::packet_from_bytes(data, pts, dts) };
-        if !unsafe { objects::packet_attach_encode_meta(output, &meta, motion_info) } {
+        if !unsafe { objects::packet_attach_encode_meta(output, &meta, motion_info, input_frame) } {
             let mut packet = output;
             unsafe {
                 let _ = objects::mpp_packet_deinit(&mut packet);
@@ -966,6 +1010,9 @@ unsafe extern "C" fn compat_encode_get_packet(ctx: MppCtx, packet: *mut MppPacke
             return MPP_NOK;
         }
         unsafe { *packet = output };
+    } else if context.encoder_eos_submitted && !context.encoder_eos_delivered {
+        context.encoder_eos_delivered = true;
+        unsafe { *packet = objects::packet_eos() };
     }
     MPP_OK
 }
@@ -1008,7 +1055,12 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
+    context.pending_decoded_frame = None;
+    context.decoder_output_info = None;
     context.pending_packet_motion_info.clear();
+    context.pending_packet_input_frames.clear();
+    context.encoder_eos_submitted = false;
+    context.encoder_eos_delivered = false;
     context.encoder_input_scratch.clear();
     context.encoder_ref_pattern.clear();
     context.encoder_ref_schedule = None;
@@ -1029,10 +1081,17 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
         // Configuration is consumed by the surrounding SDK session at
         // mpp_init. Keep the vendor MppDecCfg object valid and accept the
         // values the official simple decode loop sets.
-        MPP_DEC_SET_CFG
+        MPP_DEC_SET_EXT_BUF_GROUP
+        | MPP_DEC_SET_INFO_CHANGE_READY
+        | MPP_DEC_SET_PARSER_FAST_MODE
+        | MPP_DEC_SET_CFG
         | MPP_DEC_GET_CFG
         | MPP_DEC_SET_DISABLE_ERROR
         | MPP_DEC_SET_IMMEDIATE_OUT => MPP_OK,
+        MPP_DEC_SET_ENABLE_DEINTERLACE => {
+            context.decoder_info_change_enabled = true;
+            MPP_OK
+        }
         MPP_DEC_SET_OUTPUT_FORMAT => {
             if param.is_null() {
                 return MPP_ERR_NULL_PTR;
@@ -1184,7 +1243,20 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                 }
             }
         }
-        MPP_ENC_GET_CFG | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
+        MPP_ENC_GET_CFG => {
+            if context.ctx_type != MPP_CTX_ENC || param.is_null() {
+                return MPP_ERR_VALUE;
+            }
+            if unsafe {
+                standalone::mpp_enc_cfg_set_s32(param, c"codec:type".as_ptr(), context.coding)
+            } == MPP_OK
+            {
+                MPP_OK
+            } else {
+                MPP_NOK
+            }
+        }
+        MPP_SET_INPUT_TIMEOUT | MPP_SET_OUTPUT_TIMEOUT => MPP_OK,
         MPP_SET_VENC_INIT_KCFG => {
             if param.is_null() {
                 return MPP_ERR_NULL_PTR;
@@ -1396,7 +1468,13 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             eos_delivered: false,
             pending_output_frame: std::ptr::null_mut(),
             pending_input_packet: std::ptr::null_mut(),
+            pending_decoded_frame: None,
+            decoder_output_info: None,
+            decoder_info_change_enabled: false,
             pending_packet_motion_info: VecDeque::new(),
+            pending_packet_input_frames: VecDeque::new(),
+            encoder_eos_submitted: false,
+            encoder_eos_delivered: false,
             encoder_ref_pattern: Vec::new(),
             encoder_ref_schedule: None,
             rc_api: rc_api::Selection::new(),
@@ -1473,7 +1551,13 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
+    context.pending_decoded_frame = None;
+    context.decoder_output_info = None;
+    context.decoder_info_change_enabled = false;
     context.pending_packet_motion_info.clear();
+    context.pending_packet_input_frames.clear();
+    context.encoder_eos_submitted = false;
+    context.encoder_eos_delivered = false;
     context.encoder_ref_pattern.clear();
     context.encoder_ref_schedule = None;
     MPP_OK
@@ -1534,7 +1618,6 @@ mod tests {
             format: MPP_FMT_YUV420P,
             pts: 0,
             dts: 0,
-            eos: false,
             motion_info: ptr::null_mut(),
             osd_data: ptr::null_mut(),
         };
@@ -1567,7 +1650,6 @@ mod tests {
             format: MPP_FMT_YUV420SP_VU,
             pts: 0,
             dts: 0,
-            eos: false,
             motion_info: ptr::null_mut(),
             osd_data: ptr::null_mut(),
         };

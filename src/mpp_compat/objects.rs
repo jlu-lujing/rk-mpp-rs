@@ -99,7 +99,6 @@ pub(super) struct FrameInputView {
     pub format: u32,
     pub pts: i64,
     pub dts: i64,
-    pub eos: bool,
     pub motion_info: MppBuffer,
     pub osd_data: *mut c_void,
 }
@@ -612,10 +611,13 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
         format: frame.format,
         pts: frame.pts,
         dts: frame.dts,
-        eos: frame.eos != 0,
         motion_info,
         osd_data,
     })
+}
+
+pub(super) unsafe fn frame_is_eos(frame: MppFrame) -> bool {
+    unsafe { frame_ref(frame) }.is_some_and(|frame| frame.eos != 0)
 }
 
 pub(super) unsafe fn frame_output_dmabuf(frame: MppFrame) -> Option<DmaBuf> {
@@ -717,6 +719,7 @@ pub(super) unsafe fn packet_attach_encode_meta(
     packet: MppPacket,
     values: &crate::encoder::PacketMeta,
     motion_info: MppBuffer,
+    input_frame: MppFrame,
 ) -> bool {
     let meta = unsafe { mpp_packet_get_meta(packet) };
     if meta.is_null() {
@@ -769,7 +772,16 @@ pub(super) unsafe fn packet_attach_encode_meta(
     if !motion_info.is_null() {
         ok &= unsafe { mpp_meta_set_buffer(meta, KEY_MOTION_INFO, motion_info) } == MPP_OK;
     }
+    if !input_frame.is_null() {
+        ok &= unsafe { mpp_meta_set_frame(meta, KEY_INPUT_FRAME, input_frame) } == MPP_OK;
+    }
     ok
+}
+
+pub(super) unsafe fn packet_eos() -> MppPacket {
+    let packet = new_packet(std::ptr::null_mut(), 0);
+    let _ = unsafe { mpp_packet_set_eos(packet) };
+    packet
 }
 
 pub(super) unsafe fn packet_consume(packet: MppPacket) -> bool {
@@ -1258,6 +1270,44 @@ pub(super) unsafe fn frame_eos() -> MppFrame {
         hdr_dynamic_meta: std::ptr::null_mut(),
     }))
     .cast()
+}
+
+pub(super) unsafe fn frame_info_change(
+    width: u32,
+    height: u32,
+    format: u32,
+) -> Result<MppFrame, ()> {
+    if width == 0 || height == 0 {
+        return Err(());
+    }
+    Ok(Box::into_raw(Box::new(CompatFrame {
+        magic: FRAME_MAGIC,
+        width,
+        height,
+        hor_stride: align(width, 16),
+        ver_stride: align(height, 16),
+        format,
+        offset_x: 0,
+        offset_y: 0,
+        mode: 0,
+        discard: 0,
+        viewid: 0,
+        poc: 0,
+        pts: 0,
+        dts: 0,
+        errinfo: 0,
+        buffer_size: 0,
+        eos: 0,
+        info_change: 1,
+        thumbnail: 0,
+        buffer: std::ptr::null_mut(),
+        meta: std::ptr::null_mut(),
+        sar: MppFrameRational::default(),
+        mastering: MppFrameMasteringDisplayMetadata::default(),
+        content_light: MppFrameContentLightMetadata::default(),
+        hdr_dynamic_meta: std::ptr::null_mut(),
+    }))
+    .cast())
 }
 
 #[no_mangle]
@@ -2993,3 +3043,27 @@ pub unsafe extern "C" fn mpp_frame_set_hdr_dynamic_meta(frame: MppFrame, meta: *
 const _: () = {
     assert!(size_of::<CompatBufferInfo>() == 40);
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffmpeg_info_change_and_eos_objects_expose_the_expected_accessors() {
+        unsafe {
+            let mut frame = frame_info_change(1280, 720, MPP_FMT_YUV420SP).unwrap();
+            assert_eq!(mpp_frame_get_width(frame), 1280);
+            assert_eq!(mpp_frame_get_height(frame), 720);
+            assert_eq!(mpp_frame_get_hor_stride(frame), 1280);
+            assert_eq!(mpp_frame_get_ver_stride(frame), 720);
+            assert_eq!(mpp_frame_get_fmt(frame), MPP_FMT_YUV420SP);
+            assert_eq!(mpp_frame_get_info_change(frame), 1);
+            assert!(mpp_frame_get_buffer(frame).is_null());
+            assert_eq!(mpp_frame_deinit(&mut frame), MPP_OK);
+
+            let mut packet = packet_eos();
+            assert_eq!(mpp_packet_get_eos(packet), 1);
+            assert_eq!(mpp_packet_deinit(&mut packet), MPP_OK);
+        }
+    }
+}
