@@ -17,9 +17,11 @@ existing NV12 allocation directly when all of these are true:
 
 I420/NV21 frames, OSD/custom-RC frames and geometry mismatches keep the CPU
 fallback. The new fast path also avoids the interim `DmaBufInput::new()` cost.
-Separately, the stable `DmaBufInput` itself now duplicates only the fd instead
-of importing and mapping it, because hardware submission needs just the fd,
-length and strides. The stable C ABI
+Separately, the stable `DmaBufInput<'a>` now borrows the original fd instead
+of importing or duplicating it, because hardware submission needs just the fd,
+length and strides; the lifetime covers the synchronous call. A real VEPU580
+test showed that a duplicated fd completes without `enc_done` (`int_sta=0`).
+The stable C ABI
 `rk_mpp_encoder_submit_frame_dmabuf()` is synchronous, so it borrows the
 caller's fd directly and avoids even that duplicate. A six-frame H.264
 `strace -f -e trace=fcntl` run reports zero `F_DUPFD_CLOEXEC` calls;
@@ -62,10 +64,11 @@ median 1.428 s. `RKMPP_COMPAT_OSD_DMABUF=1` enables direct submission for
 surfaces whose cache policy is known suitable; `RKMPP_COMPAT_CPU_INPUT=1`
 forces the fallback.
 
-The owned Rust API now exposes the same hardware capability through
-`DmaBufInput::with_osd(config)`. The existing direct/fallback hardware gate is
-the OSD-path evidence; a unit test separately verifies that submission carries
-the OSD only when attached. VEPU510 and JPEG still reject OSD explicitly.
+The Rust dma-buf API exposes the same hardware capability through
+`DmaBufInput::with_osd(config)`. The `encoder::tests::dmabuf_osd_hw_matches_copy`
+board test runs copied and dma-buf H.264/H.265, both with and without OSD, and
+requires all four streams to match byte for byte. VEPU510 and JPEG still reject
+OSD explicitly.
 
 ### H.265 session CPU input becomes uncached
 
@@ -1495,8 +1498,8 @@ and TOML, and verifies that the vendor-compatible `mpp_enc_cfg_deinit()` path
 releases it. All three formats pass.
 The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 **3/3 PASS**. The same tree also passes the host workspace gate with
-**1361 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
-**1363 passed / 0 failed / 45 ignored** plus strict rustdoc.
+**1361 passed / 0 failed / 46 ignored**, and the t6 workspace gate with
+**1363 passed / 0 failed / 46 ignored** plus strict rustdoc.
 `scripts/board_mpp_enc_cfg_gdr.sh` also maps the vendor probes'
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`) and H.265 is

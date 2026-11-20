@@ -7,7 +7,7 @@
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd};
 
 use crate::codec::h264::encoder::{
     self as h264_encoder, EncoderConfig as H264EncoderConfig, PROFILE_BASELINE, PROFILE_HIGH,
@@ -22,7 +22,6 @@ use crate::codec::h265::roi::RoiRegion as H265RoiRegion;
 use crate::hal::h265e::RefreshMode as H265RefreshMode;
 use crate::hal::{h264e, h265e_session, jpege, jpege720, osd, vepu510_h264, vepu510_h265};
 use crate::sdk::{Codec, Error, PixelFormat};
-use crate::service::dma_heap::duplicate_fd;
 use crate::service::soc::{SocProfile, VideoEncodeHal};
 
 pub const MAX_ROI_REGIONS: usize = 8;
@@ -951,10 +950,9 @@ impl<'a> InputFrame<'a> {
 
 /// One externally allocated NV12 frame submitted by fd.
 ///
-/// The constructor duplicates the caller's fd. Submission is synchronous, so
-/// the caller may reuse the surface after it returns.
-pub struct DmaBufInput {
-    fd: OwnedFd,
+/// The borrow keeps the descriptor live through the synchronous submission.
+pub struct DmaBufInput<'a> {
+    fd: BorrowedFd<'a>,
     size: usize,
     hor_stride: usize,
     ver_stride: usize,
@@ -963,15 +961,20 @@ pub struct DmaBufInput {
     osd: Option<osd::Config>,
 }
 
-impl DmaBufInput {
-    pub fn new(fd: i32, size: usize, hor_stride: usize, ver_stride: usize) -> Result<Self, Error> {
-        if fd < 0 || size == 0 || hor_stride == 0 || ver_stride == 0 {
+impl<'a> DmaBufInput<'a> {
+    pub fn new(
+        fd: BorrowedFd<'a>,
+        size: usize,
+        hor_stride: usize,
+        ver_stride: usize,
+    ) -> Result<Self, Error> {
+        if size == 0 || hor_stride == 0 || ver_stride == 0 {
             return Err(Error::InvalidInput(
                 "DMA-BUF input fd, size and strides must be nonzero".to_string(),
             ));
         }
         Ok(Self {
-            fd: duplicate_fd(fd).map_err(Error::from)?,
+            fd,
             size,
             hor_stride,
             ver_stride,
@@ -1954,7 +1957,7 @@ impl Encoder {
         Ok(count)
     }
 
-    pub fn submit_dmabuf_frame(&mut self, frame: DmaBufInput) -> Result<usize, Error> {
+    pub fn submit_dmabuf_frame(&mut self, frame: DmaBufInput<'_>) -> Result<usize, Error> {
         self.submit_dmabuf_submission(frame.into_submission())
     }
 
@@ -2771,8 +2774,9 @@ mod tests {
         RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
+    use crate::service::dma_heap::DmaBuf;
     use std::borrow::Cow;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsFd, AsRawFd};
 
     #[test]
     fn aligned_nv12_input_is_borrowed_without_a_frame_copy() {
@@ -2812,16 +2816,16 @@ mod tests {
     }
 
     #[test]
-    fn dmabuf_input_duplicates_the_fd_without_mapping_it() {
+    fn dmabuf_input_borrows_the_fd_without_mapping_it() {
         let file = std::fs::File::open("/dev/null").unwrap();
-        let input = DmaBufInput::new(file.as_raw_fd(), 4096, 1920, 1088).unwrap();
-        assert!(input.into_submission().fd >= 0);
+        let input = DmaBufInput::new(file.as_fd(), 4096, 1920, 1088).unwrap();
+        assert_eq!(input.into_submission().fd, file.as_raw_fd());
     }
 
     #[test]
     fn dmabuf_input_carries_osd_only_when_requested() {
         let file = std::fs::File::open("/dev/null").unwrap();
-        let input = DmaBufInput::new(file.as_raw_fd(), 4096, 1920, 1088).unwrap();
+        let input = DmaBufInput::new(file.as_fd(), 4096, 1920, 1088).unwrap();
         assert!(input.into_submission().osd.is_none());
 
         let osd = crate::hal::osd::Config {
@@ -2830,10 +2834,87 @@ mod tests {
             regions: Vec::new(),
             user_palette: None,
         };
-        let input = DmaBufInput::new(file.as_raw_fd(), 4096, 1920, 1088)
+        let input = DmaBufInput::new(file.as_fd(), 4096, 1920, 1088)
             .unwrap()
             .with_osd(osd);
         assert!(input.into_submission().osd.is_some());
+    }
+
+    #[test]
+    #[ignore = "requires an RK3588 VEPU580 and /dev/mpp_service"]
+    fn dmabuf_osd_hw_matches_copy() {
+        fn encode(codec: Codec, direct: bool, with_osd: bool) -> Vec<u8> {
+            let width = 320;
+            let height = 240;
+            let mut config = EncoderConfig::new(codec, width, height);
+            config.gop = 60;
+            let mut encoder = super::Encoder::new(config).unwrap();
+
+            let frame = crate::hal::h264e::probe_nv12(width, height);
+            let coded_bytes = width * height * 3 / 2;
+            let mut input = DmaBuf::alloc("system", coded_bytes, false).unwrap();
+            input.sync_write_begin().unwrap();
+            input.as_mut_slice()[..frame.len()].copy_from_slice(&frame);
+            input.sync_write_end().unwrap();
+
+            let osd_buffer = with_osd.then(|| {
+                let mut buffer = DmaBuf::alloc("system", 256, false).unwrap();
+                buffer.sync_write_begin().unwrap();
+                buffer.as_mut_slice().fill(0x5a);
+                buffer.sync_write_end().unwrap();
+                buffer
+            });
+            let osd = osd_buffer.as_ref().map(|buffer| crate::hal::osd::Config {
+                buffer_fd: buffer.fd(),
+                buffer_size: buffer.len(),
+                regions: vec![crate::hal::osd::Region {
+                    enable: 1,
+                    inverse: 1,
+                    start_mb_x: 2,
+                    start_mb_y: 2,
+                    num_mb_x: 1,
+                    num_mb_y: 1,
+                    buffer_offset: 0,
+                }],
+                user_palette: None,
+            });
+
+            if direct {
+                let input = DmaBufInput::new(input.as_fd(), coded_bytes, width, height).unwrap();
+                encoder
+                    .submit_dmabuf_frame(match osd {
+                        Some(osd) => input.with_osd(osd),
+                        None => input,
+                    })
+                    .unwrap();
+            } else {
+                encoder
+                    .submit_frame(super::InputFrame::new(&frame).with_osd(osd))
+                    .unwrap();
+            }
+
+            let mut stream = Vec::new();
+            while let Some(packet) = encoder.receive_packet() {
+                stream.extend_from_slice(packet.data());
+            }
+            stream
+        }
+
+        for codec in [Codec::H264, Codec::H265] {
+            let copied = encode(codec, false, false);
+            let direct = encode(codec, true, false);
+            assert_eq!(
+                direct, copied,
+                "{codec:?} dma-buf input differs from copied input"
+            );
+
+            let copied = encode(codec, false, true);
+            let direct = encode(codec, true, true);
+            assert_eq!(
+                direct, copied,
+                "{codec:?} dma-buf OSD differs from copied-input OSD"
+            );
+        }
     }
 
     #[test]

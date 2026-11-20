@@ -110,10 +110,10 @@ MppPacket/MppBuffer/MppMeta/MppApi` 的布局与调用序列按官方 ABI 实现
 - internal `MppBuffer` + NV12 + 匹配 coded stride 的 `encode_put_frame`
   自动直交现有 dma-buf fd，不再复制到 packed CPU staging；I420/NV21、OSD、
   custom RC 或几何不匹配时透明回退到原转换路径；
-- 显式 `DmaBufInput` 只 dup fd 保持生命周期，不再建立 CPU mapping；
-  `rk_mpp_encoder_submit_frame_dmabuf()` 的同步 C ABI 直接借用调用方 fd，
-  逐帧 dup 和 mmap 都为零；
-- Rust owned dma-buf 路径可用 `DmaBufInput::with_osd(config)` 随帧提交
+- 显式 `DmaBufInput<'a>` 借用原始 fd，生命周期覆盖同步提交；不 dup、不
+  mmap。VEPU580 实测 dup fd 会 `int_sta=0`；
+  `rk_mpp_encoder_submit_frame_dmabuf()` 的同步 C ABI 同样直接借用 fd；
+- Rust dma-buf 路径可用 `DmaBufInput::with_osd(config)` 随帧提交
   VEPU580 OSD；该能力不扩大到不支持的 VEPU510/JPEG backend；
 - `MppPacket/MppFrame/MppBuffer/MppMeta` 的 get/set 与生命周期；
 - `MPP_DEC_SET_CFG/MPP_ENC_SET_CFG`、`MppEncCfg` 键值读写

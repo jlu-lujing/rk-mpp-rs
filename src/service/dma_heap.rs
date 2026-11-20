@@ -3,7 +3,7 @@
 use std::ffi::CString;
 use std::fmt;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::raw::{c_int, c_ulong, c_void};
 
 const DMA_HEAP_IOC_MAGIC: u8 = b'H';
@@ -270,6 +270,13 @@ impl Drop for DmaBuf {
 impl AsRawFd for DmaBuf {
     fn as_raw_fd(&self) -> c_int {
         self.fd
+    }
+}
+
+impl AsFd for DmaBuf {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: `self` owns this live descriptor for the returned borrow.
+        unsafe { BorrowedFd::borrow_raw(self.fd) }
     }
 }
 

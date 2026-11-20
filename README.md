@@ -605,9 +605,11 @@ rk_mpp_encoder_submit_frame_dmabuf(
     encoder, fd, allocation_size, hor_stride, ver_stride, pts, dts);
 ```
 
-Rust 对应 `DmaBufInput::new(...)` 和 `Encoder::submit_dmabuf_frame()`；输入句柄
-只 dup fd 保住生命周期，不再建立无用 CPU mapping。C ABI 的调用本身是同步的，
-因此 `rk_mpp_encoder_submit_frame_dmabuf()` 直接借用调用方 fd，连逐帧 dup 也省掉。
+Rust 对应 `DmaBufInput::new(borrowed_fd, ...)` 和
+`Encoder::submit_dmabuf_frame()`；类型上的生命周期保证 fd 在同步提交期间存活，
+既不 dup 也不建立无用 CPU mapping。板级测试确认 dup fd 在 VEPU580 上会导致
+`int_sta=0`，因此所有 Rust/C 路径都直接提交原 fd。C ABI
+`rk_mpp_encoder_submit_frame_dmabuf()` 同样直接借用调用方 fd。
 需要 OSD 的 Rust 调用方可在 `DmaBufInput::with_osd(Config)` 上随帧附带
 VEPU580 OSD 表；不支持的 VEPU510/JPEG backend 会明确返回 unsupported。
 lf1/t6 上 H.264、H.265、JPEG 的 fd 输入输出与 copied-input 输出逐字节一致：
