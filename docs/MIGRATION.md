@@ -107,6 +107,11 @@ MppPacket/MppBuffer/MppMeta/MppApi` 的布局与调用序列按官方 ABI 实现
 
 - `mpp_create/mpp_init/mpp_destroy`、`mpp_check_support_format`；
 - `decode_put_packet/decode_get_frame`、`encode_put_frame/encode_get_packet`；
+- internal `MppBuffer` + NV12 + 匹配 coded stride 的 `encode_put_frame`
+  自动直交现有 dma-buf fd，不再复制到 packed CPU staging；I420/NV21、OSD、
+  custom RC 或几何不匹配时透明回退到原转换路径；
+- 显式 `DmaBufInput` / `rk_mpp_encoder_submit_frame_dmabuf()` 只 dup fd
+  保持同步提交期间的生命周期，不再为该路径建立 CPU mapping；
 - `MppPacket/MppFrame/MppBuffer/MppMeta` 的 get/set 与生命周期；
 - `MPP_DEC_SET_CFG/MPP_ENC_SET_CFG`、`MppEncCfg` 键值读写
   （`mpp_enc_cfg_get_*/set_*` 等），包括 `rc:ref_cfg`、`MPP_ENC_SET_IDR_FRAME`、
@@ -123,6 +128,15 @@ BOARD=t6 scripts/board_mpp_migration.sh
 ```
 
 覆盖日志级别与回调、`mpp_frame` 的 SAR/内容亮度/母版显示、compat 查询与更新。
+编码输入直交与回退可单独复验：
+
+```bash
+BOARD=t6 scripts/board_mpp_enc_cfg_dma_input.sh
+```
+
+t6 的 120 帧 720p 门要求 H.264/H.265 两条路径分别保持 126/125 NAL 一致；
+OSD、custom RC 和 I420/NV21 仍需由各自的现有专项门继续覆盖其 CPU staging
+行为。
 
 ## 3. 新 C API / Rust crate（推荐新代码）
 

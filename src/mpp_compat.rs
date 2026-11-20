@@ -798,16 +798,24 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             return MPP_NOK;
         }
     };
+    let use_dmabuf = if frame.format == MPP_FMT_YUV420SP
+        && frame.dma_fd >= 0
+        && osd.is_none()
+        && context.custom_rc.is_none()
+        && context.encoder.as_ref().is_some_and(|encoder| {
+            encoder.config().input_format() == sdk::PixelFormat::Nv12
+                && encoder.accepts_dmabuf_frame(frame.len, frame.hor_stride, frame.ver_stride)
+        }) {
+        true
+    } else {
+        false
+    };
     let mut scratch = std::mem::take(&mut context.encoder_input_scratch);
     let result = (|| -> Result<(), c_int> {
-        if video_input_into(&frame, frame.format, &mut scratch).is_err() {
+        if !use_dmabuf && video_input_into(&frame, frame.format, &mut scratch).is_err() {
             eprintln!("rk-mpp-rs mpp: encode frame is not a complete YUV420 picture");
             return Err(MPP_ERR_VALUE);
         }
-        let input = encoder::InputFrame::new(&scratch)
-            .with_pts(frame.pts)
-            .with_dts(frame.dts)
-            .with_osd(osd);
         if let Some(frame) = picture_layout.as_ref() {
             let Some(encoder) = context.encoder.as_mut() else {
                 return Err(MPP_ERR_VALUE);
@@ -832,10 +840,34 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             Err(error) => return Err(error),
         }
         let submitted = if context.custom_rc_pending.is_some() {
+            let input = encoder::InputFrame::new(&scratch)
+                .with_pts(frame.pts)
+                .with_dts(frame.dts)
+                .with_osd(osd);
             context.submit_custom_rc_frame(input)
         } else {
             match context.encoder.as_mut() {
-                Some(encoder) => encoder.submit_frame(input),
+                Some(encoder) if use_dmabuf => {
+                    // SAFETY: `frame` borrows the live compatible MppBuffer for
+                    // this call, and encoder submission consumes the fd
+                    // synchronously before returning.
+                    unsafe {
+                        encoder.submit_dmabuf_frame_borrowed(
+                            frame.dma_fd,
+                            frame.len,
+                            frame.hor_stride,
+                            frame.ver_stride,
+                            frame.pts,
+                            frame.dts,
+                        )
+                    }
+                }
+                Some(encoder) => encoder.submit_frame(
+                    encoder::InputFrame::new(&scratch)
+                        .with_pts(frame.pts)
+                        .with_dts(frame.dts)
+                        .with_osd(osd),
+                ),
                 None => return Err(MPP_ERR_VALUE),
             }
         };
@@ -1476,6 +1508,7 @@ mod tests {
         let frame = objects::FrameInputView {
             data: source.as_ptr(),
             len: source.len(),
+            dma_fd: -1,
             width: 4,
             height: 4,
             hor_stride: 8,
@@ -1508,6 +1541,7 @@ mod tests {
         let frame = objects::FrameInputView {
             data: source.as_ptr(),
             len: source.len(),
+            dma_fd: -1,
             width: 4,
             height: 4,
             hor_stride: 8,

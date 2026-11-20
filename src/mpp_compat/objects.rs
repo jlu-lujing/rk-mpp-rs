@@ -91,6 +91,7 @@ const KEY_DEC_TBN_UV_OFFSET: c_int = fourcc(b't', b'b', b'c', b'o');
 pub(super) struct FrameInputView {
     pub data: *const u8,
     pub len: usize,
+    pub dma_fd: c_int,
     pub width: usize,
     pub height: usize,
     pub hor_stride: usize,
@@ -603,6 +604,7 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
     Some(FrameInputView {
         data,
         len,
+        dma_fd: buffer.dma.as_ref().map(DmaBuf::fd).unwrap_or(-1),
         width: frame.width as usize,
         height: frame.height as usize,
         hor_stride: frame.hor_stride as usize,

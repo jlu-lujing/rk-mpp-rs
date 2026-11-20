@@ -432,6 +432,14 @@ H.265 的 `h265:dblk_*`、`sao_*`、`lpf_acs_*` 和 `auto_tile` 会进入 typed
 NV21 会交换 V/U 后分别进入 typed I420/NV12 路径。
 `board_mpp_enc_cfg_i420.sh` 对比同一画面的 NV12/I420/NV21 码流。
 H.264 和 H.265 都覆盖这三条对象输入路径。
+当 `encode_put_frame` 收到 internal dma-heap 的 NV12 frame，且没有 OSD、
+custom RC 或 stride/size 不匹配时，兼容层现在直接把现有 fd 交给硬件，
+不再逐帧 `dup/mmap` 或生成 packed CPU staging；I420/NV21、OSD、custom RC
+和几何不匹配仍走原 CPU fallback。`board_mpp_enc_cfg_dma_input.sh` 在 t6
+以 120 帧 720p 对比两条路径：H.264 126 NAL、H.265 125 NAL 均一致，码流
+SHA-256 分别为 `2fdcd6ed…bcbb2c3` 和 `1865f014…f7af84b`。9 次交错采样中，
+dma-heap 路径 wall median 273 ms，CPU fallback 为 311 ms（范围 306–449 ms）；
+user+sys median 从 95 ms 降到 59 ms（-37.9%）。
 t6 VEPU580 的 `-g 1:60` 六帧 TSVC2
 也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
 （`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则
@@ -588,7 +596,8 @@ rk_mpp_encoder_submit_frame_dmabuf(
     encoder, fd, allocation_size, hor_stride, ver_stride, pts, dts);
 ```
 
-Rust 对应 `DmaBufInput::new(...)` 和 `Encoder::submit_dmabuf_frame()`。
+Rust 对应 `DmaBufInput::new(...)` 和 `Encoder::submit_dmabuf_frame()`；输入句柄
+只 dup fd 保住生命周期，不再建立无用 CPU mapping。
 lf1/t6 上 H.264、H.265、JPEG 的 fd 输入输出与 copied-input 输出逐字节一致：
 
 ```bash

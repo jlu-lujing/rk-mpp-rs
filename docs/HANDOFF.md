@@ -163,9 +163,9 @@ t6 VEPU580 的 H.264/H.265 六组 C API RC 输出与既有 CLI 逐字节相同�
 快照头文件编译的 consumer 也能直接运行在 V1.9 库上。RK3576 VEPU510 的
 CBR/VBR/AVBR 逐帧 streaming RC 已接入；用户自定义 RC callback 也已接通
 H.264/H.265，并在 t6/lf1 的 fixed/CBR/VBR/AVBR 8/8 矩阵上通过。
-当前 host workspace gate 为 `1357 passed / 0 failed / 45 ignored`；t6
+当前 host workspace gate 为 `1359 passed / 0 failed / 45 ignored`；t6
 标准 workspace gate（含 `rk-mpp-rs-sys`）为
-`1359 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
+`1361 passed / 0 failed / 45 ignored`，严格 rustdoc 同时通过。lf1 使用简化门
 `1090 library tests / 0 failed` 加 packet-meta/JPEG 专项。rustfmt 与严格
 workspace rustdoc 同时通过。
 
@@ -447,6 +447,16 @@ MppFrame。`board_mpp_enc_cfg_i420.sh` 用同一 `testsrc` 经 NV12/I420/NV21
 compat context 现在持有可复用的 `encoder_input_scratch`，每帧 NV12/I420/NV21
 整理只调整容量和内容，不再重新分配输入 Vec。25 帧 H.264/H.265 对象 GDR
 连续会话仍分别保持 `09b7bc26…4367ca8` 与 `bc22eb33…454f035`。
+在此基础上，internal dma-heap NV12 frame 不再进入 scratch：无 OSD/custom RC
+且 coded stride/size 匹配时，`encode_put_frame` 直接借用 `MppBuffer` 的现有
+fd 同步提交，既不复制整帧，也不逐帧 `dup/mmap`；I420/NV21、OSD、custom RC
+和几何不匹配仍使用 CPU fallback。t6 80% OPP、120 帧 720p 的
+稳定 C API 的 `DmaBufInput` 也改成只 dup fd 而不再 mmap；硬件提交只需要
+fd、长度和 stride。
+`board_mpp_enc_cfg_dma_input.sh` 中 H.264/H.265 分别保持 126/125 NAL 一致，
+码流为 `2fdcd6ed…bcbb2c3` 与 `1865f014…f7af84b`。H.264 9 次交错采样的
+wall median 为 273 ms 对 CPU fallback 311 ms（fallback 呈 306–449 ms 双峰），
+user+sys median 从 95 ms 降到 59 ms。
 
 H.265 也把 aggregate STATUS、per-tile STATUS 和 Batch 改为 session 内复用。
 t6、80% OPP、7 次交错 500 帧 720p 中位数从 1111 ms 降到 1069 ms，输出完全
@@ -710,7 +720,7 @@ dma-buf lease 归还前关闭；旧顺序曾让驱动在 `mpp_dma_find_buffer_fd
 
 ```bash
 cd ~/workspace/rknn-test/rk-mpp-rs
-cargo test --workspace --all-targets --offline   # t6 门：1319 passed / 0 failed / 45 ignored（59 suites）
+cargo test --workspace --all-targets --offline   # host：1359 passed / 0 failed / 45 ignored（59 suites）
 cargo fmt --check
 python3 scripts/check_corpus_manifest.py --write tests/data \
   --manifest /tmp/tests-data-manifest.json

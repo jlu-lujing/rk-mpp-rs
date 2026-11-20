@@ -7,6 +7,7 @@
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::os::fd::{AsRawFd, OwnedFd};
 
 use crate::codec::h264::encoder::{
     self as h264_encoder, EncoderConfig as H264EncoderConfig, PROFILE_BASELINE, PROFILE_HIGH,
@@ -21,7 +22,7 @@ use crate::codec::h265::roi::RoiRegion as H265RoiRegion;
 use crate::hal::h265e::RefreshMode as H265RefreshMode;
 use crate::hal::{h264e, h265e_session, jpege, jpege720, osd, vepu510_h264, vepu510_h265};
 use crate::sdk::{Codec, Error, PixelFormat};
-use crate::service::dma_heap::DmaBuf;
+use crate::service::dma_heap::duplicate_fd;
 use crate::service::soc::{SocProfile, VideoEncodeHal};
 
 pub const MAX_ROI_REGIONS: usize = 8;
@@ -950,10 +951,11 @@ impl<'a> InputFrame<'a> {
 
 /// One externally allocated NV12 frame submitted by fd.
 ///
-/// The constructor duplicates and maps the caller's fd. Submission is
-/// synchronous, so the caller may reuse the surface after it returns.
+/// The constructor duplicates the caller's fd. Submission is synchronous, so
+/// the caller may reuse the surface after it returns.
 pub struct DmaBufInput {
-    buffer: DmaBuf,
+    fd: OwnedFd,
+    size: usize,
     hor_stride: usize,
     ver_stride: usize,
     pts: i64,
@@ -968,7 +970,8 @@ impl DmaBufInput {
             ));
         }
         Ok(Self {
-            buffer: DmaBuf::import_fd(fd, size, false).map_err(Error::from)?,
+            fd: duplicate_fd(fd).map_err(Error::from)?,
+            size,
             hor_stride,
             ver_stride,
             pts: 0,
@@ -985,6 +988,27 @@ impl DmaBufInput {
         self.dts = dts;
         self
     }
+
+    fn submission(&self) -> DmaBufSubmission {
+        DmaBufSubmission {
+            fd: self.fd.as_raw_fd(),
+            size: self.size,
+            hor_stride: self.hor_stride,
+            ver_stride: self.ver_stride,
+            pts: self.pts,
+            dts: self.dts,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DmaBufSubmission {
+    fd: i32,
+    size: usize,
+    hor_stride: usize,
+    ver_stride: usize,
+    pts: i64,
+    dts: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1922,11 +1946,51 @@ impl Encoder {
     }
 
     pub fn submit_dmabuf_frame(&mut self, frame: DmaBufInput) -> Result<usize, Error> {
+        self.submit_dmabuf_submission(frame.submission())
+    }
+
+    /// Return whether these DMA-BUF geometry parameters are accepted without
+    /// falling back to a CPU staging copy.
+    pub(crate) fn accepts_dmabuf_frame(
+        &self,
+        size: usize,
+        hor_stride: usize,
+        ver_stride: usize,
+    ) -> bool {
+        !self.eos && validate_dmabuf_layout(self.config, size, hor_stride, ver_stride).is_ok()
+    }
+
+    /// Submit a DMA-BUF that remains owned by the caller for the duration of
+    /// this synchronous call.
+    ///
+    /// # Safety
+    /// `fd` must reference a readable DMA-BUF allocation of at least `size`
+    /// bytes, offset zero, in the supplied NV12 layout for this call.
+    pub(crate) unsafe fn submit_dmabuf_frame_borrowed(
+        &mut self,
+        fd: i32,
+        size: usize,
+        hor_stride: usize,
+        ver_stride: usize,
+        pts: i64,
+        dts: i64,
+    ) -> Result<usize, Error> {
+        self.submit_dmabuf_submission(DmaBufSubmission {
+            fd,
+            size,
+            hor_stride,
+            ver_stride,
+            pts,
+            dts,
+        })
+    }
+
+    fn submit_dmabuf_submission(&mut self, frame: DmaBufSubmission) -> Result<usize, Error> {
         if self.eos {
             return Err(Error::State("frame submitted after encoder EOS"));
         }
-        validate_dmabuf_input(self.config, &frame)?;
-        let input_fd = frame.buffer.fd();
+        validate_dmabuf_layout(self.config, frame.size, frame.hor_stride, frame.ver_stride)?;
+        let input_fd = frame.fd;
         let external_rc = self.next_rate_control.take();
         let use_rate_control_registers = self
             .config
@@ -2545,7 +2609,12 @@ fn jpeg_config(config: EncoderConfig) -> Result<jpege::EncoderConfig, Error> {
     Ok(jpeg)
 }
 
-fn validate_dmabuf_input(config: EncoderConfig, input: &DmaBufInput) -> Result<(), Error> {
+fn validate_dmabuf_layout(
+    config: EncoderConfig,
+    size: usize,
+    hor_stride: usize,
+    ver_stride: usize,
+) -> Result<(), Error> {
     if config.input_format != PixelFormat::Nv12 {
         return Err(Error::Unsupported(
             "DMA-BUF encoder input requires NV12".to_string(),
@@ -2558,21 +2627,20 @@ fn validate_dmabuf_input(config: EncoderConfig, input: &DmaBufInput) -> Result<(
     };
     let expected_hor_stride = align_up(config.width, width_align);
     let expected_ver_stride = align_up(config.height, height_align);
-    if input.hor_stride != expected_hor_stride || input.ver_stride != expected_ver_stride {
+    if hor_stride != expected_hor_stride || ver_stride != expected_ver_stride {
         return Err(Error::InvalidInput(format!(
             "DMA-BUF encoder input stride {}x{} does not match required {}x{}",
-            input.hor_stride, input.ver_stride, expected_hor_stride, expected_ver_stride
+            hor_stride, ver_stride, expected_hor_stride, expected_ver_stride
         )));
     }
-    let required = input
-        .hor_stride
-        .checked_mul(input.ver_stride)
+    let required = hor_stride
+        .checked_mul(ver_stride)
         .and_then(|luma| luma.checked_mul(3).map(|bytes| bytes / 2))
         .ok_or_else(|| Error::InvalidInput("DMA-BUF encoder input size overflow".to_string()))?;
-    if input.buffer.len() < required {
+    if size < required {
         return Err(Error::InvalidInput(format!(
             "DMA-BUF encoder input is {} bytes, expected at least {required}",
-            input.buffer.len()
+            size
         )));
     }
     Ok(())
@@ -2661,13 +2729,14 @@ fn format_nv12_padded<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        format_nv12_input, BlockStatistics, Codec, EncoderConfig, GdrConfig, GdrMode,
-        H264DeblockConfig, H264RcTuning, H264SyntaxConfig, H265SyntaxOptions, PacketMeta,
-        PixelFormat, RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
-        SliceSplitConfig, SliceSplitMode,
+        format_nv12_input, validate_dmabuf_layout, BlockStatistics, Codec, DmaBufInput,
+        EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning, H264SyntaxConfig,
+        H265SyntaxOptions, PacketMeta, PixelFormat, RateControlConfig, RateControlMode, RoiConfig,
+        RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
     use std::borrow::Cow;
+    use std::os::fd::AsRawFd;
 
     #[test]
     fn aligned_nv12_input_is_borrowed_without_a_frame_copy() {
@@ -2693,6 +2762,24 @@ mod tests {
             format_nv12_input(config, &i420).unwrap(),
             Cow::Owned(_)
         ));
+    }
+
+    #[test]
+    fn dmabuf_layout_requires_nv12_exact_strides_and_complete_picture() {
+        let config = EncoderConfig::new(Codec::H264, 1920, 1080);
+        assert!(validate_dmabuf_layout(config, 1920 * 1088 * 3 / 2, 1920, 1088).is_ok());
+        assert!(validate_dmabuf_layout(config, 1920 * 1088 * 3 / 2, 1920, 1080).is_err());
+        assert!(validate_dmabuf_layout(config, 1920 * 1088 * 3 / 2 - 1, 1920, 1088).is_err());
+
+        let i420 = config.with_input_format(PixelFormat::I420);
+        assert!(validate_dmabuf_layout(i420, 1920 * 1088 * 3 / 2, 1920, 1088).is_err());
+    }
+
+    #[test]
+    fn dmabuf_input_duplicates_the_fd_without_mapping_it() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let input = DmaBufInput::new(file.as_raw_fd(), 4096, 1920, 1088).unwrap();
+        assert!(input.submission().fd >= 0);
     }
 
     #[test]

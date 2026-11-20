@@ -1,7 +1,46 @@
-# t6 validation — 2026-11-17
+# t6 validation — 2026-11-20
 
 This is the current integrated validation checkpoint after moving work from
 t62 back to the RK3588 reference board.
+
+## 2026-11-20 Compatible encoder input submits dma-buf directly
+
+The official `MppFrame` compatibility path previously packed every NV12 input
+into `encoder_input_scratch`, then the typed encoder copied it into its HAL
+surface. It now borrows the internal dma-heap fd and submits the caller's
+existing NV12 allocation directly when all of these are true:
+
+- codec input is NV12;
+- the frame buffer has a valid fd;
+- no OSD or custom-RC work is pending;
+- allocation size and coded Y/UV strides match the typed encoder.
+
+I420/NV21 frames, OSD/custom-RC frames and geometry mismatches keep the CPU
+fallback. The new fast path also avoids the interim `DmaBufInput::new()` cost.
+Separately, the stable `DmaBufInput` itself now duplicates only the fd instead
+of importing and mapping it, because hardware submission needs just the fd,
+length and strides.
+
+`scripts/board_mpp_enc_cfg_dma_input.sh` encodes 120 frames of 1280x720
+`testsrc2` at 80% OPP through both an internal dma-heap buffer and an internal
+CPU buffer. The stream comparison removes only version-SEI framing text:
+
+| codec | identical NALs | direct stream SHA-256 |
+| --- | ---: | --- |
+| H.264 | 126 | `2fdcd6edd0412e7e666a121ceaae93302e506e50fcfd2cca4a8cc611abcbb2c3` |
+| H.265 | 125 | `1865f014eefc877719b1ebc4adf989584d1b8e974b87124b21d4bfd7bf7af84b` |
+
+Nine interleaved H.264 samples used shell `time` with the same probe, fixture
+and parameters:
+
+| path | wall samples | wall median | user+sys samples | user+sys median |
+| --- | --- | ---: | --- | ---: |
+| internal dma-heap | 273–275 ms | **273 ms** | 59–60 ms | **59 ms** |
+| CPU fallback | 306–449 ms, bimodal | **311 ms** | 90–232 ms | **95 ms** |
+
+The direct path therefore removes the staging copy and fd-import overhead
+without changing a NAL. The 12.2% median wall improvement understates the
+lower 306 ms mode; total CPU is consistently about 38% lower.
 
 ## 2026-11-17 SDK / C API now use the submission ring
 
@@ -1402,8 +1441,8 @@ and TOML, and verifies that the vendor-compatible `mpp_enc_cfg_deinit()` path
 releases it. All three formats pass.
 The corresponding LOG/JSON/TOML bidirectional `MppEncCfg` matrix remains
 **3/3 PASS**. The same tree also passes the host workspace gate with
-**1357 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
-**1359 passed / 0 failed / 45 ignored** plus strict rustdoc.
+**1359 passed / 0 failed / 45 ignored**, and the t6 workspace gate with
+**1361 passed / 0 failed / 45 ignored** plus strict rustdoc.
 `scripts/board_mpp_enc_cfg_gdr.sh` also maps the vendor probes'
 `rc:refresh_en/mode/num` keys through the Rust standalone library. H.264 GDR
 is NAL-identical under the version-SEI rule (`09b7bc26…4367ca8`) and H.265 is

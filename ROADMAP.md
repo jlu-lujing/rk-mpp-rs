@@ -4057,7 +4057,7 @@ pipeline uses.
   and LOG/JSON/TOML extract/apply, and `mpp_enc_cfg_deinit()` releases it.
   A focused board consumer checks all three ST_CFG formats; the independent
   LOG/JSON/TOML bidirectional matrix remains 3/3. Host workspace tests are
-  1357 passed / 45 ignored and t6 workspace tests are 1359 passed / 45 ignored,
+  1359 passed / 45 ignored and t6 workspace tests are 1361 passed / 45 ignored,
   with strict rustdoc clean.
 
 - **2026-11-20: H.264 output layout reuses the unprefixed payload.** Normal
@@ -4148,6 +4148,24 @@ pipeline uses.
   buffer and the formatter overwrites it in place. The 25-frame H.264/H.265
   object GDR sessions remain byte-identical (`09b7bc26…4367ca8` and
   `bc22eb33…454f035`).
+
+- **2026-11-20: compatible NV12 frames submit their dma-buf directly.**
+  `encode_put_frame` now borrows the internal `MppBuffer` fd for synchronous
+  hardware submission when the typed encoder is NV12, the frame has no OSD or
+  custom RC work, and the allocation already has the required coded
+  stride/size. This removes both the packed CPU staging copy and the previous
+  per-frame fd `dup` plus mapping from the compat path. The stable
+  `DmaBufInput` API also now duplicates only the fd, because hardware
+  submission never needed a CPU mapping. I420/NV21, OSD, custom RC and
+  mismatched geometry retain the CPU fallback. On t6 at 80% OPP, 120-frame
+  720p H.264 and H.265 A/B runs have 126 and 125 identical NALs respectively,
+  with streams
+  `2fdcd6edd0412e7e666a121ceaae93302e506e50fcfd2cca4a8cc611abcbb2c3`
+  and
+  `1865f014eefc877719b1ebc4adf989584d1b8e974b87124b21d4bfd7bf7af84b`.
+  Nine interleaved H.264 samples moved wall median from 311 to 273 ms (the CPU
+  fallback is bimodal at 306–449 ms), while median user+sys time fell from 95
+  to 59 ms (-37.9%); per-sample CPU totals were 90–232 ms versus 59–60 ms.
 
 - **2026-11-19: H.264 reuses per-session STATUS and Batch scratch.** Each
   VEPU580 H.264 picture previously allocated a 4,160-word STATUS vector and a

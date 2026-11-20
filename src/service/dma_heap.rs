@@ -171,15 +171,7 @@ impl DmaBuf {
 
     /// Duplicate this buffer's fd for another driver or process.
     pub fn dup_fd(&self) -> io::Result<OwnedFd> {
-        // SAFETY: this queries a live owned descriptor and returns a fresh fd
-        // owned by the caller on success.
-        let fd = unsafe { libc::fcntl(self.fd, libc::F_DUPFD_CLOEXEC, 0) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `fd` is a fresh descriptor returned by fcntl and ownership
-        // transfers exactly once to OwnedFd.
-        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        duplicate_fd(self.fd)
     }
 
     pub fn try_clone(&self) -> io::Result<Self> {
@@ -241,6 +233,25 @@ impl DmaBuf {
             Ok(())
         }
     }
+}
+
+/// Duplicate a caller-owned descriptor without importing or mapping the
+/// underlying allocation.
+pub fn duplicate_fd(fd: c_int) -> io::Result<OwnedFd> {
+    if fd < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot duplicate a negative fd",
+        ));
+    }
+    // SAFETY: this queries a live descriptor and returns a fresh fd owned by
+    // the caller on success.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `duplicate` is fresh and ownership transfers exactly once.
+    Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
 }
 
 impl Drop for DmaBuf {
@@ -307,6 +318,10 @@ mod tests {
         );
         assert_eq!(
             super::DmaBuf::import_fd(0, 0, false).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            super::duplicate_fd(-1).unwrap_err().kind(),
             std::io::ErrorKind::InvalidInput
         );
     }

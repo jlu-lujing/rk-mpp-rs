@@ -242,6 +242,11 @@ int main(int argc, char **argv)
                                       ? atoi(getenv("MPP_INPUT_FORMAT"))
                                       : (bit_depth == 10 ? MPP_FMT_YUV420SP_10BIT
                                                          : MPP_FMT_YUV420SP);
+    MppBufferType input_buffer_type =
+        getenv("CPU_BUFFER")
+            ? MPP_BUFFER_TYPE_NORMAL
+            : (MppBufferType)(MPP_BUFFER_TYPE_DMA_HEAP |
+                              MPP_BUFFER_FLAGS_CACHABLE);
     int hor_stride = (width + 15) & ~15;
     int ver_stride = (height + 15) & ~15;
     size_t frame_size =
@@ -353,9 +358,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    CHECK(mpp_buffer_group_get_internal(
-        &group, (MppBufferType)(MPP_BUFFER_TYPE_DMA_HEAP |
-                                MPP_BUFFER_FLAGS_CACHABLE)));
+    CHECK(mpp_buffer_group_get_internal(&group, input_buffer_type));
     CHECK(mpp_buffer_get(group, &frame_buf, frame_size));
     CHECK(mpp_buffer_get(group, &packet_buf, frame_size + 4096));
     CHECK(mpp_buffer_get(group, &md_info,

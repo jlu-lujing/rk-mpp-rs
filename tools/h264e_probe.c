@@ -309,6 +309,11 @@ int main(int argc, char **argv)
     int input_format = getenv("MPP_INPUT_FORMAT")
                            ? atoi(getenv("MPP_INPUT_FORMAT"))
                            : MPP_FMT_YUV420SP;
+    MppBufferType input_buffer_type =
+        getenv("CPU_BUFFER")
+            ? MPP_BUFFER_TYPE_NORMAL
+            : (MppBufferType)(MPP_BUFFER_TYPE_DMA_HEAP |
+                              MPP_BUFFER_FLAGS_CACHABLE);
     const char *force_idr = NULL;
     int hier_qp_delta[4] = { 0, 0, 0, 0 };
     int hier_frame_num[4] = { 0, 0, 0, 0 };
@@ -469,9 +474,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    CHECK(mpp_buffer_group_get_internal(
-        &group, (MppBufferType)(MPP_BUFFER_TYPE_DMA_HEAP |
-                                MPP_BUFFER_FLAGS_CACHABLE)));
+    CHECK(mpp_buffer_group_get_internal(&group, input_buffer_type));
     CHECK(mpp_buffer_get(group, &frame_buf, frame_size));
     CHECK(mpp_buffer_get(group, &packet_buf, frame_size + 4096));
 
