@@ -758,7 +758,7 @@ pub unsafe extern "C" fn rk_mpp_encoder_submit_frame_dmabuf(
     pts: i64,
     dts: i64,
 ) -> c_int {
-    if encoder.is_null() {
+    if encoder.is_null() || fd < 0 {
         return RK_MPP_ERR_INVALID;
     }
     let Ok(size) = usize::try_from(size) else {
@@ -770,12 +770,13 @@ pub unsafe extern "C" fn rk_mpp_encoder_submit_frame_dmabuf(
     let Ok(ver_stride) = usize::try_from(ver_stride) else {
         return RK_MPP_ERR_INVALID;
     };
-    let input = match encoder::DmaBufInput::new(fd as i32, size, hor_stride, ver_stride) {
-        Ok(input) => input.with_pts(pts).with_dts(dts),
-        Err(error) => return error_code(&error),
-    };
-    // SAFETY: encoder is live and exclusively used for this call.
-    match unsafe { &mut *encoder }.inner.submit_dmabuf_frame(input) {
+    // SAFETY: encoder is live, the synchronous call keeps the caller's fd valid,
+    // and the C API contract requires that fd to describe `size` readable bytes.
+    match unsafe {
+        (&mut *encoder)
+            .inner
+            .submit_dmabuf_frame_borrowed(fd, size, hor_stride, ver_stride, pts, dts)
+    } {
         Ok(_) => RK_MPP_OK,
         Err(error) => error_code(&error),
     }

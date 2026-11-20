@@ -19,7 +19,11 @@ I420/NV21 frames, OSD/custom-RC frames and geometry mismatches keep the CPU
 fallback. The new fast path also avoids the interim `DmaBufInput::new()` cost.
 Separately, the stable `DmaBufInput` itself now duplicates only the fd instead
 of importing and mapping it, because hardware submission needs just the fd,
-length and strides.
+length and strides. The stable C ABI
+`rk_mpp_encoder_submit_frame_dmabuf()` is synchronous, so it borrows the
+caller's fd directly and avoids even that duplicate. A six-frame H.264
+`strace -f -e trace=fcntl` run reports zero `F_DUPFD_CLOEXEC` calls;
+`board_sdk_encoder_dmabuf.sh` enforces that when `strace` is available.
 
 `scripts/board_mpp_enc_cfg_dma_input.sh` encodes 120 frames of 1280x720
 `testsrc2` at 80% OPP through both an internal dma-heap buffer and an internal

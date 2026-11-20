@@ -47,4 +47,17 @@ DMABUF_INPUT=1 LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
         320 240 10 1 1 "$raw_dir/frames.nv12"
 cmp "$jpeg_copied" "$jpeg_dmabuf"
 
+if command -v strace >/dev/null 2>&1; then
+    trace="$raw_dir/fcntl.trace"
+    strace -f -e trace=fcntl -o "$trace" \
+        env LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" DMABUF_INPUT=1 \
+        /tmp/rk_mpp_encoder_dmabuf h264 nv12 /tmp/rk_mpp_sdk_encoder_strace.bin \
+            320 240 26 6 6 "$raw_dir/frames.nv12" >/dev/null
+    if grep -q F_DUPFD_CLOEXEC "$trace"; then
+        echo "FAIL dma-buf C submit duplicated the caller fd" >&2
+        grep F_DUPFD_CLOEXEC "$trace" >&2
+        exit 1
+    fi
+fi
+
 printf 'PASS copied and dma-buf encoder input match for H.264, H.265 and JPEG\n'

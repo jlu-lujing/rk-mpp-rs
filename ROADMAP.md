@@ -4156,10 +4156,12 @@ pipeline uses.
   stride/size. This removes both the packed CPU staging copy and the previous
   per-frame fd `dup` plus mapping from the compat path. The stable
   `DmaBufInput` API also now duplicates only the fd, because hardware
-  submission never needed a CPU mapping. I420/NV21, OSD, custom RC and
-  mismatched geometry retain the CPU fallback. On t6 at 80% OPP, 120-frame
-  720p H.264 and H.265 A/B runs have 126 and 125 identical NALs respectively,
-  with streams
+  submission never needed a CPU mapping; the synchronous C ABI bypasses even
+  that duplicate and borrows the caller's fd directly. A six-frame t6
+  `strace -f -e trace=fcntl` run records zero `F_DUPFD_CLOEXEC` calls, and the
+  SDK gate now enforces that count. I420/NV21, OSD, custom RC and mismatched
+  geometry retain the CPU fallback. On t6 at 80% OPP, 120-frame 720p H.264 and
+  H.265 A/B runs have 126 and 125 identical NALs respectively, with streams
   `2fdcd6edd0412e7e666a121ceaae93302e506e50fcfd2cca4a8cc611abcbb2c3`
   and
   `1865f014eefc877719b1ebc4adf989584d1b8e974b87124b21d4bfd7bf7af84b`.

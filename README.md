@@ -597,7 +597,8 @@ rk_mpp_encoder_submit_frame_dmabuf(
 ```
 
 Rust 对应 `DmaBufInput::new(...)` 和 `Encoder::submit_dmabuf_frame()`；输入句柄
-只 dup fd 保住生命周期，不再建立无用 CPU mapping。
+只 dup fd 保住生命周期，不再建立无用 CPU mapping。C ABI 的调用本身是同步的，
+因此 `rk_mpp_encoder_submit_frame_dmabuf()` 直接借用调用方 fd，连逐帧 dup 也省掉。
 lf1/t6 上 H.264、H.265、JPEG 的 fd 输入输出与 copied-input 输出逐字节一致：
 
 ```bash

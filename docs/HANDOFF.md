@@ -452,7 +452,10 @@ compat context 现在持有可复用的 `encoder_input_scratch`，每帧 NV12/I4
 fd 同步提交，既不复制整帧，也不逐帧 `dup/mmap`；I420/NV21、OSD、custom RC
 和几何不匹配仍使用 CPU fallback。t6 80% OPP、120 帧 720p 的
 稳定 C API 的 `DmaBufInput` 也改成只 dup fd 而不再 mmap；硬件提交只需要
-fd、长度和 stride。
+fd、长度和 stride。`rk_mpp_encoder_submit_frame_dmabuf()` 是同步 C ABI，
+因此直接借用调用方 fd，连这一次 dup 也取消；t6 6 帧 `strace -f -e
+trace=fcntl` 中 `F_DUPFD_CLOEXEC` 为 0，`board_sdk_encoder_dmabuf.sh`
+在 strace 可用时会强制此条件。
 `board_mpp_enc_cfg_dma_input.sh` 中 H.264/H.265 分别保持 126/125 NAL 一致，
 码流为 `2fdcd6ed…bcbb2c3` 与 `1865f014…f7af84b`。H.264 9 次交错采样的
 wall median 为 273 ms 对 CPU fallback 311 ms（fallback 呈 306–449 ms 双峰），
