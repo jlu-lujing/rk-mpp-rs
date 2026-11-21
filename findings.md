@@ -292,6 +292,22 @@
 - Perf after the copy fixes shows FFmpeg+rkmpp-rs encode retired instructions
   near vendor C (111M versus 108M), but CPU utilization is only about 50-60%.
   The remaining wall-time gap is waiting, not memory traffic.
+- FFmpeg's RKMPP hwcontext allocates its internal DRM frames from an MPP group
+  with `MPP_BUFFER_FLAGS_DMA32` and no `MPP_BUFFER_FLAGS_CACHABLE`. The
+  compatibility allocator was still using the cached `system` dma-heap. The
+  CPU-visible second frame matched the source, but VEPU580 read stale cache
+  lines, so FFmpeg+rkmpp-rs produced a correct I-frame and a divergent P-frame.
+  Selecting `system-uncached` for non-cacheable MPP groups restores exact
+  input visibility.
+- With uncached MPP DRM buffers, H.264 High/QP26 is byte-identical to vendor C
+  for both the 2-frame diagnostic stream and the 12-frame board gate. H.265
+  reconstructs identical NV12 but still has different parameter-set and packet
+  bytes.
+- FFmpeg sends `MPP_ENC_SET_CFG` once during init and again on the first frame
+  to add DRM-plane strides. Reconstructing `Encoder` on the second command
+  discarded the session's previously selected SEI and header modes. Preserving
+  those controls across config replacement removes the extra SEI NALs and makes
+  the H.264 output match vendor C exactly.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.
   The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline

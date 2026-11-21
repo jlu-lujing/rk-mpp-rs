@@ -13,6 +13,7 @@ const MPP_ERR_MALLOC: c_int = -4;
 const MPP_ERR_VALUE: c_int = -6;
 
 const MPP_BUFFER_TYPE_DMA_HEAP: c_int = 4;
+const MPP_BUFFER_FLAGS_CACHABLE: c_int = 0x0002_0000;
 const MPP_BUFFER_INTERNAL: c_int = 0;
 const MPP_BUFFER_EXTERNAL: c_int = 1;
 
@@ -889,7 +890,12 @@ unsafe fn new_internal_buffer(
         }
         (data, None, -1)
     } else {
-        let mut dma = DmaBuf::alloc("system", size, false).map_err(|_| MPP_ERR_MALLOC)?;
+        let heap = if type_ & MPP_BUFFER_FLAGS_CACHABLE != 0 {
+            "system"
+        } else {
+            "system-uncached"
+        };
+        let mut dma = DmaBuf::alloc(heap, size, false).map_err(|_| MPP_ERR_MALLOC)?;
         if let Some(initial) = initial {
             dma.sync_write_begin().map_err(|_| MPP_NOK)?;
             dma.as_mut_slice()[..initial.len()].copy_from_slice(initial);

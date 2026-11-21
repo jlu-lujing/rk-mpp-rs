@@ -161,6 +161,8 @@ struct CompatContext {
     pending_packet_input_frames: VecDeque<MppFrame>,
     encoder_eos_submitted: bool,
     encoder_eos_delivered: bool,
+    encoder_sei_enabled: bool,
+    encoder_headers_each_idr: bool,
     encoder_ref_pattern: Vec<standalone::ReferenceFrameStep>,
     encoder_ref_schedule: Option<ReferenceSchedule>,
     rc_api: rc_api::Selection,
@@ -1159,6 +1161,20 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                             return MPP_NOK;
                         }
                     }
+                    if encoder
+                        .set_sei_enabled(context.encoder_sei_enabled)
+                        .is_err()
+                        && context.coding == MPP_VIDEO_CODING_AVC
+                    {
+                        return MPP_NOK;
+                    }
+                    if encoder
+                        .set_headers_each_idr(context.encoder_headers_each_idr)
+                        .is_err()
+                        && context.coding == MPP_VIDEO_CODING_AVC
+                    {
+                        return MPP_NOK;
+                    }
                     if !encoder.supports_h264_reference_layout()
                         && !context.encoder_ref_pattern.is_empty()
                     {
@@ -1369,6 +1385,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             {
                 return MPP_NOK;
             }
+            context.encoder_sei_enabled = mode != 0;
             MPP_OK
         }
         MPP_ENC_SET_HEADER_MODE => {
@@ -1387,6 +1404,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             {
                 return MPP_NOK;
             }
+            context.encoder_headers_each_idr = mode == 1;
             MPP_OK
         }
         MPP_ENC_SET_REF_CFG => {
@@ -1479,6 +1497,8 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             pending_packet_input_frames: VecDeque::new(),
             encoder_eos_submitted: false,
             encoder_eos_delivered: false,
+            encoder_sei_enabled: true,
+            encoder_headers_each_idr: false,
             encoder_ref_pattern: Vec::new(),
             encoder_ref_schedule: None,
             rc_api: rc_api::Selection::new(),

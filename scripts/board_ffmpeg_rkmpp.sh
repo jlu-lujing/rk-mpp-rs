@@ -101,8 +101,10 @@ encode_case() {
     local require_exact=$5
     local vendor="$work/${name}-vendor.$extension"
     local ours="$work/${name}-ours.$extension"
+    local cpu="$work/${name}-cpu.$extension"
     local vendor_log="$work/${name}-vendor.log"
     local ours_log="$work/${name}-ours.log"
+    local cpu_log="$work/${name}-cpu.log"
     local common=(-nostdin -hide_banner -loglevel warning
         -f lavfi -i testsrc2=size=320x240:rate=30 -frames:v 12
         -pix_fmt nv12 -c:v "${codec}_rkmpp" -rc_mode CQP -qp_init 26
@@ -118,6 +120,16 @@ encode_case() {
         "${common[@]}" "$ours" >"$ours_log" 2>&1; then
         fail_case "$name encode" "Rust FFmpeg frontend failed"
         tail -20 "$ours_log" >&2
+        return
+    fi
+    if ! timeout 90 env LD_LIBRARY_PATH="$overlay" RKMPP_COMPAT_CPU_INPUT=1 \
+        "$ffmpeg_bin" "${common[@]}" "$cpu" >"$cpu_log" 2>&1; then
+        fail_case "$name encode" "Rust FFmpeg CPU fallback failed"
+        tail -20 "$cpu_log" >&2
+        return
+    fi
+    if ! cmp -s "$ours" "$cpu"; then
+        fail_case "$name encode" "DMA-BUF input and CPU fallback differ"
         return
     fi
 
@@ -155,7 +167,7 @@ decode_exact h264-decode h264 "$h264" 12 nv12
 decode_exact hevc-decode hevc tests/data/h265e_c_fixqp_qp26_320x240.265 1 nv12
 decode_exact vp9-decode vp9 tests/data/vp9_p0_lossless_320x240_12.ivf 12 nv12
 
-encode_case h264-encode h264 h264 h264 0
+encode_case h264-encode h264 h264 h264 1
 encode_case hevc-encode hevc hevc h265 0
 encode_case mjpeg-encode mjpeg mjpeg mjpeg 1
 

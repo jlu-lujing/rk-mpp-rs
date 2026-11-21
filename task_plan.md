@@ -351,6 +351,10 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Add `--mpp-compat` SDK packaging for rebuilding FFmpeg against Rust MPP.
 - [x] Benchmark vendor FFmpeg, FFmpeg+rkmpp-rs and native rkmpp-rs.
 - [x] Remove imported-input CPU staging and decoded-frame packing copies.
+- [x] Honor uncached MPP DRM buffer groups and preserve session controls across
+  FFmpeg's second encoder config update.
+- [x] Require H.264 FFmpeg output to match vendor C byte-for-byte and direct
+  DMA-BUF encode output to match the CPU fallback.
 - [x] Re-run byte-exact standalone, FFmpeg and workspace gates.
 - [ ] Split VEPU580 H.264 submit and completion into a deferred job.
 - [ ] Extend the same queue contract to VEPU580 H.265.

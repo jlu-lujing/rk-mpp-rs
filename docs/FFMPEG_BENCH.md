@@ -32,23 +32,23 @@ stack.
 
 | codec | path | median wall | FPS | CPU time | vs C |
 |---|---|---:|---:|---:|---:|
-| H.264 | C ffmpeg | 0.558 s | 1075.3 | 1.429 s (256%) | baseline |
-| H.264 | ffmpeg+rkmpp-rs | 0.513 s | 1169.6 | 0.939 s (183%) | **+8.8%** |
-| H.264 | native rkmpp-rs | **0.233 s** | **2575.1** | **0.202 s (87%)** | **+139.5%** |
-| H.265 | C ffmpeg | 0.540 s | 1111.1 | 1.446 s (268%) | baseline |
-| H.265 | ffmpeg+rkmpp-rs | 0.517 s | 1160.5 | 0.995 s (192%) | **+4.4%** |
-| H.265 | native rkmpp-rs | **0.227 s** | **2643.2** | **0.204 s (90%)** | **+137.9%** |
+| H.264 | C ffmpeg | 0.554 s | 1083.0 | 1.438 s (260%) | baseline |
+| H.264 | ffmpeg+rkmpp-rs | 0.533 s | 1125.7 | 0.986 s (185%) | **+3.9%** |
+| H.264 | native rkmpp-rs | **0.238 s** | **2521.0** | **0.202 s (85%)** | **+132.8%** |
+| H.265 | C ffmpeg | 0.533 s | 1125.7 | 1.389 s (261%) | baseline |
+| H.265 | ffmpeg+rkmpp-rs | 0.529 s | 1134.2 | 1.058 s (200%) | **+0.8%** |
+| H.265 | native rkmpp-rs | **0.214 s** | **2803.7** | **0.188 s (88%)** | **+149.1%** |
 
 ## Encode
 
 | codec | path | median wall | FPS | CPU time | vs C |
 |---|---|---:|---:|---:|---:|
-| H.264 | C ffmpeg | **0.341 s** | **879.8** | 0.409 s (120%) | baseline |
-| H.264 | ffmpeg+rkmpp-rs | 0.711 s | 421.9 | 0.377 s (53%) | **-52.0%** |
-| H.264 | native rkmpp-rs | 0.625 s | 480.0 | **0.168 s (27%)** | **-45.4%** |
-| H.265 | C ffmpeg | **0.443 s** | **677.2** | 0.402 s (91%) | baseline |
-| H.265 | ffmpeg+rkmpp-rs | 0.738 s | 406.5 | 0.371 s (50%) | **-40.0%** |
-| H.265 | native rkmpp-rs | 0.656 s | 457.3 | **0.167 s (25%)** | **-32.5%** |
+| H.264 | C ffmpeg | **0.327 s** | **917.4** | 0.385 s (118%) | baseline |
+| H.264 | ffmpeg+rkmpp-rs | 0.727 s | 412.7 | 0.358 s (49%) | **-55.0%** |
+| H.264 | native rkmpp-rs | 0.622 s | 482.3 | **0.177 s (28%)** | **-47.4%** |
+| H.265 | C ffmpeg | **0.445 s** | **674.2** | 0.472 s (106%) | baseline |
+| H.265 | ffmpeg+rkmpp-rs | 0.744 s | 403.2 | 0.434 s (58%) | **-40.2%** |
+| H.265 | native rkmpp-rs | 0.665 s | 451.1 | **0.180 s (27%)** | **-33.1%** |
 
 ## 2026-11-21 direct DMA-BUF improvement
 
@@ -61,6 +61,8 @@ Two compatibility-copy paths were removed:
   copied for every picture.
 
 Before/after, same seven-sample method:
+(The "after" column is the direct-copy milestone; the following cache-correctness
+section supersedes it with slightly slower but byte-correct numbers.)
 
 | case | before | after | change |
 |---|---:|---:|---:|
@@ -84,6 +86,31 @@ scheduling: the Rust compatibility encoder still performs synchronous
 `submit -> poll(enc_done)` per picture, while the FFmpeg C wrapper keeps several
 encoder frames in flight. MJPEG intentionally remains on CPU staging because
 its current backend does not accept DMA-BUF input.
+
+## 2026-11-21 buffer-cache and session-control correctness
+
+FFmpeg's RKMPP hwcontext requests an uncached MPP DRM buffer by default. The
+compatibility allocator had mapped every imported mpp buffer through the
+`system` dma-heap even without `MPP_BUFFER_FLAGS_CACHABLE`, so the second and
+later CPU-written frames could reach VEPU580 with dirty cache lines. The first
+I-frame matched vendor C, while the P-frame diverged.
+
+Allocating the MPP default and DRM32 groups from `system-uncached` restored
+exact external-buffer behavior:
+
+- H.264 2-frame H.264 High/QP26 is byte-identical to vendor C and native Rust;
+- H.264 12-frame FFmpeg output is byte-identical to vendor C;
+- H.265 2-frame visible NV12 is identical, although its parameter sets and
+  packet bytes still differ from vendor C;
+- FFmpeg's second `MPP_ENC_SET_CFG` at the first frame now preserves the
+  previously set SEI and per-IDR header modes instead of reconstructing an
+  encoder with default controls. This removes the extra version/RC SEI NALs.
+
+The board gate compares DMA-BUF input with `RKMPP_COMPAT_CPU_INPUT=1` for
+H.264, H.265 and MJPEG, and requires the H.264 12-frame output to match vendor C
+byte for byte. The correct uncached mapping costs about 2-4% in the FFmpeg
+frontend rows versus the previous incorrect run; native Rust throughput is
+unchanged.
 
 ## Interpretation
 

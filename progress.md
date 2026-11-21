@@ -15,6 +15,17 @@
   0.927 -> 0.517 s. Static NV12 output remains byte-identical.
 - H.264/H.265 FFmpeg+rkmpp-rs encode improved about 12%; MJPEG remains exact
   on the CPU fallback.
+- Fixed FFmpeg's uncached MPP DRM buffer semantics: compatibility groups now
+  allocate from `system-uncached` unless `MPP_BUFFER_FLAGS_CACHABLE` is set.
+  The previous cached mapping made VEPU580 read stale P-frame input even though
+  CPU-visible bytes matched the source.
+- Preserved SEI/header session controls when FFmpeg sends its second
+  `MPP_ENC_SET_CFG` at the first frame.
+- H.264 High/QP26 now matches vendor C byte-for-byte for both the 2-frame
+  diagnostic stream and the 12-frame FFmpeg gate. H.265 rebuilds identical NV12
+  but its parameter sets and packet bytes still differ.
+- Added direct DMA-BUF versus CPU-fallback equality checks for H.264, H.265 and
+  MJPEG to `board_ffmpeg_rkmpp.sh`.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
   C-level or below; no code from that experiment remains.
 - Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.

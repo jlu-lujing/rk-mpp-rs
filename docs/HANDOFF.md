@@ -679,6 +679,17 @@ dma-buf lease 归还前关闭；旧顺序曾让驱动在 `mpp_dma_find_buffer_fd
 ## 0. 五分钟了解现状
 一页能力矩阵（做了什么、怎么证明、哪些在 RK3588 不可达）：[CAPABILITY.md](CAPABILITY.md)。
 
+**2026-11-21 FFmpeg drop-in 修复：** 未修改的 FFmpeg `c5e745e3c1` 现在可把
+`librockchip_mpp.so.1` 解析到本仓库。FFmpeg 的首帧会再次发送
+`MPP_ENC_SET_CFG` 补充 DRM stride；compat 层重建 encoder 后必须恢复
+`MPP_ENC_SET_SEI_CFG` 和 `MPP_ENC_SET_HEADER_MODE`，否则会多出 version/RC
+SEI。另一个问题是 FFmpeg 默认请求非 cacheable MPP DRM group，而兼容层原先
+仍从 `system` heap 分配；CPU 可见数据正确，但 P 帧送硬件时会读到旧 cache。
+非 `MPP_BUFFER_FLAGS_CACHABLE` 的 group 必须走 `system-uncached`。修复后
+H.264 High/QP26 的 2 帧诊断流和 12 帧板级门都与 vendor C 整条码流逐字节
+一致；H.265 两帧 NV12 一致但 VPS/SPS/P packet 仍不同。回归入口：
+`scripts/board_ffmpeg_rkmpp.sh`。
+
 
 > **2026-11-02 事件：** 第一次尝试 `scripts/board_corpus_sweep.sh`（corpus 全量
 > 解码对照）时，RK3588 在跑完不到 10 条流后从网络消失，连续约 3 分钟 ssh 超时，疑似
