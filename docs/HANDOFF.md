@@ -689,7 +689,12 @@ SEI。另一个问题是 FFmpeg 默认请求非 cacheable MPP DRM group，而兼
 H.265 level/temporal-MVP/GOP-boundary 状态，以及 H.264 在 FFmpeg 未提供
 `KEY_MOTION_INFO` 时的 `mei_stor=0` 与 scene-tune 单帧延迟。现在 H.264/H.265
 的 12 帧门和 320x240/1280x720 的 120-frame GOP60 序列都与 vendor C 整条码流
-逐字节一致。回归入口：`scripts/board_ffmpeg_rkmpp.sh`（8/8）。
+逐字节一致。VEPU580 H.264 固定 QP 兼容路径现在默认 depth-2 deferred queue；
+每个 job 独立持有 batch/STATUS/output，三槽 recon 按 C 的 `0→1→2` 轮转，
+pipeline 完成必须使用 blocking `POLL_HW_FINISH`。300 帧 720p 为
+0.306 s / 980 FPS，C FFmpeg 为 0.321 s / 935 FPS，输出保持逐字节一致。
+回归入口：`scripts/board_ffmpeg_rkmpp.sh`（8/8）和
+`scripts/board_ffmpeg_h264_pipeline_bench.sh`。
 
 
 > **2026-11-02 事件：** 第一次尝试 `scripts/board_corpus_sweep.sh`（corpus 全量

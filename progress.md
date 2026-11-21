@@ -32,6 +32,15 @@
   H.264/H.265 cases to `board_ffmpeg_rkmpp.sh`; each long path gets a discarded
   full-length warmup to neutralize RK3588 cross-process encoder state. The gate
   is now 8/8.
+- Implemented a VEPU580 H.264 fixed-QP depth-2 session queue for the FFmpeg
+  compatibility path. Pending jobs own independent batch/STATUS/output state,
+  input metadata stays in submission order, reconstruction slots rotate
+  `0→1→2`, and pipeline completion uses blocking `POLL_HW_FINISH`.
+- H.264 120-frame GOP60 remains byte-identical at 320x240 and 1280x720. Seven
+  interleaved 300-frame 720p samples improved synchronous 0.711 s / 422 FPS to
+  depth-2 0.306 s / 980 FPS; C FFmpeg is 0.321 s / 935 FPS.
+- Added `board_ffmpeg_h264_pipeline_bench.sh` for C/sync/depth-1/depth-2
+  comparison and retained only the byte-identical depth.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
   C-level or below; no code from that experiment remains.
 - Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.

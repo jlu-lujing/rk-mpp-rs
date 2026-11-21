@@ -320,6 +320,18 @@
   measured path first ran a discarded 120-frame encode with the same codec. A
   two-frame warmup was insufficient; the full-length warmup is part of the
   board gate, not an output workaround.
+- VEPU580 H.264 depth-2 needs three reconstruction surfaces in the vendor
+  `0→1→2→0` rotation. The prior synchronous two-slot alternation stayed
+  byte-exact only because each job had completed before the next was prepared;
+  with two pending jobs it overwrote a surface still used as a reference.
+- A blocking `POLL_HW_FINISH` is required when more than one encoder job is
+  queued. The non-blocking poll can return after one task while later queued
+  STATUS destinations have not yet been filled, which changed the final
+  packets even though all named registers matched.
+- The depth-2 H.264 FFmpeg path reaches 980 FPS on 300-frame 720p versus C
+  FFmpeg at 935 FPS, while 120-frame CQP/GOP60 output remains byte-identical.
+  Depth 1 improves the synchronous 422 FPS path to 525 FPS but is still below
+  C; depth 2 is therefore the default compatibility path.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.
   The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline

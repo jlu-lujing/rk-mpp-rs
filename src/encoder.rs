@@ -1338,6 +1338,7 @@ pub struct Encoder {
     mpi_compat: bool,
     last_motion_info: Option<Vec<u8>>,
     next_rate_control: Option<ExternalRateControl>,
+    h264_pipeline_timing: VecDeque<(i64, i64)>,
 }
 
 impl Encoder {
@@ -1398,6 +1399,7 @@ impl Encoder {
             mpi_compat,
             last_motion_info: None,
             next_rate_control: None,
+            h264_pipeline_timing: VecDeque::new(),
         })
     }
 
@@ -1500,6 +1502,24 @@ impl Encoder {
         if let Backend::H264Vepu580(encoder) = &mut self.backend {
             encoder.set_deferred_scene_tune(enabled);
         }
+    }
+
+    pub(crate) fn set_h264_pipeline(&mut self, enabled: bool, depth: usize) -> bool {
+        if let Backend::H264Vepu580(encoder) = &mut self.backend {
+            encoder.set_pipeline_depth(depth);
+            encoder.set_pipeline(enabled);
+            self.h264_pipeline_timing.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn h264_pipeline_empty(&self) -> bool {
+        matches!(
+            &self.backend,
+            Backend::H264Vepu580(encoder) if encoder.pipeline_empty()
+        )
     }
 
     pub fn set_h265_long_term_reference(&mut self, long_term: bool) -> Result<(), Error> {
@@ -1622,6 +1642,42 @@ impl Encoder {
                     .to_string(),
             )),
         }
+    }
+
+    fn queue_h264_frames(&mut self, frames: Vec<h264e::EncodedFrame>) -> Result<usize, Error> {
+        let coded_width = self.config.width().div_ceil(16) * 16;
+        let coded_height = self.config.height().div_ceil(16) * 16;
+        let macroblocks = ((coded_width / 16) * (coded_height / 16)) as u32;
+        let mut packets = 0;
+        for encoded in frames {
+            let (pts, dts) = self.h264_pipeline_timing.pop_front().ok_or_else(|| {
+                Error::State("H.264 pipeline completion has no queued input timestamp".into())
+            })?;
+            let meta = PacketMeta::from_h264(&encoded, macroblocks);
+            packets += encoded.packets.len();
+            for data in encoded.packets {
+                self.packets.push_back(Packet {
+                    data,
+                    pts,
+                    dts,
+                    keyframe: encoded.is_idr,
+                    frame_num: encoded.frame_num,
+                    poc: encoded.poc,
+                    meta: meta.clone(),
+                });
+            }
+        }
+        Ok(packets)
+    }
+
+    pub(crate) fn flush_pending(&mut self) -> Result<usize, Error> {
+        let frames = match &mut self.backend {
+            Backend::H264Vepu580(encoder) if encoder.pipeline_enabled() => encoder
+                .flush_pipeline()
+                .map_err(|error| Error::Hardware(error.to_string()))?,
+            _ => Vec::new(),
+        };
+        self.queue_h264_frames(frames)
     }
 
     pub fn submit_frame(&mut self, frame: InputFrame<'_>) -> Result<usize, Error> {
@@ -1840,11 +1896,12 @@ impl Encoder {
         };
         let count = submitted?;
         self.last_motion_info = match &mut self.backend {
-            Backend::H264Vepu580(encoder) => Some(
+            Backend::H264Vepu580(encoder) if encoder.motion_info_enabled() => Some(
                 encoder
                     .read_motion_info()
                     .map_err(|error| Error::Hardware(error.to_string()))?,
             ),
+            Backend::H264Vepu580(_) => None,
             Backend::H264Vepu510(encoder) => Some(
                 encoder
                     .read_motion_info()
@@ -2003,11 +2060,12 @@ impl Encoder {
         };
         let count = submitted?;
         self.last_motion_info = match &mut self.backend {
-            Backend::H264Vepu580(encoder) => Some(
+            Backend::H264Vepu580(encoder) if encoder.motion_info_enabled() => Some(
                 encoder
                     .read_motion_info()
                     .map_err(|error| Error::Hardware(error.to_string()))?,
             ),
+            Backend::H264Vepu580(_) => None,
             Backend::H264Vepu510(encoder) => Some(
                 encoder
                     .read_motion_info()
@@ -2098,6 +2156,23 @@ impl Encoder {
         let osd = frame.osd;
         let submitted: Result<usize, Error> = match &mut self.backend {
             Backend::H264Vepu580(encoder) => {
+                if encoder.pipeline_enabled() {
+                    if osd.is_some() {
+                        return Err(Error::Unsupported(
+                            "H.264 pipelined DMA input does not support per-frame OSD".into(),
+                        ));
+                    }
+                    if external_rc.is_some() {
+                        return Err(Error::Unsupported(
+                            "H.264 pipelined DMA input does not support custom rate control".into(),
+                        ));
+                    }
+                    let completed = encoder
+                        .encode_frame_fd_pipeline(input_fd)
+                        .map_err(|error| Error::Hardware(error.to_string()))?;
+                    self.h264_pipeline_timing.push_back((frame.pts, frame.dts));
+                    return Ok(self.queue_h264_frames(completed)?);
+                }
                 encoder.set_next_osd(osd);
                 if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
                     encoder.force_next_rate_control(h264e::RateControl {
@@ -2264,11 +2339,12 @@ impl Encoder {
         };
         let count = submitted?;
         self.last_motion_info = match &mut self.backend {
-            Backend::H264Vepu580(encoder) => Some(
+            Backend::H264Vepu580(encoder) if encoder.motion_info_enabled() => Some(
                 encoder
                     .read_motion_info()
                     .map_err(|error| Error::Hardware(error.to_string()))?,
             ),
+            Backend::H264Vepu580(_) => None,
             Backend::H264Vepu510(encoder) => Some(
                 encoder
                     .read_motion_info()
@@ -2298,6 +2374,7 @@ impl Encoder {
     }
 
     pub fn flush(&mut self) -> usize {
+        let _ = self.flush_pending();
         self.eos = true;
         self.packets.len()
     }
@@ -2311,6 +2388,7 @@ impl Encoder {
         self.eos = false;
         self.last_motion_info = None;
         self.next_rate_control = None;
+        self.h264_pipeline_timing.clear();
         self.backend = match self.config.codec {
             Codec::H264 => open_h264_backend(self.config)?,
             Codec::H265 => open_h265_backend_with_mode(self.config, self.mpi_compat)?,

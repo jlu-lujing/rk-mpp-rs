@@ -71,6 +71,11 @@
   (`6f5b544f…b9fe`)。多帧/inter/10-bit 仍未接通。
   其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
   固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
+- **RK3588 FFmpeg H.264 编码已达到并略超 C。** 固定 QP DMA-BUF 路径默认
+  使用 VEPU580 session 内 depth-2 deferred queue；pending job 独立持有
+  batch/STATUS/output，三槽 recon 按 `0→1→2` 轮转，并使用 blocking
+  `POLL_HW_FINISH`。300 帧 720p 中介为 **0.306 s / 980 FPS**，C FFmpeg 为
+  `0.321 s / 935 FPS`；120 帧 320x240/1280x720 GOP60 码流逐字节一致。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
   rkvdec 拒收 H.265 4:2:2 / 4:4:4。
 - 未来扩展到其他 SoC 的工作与成本见 [docs/PLAN.md](docs/PLAN.md) 的 W12 与决策 D2；

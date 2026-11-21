@@ -16,6 +16,7 @@
 //! what the reference writes there for fixed QP.
 
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::io::Read;
 
 use crate::codec::h264::encoder::{self, EncoderConfig, GdrMode, RcMode, SplitMode};
@@ -706,10 +707,14 @@ pub struct Vepu580H264 {
     svc: MppService,
     config: EncoderConfig,
     input: DmaBuf,
-    output: DmaBuf,
+    outputs: [DmaBuf; 2],
+    pipeline: bool,
+    pipeline_depth: usize,
+    pipeline_output: usize,
+    pending_jobs: VecDeque<PendingH264Job>,
     started: bool,
-    /// Slot zero retains the IDR for smart-GOP VI pictures; the two working
-    /// slots alternate after it.
+    /// Vendor scheduling walks all three reconstruction surfaces; slot zero
+    /// also retains the IDR for smart-GOP VI pictures.
     recons: [Recon; 3],
     md_info: DmaBuf,
     store_motion_info: bool,
@@ -772,6 +777,25 @@ pub struct Vepu580H264 {
     batch_scratch: Batch,
 }
 
+struct PendingH264Job {
+    // These arrays own the allocations referenced by `batch`.
+    _ctl: Vec<u32>,
+    _base: Vec<u32>,
+    _rc_klut: Vec<u32>,
+    _param: Vec<u32>,
+    _rdo: Vec<u32>,
+    _scl: Vec<u32>,
+    _osd: Vec<u32>,
+    _offsets: Vec<RegOffsetInfo>,
+    _rcb: Vec<RcbInfo>,
+    batch: Batch,
+    status: Vec<u32>,
+    hw_status: Vec<u32>,
+    output_slot: usize,
+    state: FrameState,
+    include_annex_b: bool,
+}
+
 impl Vepu580H264 {
     pub fn open(config: EncoderConfig) -> Result<Self, String> {
         require_video_encode(VideoEncodeHal::Vepu580)?;
@@ -814,16 +838,25 @@ impl Vepu580H264 {
             )),
         };
 
+        let outputs = [
+            DmaBuf::alloc("system-uncached", output_size, false)
+                .map_err(|e| format!("allocate H.264 output 0: {e}"))?,
+            DmaBuf::alloc("system-uncached", output_size, false)
+                .map_err(|e| format!("allocate H.264 output 1: {e}"))?,
+        ];
         Ok(Self {
             svc: MppService::open(Client::RkvEnc as u32)
                 .map_err(|e| format!("open rkv encoder: {e}"))?,
             started: false,
             input: DmaBuf::alloc("system-uncached", input_size, false)
                 .map_err(|e| format!("allocate H.264 input: {e}"))?,
-            // The packet is only a few KiB. Keeping it uncached makes the
+            // The packets are only a few KiB. Keeping them uncached makes the
             // hardware result CPU-visible without two sync ioctls per picture.
-            output: DmaBuf::alloc("system-uncached", output_size, false)
-                .map_err(|e| format!("allocate H.264 output: {e}"))?,
+            outputs,
+            pipeline: false,
+            pipeline_depth: 2,
+            pipeline_output: 0,
+            pending_jobs: VecDeque::new(),
             recons: [
                 Recon::alloc(pixel_size, thumb_size)?,
                 Recon::alloc(pixel_size, thumb_size)?,
@@ -937,6 +970,26 @@ impl Vepu580H264 {
 
     pub fn set_deferred_scene_tune(&mut self, enabled: bool) {
         self.defer_tune = enabled;
+    }
+
+    pub fn set_pipeline(&mut self, enabled: bool) {
+        self.pipeline = enabled;
+    }
+
+    pub fn set_pipeline_depth(&mut self, depth: usize) {
+        self.pipeline_depth = depth.clamp(1, 2);
+    }
+
+    pub fn pipeline_enabled(&self) -> bool {
+        self.pipeline
+    }
+
+    pub fn pipeline_empty(&self) -> bool {
+        self.pending_jobs.is_empty()
+    }
+
+    pub fn motion_info_enabled(&self) -> bool {
+        self.store_motion_info
     }
 
     pub fn set_rate_control_name(&mut self, name: String) {
@@ -1159,7 +1212,7 @@ impl Vepu580H264 {
         let job = Job {
             config: &self.config,
             input_fd,
-            output_fd: self.output.fd(),
+            output_fd: self.outputs[0].fd(),
             current_fd,
             current_thumb_fd: self.recons[current_slot].thumb.fd(),
             md_fd: self.md_info.fd(),
@@ -1271,14 +1324,14 @@ impl Vepu580H264 {
         }
 
         let payload_len = status[0] as usize;
-        if payload_len < 8 || payload_len > self.output.len() {
+        if payload_len < 8 || payload_len > self.outputs[0].len() {
             let _ = self.svc.restart_after_hardware_error();
             return Err(format!(
                 "invalid VEPU580 H.264 length {payload_len} (capacity {})",
-                self.output.len()
+                self.outputs[0].len()
             ));
         }
-        let mut payload = self.output.as_slice()[..payload_len].to_vec();
+        let mut payload = self.outputs[0].as_slice()[..payload_len].to_vec();
         let nal_validation = validate_nal_bytes(&payload, if state.is_idr { 5 } else { 1 });
         nal_validation?;
         if self.forced_reference_slot == Some(0) && !reference_pattern_active {
@@ -1310,6 +1363,274 @@ impl Vepu580H264 {
         }
         self.status_scratch = status;
         Ok((payload, slice_lengths, statistics))
+    }
+
+    fn prepare_pipeline_job(
+        &mut self,
+        state: FrameState,
+        current_slot: usize,
+        reference_slot: usize,
+        input_fd: i32,
+        non_reference: bool,
+        include_annex_b: bool,
+    ) -> Result<PendingH264Job, String> {
+        let output_slot = self.pipeline_output;
+        self.pipeline_output ^= 1;
+        let output_fd = self.outputs[output_slot].fd();
+        let output_capacity = logical_output_size(&self.config)?;
+        let job = Job {
+            config: &self.config,
+            input_fd,
+            output_fd,
+            current_fd: self.recons[current_slot].pixel.fd(),
+            current_thumb_fd: self.recons[current_slot].thumb.fd(),
+            md_fd: self.md_info.fd(),
+            store_motion_info: self.store_motion_info,
+            reference_fd: self.recons[reference_slot].pixel.fd(),
+            reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
+            state,
+            output_capacity,
+            rc: None,
+            tune: &self.tune,
+            roi_fd: self.roi.as_ref().map_or(-1, |b| b.0.fd()),
+            roi_qp_fd: self.roi.as_ref().map_or(-1, |b| b.1.fd()),
+            gdr_fd: -1,
+            ext_fd: self.ext_line.as_ref().map_or(-1, |b| b.0.fd()),
+            ext_offset: self.ext_line.as_ref().map_or(0, |b| b.1 as u32),
+            save_pass1: false,
+            use_pass1: false,
+            non_reference,
+            current_long_term: false,
+            pass1_fd: self.pass1.as_ref().map_or(-1, |b| b.fd()),
+        };
+        let registers = build_registers(&job)?;
+        dump_job_registers(&job, &registers);
+
+        let ctl = registers.ctl.to_vec();
+        let base = registers.base.to_vec();
+        let rc_klut = registers.rc_klut.to_vec();
+        let param = registers.param.to_vec();
+        let rdo = registers.rdo.to_vec();
+        let scl = registers.scl.to_vec();
+        let osd = registers.osd.to_vec();
+        let offsets = registers.offsets;
+        let rcb = registers.rcb;
+        let mut status = vec![0u32; STATUS_WORDS];
+        let mut hw_status = vec![0u32; 1];
+        let mut batch = Batch::new();
+        batch
+            .reg_write(&ctl, CTL_OFFSET)
+            .reg_write(&base, BASE_OFFSET)
+            .reg_write(&rc_klut, RCKLUT_OFFSET)
+            .reg_write(&param, PARAM_OFFSET)
+            .reg_write(&rdo, RDO_OFFSET)
+            .reg_write(&scl, SCL_OFFSET)
+            .reg_write(&osd, OSD_OFFSET)
+            .reg_offsets(&offsets)
+            .reg_read(&mut hw_status, HW_STATUS_OFFSET)
+            .reg_read(&mut status, STATUS_OFFSET);
+        if !rcb.is_empty() {
+            batch.rcb_info(&rcb);
+        }
+        Ok(PendingH264Job {
+            _ctl: ctl,
+            _base: base,
+            _rc_klut: rc_klut,
+            _param: param,
+            _rdo: rdo,
+            _scl: scl,
+            _osd: osd,
+            _offsets: offsets,
+            _rcb: rcb,
+            batch,
+            status,
+            hw_status,
+            output_slot,
+            state,
+            include_annex_b,
+        })
+    }
+
+    fn finish_pipeline_job(&mut self, pending: PendingH264Job) -> Result<EncodedFrame, String> {
+        if let Err(error) = self.svc.poll_hw_finish_blocking() {
+            let recovery = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "H.264 pipeline blocking poll: {error}; recovery: {recovery:?}"
+            ));
+        }
+        let errors = pending.hw_status[0] & HW_ERROR_MASK;
+        if errors != 0 {
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "VEPU580 H.264 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
+                pending.hw_status[0]
+            ));
+        }
+        if pending.hw_status[0] & 1 == 0 {
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "VEPU580 H.264 pipeline completed without enc_done (int_sta=0x{:08x})",
+                pending.hw_status[0]
+            ));
+        }
+        let output = &self.outputs[pending.output_slot];
+        let payload_len = pending.status[0] as usize;
+        if payload_len < 8 || payload_len > output.len() {
+            let _ = self.svc.restart_after_hardware_error();
+            return Err(format!(
+                "invalid VEPU580 H.264 pipeline length {payload_len} (capacity {})",
+                output.len()
+            ));
+        }
+        let mut payload = output.as_slice()[..payload_len].to_vec();
+        validate_nal_bytes(&payload, if pending.state.is_idr { 5 } else { 1 })?;
+        if self.forced_reference_slot == Some(0) {
+            payload = amend_default_reference_slice(
+                payload,
+                &self.config,
+                &pending.state,
+                &self.parameter_sets()?,
+            )?;
+        }
+
+        let statistics = Statistics::from_words(&pending.status);
+        dump_statistics(&pending.state, &pending.status);
+        if self.defer_tune {
+            if let Some(previous) = self.pending_tune.replace(statistics.clone()) {
+                self.tune.update(&previous);
+            }
+        } else {
+            self.tune.update(&statistics);
+        }
+        let headers = if pending.state.is_idr {
+            let mut out = if !self.hdr_added || self.headers_each_idr {
+                self.hdr_added = true;
+                self.parameter_sets()?
+            } else {
+                Vec::new()
+            };
+            out.extend(self.idr_seis()?);
+            out
+        } else {
+            Vec::new()
+        };
+        let packets = output_packets(&headers, &[], &payload, &[])?;
+        let annex_b = if pending.include_annex_b {
+            let mut out = Vec::with_capacity(headers.len() + payload.len());
+            out.extend_from_slice(&headers);
+            out.extend_from_slice(&payload);
+            out
+        } else {
+            Vec::new()
+        };
+        Ok(EncodedFrame {
+            annex_b,
+            packets,
+            payload,
+            headers,
+            is_idr: pending.state.is_idr,
+            frame_num: pending.state.frame_num,
+            poc: pending.state.poc,
+            quality_target: i32::from(self.config.qp_init),
+            rt_bits: 0,
+            is_intra: pending.state.is_idr || pending.state.is_i_refresh,
+            is_pskip: false,
+            use_ltr: None,
+            statistics,
+        })
+    }
+
+    pub(crate) fn encode_frame_fd_pipeline(
+        &mut self,
+        input_fd: i32,
+    ) -> Result<Vec<EncodedFrame>, String> {
+        if !self.pipeline || self.rc.is_some() || self.pass1.is_some() || self.config.gdr {
+            return Err("H.264 pipeline is disabled or incompatible with this session".into());
+        }
+        if input_fd < 0 {
+            return Err("H.264 input fd is invalid".to_string());
+        }
+        if self.next_osd.is_some()
+            || self.next_prefix_temporal_id_override.is_some()
+            || self.next_reference_reorder_override.is_some()
+            || self.next_current_long_term_override.is_some()
+            || self.next_non_reference_override == Some(true)
+        {
+            return Err("H.264 pipeline does not support per-frame syntax overrides".into());
+        }
+
+        let previous_slot = self.slot;
+        let force_idr = std::mem::take(&mut self.force_next_idr);
+        if self.state.index != 0 || self.started {
+            self.state = if force_idr {
+                FrameState {
+                    index: self.state.index + 1,
+                    is_idr: true,
+                    frame_num: 0,
+                    idr_pic_id: self.state.idr_pic_id + 1,
+                    poc: 0,
+                    ..FrameState::default()
+                }
+            } else {
+                next_picture_state(
+                    self.state,
+                    self.config.gop,
+                    self.config.gdr_refresh_length(),
+                    false,
+                    self.last_non_reference,
+                    false,
+                )
+            };
+            self.state.is_vi = self.config.smart_p_vgop().is_some_and(|vi_len| {
+                !self.state.is_idr
+                    && self.state.index % self.config.gop.max(1) as usize == vi_len as usize
+            });
+            self.slot = self.next_slot_override.take().unwrap_or_else(|| {
+                if self.state.is_idr {
+                    0
+                } else {
+                    (previous_slot + 1) % self.recons.len()
+                }
+            });
+        } else {
+            self.started = true;
+        }
+        let state = self.state;
+        let reference_slot = self
+            .next_reference_override
+            .take()
+            .or(self.forced_reference_slot)
+            .unwrap_or_else(|| {
+                if state.is_idr || state.is_vi || state.index <= 1 {
+                    0
+                } else {
+                    previous_slot
+                }
+            });
+
+        let mut completed = Vec::new();
+        if self.pending_jobs.len() >= self.pipeline_depth {
+            let pending = self.pending_jobs.pop_front().unwrap();
+            completed.push(self.finish_pipeline_job(pending)?);
+        }
+        let mut pending =
+            self.prepare_pipeline_job(state, self.slot, reference_slot, input_fd, false, false)?;
+        self.svc
+            .submit_batch_recovering(&mut pending.batch)
+            .map_err(|e| format!("H.264 pipeline submit: {e}"))?;
+        self.pending_jobs.push_back(pending);
+        self.state = state;
+        self.last_non_reference = false;
+        self.last_rate_control = None;
+        Ok(completed)
+    }
+
+    pub(crate) fn flush_pipeline(&mut self) -> Result<Vec<EncodedFrame>, String> {
+        let mut completed = Vec::new();
+        while let Some(pending) = self.pending_jobs.pop_front() {
+            completed.push(self.finish_pipeline_job(pending)?);
+        }
+        Ok(completed)
     }
 
     /// Encode one picture, continuing the GOP: the first call of a session is an
@@ -1415,10 +1736,8 @@ impl Vepu580H264 {
             self.slot = self.next_slot_override.take().unwrap_or_else(|| {
                 if self.state.is_idr {
                     0
-                } else if previous_slot == 1 {
-                    2
                 } else {
-                    1
+                    (previous_slot + 1) % self.recons.len()
                 }
             });
         } else {

@@ -159,6 +159,10 @@ struct CompatContext {
     decoder_info_change_enabled: bool,
     pending_packet_motion_info: VecDeque<MppBuffer>,
     pending_packet_input_frames: VecDeque<MppFrame>,
+    encoder_pipeline_active: bool,
+    encoder_pipeline_depth: usize,
+    encoder_pipeline_input_frames: VecDeque<MppFrame>,
+    encoder_pipeline_motion_info: VecDeque<MppBuffer>,
     encoder_eos_submitted: bool,
     encoder_eos_delivered: bool,
     encoder_sei_enabled: bool,
@@ -810,6 +814,10 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         let Some(encoder) = context.encoder.as_mut() else {
             return MPP_ERR_VALUE;
         };
+        if let Err(error) = encoder.flush_pending() {
+            eprintln!("rk-mpp-rs mpp: encoder flush failed: {error}");
+            return MPP_NOK;
+        }
         encoder.flush();
         context.encoder_eos_submitted = true;
         return MPP_OK;
@@ -850,7 +858,28 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             return MPP_NOK;
         }
     };
-    let defer_scene_tune = motion_info.is_null() && context.encoder_ref_schedule.is_none();
+    if context.encoder_pipeline_active && (!motion_info.is_null() || osd.is_some()) {
+        let empty = context
+            .encoder
+            .as_ref()
+            .is_some_and(encoder::Encoder::h264_pipeline_empty);
+        if !empty {
+            eprintln!(
+                "rk-mpp-rs mpp: H.264 pipeline cannot switch to motion-info/OSD input mid-stream"
+            );
+            return MPP_NOK;
+        }
+        if let Some(encoder) = context.encoder.as_mut() {
+            encoder.set_h264_pipeline(false, 2);
+        }
+        context.encoder_pipeline_active = false;
+        context.encoder_pipeline_depth = 0;
+    }
+    let defer_scene_tune = if context.encoder_pipeline_active {
+        context.encoder_pipeline_depth == 1
+    } else {
+        motion_info.is_null() && context.encoder_ref_schedule.is_none()
+    };
     if let Some(encoder) = context.encoder.as_mut() {
         encoder.set_motion_info_enabled(!motion_info.is_null());
         encoder.set_deferred_scene_tune(defer_scene_tune);
@@ -961,9 +990,14 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
                         }
                     }
                 }
-                for _ in 0..count {
-                    context.pending_packet_motion_info.push_back(motion_info);
-                    context.pending_packet_input_frames.push_back(input_frame);
+                if context.encoder_pipeline_active {
+                    context.encoder_pipeline_motion_info.push_back(motion_info);
+                    context.encoder_pipeline_input_frames.push_back(input_frame);
+                } else {
+                    for _ in 0..count {
+                        context.pending_packet_motion_info.push_back(motion_info);
+                        context.pending_packet_input_frames.push_back(input_frame);
+                    }
                 }
                 Ok(())
             }
@@ -1000,14 +1034,29 @@ unsafe extern "C" fn compat_encode_get_packet(ctx: MppCtx, packet: *mut MppPacke
         let dts = encoded.dts();
         let meta = encoded.meta().clone();
         let data = encoded.into_data();
-        let motion_info = context
-            .pending_packet_motion_info
-            .pop_front()
-            .unwrap_or(std::ptr::null_mut());
-        let input_frame = context
-            .pending_packet_input_frames
-            .pop_front()
-            .unwrap_or(std::ptr::null_mut());
+        let (motion_info, input_frame) = if context.encoder_pipeline_active {
+            (
+                context
+                    .encoder_pipeline_motion_info
+                    .pop_front()
+                    .unwrap_or(std::ptr::null_mut()),
+                context
+                    .encoder_pipeline_input_frames
+                    .pop_front()
+                    .unwrap_or(std::ptr::null_mut()),
+            )
+        } else {
+            (
+                context
+                    .pending_packet_motion_info
+                    .pop_front()
+                    .unwrap_or(std::ptr::null_mut()),
+                context
+                    .pending_packet_input_frames
+                    .pop_front()
+                    .unwrap_or(std::ptr::null_mut()),
+            )
+        };
         let output = unsafe { objects::packet_from_bytes(data, pts, dts) };
         if !unsafe { objects::packet_attach_encode_meta(output, &meta, motion_info, input_frame) } {
             let mut packet = output;
@@ -1070,6 +1119,10 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.decoder_output_info = None;
     context.pending_packet_motion_info.clear();
     context.pending_packet_input_frames.clear();
+    context.encoder_pipeline_active = false;
+    context.encoder_pipeline_depth = 0;
+    context.encoder_pipeline_input_frames.clear();
+    context.encoder_pipeline_motion_info.clear();
     context.encoder_eos_submitted = false;
     context.encoder_eos_delivered = false;
     context.encoder_input_scratch.clear();
@@ -1259,6 +1312,28 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                         context.custom_rc_sequence = 0;
                         context.custom_force_idr = false;
                     }
+                    let pipeline_depth = std::env::var("RKMPP_ENCODER_PIPELINE_DEPTH")
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(2);
+                    let pipeline_candidate = context.coding == MPP_VIDEO_CODING_AVC
+                        && !force_cpu_encoder_input()
+                        && std::env::var("RKMPP_ENCODER_PIPELINE").as_deref() != Ok("0")
+                        && context.encoder_ref_pattern.is_empty()
+                        && context.custom_rc.is_none()
+                        && config.gdr().is_none()
+                        && config.rate_control().is_none_or(|rate_control| {
+                            rate_control.mode() == encoder::RateControlMode::FixedQp
+                        });
+                    context.encoder_pipeline_active =
+                        pipeline_candidate && encoder.set_h264_pipeline(true, pipeline_depth);
+                    context.encoder_pipeline_depth = if context.encoder_pipeline_active {
+                        pipeline_depth.clamp(1, 2)
+                    } else {
+                        0
+                    };
+                    context.encoder_pipeline_input_frames.clear();
+                    context.encoder_pipeline_motion_info.clear();
                     context.encoder = Some(encoder);
                     MPP_OK
                 }
@@ -1500,6 +1575,10 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             decoder_info_change_enabled: false,
             pending_packet_motion_info: VecDeque::new(),
             pending_packet_input_frames: VecDeque::new(),
+            encoder_pipeline_active: false,
+            encoder_pipeline_depth: 0,
+            encoder_pipeline_input_frames: VecDeque::new(),
+            encoder_pipeline_motion_info: VecDeque::new(),
             encoder_eos_submitted: false,
             encoder_eos_delivered: false,
             encoder_sei_enabled: true,
@@ -1585,6 +1664,10 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.decoder_info_change_enabled = false;
     context.pending_packet_motion_info.clear();
     context.pending_packet_input_frames.clear();
+    context.encoder_pipeline_active = false;
+    context.encoder_pipeline_depth = 0;
+    context.encoder_pipeline_input_frames.clear();
+    context.encoder_pipeline_motion_info.clear();
     context.encoder_eos_submitted = false;
     context.encoder_eos_delivered = false;
     context.encoder_ref_pattern.clear();

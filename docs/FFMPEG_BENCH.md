@@ -32,23 +32,23 @@ stack.
 
 | codec | path | median wall | FPS | CPU time | vs C |
 |---|---|---:|---:|---:|---:|
-| H.264 | C ffmpeg | 0.557 s | 1077.2 | 1.413 s (254%) | baseline |
-| H.264 | ffmpeg+rkmpp-rs | 0.494 s | 1214.6 | 0.978 s (198%) | **+12.8%** |
-| H.264 | native rkmpp-rs | **0.231 s** | **2597.4** | **0.200 s (87%)** | **+141.1%** |
-| H.265 | C ffmpeg | 0.531 s | 1129.9 | 1.427 s (269%) | baseline |
-| H.265 | ffmpeg+rkmpp-rs | 0.513 s | 1169.6 | 0.976 s (190%) | **+3.5%** |
-| H.265 | native rkmpp-rs | **0.215 s** | **2790.7** | **0.188 s (87%)** | **+147.0%** |
+| H.264 | C ffmpeg | 0.568 s | 1056.3 | 1.433 s (252%) | baseline |
+| H.264 | ffmpeg+rkmpp-rs | 0.522 s | 1149.4 | 0.978 s (187%) | **+8.8%** |
+| H.264 | native rkmpp-rs | **0.249 s** | **2409.6** | **0.216 s (87%)** | **+128.1%** |
+| H.265 | C ffmpeg | 0.528 s | 1136.4 | 1.416 s (268%) | baseline |
+| H.265 | ffmpeg+rkmpp-rs | 0.505 s | 1188.1 | 0.993 s (197%) | **+4.6%** |
+| H.265 | native rkmpp-rs | **0.215 s** | **2790.7** | **0.188 s (87%)** | **+145.6%** |
 
 ## Encode
 
 | codec | path | median wall | FPS | CPU time | vs C |
 |---|---|---:|---:|---:|---:|
-| H.264 | C ffmpeg | **0.328 s** | **914.6** | 0.390 s (119%) | baseline |
-| H.264 | ffmpeg+rkmpp-rs | 0.707 s | 424.3 | 0.438 s (62%) | **-53.6%** |
-| H.264 | native rkmpp-rs | 0.630 s | 476.2 | **0.179 s (28%)** | **-47.9%** |
-| H.265 | C ffmpeg | **0.434 s** | **691.2** | 0.447 s (103%) | baseline |
-| H.265 | ffmpeg+rkmpp-rs | 0.746 s | 402.1 | 0.329 s (44%) | **-41.8%** |
-| H.265 | native rkmpp-rs | 0.623 s | 481.5 | **0.134 s (22%)** | **-30.3%** |
+| H.264 | C ffmpeg | 0.339 s | 885.0 | 0.382 s (113%) | baseline |
+| H.264 | ffmpeg+rkmpp-rs | **0.325 s** | **923.1** | 0.341 s (105%) | **+4.3%** |
+| H.264 | native rkmpp-rs | 0.582 s | 515.5 | **0.126 s (22%)** | **-41.8%** |
+| H.265 | C ffmpeg | **0.442 s** | **678.7** | 0.462 s (105%) | baseline |
+| H.265 | ffmpeg+rkmpp-rs | 0.740 s | 405.4 | 0.435 s (59%) | **-40.3%** |
+| H.265 | native rkmpp-rs | 0.667 s | 449.8 | **0.178 s (27%)** | **-33.7%** |
 
 ## 2026-11-21 direct DMA-BUF improvement
 
@@ -126,6 +126,29 @@ discarded 120-frame encode with the same codec immediately before each measured
 path. This makes the C and Rust processes start from the same hardware state and
 removes alternating false failures between the two long cases.
 
+## 2026-11-21 VEPU580 H.264 deferred queue
+
+The FFmpeg compatibility H.264 fixed-QP path now keeps two hardware jobs below
+the encoder session. Each pending job owns its register/batch/STATUS data and
+one of two output buffers; packet timing and `KEY_INPUT_FRAME` metadata remain
+in submission order. A third frame completes the oldest job before preparing
+its replacement.
+
+The queue uses all three reconstruction surfaces in the same `0 → 1 → 2 → 0`
+rotation as vendor C. Completion uses the kernel's blocking
+`POLL_HW_FINISH`, which writes all queued readbacks before returning; the
+non-blocking poll is only safe for the single-job synchronous path.
+
+H.264 120-frame GOP60 output remains byte-identical at 320x240 and 1280x720.
+Seven interleaved 300-frame 720p encode samples:
+
+| path | wall | FPS | CPU | vs C |
+|---|---:|---:|---:|---:|
+| C FFmpeg | 0.321 s | 934.6 | 0.372 s (116%) | baseline |
+| Rust synchronous | 0.711 s | 421.9 | 0.337 s (47%) | -54.9% |
+| Rust depth 1 | 0.571 s | 525.4 | 0.328 s (57%) | -43.8% |
+| Rust depth 2 | **0.306 s** | **980.4** | 0.334 s (109%) | **+4.9%** |
+
 ## Interpretation
 
 - Loading `rk-mpp-rs` through FFmpeg is functionally compatible, but this
@@ -133,11 +156,11 @@ removes alternating false failures between the two long cases.
   substantially less CPU.
 - Native Rust has no FFmpeg demux/mux/frontend overhead. Decode is 2.4-2.6x
   faster than C FFmpeg while using roughly one-third of the CPU.
-- For encode, vendor C FFmpeg is still the fastest wall-clock path. DMA input
-  staging is gone from FFmpeg+rkmpp-rs, but synchronous encoder completion
-  leaves hardware idle between pictures.
-- The next encoder step is a 2-4-job submit/poll pipeline, not another copy
-  optimization.
+- H.264 encode now beats vendor C FFmpeg by about 4-5% through the depth-2
+  session queue. H.265 still uses the synchronous path and remains about 40%
+  slower than C in the FFmpeg frontend.
+- The next encoder step is the same deferred queue below the VEPU580 H.265
+  session.
 - Encoded streams were not treated as byte-identical across all three APIs.
   The established exactness gates remain the dedicated standalone and SDK
   tests.
@@ -148,4 +171,6 @@ Run on the board:
 
 ```bash
 SAMPLES=7 scripts/board_ffmpeg_rkmpp_bench.sh
+# H.264 sync/depth-1/depth-2 comparison:
+SAMPLES=7 scripts/board_ffmpeg_h264_pipeline_bench.sh
 ```

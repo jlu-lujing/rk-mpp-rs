@@ -360,10 +360,11 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Match H.264's FFmpeg motion-info and deferred scene-tune state so long
   moving sequences do not switch lambda/ATF rows early.
 - [x] Re-run byte-exact standalone, FFmpeg and workspace gates.
-- [ ] Split VEPU580 H.264 submit and completion into a deferred job.
+- [x] Split VEPU580 H.264 submit and completion into a deferred job.
 - [ ] Extend the same queue contract to VEPU580 H.265.
 - [ ] Feed deferred encoder completions through the FFmpeg C compatibility API.
-- [ ] Benchmark depth 1/2 and retain only byte-identical outputs.
+- [x] Benchmark depth 1/2 and retain only byte-identical outputs. Depth 2 is
+  exact and now the default FFmpeg fixed-QP H.264 path.
 - [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
   FFmpeg encoder loop.
 - [x] Reject the high-level cross-thread compatibility worker; it lost delayed
