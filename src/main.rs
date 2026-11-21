@@ -19,6 +19,7 @@ use rk_mpp_rs::service::soc;
 use rk_mpp_rs::service::MppService;
 
 use rk_mpp_rs::service::*;
+use std::collections::VecDeque;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::sync::mpsc;
@@ -196,11 +197,19 @@ impl Av1CliDecoder {
 }
 
 impl DmaInputPipeline {
-    fn start(path: &str, frame_bytes: usize, wanted: usize) -> Result<Self, String> {
+    fn start(
+        path: &str,
+        frame_bytes: usize,
+        wanted: usize,
+        surface_count: usize,
+    ) -> Result<Self, String> {
+        if surface_count < 2 {
+            return Err("encoder input pipeline needs at least two surfaces".into());
+        }
         let (frame_tx, frames) = mpsc::sync_channel(1);
-        let (recycle, recycle_rx) = mpsc::sync_channel(2);
+        let (recycle, recycle_rx) = mpsc::sync_channel(surface_count);
         let (stop, stop_rx) = mpsc::sync_channel(1);
-        for _ in 0..2 {
+        for _ in 0..surface_count {
             let buffer = dma_heap::DmaBuf::alloc("system-uncached", frame_bytes, false)
                 .map_err(|error| format!("allocate encoder input surface: {error}"))?;
             recycle
@@ -386,6 +395,15 @@ fn encode_h264(
     // are copied one picture at a time; when process affinity covers multiple
     // CPUs, the next surface is filled while the encoder drives the current
     // one. Pipes and other non-regular inputs retain the streaming fallback.
+    let pipeline_compatible = bps.is_none()
+        && gdr.is_none()
+        && debreath_strength.is_none()
+        && hier_qp.is_none()
+        && smart_p_vi_len.is_none()
+        && max_reencode_times.is_none()
+        && super_frame.is_none()
+        && drop_frame.is_none()
+        && split_out & h264_syntax::MPP_ENC_SPLIT_OUT_LOWDELAY == 0;
     let mut config = h264_syntax::EncoderConfig::new(width, height);
     // The SPS level is normally derived from the size, which is what MPP's own
     // `h264e_sps_init` does. This override exists for the level matrix that proves
@@ -524,8 +542,28 @@ fn encode_h264(
     let input_parallelism = std::thread::available_parallelism()
         .map(|parallelism| parallelism.get())
         .unwrap_or(1);
+    let pipeline_requested = std::env::var("RKMPP_ENCODER_PIPELINE").as_deref() == Ok("1");
+    let pipeline_depth = std::env::var("RKMPP_ENCODER_PIPELINE_DEPTH")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 2);
+    let hardware_pipeline = pipeline_compatible && pipeline_requested && input_parallelism > 1;
+    if hardware_pipeline {
+        encoder.set_pipeline_depth(pipeline_depth);
+        encoder.set_pipeline(true);
+    }
     let pipeline = if input_parallelism > 1 {
-        Some(DmaInputPipeline::start(path, per_frame, wanted)?)
+        Some(DmaInputPipeline::start(
+            path,
+            per_frame,
+            wanted,
+            if hardware_pipeline {
+                pipeline_depth + 1
+            } else {
+                2
+            },
+        )?)
     } else {
         None
     };
@@ -547,13 +585,58 @@ fn encode_h264(
     let mut payload = 0usize;
     let mut packets = 0usize;
     let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
+    let mut in_flight = VecDeque::new();
+    let mut emit = |encoded: h264e::EncodedFrame| -> Result<(), String> {
+        headers += encoded.headers.len();
+        payload += encoded.payload.len();
+        packets += encoded.packets.len();
+        let output_len = if encoded.annex_b.is_empty() {
+            encoded.packets.iter().map(Vec::len).sum()
+        } else {
+            encoded.annex_b.len()
+        };
+        total_bytes += output_len;
+        if trace_packets {
+            let sizes = encoded
+                .packets
+                .iter()
+                .map(|packet| packet.len().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!(
+                "h264 frame {}: {} packet(s): {sizes}",
+                encoded.frame_num,
+                encoded.packets.len()
+            );
+        }
+        if let Some(output) = output.as_mut() {
+            use std::io::Write;
+            if encoded.annex_b.is_empty() {
+                for packet in &encoded.packets {
+                    output
+                        .write_all(packet)
+                        .map_err(|error| format!("{out_path}: {error}"))?;
+                }
+            } else {
+                output
+                    .write_all(&encoded.annex_b)
+                    .map_err(|error| format!("{out_path}: {error}"))?;
+            }
+        }
+        Ok(())
+    };
     for index in 0..wanted {
-        let mut dma_input = None;
-        let encoded = if let Some(pipeline) = pipeline.as_ref() {
+        let completed = if let Some(pipeline) = pipeline.as_ref() {
             let input = pipeline.next(index)?;
-            let encoded = encoder.encode_frame_fd(input.fd())?;
-            dma_input = Some(input);
-            encoded
+            let input_fd = input.fd();
+            if hardware_pipeline {
+                in_flight.push_back(input);
+                encoder.encode_frame_fd_pipeline(input_fd)?
+            } else {
+                let encoded = encoder.encode_frame_fd(input_fd)?;
+                pipeline.recycle(input)?;
+                vec![encoded]
+            }
         } else {
             let source = source.as_mut().expect("sequential input source");
             if !encoder.load_input_frame(per_frame, source)? {
@@ -563,34 +646,34 @@ fn encode_h264(
                     per_frame
                 ));
             }
-            encoder.encode_prepared_frame()?
+            vec![encoder.encode_prepared_frame()?]
         };
-        headers += encoded.headers.len();
-        payload += encoded.payload.len();
-        packets += encoded.packets.len();
-        total_bytes += encoded.annex_b.len();
-        if trace_packets {
-            let sizes = encoded
-                .packets
-                .iter()
-                .map(|packet| packet.len().to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            eprintln!(
-                "h264 frame {index}: {} packet(s): {sizes}",
-                encoded.packets.len()
-            );
-        }
-        if let Some(output) = output.as_mut() {
-            use std::io::Write;
-            output
-                .write_all(&encoded.annex_b)
-                .map_err(|error| format!("{out_path}: {error}"))?;
-        }
-        if let (Some(pipeline), Some(input)) = (pipeline.as_ref(), dma_input) {
-            pipeline.recycle(input)?;
+        for encoded in completed {
+            if hardware_pipeline {
+                let input = in_flight
+                    .pop_front()
+                    .ok_or_else(|| "H.264 completion has no in-flight input".to_string())?;
+                pipeline
+                    .as_ref()
+                    .expect("hardware pipeline owns an input pipeline")
+                    .recycle(input)?;
+            }
+            emit(encoded)?;
         }
     }
+    if hardware_pipeline {
+        for encoded in encoder.flush_pipeline()? {
+            let input = in_flight
+                .pop_front()
+                .ok_or_else(|| "H.264 flush has no in-flight input".to_string())?;
+            pipeline
+                .as_ref()
+                .expect("hardware pipeline owns an input pipeline")
+                .recycle(input)?;
+            emit(encoded)?;
+        }
+    }
+    drop(emit);
     if let Some(output) = output.as_mut() {
         use std::io::Write;
         output
@@ -2946,6 +3029,9 @@ fn main() {
                 },
             }
         }
+        let pipeline_compatible = refresh.is_none()
+            && split.out & h265_syntax::MPP_ENC_SPLIT_OUT_LOWDELAY == 0
+            && !syntax.auto_tile;
         let opened = if refresh.is_some() || short_term {
             h265e_session::Vepu580H265::open_gop_short_term(width, height, qp)
         } else {
@@ -2981,8 +3067,29 @@ fn main() {
             let input_parallelism = std::thread::available_parallelism()
                 .map(|parallelism| parallelism.get())
                 .unwrap_or(1);
+            let pipeline_requested = std::env::var("RKMPP_ENCODER_PIPELINE").as_deref() != Ok("0");
+            let pipeline_depth = std::env::var("RKMPP_ENCODER_PIPELINE_DEPTH")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(2)
+                .clamp(1, 2);
+            let hardware_pipeline =
+                pipeline_compatible && pipeline_requested && input_parallelism > 1;
+            if hardware_pipeline {
+                encoder.set_pipeline_depth(pipeline_depth);
+                encoder.set_pipeline(true);
+            }
             let pipeline = if input_parallelism > 1 {
-                Some(DmaInputPipeline::start(src, frame_size, frames)?)
+                Some(DmaInputPipeline::start(
+                    src,
+                    frame_size,
+                    frames,
+                    if hardware_pipeline {
+                        pipeline_depth + 1
+                    } else {
+                        2
+                    },
+                )?)
             } else {
                 None
             };
@@ -2999,20 +3106,8 @@ fn main() {
             let mut total_bytes = 0usize;
             let mut packets = 0;
             let trace_packets = std::env::var_os("RK_MPP_TRACE_PACKETS").is_some();
-            for index in 0..frames {
-                let encoded = if let Some(pipeline) = pipeline.as_ref() {
-                    let input = pipeline.next(index)?;
-                    let encoded = encoder.encode_frame_packets_fd(input.fd())?;
-                    pipeline.recycle(input)?;
-                    encoded
-                } else {
-                    use std::io::Read as _;
-                    file.as_mut()
-                        .expect("sequential H.265 input source")
-                        .read_exact(&mut frame)
-                        .map_err(|error| format!("{src}: frame {index}: {error}"))?;
-                    encoder.encode_frame_packets(&frame)?
-                };
+            let mut in_flight = VecDeque::new();
+            let mut emit = |encoded: h265e_session::EncodedFrame| -> Result<(), String> {
                 packets += encoded.packets.len();
                 if trace_packets {
                     let sizes = encoded
@@ -3022,17 +3117,77 @@ fn main() {
                         .collect::<Vec<_>>()
                         .join(",");
                     eprintln!(
-                        "h265 frame {index}: {} packet(s): {sizes}",
+                        "h265 frame {}: {} packet(s): {sizes}",
+                        encoded.frame_num,
                         encoded.packets.len()
                     );
                 }
-                total_bytes += encoded.annex_b.len();
+                let output_len = if encoded.annex_b.is_empty() {
+                    encoded.packets.iter().map(Vec::len).sum()
+                } else {
+                    encoded.annex_b.len()
+                };
+                total_bytes += output_len;
                 if let Some(out) = output.as_mut() {
                     use std::io::Write as _;
-                    out.write_all(&encoded.annex_b)
-                        .map_err(|error| format!("{dst}: {error}"))?;
+                    if encoded.annex_b.is_empty() {
+                        for packet in &encoded.packets {
+                            out.write_all(packet)
+                                .map_err(|error| format!("{dst}: {error}"))?;
+                        }
+                    } else {
+                        out.write_all(&encoded.annex_b)
+                            .map_err(|error| format!("{dst}: {error}"))?;
+                    }
+                }
+                Ok(())
+            };
+            for index in 0..frames {
+                let completed = if let Some(pipeline) = pipeline.as_ref() {
+                    let input = pipeline.next(index)?;
+                    let input_fd = input.fd();
+                    if hardware_pipeline {
+                        in_flight.push_back(input);
+                        encoder.encode_frame_fd_pipeline(input_fd)?
+                    } else {
+                        let encoded = encoder.encode_frame_packets_fd(input_fd)?;
+                        pipeline.recycle(input)?;
+                        vec![encoded]
+                    }
+                } else {
+                    use std::io::Read as _;
+                    file.as_mut()
+                        .expect("sequential H.265 input source")
+                        .read_exact(&mut frame)
+                        .map_err(|error| format!("{src}: frame {index}: {error}"))?;
+                    vec![encoder.encode_frame_packets(&frame)?]
+                };
+                for encoded in completed {
+                    if hardware_pipeline {
+                        let input = in_flight
+                            .pop_front()
+                            .ok_or_else(|| "H.265 completion has no in-flight input".to_string())?;
+                        pipeline
+                            .as_ref()
+                            .expect("hardware pipeline owns an input pipeline")
+                            .recycle(input)?;
+                    }
+                    emit(encoded)?;
                 }
             }
+            if hardware_pipeline {
+                for encoded in encoder.flush_pipeline()? {
+                    let input = in_flight
+                        .pop_front()
+                        .ok_or_else(|| "H.265 flush has no in-flight input".to_string())?;
+                    pipeline
+                        .as_ref()
+                        .expect("hardware pipeline owns an input pipeline")
+                        .recycle(input)?;
+                    emit(encoded)?;
+                }
+            }
+            drop(emit);
             if let Some(pipeline) = pipeline {
                 pipeline.finish();
             }
@@ -3144,7 +3299,7 @@ fn main() {
                     .map(|parallelism| parallelism.get())
                     .unwrap_or(1);
                 let pipeline = if input_parallelism > 1 {
-                    Some(DmaInputPipeline::start(src, frame_size, steps.len())?)
+                    Some(DmaInputPipeline::start(src, frame_size, steps.len(), 2)?)
                 } else {
                     None
                 };
@@ -3310,7 +3465,7 @@ fn main() {
                 .map(|parallelism| parallelism.get())
                 .unwrap_or(1);
             let pipeline = if input_parallelism > 1 {
-                Some(DmaInputPipeline::start(src, frame_size, frames)?)
+                Some(DmaInputPipeline::start(src, frame_size, frames, 2)?)
             } else {
                 None
             };

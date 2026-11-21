@@ -1596,10 +1596,7 @@ impl Vepu580H264 {
         })
     }
 
-    pub(crate) fn encode_frame_fd_pipeline(
-        &mut self,
-        input_fd: i32,
-    ) -> Result<Vec<EncodedFrame>, String> {
+    pub fn encode_frame_fd_pipeline(&mut self, input_fd: i32) -> Result<Vec<EncodedFrame>, String> {
         if !self.pipeline || self.rc.is_some() || self.pass1.is_some() || self.config.gdr {
             return Err("H.264 pipeline is disabled or incompatible with this session".into());
         }
@@ -1681,7 +1678,7 @@ impl Vepu580H264 {
         Ok(completed)
     }
 
-    pub(crate) fn flush_pipeline(&mut self) -> Result<Vec<EncodedFrame>, String> {
+    pub fn flush_pipeline(&mut self) -> Result<Vec<EncodedFrame>, String> {
         let mut completed = Vec::new();
         while let Some(pending) = self.pending_jobs.pop_front() {
             completed.push(self.finish_pipeline_job(pending)?);

@@ -62,6 +62,11 @@
   instructions, matching C's 327.3M, and from 428.0 to 362.9 ms task-clock.
   `strace -c` mmap calls fell from 544 to 244 while the FFmpeg and C object API
   gates remained byte-exact.
+- The native fixed-QP CLI now drives the deferred hardware queue. H.265 depth 2
+  is the default/byte-exact mode and improves 300-frame 720p from 438 to
+  701 FPS. H.264 stays sync by default; explicit depth 2 reaches 909 FPS but
+  moves scene-tune feedback one picture later, so it is not stream-identical
+  to the default path.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
   C-level or below; no code from that experiment remains.
 - Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.

@@ -112,6 +112,48 @@ recorded streams: `0a039e02…a2bc6a2e` for H.264 and
 `ae613590…c93b469783` for H.265. H.264/H.265 low-delay output also stayed
 5/5 and 4/4 exact.
 
+## 2026-11-21: native CLI fixed-QP hardware queue
+
+The native file encoders now feed the same VEPU580 deferred queue used by the
+FFmpeg compatibility path. The input reader owns one extra DMA surface, two
+completed jobs may remain below the session, and packet output is released
+only after the corresponding input surface has completed.
+
+H.265 fixed-QP file encoding enables depth 2 by default when the session has no
+refresh, low-delay split or tiles. H.264 remains synchronous by default because
+depth 1 adds no useful overlap while depth 2 legitimately exposes scene-tune
+state one picture later than the blocking path. The H.264 high-throughput mode
+is explicit and applies only to fixed-QP sessions without GDR, debreath,
+hierarchical QP, custom rate control or low-delay slice output:
+
+```bash
+RKMPP_ENCODER_PIPELINE=1 RKMPP_ENCODER_PIPELINE_DEPTH=2 \
+    rk-mpp-rs h264-enc input.nv12 output.264 1280 720 26 high 300 60
+```
+
+Eleven interleaved 300-frame 1280x720 samples, pinned to CPUs 4-7:
+
+| path | wall | FPS | CPU user+sys |
+|---|---:|---:|---:|
+| H.264 C FFmpeg | 0.352 s | 852 | 0.372 s |
+| H.264 Rust sync/default | 0.638 s | 470 | 0.272 s |
+| H.264 Rust depth 1 | 0.637 s | 471 | 0.292 s |
+| H.264 Rust depth 2, explicit | **0.330 s** | **909** | **0.207 s** |
+| H.265 C FFmpeg | 0.453 s | 662 | 0.410 s |
+| H.265 Rust sync | 0.686 s | 437 | 0.278 s |
+| H.265 Rust depth 1 | 0.669 s | 448 | 0.282 s |
+| H.265 Rust depth 2/default | **0.428 s** | **701** | **0.210 s** |
+
+The script `scripts/board_native_encoder_pipeline_bench.sh` also checks streams:
+H.264 depth 1 and H.265 depth 1/2 are byte-identical to sync for all 300
+frames at 320x240 and 1280x720. H.264 depth 2 decodes all frames but is not
+asserted byte-identical to sync because one observed statistics window is
+necessarily delayed by the deeper queue.
+
+```bash
+SAMPLES=11 scripts/board_native_encoder_pipeline_bench.sh
+```
+
 ## Earlier 60-frame single-stream baseline
 
 | codec | size | C MPP | this crate | Rust advantage |

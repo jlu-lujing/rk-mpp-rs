@@ -371,6 +371,9 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Defer imported fd-only MPP buffer mapping until pointer, info, read/write
   or CPU fallback actually needs it. This removes one `mmap/munmap` pair per
   FFmpeg DMA-BUF frame and brings Rust instructions to C parity.
+- [x] Feed native file encoders through the VEPU580 deferred queue. H.265
+  depth 2 is exact and default; H.264 depth 2 is exposed as a high-throughput
+  opt-in because async scene-tune feedback differs from the blocking stream.
 - [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
   FFmpeg encoder loop.
 - [x] Reject the high-level cross-thread compatibility worker; it lost delayed

@@ -362,6 +362,15 @@
   912 FPS result was the unsafe unsynchronised path. Rust CPU user+sys is
   0.372 s versus C 0.393 s, so there is no CPU-cost regression beyond the C
   baseline. H.265 depth 2 is now the compatibility default.
+- The native file CLI now feeds the deferred session queue directly. H.265
+  fixed-QP defaults to depth 2 when refresh/tiles/low-delay split are absent;
+  300-frame 720p rises from 438 to 701 FPS and remains byte-identical to sync
+  at 320x240 and 1280x720.
+- H.264 native depth 1 is byte-exact but does not overlap enough work to beat
+  the existing input-copy pipeline. Depth 2 reaches 909 FPS versus C's 852,
+  but scene-tune observes STATUS one picture later, so it is opt-in rather than
+  the default. The explicit high-throughput stream decodes all 300 frames but
+  is not asserted byte-identical to sync across multiple GOPs.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.
   The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline

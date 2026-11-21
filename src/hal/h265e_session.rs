@@ -688,10 +688,7 @@ impl Vepu580H265 {
         })
     }
 
-    pub(crate) fn encode_frame_fd_pipeline(
-        &mut self,
-        input_fd: i32,
-    ) -> Result<Vec<EncodedFrame>, String> {
+    pub fn encode_frame_fd_pipeline(&mut self, input_fd: i32) -> Result<Vec<EncodedFrame>, String> {
         if !self.pipeline
             || self.rc.is_some()
             || self.refresh_length != 0
@@ -745,7 +742,7 @@ impl Vepu580H265 {
         Ok(completed)
     }
 
-    pub(crate) fn flush_pipeline(&mut self) -> Result<Vec<EncodedFrame>, String> {
+    pub fn flush_pipeline(&mut self) -> Result<Vec<EncodedFrame>, String> {
         let mut completed = Vec::new();
         while let Some(pending) = self.pending_jobs.pop_front() {
             completed.push(self.finish_pipeline_job(pending)?);

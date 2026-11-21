@@ -17,6 +17,9 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   read/write or CPU fallback path first needs CPU access. On a 300-frame
   1280x720 H.265 encode this reduces Rust instructions from about 390 M to
   327 M, matching vendor C, and task-clock from about 428 ms to 363 ms.
+- The native fixed-QP H.264/H.265 file encoders can feed the VEPU580 deferred
+  queue. H.265 depth 2 is exact and enabled by default; H.264 depth 2 is an
+  explicit high-throughput mode.
 - Imported encoder buffers now submit their DMA-BUF fd directly instead of
   falling back to NV12 CPU staging. Canonical decoded NV12 surfaces are also
   transferred into compatibility frames without packing and reallocating.
