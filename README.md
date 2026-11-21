@@ -435,7 +435,8 @@ surface，`show_existing` 则按参考帧语义复制历史 display surface。
 standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 `vfprintf` helper，实际展开 printf 变参；
 未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG
-单帧编码：H.264/H.265 重建逐字节一致，MJPEG stream 逐字节一致。
+单帧编码：H.264/H.265 的 NAL 序列与解码重建一致，version SEI 只比较
+framing；MJPEG stream 逐字节一致。
 带 `--enable-rkmpp` 的 FFmpeg 同样可用 `LD_LIBRARY_PATH` 把
 `librockchip_mpp.so.1` 指向本库；RK3588 已通过 H.264/H.265/VP9 解码和
 H.264/H.265/MJPEG 编码 FFmpeg 门，复验见 `scripts/board_ffmpeg_rkmpp.sh`。
@@ -544,7 +545,8 @@ CBR/VBR/AVBR 的 6 帧持续会话也与 vendor stream/YUV/metadata 一致。
 `mpi_enc_test` 中跑通。H.264 单帧、默认 6 帧、RK3588 TSVC2/TSVC3/TSVC4
 12 帧以及 RK3576 TSVC2 12 帧的
 SPS/PPS、rc-SEI、type-14 prefix、VCL NAL 和解码重建一致，仅 version-SEI
-的构建身份文本长度不同；H.265 单帧和 6 帧、MJPEG 均 stream 逐字节一致。
+的构建身份文本长度不同；H.265 单帧和 6 帧的参数集、rc-SEI、VCL NAL 和
+解码重建也一致，version-SEI 同样只比较 framing；MJPEG stream 逐字节一致。
 RK3576 High-profile 的 CABAC/8x8 模板、
 MEIW buffer 和普通 GOP60 现已接入；调用方通过 `KEY_MOTION_INFO` 传入的
 1200-byte H.264 / 1280-byte H.265 结果 buffer 也与原生 C MPP 逐字节一致。

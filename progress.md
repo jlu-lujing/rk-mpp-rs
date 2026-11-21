@@ -81,9 +81,23 @@
   it now discovers a matching `mpi_dec_test`/library pair under
   `~/rk-mpp-oracles` and refuses to mix the system test with another oracle's
   library. The default gate is back to 5/5 after cold boot.
-- Final regression: FFmpeg 6/6, official encoder/TSVC all pass, and host
-  `cargo test --all-targets --offline` completes with 1199 passed, 0 failed,
-  2 ignored in the root library plus all integration suites green.
+- Re-ran the standalone gates after the H.264 three-output-slot change:
+  `board_mpp_standalone.sh` is 5/5 (H.264/H.265/VP9/AV1/MJPEG) and
+  `board_mpp_standalone_encode.sh` passes H.264/H.265/MJPEG plus TSVC2/3/4
+  and the 64-frame IGOP restart.
+- Fixed object-path default state for unchanged `mpi_enc_test`. Its missing
+  `h265:level` key now maps to the reference 4.0 default and keeps temporal MVP
+  off. FFmpeg's explicit `h265:level=0` continues to select the size-derived
+  level and enables temporal MVP. H.264 keeps its separate explicit-zero 1.0
+  seed rule.
+- The official encoder gate now compares H.265 NALs through
+  `compare_streams.py` and requires decoded reconstruction equality because the
+  version-SEI text is the encoder build identity. RK3588 passes H.264/H.265
+  one-frame and six-frame cases plus MJPEG.
+- Final regression on 2026-11-21: FFmpeg RKMPP is 8/8, the unchanged official
+  encoder passes all H.264/H.265/MJPEG cases, and host
+  `cargo test --all-targets --offline` reports
+  `1370 passed / 0 failed / 47 ignored`.
 
 ## Session: 2026-11-20
 
@@ -178,7 +192,9 @@
 - A minimal packet `MppMeta` preserves `KEY_OUTPUT_FRAME`, so advanced MJPEG
   returns the exact preallocated `MppFrame` and no longer logs an identity
   mismatch.
-- Standalone linking without vendor helpers and `mpi_enc_test` remain.
+- Standalone linking without vendor helpers and the unchanged
+  `mpi_enc_test` path are now complete; this historical section records the
+  point before those slices landed.
 
 ### Phase 18: Official MPP Drop-in Lifecycle Foundation
 - **Status:** lifecycle plus CPU decode data path complete on RK3588 and RK3576.

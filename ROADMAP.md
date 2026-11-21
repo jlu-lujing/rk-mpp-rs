@@ -4536,3 +4536,13 @@ pipeline uses.
   stream was encoded from (a synthetic source we generate), so no external
   decoder is needed.
 - Performance target: never slower than the C MPP on the same stream.
+- **2026-11-21: standalone object defaults and regression closure.** The
+  unchanged encoder tool and FFmpeg now keep their distinct H.265 reference
+  defaults: FFmpeg's explicit `h265:level=0` selects the size-derived level and
+  temporal MVP, while the stock tool's absent key keeps level 4.0 and TMVP off.
+  H.264's explicit-zero 1.0 seed remains separate. RK3588 passes standalone
+  decode 5/5, the standalone encode matrix including TSVC2/3/4 and a 64-frame
+  IGOP restart, the unchanged `mpi_enc_test` H.264/H.265/MJPEG cases, and the
+  FFmpeg RKMPP gate 8/8. H.265 object streams compare parameter sets, rc-SEI,
+  VCL and decoded YUV exactly; version-SEI build text is framing-only. The host
+  all-targets gate is `1370 passed / 0 failed / 47 ignored`.

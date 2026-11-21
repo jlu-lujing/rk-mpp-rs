@@ -399,6 +399,20 @@
   must accept a NULL frame as EOS, and `encode_get_packet` must return
   `MPP_NOK` when no packet is ready. Returning `MPP_OK` with a null packet made
   the FFmpeg wrapper report `ENOMEM`.
+- The unchanged `mpi_enc_test` and FFmpeg share `MPP_ENC_SET_CFG`, but not the
+  same H.265 defaults. FFmpeg always writes `h265:level`; value zero is then
+  raised by picture size (2.0 at 320x240) and its SPS enables temporal MVP.
+  The stock tool leaves the key absent, so `h265e_init` retains level 4.0 and
+  TMVP off. Preserving key presence reproduces both callers; VEPU510 uses 30
+  rather than 120 when the key is absent.
+- H.264 has a separate explicit-zero rule: FFmpeg's `h264:level=0` starts at
+  1.0 and lets the SPS builder raise it to the minimum level that fits.
+  Treating that zero as an unset reference level breaks FFmpeg at config time.
+- The official H.265 encoder's version SEI contains the producing binary's
+  build identity, so whole-file `cmp` is not a valid correctness gate. On
+  RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;
+  only that text differs. The board gate therefore uses `compare_streams.py`
+  (version SEI framing only) and an explicit YUV comparison.
 
 ## Technical Decisions
 

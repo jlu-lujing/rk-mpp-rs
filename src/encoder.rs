@@ -1535,6 +1535,12 @@ impl Encoder {
         }
     }
 
+    pub(crate) fn set_h265_temporal_mvp(&mut self, enabled: bool) {
+        if let Backend::H265Vepu580(encoder) = &mut self.backend {
+            encoder.set_temporal_mvp(enabled);
+        }
+    }
+
     pub(crate) fn h265_pipeline_empty(&self) -> bool {
         matches!(
             &self.backend,

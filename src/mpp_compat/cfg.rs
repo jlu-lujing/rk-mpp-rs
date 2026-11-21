@@ -7,6 +7,7 @@ use crate::encoder::{
     RateControlConfig, RateControlMode,
 };
 use crate::sdk::{Codec, PixelFormat};
+use crate::service::soc::{SocProfile, VideoEncodeHal};
 
 const MPP_OK: c_int = 0;
 const MPP_VIDEO_CODING_MPEG2: c_int = 2;
@@ -68,7 +69,16 @@ fn codec(coding: i32) -> Option<Codec> {
     }
 }
 
-pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig, String> {
+pub(super) struct CompatibleEncoderConfig {
+    pub config: EncoderConfig,
+    /// FFmpeg explicitly writes `h265:level`; the stock `mpi_enc_test` leaves
+    /// the key unset and therefore keeps the reference encoder's TMVP default.
+    pub h265_temporal_mvp: bool,
+}
+
+pub(super) unsafe fn encoder_config(
+    config: *mut c_void,
+) -> Result<CompatibleEncoderConfig, String> {
     let cfg = unsafe { VendorEncCfg::new(config) }
         .ok_or_else(|| "vendor MppEncCfg accessors are unavailable".to_string())?;
     let coding = unsafe { cfg.get("codec:type") }
@@ -113,15 +123,17 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
     } else {
         profile
     };
-    let level = unsafe { cfg.get_or(level_key, 0) }.clamp(0, u8::MAX as i32) as u8;
-    // FFmpeg uses zero for "let MPP choose". H.264's SPS builder raises this
-    // initial 1.0 level to the lowest level that fits the coded picture.
-    let level = match (codec, level) {
-        (Codec::H264, 0) => 10,
-        (Codec::H265, 0) => 30,
-        (_, 0) => 0,
-        (_, value) => value,
+    let level_value = unsafe { cfg.get(level_key) };
+    let level_present = level_value.is_some();
+    let level = level_value.map(|value| value.clamp(0, u8::MAX as i32) as u8);
+    let h265_unset_level = if SocProfile::detect()
+        .is_ok_and(|profile| profile.video_encode == VideoEncodeHal::Vepu510)
+    {
+        30
+    } else {
+        120
     };
+    let level = level_or_default(codec, level, h265_unset_level);
     let jpeg_qfactor = unsafe { cfg.get_or("jpeg:q_factor", 80) }.clamp(1, 100) as u32;
 
     let mut result = EncoderConfig::new(codec, width as usize, height as usize)
@@ -338,7 +350,10 @@ pub(super) unsafe fn encoder_config(config: *mut c_void) -> Result<EncoderConfig
             }
         }
     }
-    Ok(result)
+    Ok(CompatibleEncoderConfig {
+        config: result,
+        h265_temporal_mvp: codec == Codec::H265 && level_present,
+    })
 }
 
 fn gdr_config(enabled: i32, mode: i32, refresh_blocks: i32) -> Result<Option<GdrConfig>, String> {
@@ -358,10 +373,23 @@ fn gdr_config(enabled: i32, mode: i32, refresh_blocks: i32) -> Result<Option<Gdr
     Ok(Some(GdrConfig::new(mode, refresh_blocks as u32)))
 }
 
+fn level_or_default(codec: Codec, level: Option<u8>, h265_unset_level: u8) -> u8 {
+    match (codec, level) {
+        (Codec::H264, None) => 30,
+        // FFmpeg writes zero to mean "let the SPS builder raise 1.0 to the
+        // smallest level that fits".
+        (Codec::H264, Some(0)) => 10,
+        (Codec::H265, None) => h265_unset_level,
+        (_, Some(value)) => value,
+        (_, None) => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::gdr_config;
+    use super::{gdr_config, level_or_default};
     use crate::encoder::GdrMode;
+    use crate::sdk::Codec;
 
     #[test]
     fn gdr_keys_map_to_the_public_refresh_axis() {
@@ -379,5 +407,15 @@ mod tests {
         assert!(gdr_config(1, 0, 0)
             .unwrap_err()
             .contains("refresh_num must be positive"));
+    }
+
+    #[test]
+    fn unset_encoder_levels_follow_the_reference_defaults() {
+        assert_eq!(level_or_default(Codec::H264, None, 120), 30);
+        assert_eq!(level_or_default(Codec::H264, Some(0), 120), 10);
+        assert_eq!(level_or_default(Codec::H265, None, 120), 120);
+        assert_eq!(level_or_default(Codec::H265, None, 30), 30);
+        assert_eq!(level_or_default(Codec::H265, Some(0), 120), 0);
+        assert_eq!(level_or_default(Codec::H265, Some(30), 120), 30);
     }
 }

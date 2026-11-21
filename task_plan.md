@@ -43,10 +43,10 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - **Status:** complete on RK3576 and RK3588.
 
 ### Phase 6: Other Codec Interfaces
-- [ ] Extend the decoder contract to HEVC, VP9, AV1, VP8, MPEG-2, MPEG-4, H.263.
-- [ ] Add the same contract to JPEG single-image decode and legacy `rk_jpeg_*`.
-- [ ] Add encoder interfaces for the implemented H.264, H.265 and JPEG paths.
-- **Status:** in_progress
+- [x] Extend the decoder contract to HEVC, VP9, AV1, VP8, MPEG-2, MPEG-4, H.263.
+- [x] Add the same contract to JPEG single-image decode and legacy `rk_jpeg_*`.
+- [x] Add encoder interfaces for the implemented H.264, H.265 and JPEG paths.
+- **Status:** complete where the corresponding hardware exists.
 
 ### Phase 6.1: H.265/HEVC Decode Backend
 - [x] Add H.265 codec IDs and 10-bit planar output to the V1 header.
@@ -272,17 +272,17 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Add deterministic null/value/init/reset/control lifecycle checks.
 - [x] Implement MppFrame/MppPacket/MppBuffer ownership and H.264/H.265/MJPEG
       CPU NV12 decode put/get data flow.
-- [ ] Link and run official `mpi_dec_test` unchanged.
-- **Status:** lifecycle and basic decode data path complete; official-tool
-      compatibility, meta and encoder object flow remain.
+- [x] Link and run official `mpi_dec_test` unchanged.
+- **Status:** complete; the broader object/meta surface continues in later
+      compatibility phases.
 
 ### Phase 19: Official `mpi_dec_test` Compatibility
 - [x] Interpose public MPP symbols into unchanged vendor `mpi_dec_test`.
 - [x] Preserve advanced MJPEG `KEY_OUTPUT_FRAME` through packet `MppMeta`.
 - [x] Validate H.264/H.265/MJPEG against native outputs on RK3588 and RK3576.
-- [ ] Remove the remaining dependency on vendor log/cfg/OSAL helper symbols.
-- [ ] Pass unchanged `mpi_enc_test`.
-- **Status:** decoder path complete under vendor-helper preload.
+- [x] Remove the remaining dependency on vendor log/cfg/OSAL helper symbols.
+- [x] Pass unchanged `mpi_enc_test`.
+- **Status:** complete with the standalone library on RK3588.
 
 ### Phase 20: Official `mpi_enc_test` Object Bridge
 - [x] Parse vendor `MppEncCfg` into the stable encoder configuration.
@@ -290,9 +290,10 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Validate RK3588 H.265/MJPEG byte identity and H.264 one-frame reconstruction.
 - [x] Implement the default IDR-only CPB reference schedule and slice amendment
       for exact RK3588 H.264 six-frame VCL/reconstruction.
-- [ ] Close RK3576 H.264/H.265 parameter gaps.
-- [ ] Remove vendor helper dependency and pass standalone `mpi_enc_test`.
-- **Status:** RK3588 encoder object bridge complete; RK3576 codec matrix remains.
+- [x] Close RK3576 H.264/H.265 parameter gaps.
+- [x] Remove vendor helper dependency and pass standalone `mpi_enc_test`.
+- **Status:** RK3588 was revalidated on 2026-11-21; the earlier RK3576 matrix
+      remains recorded in CAPABILITY, while current RK3576 SSH was unavailable.
 
 ### Phase 21: Public H.264 Syntax and Deblock ABI
 - Goal: expose the already board-validated typed H.264 syntax/deblock controls
@@ -376,6 +377,10 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
   opt-in because async scene-tune feedback differs from the blocking stream.
 - [x] Measure 1/2/4/6/8-way encoder scaling. Aggregate H.264/H.265 throughput
   plateaus around four streams, identifying VEPU580 as the next hard limit.
+- [x] Preserve the reference object-path level/TMVP defaults: FFmpeg's explicit
+  `h265:level=0` selects the size-derived level and temporal MVP, while an
+  unchanged `mpi_enc_test` keeps level 4.0 and TMVP off. Revalidate the
+  standalone encoder NAL/reconstruction and FFmpeg exact gates.
 - [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
   FFmpeg encoder loop.
 - [x] Reject the high-level cross-thread compatibility worker; it lost delayed

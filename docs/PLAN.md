@@ -438,7 +438,7 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 - [ ] W7-1 Rust 公开 API 稳定化：`Decoder`/`Encoder` 句柄、配置、帧/包类型。
       **全部已实现 decoder 与 H.264/H.265/JPEG encoder 已完成**
-- [ ] W7-2 C ABI：`mpp_create/mpp_init/mpp_destroy`、`MppApi` 函数表子集、
+- [x] W7-2 C ABI：`mpp_create/mpp_init/mpp_destroy`、`MppApi` 函数表子集、
       `mpp_frame/mpp_packet/mpp_buffer` 最小实现
       **Foundation landed:** official-header lifecycle and support-query
       symbols plus the complete 184-byte `MppApi` table layout pass on RK3588/RK3576.
@@ -446,19 +446,20 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       `decode_put_packet/decode_get_frame` pass H.264, H.265 and MJPEG against
       C MPP on both boards. Local `MppMeta` now covers scalar/pointer/object
       values, user-data deep copies, duplicate/ref/lifetime and frame/packet
-      lazy ownership. Imported DMABUF buffers, kernel meta and complete
-      standalone helper symbols remain.
-- [ ] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
+      lazy ownership. Imported DMABUF buffers, kernel meta and the complete
+      standalone helper surface are now implemented.
+- [x] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
       **Decode partial landed:** the unchanged vendor `mpi_dec_test` runs
       H.264/H.265/MJPEG under `LD_PRELOAD` with byte-identical output on
-      RK3588/RK3576. Vendor log/cfg/OSAL helpers remain linked from the native MPP;
-      standalone linking and `mpi_enc_test` remain.
+      RK3588/RK3576. Vendor log/cfg/OSAL helpers are now supplied by the Rust
+      library, and the same standalone library drives `mpi_enc_test`.
       **Encoder partial landed:** vendor `MppEncCfg`, `MppFrame` input and
       `MppPacket` output are bridged into `encoder::Encoder`. RK3588/RK3576 H.265 and
       MJPEG one/six-frame streams are byte-identical; H.264 one/six-frame
       VCL/reconstruction matches C MPP with only version-SEI framing differing.
       RK3576 High CABAC/8x8, MEIW and its object-specific H.265 header/register
-      templates are covered. Standalone helper replacement remains.
+      templates are covered. Standalone helper replacement is complete on
+      RK3588; version SEI is compared as framing.
 - [x] W7-4 头文件与符号导出策略（前缀、版本、`-sys` crate）。
       **V1.11 头文件、`rk_mpp_` 前缀、SONAME、pkg-config/CMake、符号快照和
       版本化 advanced encoder config、完整 `rk-mpp-rs-sys` 已完成**

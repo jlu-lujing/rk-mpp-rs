@@ -224,7 +224,8 @@ MJPEG 路径：vendor `mpi_dec_test`
 二进制无需重编译，通过 `LD_PRELOAD` 切到 rk-mpp-rs 后，H.264 640×480
 6 帧、H.265 和 MJPEG 在 RK3588/RK3576 都成功，输出 SHA 与原生 MPP 相同，且
 advanced MJPEG 不再报告 frame identity mismatch。vendor log/cfg/OSAL
-辅助符号目前仍由原生库提供；完全 standalone 替换仍是后续工作。
+辅助符号后来也已由本库提供；未修改的 `mpi_dec_test` 和 `mpi_enc_test`
+现在都能只加载 standalone `librk_mpp_rs.so` 运行。
 
 第四个 slice 已把本地 `MppMeta` 扩成真正的 key-value 容器：
 s32/s64/ptr、frame/packet/buffer、`KEY_USER_DATA(S)` 深拷贝、
@@ -649,10 +650,17 @@ encoder 对象流已开始接通：`MPP_ENC_SET_CFG` 通过 vendor `MppEncCfg`
 slice-header amend 已补齐：H.264 320×240 6 帧的 SPS/PPS、rc-SEI、IDR 和
 P1–P5 VCL 与 C 完全一致，解码重建逐帧相同；只有 version-SEI 的构建文本
 长度不同。RK3576 也已通过同一官方工具门：H.264 High 单帧和真实 6 帧的
-NAL/解码重建一致，H.265 单帧和 6 帧、MJPEG 均逐字节一致。RK3576 使用
+NAL/解码重建一致，H.265 单帧和 6 帧的 NAL/解码重建一致，MJPEG 逐字节
+一致。RK3576 使用
 单独的 High CABAC/8x8 寄存器模板、MEIW `KEY_MOTION_INFO` buffer，以及
 `mpi_enc_test` 的 H.265 参数集/无 SEI 对象流，不再复用直连 CLI 的 4710-byte
-前缀格式。`CHECK_MOTION_INFO=1` 还会用 `tools/mpp_mdinfo_dump.c` 抓取调用方
+前缀格式。RK3588 当前默认 SEI 路径下，H.265 单帧和 6 帧的
+VPS/SPS/PPS、rc-SEI、VCL NAL 与重建一致，version-SEI 仅比较 framing。
+2026-11-21 的复验还补上了 object-path 默认值差异：FFmpeg 总会显式写
+`h265:level`，所以 `0` 表示让 SPS 按尺寸抬到 2.0，并启用 temporal MVP；
+未修改的 `mpi_enc_test` 不写这个 key，参考 `h265e_init` 保留 4.0 且关闭
+temporal MVP。兼容层现在按 key 是否存在保留这一区别，VEPU580 缺省为 120，
+VEPU510 缺省为 30。`CHECK_MOTION_INFO=1` 还会用 `tools/mpp_mdinfo_dump.c` 抓取调用方
 buffer：H.264 1200-byte（SHA `655a3ef0…5955273`）和 H.265 1280-byte
 （SHA `bfe492ba…09f462`）均与 C 逐字节一致。
 

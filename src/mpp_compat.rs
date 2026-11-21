@@ -1191,7 +1191,10 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             let encoder_ref_long_term = standalone::encoder_cfg_long_term_config(param);
             let has_ref_cfg = standalone::encoder_cfg_has_ref_cfg(param);
             context.encoder_ref_schedule = None;
-            let mut config = match unsafe { cfg::encoder_config(param) } {
+            let cfg::CompatibleEncoderConfig {
+                mut config,
+                h265_temporal_mvp,
+            } = match unsafe { cfg::encoder_config(param) } {
                 Ok(config) => config,
                 Err(error) => {
                     eprintln!("rk-mpp-rs mpp: encoder config rejected: {error}");
@@ -1221,6 +1224,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
             }
             match encoder::Encoder::new_mpi_compat(config) {
                 Ok(mut encoder) => {
+                    encoder.set_h265_temporal_mvp(h265_temporal_mvp);
                     if context.coding == MPP_VIDEO_CODING_HEVC && context.header_sync_requested {
                         if let Err(error) = encoder.set_h265_mpi_compat() {
                             eprintln!("rk-mpp-rs mpp: H.265 header mode rejected: {error}");

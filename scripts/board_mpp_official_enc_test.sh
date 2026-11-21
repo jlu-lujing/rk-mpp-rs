@@ -158,17 +158,32 @@ else
         printf 'PASS h265 KEY_MOTION_INFO matches C MPP (%s)\n' \
             "$(sha256sum "$h265_md_r" | cut -d' ' -f1)"
     fi
-    cmp "$h265_c" "$h265_r"
-    printf 'PASS h265 stream through unchanged mpi_enc_test (%s)\n' \
-        "$(sha256sum "$h265_r" | cut -d' ' -f1)"
+    python3 "$repo/scripts/compare_streams.py" "$h265_c" "$h265_r"
+    LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
+        "$cli" hevcdec "$h265_c" /tmp/rk_mpp_official_enc_h265_c.yuv \
+        > /dev/null
+    LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
+        "$cli" hevcdec "$h265_r" /tmp/rk_mpp_official_enc_h265_r.yuv \
+        > /dev/null
+    cmp /tmp/rk_mpp_official_enc_h265_c.yuv /tmp/rk_mpp_official_enc_h265_r.yuv
+    printf 'PASS h265 stream and reconstruction through unchanged mpi_enc_test (%s)\n' \
+        "$(sha256sum /tmp/rk_mpp_official_enc_h265_r.yuv | cut -d' ' -f1)"
 
     h265_multi_c=/tmp/rk_mpp_official_enc_h265_multi_c.265
     h265_multi_r=/tmp/rk_mpp_official_enc_h265_multi_r.265
     run_vendor_frames "$raw_multi" "$h265_multi_c" 6 -t 16777220 -qc 26
     run_compat_frames "$raw_multi" "$h265_multi_r" 6 -t 16777220 -qc 26
-    cmp "$h265_multi_c" "$h265_multi_r"
-    printf 'PASS h265 six-frame stream through unchanged mpi_enc_test (%s)\n' \
-        "$(sha256sum "$h265_multi_r" | cut -d' ' -f1)"
+    python3 "$repo/scripts/compare_streams.py" "$h265_multi_c" "$h265_multi_r"
+    LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
+        "$cli" hevcdec "$h265_multi_c" /tmp/rk_mpp_official_enc_h265_multi_c.yuv \
+        > /dev/null
+    LD_LIBRARY_PATH="$repo/target/release:${LD_LIBRARY_PATH:-}" \
+        "$cli" hevcdec "$h265_multi_r" /tmp/rk_mpp_official_enc_h265_multi_r.yuv \
+        > /dev/null
+    cmp /tmp/rk_mpp_official_enc_h265_multi_c.yuv \
+        /tmp/rk_mpp_official_enc_h265_multi_r.yuv
+    printf 'PASS h265 six-frame stream and reconstruction through unchanged mpi_enc_test (%s)\n' \
+        "$(sha256sum /tmp/rk_mpp_official_enc_h265_multi_r.yuv | cut -d' ' -f1)"
 fi
 
 mjpeg_c=/tmp/rk_mpp_official_enc_mjpeg_c.jpg
