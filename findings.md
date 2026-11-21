@@ -377,6 +377,10 @@
   Matching sync would therefore require waiting for the younger task before
   preparing the next picture, which removes the depth-2 overlap this mode
   exists to provide.
+- Multi-process encoder tests show that host scheduling is no longer the limit:
+  H.264 saturates near 1050 FPS and H.265 near 1010 FPS around four concurrent
+  720p streams. Adding six or eight streams does not materially increase
+  aggregate output even when each process is pinned independently.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.
   The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline

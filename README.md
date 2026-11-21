@@ -91,6 +91,8 @@
   `RKMPP_ENCODER_PIPELINE=1 RKMPP_ENCODER_PIPELINE_DEPTH=2` 可到
   **0.331 s / 906 FPS**，C 为 0.362 s / 829 FPS。depth 2 的 scene-tune
   统计晚一帧，码流仍可完整解码，但该高性能模式不等同于同步码流。
+  1/2/4/6/8 路并发测试中，H.264/H.265 聚合吞吐在 4 路后接近硬件上限约
+  1050/1010 FPS；1-2 路 Rust 分别领先 C，更多并发后差距收敛到噪声范围。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
   rkvdec 拒收 H.265 4:2:2 / 4:4:4。
 - 未来扩展到其他 SoC 的工作与成本见 [docs/PLAN.md](docs/PLAN.md) 的 W12 与决策 D2；

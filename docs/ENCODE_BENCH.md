@@ -159,6 +159,27 @@ necessarily delayed by the deeper queue.
 SAMPLES=11 scripts/board_native_encoder_pipeline_bench.sh
 ```
 
+## 2026-11-21: concurrent encoder sessions
+
+`scripts/board_multistream_encode_bench.sh` starts 1/2/4/6/8 independent
+FFmpeg processes, pins them round-robin across CPUs 4-7, and compares vendor C
+with the Rust drop-in. Three interleaved samples at 300 frames each still show
+Rust ahead at the practical 1-2 stream operating points; aggregate throughput
+then saturates in the encoder hardware rather than the host CPU.
+
+| streams | H.264 C / Rust aggregate | H.265 C / Rust aggregate |
+|---:|---:|---:|
+| 1 | 838 / **898 FPS** | 638 / **671 FPS** |
+| 2 | 1003 / **1007 FPS** | 925 / **957 FPS** |
+| 4 | 1042 / **1047 FPS** | 984 / 979 FPS |
+| 6 | 1071 / 1059 FPS | 959 / **1009 FPS** |
+| 8 | **1077 FPS** / 1068 FPS | 971 / **1010 FPS** |
+
+The small negative deltas at high stream counts are within sampling noise and
+occur after the aggregate has plateaued. The useful conclusion is that adding
+more host-side queues no longer raises throughput; further gains must reduce
+hardware work or frame count, not add CPU concurrency.
+
 ## Earlier 60-frame single-stream baseline
 
 | codec | size | C MPP | this crate | Rust advantage |

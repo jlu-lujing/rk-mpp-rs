@@ -374,6 +374,8 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Feed native file encoders through the VEPU580 deferred queue. H.265
   depth 2 is exact and default; H.264 depth 2 is exposed as a high-throughput
   opt-in because async scene-tune feedback differs from the blocking stream.
+- [x] Measure 1/2/4/6/8-way encoder scaling. Aggregate H.264/H.265 throughput
+  plateaus around four streams, identifying VEPU580 as the next hard limit.
 - [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
   FFmpeg encoder loop.
 - [x] Reject the high-level cross-thread compatibility worker; it lost delayed

@@ -64,9 +64,12 @@
   gates remained byte-exact.
 - The native fixed-QP CLI now drives the deferred hardware queue. H.265 depth 2
   is the default/byte-exact mode and improves 300-frame 720p from 439 to
-  698 FPS. H.264 stays sync by default; explicit depth 2 reaches 888 FPS but
-  moves scene-tune feedback one picture later, so it is not stream-identical
-  to the default path.
+  698 FPS. H.264 stays sync by default; explicit depth 2 overlaps packet
+  assembly with the next submit and reaches 906 FPS, but moves scene-tune
+  feedback one picture later and is not stream-identical to the default path.
+- Added a 1/2/4/6/8-way FFmpeg encode benchmark. Rust leads C at one and two
+  streams; aggregate H.264/H.265 throughput plateaus at roughly 1050/1010 FPS
+  from four streams onward, so the remaining limit is the VEPU580 itself.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
   C-level or below; no code from that experiment remains.
 - Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.

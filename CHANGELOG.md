@@ -20,6 +20,12 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 - The native fixed-QP H.264/H.265 file encoders can feed the VEPU580 deferred
   queue. H.265 depth 2 is exact and enabled by default; H.264 depth 2 is an
   explicit high-throughput mode.
+- H.264 uses a third packet output slot so packet assembly overlaps the next
+  hardware submission. The 300-frame 720p high-throughput path reaches about
+  906 FPS while preserving the documented scene-tune caveat.
+- Added a 1/2/4/6/8-session FFmpeg encoder benchmark. Aggregate throughput
+  plateaus around four streams on RK3588, while Rust remains ahead at the
+  practical one- and two-stream operating points.
 - Imported encoder buffers now submit their DMA-BUF fd directly instead of
   falling back to NV12 CPU staging. Canonical decoded NV12 surfaces are also
   transferred into compatibility frames without packing and reallocating.
