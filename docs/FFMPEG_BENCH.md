@@ -32,23 +32,23 @@ stack.
 
 | codec | path | median wall | FPS | CPU time | vs C |
 |---|---|---:|---:|---:|---:|
-| H.264 | C ffmpeg | 0.568 s | 1056.3 | 1.433 s (252%) | baseline |
-| H.264 | ffmpeg+rkmpp-rs | 0.522 s | 1149.4 | 0.978 s (187%) | **+8.8%** |
-| H.264 | native rkmpp-rs | **0.249 s** | **2409.6** | **0.216 s (87%)** | **+128.1%** |
-| H.265 | C ffmpeg | 0.528 s | 1136.4 | 1.416 s (268%) | baseline |
-| H.265 | ffmpeg+rkmpp-rs | 0.505 s | 1188.1 | 0.993 s (197%) | **+4.6%** |
-| H.265 | native rkmpp-rs | **0.215 s** | **2790.7** | **0.188 s (87%)** | **+145.6%** |
+| H.264 | C ffmpeg | 0.562 s | 1067.6 | 1.437 s (256%) | baseline |
+| H.264 | ffmpeg+rkmpp-rs | 0.505 s | 1188.1 | 0.963 s (191%) | **+11.3%** |
+| H.264 | native rkmpp-rs | **0.234 s** | **2564.1** | **0.202 s (86%)** | **+140.2%** |
+| H.265 | C ffmpeg | 0.545 s | 1100.9 | 1.431 s (263%) | baseline |
+| H.265 | ffmpeg+rkmpp-rs | 0.526 s | 1140.7 | 1.007 s (191%) | **+3.6%** |
+| H.265 | native rkmpp-rs | **0.210 s** | **2857.1** | **0.187 s (89%)** | **+159.5%** |
 
 ## Encode
 
 | codec | path | median wall | FPS | CPU time | vs C |
 |---|---|---:|---:|---:|---:|
-| H.264 | C ffmpeg | 0.339 s | 885.0 | 0.382 s (113%) | baseline |
-| H.264 | ffmpeg+rkmpp-rs | **0.325 s** | **923.1** | 0.341 s (105%) | **+4.3%** |
-| H.264 | native rkmpp-rs | 0.582 s | 515.5 | **0.126 s (22%)** | **-41.8%** |
-| H.265 | C ffmpeg | **0.442 s** | **678.7** | 0.462 s (105%) | baseline |
-| H.265 | ffmpeg+rkmpp-rs | 0.740 s | 405.4 | 0.435 s (59%) | **-40.3%** |
-| H.265 | native rkmpp-rs | 0.667 s | 449.8 | **0.178 s (27%)** | **-33.7%** |
+| H.264 | C ffmpeg | 0.326 s | 920.2 | 0.377 s (116%) | baseline |
+| H.264 | ffmpeg+rkmpp-rs | **0.310 s** | **967.7** | 0.330 s (106%) | **+5.2%** |
+| H.264 | native rkmpp-rs | 0.577 s | 519.9 | **0.127 s (22%)** | **-43.5%** |
+| H.265 | C ffmpeg | **0.426 s** | **704.2** | 0.418 s (98%) | baseline |
+| H.265 | ffmpeg+rkmpp-rs | 0.606 s | 495.0 | 0.390 s (64%) | **-29.7%** |
+| H.265 | native rkmpp-rs | 0.614 s | 488.6 | **0.128 s (21%)** | **-30.6%** |
 
 ## 2026-11-21 direct DMA-BUF improvement
 
@@ -149,6 +149,31 @@ Seven interleaved 300-frame 720p encode samples:
 | Rust depth 1 | 0.571 s | 525.4 | 0.328 s (57%) | -43.8% |
 | Rust depth 2 | **0.306 s** | **980.4** | 0.334 s (109%) | **+4.9%** |
 
+## 2026-11-21 VEPU580 H.265 deferred queue
+
+The same compatibility queue now covers VEPU580 H.265 fixed-QP short-term GOPs.
+H.265 is different from H.264 in two places:
+
+- every P reconstruction rotates through three surfaces while referring to the
+  immediately preceding picture;
+- FFmpeg's H.265 object path uses a short-term reference, whereas the standalone
+  harness uses the long-term IDR variant.
+
+Five interleaved 300-frame 720p samples:
+
+| path | wall | FPS | result |
+|---|---:|---:|---|
+| C FFmpeg | 0.436 s | 688 FPS | baseline |
+| Rust synchronous | 0.752 s | 399 FPS | exact |
+| Rust depth 1 | **0.612 s** | **490 FPS** | **exact, default** |
+| Rust depth 2 | 0.329 s | 912 FPS | 120-frame long GOP differs |
+
+Depth 2 removes enough hardware serialization to expose a reference-data race:
+named registers and surface addresses match C, but the long stream diverges
+around frame 41. It remains an explicit experimental setting and is not the
+default. Depth 1 is retained because it improves the synchronous path by about
+23% while remaining byte-identical.
+
 ## Interpretation
 
 - Loading `rk-mpp-rs` through FFmpeg is functionally compatible, but this
@@ -156,11 +181,12 @@ Seven interleaved 300-frame 720p encode samples:
   substantially less CPU.
 - Native Rust has no FFmpeg demux/mux/frontend overhead. Decode is 2.4-2.6x
   faster than C FFmpeg while using roughly one-third of the CPU.
-- H.264 encode now beats vendor C FFmpeg by about 4-5% through the depth-2
-  session queue. H.265 still uses the synchronous path and remains about 40%
-  slower than C in the FFmpeg frontend.
-- The next encoder step is the same deferred queue below the VEPU580 H.265
-  session.
+- H.264 encode now beats vendor C FFmpeg by about 5% through the depth-2
+  session queue. H.265 depth 1 improves synchronous throughput by about 23% to
+  490 FPS but remains below C's 688 FPS; depth 2 is faster but not stable enough
+  for default use.
+- The next H.265 step is to model the reference dependency explicitly rather
+  than relying on hardware queue ordering, so depth 2 can become byte-exact.
 - Encoded streams were not treated as byte-identical across all three APIs.
   The established exactness gates remain the dedicated standalone and SDK
   tests.

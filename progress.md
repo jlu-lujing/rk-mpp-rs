@@ -41,6 +41,10 @@
   depth-2 0.306 s / 980 FPS; C FFmpeg is 0.321 s / 935 FPS.
 - Added `board_ffmpeg_h264_pipeline_bench.sh` for C/sync/depth-1/depth-2
   comparison and retained only the byte-identical depth.
+- Extended the session queue to VEPU580 H.265. Its three-surface short-term P
+  rotation is byte-exact at depth 1; 300-frame 720p improved from 0.752 s /
+  399 FPS synchronous to 0.612 s / 490 FPS. H.265 depth 2 reaches 912 FPS but
+  fails the 120-frame exact gate around frame 41 and remains opt-in.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
   C-level or below; no code from that experiment remains.
 - Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.

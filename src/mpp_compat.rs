@@ -859,10 +859,13 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         }
     };
     if context.encoder_pipeline_active && (!motion_info.is_null() || osd.is_some()) {
-        let empty = context
-            .encoder
-            .as_ref()
-            .is_some_and(encoder::Encoder::h264_pipeline_empty);
+        let empty = context.encoder.as_ref().is_some_and(|encoder| {
+            if context.coding == MPP_VIDEO_CODING_AVC {
+                encoder.h264_pipeline_empty()
+            } else {
+                encoder.h265_pipeline_empty()
+            }
+        });
         if !empty {
             eprintln!(
                 "rk-mpp-rs mpp: H.264 pipeline cannot switch to motion-info/OSD input mid-stream"
@@ -871,12 +874,13 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         }
         if let Some(encoder) = context.encoder.as_mut() {
             encoder.set_h264_pipeline(false, 2);
+            encoder.set_h265_pipeline(false, 2);
         }
         context.encoder_pipeline_active = false;
         context.encoder_pipeline_depth = 0;
     }
     let defer_scene_tune = if context.encoder_pipeline_active {
-        context.encoder_pipeline_depth == 1
+        context.coding == MPP_VIDEO_CODING_AVC && context.encoder_pipeline_depth == 1
     } else {
         motion_info.is_null() && context.encoder_ref_schedule.is_none()
     };
@@ -1312,21 +1316,31 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                         context.custom_rc_sequence = 0;
                         context.custom_force_idr = false;
                     }
+                    let default_pipeline_depth = if context.coding == MPP_VIDEO_CODING_AVC {
+                        2
+                    } else {
+                        1
+                    };
                     let pipeline_depth = std::env::var("RKMPP_ENCODER_PIPELINE_DEPTH")
                         .ok()
                         .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(2);
-                    let pipeline_candidate = context.coding == MPP_VIDEO_CODING_AVC
-                        && !force_cpu_encoder_input()
-                        && std::env::var("RKMPP_ENCODER_PIPELINE").as_deref() != Ok("0")
-                        && context.encoder_ref_pattern.is_empty()
-                        && context.custom_rc.is_none()
-                        && config.gdr().is_none()
-                        && config.rate_control().is_none_or(|rate_control| {
-                            rate_control.mode() == encoder::RateControlMode::FixedQp
-                        });
-                    context.encoder_pipeline_active =
-                        pipeline_candidate && encoder.set_h264_pipeline(true, pipeline_depth);
+                        .unwrap_or(default_pipeline_depth);
+                    let pipeline_candidate =
+                        matches!(context.coding, MPP_VIDEO_CODING_AVC | MPP_VIDEO_CODING_HEVC)
+                            && !force_cpu_encoder_input()
+                            && std::env::var("RKMPP_ENCODER_PIPELINE").as_deref() != Ok("0")
+                            && context.encoder_ref_pattern.is_empty()
+                            && context.custom_rc.is_none()
+                            && config.gdr().is_none()
+                            && config.rate_control().is_none_or(|rate_control| {
+                                rate_control.mode() == encoder::RateControlMode::FixedQp
+                            });
+                    context.encoder_pipeline_active = pipeline_candidate
+                        && if context.coding == MPP_VIDEO_CODING_AVC {
+                            encoder.set_h264_pipeline(true, pipeline_depth)
+                        } else {
+                            encoder.set_h265_pipeline(true, pipeline_depth)
+                        };
                     context.encoder_pipeline_depth = if context.encoder_pipeline_active {
                         pipeline_depth.clamp(1, 2)
                     } else {

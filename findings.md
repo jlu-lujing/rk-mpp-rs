@@ -332,6 +332,15 @@
   FFmpeg at 935 FPS, while 120-frame CQP/GOP60 output remains byte-identical.
   Depth 1 improves the synchronous 422 FPS path to 525 FPS but is still below
   C; depth 2 is therefore the default compatibility path.
+- H.265 FFmpeg uses a short-term GOP, unlike the standalone long-term IDR
+  variant. Its P jobs rotate through three reconstruction surfaces and refer to
+  the immediately preceding surface. Depth 1 is byte-exact and improves the
+  synchronous FFmpeg frontend from roughly 399 to 490 FPS.
+- H.265 depth 2 reaches about 912 FPS, but the immediate-reference dependency
+  is not guaranteed once the older job has been reaped and the previous picture
+  is still in flight. Registers and address-rotation patterns match C, yet a
+  120-frame stream diverges around frame 41. Depth 2 remains experimental; the
+  default is depth 1 until the reference dependency is modelled explicitly.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.
   The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline

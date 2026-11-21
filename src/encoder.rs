@@ -1339,6 +1339,7 @@ pub struct Encoder {
     last_motion_info: Option<Vec<u8>>,
     next_rate_control: Option<ExternalRateControl>,
     h264_pipeline_timing: VecDeque<(i64, i64)>,
+    h265_pipeline_timing: VecDeque<(i64, i64)>,
 }
 
 impl Encoder {
@@ -1400,6 +1401,7 @@ impl Encoder {
             last_motion_info: None,
             next_rate_control: None,
             h264_pipeline_timing: VecDeque::new(),
+            h265_pipeline_timing: VecDeque::new(),
         })
     }
 
@@ -1519,6 +1521,24 @@ impl Encoder {
         matches!(
             &self.backend,
             Backend::H264Vepu580(encoder) if encoder.pipeline_empty()
+        )
+    }
+
+    pub(crate) fn set_h265_pipeline(&mut self, enabled: bool, depth: usize) -> bool {
+        if let Backend::H265Vepu580(encoder) = &mut self.backend {
+            encoder.set_pipeline_depth(depth);
+            encoder.set_pipeline(enabled);
+            self.h265_pipeline_timing.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn h265_pipeline_empty(&self) -> bool {
+        matches!(
+            &self.backend,
+            Backend::H265Vepu580(encoder) if encoder.pipeline_empty()
         )
     }
 
@@ -1670,14 +1690,48 @@ impl Encoder {
         Ok(packets)
     }
 
+    fn queue_h265_frames(
+        &mut self,
+        frames: Vec<h265e_session::EncodedFrame>,
+    ) -> Result<usize, Error> {
+        let mut packets = 0;
+        for encoded in frames {
+            let (pts, dts) = self.h265_pipeline_timing.pop_front().ok_or_else(|| {
+                Error::State("H.265 pipeline completion has no queued input timestamp".into())
+            })?;
+            let meta = PacketMeta::from_h265(&encoded, self.config.width(), self.config.height());
+            packets += encoded.packets.len();
+            for data in encoded.packets {
+                self.packets.push_back(Packet {
+                    data,
+                    pts,
+                    dts,
+                    keyframe: encoded.is_idr,
+                    frame_num: encoded.frame_num,
+                    poc: encoded.frame_num as i32 * 2,
+                    meta: meta.clone(),
+                });
+            }
+        }
+        Ok(packets)
+    }
+
     pub(crate) fn flush_pending(&mut self) -> Result<usize, Error> {
-        let frames = match &mut self.backend {
-            Backend::H264Vepu580(encoder) if encoder.pipeline_enabled() => encoder
-                .flush_pipeline()
-                .map_err(|error| Error::Hardware(error.to_string()))?,
-            _ => Vec::new(),
-        };
-        self.queue_h264_frames(frames)
+        match &mut self.backend {
+            Backend::H264Vepu580(encoder) if encoder.pipeline_enabled() => {
+                let frames = encoder
+                    .flush_pipeline()
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                self.queue_h264_frames(frames)
+            }
+            Backend::H265Vepu580(encoder) if encoder.pipeline_enabled() => {
+                let frames = encoder
+                    .flush_pipeline()
+                    .map_err(|error| Error::Hardware(error.to_string()))?;
+                self.queue_h265_frames(frames)
+            }
+            _ => Ok(0),
+        }
     }
 
     pub fn submit_frame(&mut self, frame: InputFrame<'_>) -> Result<usize, Error> {
@@ -2239,6 +2293,23 @@ impl Encoder {
                 Ok(1)
             }
             Backend::H265Vepu580(encoder) => {
+                if encoder.pipeline_enabled() {
+                    if osd.is_some() {
+                        return Err(Error::Unsupported(
+                            "H.265 pipelined DMA input does not support per-frame OSD".into(),
+                        ));
+                    }
+                    if external_rc.is_some() {
+                        return Err(Error::Unsupported(
+                            "H.265 pipelined DMA input does not support custom rate control".into(),
+                        ));
+                    }
+                    let completed = encoder
+                        .encode_frame_fd_pipeline(input_fd)
+                        .map_err(|error| Error::Hardware(error.to_string()))?;
+                    self.h265_pipeline_timing.push_back((frame.pts, frame.dts));
+                    return Ok(self.queue_h265_frames(completed)?);
+                }
                 encoder.set_next_osd(osd);
                 if use_rate_control_registers && external_rc.is_some() {
                     return Err(Error::Unsupported(
@@ -2389,6 +2460,7 @@ impl Encoder {
         self.last_motion_info = None;
         self.next_rate_control = None;
         self.h264_pipeline_timing.clear();
+        self.h265_pipeline_timing.clear();
         self.backend = match self.config.codec {
             Codec::H264 => open_h264_backend(self.config)?,
             Codec::H265 => open_h265_backend_with_mode(self.config, self.mpi_compat)?,

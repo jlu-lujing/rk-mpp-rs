@@ -76,6 +76,9 @@
   batch/STATUS/output，三槽 recon 按 `0→1→2` 轮转，并使用 blocking
   `POLL_HW_FINISH`。300 帧 720p 中介为 **0.306 s / 980 FPS**，C FFmpeg 为
   `0.321 s / 935 FPS`；120 帧 320x240/1280x720 GOP60 码流逐字节一致。
+  H.265 使用同一 queue contract 的默认 depth 1，300 帧 720p 从同步
+  **399 FPS** 提升到 **490 FPS** 且输出逐字节；depth 2 虽可达 912 FPS，
+  但 long-GOP 的 immediate-reference 仍有数据竞争，暂不设为默认。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
   rkvdec 拒收 H.265 4:2:2 / 4:4:4。
 - 未来扩展到其他 SoC 的工作与成本见 [docs/PLAN.md](docs/PLAN.md) 的 W12 与决策 D2；

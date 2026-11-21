@@ -12,6 +12,8 @@
 //! header length), 165/166 the reference, 167..170 the motion-vector and display
 //! thumbs, 171 the motion-info buffer, and 172..175 the bitstream buffer.
 
+use std::collections::VecDeque;
+
 use crate::codec::h265::encoder::{SliceSplit, SyntaxOptions, MPP_ENC_SPLIT_OUT_LOWDELAY};
 use crate::codec::h265::roi::{build_tables as build_roi_tables, RoiRegion};
 use crate::codec::rc::model as rc_model;
@@ -227,10 +229,15 @@ pub struct Vepu580H265 {
     input: DmaBuf,
     input_padding_initialized: bool,
     input_prepared: bool,
-    output: DmaBuf,
-    /// Two DPB slots. Slot 0 is the opening IDR's reconstruction; the next picture
-    /// reconstructs into the other slot and reads slot 0 as its reference.
-    surfaces: [Surface; 2],
+    outputs: [DmaBuf; 2],
+    pipeline: bool,
+    pipeline_depth: usize,
+    pipeline_output: usize,
+    pending_jobs: VecDeque<PendingH265Job>,
+    /// Slot 0 is the opening IDR's reconstruction. Synchronous paths use one
+    /// other slot; the depth-2 compatibility path alternates two P output
+    /// surfaces so an in-flight job never overwrites the next reconstruction.
+    surfaces: [Surface; 3],
     slot: usize,
     /// Pictures this session has encoded; 0 means the next one is the IDR.
     frames: u32,
@@ -256,6 +263,24 @@ pub struct Vepu580H265 {
     status_scratch: Vec<u32>,
     aggregate_status_scratch: Vec<u32>,
     batch_scratch: Batch,
+}
+
+struct PendingH265Job {
+    _ctl: Vec<u32>,
+    _base: Vec<u32>,
+    _rc_klut: Vec<u32>,
+    _wgt: Vec<u32>,
+    _rdo: Vec<u32>,
+    _osd: Vec<u32>,
+    _offsets: Vec<RegOffsetInfo>,
+    batch: Batch,
+    status: Vec<u32>,
+    hw_status: Vec<u32>,
+    output_slot: usize,
+    picture: Picture,
+    frame_num: u32,
+    with_prefix: bool,
+    include_annex_b: bool,
 }
 
 impl Vepu580H265 {
@@ -329,6 +354,12 @@ impl Vepu580H265 {
         let output_size = input_size
             .checked_add(OUTPUT_MARGIN)
             .ok_or_else(|| "H.265 output size overflow".to_string())?;
+        let outputs = [
+            DmaBuf::alloc("system-uncached", output_size, false)
+                .map_err(|e| format!("allocate H.265 output 0: {e}"))?,
+            DmaBuf::alloc("system-uncached", output_size, false)
+                .map_err(|e| format!("allocate H.265 output 1: {e}"))?,
+        ];
         Ok(Self {
             service: MppService::open(Client::RkvEnc as u32)
                 .map_err(|e| format!("open rkv encoder: {e}"))?,
@@ -355,11 +386,18 @@ impl Vepu580H265 {
                 .map_err(|e| format!("allocate H.265 input: {e}"))?,
             input_padding_initialized: false,
             input_prepared: false,
-            // The packet is only a few KiB. Keeping it uncached makes the
+            // The packets are only a few KiB. Keeping them uncached makes the
             // hardware result CPU-visible without two sync ioctls per picture.
-            output: DmaBuf::alloc("system-uncached", output_size, false)
-                .map_err(|e| format!("allocate H.265 output: {e}"))?,
-            surfaces: [Surface::alloc(sizes)?, Surface::alloc(sizes)?],
+            outputs,
+            pipeline: false,
+            pipeline_depth: 2,
+            pipeline_output: 0,
+            pending_jobs: VecDeque::new(),
+            surfaces: [
+                Surface::alloc(sizes)?,
+                Surface::alloc(sizes)?,
+                Surface::alloc(sizes)?,
+            ],
             slot: 0,
             frames: 0,
             idr_frame: 0,
@@ -380,6 +418,289 @@ impl Vepu580H265 {
             aggregate_status_scratch: vec![0; STATUS_WORDS],
             batch_scratch: Batch::new(),
         })
+    }
+
+    fn prepare_pipeline_job(
+        &mut self,
+        input_fd: i32,
+        picture: Picture,
+        frame_num: u32,
+        with_prefix: bool,
+        include_annex_b: bool,
+    ) -> Result<PendingH265Job, String> {
+        let output_slot = self.pipeline_output;
+        self.pipeline_output ^= 1;
+        let output_fd = self.outputs[output_slot].fd();
+        let (current, reference) = if matches!(picture, Picture::Idr) {
+            (self.slot, self.slot)
+        } else if self.long_term {
+            (1 + (frame_num.saturating_sub(1) as usize & 1), 0)
+        } else {
+            let current = frame_num as usize % self.surfaces.len();
+            (
+                current,
+                (current + self.surfaces.len() - 1) % self.surfaces.len(),
+            )
+        };
+        let current_pixel = self.surfaces[current].pixel.fd();
+        let current_dsp = self.surfaces[current].dsp.fd();
+        let reference_pixel = self.surfaces[reference].pixel.fd();
+        let reference_dsp = self.surfaces[reference].dsp.fd();
+        let job = IdrJob {
+            width: self.width,
+            height: self.height,
+            qp: self.qp,
+            qp_min: self.qp,
+            qp_max: self.qp,
+            picture,
+            long_term: self.long_term,
+            temporal_mvp: self.temporal_mvp,
+            rc: None,
+            refresh: None,
+            split: self.split,
+            syntax: self.syntax,
+            tile: None,
+            roi_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.0.fd()),
+            roi_qp_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.1.fd()),
+            input_fd,
+            output_fd,
+            current_fd: current_pixel,
+            current_thumb_fd: current_dsp,
+            reference_fd: reference_pixel,
+            reference_thumb_fd: reference_dsp,
+        };
+        let mut registers = build_registers(&job)?;
+        let input = input_fd as u32;
+        let output = output_fd as u32;
+        let base = &mut registers.base;
+        base[0] = input;
+        base[1] = input;
+        base[2] = input;
+        base[3] = current_pixel as u32;
+        base[4] = current_pixel as u32;
+        base[5] = reference_pixel as u32;
+        base[6] = reference_pixel as u32;
+        base[7] = self.surfaces[current].cmv.fd() as u32;
+        base[8] = self.surfaces[reference].cmv.fd() as u32;
+        base[9] = current_dsp as u32;
+        base[10] = reference_dsp as u32;
+        base[11] = self.md_info.fd() as u32;
+        base[12] = output;
+        base[13] = output;
+        base[14] = output;
+        base[15] = output;
+        registers.set(&regs::BASE_ENC_PIC_MEI_STOR, 1)?;
+        let header = fbc_header_len(self.width, self.height);
+        let luma = luma_bytes(self.width, self.height) as u32;
+        registers.offsets.extend([
+            RegOffsetInfo {
+                reg_idx: 161,
+                offset: luma,
+            },
+            RegOffsetInfo {
+                reg_idx: 162,
+                offset: luma,
+            },
+            RegOffsetInfo {
+                reg_idx: 164,
+                offset: header as u32,
+            },
+            RegOffsetInfo {
+                reg_idx: 166,
+                offset: header as u32,
+            },
+            RegOffsetInfo {
+                reg_idx: 175,
+                offset: 0,
+            },
+            RegOffsetInfo {
+                reg_idx: 172,
+                offset: self.outputs[output_slot].len() as u32,
+            },
+        ]);
+
+        let ctl = registers.ctl.to_vec();
+        let base = registers.base.to_vec();
+        let rc_klut = registers.rc_klut.to_vec();
+        let wgt = registers.wgt.to_vec();
+        let rdo = registers.rdo.to_vec();
+        let osd = registers.osd.to_vec();
+        let offsets = registers.offsets;
+        let mut status = vec![0u32; STATUS_WORDS];
+        let mut hw_status = vec![0u32; 1];
+        let mut batch = Batch::new();
+        batch
+            .reg_write(&ctl, CTL_OFFSET)
+            .reg_write(&base, BASE_OFFSET)
+            .reg_write(&rc_klut, RCKLUT_OFFSET)
+            .reg_write(&wgt, WGT_OFFSET)
+            .reg_write(&rdo, RDO_OFFSET)
+            .reg_write(&osd, OSD_OFFSET)
+            .reg_offsets(&offsets)
+            .reg_read(&mut hw_status, HW_STATUS_OFFSET)
+            .reg_read(&mut status, STATUS_OFFSET);
+        Ok(PendingH265Job {
+            _ctl: ctl,
+            _base: base,
+            _rc_klut: rc_klut,
+            _wgt: wgt,
+            _rdo: rdo,
+            _osd: osd,
+            _offsets: offsets,
+            batch,
+            status,
+            hw_status,
+            output_slot,
+            picture,
+            frame_num,
+            with_prefix,
+            include_annex_b,
+        })
+    }
+
+    fn finish_pipeline_job(&mut self, pending: PendingH265Job) -> Result<EncodedFrame, String> {
+        if let Err(error) = self.service.poll_hw_finish_blocking() {
+            let recovery = self.service.restart_after_hardware_error();
+            return Err(format!(
+                "H.265 pipeline blocking poll: {error}; recovery: {recovery:?}"
+            ));
+        }
+        let errors = pending.hw_status[0] & HW_ERROR_MASK;
+        if errors != 0 {
+            let _ = self.service.restart_after_hardware_error();
+            return Err(format!(
+                "VEPU580 H.265 hardware error mask 0x{errors:03x} (int_sta=0x{:08x})",
+                pending.hw_status[0]
+            ));
+        }
+        if pending.hw_status[0] & 1 == 0 {
+            let _ = self.service.restart_after_hardware_error();
+            return Err(format!(
+                "VEPU580 H.265 pipeline completed without enc_done (int_sta=0x{:08x})",
+                pending.hw_status[0]
+            ));
+        }
+        let output = &self.outputs[pending.output_slot];
+        let length = pending.status[0] as usize;
+        if length == 0 || length > output.len() {
+            let _ = self.service.restart_after_hardware_error();
+            return Err(format!(
+                "invalid VEPU580 H.265 pipeline length {length} (capacity {})",
+                output.len()
+            ));
+        }
+        let payload = output.as_slice()[..length].to_vec();
+        let statistics = Statistics::from_words(&pending.status);
+        let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
+        config.level = self.level;
+        config.tmvp_enable = self.temporal_mvp;
+        config.long_term_refs = self.long_term;
+        config.apply_syntax_options(self.syntax);
+        let headers = if !pending.with_prefix {
+            Vec::new()
+        } else if !self.sei_enabled {
+            crate::codec::h265::encoder::build_headers(&config)
+                .map_err(|e| format!("H.265 headers: {e:?}"))?
+        } else {
+            let line = crate::codec::h265::sei::RcCfgLine {
+                model_name: &self.rc_model_name,
+                ..crate::codec::h265::sei::RcCfgLine::fixed_qp(
+                    self.fixed_qp_header_override.unwrap_or(self.qp),
+                    self.gop,
+                    crate::codec::h265::sei::default_bps_target(config.width, config.height, 30),
+                )
+            };
+            crate::codec::h265::encoder::build_prefix_line(&config, &line)
+                .map_err(|e| format!("H.265 prefix: {e:?}"))?
+        };
+        let packets = output_packets(&headers, &payload, &[])?;
+        let annex_b = if pending.include_annex_b {
+            let mut out = Vec::with_capacity(headers.len() + payload.len());
+            out.extend_from_slice(&headers);
+            out.extend_from_slice(&payload);
+            out
+        } else {
+            Vec::new()
+        };
+        Ok(EncodedFrame {
+            annex_b,
+            packets,
+            payload,
+            headers,
+            is_idr: matches!(
+                pending.picture,
+                Picture::Idr | Picture::ForcedIdrFromP { .. }
+            ),
+            frame_num: pending.frame_num,
+            quality_target: self.qp as i32,
+            rt_bits: 0,
+            statistics,
+        })
+    }
+
+    pub(crate) fn encode_frame_fd_pipeline(
+        &mut self,
+        input_fd: i32,
+    ) -> Result<Vec<EncodedFrame>, String> {
+        if !self.pipeline
+            || self.rc.is_some()
+            || self.refresh_length != 0
+            || self.tile_widths().len() != 1
+            || self.split.out & MPP_ENC_SPLIT_OUT_LOWDELAY != 0
+        {
+            return Err("H.265 pipeline is disabled or incompatible with this session".into());
+        }
+        if input_fd < 0 {
+            return Err("H.265 input fd is invalid".to_string());
+        }
+        if self.next_osd.is_some() {
+            return Err("H.265 pipeline does not support per-frame OSD".into());
+        }
+        self.synchronize_service_recovery()?;
+        if self.recovery_pending {
+            return Err("H.265 pipeline requires a synchronous recovery IDR".into());
+        }
+        let force_idr = std::mem::take(&mut self.force_next_idr);
+        let gop_idr = self.frames != 0 && self.frames % self.gop == 0;
+        let is_idr = self.frames == 0 || force_idr || gop_idr;
+        if is_idr {
+            self.slot = 0;
+            self.idr_frame = self.frames;
+        }
+        let frame_num = self.frames;
+        let (picture, with_prefix) = if is_idr {
+            (Picture::Idr, self.frames == 0 || self.headers_each_idr)
+        } else {
+            (
+                Picture::P {
+                    poc_lsb: self.frames.saturating_sub(self.idr_frame),
+                },
+                false,
+            )
+        };
+        let mut completed = Vec::new();
+        if self.pending_jobs.len() >= self.pipeline_depth {
+            let pending = self.pending_jobs.pop_front().unwrap();
+            completed.push(self.finish_pipeline_job(pending)?);
+        }
+        let mut pending =
+            self.prepare_pipeline_job(input_fd, picture, frame_num, with_prefix, false)?;
+        self.service
+            .submit_batch_recovering(&mut pending.batch)
+            .map_err(|e| format!("H.265 pipeline submit: {e}"))?;
+        self.pending_jobs.push_back(pending);
+        self.slot = 1 - self.slot;
+        self.frames += 1;
+        self.recovery_pending = false;
+        Ok(completed)
+    }
+
+    pub(crate) fn flush_pipeline(&mut self) -> Result<Vec<EncodedFrame>, String> {
+        let mut completed = Vec::new();
+        while let Some(pending) = self.pending_jobs.pop_front() {
+            completed.push(self.finish_pipeline_job(pending)?);
+        }
+        Ok(completed)
     }
 
     /// Encode the next picture. The first call is an IDR and later calls are P
@@ -598,6 +919,22 @@ impl Vepu580H265 {
 
     pub fn set_temporal_mvp(&mut self, enabled: bool) {
         self.temporal_mvp = enabled;
+    }
+
+    pub fn set_pipeline(&mut self, enabled: bool) {
+        self.pipeline = enabled;
+    }
+
+    pub fn set_pipeline_depth(&mut self, depth: usize) {
+        self.pipeline_depth = depth.clamp(1, 2);
+    }
+
+    pub fn pipeline_enabled(&self) -> bool {
+        self.pipeline
+    }
+
+    pub fn pipeline_empty(&self) -> bool {
+        self.pending_jobs.is_empty()
     }
 
     pub fn set_headers_each_idr(&mut self, each_idr: bool) {
@@ -1210,7 +1547,7 @@ impl Vepu580H265 {
                 roi_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.0.fd()),
                 roi_qp_fd: self.roi.as_ref().map_or(-1, |buffers| buffers.1.fd()),
                 input_fd,
-                output_fd: self.output.fd(),
+                output_fd: self.outputs[0].fd(),
                 current_fd: current_pixel,
                 current_thumb_fd: current_dsp,
                 reference_fd: reference_pixel,
@@ -1227,7 +1564,7 @@ impl Vepu580H265 {
             // through regs 176/177.
             let base = &mut registers.base;
             let input = input_fd as u32;
-            let output = self.output.fd() as u32;
+            let output = self.outputs[0].fd() as u32;
             base[0] = input;
             base[1] = input;
             base[2] = input;
@@ -1260,11 +1597,12 @@ impl Vepu580H265 {
             // per-tile, not one shared end minus a spare byte.
             let output_offset = stream_len as u32;
             let output_limit = if tile.is_none() {
-                self.output.len() as u32
+                self.outputs[0].len() as u32
             } else if tile_index == 0 {
-                self.output.len() as u32
+                self.outputs[0].len() as u32
             } else {
-                (stream_len + self.output.len() / tile_widths.len()).min(self.output.len()) as u32
+                (stream_len + self.outputs[0].len() / tile_widths.len()).min(self.outputs[0].len())
+                    as u32
             };
             registers.offsets.extend([
                 RegOffsetInfo {
@@ -1331,11 +1669,11 @@ impl Vepu580H265 {
             }
 
             let length = status[0] as usize;
-            if length == 0 || length > self.output.len().saturating_sub(stream_len) {
+            if length == 0 || length > self.outputs[0].len().saturating_sub(stream_len) {
                 let _ = self.service.restart_after_hardware_error();
                 return Err(format!(
                     "invalid VEPU580 H.265 length {length} at offset {stream_len} (capacity {})",
-                    self.output.len()
+                    self.outputs[0].len()
                 ));
             }
             sse_sum += (u64::from(status[2]) << 16) | u64::from((status[1] >> 16) & 0xffff);
@@ -1345,7 +1683,7 @@ impl Vepu580H265 {
             stream_len += length;
             payload.resize(stream_len, 0);
             payload[stream_len - length..stream_len]
-                .copy_from_slice(&self.output.as_slice()[stream_len - length..stream_len]);
+                .copy_from_slice(&self.outputs[0].as_slice()[stream_len - length..stream_len]);
             self.status_scratch = status;
         }
         let mut status = aggregate_status;

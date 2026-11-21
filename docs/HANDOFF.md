@@ -693,6 +693,10 @@ H.265 level/temporal-MVP/GOP-boundary 状态，以及 H.264 在 FFmpeg 未提供
 每个 job 独立持有 batch/STATUS/output，三槽 recon 按 C 的 `0→1→2` 轮转，
 pipeline 完成必须使用 blocking `POLL_HW_FINISH`。300 帧 720p 为
 0.306 s / 980 FPS，C FFmpeg 为 0.321 s / 935 FPS，输出保持逐字节一致。
+H.265 也已接入同一 queue contract，默认 depth 1；300 帧 720p 从同步
+0.752 s / 399 FPS 提升到 0.612 s / 490 FPS，长 GOP 保持逐字节。H.265
+depth 2 可到 912 FPS，但 immediate-reference 在 monitor 内仍可能在约第 41
+帧产生数据竞争，因此只保留为显式实验，不作为默认。
 回归入口：`scripts/board_ffmpeg_rkmpp.sh`（8/8）和
 `scripts/board_ffmpeg_h264_pipeline_bench.sh`。
 
