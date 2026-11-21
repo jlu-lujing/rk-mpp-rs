@@ -8,11 +8,16 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
 export PATH="$HOME/.cargo/bin:$PATH"
 
-samples=${SAMPLES:-5}
+samples=${SAMPLES:-11}
 frames=${FRAMES:-300}
 width=${WIDTH:-1280}
 height=${HEIGHT:-720}
+cpuset=${CPUSET:-4-7}
 ffmpeg_bin=$(command -v ffmpeg)
+task_prefix=()
+if [ -n "$cpuset" ]; then
+    task_prefix=(taskset -c "$cpuset")
+fi
 work=$(mktemp -d /tmp/rk-mpp-h265-pipeline.XXXXXX)
 overlay="$work/overlay"
 trap 'rm -rf "$work"' EXIT
@@ -72,18 +77,25 @@ run_rust() {
     local depth=$1
     if [ "$depth" = sync ]; then
         env LD_LIBRARY_PATH="$overlay" RKMPP_ENCODER_PIPELINE=0 \
-            "$ffmpeg_bin" "${common[@]}" /dev/null
+            "${task_prefix[@]}" "$ffmpeg_bin" "${common[@]}" /dev/null
     else
         env LD_LIBRARY_PATH="$overlay" RKMPP_ENCODER_PIPELINE_DEPTH="$depth" \
-            "$ffmpeg_bin" "${common[@]}" /dev/null
+            "${task_prefix[@]}" "$ffmpeg_bin" "${common[@]}" /dev/null
     fi
 }
 
 for sample in $(seq 1 "$samples"); do
-    run_path "c-$sample" "$ffmpeg_bin" "${common[@]}" /dev/null
-    run_path "sync-$sample" run_rust sync
-    run_path "d1-$sample" run_rust 1
-    run_path "d2-$sample" run_rust 2
+    if [ $((sample % 2)) -eq 1 ]; then
+        run_path "c-$sample" "${task_prefix[@]}" "$ffmpeg_bin" "${common[@]}" /dev/null
+        run_path "sync-$sample" run_rust sync
+        run_path "d1-$sample" run_rust 1
+        run_path "d2-$sample" run_rust 2
+    else
+        run_path "d2-$sample" run_rust 2
+        run_path "d1-$sample" run_rust 1
+        run_path "sync-$sample" run_rust sync
+        run_path "c-$sample" "${task_prefix[@]}" "$ffmpeg_bin" "${common[@]}" /dev/null
+    fi
 done
 
 median() {

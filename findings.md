@@ -292,6 +292,14 @@
 - Perf after the copy fixes shows FFmpeg+rkmpp-rs encode retired instructions
   near vendor C (111M versus 108M), but CPU utilization is only about 50-60%.
   The remaining wall-time gap is waiting, not memory traffic.
+- Imported MPP DMA-BUF objects were eagerly mmap'ed in
+  `new_external_buffer`, even though the FFmpeg hardware path needs only the
+  fd. This cost one mapping per input frame. Mapping is now lazy: pointer,
+  info, read/write and CPU fallback establish it on demand. H.265 `mmap` calls
+  dropped from 544 to 244 over 300 frames. Rust retired instructions fell from
+  390.0M to 327.4M, effectively equal to C's 327.3M; task-clock fell from
+  428.0 to 362.9 ms. The C data-path object checks still return a non-null
+  pointer and byte-exact read/write results.
 - FFmpeg's RKMPP hwcontext allocates its internal DRM frames from an MPP group
   with `MPP_BUFFER_FLAGS_DMA32` and no `MPP_BUFFER_FLAGS_CACHABLE`. The
   compatibility allocator was still using the cached `system` dma-heap. The
@@ -331,9 +339,9 @@
   queued. The non-blocking poll can return after one task while later queued
   STATUS destinations have not yet been filled, which changed the final
   packets even though all named registers matched.
-- The depth-2 H.264 FFmpeg path reaches 890 FPS on 300-frame 720p versus C
-  FFmpeg at 798 FPS, while 60-frame single-GOP output remains byte-identical.
-  Depth 1 improves the synchronous 332 FPS path to 493 FPS but is still below
+- The depth-2 H.264 FFmpeg path reaches 896 FPS on 300-frame 720p versus C
+  FFmpeg at 838 FPS, while 60-frame single-GOP output remains byte-identical.
+  Depth 1 improves the synchronous 351 FPS path to 477 FPS but is still below
   C; depth 2 is therefore the default compatibility path.
 - H.265 FFmpeg uses a short-term GOP, unlike the standalone long-term IDR
   variant. Its P jobs rotate through three reconstruction surfaces and refer to
@@ -349,10 +357,10 @@
   `0009003b`, and `0009003c`. Rust now emits the same sequence when depth 2 is
   selected. Both 320x240 and 1280x720 60-frame single-GOP streams match C, including
   the former divergence around frame 41.
-- With the handshake present, five interleaved 300-frame 720p samples give Rust
-  depth 2 **0.453 s / 662 FPS** and C **0.462 s / 649 FPS**. The earlier
+- With the handshake present, 11 interleaved 300-frame 720p samples give Rust
+  depth 2 **0.444 s / 676 FPS** and C **0.444 s / 676 FPS**. The earlier
   912 FPS result was the unsafe unsynchronised path. Rust CPU user+sys is
-  0.418 s versus C 0.442 s, so there is no CPU-cost regression beyond the C
+  0.372 s versus C 0.393 s, so there is no CPU-cost regression beyond the C
   baseline. H.265 depth 2 is now the compatibility default.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.

@@ -42,9 +42,10 @@
   compatibility path. Pending jobs own independent batch/STATUS/output state,
   input metadata stays in submission order, reconstruction slots rotate
   `0→1→2`, and pipeline completion uses blocking `POLL_HW_FINISH`.
-- H.264 60-frame single-GOP remains byte-identical at 320x240 and 1280x720. Five
-  interleaved 300-frame 720p samples improved synchronous 0.904 s / 332 FPS to
-  depth-2 0.337 s / 890 FPS; C FFmpeg is 0.376 s / 798 FPS.
+- H.264 60-frame single-GOP remains byte-identical at 320x240 and 1280x720. Eleven
+  interleaved 300-frame 720p samples on A76 cores improved synchronous
+  0.854 s / 351 FPS to depth-2 0.335 s / 896 FPS; C FFmpeg is
+  0.358 s / 838 FPS.
 - Added `board_ffmpeg_h264_pipeline_bench.sh` for C/sync/depth-1/depth-2
   comparison and retained only the byte-identical depth.
 - Extended the session queue to VEPU580 H.265. Its three-surface short-term P
@@ -53,7 +54,14 @@
   was unsafe: it omitted C's frame-parallel dual-core handshake and diverged
   around frame 41. Modelling `reg0193_dual_core` (`txid/rxid/txe/rxe` and
   offset 9) makes both 320x240 and 720p 60-frame single GOPs exact; 300-frame 720p is
-  now 0.453 s / 662 FPS versus C 0.462 s / 649 FPS. H.265 depth 2 is the default.
+  now 0.444 s / 676 FPS, matching C's 0.444 s / 676 FPS. H.265 depth 2 is the
+  default.
+- Imported MPP DMA-BUF buffers no longer mmap eagerly. The FFmpeg direct path
+  keeps them idle until a C caller actually asks for a CPU pointer or falls
+  back to CPU input. A 300-frame H.265 profile fell from 390.0M to 327.4M
+  instructions, matching C's 327.3M, and from 428.0 to 362.9 ms task-clock.
+  `strace -c` mmap calls fell from 544 to 244 while the FFmpeg and C object API
+  gates remained byte-exact.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
   C-level or below; no code from that experiment remains.
 - Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.

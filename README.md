@@ -74,14 +74,16 @@
 - **RK3588 FFmpeg H.264 编码已达到并略超 C。** 固定 QP DMA-BUF 路径默认
   使用 VEPU580 session 内 depth-2 deferred queue；pending job 独立持有
   batch/STATUS/output，三槽 recon 按 `0→1→2` 轮转，并使用 blocking
-  `POLL_HW_FINISH`。最近五组交错 300 帧 720p 中位为
-  **0.337 s / 890 FPS**，C FFmpeg 为 `0.376 s / 798 FPS`；60 帧
+  `POLL_HW_FINISH`。固定 A76 核、11 组交错 300 帧 720p 中位为
+  **0.335 s / 896 FPS**，C FFmpeg 为 `0.358 s / 838 FPS`；60 帧
   320x240/1280x720 单 GOP 码流逐字节一致。
   H.265 也默认使用 depth 2，并补上 C 侧 frame-parallel 硬件启动流程中的
-  `reg0193_dual_core` 跨任务握手；300 帧 720p 从同步 **341 FPS** 提升到
-  **662 FPS**，C FFmpeg 为 649 FPS。60 帧 320x240/1280x720 单 GOP 均逐字节，
-  且 CPU user+sys 为 0.418 s，低于 C 的 0.442 s。120 帧/GOP60 跨第二个
+  `reg0193_dual_core` 跨任务握手；300 帧 720p 从同步 **308 FPS** 提升到
+  **676 FPS**，与 C FFmpeg 的 676 FPS 持平。60 帧 320x240/1280x720 单 GOP
+  均逐字节，且 CPU user+sys 为 0.372 s，低于 C 的 0.393 s。120 帧/GOP60 跨第二个
   IDR 后 C 会因 VEPU580 遗留状态产生多个码流，不能作为逐字节 oracle。
+  外部 DMA-BUF 的 CPU 映射改为按需建立后，300 帧 H.265 的 Rust 指令数为
+  327.4M、C 为 327.3M；task-clock 为 362.9 ms、C 为 402.6 ms。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
   rkvdec 拒收 H.265 4:2:2 / 4:4:4。
 - 未来扩展到其他 SoC 的工作与成本见 [docs/PLAN.md](docs/PLAN.md) 的 W12 与决策 D2；

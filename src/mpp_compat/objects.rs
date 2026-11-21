@@ -397,10 +397,41 @@ fn buffer_ptr(buffer: &CompatBuffer) -> *mut u8 {
     if let Some(dma) = &buffer.dma {
         dma.as_slice().as_ptr().cast_mut()
     } else if buffer.external_ptr.is_null() {
-        buffer.data.as_ptr().cast_mut()
+        if buffer.fd >= 0 && buffer.external_size != 0 {
+            std::ptr::null_mut()
+        } else {
+            buffer.data.as_ptr().cast_mut()
+        }
     } else {
         buffer.external_ptr
     }
+}
+
+unsafe fn ensure_buffer_mapped(buffer: &mut CompatBuffer) -> bool {
+    if buffer.dma.is_some() || !buffer.data.is_empty() || !buffer.external_ptr.is_null() {
+        return true;
+    }
+    if buffer.fd < 0 || buffer.external_size == 0 {
+        return false;
+    }
+    // SAFETY: the imported dma-buf fd is owned by this buffer and
+    // `external_size` is the exact allocation length promised by the importer.
+    let pointer = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            buffer.external_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            buffer.fd,
+            0,
+        )
+    };
+    if pointer == libc::MAP_FAILED {
+        return false;
+    }
+    buffer.external_ptr = pointer.cast::<u8>();
+    buffer.mapped = true;
+    true
 }
 
 fn buffer_len(buffer: &CompatBuffer) -> usize {
@@ -617,6 +648,16 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
     })
 }
 
+pub(super) unsafe fn ensure_frame_input_mapped(frame: MppFrame) -> bool {
+    let Some(frame) = (unsafe { frame_mut(frame) }) else {
+        return false;
+    };
+    let Some(buffer) = (unsafe { buffer_mut(frame.buffer) }) else {
+        return false;
+    };
+    unsafe { ensure_buffer_mapped(buffer) }
+}
+
 fn buffer_dma_fd(buffer: &CompatBuffer) -> c_int {
     buffer
         .dma
@@ -672,6 +713,9 @@ pub(super) unsafe fn buffer_replace(buffer: MppBuffer, data: &[u8]) -> bool {
         return false;
     };
     if data.len() > buffer_len(buffer) {
+        return false;
+    }
+    if !unsafe { ensure_buffer_mapped(buffer) } {
         return false;
     }
     if let Some(dma) = &buffer.dma {
@@ -950,26 +994,7 @@ unsafe fn new_external_buffer(
             return Err(MPP_NOK);
         }
     }
-    let mut mapped = false;
-    let pointer = if info.ptr.is_null() {
-        let pointer = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                info.size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
-                info.fd,
-                0,
-            )
-        };
-        if pointer == libc::MAP_FAILED {
-            return Err(MPP_NOK);
-        }
-        mapped = true;
-        pointer.cast::<u8>()
-    } else {
-        info.ptr.cast::<u8>()
-    };
+    let pointer = info.ptr.cast::<u8>();
     if !group.is_null() {
         let Some(group_object) = (unsafe { group_mut(group) }) else {
             return Err(MPP_ERR_NULL_PTR);
@@ -984,7 +1009,7 @@ unsafe fn new_external_buffer(
         dma: None,
         external_ptr: pointer,
         external_size: info.size,
-        mapped,
+        mapped: false,
         type_: info.type_,
         hnd: info.hnd,
         group,
@@ -1614,6 +1639,9 @@ pub unsafe extern "C" fn mpp_buffer_info_get_with_caller(
     let Some(buffer) = (unsafe { buffer_mut(buffer) }) else {
         return MPP_ERR_NULL_PTR;
     };
+    if !unsafe { ensure_buffer_mapped(buffer) } {
+        return MPP_NOK;
+    }
     let ptr = buffer_ptr(buffer).cast();
     // SAFETY: the caller supplied writable MppBufferInfo storage.
     unsafe {
@@ -1720,9 +1748,13 @@ pub unsafe extern "C" fn mpp_buffer_get_ptr_with_caller(
     buffer: MppBuffer,
     _caller: *const c_char,
 ) -> *mut c_void {
-    unsafe { buffer_mut(buffer) }
-        .map(|buffer| buffer_ptr(buffer).cast())
-        .unwrap_or(std::ptr::null_mut())
+    let Some(buffer) = (unsafe { buffer_mut(buffer) }) else {
+        return std::ptr::null_mut();
+    };
+    if !unsafe { ensure_buffer_mapped(buffer) } {
+        return std::ptr::null_mut();
+    }
+    buffer_ptr(buffer).cast()
 }
 
 #[no_mangle]
@@ -3136,5 +3168,46 @@ mod tests {
             assert_eq!(mpp_packet_get_eos(packet), 1);
             assert_eq!(mpp_packet_deinit(&mut packet), MPP_OK);
         }
+    }
+
+    #[test]
+    fn imported_fd_buffers_map_only_when_a_cpu_pointer_is_requested() {
+        use std::fs::OpenOptions;
+        use std::os::fd::AsRawFd;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("rk-mpp-rs-lazy-map-{}-{stamp}", std::process::id()));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(4096).unwrap();
+        let info = CompatBufferInfo {
+            type_: MPP_BUFFER_TYPE_DMA_HEAP,
+            size: 4096,
+            ptr: std::ptr::null_mut(),
+            hnd: std::ptr::null_mut(),
+            fd: file.as_raw_fd(),
+            index: 0,
+        };
+        let buffer = unsafe { new_external_buffer(&info, std::ptr::null_mut()) }.unwrap();
+        assert!(unsafe { buffer_ref(buffer) }.is_some_and(|buffer| buffer.external_ptr.is_null()));
+        assert!(unsafe { buffer_ref(buffer) }.is_some_and(|buffer| buffer_ptr(buffer).is_null()));
+
+        let pointer = unsafe { mpp_buffer_get_ptr_with_caller(buffer, std::ptr::null()) };
+        assert!(!pointer.is_null());
+        assert!(unsafe { buffer_ref(buffer) }
+            .is_some_and(|buffer| buffer.external_ptr.cast() == pointer));
+        assert!(unsafe { buffer_put_raw(buffer) });
+
+        drop(file);
+        std::fs::remove_file(path).unwrap();
     }
 }

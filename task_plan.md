@@ -368,6 +368,9 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Feed deferred encoder completions through the FFmpeg C compatibility API.
 - [x] Benchmark depth 1/2 and retain only byte-identical outputs. Depth 2 is
   exact and now the default FFmpeg fixed-QP H.264 path.
+- [x] Defer imported fd-only MPP buffer mapping until pointer, info, read/write
+  or CPU fallback actually needs it. This removes one `mmap/munmap` pair per
+  FFmpeg DMA-BUF frame and brings Rust instructions to C parity.
 - [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
   FFmpeg encoder loop.
 - [x] Reject the high-level cross-thread compatibility worker; it lost delayed

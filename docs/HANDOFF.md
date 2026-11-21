@@ -692,13 +692,17 @@ H.265 level/temporal-MVP/GOP-boundary 状态，以及 H.264 在 FFmpeg 未提供
 逐字节一致。VEPU580 H.264 固定 QP 兼容路径现在默认 depth-2 deferred queue；
 每个 job 独立持有 batch/STATUS/output，三槽 recon 按 C 的 `0→1→2` 轮转，
 pipeline 完成必须使用 blocking `POLL_HW_FINISH`。300 帧 720p 为
-0.337 s / 890 FPS，C FFmpeg 为 0.376 s / 798 FPS，输出保持逐字节一致。
+0.335 s / 896 FPS，C FFmpeg 为 0.358 s / 838 FPS，输出保持逐字节一致。
 H.265 也已接入同一 queue contract，并补上 C `task_cnt == 2` 路径的
 `reg0193_dual_core` 跨任务握手。此前 depth 2 的 912 FPS 来自未同步双核路径，
 长 GOP 会在约第 41 帧分叉；现在 `txid/rxid/txe/rxe` 与 offset 9 按 C 的
 `0→1→2→3→0` 序列写入，320x240/1280x720 的 60 帧单 GOP 均逐字节。300 帧
-720p 为 0.453 s / 662 FPS，C 为 0.462 s / 649 FPS；Rust CPU user+sys
-0.418 s，C 0.442 s。H.265 depth 2 现在是兼容路径默认。
+720p 为 0.444 s / 676 FPS，C 为 0.444 s / 676 FPS；Rust CPU user+sys
+0.372 s，C 0.393 s。H.265 depth 2 现在是兼容路径默认。
+外部 MPP DMA-BUF 的 CPU 映射也改为按需建立。300 帧 H.265 下 mmap 从 544
+降到 244，Rust task-clock 从约 428 ms 降到 363 ms，instructions 为 327.4M，
+与 C 的 327.3M 基本一致；pointer/info/read/write 与 CPU fallback 仍按需建立
+映射并通过 C object gate。
 重复测试同时发现 120 帧/GOP60 跨第二个 IDR 后，C FFmpeg 会在不同进程产生
 多个码流且解码像素不同；相同参数的 60 帧在 8 次冷启动重复中全部一致，因此
 精确门使用一个完整 60 帧 GOP，不用不稳定的 C 结果定义 Rust 正确性。

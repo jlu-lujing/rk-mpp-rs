@@ -833,7 +833,7 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         },
         None => None,
     };
-    let Some(frame) = (unsafe { objects::frame_input_view(frame) }) else {
+    let Some(mut frame) = (unsafe { objects::frame_input_view(frame) }) else {
         eprintln!("rk-mpp-rs mpp: encode frame has no readable buffer");
         return MPP_ERR_NULL_PTR;
     };
@@ -906,6 +906,16 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     } else {
         false
     };
+    if !use_dmabuf && !unsafe { objects::ensure_frame_input_mapped(input_frame) } {
+        eprintln!("rk-mpp-rs mpp: encode frame buffer could not be mapped");
+        return MPP_NOK;
+    }
+    if !use_dmabuf {
+        let Some(mapped) = (unsafe { objects::frame_input_view(input_frame) }) else {
+            return MPP_NOK;
+        };
+        frame = mapped;
+    }
     let mut scratch = std::mem::take(&mut context.encoder_input_scratch);
     let result = (|| -> Result<(), c_int> {
         if !use_dmabuf && video_input_into(&frame, frame.format, &mut scratch).is_err() {

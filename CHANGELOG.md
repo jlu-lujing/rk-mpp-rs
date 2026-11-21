@@ -10,6 +10,13 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
   `rkmpp` lifecycle: info-change frames, external-buffer controls, encoder
   packet `KEY_INPUT_FRAME`, NULL-frame EOS and `MPP_NOK` for an empty packet
   queue.
+- VEPU580 H.264 and H.265 compatibility encoders now reproduce C's
+  frame-parallel `reg0193_dual_core` handshake. H.265 depth-2 is byte-exact
+  for a complete 60-frame GOP and is enabled by default.
+- Imported fd-only MPP buffers now map lazily when the C pointer/info,
+  read/write or CPU fallback path first needs CPU access. On a 300-frame
+  1280x720 H.265 encode this reduces Rust instructions from about 390 M to
+  327 M, matching vendor C, and task-clock from about 428 ms to 363 ms.
 - Imported encoder buffers now submit their DMA-BUF fd directly instead of
   falling back to NV12 CPU staging. Canonical decoded NV12 surfaces are also
   transferred into compatibility frames without packing and reallocating.
