@@ -216,6 +216,10 @@ pub struct Vepu580H265 {
     width: usize,
     height: usize,
     qp: u32,
+    /// `general_level_idc` written into VPS/SPS. `h265e_init` starts at 4.0 and
+    /// raises this by picture size; the object path may request a lower level.
+    level: u8,
+    temporal_mvp: bool,
     fixed_qp_header_override: Option<u32>,
     /// Emit the GOP SPS variant (long-term reference entry) and let `encode_frame`
     /// produce P pictures.
@@ -331,6 +335,8 @@ impl Vepu580H265 {
             width,
             height,
             qp,
+            level: 120,
+            temporal_mvp: false,
             fixed_qp_header_override: None,
             long_term,
             rc_sei: None,
@@ -419,8 +425,9 @@ impl Vepu580H265 {
         self.synchronize_service_recovery()?;
         let recovery_restart = self.recovery_pending;
         let force_idr = std::mem::take(&mut self.force_next_idr);
-        let is_idr = self.frames == 0 || force_idr || recovery_restart;
-        if force_idr || recovery_restart {
+        let gop_idr = self.refresh_length == 0 && self.frames != 0 && self.frames % self.gop == 0;
+        let is_idr = self.frames == 0 || force_idr || recovery_restart || gop_idr;
+        if force_idr || recovery_restart || gop_idr {
             self.slot = 0;
         }
         if is_idr {
@@ -583,6 +590,14 @@ impl Vepu580H265 {
 
     pub fn set_long_term(&mut self, long_term: bool) {
         self.long_term = long_term;
+    }
+
+    pub fn set_level(&mut self, level: u8) {
+        self.level = level;
+    }
+
+    pub fn set_temporal_mvp(&mut self, enabled: bool) {
+        self.temporal_mvp = enabled;
     }
 
     pub fn set_headers_each_idr(&mut self, each_idr: bool) {
@@ -905,8 +920,9 @@ impl Vepu580H265 {
         self.synchronize_service_recovery()?;
         let recovery_restart = self.recovery_pending;
         let force_idr = std::mem::take(&mut self.force_next_idr);
-        let is_idr = self.frames == 0 || force_idr || recovery_restart;
-        if force_idr || recovery_restart {
+        let gop_idr = self.refresh_length == 0 && self.frames != 0 && self.frames % self.gop == 0;
+        let is_idr = self.frames == 0 || force_idr || recovery_restart || gop_idr;
+        if force_idr || recovery_restart || gop_idr {
             self.slot = 0;
         }
         if is_idr {
@@ -1185,6 +1201,7 @@ impl Vepu580H265 {
                 qp_max: self.qp,
                 picture,
                 long_term: self.long_term,
+                temporal_mvp: self.temporal_mvp,
                 rc,
                 refresh: refresh_job,
                 split: self.split,
@@ -1345,6 +1362,8 @@ impl Vepu580H265 {
         // are software output, exactly as `mpp_enc_impl.cpp` prepends them ahead
         // of the opening IDR or every IDR in per-IDR header mode.
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
+        config.level = self.level;
+        config.tmvp_enable = self.temporal_mvp;
         config.long_term_refs = self.long_term;
         config.apply_syntax_options(self.syntax);
         if self.rc_sei.is_some() {

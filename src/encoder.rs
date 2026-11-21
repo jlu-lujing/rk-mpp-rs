@@ -1490,6 +1490,18 @@ impl Encoder {
         }
     }
 
+    pub fn set_motion_info_enabled(&mut self, enabled: bool) {
+        if let Backend::H264Vepu580(encoder) = &mut self.backend {
+            encoder.set_motion_info_enabled(enabled);
+        }
+    }
+
+    pub fn set_deferred_scene_tune(&mut self, enabled: bool) {
+        if let Backend::H264Vepu580(encoder) = &mut self.backend {
+            encoder.set_deferred_scene_tune(enabled);
+        }
+    }
+
     pub fn set_h265_long_term_reference(&mut self, long_term: bool) -> Result<(), Error> {
         match &mut self.backend {
             Backend::H265Vepu580(encoder) => {
@@ -2513,7 +2525,7 @@ fn open_h265_backend_with_mode(config: EncoderConfig, mpi_compat: bool) -> Resul
     validate_h265_input(config)?;
     let profile = SocProfile::detect().map_err(|error| Error::Hardware(error.to_string()))?;
     match profile.video_encode {
-        VideoEncodeHal::Vepu580 => Ok(Backend::H265Vepu580(open_h265_vepu580(config)?)),
+        VideoEncodeHal::Vepu580 => Ok(Backend::H265Vepu580(open_h265_vepu580(config, mpi_compat)?)),
         VideoEncodeHal::Vepu510 => Ok(Backend::H265Vepu510(open_h265_vepu510(config, mpi_compat)?)),
         other => Err(Error::Unsupported(format!(
             "no H.265 encoder backend for {other:?}"
@@ -2540,7 +2552,10 @@ fn validate_h265_input(config: EncoderConfig) -> Result<(), Error> {
     Ok(())
 }
 
-fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265, Error> {
+fn open_h265_vepu580(
+    config: EncoderConfig,
+    mpi_compat: bool,
+) -> Result<h265e_session::Vepu580H265, Error> {
     let mut encoder = match config.rate_control {
         Some(rate_control) if rate_control.mode != RateControlMode::FixedQp => {
             let mode = match rate_control.mode {
@@ -2574,6 +2589,8 @@ fn open_h265_vepu580(config: EncoderConfig) -> Result<h265e_session::Vepu580H265
     encoder
         .set_gop(config.gop.max(1))
         .map_err(|error| Error::Hardware(error.to_string()))?;
+    encoder.set_level(config.level());
+    encoder.set_temporal_mvp(mpi_compat);
     encoder.set_syntax_options(config.h265_syntax);
     if let Some(slice_split) = config.slice_split {
         encoder

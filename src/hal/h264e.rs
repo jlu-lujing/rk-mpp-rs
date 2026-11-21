@@ -358,6 +358,8 @@ pub struct Job<'a> {
     pub reference_thumb_fd: i32,
     /// The motion derivation info surface, `meiw_addr`.
     pub md_fd: i32,
+    /// Whether this job stores motion derivation info into `md_fd`.
+    pub store_motion_info: bool,
     pub state: FrameState,
     pub output_capacity: usize,
     /// What rate control decided for this picture, or `None` under fixed QP.
@@ -710,6 +712,7 @@ pub struct Vepu580H264 {
     /// slots alternate after it.
     recons: [Recon; 3],
     md_info: DmaBuf,
+    store_motion_info: bool,
     state: FrameState,
     slot: usize,
     /// A PSKIP consumes input/POC but neither advances frame_num nor becomes a
@@ -727,6 +730,9 @@ pub struct Vepu580H264 {
     rc: Option<rc_model::Model>,
     /// The scene-motion detector, updated from every picture's STATUS window.
     tune: SceneTune,
+    /// FFmpeg's async encoder exposes tune statistics one picture later.
+    defer_tune: bool,
+    pending_tune: Option<Statistics>,
     input_fd_override: Option<i32>,
     input_padding_initialized: bool,
     input_prepared: bool,
@@ -825,6 +831,7 @@ impl Vepu580H264 {
             ],
             md_info: DmaBuf::alloc("system", mdinfo_size(&config)?, false)
                 .map_err(|e| format!("allocate H.264 motion info: {e}"))?,
+            store_motion_info: true,
             roi: if config.rois.is_empty() {
                 None
             } else {
@@ -880,6 +887,8 @@ impl Vepu580H264 {
             force_next_idr: false,
             last_non_reference: false,
             tune: SceneTune::new(false),
+            defer_tune: false,
+            pending_tune: None,
             input_fd_override: None,
             input_padding_initialized: false,
             input_prepared: false,
@@ -920,6 +929,14 @@ impl Vepu580H264 {
 
     pub fn set_sei_enabled(&mut self, enabled: bool) {
         self.sei_enabled = enabled;
+    }
+
+    pub fn set_motion_info_enabled(&mut self, enabled: bool) {
+        self.store_motion_info = enabled;
+    }
+
+    pub fn set_deferred_scene_tune(&mut self, enabled: bool) {
+        self.defer_tune = enabled;
     }
 
     pub fn set_rate_control_name(&mut self, name: String) {
@@ -1146,6 +1163,7 @@ impl Vepu580H264 {
             current_fd,
             current_thumb_fd: self.recons[current_slot].thumb.fd(),
             md_fd: self.md_info.fd(),
+            store_motion_info: self.store_motion_info,
             reference_fd: self.recons[reference_slot].pixel.fd(),
             reference_thumb_fd: self.recons[reference_slot].thumb.fd(),
             state,
@@ -1283,7 +1301,13 @@ impl Vepu580H264 {
 
         let statistics = Statistics::from_words(&status);
         dump_statistics(&state, &status);
-        self.tune.update(&statistics);
+        if self.defer_tune {
+            if let Some(previous) = self.pending_tune.replace(statistics.clone()) {
+                self.tune.update(&previous);
+            }
+        } else {
+            self.tune.update(&statistics);
+        }
         self.status_scratch = status;
         Ok((payload, slice_lengths, statistics))
     }
@@ -2524,7 +2548,11 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     base[BASE_BSBB] = output;
     base[BASE_BSBR] = output;
     base[BASE_ADR_BSBS] = output;
-    base[BASE_MEIW] = job.md_fd as u32;
+    base[BASE_MEIW] = if job.store_motion_info {
+        job.md_fd as u32
+    } else {
+        0
+    };
     patch_reference_layout(&mut base, config)?;
 
     let luma_bytes = config.coded_width() * config.coded_height();
@@ -2614,19 +2642,14 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
             },
         ];
     }
-    // The reference job was captured with a harness that asked for motion
-    // derivation info, so the recorded image has `enc_pic.mei_stor` set. Writing
-    // side information needs the MD buffer `setup_hal_bufs` allocates for it,
-    // which this driver does not implement; leaving the enable on without that
-    // buffer would have the hardware write to a surface nobody owns. That is not a
-    // guess: with the enable set and `meiw_addr` at zero the encoder returns
-    // `int_sta = 0x100` instead of encoding.
-    // The reference harness passes a motion info buffer for every picture, so
-    // `setup_vepu580_start` leaves `mei_stor` set for I and P alike. Matching
-    // it is what `md_info` is for: with the enable set and `meiw_addr` at zero
-    // the encoder answers `int_sta = 0x100` instead of encoding - which is what
-    // the attempt to clear this bit turned out to be measuring.
-    file.set(&vepu580_regs::BASE_ENC_PIC_MEI_STOR, 1)?;
+    // `mpi_enc_test` supplies an MD surface and leaves `mei_stor` set for I and
+    // P alike. FFmpeg supplies no `KEY_MOTION_INFO`, and vendor C clears both
+    // `mei_stor` and `meiw_addr`; enabling storage without `meiw_addr` makes the
+    // hardware return `int_sta = 0x100` instead of encoding.
+    file.set(
+        &vepu580_regs::BASE_ENC_PIC_MEI_STOR,
+        u32::from(job.store_motion_info),
+    )?;
     file.apply_tune(job)?;
     file.apply_pass1(job)?;
     Ok(file)
@@ -4035,6 +4058,7 @@ mod tests {
             reference_fd: 11,
             reference_thumb_fd: 13,
             md_fd: 15,
+            store_motion_info: true,
             rc: None,
             state,
             output_capacity: 119_296,
@@ -4090,6 +4114,19 @@ mod tests {
             "the enable is legal only because md_fd points at a real surface"
         );
         assert_eq!(registers.base[BASE_MEIW], 15, "meiw_addr carries the md fd");
+    }
+
+    #[test]
+    fn a_job_without_motion_info_leaves_both_md_fields_clear() {
+        let config = config();
+        let mut job = job(&config, FrameState::default());
+        job.store_motion_info = false;
+        let registers = build_registers(&job).unwrap();
+        assert_eq!(
+            registers.get(&vepu580_regs::BASE_ENC_PIC_MEI_STOR).unwrap(),
+            0
+        );
+        assert_eq!(registers.base[BASE_MEIW], 0);
     }
 
     #[test]
@@ -5950,6 +5987,7 @@ mod rate_control_registers {
             reference_fd: 13,
             reference_thumb_fd: 14,
             md_fd: 15,
+            store_motion_info: true,
             rc: None,
             // Job 1 of the capture is the P picture that follows the IDR, so it
             // needs the state the GOP walk would be in by then - `apply_picture`
@@ -6045,6 +6083,7 @@ mod rate_control_registers {
             reference_fd: 13,
             reference_thumb_fd: 14,
             md_fd: 15,
+            store_motion_info: true,
             rc: None,
             state: FrameState::default(),
             output_capacity: logical_output_size(&config).unwrap(),

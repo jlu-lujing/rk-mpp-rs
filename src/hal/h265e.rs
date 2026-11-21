@@ -186,6 +186,9 @@ pub struct IdrJob {
     /// The GOP configuration carries long-term references, which the HAL states on
     /// every picture of the sequence - the opening IDR included.
     pub long_term: bool,
+    /// `sps_temporal_mvp_enabled_flag`; the vendor FFmpeg object path defaults
+    /// this on while the standalone CLI leaves it off.
+    pub temporal_mvp: bool,
     /// Rate control for this picture, `None` for fixed QP.
     pub rc: Option<RateControl>,
     /// Intra-refresh (GDR) picture: the base-table fd, its sweep, and the index.
@@ -228,6 +231,7 @@ impl IdrJob {
             qp_max: qp,
             picture: Picture::Idr,
             long_term: false,
+            temporal_mvp: false,
             rc: None,
             refresh: None,
             split: SliceSplit::default(),
@@ -664,7 +668,10 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     file.set(&regs::H265_REG0237_SYNT_SPS_NUM_ST_REF_PIC, 0)?; // num_short_term_ref_pic_sets
     file.set(&regs::H265_REG0237_SYNT_SPS_NUM_LT_REF_PIC, 0)?;
     file.set(&regs::H265_REG0237_SYNT_SPS_LT_REF_PIC_PRSNT, 0)?;
-    file.set(&regs::H265_REG0237_SYNT_SPS_TMPL_MVP_E, 0)?; // tmvp_enable
+    file.set(
+        &regs::H265_REG0237_SYNT_SPS_TMPL_MVP_E,
+        u32::from(job.temporal_mvp),
+    )?;
     file.set(&regs::H265_REG0237_SYNT_SPS_LOG2_MAX_POC_LSB, 12)?; // bitsForPOC 16
     file.set(&regs::H265_REG0237_SYNT_SPS_STRG_INTRA_SMTH, 1)?;
 
@@ -774,6 +781,18 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         )?;
         file.set(&regs::H265_REG0239_SYNT_SLI0_NUM_REFIDX_ACT_OVRD, 0)?;
         file.set(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE, 1)?;
+        if job.temporal_mvp && matches!(job.picture, Picture::P { .. }) {
+            file.set(&regs::H265_REG0239_SYNT_SLI0_SLI_TMPRL_MVP_E, 1)?;
+            file.set(&regs::H265_REG0240_SYNT_SLI1_COL_REF_IDX, 0)?;
+            file.set(&regs::H265_REG0240_SYNT_SLI1_COL_FRM_L0_FLG, 1)?;
+            // The collocated picture is stored for every temporal-MVP picture.
+            // It can only be loaded after the first P, whose reference is an IDR.
+            file.set(
+                &regs::H265_REG0221_ME_CFG_COLMV_LOAD,
+                u32::from(poc_lsb >= 2),
+            )?;
+            file.set(&regs::H265_REG0221_ME_CFG_COLMV_STOR, 1)?;
+        }
         file.set(&regs::H265_REG0241_SYNT_SLI2_SLI_POC_LSB, poc_lsb)?;
         // The reference marking follows the GOP configuration: a refresh/VI GOP
         // points at the SPS long-term entry, a plain GOP at short-term reference 0.
@@ -1334,6 +1353,7 @@ mod tests {
         let mut job = IdrJob::reference(26);
         job.long_term = true;
         job.picture = Picture::P { poc_lsb: 1 };
+        job.temporal_mvp = true;
         let first = build_registers(&job).unwrap();
         assert_eq!(first.get(&regs::CTL_DTRNS_CFG_DSPR_OTSD).unwrap(), 1);
         assert_eq!(
@@ -1346,6 +1366,20 @@ mod tests {
             first.get(&regs::H265_REG0239_SYNT_SLI0_SLI_TYPE).unwrap(),
             1
         );
+        assert_eq!(
+            first
+                .get(&regs::H265_REG0239_SYNT_SLI0_SLI_TMPRL_MVP_E)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            first
+                .get(&regs::H265_REG0240_SYNT_SLI1_COL_FRM_L0_FLG)
+                .unwrap(),
+            1
+        );
+        assert_eq!(first.get(&regs::H265_REG0221_ME_CFG_COLMV_LOAD).unwrap(), 0);
+        assert_eq!(first.get(&regs::H265_REG0221_ME_CFG_COLMV_STOR).unwrap(), 1);
         assert_eq!(
             first
                 .get(&regs::H265_REG0192_ENC_PIC_NUM_PIC_TOT_CUR)
@@ -1387,6 +1421,7 @@ mod tests {
                 .unwrap(),
             1
         );
+        assert_eq!(third.get(&regs::H265_REG0221_ME_CFG_COLMV_LOAD).unwrap(), 1);
         assert_eq!(
             third
                 .get(&regs::H265_REG0241_SYNT_SLI2_SLI_POC_LSB)

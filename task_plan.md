@@ -355,6 +355,10 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
   FFmpeg's second encoder config update.
 - [x] Require H.264 FFmpeg output to match vendor C byte-for-byte and direct
   DMA-BUF encode output to match the CPU fallback.
+- [x] Match H.265 VPS/SPS/PPS, temporal MVP, GOP-boundary IDR and long-GOP output
+  to vendor C, including the 120-frame 320x240/1280x720 sequences.
+- [x] Match H.264's FFmpeg motion-info and deferred scene-tune state so long
+  moving sequences do not switch lambda/ATF rows early.
 - [x] Re-run byte-exact standalone, FFmpeg and workspace gates.
 - [ ] Split VEPU580 H.264 submit and completion into a deferred job.
 - [ ] Extend the same queue contract to VEPU580 H.265.

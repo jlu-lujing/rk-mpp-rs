@@ -32,23 +32,23 @@ stack.
 
 | codec | path | median wall | FPS | CPU time | vs C |
 |---|---|---:|---:|---:|---:|
-| H.264 | C ffmpeg | 0.554 s | 1083.0 | 1.438 s (260%) | baseline |
-| H.264 | ffmpeg+rkmpp-rs | 0.533 s | 1125.7 | 0.986 s (185%) | **+3.9%** |
-| H.264 | native rkmpp-rs | **0.238 s** | **2521.0** | **0.202 s (85%)** | **+132.8%** |
-| H.265 | C ffmpeg | 0.533 s | 1125.7 | 1.389 s (261%) | baseline |
-| H.265 | ffmpeg+rkmpp-rs | 0.529 s | 1134.2 | 1.058 s (200%) | **+0.8%** |
-| H.265 | native rkmpp-rs | **0.214 s** | **2803.7** | **0.188 s (88%)** | **+149.1%** |
+| H.264 | C ffmpeg | 0.557 s | 1077.2 | 1.413 s (254%) | baseline |
+| H.264 | ffmpeg+rkmpp-rs | 0.494 s | 1214.6 | 0.978 s (198%) | **+12.8%** |
+| H.264 | native rkmpp-rs | **0.231 s** | **2597.4** | **0.200 s (87%)** | **+141.1%** |
+| H.265 | C ffmpeg | 0.531 s | 1129.9 | 1.427 s (269%) | baseline |
+| H.265 | ffmpeg+rkmpp-rs | 0.513 s | 1169.6 | 0.976 s (190%) | **+3.5%** |
+| H.265 | native rkmpp-rs | **0.215 s** | **2790.7** | **0.188 s (87%)** | **+147.0%** |
 
 ## Encode
 
 | codec | path | median wall | FPS | CPU time | vs C |
 |---|---|---:|---:|---:|---:|
-| H.264 | C ffmpeg | **0.327 s** | **917.4** | 0.385 s (118%) | baseline |
-| H.264 | ffmpeg+rkmpp-rs | 0.727 s | 412.7 | 0.358 s (49%) | **-55.0%** |
-| H.264 | native rkmpp-rs | 0.622 s | 482.3 | **0.177 s (28%)** | **-47.4%** |
-| H.265 | C ffmpeg | **0.445 s** | **674.2** | 0.472 s (106%) | baseline |
-| H.265 | ffmpeg+rkmpp-rs | 0.744 s | 403.2 | 0.434 s (58%) | **-40.2%** |
-| H.265 | native rkmpp-rs | 0.665 s | 451.1 | **0.180 s (27%)** | **-33.1%** |
+| H.264 | C ffmpeg | **0.328 s** | **914.6** | 0.390 s (119%) | baseline |
+| H.264 | ffmpeg+rkmpp-rs | 0.707 s | 424.3 | 0.438 s (62%) | **-53.6%** |
+| H.264 | native rkmpp-rs | 0.630 s | 476.2 | **0.179 s (28%)** | **-47.9%** |
+| H.265 | C ffmpeg | **0.434 s** | **691.2** | 0.447 s (103%) | baseline |
+| H.265 | ffmpeg+rkmpp-rs | 0.746 s | 402.1 | 0.329 s (44%) | **-41.8%** |
+| H.265 | native rkmpp-rs | 0.623 s | 481.5 | **0.134 s (22%)** | **-30.3%** |
 
 ## 2026-11-21 direct DMA-BUF improvement
 
@@ -100,17 +100,31 @@ exact external-buffer behavior:
 
 - H.264 2-frame H.264 High/QP26 is byte-identical to vendor C and native Rust;
 - H.264 12-frame FFmpeg output is byte-identical to vendor C;
-- H.265 2-frame visible NV12 is identical, although its parameter sets and
-  packet bytes still differ from vendor C;
+- H.264 and H.265 are byte-identical to vendor C for both the 12-frame gate
+  and 120-frame GOP60 sequences at 320x240 and 1280x720;
 - FFmpeg's second `MPP_ENC_SET_CFG` at the first frame now preserves the
   previously set SEI and per-IDR header modes instead of reconstructing an
   encoder with default controls. This removes the extra version/RC SEI NALs.
+- H.265 now carries the configured level into VPS/SPS and enables temporal MVP
+  on the slice, collocated-reference and colmv load/store registers when the
+  FFmpeg object path requests it. The H.265 long-term path also emits a fresh
+  IDR at each configured GOP boundary.
+- The FFmpeg object path has no `KEY_MOTION_INFO`; H.264 therefore leaves
+  `mei_stor`/`meiw_addr` clear and delays scene-tune feedback by one picture,
+  matching vendor MPP's asynchronous encoder state at the frame where the
+  detector first changes rows.
 
 The board gate compares DMA-BUF input with `RKMPP_COMPAT_CPU_INPUT=1` for
-H.264, H.265 and MJPEG, and requires the H.264 12-frame output to match vendor C
-byte for byte. The correct uncached mapping costs about 2-4% in the FFmpeg
-frontend rows versus the previous incorrect run; native Rust throughput is
-unchanged.
+H.264, H.265 and MJPEG. It requires 12-frame and 120-frame/GOP60 H.264 and H.265
+outputs to match vendor C byte for byte. The correct uncached mapping costs
+about 2-4% in the FFmpeg frontend rows versus the previous incorrect run; native
+Rust throughput is unchanged.
+
+RK3588 retains encoder state across processes. A two-frame warmup was not
+enough after a preceding long H.264 run; the long-GOP gate therefore performs a
+discarded 120-frame encode with the same codec immediately before each measured
+path. This makes the C and Rust processes start from the same hardware state and
+removes alternating false failures between the two long cases.
 
 ## Interpretation
 

@@ -850,6 +850,11 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             return MPP_NOK;
         }
     };
+    let defer_scene_tune = motion_info.is_null() && context.encoder_ref_schedule.is_none();
+    if let Some(encoder) = context.encoder.as_mut() {
+        encoder.set_motion_info_enabled(!motion_info.is_null());
+        encoder.set_deferred_scene_tune(defer_scene_tune);
+    }
     let use_dmabuf = if frame.format == MPP_FMT_YUV420SP
         && frame.dma_fd >= 0
         && !force_cpu_encoder_input()

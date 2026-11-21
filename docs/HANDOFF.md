@@ -685,10 +685,11 @@ dma-buf lease 归还前关闭；旧顺序曾让驱动在 `mpp_dma_find_buffer_fd
 `MPP_ENC_SET_SEI_CFG` 和 `MPP_ENC_SET_HEADER_MODE`，否则会多出 version/RC
 SEI。另一个问题是 FFmpeg 默认请求非 cacheable MPP DRM group，而兼容层原先
 仍从 `system` heap 分配；CPU 可见数据正确，但 P 帧送硬件时会读到旧 cache。
-非 `MPP_BUFFER_FLAGS_CACHABLE` 的 group 必须走 `system-uncached`。修复后
-H.264 High/QP26 的 2 帧诊断流和 12 帧板级门都与 vendor C 整条码流逐字节
-一致；H.265 两帧 NV12 一致但 VPS/SPS/P packet 仍不同。回归入口：
-`scripts/board_ffmpeg_rkmpp.sh`。
+非 `MPP_BUFFER_FLAGS_CACHABLE` 的 group 必须走 `system-uncached`。后续又补通
+H.265 level/temporal-MVP/GOP-boundary 状态，以及 H.264 在 FFmpeg 未提供
+`KEY_MOTION_INFO` 时的 `mei_stor=0` 与 scene-tune 单帧延迟。现在 H.264/H.265
+的 12 帧门和 320x240/1280x720 的 120-frame GOP60 序列都与 vendor C 整条码流
+逐字节一致。回归入口：`scripts/board_ffmpeg_rkmpp.sh`（8/8）。
 
 
 > **2026-11-02 事件：** 第一次尝试 `scripts/board_corpus_sweep.sh`（corpus 全量

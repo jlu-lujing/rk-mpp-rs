@@ -21,11 +21,17 @@
   CPU-visible bytes matched the source.
 - Preserved SEI/header session controls when FFmpeg sends its second
   `MPP_ENC_SET_CFG` at the first frame.
-- H.264 High/QP26 now matches vendor C byte-for-byte for both the 2-frame
-  diagnostic stream and the 12-frame FFmpeg gate. H.265 rebuilds identical NV12
-  but its parameter sets and packet bytes still differ.
-- Added direct DMA-BUF versus CPU-fallback equality checks for H.264, H.265 and
-  MJPEG to `board_ffmpeg_rkmpp.sh`.
+- H.264 and H.265 now match vendor C byte-for-byte for the 2/12-frame gates and
+  120-frame GOP60 sequences at 320x240 and 1280x720.
+- H.265 now carries level into VPS/SPS, enables slice temporal MVP plus
+  collocated/colmv state, and emits a fresh IDR at each GOP boundary.
+- H.264 compatibility now follows FFmpeg's absent `KEY_MOTION_INFO`: MD writeback
+  is disabled and the scene-tune update is delayed one picture to match the
+  vendor async encoder.
+- Added direct DMA-BUF versus CPU-fallback equality checks and 12/120-frame exact
+  H.264/H.265 cases to `board_ffmpeg_rkmpp.sh`; each long path gets a discarded
+  full-length warmup to neutralize RK3588 cross-process encoder state. The gate
+  is now 8/8.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
   C-level or below; no code from that experiment remains.
 - Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.

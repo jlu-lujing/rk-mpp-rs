@@ -299,15 +299,27 @@
   lines, so FFmpeg+rkmpp-rs produced a correct I-frame and a divergent P-frame.
   Selecting `system-uncached` for non-cacheable MPP groups restores exact
   input visibility.
-- With uncached MPP DRM buffers, H.264 High/QP26 is byte-identical to vendor C
-  for both the 2-frame diagnostic stream and the 12-frame board gate. H.265
-  reconstructs identical NV12 but still has different parameter-set and packet
-  bytes.
+- With uncached MPP DRM buffers, H.264 and H.265 are byte-identical to vendor C
+  for the 2/12-frame gates and 120-frame GOP60 sequences at both 320x240 and
+  1280x720.
 - FFmpeg sends `MPP_ENC_SET_CFG` once during init and again on the first frame
   to add DRM-plane strides. Reconstructing `Encoder` on the second command
   discarded the session's previously selected SEI and header modes. Preserving
   those controls across config replacement removes the extra SEI NALs and makes
   the H.264 output match vendor C exactly.
+- H.265's object path needs the configured level in VPS/SPS, slice temporal MVP,
+  `colFromL0Flag`, `col_ref_idx`, and colmv load/store registers. It also must
+  begin a new IDR when the configured GOP boundary is reached; the short
+  pre-boundary tests did not expose this.
+- FFmpeg does not attach `KEY_MOTION_INFO`. Vendor C therefore leaves H.264
+  `enc_pic.mei_stor` and `meiw_addr` clear. Matching that and delaying H.264
+  scene-tune feedback by one picture reproduces the async encoder's state at
+  frame 105, where a 120-frame fixture otherwise changes lambda/ATF rows early.
+- RK3588 carries codec state across processes. In a gate that runs H.264 and
+  H.265 long GOPs back-to-back, the second codec alternately failed unless each
+  measured path first ran a discarded 120-frame encode with the same codec. A
+  two-frame warmup was insufficient; the full-length warmup is part of the
+  board gate, not an output workaround.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.
   The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline
