@@ -4011,8 +4011,10 @@ pipeline uses.
   `MPP_ENC_SET_CFG`, and keeps kernel-only keys explicitly storage-only.
   Audited against Rockchip MPP `9b56348`. `scripts/board_mpp_kcfg.sh` compiles
   `tools/mpp_kcfg_probe.c` against upstream headers and passes on RK3588.
-  Full `mpi_enc_test -kmpp_mode=1` still requires the wider KMPP object ABI;
-  that boundary is documented in `docs/KCFG.md`.
+  The upstream `mpp-develop/build/test/mpi_enc_test -kmpp_mode=1` still
+  requires the wider KMPP object ABI and currently stops at an unresolved
+  `kmpp_obj_get` before `main`; that boundary is documented in
+  `docs/KCFG.md`.
 
 - **2026-11-19: kcfg handles follow vendor lifecycle semantics.** Invalid
   vdec/venc config types now return `MPP_ERR_VALUE`, `init_by_name()` accepts
@@ -4572,9 +4574,10 @@ pipeline uses.
   remaining samples are file output and process startup.
 - **2026-11-22: MPP option trie accepts both public ABIs.** The 2024-04
   `mpi_enc_test` uses four-argument `mpp_opt_setup` with tag `0x47` and
-  two-argument `mpp_trie_add_info(info)`, while the newer installed tool uses
-  tag `0x20` and three-argument add with a name/context pair. The compatibility
-  trie now returns direct option context for the former and packed
-  `MppTrieInfo` for the latter. The old official H.264/H.265/MJPEG gate remains
-  fully green; the newer `-kmpp_mode=1` reaches the KMPP object-entry path but
-  still fails there, so full KMPP object compatibility remains open.
+  two-argument `mpp_trie_add_info(info)`, while the installed `0x20` binary
+  uses three-argument add with a name/context pair and expects a 24-byte
+  `MppTrieInfo v0` `{name, ctx, index, str_len}`. Generic object tries retain
+  the current packed 4-byte layout. The old official H.264/H.265/MJPEG gate
+  remains fully green. `/usr/local/bin/mpi_enc_test` has no `kmpp_mode`; the
+  upstream `mpp-develop` binary still fails before `main` on unresolved
+  `kmpp_obj_get`, so full KMPP object compatibility remains open.

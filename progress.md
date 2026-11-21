@@ -34,12 +34,15 @@
 - The final host `cargo test --all-targets --offline` gate remains
   `1373 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
   legacy VDPU2/VP8 hardware is absent there by platform design.
-- Fixed the MPP option-trie ABI split: old `mpp_opt_setup(..., 0x47, ...)` and
+- Fixed the MPP option-trie ABI split: `mpp_opt_setup(..., 0x47, ...)` and
   two-argument `mpp_trie_add_info(info)` return the option context directly,
-  while the newer `0x20` setup and three-argument add return packed
-  `MppTrieInfo`. The old official encoder gate remains fully green. The newer
-  `mpi_enc_test -kmpp_mode=1` now gets past option parsing but still faults in
-  the KMPP object-entry path.
+  while `0x20` setup and three-argument add return the binary's 24-byte
+  `MppTrieInfo v0` `{name, ctx, index, str_len}`. Generic object tries retain
+  the packed 4-byte `MppTrieInfo`. The old official encoder gate remains fully
+  green.
+  `/usr/local/bin/mpi_enc_test` has no KMPP mode; the upstream
+  `mpp-develop/build/test/mpi_enc_test` still fails before `main` on unresolved
+  `kmpp_obj_get`.
 
 ## Session: 2026-11-21
 

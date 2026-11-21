@@ -66,10 +66,14 @@ The option-trie layer now supports both observed `mpp_opt_add` ABIs:
   form passes an `MppOptInfo *` as the name and returns that context directly;
 - the newer three-argument `mpp_trie_add_info` form passes a name string plus
   context, with an undefined fourth register in the installed tool, and returns
-  a packed `MppTrieInfo`.
+  the 24-byte `MppTrieInfo v0` `{name, ctx, index, str_len}` expected by that
+  binary. Generic object tries retain the current packed 4-byte
+  `MppTrieInfo`.
 
-The complete upstream `mpi_enc_test -kmpp_mode=1` still requires the broader
-KMPP object ABI (`kmpp_obj_get`, `kmpp_obj_to_shm`, object definitions, shared
-memory/ioctl helpers). The current tool now gets through option parsing but
-still faults in the KMPP object-entry path, so full KMPP-object compatibility is
-not claimed.
+`/usr/local/bin/mpi_enc_test` does not contain a `kmpp_mode` option. The
+upstream `mpp-develop/build/test/mpi_enc_test` is the real object-path oracle;
+it still requires the broader KMPP object ABI (`kmpp_obj_get`,
+`kmpp_obj_to_shm`, object definitions, shared-memory/ioctl helpers). With the
+Rust library alone it currently stops during symbol resolution at
+`kmpp_obj_get`, before `main`, so full KMPP-object compatibility is not
+claimed.

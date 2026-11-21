@@ -387,8 +387,9 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
   `h265:level=0` selects the size-derived level and temporal MVP, while an
   unchanged `mpi_enc_test` keeps level 4.0 and TMVP off. Revalidate the
   standalone encoder NAL/reconstruction and FFmpeg exact gates.
-- [x] Support both old and new `mpp_opt_setup` / `mpp_trie_add_info` ABIs and
-      keep the unchanged encoder object gate green.
+- [x] Support `0x47` direct-context and `0x20` 24-byte `MppTrieInfo v0`
+      `mpp_opt_setup` / `mpp_trie_add_info` ABIs while keeping the unchanged
+      encoder object gate green.
 - [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
   FFmpeg encoder loop.
 - [x] Reject the high-level cross-thread compatibility worker; it lost delayed

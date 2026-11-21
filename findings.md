@@ -289,13 +289,16 @@
 - `mpi_enc_test` has two option-trie ABIs in the local oracles. The 2024-04
   binary calls four-argument `mpp_opt_setup(..., 0x47, info_count)` and
   two-argument `mpp_trie_add_info(info)`; `mpp_opt_parse` expects the returned
-  pointer to be the original `MppOptInfo *`. The newer installed binary calls
-  two-argument setup with `0x20` and three-argument add with a name string and
-  context; its parse path expects packed `MppTrieInfo`. Encoding the tag
-  explicitly fixes both without pointer heuristics.
-- The newer `-kmpp_mode=1` path now passes option parsing but still SIGBUSes in
-  the KMPP object-entry layer. The trie fix is not sufficient for full object
-  ABI compatibility.
+  pointer to be the original `MppOptInfo *`. The installed `0x20` binary calls
+  three-argument add with a name string and context, then loads `ctx` from
+  offset 8 of a 24-byte `MppTrieInfo v0`
+  `{name, ctx, index, str_len}`. Encoding the tag explicitly fixes both
+  without pointer heuristics.
+- `/usr/local/bin/mpi_enc_test` has no `kmpp_mode` string or option. The actual
+  KMPP oracle is `mpp-develop/build/test/mpi_enc_test`; it imports the full
+  `kmpp_obj_*` surface and currently fails before `main` on unresolved
+  `kmpp_obj_get`. The trie fix is not sufficient for full object ABI
+  compatibility.
 - The RK3588 standalone decoder matrix is now 13/13 with exact output-size
   checks: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
   H.263 CIF/QCIF, AV1 and MJPEG all match vendor C byte-for-byte; the extra

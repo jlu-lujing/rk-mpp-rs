@@ -67,6 +67,14 @@ struct ObjDefStub {
     next_node: i32,
 }
 
+#[repr(C)]
+struct MppTrieInfoV0 {
+    name: *const c_char,
+    context: *mut c_void,
+    index: u16,
+    str_len: u16,
+}
+
 fn spinlock_mut(lock: *mut SpinLock) -> Option<&'static mut SpinLock> {
     (!lock.is_null()).then(|| unsafe { &mut *lock })
 }
@@ -717,8 +725,8 @@ pub unsafe extern "C" fn mpp_trie_init(trie: *mut *mut c_void, name: *const c_ch
     }
     let tag = name as usize;
     let legacy_opt = name.is_null() || tag == 0x47;
-    let current_opt = tag == 0x20;
-    let name = if legacy_opt || current_opt {
+    let opt_info_struct = tag == 0x20;
+    let name = if legacy_opt || opt_info_struct {
         CString::new("standalone-trie").unwrap()
     } else {
         match obj_def_name(name) {
@@ -732,7 +740,7 @@ pub unsafe extern "C" fn mpp_trie_init(trie: *mut *mut c_void, name: *const c_ch
         infos: Vec::new(),
         names: Vec::new(),
         legacy_opt,
-        current_opt,
+        opt_info_struct,
         direct_context: false,
     })) as usize;
     tries().lock().unwrap().push(pointer);
@@ -775,12 +783,25 @@ pub unsafe extern "C" fn mpp_trie_add_info(
     if name.is_null() {
         return MPP_NOK;
     }
-    if trie.current_opt && !context.is_null() {
-        // This mpp_opt_add variant leaves the context_size register undefined.
-        // MppOptInfo is 32 bytes in that ABI.
-        context_size = 32;
+    let name = unsafe { CStr::from_ptr(name) };
+    if trie.opt_info_struct {
+        let name_owned = name.to_owned();
+        let name_pointer = name_owned.as_ptr();
+        let index = u16::try_from(trie.infos.len()).unwrap_or(u16::MAX);
+        let str_len = u16::try_from(name_owned.as_bytes().len() + 1).unwrap_or(u16::MAX);
+        let info = Box::into_raw(Box::new(MppTrieInfoV0 {
+            name: name_pointer,
+            context,
+            index,
+            str_len,
+        }));
+        trie.nodes += 1;
+        trie.infos.push(info as usize);
+        trie.names
+            .push((name_owned, info as usize, context as usize));
+        return MPP_OK;
     }
-    let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+    let name = name.to_bytes();
     let context_size = usize::try_from(context_size).unwrap_or(0);
     let name_size = name.len() + 1;
     let string_size = (name_size + 4).next_multiple_of(8) - 4;
@@ -1054,7 +1075,7 @@ struct TrieStub {
     infos: Vec<usize>,
     names: Vec<(CString, usize, usize)>,
     legacy_opt: bool,
-    current_opt: bool,
+    opt_info_struct: bool,
     direct_context: bool,
 }
 
@@ -4682,7 +4703,7 @@ lt_cfg_cnt = 0
     }
 
     #[test]
-    fn small_named_trie_accepts_the_current_mpp_opt_add_abi() {
+    fn opt_trie_returns_the_tool_v0_info_with_split_name_and_context() {
         let mut trie = std::ptr::null_mut();
         assert_eq!(
             unsafe { mpp_trie_init(&mut trie, 0x20 as *const c_char) },
@@ -4696,13 +4717,17 @@ lt_cfg_cnt = 0
             },
             MPP_OK
         );
-        let info = unsafe { mpp_trie_get_info(trie, name.as_ptr()) }.cast::<u8>();
+        let info = unsafe { mpp_trie_get_info(trie, name.as_ptr()) }.cast::<MppTrieInfoV0>();
         assert!(!info.is_null());
-        let header = unsafe { std::ptr::read_unaligned(info.cast::<u32>()) };
-        let context_offset = 4 + (header >> 24) as usize;
-        let stored_context =
-            unsafe { std::slice::from_raw_parts(info.add(context_offset).cast::<u64>(), 4) };
-        assert_eq!(stored_context, context);
+        assert_eq!(std::mem::size_of::<MppTrieInfoV0>(), 24);
+        let info = unsafe { &*info };
+        assert_eq!(
+            unsafe { CStr::from_ptr(info.name) },
+            CStr::from_bytes_with_nul(b"codec:type\0").unwrap()
+        );
+        assert_eq!(info.context, context.as_mut_ptr().cast());
+        assert_eq!(info.index, 0);
+        assert_eq!(info.str_len, 11);
     }
 
     #[test]
