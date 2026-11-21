@@ -135,14 +135,14 @@ Eleven interleaved 300-frame 1280x720 samples, pinned to CPUs 4-7:
 
 | path | wall | FPS | CPU user+sys |
 |---|---:|---:|---:|
-| H.264 C FFmpeg | 0.352 s | 852 | 0.372 s |
-| H.264 Rust sync/default | 0.638 s | 470 | 0.272 s |
-| H.264 Rust depth 1 | 0.637 s | 471 | 0.292 s |
-| H.264 Rust depth 2, explicit | **0.330 s** | **909** | **0.207 s** |
-| H.265 C FFmpeg | 0.453 s | 662 | 0.410 s |
-| H.265 Rust sync | 0.686 s | 437 | 0.278 s |
-| H.265 Rust depth 1 | 0.669 s | 448 | 0.282 s |
-| H.265 Rust depth 2/default | **0.428 s** | **701** | **0.210 s** |
+| H.264 C FFmpeg | 0.350 s | 857 | 0.395 s |
+| H.264 Rust sync/default | 0.642 s | 467 | 0.279 s |
+| H.264 Rust depth 1 | 0.625 s | 480 | 0.281 s |
+| H.264 Rust depth 2, explicit | **0.338 s** | **888** | **0.212 s** |
+| H.265 C FFmpeg | 0.452 s | 664 | 0.448 s |
+| H.265 Rust sync | 0.691 s | 434 | 0.292 s |
+| H.265 Rust depth 1 | 0.678 s | 443 | 0.293 s |
+| H.265 Rust depth 2/default | **0.430 s** | **698** | **0.215 s** |
 
 The script `scripts/board_native_encoder_pipeline_bench.sh` also checks streams:
 H.264 depth 1 and H.265 depth 1/2 are byte-identical to sync for all 300

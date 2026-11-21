@@ -364,13 +364,19 @@
   baseline. H.265 depth 2 is now the compatibility default.
 - The native file CLI now feeds the deferred session queue directly. H.265
   fixed-QP defaults to depth 2 when refresh/tiles/low-delay split are absent;
-  300-frame 720p rises from 438 to 701 FPS and remains byte-identical to sync
+  300-frame 720p rises from 434 to 698 FPS and remains byte-identical to sync
   at 320x240 and 1280x720.
 - H.264 native depth 1 is byte-exact but does not overlap enough work to beat
-  the existing input-copy pipeline. Depth 2 reaches 909 FPS versus C's 852,
+  the existing input-copy pipeline. Depth 2 reaches 888 FPS versus C's 857,
   but scene-tune observes STATUS one picture later, so it is opt-in rather than
   the default. The explicit high-throughput stream decodes all 300 frames but
   is not asserted byte-identical to sync across multiple GOPs.
+- Attempting to catch scene tune up by reading the younger pending task's
+  STATUS after the blocking poll did not change the stream: the younger
+  `enc_done`/STATUS fields are still unavailable when the oldest task unblocks.
+  Matching sync would therefore require waiting for the younger task before
+  preparing the next picture, which removes the depth-2 overlap this mode
+  exists to provide.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.
   The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline

@@ -704,9 +704,9 @@ H.265 也已接入同一 queue contract，并补上 C `task_cnt == 2` 路径的
 与 C 的 327.3M 基本一致；pointer/info/read/write 与 CPU fallback 仍按需建立
 映射并通过 C object gate。
 原生 fixed-QP 文件编码也接入了 deferred queue。H.265 `h265-gop` 在普通
-GOP 下默认 depth 2，300 帧 720p 为 0.428 s / 701 FPS，C FFmpeg 为
-0.453 s / 662 FPS，320x240/1280x720 与同步路径逐字节。H.264 默认保持
-同步；显式 depth 2 达到 0.330 s / 909 FPS，但 scene-tune 统计晚一帧，
+GOP 下默认 depth 2，300 帧 720p 为 0.430 s / 698 FPS，C FFmpeg 为
+0.452 s / 664 FPS，320x240/1280x720 与同步路径逐字节。H.264 默认保持
+同步；显式 depth 2 达到 0.338 s / 888 FPS，但 scene-tune 统计晚一帧，
 输出未经多 GOP 同步逐字节断言，因此只作为性能 opt-in。
 重复测试同时发现 120 帧/GOP60 跨第二个 IDR 后，C FFmpeg 会在不同进程产生
 多个码流且解码像素不同；相同参数的 60 帧在 8 次冷启动重复中全部一致，因此

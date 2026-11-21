@@ -64,7 +64,7 @@
   gates remained byte-exact.
 - The native fixed-QP CLI now drives the deferred hardware queue. H.265 depth 2
   is the default/byte-exact mode and improves 300-frame 720p from 438 to
-  701 FPS. H.264 stays sync by default; explicit depth 2 reaches 909 FPS but
+  698 FPS. H.264 stays sync by default; explicit depth 2 reaches 888 FPS but
   moves scene-tune feedback one picture later, so it is not stream-identical
   to the default path.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
