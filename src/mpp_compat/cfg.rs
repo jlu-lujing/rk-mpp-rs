@@ -148,6 +148,11 @@ pub(super) unsafe fn encoder_config(
     }
 
     if codec == Codec::H264 {
+        if standalone::kmpp_args_seen() {
+            result = result
+                .with_h264_full_range(true)
+                .with_h264_log2_max_mv_length(15);
+        }
         if let Some(values) = standalone::encoder_cfg_i32_array::<16>(config, "hw:aq_step_i") {
             let mut aq_step_i = [0i8; 16];
             for (output, input) in aq_step_i.iter_mut().zip(values) {
@@ -172,7 +177,8 @@ pub(super) unsafe fn encoder_config(
         let cabac = unsafe { cfg.get("h264:cabac_en") };
         let transform_8x8 = unsafe { cfg.get("h264:trans8x8") };
         let cabac_init_idc = unsafe { cfg.get("h264:cabac_idc") };
-        let constraint_set = unsafe { cfg.get("h264:constraint_set") };
+        let constraint_set = unsafe { cfg.get("h264:constraint_set") }
+            .or_else(|| standalone::kmpp_args_seen().then_some(0));
         let base_layer_pid = unsafe { cfg.get("h264:base_layer_pid") };
         if cabac.is_some()
             || transform_8x8.is_some()
@@ -205,6 +211,11 @@ pub(super) unsafe fn encoder_config(
     }
 
     if codec == Codec::H265 {
+        if standalone::kmpp_args_seen() {
+            result = result
+                .with_h265_full_range(true)
+                .with_h265_force_cu_qp_delta(true);
+        }
         let mut syntax = H265SyntaxOptions::default();
         let mut any = false;
         if let Some(value) = unsafe { cfg.get("h265:dblk_disable") } {

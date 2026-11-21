@@ -295,10 +295,15 @@
   `{name, ctx, index, str_len}`. Encoding the tag explicitly fixes both
   without pointer heuristics.
 - `/usr/local/bin/mpi_enc_test` has no `kmpp_mode` string or option. The actual
-  KMPP oracle is `mpp-develop/build/test/mpi_enc_test`; it imports the full
-  `kmpp_obj_*` surface and currently fails before `main` on unresolved
-  `kmpp_obj_get`. The trie fix is not sufficient for full object ABI
-  compatibility.
+  KMPP oracle is `mpp-develop/build/test/mpi_enc_test`. Its userspace object
+  path now runs on the Rust library: dual-ABI objdef lookup/register, trie
+  VLA/leaf storage, object allocation, field get/set, flags and callbacks are
+  implemented. `-kmpp_mode 0` H.264 is byte-identical to the new vendor stream
+  (`e18fe707…14bdbd`, 3 NAL). H.265 VPS/SPS/PPS match after carrying the new
+  full-range/VUI/CU-QP-delta defaults, but its fixed-QP slice is still different
+  (vendor 4192B versus Rust 4088B). The RK3588 kernel exposes neither
+  `/dev/vcodec` nor `/proc/kmpp` ctrl-cfg support, so the tool rejects KMPP
+  modes 1/2 before encoding.
 - The RK3588 standalone decoder matrix is now 13/13 with exact output-size
   checks: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
   H.263 CIF/QCIF, AV1 and MJPEG all match vendor C byte-for-byte; the extra

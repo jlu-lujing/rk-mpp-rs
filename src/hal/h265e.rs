@@ -189,6 +189,8 @@ pub struct IdrJob {
     /// `sps_temporal_mvp_enabled_flag`; the vendor FFmpeg object path defaults
     /// this on while the standalone CLI leaves it off.
     pub temporal_mvp: bool,
+    /// Force `cu_qp_delta_enabled_flag` for the new upstream object defaults.
+    pub force_cu_qp_delta: bool,
     /// Rate control for this picture, `None` for fixed QP.
     pub rc: Option<RateControl>,
     /// Intra-refresh (GDR) picture: the base-table fd, its sweep, and the index.
@@ -232,6 +234,7 @@ impl IdrJob {
             picture: Picture::Idr,
             long_term: false,
             temporal_mvp: false,
+            force_cu_qp_delta: false,
             rc: None,
             refresh: None,
             split: SliceSplit::default(),
@@ -676,6 +679,10 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
     file.set(&regs::H265_REG0237_SYNT_SPS_STRG_INTRA_SMTH, 1)?;
 
     // reg0238 synt_pps: from syn->pp.
+    file.set(
+        &regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_EN,
+        u32::from(job.force_cu_qp_delta || job.rc.is_some()),
+    )?;
     file.set(&regs::H265_REG0238_SYNT_PPS_CBC_INIT_PRSNT_FLG, 1)?; // cabac_init_present
     file.set(&regs::H265_REG0238_SYNT_PPS_PIC_INIT_QP, 26)?; // init_qp_minus26 + 26
                                                              // FIXQP leaves `cu_qp_dlt_en` clear, the same rate-control rule the PPS
@@ -1028,6 +1035,22 @@ mod tests {
         let file = reference_idr(26);
         assert_eq!(file.get(&regs::BASE_RC_CFG_RC_EN).unwrap(), 0);
         assert_eq!(file.get(&regs::BASE_RC_CFG_AQ_EN).unwrap(), 0);
+    }
+
+    #[test]
+    fn upstream_object_defaults_can_force_cu_qp_delta_in_fixed_qp() {
+        let mut job = IdrJob::reference(26);
+        job.force_cu_qp_delta = true;
+        let file = build_registers(&job).unwrap();
+        assert_eq!(
+            file.get(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_EN).unwrap(),
+            1
+        );
+        assert_eq!(
+            file.get(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_DEPTH)
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

@@ -31,8 +31,8 @@
   and interleaves UV once. `perf stat` for 100-frame MPEG-2 fell to 50.1 ms
   task-clock / 75.4M instructions; vendor C is 66.5 ms / 80.0M. The remaining
   perf samples are file writes and process startup, not Rust decode hot spots.
-- The final host `cargo test --all-targets --offline` gate remains
-  `1373 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
+- The final host `cargo test --all-targets --offline` gate is
+  `1377 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
   legacy VDPU2/VP8 hardware is absent there by platform design.
 - Fixed the MPP option-trie ABI split: `mpp_opt_setup(..., 0x47, ...)` and
   two-argument `mpp_trie_add_info(info)` return the option context directly,
@@ -41,8 +41,13 @@
   the packed 4-byte `MppTrieInfo`. The old official encoder gate remains fully
   green.
   `/usr/local/bin/mpi_enc_test` has no KMPP mode; the upstream
-  `mpp-develop/build/test/mpi_enc_test` still fails before `main` on unresolved
-  `kmpp_obj_get`.
+  `mpp-develop/build/test/mpi_enc_test` now loads and runs its default MPP path
+  on the Rust library. The userspace KMPP object subset covers dual-ABI
+  objdefs, trie entries, allocation, field access, flags and callbacks.
+  `-kmpp_mode 0` H.264 is byte-identical to the new vendor stream
+  (`e18fe707…14bdbd`, 3 NAL); H.265 VPS/SPS/PPS match but the fixed-QP slice
+  remains different. KMPP mode 1/2 is rejected because this RK3588 kernel has
+  no `/dev/vcodec` or `/proc/kmpp` ctrl-cfg capability.
 
 ## Session: 2026-11-21
 

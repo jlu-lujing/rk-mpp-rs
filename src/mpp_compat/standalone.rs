@@ -12,6 +12,9 @@ const MPP_OK: c_int = 0;
 const MPP_NOK: c_int = -1;
 const MPP_ERR_NULL_PTR: c_int = -3;
 const MPP_ERR_VALUE: c_int = -6;
+const MPP_TRIE_LEAF: c_int = 0;
+const MPP_TRIE_SUBROOT: c_int = 1;
+const KMPP_USER_POINTER_MIN: usize = 0x1_0000;
 const DEC_CFG_MAGIC: u64 = 0x524b_4445_4343_4647;
 const ENC_CFG_MAGIC: u64 = 0x524b_454e_4343_4647;
 const REF_CFG_MAGIC: u64 = 0x524b_5245_4643_4647;
@@ -65,6 +68,20 @@ pub struct SglnBase {
 struct ObjDefStub {
     name: CString,
     next_node: i32,
+    trie: usize,
+    cfg_root: usize,
+    entry_size: i32,
+    buf_size: i32,
+    flag_max_pos: i32,
+    index: i32,
+    flags: u32,
+    init: usize,
+    deinit: usize,
+    preset: usize,
+    dump: usize,
+    resize: usize,
+    cache_init: usize,
+    cache_deinit: usize,
 }
 
 #[repr(C)]
@@ -73,6 +90,22 @@ struct MppTrieInfoV0 {
     context: *mut c_void,
     index: u16,
     str_len: u16,
+}
+
+#[repr(C)]
+struct MppTrieStatus {
+    root_idx: i32,
+    node_idx: i32,
+    array_idx: i32,
+    name_pos: i32,
+}
+
+struct TrieEntryStub {
+    root_idx: i32,
+    node_idx: i32,
+    name: CString,
+    value: u64,
+    is_vla: bool,
 }
 
 fn spinlock_mut(lock: *mut SpinLock) -> Option<&'static mut SpinLock> {
@@ -350,26 +383,101 @@ pub unsafe extern "C" fn mpp_sgln_base_deinit(base: *mut SglnBase) {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_get(def: *mut *mut c_void, _name: *const c_char) -> i32 {
-    if def.is_null() {
-        return MPP_ERR_NULL_PTR;
-    }
-    unsafe { def.write(ptr::null_mut()) };
-    MPP_NOK
+fn new_obj_def(name: CString, entry_size: i32, flags: u32) -> *mut c_void {
+    Box::into_raw(Box::new(ObjDefStub {
+        name,
+        next_node: 0,
+        trie: 0,
+        cfg_root: 0,
+        entry_size,
+        buf_size: entry_size.max(0),
+        flag_max_pos: 0,
+        index: 0,
+        flags,
+        init: 0,
+        deinit: 0,
+        preset: 0,
+        dump: 0,
+        resize: 0,
+        cache_init: 0,
+        cache_deinit: 0,
+    })) as *mut c_void
+}
+
+fn find_obj_def(name: &CStr) -> Option<*mut c_void> {
+    obj_defs()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|pointer| unsafe { &*(*pointer as *const ObjDefStub) }.name.as_c_str() == name)
+        .map(|pointer| pointer as *mut c_void)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_register(
+pub unsafe extern "C" fn kmpp_objdef_get(
     def: *mut *mut c_void,
-    _size: i32,
-    _name: *const c_char,
+    arg1: usize,
+    arg2: usize,
+    _flags: u32,
 ) -> i32 {
     if def.is_null() {
         return MPP_ERR_NULL_PTR;
     }
     unsafe { def.write(ptr::null_mut()) };
-    MPP_NOK
+    let name = if arg1 >= KMPP_USER_POINTER_MIN {
+        arg1 as *const c_char
+    } else {
+        arg2 as *const c_char
+    };
+    if name.is_null() {
+        return MPP_NOK;
+    }
+    let Ok(name) = obj_def_name(name) else {
+        return MPP_NOK;
+    };
+    let lower = name.to_string_lossy().to_ascii_lowercase();
+    if lower.contains("encargs") || lower.contains("enc_args") {
+        KMPP_ARGS_SEEN.store(1, Ordering::Relaxed);
+    }
+    let Some(found) = find_obj_def(name.as_c_str()) else {
+        return MPP_NOK;
+    };
+    unsafe { def.write(found) };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_objdef_register(
+    def: *mut *mut c_void,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+    arg4: u32,
+) -> i32 {
+    if def.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    unsafe { def.write(ptr::null_mut()) };
+    let (size, name, flags) = if arg2 >= KMPP_USER_POINTER_MIN {
+        (arg1 as i32, arg2 as *const c_char, 0)
+    } else {
+        (arg2 as i32, arg3 as *const c_char, arg4)
+    };
+    if name.is_null() {
+        return MPP_NOK;
+    }
+    let Ok(name) = obj_def_name(name) else {
+        return MPP_NOK;
+    };
+    if let Some(found) = find_obj_def(name.as_c_str()) {
+        unsafe { def.write(found) };
+        return MPP_OK;
+    }
+    let pointer = new_obj_def(name, size, flags);
+    obj_defs().lock().unwrap().push(pointer as usize);
+    unsafe { def.write(pointer) };
+    MPP_OK
 }
 
 #[no_mangle]
@@ -400,96 +508,178 @@ pub unsafe extern "C" fn kmpp_objdef_put(_def: *mut c_void) -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_add_cfg_root(_def: *mut c_void, _root: *mut c_void) -> i32 {
+pub unsafe extern "C" fn kmpp_objdef_add_cfg_root(def: *mut c_void, root: *mut c_void) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    def.cfg_root = root as usize;
     MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_get_cfg_root(_def: *mut c_void) -> *mut c_void {
-    ptr::null_mut()
+pub unsafe extern "C" fn kmpp_objdef_get_cfg_root(def: *mut c_void) -> *mut c_void {
+    obj_def_mut(def).map_or(ptr::null_mut(), |def| def.cfg_root as *mut c_void)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn kmpp_objdef_add_entry(
     def: *mut c_void,
-    _subroot: i32,
+    subroot: i32,
     name: *const c_char,
-    _table: *mut c_void,
+    table: *mut c_void,
 ) -> i32 {
-    if name.is_null() {
-        return MPP_OK;
-    }
     let Some(def) = obj_def_mut(def) else {
         return MPP_NOK;
     };
-    let node = def.next_node;
-    def.next_node += 1;
-    node
+    if def.trie == 0 {
+        let mut trie = ptr::null_mut();
+        let ret = unsafe { mpp_trie_init(&mut trie, def.name.as_ptr()) };
+        if ret != MPP_OK || trie.is_null() {
+            return MPP_NOK;
+        }
+        def.trie = trie as usize;
+    }
+    let trie = def.trie as *mut c_void;
+    if name.is_null() {
+        let index = ptr::addr_of_mut!(def.index).cast::<c_void>();
+        let size = ptr::addr_of_mut!(def.entry_size).cast::<c_void>();
+        let ret = unsafe {
+            mpp_trie_add_info(trie, c"__index".as_ptr(), index, 4)
+                | mpp_trie_add_info(trie, c"__size".as_ptr(), size, 4)
+        };
+        def.buf_size = def.entry_size;
+        return ret;
+    }
+    let mut status = MppTrieStatus {
+        root_idx: subroot,
+        node_idx: -1,
+        array_idx: -1,
+        name_pos: 0,
+    };
+    let ret = unsafe {
+        mpp_trie_add_entry(
+            trie,
+            (&mut status as *mut MppTrieStatus).cast(),
+            name,
+            table,
+        )
+    };
+    if ret < 0 {
+        return ret;
+    }
+    if table.is_null() {
+        def.flag_max_pos = def.flag_max_pos.max(0);
+    } else {
+        let value = unsafe { ptr::read_unaligned(table.cast::<u64>()) };
+        if value & 0xf == 3 {
+            def.flag_max_pos = def.flag_max_pos.max(((value >> 48) & 0xffff) as i32);
+        }
+    }
+    def.next_node = status.node_idx.saturating_add(1);
+    status.node_idx
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_add_init(_def: *mut c_void, _function: *mut c_void) -> i32 {
+pub unsafe extern "C" fn kmpp_objdef_add_init(def: *mut c_void, function: *mut c_void) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    def.init = function as usize;
     MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_add_deinit(_def: *mut c_void, _function: *mut c_void) -> i32 {
+pub unsafe extern "C" fn kmpp_objdef_add_deinit(def: *mut c_void, function: *mut c_void) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    def.deinit = function as usize;
     MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_add_preset(_def: *mut c_void, _function: *mut c_void) -> i32 {
+pub unsafe extern "C" fn kmpp_objdef_add_preset(def: *mut c_void, function: *mut c_void) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    def.preset = function as usize;
     MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_add_dump(_def: *mut c_void, _function: *mut c_void) -> i32 {
+pub unsafe extern "C" fn kmpp_objdef_add_dump(def: *mut c_void, function: *mut c_void) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    def.dump = function as usize;
     MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_add_resize(_def: *mut c_void, _function: *mut c_void) -> i32 {
+pub unsafe extern "C" fn kmpp_objdef_add_resize(def: *mut c_void, function: *mut c_void) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    def.resize = function as usize;
     MPP_OK
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn kmpp_objdef_add_cache_init(
-    _def: *mut c_void,
-    _function: *mut c_void,
+    def: *mut c_void,
+    function: *mut c_void,
 ) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    def.cache_init = function as usize;
     MPP_OK
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn kmpp_objdef_add_cache_deinit(
-    _def: *mut c_void,
-    _function: *mut c_void,
+    def: *mut c_void,
+    function: *mut c_void,
 ) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    def.cache_deinit = function as usize;
     MPP_OK
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn kmpp_objdef_get_entry(
-    _def: *mut c_void,
-    _name: *const c_char,
+    def: *mut c_void,
+    name: *const c_char,
     table: *mut *mut c_void,
 ) -> i32 {
     if table.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let entry = Box::into_raw(Box::new([0u64; 2])) as *mut c_void;
-    unsafe { table.write(entry) };
+    unsafe { table.write(ptr::null_mut()) };
+    let Some(def) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    let Some(entry) = trie_entry_value(def.trie as *mut c_void, name) else {
+        return MPP_NOK;
+    };
+    unsafe { table.write(entry.cast()) };
     MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_get_offset(_def: *mut c_void, _name: *const c_char) -> i32 {
-    0
+pub unsafe extern "C" fn kmpp_objdef_get_offset(def: *mut c_void, name: *const c_char) -> i32 {
+    let Some(def) = obj_def_mut(def) else {
+        return -1;
+    };
+    trie_entry_value(def.trie as *mut c_void, name)
+        .map_or(-1, |entry| ((unsafe { *entry } >> 32) & 0xffff) as i32)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn kmpp_objdef_get_cmd(_def: *mut c_void, _name: *const c_char) -> i32 {
-    0
+    -1
 }
 
 #[no_mangle]
@@ -503,18 +693,18 @@ pub unsafe extern "C" fn kmpp_objdef_get_name(def: *mut c_void) -> *const c_char
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_get_entry_size(_def: *mut c_void) -> i32 {
-    512
+pub unsafe extern "C" fn kmpp_objdef_get_entry_size(def: *mut c_void) -> i32 {
+    obj_def_mut(def).map_or(0, |def| def.entry_size)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_get_buf_size(_def: *mut c_void) -> i32 {
-    1024
+pub unsafe extern "C" fn kmpp_objdef_get_buf_size(def: *mut c_void) -> i32 {
+    obj_def_mut(def).map_or(0, |def| def.buf_size)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_objdef_get_trie(_def: *mut c_void) -> *mut c_void {
-    ptr::null_mut()
+pub unsafe extern "C" fn kmpp_objdef_get_trie(def: *mut c_void) -> *mut c_void {
+    obj_def_mut(def).map_or(ptr::null_mut(), |def| def.trie as *mut c_void)
 }
 
 #[no_mangle]
@@ -523,8 +713,361 @@ pub extern "C" fn mpp_enc_cfg_objdef() -> *mut c_void {
 }
 
 #[no_mangle]
-pub extern "C" fn kmpp_obj_to_entry(object: *mut c_void) -> *mut c_void {
-    object
+pub unsafe extern "C" fn kmpp_obj_get(
+    object: *mut *mut c_void,
+    def: *mut c_void,
+    caller: *const c_char,
+) -> i32 {
+    if object.is_null() || def.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    unsafe { object.write(ptr::null_mut()) };
+    let Some(def_ref) = obj_def_mut(def) else {
+        return MPP_NOK;
+    };
+    if def_ref.name.to_string_lossy().contains("EncArgs") {
+        KMPP_ARGS_SEEN.store(1, Ordering::Relaxed);
+    }
+    let Ok(entry_size) = usize::try_from(def_ref.entry_size) else {
+        return MPP_NOK;
+    };
+    if entry_size == 0 || entry_size > 64 * 1024 * 1024 {
+        return MPP_NOK;
+    }
+    let flag_size = if def_ref.flag_max_pos > 0 {
+        ((def_ref.flag_max_pos as usize + 8) / 8 + 3) & !3
+    } else {
+        0
+    };
+    let pointer = Box::into_raw(Box::new(ObjStub {
+        magic: KMPP_OBJ_MAGIC,
+        def: def as usize,
+        entry: vec![0; entry_size],
+        flags: vec![0; flag_size],
+    }));
+    let object_pointer = pointer as *mut c_void;
+    objects().lock().unwrap().push(pointer as usize);
+    if def_ref.init != 0 {
+        let init: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> i32 =
+            unsafe { std::mem::transmute(def_ref.init) };
+        if unsafe { init((*pointer).entry.as_mut_ptr().cast(), object_pointer, caller) } != 0 {
+            objects()
+                .lock()
+                .unwrap()
+                .retain(|item| *item != pointer as usize);
+            drop(unsafe { Box::from_raw(pointer) });
+            return MPP_NOK;
+        }
+    }
+    unsafe { object.write(object_pointer) };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_put(object: *mut c_void, caller: *const c_char) -> i32 {
+    let Some(pointer) = objects()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|pointer| *pointer == object as usize)
+    else {
+        return MPP_NOK;
+    };
+    let pointer = pointer as *mut ObjStub;
+    let object_ref = unsafe { &mut *pointer };
+    if object_ref.magic != KMPP_OBJ_MAGIC {
+        return MPP_NOK;
+    }
+    if let Some(def) = obj_def_mut(object_ref.def as *mut c_void) {
+        if def.deinit != 0 {
+            let deinit: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> i32 =
+                unsafe { std::mem::transmute(def.deinit) };
+            unsafe { deinit(object_ref.entry.as_mut_ptr().cast(), object, caller) };
+        }
+    }
+    object_ref.magic = 0;
+    objects()
+        .lock()
+        .unwrap()
+        .retain(|item| *item != object as usize);
+    drop(unsafe { Box::from_raw(pointer) });
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_check(object: *mut c_void, _caller: *const c_char) -> i32 {
+    obj_mut(object).map_or(MPP_NOK, |object| {
+        if object.magic == KMPP_OBJ_MAGIC {
+            MPP_OK
+        } else {
+            MPP_NOK
+        }
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_is_obj(object: *mut c_void) -> i32 {
+    obj_mut(object).is_some() as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_is_kobj(_object: *mut c_void) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_to_objdef(object: *mut c_void) -> *mut c_void {
+    obj_mut(object).map_or(ptr::null_mut(), |object| object.def as *mut c_void)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_to_entry(object: *mut c_void) -> *mut c_void {
+    obj_mut(object).map_or(ptr::null_mut(), |object| object.entry.as_mut_ptr().cast())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_to_shm(_object: *mut c_void) -> *mut c_void {
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_to_flags_size(object: *mut c_void) -> i32 {
+    obj_mut(object).map_or(0, |object| object.flags.len() as i32)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_resize(
+    object: *mut c_void,
+    vla_size: i32,
+    caller: *const c_char,
+) -> i32 {
+    if vla_size < 0 {
+        return MPP_NOK;
+    }
+    let Some(object_ref) = obj_mut(object) else {
+        return MPP_NOK;
+    };
+    let Some(def) = obj_def_mut(object_ref.def as *mut c_void) else {
+        return MPP_NOK;
+    };
+    if def.flags & 2 == 0 {
+        return MPP_NOK;
+    }
+    let wanted = def
+        .buf_size
+        .max(0)
+        .saturating_add(vla_size)
+        .max(object_ref.entry.len() as i32) as usize;
+    object_ref.entry.resize(wanted, 0);
+    if def.resize != 0 {
+        let resize: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> i32 =
+            unsafe { std::mem::transmute(def.resize) };
+        return unsafe { resize(object_ref.entry.as_mut_ptr().cast(), object, caller) };
+    }
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_copy(destination: *mut c_void, source: *mut c_void) -> i32 {
+    if destination == source {
+        return obj_mut(destination).map_or(MPP_NOK, |_| MPP_OK);
+    }
+    let Some(source) = obj_mut(source) else {
+        return MPP_NOK;
+    };
+    let Some(destination) = obj_mut(destination) else {
+        return MPP_NOK;
+    };
+    if source.def != destination.def || source.entry.len() > destination.entry.len() {
+        return MPP_NOK;
+    }
+    destination.entry[..source.entry.len()].copy_from_slice(&source.entry);
+    let size = source.flags.len().min(destination.flags.len());
+    destination.flags[..size].copy_from_slice(&source.flags[..size]);
+    MPP_OK
+}
+
+unsafe fn obj_tbl_target(object: *mut c_void, table: *mut c_void, size: usize) -> Option<*mut u8> {
+    if table.is_null() {
+        return None;
+    }
+    let object = obj_mut(object)?;
+    let entry = unsafe { ptr::read_unaligned(table.cast::<u64>()) };
+    if entry & 0xf != 3 {
+        return None;
+    }
+    let offset = ((entry >> 32) & 0xffff) as usize;
+    let element_size = ((entry >> 16) & 0xffff) as usize;
+    if size > element_size || offset.checked_add(size)? > object.entry.len() {
+        return None;
+    }
+    Some(unsafe { object.entry.as_mut_ptr().add(offset) })
+}
+
+unsafe fn obj_tbl_set_flag(object: *mut c_void, table: *mut c_void) {
+    let Some(object) = obj_mut(object) else {
+        return;
+    };
+    let entry = unsafe { ptr::read_unaligned(table.cast::<u64>()) };
+    let flag_offset = ((entry >> 48) & 0xffff) as usize;
+    let byte = flag_offset / 8;
+    let bit = flag_offset % 8;
+    if let Some(value) = object.flags.get_mut(byte) {
+        *value |= 1 << bit;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_tbl_get_s32(
+    object: *mut c_void,
+    table: *mut c_void,
+    value: *mut i32,
+) -> i32 {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(target) = (unsafe { obj_tbl_target(object, table, 4) }) else {
+        return MPP_NOK;
+    };
+    unsafe { value.write(ptr::read_unaligned(target.cast::<i32>())) };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_tbl_get_u32(
+    object: *mut c_void,
+    table: *mut c_void,
+    value: *mut u32,
+) -> i32 {
+    if value.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(target) = (unsafe { obj_tbl_target(object, table, 4) }) else {
+        return MPP_NOK;
+    };
+    unsafe { value.write(ptr::read_unaligned(target.cast::<u32>())) };
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_tbl_set_s32(
+    object: *mut c_void,
+    table: *mut c_void,
+    value: i32,
+) -> i32 {
+    let Some(target) = (unsafe { obj_tbl_target(object, table, 4) }) else {
+        return MPP_NOK;
+    };
+    unsafe {
+        ptr::write_unaligned(target.cast::<i32>(), value);
+        obj_tbl_set_flag(object, table);
+    }
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_tbl_set_u32(
+    object: *mut c_void,
+    table: *mut c_void,
+    value: u32,
+) -> i32 {
+    let Some(target) = (unsafe { obj_tbl_target(object, table, 4) }) else {
+        return MPP_NOK;
+    };
+    unsafe {
+        ptr::write_unaligned(target.cast::<u32>(), value);
+        obj_tbl_set_flag(object, table);
+    }
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_tbl_test(object: *mut c_void, table: *mut c_void) -> i32 {
+    let Some(object) = obj_mut(object) else {
+        return MPP_NOK;
+    };
+    if table.is_null() {
+        return MPP_NOK;
+    }
+    let entry = unsafe { ptr::read_unaligned(table.cast::<u64>()) };
+    let offset = ((entry >> 32) & 0xffff) as usize;
+    let size = ((entry >> 16) & 0xffff) as usize;
+    if offset
+        .checked_add(size)
+        .is_some_and(|end| end <= object.entry.len())
+    {
+        MPP_OK
+    } else {
+        MPP_NOK
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_udump_f(_object: *mut c_void, _caller: *const c_char) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_obj_kdump_f(_object: *mut c_void, _caller: *const c_char) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub extern "C" fn kmpp_cap_version(_id: u32) -> u32 {
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_meta_set_s32(_meta: *mut c_void, _key: i32, _value: i32) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_meta_set_ptr(
+    _meta: *mut c_void,
+    _key: i32,
+    _value: *mut c_void,
+) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buffer_get(buffer: *mut *mut c_void) -> i32 {
+    if buffer.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    unsafe { buffer.write(ptr::null_mut()) };
+    MPP_NOK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buffer_put(_buffer: *mut c_void) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buffer_setup(_buffer: *mut c_void) -> i32 {
+    MPP_NOK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buffer_to_cfg(_buffer: *mut c_void) -> *mut c_void {
+    ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buf_cfg_set_size(_config: *mut c_void, _size: u32) -> i32 {
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buf_cfg_get_sptr(_config: *mut c_void, pointer: *mut c_void) -> i32 {
+    if pointer.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    unsafe { pointer.cast::<[u64; 2]>().write([0; 2]) };
+    MPP_NOK
 }
 
 fn new_cfg_object() -> *mut c_void {
@@ -739,6 +1282,8 @@ pub unsafe extern "C" fn mpp_trie_init(trie: *mut *mut c_void, name: *const c_ch
         nodes: 0,
         infos: Vec::new(),
         names: Vec::new(),
+        entries: Vec::new(),
+        name_max: 0,
         legacy_opt,
         opt_info_struct,
         direct_context: false,
@@ -784,6 +1329,9 @@ pub unsafe extern "C" fn mpp_trie_add_info(
         return MPP_NOK;
     }
     let name = unsafe { CStr::from_ptr(name) };
+    trie.name_max = trie
+        .name_max
+        .max(name.to_bytes().len().min(i32::MAX as usize) as i32);
     if trie.opt_info_struct {
         let name_owned = name.to_owned();
         let name_pointer = name_owned.as_ptr();
@@ -830,29 +1378,131 @@ pub unsafe extern "C" fn mpp_trie_add_info(
 #[no_mangle]
 pub unsafe extern "C" fn mpp_trie_add_entry(
     trie: *mut c_void,
-    _status: *mut c_void,
+    status: *mut c_void,
     name: *const c_char,
-    _entry: *mut c_void,
+    entry: *mut c_void,
 ) -> i32 {
     let Some(trie) = trie_mut(trie) else {
         return MPP_NOK;
     };
+    if status.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let status = unsafe { &mut *status.cast::<MppTrieStatus>() };
+    status.node_idx = -1;
+    status.array_idx = -1;
+    status.name_pos = 0;
     if name.is_null() {
         return MPP_OK;
     }
-    let node = trie.nodes;
-    trie.nodes += 1;
-    node
+    let name = unsafe { CStr::from_ptr(name) };
+    if name.to_bytes().is_empty() {
+        return MPP_NOK;
+    }
+    trie.name_max = trie
+        .name_max
+        .max(name.to_bytes().len().min(i32::MAX as usize) as i32);
+    let value = if entry.is_null() {
+        0
+    } else {
+        unsafe { ptr::read_unaligned(entry.cast::<u64>()) }
+    };
+    let is_vla = value & 0xf == 4;
+    let existing = trie
+        .entries
+        .iter()
+        .find(|candidate| {
+            candidate.root_idx == status.root_idx && candidate.name.as_c_str() == name
+        })
+        .map(|candidate| candidate.node_idx);
+    let node_idx = if let Some(node_idx) = existing {
+        node_idx
+    } else {
+        let node_idx = trie.nodes;
+        trie.nodes += 1;
+        trie.entries.push(TrieEntryStub {
+            root_idx: status.root_idx,
+            node_idx,
+            name: name.to_owned(),
+            value,
+            is_vla,
+        });
+        node_idx
+    };
+    status.array_idx = if is_vla {
+        ((value >> 16) & 0x3fff) as i32
+    } else {
+        -1
+    };
+    status.node_idx = node_idx;
+    if is_vla {
+        MPP_TRIE_SUBROOT
+    } else {
+        MPP_TRIE_LEAF
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_trie_get_entry(
-    _trie: *mut c_void,
-    _status: *mut c_void,
-    _name: *const c_char,
-    _entry: *mut c_void,
+    trie: *mut c_void,
+    status: *mut c_void,
+    name: *const c_char,
+    entry: *mut c_void,
 ) -> i32 {
-    MPP_NOK
+    let Some(trie) = trie_mut(trie) else {
+        return MPP_NOK;
+    };
+    if status.is_null() || name.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let status = unsafe { &mut *status.cast::<MppTrieStatus>() };
+    status.node_idx = -1;
+    status.array_idx = -1;
+    status.name_pos = 0;
+    let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+    if name.is_empty() {
+        return MPP_NOK;
+    }
+    let mut segment_end = name.len();
+    let mut consumed = name.len();
+    let mut array_idx = -1;
+    for (index, window) in name.windows(2).enumerate() {
+        if window[0] == b':' && window[1].is_ascii_digit() && index > 0 {
+            let mut cursor = index + 1;
+            let mut value = 0i32;
+            while cursor < name.len() && name[cursor].is_ascii_digit() {
+                value = value
+                    .saturating_mul(10)
+                    .saturating_add((name[cursor] - b'0') as i32);
+                cursor += 1;
+            }
+            if cursor < name.len() && name[cursor] == b':' {
+                cursor += 1;
+            }
+            segment_end = index;
+            consumed = cursor;
+            array_idx = value;
+            break;
+        }
+    }
+    let segment = &name[..segment_end];
+    let found = trie.entries.iter().find(|candidate| {
+        candidate.root_idx == status.root_idx && candidate.name.as_bytes() == segment
+    });
+    let Some(found) = found else {
+        return MPP_NOK;
+    };
+    if !entry.is_null() {
+        unsafe { ptr::write_unaligned(entry.cast::<u64>(), found.value) };
+    }
+    status.node_idx = found.node_idx;
+    status.array_idx = array_idx;
+    status.name_pos = consumed.min(i32::MAX as usize) as i32;
+    if array_idx >= 0 {
+        MPP_TRIE_SUBROOT
+    } else {
+        MPP_TRIE_LEAF
+    }
 }
 
 #[no_mangle]
@@ -862,7 +1512,7 @@ pub unsafe extern "C" fn mpp_trie_get_node_count(trie: *mut c_void) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_trie_get_info_count(trie: *mut c_void) -> i32 {
-    trie_mut(trie).map_or(0, |trie| trie.infos.len() as i32)
+    trie_mut(trie).map_or(0, |trie| (trie.infos.len() + trie.entries.len()) as i32)
 }
 
 #[no_mangle]
@@ -872,7 +1522,7 @@ pub unsafe extern "C" fn mpp_trie_get_buf_size(_trie: *mut c_void) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_trie_get_name_max(trie: *mut c_void) -> i32 {
-    trie_mut(trie).map_or(0, |trie| trie.name.as_bytes().len() as i32)
+    trie_mut(trie).map_or(0, |trie| trie.name_max)
 }
 
 #[no_mangle]
@@ -968,10 +1618,44 @@ pub unsafe extern "C" fn mpp_trie_get_info_from_root(
 
 #[no_mangle]
 pub unsafe extern "C" fn mpp_trie_for_each_entry(
-    _trie: *mut c_void,
-    _callback: *mut c_void,
-    _context: *mut c_void,
+    trie: *mut c_void,
+    callback: *mut c_void,
+    context: *mut c_void,
 ) -> i32 {
+    let Some(trie) = trie_mut(trie) else {
+        return MPP_NOK;
+    };
+    if callback.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let callback: unsafe extern "C" fn(*const c_char, *mut c_void, i32, *mut c_void) -> i32 =
+        unsafe { std::mem::transmute(callback) };
+    for entry in &mut trie.entries {
+        if entry
+            .name
+            .as_bytes()
+            .windows(2)
+            .any(|window| window == b"__")
+        {
+            continue;
+        }
+        let subroot = if entry.is_vla {
+            entry.node_idx
+        } else {
+            entry.root_idx
+        };
+        if unsafe {
+            callback(
+                entry.name.as_ptr(),
+                (&mut entry.value as *mut u64).cast(),
+                subroot,
+                context,
+            )
+        } != 0
+        {
+            return MPP_NOK;
+        }
+    }
     MPP_OK
 }
 
@@ -1067,13 +1751,30 @@ pub(super) struct LongTermReferenceConfig {
 static ENV_STRINGS: OnceLock<Mutex<Vec<CString>>> = OnceLock::new();
 static SOC_NAME: OnceLock<CString> = OnceLock::new();
 static OBJ_DEFS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
+static OBJECTS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 static TRIES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
+static KMPP_ARGS_SEEN: AtomicU32 = AtomicU32::new(0);
+
+pub fn kmpp_args_seen() -> bool {
+    KMPP_ARGS_SEEN.load(Ordering::Relaxed) != 0
+}
+
+const KMPP_OBJ_MAGIC: u64 = 0x524b_4d50_504f_424a;
+
+struct ObjStub {
+    magic: u64,
+    def: usize,
+    entry: Vec<u8>,
+    flags: Vec<u8>,
+}
 
 struct TrieStub {
     name: CString,
     nodes: i32,
     infos: Vec<usize>,
     names: Vec<(CString, usize, usize)>,
+    entries: Vec<TrieEntryStub>,
+    name_max: i32,
     legacy_opt: bool,
     opt_info_struct: bool,
     direct_context: bool,
@@ -1085,6 +1786,10 @@ fn env_strings() -> &'static Mutex<Vec<CString>> {
 
 fn obj_defs() -> &'static Mutex<Vec<usize>> {
     OBJ_DEFS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn objects() -> &'static Mutex<Vec<usize>> {
+    OBJECTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 fn tries() -> &'static Mutex<Vec<usize>> {
@@ -1104,6 +1809,18 @@ fn trie_mut(trie: *mut c_void) -> Option<&'static mut TrieStub> {
         .map(|pointer| unsafe { &mut *(pointer as *mut TrieStub) })
 }
 
+fn trie_entry_value(trie: *mut c_void, name: *const c_char) -> Option<*mut u64> {
+    let trie = trie_mut(trie)?;
+    if name.is_null() {
+        return None;
+    }
+    let name = unsafe { CStr::from_ptr(name) };
+    trie.entries
+        .iter_mut()
+        .find(|entry| entry.root_idx == 0 && entry.name.as_c_str() == name)
+        .map(|entry| &mut entry.value as *mut u64)
+}
+
 fn obj_def_name(name: *const c_char) -> Result<CString, c_int> {
     Ok(c_name(name)?.to_owned())
 }
@@ -1119,6 +1836,19 @@ fn obj_def_mut(def: *mut c_void) -> Option<&'static mut ObjDefStub> {
         .copied()
         .find(|pointer| *pointer == def as usize)
         .map(|pointer| unsafe { &mut *(pointer as *mut ObjDefStub) })
+}
+
+fn obj_mut(object: *mut c_void) -> Option<&'static mut ObjStub> {
+    if object.is_null() {
+        return None;
+    }
+    objects()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|pointer| *pointer == object as usize)
+        .map(|pointer| unsafe { &mut *(pointer as *mut ObjStub) })
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -2943,7 +3673,15 @@ pub unsafe extern "C" fn mpp_enc_cfg_init(config: *mut *mut c_void) -> i32 {
     if config.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    unsafe { config.write(Box::into_raw(Box::new(new_enc_cfg())).cast()) };
+    let pointer = Box::into_raw(Box::new(new_enc_cfg())).cast::<c_void>();
+    if KMPP_ARGS_SEEN.load(Ordering::Relaxed) != 0 {
+        let _ = enc_set_value(
+            pointer,
+            c"h264:constraint_set".as_ptr(),
+            ConfigValue::S32(0),
+        );
+    }
+    unsafe { config.write(pointer) };
     MPP_OK
 }
 
@@ -2953,8 +3691,14 @@ pub unsafe extern "C" fn mpp_enc_cfg_init_k(config: *mut *mut c_void) -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn mpp_enc_cfg_create(config: *mut *mut c_void, _mode: u32) -> i32 {
-    unsafe { mpp_enc_cfg_init(config) }
+pub unsafe extern "C" fn mpp_enc_cfg_create(config: *mut *mut c_void, mode: u32) -> i32 {
+    let ret = unsafe { mpp_enc_cfg_init(config) };
+    if ret != MPP_OK || mode != 0 || config.is_null() {
+        return ret;
+    }
+    let config = unsafe { *config };
+    let _ = enc_set_value(config, c"h264:constraint_set".as_ptr(), ConfigValue::S32(0));
+    ret
 }
 
 #[no_mangle]
@@ -3641,20 +4385,154 @@ mod tests {
     }
 
     #[test]
-    fn kmpp_objdef_get_and_register_clear_the_current_rk3576_abi_output() {
-        let mut def = 1usize as *mut c_void;
+    fn kmpp_objdef_and_object_access_round_trip_a_user_entry() {
+        let name = CString::new("rk_mpp_rs_user_object_test").unwrap();
+        let mut def = std::ptr::null_mut();
         assert_eq!(
-            unsafe { kmpp_objdef_get(&mut def, c"kmpp_frame".as_ptr()) },
-            MPP_NOK
+            unsafe { kmpp_objdef_register(&mut def, 0, 64, name.as_ptr() as usize, 1) },
+            MPP_OK
         );
-        assert!(def.is_null());
+        assert!(!def.is_null());
 
-        def = 1usize as *mut c_void;
+        let mut found = std::ptr::null_mut();
         assert_eq!(
-            unsafe { kmpp_objdef_register(&mut def, 80, c"kmpp_frame".as_ptr()) },
-            MPP_NOK
+            unsafe { kmpp_objdef_get(&mut found, 0, name.as_ptr() as usize, 0) },
+            MPP_OK
         );
-        assert!(def.is_null());
+        assert_eq!(found, def);
+
+        let entry_name = c"value";
+        let mut table = (3u64 | (1 << 8) | (4 << 16) | (0 << 32) | (4 << 48)).to_ne_bytes();
+        assert_eq!(
+            unsafe {
+                kmpp_objdef_add_entry(def, 0, entry_name.as_ptr(), table.as_mut_ptr().cast())
+            },
+            0
+        );
+        assert_eq!(
+            unsafe { kmpp_objdef_get_offset(def, entry_name.as_ptr()) },
+            0
+        );
+
+        let mut object = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { kmpp_obj_get(&mut object, def, c"test".as_ptr()) },
+            MPP_OK
+        );
+        assert!(!object.is_null());
+        let mut entry = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { kmpp_objdef_get_entry(def, entry_name.as_ptr(), &mut entry) },
+            MPP_OK
+        );
+        assert_eq!(
+            unsafe { kmpp_obj_tbl_set_u32(object, entry, 0x1234_5678) },
+            MPP_OK
+        );
+        let mut value = 0;
+        assert_eq!(
+            unsafe { kmpp_obj_tbl_get_u32(object, entry, &mut value) },
+            MPP_OK
+        );
+        assert_eq!(value, 0x1234_5678);
+        assert_eq!(unsafe { kmpp_obj_to_objdef(object) }, def);
+        assert_eq!(unsafe { kmpp_obj_put(object, c"test".as_ptr()) }, MPP_OK);
+    }
+
+    #[test]
+    fn trie_entry_paths_keep_vla_roots_and_iterate_leaf_payloads() {
+        let mut trie = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { mpp_trie_init(&mut trie, c"entry-test".as_ptr()) },
+            MPP_OK
+        );
+        let vla = (4u64 | (8 << 8) | (3 << 16)).to_ne_bytes();
+        let leaf = (3u64 | (1 << 8) | (4 << 16) | (16 << 32)).to_ne_bytes();
+        let mut status = MppTrieStatus {
+            root_idx: 0,
+            node_idx: -1,
+            array_idx: -1,
+            name_pos: 0,
+        };
+        assert_eq!(
+            unsafe {
+                mpp_trie_add_entry(
+                    trie,
+                    (&mut status as *mut MppTrieStatus).cast(),
+                    c"items".as_ptr(),
+                    vla.as_ptr().cast_mut().cast(),
+                )
+            },
+            MPP_TRIE_SUBROOT
+        );
+        let root = status.node_idx;
+        assert_eq!(status.array_idx, 3);
+        status.root_idx = root;
+        assert_eq!(
+            unsafe {
+                mpp_trie_add_entry(
+                    trie,
+                    (&mut status as *mut MppTrieStatus).cast(),
+                    c"value".as_ptr(),
+                    leaf.as_ptr().cast_mut().cast(),
+                )
+            },
+            MPP_TRIE_LEAF
+        );
+
+        let path = c"items:1:value";
+        status.root_idx = 0;
+        let mut value = 0u64;
+        assert_eq!(
+            unsafe {
+                mpp_trie_get_entry(
+                    trie,
+                    (&mut status as *mut MppTrieStatus).cast(),
+                    path.as_ptr(),
+                    (&mut value as *mut u64).cast(),
+                )
+            },
+            MPP_TRIE_SUBROOT
+        );
+        assert_eq!(status.name_pos, 8);
+        assert_eq!(status.array_idx, 1);
+        status.root_idx = status.node_idx;
+        assert_eq!(
+            unsafe {
+                mpp_trie_get_entry(
+                    trie,
+                    (&mut status as *mut MppTrieStatus).cast(),
+                    path.as_ptr().add(8),
+                    (&mut value as *mut u64).cast(),
+                )
+            },
+            MPP_TRIE_LEAF
+        );
+        assert_eq!(value, u64::from_ne_bytes(leaf));
+
+        unsafe extern "C" fn count_entry(
+            _name: *const c_char,
+            _entry: *mut c_void,
+            _subroot: i32,
+            context: *mut c_void,
+        ) -> i32 {
+            let count = unsafe { &mut *context.cast::<usize>() };
+            *count += 1;
+            0
+        }
+
+        let mut count = 0usize;
+        assert_eq!(
+            unsafe {
+                mpp_trie_for_each_entry(
+                    trie,
+                    count_entry as *mut c_void,
+                    (&mut count as *mut usize).cast(),
+                )
+            },
+            MPP_OK
+        );
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -3694,6 +4572,27 @@ mod tests {
         assert_eq!(codec, 0x0100_0004);
         assert_eq!(width, 320);
         assert_eq!(unsafe { mpp_enc_cfg_deinit(cfg) }, MPP_OK);
+    }
+
+    #[test]
+    fn created_encoder_cfg_uses_the_new_upstream_h264_constraint_default() {
+        let mut legacy = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_cfg_init(&mut legacy) }, MPP_OK);
+        let mut value = 0;
+        assert_eq!(
+            unsafe { mpp_enc_cfg_get_s32(legacy, c"h264:constraint_set".as_ptr(), &mut value) },
+            MPP_NOK
+        );
+        assert_eq!(unsafe { mpp_enc_cfg_deinit(legacy) }, MPP_OK);
+
+        let mut created = std::ptr::null_mut();
+        assert_eq!(unsafe { mpp_enc_cfg_create(&mut created, 0) }, MPP_OK);
+        assert_eq!(
+            unsafe { mpp_enc_cfg_get_s32(created, c"h264:constraint_set".as_ptr(), &mut value) },
+            MPP_OK
+        );
+        assert_eq!(value, 0);
+        assert_eq!(unsafe { mpp_enc_cfg_deinit(created) }, MPP_OK);
     }
 
     #[test]

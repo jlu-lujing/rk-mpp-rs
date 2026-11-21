@@ -390,6 +390,12 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Support `0x47` direct-context and `0x20` 24-byte `MppTrieInfo v0`
       `mpp_opt_setup` / `mpp_trie_add_info` ABIs while keeping the unchanged
       encoder object gate green.
+- [x] Export the upstream `kmpp_obj_*` surface and implement the userspace
+      object core needed by `mpp-develop/build/test/mpi_enc_test` to load,
+      register definitions and parse encoder arguments.
+- [x] Match the new upstream H.264 default stream byte-for-byte.
+- [ ] Finish the new upstream H.265 fixed-QP slice and the remaining
+      buffer/metadata object paths.
 - [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
   FFmpeg encoder loop.
 - [x] Reject the high-level cross-thread compatibility worker; it lost delayed

@@ -648,7 +648,11 @@ pub struct EncoderConfig {
     h264_aq_step_i: Option<[i8; 16]>,
     h264_deblock: Option<H264DeblockConfig>,
     h264_syntax: Option<H264SyntaxConfig>,
+    h264_full_range: Option<bool>,
+    h264_log2_max_mv_length: Option<u32>,
     h265_syntax: H265SyntaxOptions,
+    h265_full_range: Option<bool>,
+    h265_force_cu_qp_delta: Option<bool>,
     roi: Option<RoiConfig>,
     gdr: Option<GdrConfig>,
     slice_split: Option<SliceSplitConfig>,
@@ -687,7 +691,11 @@ impl EncoderConfig {
             h264_aq_step_i: None,
             h264_deblock: None,
             h264_syntax: None,
+            h264_full_range: None,
+            h264_log2_max_mv_length: None,
             h265_syntax: H265_SYNTAX_DEFAULT,
+            h265_full_range: None,
+            h265_force_cu_qp_delta: None,
             roi: None,
             gdr: None,
             slice_split: None,
@@ -854,8 +862,28 @@ impl EncoderConfig {
         self
     }
 
+    pub const fn with_h264_full_range(mut self, enabled: bool) -> Self {
+        self.h264_full_range = Some(enabled);
+        self
+    }
+
+    pub const fn with_h264_log2_max_mv_length(mut self, value: u32) -> Self {
+        self.h264_log2_max_mv_length = Some(value);
+        self
+    }
+
     pub const fn with_h265_syntax(mut self, syntax: H265SyntaxOptions) -> Self {
         self.h265_syntax = syntax;
+        self
+    }
+
+    pub const fn with_h265_full_range(mut self, enabled: bool) -> Self {
+        self.h265_full_range = Some(enabled);
+        self
+    }
+
+    pub const fn with_h265_force_cu_qp_delta(mut self, enabled: bool) -> Self {
+        self.h265_force_cu_qp_delta = Some(enabled);
         self
     }
 
@@ -2560,9 +2588,19 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
         h264.entropy_coding = syntax.entropy_coding;
         h264.transform_8x8 = syntax.transform_8x8;
         h264.cabac_init_idc = syntax.cabac_init_idc;
-        h264.constraint_set_force = ((syntax.constraint_set.unwrap_or(0) >> 16) & 0x3f) as u8;
-        h264.constraint_set_value = (syntax.constraint_set.unwrap_or(0) & 0x3f) as u8;
+        if let Some(constraint_set) = syntax.constraint_set() {
+            h264.constraint_set = Some((constraint_set & 0x3f) as u8);
+        }
+        h264.constraint_set_force = ((syntax.constraint_set().unwrap_or(0) >> 16) & 0x3f) as u8;
+        h264.constraint_set_value = (syntax.constraint_set().unwrap_or(0) & 0x3f) as u8;
         h264.base_layer_pid = syntax.base_layer_pid.unwrap_or(0);
+    }
+    if let Some(full_range) = config.h264_full_range {
+        h264.video_full_range = full_range;
+        h264.video_format = full_range.then_some(5);
+    }
+    if let Some(value) = config.h264_log2_max_mv_length {
+        h264.vui_log2_max_mv_length = value;
     }
     if let Some(rate_control) = config.rate_control {
         match rate_control.mode {
@@ -2747,6 +2785,11 @@ fn open_h265_vepu580(
         .map_err(|error| Error::Hardware(error.to_string()))?;
     encoder.set_level(config.level());
     encoder.set_temporal_mvp(mpi_compat);
+    encoder.set_video_signal(
+        config.h265_full_range.map(|_| 5),
+        config.h265_full_range.unwrap_or(false),
+    );
+    encoder.set_force_cu_qp_delta(config.h265_force_cu_qp_delta.unwrap_or(false));
     encoder.set_syntax_options(config.h265_syntax);
     if let Some(slice_split) = config.slice_split {
         encoder
@@ -3011,10 +3054,10 @@ fn format_nv12_padded<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        format_nv12_input, validate_dmabuf_layout, BlockStatistics, Codec, DmaBufInput,
-        EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning, H264SyntaxConfig,
-        H265SyntaxOptions, PacketMeta, PixelFormat, RateControlConfig, RateControlMode, RoiConfig,
-        RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
+        format_nv12_input, h264_encoder_config, validate_dmabuf_layout, BlockStatistics, Codec,
+        DmaBufInput, EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning,
+        H264SyntaxConfig, H265SyntaxOptions, PacketMeta, PixelFormat, RateControlConfig,
+        RateControlMode, RoiConfig, RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
     };
     use crate::sdk::Error;
     use crate::service::dma_heap::DmaBuf;
@@ -3104,6 +3147,18 @@ mod tests {
                 .with_h264_syntax(H264SyntaxConfig::new(true, false).with_constraint_set(invalid));
             assert!(config.validate_advanced_controls().is_err());
         }
+    }
+
+    #[test]
+    fn h264_full_range_override_reaches_the_sps_vui() {
+        let config = EncoderConfig::new(Codec::H264, 320, 240)
+            .with_profile(100)
+            .with_h264_full_range(true)
+            .with_h264_log2_max_mv_length(15);
+        let h264 = h264_encoder_config(config).unwrap();
+        assert_eq!(h264.video_format, Some(5));
+        assert!(h264.video_full_range);
+        assert_eq!(h264.vui_log2_max_mv_length, 15);
     }
 
     #[test]

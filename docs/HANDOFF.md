@@ -378,16 +378,20 @@ kernel-only key，遇到未知 key 返回 `MPP_NOK`；type/coding mismatch 返�
 `MPP_ERR_VALUE` 且不丢弃待用配置。`scripts/board_mpp_kcfg.sh` 用上游头文件
 编译 `tools/mpp_kcfg_probe.c`，在 RK3588 以 `librk_mpp_rs.so` 作
 `librockchip_mpp.so.1` 完成 mapping/mismatch/unknown-key 三组验证。完整
-`mpi_enc_test -kmpp_mode=1` 仍需要更大的 KMPP object ABI，边界与 key 审计
-写在 `docs/KCFG.md`。
+`mpp-develop/mpi_enc_test` 的 KMPP object 模式仍受内核能力限制；当前
+RK3588 没有 `/dev/vcodec` 或 `/proc/kmpp` 的 ctrl-cfg 能力，工具会在进入
+Rust 编码路径前拒绝 mode 1/2。边界与 key 审计写在 `docs/KCFG.md`。
 MPP option trie 现在兼容 `0x47` 旧四参数 `mpp_opt_setup` / 二参数
 `mpp_trie_add_info` 的 direct `MppOptInfo` 上下文，以及 `0x20` 三参数 add
 的 24-byte `MppTrieInfo v0` `{name, ctx, index, str_len}`；通用 object trie
 继续使用当前 packed 4-byte 布局。旧官方 `mpi_enc_test` 的
 H.264/H.265/MJPEG 门仍全通过。`/usr/local/bin/mpi_enc_test` 不含
 `kmpp_mode`；真正导入完整 object ABI 的是
-`mpp-develop/build/test/mpi_enc_test`，它目前仍在动态加载阶段缺少
-`kmpp_obj_get` 等符号，不能把 trie 修复当成完整 KMPP 兼容。
+`mpp-develop/build/test/mpi_enc_test`。该工具现在可用 Rust 库完成默认
+MPP 路径：`-kmpp_mode 0` H.264 单帧 3 NAL 与新版 vendor 完全一致
+（`e18fe707…14bdbd`）。H.265 VPS/SPS/PPS 已一致，但固定 QP slice 仍不同
+（vendor 4192B，Rust 4088B），不能宣称 H.265 全流一致。buffer/meta object
+路径仍是兼容占位，完整 KMPP object ABI 尚未闭合。
 
 `vdec_kcfg`/`venc_kcfg` 的句柄生命周期也已按 vendor 收紧：非法 type 返回
 `MPP_ERR_VALUE`，`init_by_name` 只接受 `KmppVdec*Cfg`/`KmppVenc*Cfg`

@@ -4011,9 +4011,12 @@ pipeline uses.
   `MPP_ENC_SET_CFG`, and keeps kernel-only keys explicitly storage-only.
   Audited against Rockchip MPP `9b56348`. `scripts/board_mpp_kcfg.sh` compiles
   `tools/mpp_kcfg_probe.c` against upstream headers and passes on RK3588.
-  The upstream `mpp-develop/build/test/mpi_enc_test -kmpp_mode=1` still
-  requires the wider KMPP object ABI and currently stops at an unresolved
-  `kmpp_obj_get` before `main`; that boundary is documented in
+  The upstream `mpp-develop/build/test/mpi_enc_test` now loads and runs the
+  default MPP path with the Rust library. Its userspace KMPP object subset
+  covers dual-ABI objdef lookup/registration, trie VLA and leaf entries,
+  object allocation, table field access, flags and init/deinit callbacks.
+  `kmpp_mode 1/2` still requires kernel `/dev/vcodec` or `/proc/kmpp`
+  capabilities that RK3588 does not expose; that boundary is documented in
   `docs/KCFG.md`.
 
 - **2026-11-19: kcfg handles follow vendor lifecycle semantics.** Invalid
@@ -4578,6 +4581,16 @@ pipeline uses.
   uses three-argument add with a name/context pair and expects a 24-byte
   `MppTrieInfo v0` `{name, ctx, index, str_len}`. Generic object tries retain
   the current packed 4-byte layout. The old official H.264/H.265/MJPEG gate
-  remains fully green. `/usr/local/bin/mpi_enc_test` has no `kmpp_mode`; the
-  upstream `mpp-develop` binary still fails before `main` on unresolved
-  `kmpp_obj_get`, so full KMPP object compatibility remains open.
+  remains fully green. `/usr/local/bin/mpi_enc_test` has no `kmpp_mode`.
+- **2026-11-22: upstream userspace KMPP objects run.** The Rust library now
+  exports the missing `kmpp_obj_*` surface and implements a userspace object
+  core for the unmodified `mpp-develop/build/test/mpi_enc_test`: dual-ABI
+  objdef lookup/registration, trie VLA/leaf entries, object allocation,
+  entry offsets, field get/set, flags, init/deinit and basic callbacks.
+  `-kmpp_mode 0` H.264 is byte-identical to the new vendor C stream
+  (`e18fe707…14bdbd`, 3 NAL). H.265 VPS/SPS/PPS are byte-identical after
+  carrying the new full-range and CU-QP-delta defaults; the fixed-QP slice
+  remains different (vendor 4192 bytes versus Rust 4088), so H.265 full-stream
+  compatibility is still open. The tool rejects KMPP mode 1/2 on this kernel
+  because `/dev/vcodec` and `/proc/kmpp` ctrl-cfg support are absent. Buffer
+  and metadata object paths remain incomplete.

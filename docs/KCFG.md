@@ -71,9 +71,18 @@ The option-trie layer now supports both observed `mpp_opt_add` ABIs:
   `MppTrieInfo`.
 
 `/usr/local/bin/mpi_enc_test` does not contain a `kmpp_mode` option. The
-upstream `mpp-develop/build/test/mpi_enc_test` is the real object-path oracle;
-it still requires the broader KMPP object ABI (`kmpp_obj_get`,
-`kmpp_obj_to_shm`, object definitions, shared-memory/ioctl helpers). With the
-Rust library alone it currently stops during symbol resolution at
-`kmpp_obj_get`, before `main`, so full KMPP-object compatibility is not
-claimed.
+upstream `mpp-develop/build/test/mpi_enc_test` is the real object-path oracle.
+With the Rust library alone it now loads and runs the default MPP path. The
+implemented userspace subset covers dual-ABI `kmpp_objdef_get/register`,
+object definitions, trie VLA/leaf entries, object allocation, table field
+access, flags, init/deinit callbacks and the generic entry view.
+
+For `-kmpp_mode 0`, one-frame H.264 is byte-identical to the new vendor stream
+(`e18fe707…14bdbd`, 3 NAL). H.265 carries the new full-range, VUI and
+CU-QP-delta defaults; VPS/SPS/PPS are byte-identical, while the fixed-QP slice
+still differs (vendor 4192 bytes, Rust 4088 bytes). Buffer and metadata object
+paths are currently link-compatible placeholders, not full implementations.
+
+The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no
+`/dev/vcodec` and no `/proc/kmpp` ctrl-cfg capability. Full KMPP-object
+compatibility is therefore not claimed.

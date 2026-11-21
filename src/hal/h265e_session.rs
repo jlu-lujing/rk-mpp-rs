@@ -223,6 +223,9 @@ pub struct Vepu580H265 {
     /// raises this by picture size; the object path may request a lower level.
     level: u8,
     temporal_mvp: bool,
+    video_format: Option<u8>,
+    video_full_range: bool,
+    force_cu_qp_delta: bool,
     fixed_qp_header_override: Option<u32>,
     /// Emit the GOP SPS variant (long-term reference entry) and let `encode_frame`
     /// produce P pictures.
@@ -399,6 +402,9 @@ impl Vepu580H265 {
             qp,
             level: 120,
             temporal_mvp: false,
+            video_format: None,
+            video_full_range: false,
+            force_cu_qp_delta: false,
             fixed_qp_header_override: None,
             long_term,
             rc_sei: None,
@@ -488,6 +494,7 @@ impl Vepu580H265 {
             picture,
             long_term: self.long_term,
             temporal_mvp: self.temporal_mvp,
+            force_cu_qp_delta: self.force_cu_qp_delta,
             rc: None,
             refresh: None,
             split: self.split,
@@ -644,8 +651,11 @@ impl Vepu580H265 {
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.level = self.level;
         config.tmvp_enable = self.temporal_mvp;
+        config.video_format = self.video_format;
+        config.video_full_range = self.video_full_range;
         config.long_term_refs = self.long_term;
         config.apply_syntax_options(self.syntax);
+        config.force_cu_qp_delta = self.force_cu_qp_delta;
         let headers = if !pending.with_prefix {
             Vec::new()
         } else if !self.sei_enabled {
@@ -966,6 +976,15 @@ impl Vepu580H265 {
 
     pub fn set_temporal_mvp(&mut self, enabled: bool) {
         self.temporal_mvp = enabled;
+    }
+
+    pub fn set_video_signal(&mut self, format: Option<u8>, full_range: bool) {
+        self.video_format = format;
+        self.video_full_range = full_range;
+    }
+
+    pub fn set_force_cu_qp_delta(&mut self, enabled: bool) {
+        self.force_cu_qp_delta = enabled;
     }
 
     pub fn set_pipeline(&mut self, enabled: bool) {
@@ -1586,6 +1605,7 @@ impl Vepu580H265 {
                 picture,
                 long_term: self.long_term,
                 temporal_mvp: self.temporal_mvp,
+                force_cu_qp_delta: self.force_cu_qp_delta,
                 rc,
                 refresh: refresh_job,
                 split: self.split,
@@ -1749,8 +1769,11 @@ impl Vepu580H265 {
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.level = self.level;
         config.tmvp_enable = self.temporal_mvp;
+        config.video_format = self.video_format;
+        config.video_full_range = self.video_full_range;
         config.long_term_refs = self.long_term;
         config.apply_syntax_options(self.syntax);
+        config.force_cu_qp_delta = self.force_cu_qp_delta;
         if self.rc_sei.is_some() {
             config.rc_mode = match self.rc_mode {
                 RcMode::Cbr => crate::codec::h265::encoder::RateControl::Cbr,

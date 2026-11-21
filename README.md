@@ -467,8 +467,14 @@ MPP option trie 现在兼容两种已观测到的 `mpp_opt` ABI：`0x47` 旧路�
 `{name, ctx, index, str_len}`，供三参数 `mpp_trie_add_info` 和静态
 `mpp_opt_parse` 使用。通用 object trie 仍返回当前 packed
 `MppTrieInfo`。`/usr/local/bin/mpi_enc_test` 本身没有 `kmpp_mode` 选项；
-上游 `mpp-develop` 工具会导入完整 `kmpp_obj_*` ABI，当前仍在动态加载阶段
-缺少 `kmpp_obj_get` 等符号，因此不宣称 KMPP 模式已可用。
+上游 `mpp-develop/build/test/mpi_enc_test` 现在可用 Rust 库启动并完成默认
+MPP 编码。兼容层提供 dual-ABI `kmpp_objdef_get/register`、trie VLA/叶子、
+用户态 `KmppObj` 分配、entry 偏移读写、flag 和 init/deinit callback；
+`-kmpp_mode 0` 的 H.264 单帧输出与新版 vendor 完全一致
+（`e18fe707…14bdbd`，3 NAL）。H.265 的 VPS/SPS/PPS 已一致，但固定 QP slice
+仍与新版 vendor 不同，不能宣称 H.265 全流一致。KMPP mode 1/2 由工具自身因
+内核没有 `/dev/vcodec` 或 `/proc/kmpp` 的 `ctrl_cfg` 能力拒绝；buffer/meta
+对象路径也仍未完整实现。
 同一套 scalar/array `get/set/extract/apply` 也工作在
 `MPP_VENC_KCFG_TYPE_ST_CFG` 句柄上，且 `mpp_enc_cfg_deinit()` 会按 vendor
 路径释放该句柄。
