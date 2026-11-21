@@ -715,8 +715,10 @@ pub unsafe extern "C" fn mpp_trie_init(trie: *mut *mut c_void, name: *const c_ch
     if trie.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    let legacy_opt = name.is_null() || (name as usize) < 0x10000;
-    let name = if legacy_opt {
+    let tag = name as usize;
+    let legacy_opt = name.is_null() || tag == 0x47;
+    let current_opt = tag == 0x20;
+    let name = if legacy_opt || current_opt {
         CString::new("standalone-trie").unwrap()
     } else {
         match obj_def_name(name) {
@@ -730,6 +732,8 @@ pub unsafe extern "C" fn mpp_trie_init(trie: *mut *mut c_void, name: *const c_ch
         infos: Vec::new(),
         names: Vec::new(),
         legacy_opt,
+        current_opt,
+        direct_context: false,
     })) as usize;
     tries().lock().unwrap().push(pointer);
     unsafe { trie.write(pointer as *mut c_void) };
@@ -761,17 +765,20 @@ pub unsafe extern "C" fn mpp_trie_add_info(
     }
     let name = if trie.legacy_opt {
         let stored_name = unsafe { std::ptr::read_unaligned(name.cast::<usize>()) };
-        if stored_name <= 0x10000 || stored_name >= (1usize << 56) {
-            return MPP_NOK;
-        }
         context = name.cast_mut().cast::<c_void>();
         context_size = 32;
+        trie.direct_context = true;
         stored_name as *const c_char
     } else {
         name
     };
     if name.is_null() {
         return MPP_NOK;
+    }
+    if trie.current_opt && !context.is_null() {
+        // This mpp_opt_add variant leaves the context_size register undefined.
+        // MppOptInfo is 32 bytes in that ABI.
+        context_size = 32;
     }
     let name = unsafe { CStr::from_ptr(name) }.to_bytes();
     let context_size = usize::try_from(context_size).unwrap_or(0);
@@ -866,7 +873,8 @@ pub unsafe extern "C" fn mpp_trie_get_info(trie: *mut c_void, name: *const c_cha
         return ptr::null_mut();
     };
     let name = unsafe { CStr::from_ptr(name) };
-    trie.infos
+    let result = trie
+        .infos
         .iter()
         .copied()
         .find_map(|pointer| {
@@ -874,14 +882,15 @@ pub unsafe extern "C" fn mpp_trie_get_info(trie: *mut c_void, name: *const c_cha
                 .iter()
                 .find(|(stored, candidate, _)| candidate == &pointer && stored.as_c_str() == name)
                 .map(|(_, _, context)| {
-                    if trie.legacy_opt {
+                    if trie.direct_context {
                         *context as *mut c_void
                     } else {
                         pointer as *mut c_void
                     }
                 })
         })
-        .unwrap_or(ptr::null_mut())
+        .unwrap_or(ptr::null_mut());
+    result
 }
 
 #[no_mangle]
@@ -892,7 +901,7 @@ pub unsafe extern "C" fn mpp_trie_get_info_first(trie: *mut c_void) -> *mut c_vo
     trie.names
         .first()
         .map_or(ptr::null_mut(), |(_, info, context)| {
-            if trie.legacy_opt {
+            if trie.direct_context {
                 *context as *mut c_void
             } else {
                 *info as *mut c_void
@@ -909,7 +918,7 @@ pub unsafe extern "C" fn mpp_trie_get_info_next(
         return ptr::null_mut();
     };
     let Some(index) = trie.names.iter().position(|(_, pointer, context)| {
-        if trie.legacy_opt {
+        if trie.direct_context {
             *context == info as usize
         } else {
             *pointer == info as usize
@@ -920,7 +929,7 @@ pub unsafe extern "C" fn mpp_trie_get_info_next(
     trie.names
         .get(index + 1)
         .map_or(ptr::null_mut(), |(_, pointer, context)| {
-            if trie.legacy_opt {
+            if trie.direct_context {
                 *context as *mut c_void
             } else {
                 *pointer as *mut c_void
@@ -1045,6 +1054,8 @@ struct TrieStub {
     infos: Vec<usize>,
     names: Vec<(CString, usize, usize)>,
     legacy_opt: bool,
+    current_opt: bool,
+    direct_context: bool,
 }
 
 fn env_strings() -> &'static Mutex<Vec<CString>> {
@@ -4668,6 +4679,30 @@ lt_cfg_cnt = 0
             info.cast_const().cast::<c_void>(),
             option.as_mut_ptr().cast()
         );
+    }
+
+    #[test]
+    fn small_named_trie_accepts_the_current_mpp_opt_add_abi() {
+        let mut trie = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { mpp_trie_init(&mut trie, 0x20 as *const c_char) },
+            MPP_OK
+        );
+        let name = c"codec:type";
+        let mut context = [7u64, 8, 9, 10];
+        assert_eq!(
+            unsafe {
+                mpp_trie_add_info(trie, name.as_ptr(), context.as_mut_ptr().cast(), u32::MAX)
+            },
+            MPP_OK
+        );
+        let info = unsafe { mpp_trie_get_info(trie, name.as_ptr()) }.cast::<u8>();
+        assert!(!info.is_null());
+        let header = unsafe { std::ptr::read_unaligned(info.cast::<u32>()) };
+        let context_offset = 4 + (header >> 24) as usize;
+        let stored_context =
+            unsafe { std::slice::from_raw_parts(info.add(context_offset).cast::<u64>(), 4) };
+        assert_eq!(stored_context, context);
     }
 
     #[test]

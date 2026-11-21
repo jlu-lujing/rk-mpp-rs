@@ -4554,7 +4554,7 @@ pipeline uses.
   RK3588 passes 13/13: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
   H.263 CIF/QCIF, AV1, MJPEG and a no-`-n` MPEG-2 EOS case. Each case validates
   the exact NV12 size and byte-compares with vendor C. The regular SDK path is unchanged, and the host
-  gate is `1372 passed / 0 failed / 47 ignored`.
+  gate is `1373 passed / 0 failed / 47 ignored`.
 - **2026-11-22: legacy packet path moves from replay to incremental parsing.**
   The first compatibility implementation replayed the accumulated prefix on
   every 4 KiB packet, which was correct but O(n²). The persistent parser state
@@ -4570,3 +4570,11 @@ pipeline uses.
   100-frame MPEG-2 profile is 50.1 ms task-clock / 75.4M instructions versus
   vendor C 66.5 ms / 80.0M. Perf no longer reports a Rust user-space hotspot;
   remaining samples are file output and process startup.
+- **2026-11-22: MPP option trie accepts both public ABIs.** The 2024-04
+  `mpi_enc_test` uses four-argument `mpp_opt_setup` with tag `0x47` and
+  two-argument `mpp_trie_add_info(info)`, while the newer installed tool uses
+  tag `0x20` and three-argument add with a name/context pair. The compatibility
+  trie now returns direct option context for the former and packed
+  `MppTrieInfo` for the latter. The old official H.264/H.265/MJPEG gate remains
+  fully green; the newer `-kmpp_mode=1` reaches the KMPP object-entry path but
+  still fails there, so full KMPP object compatibility remains open.

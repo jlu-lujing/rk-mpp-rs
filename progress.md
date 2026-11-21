@@ -32,8 +32,14 @@
   task-clock / 75.4M instructions; vendor C is 66.5 ms / 80.0M. The remaining
   perf samples are file writes and process startup, not Rust decode hot spots.
 - The final host `cargo test --all-targets --offline` gate remains
-  `1372 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
+  `1373 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
   legacy VDPU2/VP8 hardware is absent there by platform design.
+- Fixed the MPP option-trie ABI split: old `mpp_opt_setup(..., 0x47, ...)` and
+  two-argument `mpp_trie_add_info(info)` return the option context directly,
+  while the newer `0x20` setup and three-argument add return packed
+  `MppTrieInfo`. The old official encoder gate remains fully green. The newer
+  `mpi_enc_test -kmpp_mode=1` now gets past option parsing but still faults in
+  the KMPP object-entry path.
 
 ## Session: 2026-11-21
 

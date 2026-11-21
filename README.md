@@ -462,6 +462,10 @@ H.264/H.265/MJPEG 编码 FFmpeg 门，复验见 `scripts/board_ffmpeg_rkmpp.sh`�
 真实数值标量/数组往返；RK3588 vendor 与 Rust 可互相读取三种格式。层级 QP 数组、
 自定义 `hw:aq_step_i` 和高级 RC 策略也已从对象配置真实传入编码器。
 vendor 自带的 `mpp_enc_cfg_test` 已可在 Rust standalone 库上通过 **9/9**。
+MPP option trie 现在同时兼容旧四参数 `mpp_opt_setup` / 二参数
+`mpp_trie_add_info` 和新三参数 `mpp_trie_add_info` 布局；新版
+`mpi_enc_test -kmpp_mode=1` 已能越过选项解析，但完整 KMPP object-entry
+仍待实现，因此不宣称 KMPP 模式已可用。
 同一套 scalar/array `get/set/extract/apply` 也工作在
 `MPP_VENC_KCFG_TYPE_ST_CFG` 句柄上，且 `mpp_enc_cfg_deinit()` 会按 vendor
 路径释放该句柄。

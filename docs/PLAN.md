@@ -458,6 +458,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       CPU buffer while interleaving UV. Vendor
       log/cfg/OSAL helpers are supplied by the Rust library, and the same
       standalone library drives `mpi_enc_test`.
+      **KMPP option trie partial:** both legacy and current `mpp_opt_add` ABIs
+      are accepted; full `-kmpp_mode=1` still needs the KMPP object-entry ABI.
       **Encoder partial landed:** vendor `MppEncCfg`, `MppFrame` input and
       `MppPacket` output are bridged into `encoder::Encoder`. RK3588/RK3576 H.265 and
       MJPEG one/six-frame streams are byte-identical; H.264 one/six-frame

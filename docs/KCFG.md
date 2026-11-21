@@ -60,8 +60,16 @@ The handle lifecycle now follows the vendor object rules:
 `MPP_SET_VENC_INIT_KCFG`. Decoder keys therefore remain storage-only for the
 drop-in MPI path rather than being silently fed into `DecoderConfig`.
 
+The option-trie layer now supports both observed `mpp_opt_add` ABIs:
+
+- the older four-argument `mpp_opt_setup` / two-argument `mpp_trie_add_info`
+  form passes an `MppOptInfo *` as the name and returns that context directly;
+- the newer three-argument `mpp_trie_add_info` form passes a name string plus
+  context, with an undefined fourth register in the installed tool, and returns
+  a packed `MppTrieInfo`.
+
 The complete upstream `mpi_enc_test -kmpp_mode=1` still requires the broader
 KMPP object ABI (`kmpp_obj_get`, `kmpp_obj_to_shm`, object definitions, shared
-memory/ioctl helpers). Those symbols are deliberately not faked: an init-kcfg
-probe validates the implemented surface without claiming full KMPP-object
-compatibility.
+memory/ioctl helpers). The current tool now gets through option parsing but
+still faults in the KMPP object-entry path, so full KMPP-object compatibility is
+not claimed.

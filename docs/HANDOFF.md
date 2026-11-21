@@ -380,6 +380,11 @@ kernel-only key，遇到未知 key 返回 `MPP_NOK`；type/coding mismatch 返�
 `librockchip_mpp.so.1` 完成 mapping/mismatch/unknown-key 三组验证。完整
 `mpi_enc_test -kmpp_mode=1` 仍需要更大的 KMPP object ABI，边界与 key 审计
 写在 `docs/KCFG.md`。
+MPP option trie 现在同时兼容旧四参数 `mpp_opt_setup` / 二参数
+`mpp_trie_add_info` 和新三参数 ABI，并分别返回 direct context 或 packed
+`MppTrieInfo`。旧官方 `mpi_enc_test` 的 H.264/H.265/MJPEG 门仍全通过；新版
+`-kmpp_mode=1` 已越过选项解析，但仍在 KMPP object-entry 路径失败，不能把
+trie 修复当成完整 KMPP 兼容。
 
 `vdec_kcfg`/`venc_kcfg` 的句柄生命周期也已按 vendor 收紧：非法 type 返回
 `MPP_ERR_VALUE`，`init_by_name` 只接受 `KmppVdec*Cfg`/`KmppVenc*Cfg`
