@@ -454,7 +454,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       standalone library. The 13-case gate includes VP8 altref, MPEG-4 IPBB,
       H.263 CIF/QCIF, and a no-`-n` EOS path with exact output-size and byte
       checks. Legacy elementary streams use incremental parser state instead
-      of whole-prefix replay. Vendor
+      of whole-prefix replay, and object output writes directly into a normal
+      CPU buffer while interleaving UV. Vendor
       log/cfg/OSAL helpers are supplied by the Rust library, and the same
       standalone library drives `mpi_enc_test`.
       **Encoder partial landed:** vendor `MppEncCfg`, `MppFrame` input and

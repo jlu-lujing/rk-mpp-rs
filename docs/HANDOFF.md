@@ -234,7 +234,11 @@ I-picture gate，普通 SDK 仍保持 whole-stream/EOS 语义。每个 case 都�
 NV12 字节数，不依赖两个工具同时截断的错误输出；另有一格不带 `-n` 覆盖 EOS。
 100/96 帧相对基准中，MPEG-2/MPEG-4/H.263 比上一版 replay 快约
 18–19×/19–23×/53–56×，与 vendor C 的差距为 0.02–0.04 s（DMC performance、
-CPU 4–7；非 80% OPP 绝对性能声明）。
+CPU 4–7；非 80% OPP 绝对性能声明）。compat legacy 帧不再先生成 NV12 Vec
+再复制进 DMA heap，而是保留 I420，object 层直接写入普通 CPU buffer 并在
+同一 pass 交织 UV。100 帧 MPEG-2 的 Rust task-clock/instructions 已降到
+50.1 ms/75.4M，vendor 为 66.5 ms/80.0M；perf 采样只剩文件写出和启动等
+公共开销。
 
 第四个 slice 已把本地 `MppMeta` 扩成真正的 key-value 容器：
 s32/s64/ptr、frame/packet/buffer、`KEY_USER_DATA(S)` 深拷贝、

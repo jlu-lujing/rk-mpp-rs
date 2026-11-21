@@ -751,10 +751,18 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
     if let Some(decoded) = decoded {
         let width = u32::try_from(decoded.width()).unwrap_or(0);
         let height = u32::try_from(decoded.height()).unwrap_or(0);
-        let format = match decoded.format() {
-            sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
-            sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
-            sdk::PixelFormat::I420P10 => return MPP_NOK,
+        let legacy_planar = matches!(
+            context.coding,
+            MPP_VIDEO_CODING_MPEG2 | MPP_VIDEO_CODING_H263 | MPP_VIDEO_CODING_MPEG4
+        ) && decoded.format() == sdk::PixelFormat::I420;
+        let format = if legacy_planar {
+            MPP_FMT_YUV420SP
+        } else {
+            match decoded.format() {
+                sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
+                sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
+                sdk::PixelFormat::I420P10 => return MPP_NOK,
+            }
         };
         let output_info = (width, height, format);
         if context.decoder_info_change_enabled && context.decoder_output_info != Some(output_info) {
@@ -768,13 +776,18 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
             return MPP_OK;
         }
         let frame_object = if context.pending_output_frame.is_null() {
-            let Ok(frame) = (unsafe { objects::frame_from_sdk(decoded) }) else {
+            let frame = if legacy_planar {
+                unsafe { objects::frame_from_sdk_legacy(decoded) }
+            } else {
+                unsafe { objects::frame_from_sdk(decoded) }
+            };
+            let Ok(frame) = frame else {
                 return MPP_NOK;
             };
             frame
         } else {
             let frame = context.pending_output_frame;
-            if unsafe { objects::frame_fill_from_sdk(frame, decoded) }.is_err() {
+            if unsafe { objects::frame_fill_from_sdk(frame, decoded, legacy_planar) }.is_err() {
                 return MPP_NOK;
             }
             context.pending_output_frame = std::ptr::null_mut();

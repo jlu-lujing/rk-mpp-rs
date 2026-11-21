@@ -4563,3 +4563,10 @@ pipeline uses.
   from 8.45–8.46 s to 0.15–0.16 s. Vendor C is 0.10–0.14 s. Outputs are
   byte-identical; the measurement uses DMC performance and CPU 4–7 and is not
   an 80% OPP absolute claim.
+- **2026-11-22: legacy object output reaches CPU parity.** The compat path no
+  longer converts each legacy frame to a new NV12 `Vec` and then copies it into
+  a DMA-heap buffer. Frames stay planar in the SDK; the object layer writes
+  directly into a normal CPU `MppBuffer` and interleaves UV in one pass. The
+  100-frame MPEG-2 profile is 50.1 ms task-clock / 75.4M instructions versus
+  vendor C 66.5 ms / 80.0M. Perf no longer reports a Rust user-space hotspot;
+  remaining samples are file output and process startup.

@@ -26,6 +26,11 @@
   (19–23×), and 0.15–0.16 s for H.263 versus 8.45–8.46 s (53–56×). Vendor C is
   0.10–0.14 s, so the remaining gap is 0.02–0.04 s on these samples. Outputs
   remain byte-identical. These are relative A/B numbers, not an 80% OPP claim.
+- Removed the legacy object path's extra I420→NV12 allocation and DMA-heap
+  mapping. The object layer now writes directly into a normal CPU `MppBuffer`
+  and interleaves UV once. `perf stat` for 100-frame MPEG-2 fell to 50.1 ms
+  task-clock / 75.4M instructions; vendor C is 66.5 ms / 80.0M. The remaining
+  perf samples are file writes and process startup, not Rust decode hot spots.
 - The final host `cargo test --all-targets --offline` gate remains
   `1372 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
   legacy VDPU2/VP8 hardware is absent there by platform design.

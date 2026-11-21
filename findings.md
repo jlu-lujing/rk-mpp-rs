@@ -276,6 +276,16 @@
   2.62–2.73 s with replay. MPEG-4 (96 frames) improves from 2.66–2.71 s to
   0.12–0.14 s, and H.263 (96 frames) from 8.45–8.46 s to 0.15–0.16 s. Vendor C
   is 0.10–0.14 s under the same DMC-performance/CPU-4–7 relative setup.
+- The remaining object-layer copy was larger than the parser. `Frame::from_legacy`
+  converted I420 to a new NV12 `Vec`, then `frame_from_sdk` copied that into a
+  fresh DMA-heap buffer. Keeping the legacy frame planar and writing directly
+  into a normal CPU `MppBuffer` with one UV interleave pass removes both the
+  intermediate allocation and per-frame mmap/madvise/munmap work.
+- After that change, `perf stat` for 100-frame MPEG-2 is 50.1 ms task-clock and
+  75.4M instructions versus vendor C 66.5 ms and 80.0M. A new perf record has
+  no Rust user-space hotspot; the top samples are libc file writes and process
+  startup. The 0.02–0.04 s wall difference is therefore I/O/startup/sync noise,
+  not remaining Rust decode arithmetic.
 - The RK3588 standalone decoder matrix is now 13/13 with exact output-size
   checks: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
   H.263 CIF/QCIF, AV1 and MJPEG all match vendor C byte-for-byte; the extra

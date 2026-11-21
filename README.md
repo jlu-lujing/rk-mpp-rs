@@ -438,7 +438,10 @@ MPEG-2、MPEG-4 IP/B 帧和 H.263 CIF/QCIF。legacy elementary stream 在 MPP
 object 兼容路径按官方 4 KiB packet 增量解析，只消费完整前缀；另有一格不带
 `-n` 的 MPEG-2 EOS 路径。普通 SDK 的 whole-stream/EOS 语义不变。100/96 帧
 相对基准中，新路径比上一版整段重放快约 18–56×，与 vendor C 的差距缩到
-0.02–0.04 s；该结果使用 DMC performance 和 CPU 4–7，不代表 80% OPP 绝对性能。
+0.02–0.04 s。进一步让 object 层直接写普通 CPU buffer 并在一次拷贝中交织
+UV 后，100 帧 MPEG-2 的 Rust task-clock 为 50.1 ms、instructions 75.4M，
+vendor 为 66.5 ms、80.0M；perf 样本只剩文件写出/启动等公共开销。该结果
+使用 DMC performance 和 CPU 4–7，不代表 80% OPP 绝对性能。
 standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 `vfprintf` helper，实际展开 printf 变参；
 未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG

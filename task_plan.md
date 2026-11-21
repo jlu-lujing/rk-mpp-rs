@@ -284,6 +284,8 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
       MPEG-4 IP/B and H.263 CIF/QCIF, with exact output-size and byte checks.
 - [x] Replace whole-prefix legacy replay with incremental parser state and
       benchmark MPEG-2/MPEG-4/H.263 on 100/96-frame streams.
+- [x] Remove the legacy object-path I420→NV12 intermediate allocation and
+      write directly into a normal CPU buffer with one UV interleave pass.
 - [x] Remove the remaining dependency on vendor log/cfg/OSAL helper symbols.
 - [x] Pass unchanged `mpi_enc_test`.
 - **Status:** complete with the standalone library on RK3588.

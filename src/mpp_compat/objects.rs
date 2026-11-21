@@ -1022,6 +1022,21 @@ unsafe fn new_external_buffer(
 }
 
 pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()> {
+    unsafe { frame_from_sdk_mode(decoded, false, false) }
+}
+
+/// Legacy MPP callers expect NV12 even though the SDK keeps legacy output
+/// planar internally. Copy directly into a normal CPU buffer, interleaving UV
+/// once and avoiding a per-frame DMA-heap mapping.
+pub(super) unsafe fn frame_from_sdk_legacy(decoded: sdk::Frame) -> Result<MppFrame, ()> {
+    unsafe { frame_from_sdk_mode(decoded, true, true) }
+}
+
+unsafe fn frame_from_sdk_mode(
+    decoded: sdk::Frame,
+    force_nv12: bool,
+    normal_buffer: bool,
+) -> Result<MppFrame, ()> {
     let width = u32::try_from(decoded.width()).map_err(|_| ())?;
     let height = u32::try_from(decoded.height()).map_err(|_| ())?;
     let pts = decoded.pts();
@@ -1086,10 +1101,15 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
         .ok()
         .and_then(|stride| stride.checked_mul(ver_stride as usize))
         .ok_or(())?;
-    let format = match decoded.format() {
-        sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
-        sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
-        sdk::PixelFormat::I420P10 => return Err(()),
+    let input_format = decoded.format();
+    let format = if force_nv12 {
+        MPP_FMT_YUV420SP
+    } else {
+        match input_format {
+            sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
+            sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
+            sdk::PixelFormat::I420P10 => return Err(()),
+        }
     };
     let buffer_size = luma_size.checked_mul(3).ok_or(())? / 2;
     let mut packed = vec![0u8; buffer_size];
@@ -1106,7 +1126,7 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
         return Err(());
     }
 
-    if format == MPP_FMT_YUV420SP {
+    if format == MPP_FMT_YUV420SP && input_format == sdk::PixelFormat::Nv12 {
         let uv = decoded.plane(1).ok_or(())?;
         if !copy_rows(
             &mut packed[luma_size..],
@@ -1117,6 +1137,22 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
             height.div_ceil(2) as usize,
         ) {
             return Err(());
+        }
+    } else if format == MPP_FMT_YUV420SP {
+        let u = decoded.plane(1).ok_or(())?;
+        let v = decoded.plane(2).ok_or(())?;
+        let chroma_width = width.div_ceil(2) as usize;
+        let chroma_height = height.div_ceil(2) as usize;
+        let destination = &mut packed[luma_size..];
+        for row in 0..chroma_height {
+            let u_row = &u.data[row * u.stride..row * u.stride + chroma_width];
+            let v_row = &v.data[row * v.stride..row * v.stride + chroma_width];
+            let output = &mut destination
+                [row * hor_stride as usize..row * hor_stride as usize + chroma_width * 2];
+            for (pixel, (&u, &v)) in output.chunks_exact_mut(2).zip(u_row.iter().zip(v_row)) {
+                pixel[0] = u;
+                pixel[1] = v;
+            }
         }
     } else {
         let chroma_height = height.div_ceil(2) as usize;
@@ -1144,11 +1180,16 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
         }
     }
 
+    let buffer_type = if normal_buffer {
+        0
+    } else {
+        MPP_BUFFER_TYPE_DMA_HEAP
+    };
     let buffer = match unsafe {
         new_internal_buffer(
             packed.len(),
             Some(&packed),
-            MPP_BUFFER_TYPE_DMA_HEAP,
+            buffer_type,
             std::ptr::null_mut(),
         )
     } {
@@ -1189,6 +1230,7 @@ pub(super) unsafe fn frame_from_sdk(decoded: sdk::Frame) -> Result<MppFrame, ()>
 pub(super) unsafe fn frame_fill_from_sdk(
     target_pointer: MppFrame,
     decoded: sdk::Frame,
+    force_nv12: bool,
 ) -> Result<(), ()> {
     let Some(target) = (unsafe { frame_mut(target_pointer) }) else {
         return Err(());
@@ -1202,17 +1244,17 @@ pub(super) unsafe fn frame_fill_from_sdk(
         .ok()
         .and_then(|stride| stride.checked_mul(packed_ver_stride as usize))
         .ok_or(())?;
-    let (format, buffer_size) = match decoded.format() {
-        sdk::PixelFormat::Nv12 => (
-            MPP_FMT_YUV420SP,
-            packed_luma_size.checked_mul(3).ok_or(())? / 2,
-        ),
-        sdk::PixelFormat::I420 => (
-            MPP_FMT_YUV420P,
-            packed_luma_size.checked_mul(3).ok_or(())? / 2,
-        ),
-        sdk::PixelFormat::I420P10 => return Err(()),
+    let input_format = decoded.format();
+    let format = if force_nv12 {
+        MPP_FMT_YUV420SP
+    } else {
+        match input_format {
+            sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
+            sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
+            sdk::PixelFormat::I420P10 => return Err(()),
+        }
     };
+    let buffer_size = packed_luma_size.checked_mul(3).ok_or(())? / 2;
     if unsafe { frame_matches_decoded_dmabuf(target, &decoded) } {
         let plane = decoded.dmabuf_plane(0).ok_or(())?;
         let hor_stride = usize::try_from(plane.stride()).map_err(|_| ())?;
@@ -1239,15 +1281,14 @@ pub(super) unsafe fn frame_fill_from_sdk(
 
     let mut target_buffer = target.buffer;
     if target_buffer.is_null() {
-        target_buffer = unsafe {
-            new_internal_buffer(
-                buffer_size,
-                None,
-                MPP_BUFFER_TYPE_DMA_HEAP,
-                std::ptr::null_mut(),
-            )
-        }
-        .map_err(|_| ())?;
+        let buffer_type = if force_nv12 {
+            0
+        } else {
+            MPP_BUFFER_TYPE_DMA_HEAP
+        };
+        target_buffer =
+            unsafe { new_internal_buffer(buffer_size, None, buffer_type, std::ptr::null_mut()) }
+                .map_err(|_| ())?;
         target.buffer = target_buffer;
     }
     let Some(buffer) = (unsafe { buffer_mut(target_buffer) }) else {
@@ -1277,7 +1318,7 @@ pub(super) unsafe fn frame_fill_from_sdk(
     ) {
         return Err(());
     }
-    if format == MPP_FMT_YUV420SP {
+    if format == MPP_FMT_YUV420SP && input_format == sdk::PixelFormat::Nv12 {
         let uv = decoded.plane(1).ok_or(())?;
         if !copy_rows(
             &mut destination[packed_luma_size..],
@@ -1288,6 +1329,22 @@ pub(super) unsafe fn frame_fill_from_sdk(
             height.div_ceil(2) as usize,
         ) {
             return Err(());
+        }
+    } else if format == MPP_FMT_YUV420SP {
+        let u = decoded.plane(1).ok_or(())?;
+        let v = decoded.plane(2).ok_or(())?;
+        let chroma_width = width.div_ceil(2) as usize;
+        let chroma_height = height.div_ceil(2) as usize;
+        let destination = &mut destination[packed_luma_size..];
+        for row in 0..chroma_height {
+            let u_row = &u.data[row * u.stride..row * u.stride + chroma_width];
+            let v_row = &v.data[row * v.stride..row * v.stride + chroma_width];
+            let output = &mut destination[row * packed_hor_stride as usize
+                ..row * packed_hor_stride as usize + chroma_width * 2];
+            for (pixel, (&u, &v)) in output.chunks_exact_mut(2).zip(u_row.iter().zip(v_row)) {
+                pixel[0] = u;
+                pixel[1] = v;
+            }
         }
     } else {
         let chroma_height = height.div_ceil(2) as usize;

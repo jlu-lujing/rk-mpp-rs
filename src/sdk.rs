@@ -1012,6 +1012,8 @@ impl Frame {
         }
         let storage = if format == PixelFormat::Nv12 {
             i420_to_nv12(&yuv[..expected], width, height)
+        } else if yuv.len() == expected {
+            yuv
         } else {
             yuv[..expected].to_vec()
         };
@@ -2246,7 +2248,11 @@ impl LegacyBackend {
             picture.height,
             picture.yuv,
             picture.err_info,
-            self.format,
+            if self.packet_decode {
+                PixelFormat::I420
+            } else {
+                self.format
+            },
             self.stream_pts,
             self.stream_dts,
             self.frame_number as i32,
