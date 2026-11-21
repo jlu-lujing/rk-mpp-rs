@@ -45,9 +45,10 @@
   on the Rust library. The userspace KMPP object subset covers dual-ABI
   objdefs, trie entries, allocation, field access, flags and callbacks.
   `-kmpp_mode 0` H.264 is byte-identical to the new vendor stream
-  (`e18fe707…14bdbd`, 3 NAL); H.265 VPS/SPS/PPS match but the fixed-QP slice
-  remains different. KMPP mode 1/2 is rejected because this RK3588 kernel has
-  no `/dev/vcodec` or `/proc/kmpp` ctrl-cfg capability.
+  (`e18fe707…14bdbd`, 3 NAL); H.265 is also byte-identical over four NALs
+  (`119bbf79…caa76d5`) after carrying the new AQ/ROI/MD/QP-bias defaults.
+  KMPP mode 1/2 is rejected because this RK3588 kernel has no `/dev/vcodec`
+  or `/proc/kmpp` ctrl-cfg capability.
 
 ## Session: 2026-11-21
 

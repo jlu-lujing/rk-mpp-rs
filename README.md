@@ -471,10 +471,11 @@ MPP option trie 现在兼容两种已观测到的 `mpp_opt` ABI：`0x47` 旧路�
 MPP 编码。兼容层提供 dual-ABI `kmpp_objdef_get/register`、trie VLA/叶子、
 用户态 `KmppObj` 分配、entry 偏移读写、flag 和 init/deinit callback；
 `-kmpp_mode 0` 的 H.264 单帧输出与新版 vendor 完全一致
-（`e18fe707…14bdbd`，3 NAL）。H.265 的 VPS/SPS/PPS 已一致，但固定 QP slice
-仍与新版 vendor 不同，不能宣称 H.265 全流一致。KMPP mode 1/2 由工具自身因
-内核没有 `/dev/vcodec` 或 `/proc/kmpp` 的 `ctrl_cfg` 能力拒绝；buffer/meta
-对象路径也仍未完整实现。
+（`e18fe707…14bdbd`，3 NAL）。H.265 补齐新版上游固定 QP 下的
+AQ/ROI/MD/QP-bias 默认值后，整条 4 NAL 输出也完全一致
+（`119bbf79…caa76d5`）。KMPP mode 1/2 由工具自身因内核没有
+`/dev/vcodec` 或 `/proc/kmpp` 的 `ctrl_cfg` 能力拒绝；buffer/meta 对象路径
+仍未完整实现。
 同一套 scalar/array `get/set/extract/apply` 也工作在
 `MPP_VENC_KCFG_TYPE_ST_CFG` 句柄上，且 `mpp_enc_cfg_deinit()` 会按 vendor
 路径释放该句柄。

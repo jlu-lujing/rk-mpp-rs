@@ -4588,9 +4588,9 @@ pipeline uses.
   objdef lookup/registration, trie VLA/leaf entries, object allocation,
   entry offsets, field get/set, flags, init/deinit and basic callbacks.
   `-kmpp_mode 0` H.264 is byte-identical to the new vendor C stream
-  (`e18fe707…14bdbd`, 3 NAL). H.265 VPS/SPS/PPS are byte-identical after
-  carrying the new full-range and CU-QP-delta defaults; the fixed-QP slice
-  remains different (vendor 4192 bytes versus Rust 4088), so H.265 full-stream
-  compatibility is still open. The tool rejects KMPP mode 1/2 on this kernel
-  because `/dev/vcodec` and `/proc/kmpp` ctrl-cfg support are absent. Buffer
-  and metadata object paths remain incomplete.
+  (`e18fe707…14bdbd`, 3 NAL). H.265 is also byte-identical after carrying the
+  new full-range, CU-QP-delta, AQ/ROI/MD and QP-bias defaults
+  (`119bbf79…caa76d5`, 4 NAL); its register trace differs only in DMA-buffer
+  address words. The tool rejects KMPP mode 1/2 on this kernel because
+  `/dev/vcodec` and `/proc/kmpp` ctrl-cfg support are absent. Buffer and
+  metadata object paths remain incomplete.

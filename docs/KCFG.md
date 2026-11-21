@@ -79,9 +79,10 @@ access, flags, init/deinit callbacks and the generic entry view.
 
 For `-kmpp_mode 0`, one-frame H.264 is byte-identical to the new vendor stream
 (`e18fe707…14bdbd`, 3 NAL). H.265 carries the new full-range, VUI and
-CU-QP-delta defaults; VPS/SPS/PPS are byte-identical, while the fixed-QP slice
-still differs (vendor 4192 bytes, Rust 4088 bytes). Buffer and metadata object
-paths are currently link-compatible placeholders, not full implementations.
+CU-QP-delta plus AQ/ROI/MD/QP-bias defaults and is byte-identical over all four
+NALs (`119bbf79…caa76d5`). Its register trace differs only in dma-buf address
+words. Buffer and metadata object paths are currently link-compatible
+placeholders, not full implementations.
 
 The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no
 `/dev/vcodec` and no `/proc/kmpp` ctrl-cfg capability. Full KMPP-object

@@ -299,9 +299,10 @@
   path now runs on the Rust library: dual-ABI objdef lookup/register, trie
   VLA/leaf storage, object allocation, field get/set, flags and callbacks are
   implemented. `-kmpp_mode 0` H.264 is byte-identical to the new vendor stream
-  (`e18fe707…14bdbd`, 3 NAL). H.265 VPS/SPS/PPS match after carrying the new
-  full-range/VUI/CU-QP-delta defaults, but its fixed-QP slice is still different
-  (vendor 4192B versus Rust 4088B). The RK3588 kernel exposes neither
+  (`e18fe707…14bdbd`, 3 NAL). H.265 is byte-identical over four NALs after
+  carrying the new full-range/VUI/CU-QP-delta and AQ/ROI/MD/QP-bias defaults
+  (`119bbf79…caa76d5`); the register trace differs only in dma-buf addresses.
+  The RK3588 kernel exposes neither
   `/dev/vcodec` nor `/proc/kmpp` ctrl-cfg support, so the tool rejects KMPP
   modes 1/2 before encoding.
 - The RK3588 standalone decoder matrix is now 13/13 with exact output-size

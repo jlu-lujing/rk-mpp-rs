@@ -848,6 +848,42 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         }
     }
 
+    // The 2026 object-path defaults enable CU-QP-delta even for FIXQP and carry
+    // the AQ/ROI threshold tables the older standalone path left at zero.
+    if job.force_cu_qp_delta {
+        file.set(&regs::H265_REG0198_SRC_FMT_SRC_RANGE, 1)?;
+        file.set(&regs::H265_REG0239_SYNT_SLI0_NUM_REFIDX_L0_ACT, 0)?;
+        for field in [
+            &regs::RC_ROI_QTHD0_QPMIN_AREA0,
+            &regs::RC_ROI_QTHD0_QPMAX_AREA0,
+            &regs::RC_ROI_QTHD0_QPMIN_AREA1,
+            &regs::RC_ROI_QTHD0_QPMAX_AREA1,
+            &regs::RC_ROI_QTHD0_QPMIN_AREA2,
+            &regs::RC_ROI_QTHD1_QPMAX_AREA2,
+            &regs::RC_ROI_QTHD1_QPMIN_AREA3,
+            &regs::RC_ROI_QTHD1_QPMAX_AREA3,
+            &regs::RC_ROI_QTHD1_QPMIN_AREA4,
+            &regs::RC_ROI_QTHD1_QPMAX_AREA4,
+            &regs::RC_ROI_QTHD2_QPMIN_AREA5,
+            &regs::RC_ROI_QTHD2_QPMAX_AREA5,
+            &regs::RC_ROI_QTHD2_QPMIN_AREA6,
+            &regs::RC_ROI_QTHD2_QPMAX_AREA6,
+            &regs::RC_ROI_QTHD2_QPMIN_AREA7,
+            &regs::RC_ROI_QTHD3_QPMAX_AREA7,
+        ] {
+            file.set(field, job.qp)?;
+        }
+        file.set(&regs::RC_ROI_QTHD3_QPMAP_MODE, 1)?;
+        file.rc_klut[1044 - 1024] = 0x1919_140f;
+        file.rc_klut[1046 - 1024] = 0x3f3e_3d3c;
+        file.rc_klut[1047 - 1024] = 0x0302_0100;
+        file.rc_klut[1048 - 1024] = 0x0807_0705;
+        file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD0, 7)?;
+        file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD1, 15)?;
+        file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD2, 25)?;
+        file.set(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I, 171)?;
+    }
+
     Ok(file)
 }
 
@@ -1050,6 +1086,26 @@ mod tests {
             file.get(&regs::H265_REG0238_SYNT_PPS_CU_QP_DLT_DEPTH)
                 .unwrap(),
             0
+        );
+        assert_eq!(file.get(&regs::H265_REG0198_SRC_FMT_SRC_RANGE).unwrap(), 1);
+        assert_eq!(
+            file.get(&regs::H265_REG0239_SYNT_SLI0_NUM_REFIDX_L0_ACT)
+                .unwrap(),
+            0
+        );
+        assert_eq!(file.get(&regs::RC_ROI_QTHD0_QPMIN_AREA0).unwrap(), job.qp);
+        assert_eq!(file.get(&regs::RC_ROI_QTHD3_QPMAP_MODE).unwrap(), 1);
+        assert_eq!(file.rc_klut[1044 - 1024], 0x1919_140f);
+        assert_eq!(file.rc_klut[1046 - 1024], 0x3f3e_3d3c);
+        assert_eq!(file.rc_klut[1047 - 1024], 0x0302_0100);
+        assert_eq!(file.rc_klut[1048 - 1024], 0x0807_0705);
+        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD0).unwrap(), 7);
+        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD1).unwrap(), 15);
+        assert_eq!(file.get(&regs::RC_MD_SAD_THD_MD_SAD_THD2).unwrap(), 25);
+        assert_eq!(
+            file.get(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I)
+                .unwrap(),
+            171
         );
     }
 
