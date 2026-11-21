@@ -44,8 +44,8 @@
   `0→1→2`, and pipeline completion uses blocking `POLL_HW_FINISH`.
 - H.264 60-frame single-GOP remains byte-identical at 320x240 and 1280x720. Eleven
   interleaved 300-frame 720p samples on A76 cores improved synchronous
-  0.854 s / 351 FPS to depth-2 0.335 s / 896 FPS; C FFmpeg is
-  0.358 s / 838 FPS.
+  0.854 s / 351 FPS to depth-2 0.334 s / 898 FPS; C FFmpeg is
+  0.349 s / 860 FPS.
 - Added `board_ffmpeg_h264_pipeline_bench.sh` for C/sync/depth-1/depth-2
   comparison and retained only the byte-identical depth.
 - Extended the session queue to VEPU580 H.265. Its three-surface short-term P
@@ -63,7 +63,7 @@
   `strace -c` mmap calls fell from 544 to 244 while the FFmpeg and C object API
   gates remained byte-exact.
 - The native fixed-QP CLI now drives the deferred hardware queue. H.265 depth 2
-  is the default/byte-exact mode and improves 300-frame 720p from 438 to
+  is the default/byte-exact mode and improves 300-frame 720p from 439 to
   698 FPS. H.264 stays sync by default; explicit depth 2 reaches 888 FPS but
   moves scene-tune feedback one picture later, so it is not stream-identical
   to the default path.

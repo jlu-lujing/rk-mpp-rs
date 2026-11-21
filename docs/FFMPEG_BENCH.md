@@ -151,10 +151,10 @@ path order on every sample (`C -> sync -> depth1 -> depth2`, then reverse).
 
 | path | wall | FPS | CPU | vs C |
 |---|---:|---:|---:|---:|
-| C FFmpeg | 0.358 s | 838.0 | 0.400 s (112%) | baseline |
-| Rust synchronous | 0.854 s | 351.3 | 0.492 s (58%) | -58.1% |
-| Rust depth 1 | 0.629 s | 476.9 | 0.457 s (73%) | -43.1% |
-| Rust depth 2 | **0.335 s** | **895.5** | 0.370 s (110%) | **+6.9%** |
+| C FFmpeg | 0.349 s | 859.6 | 0.388 s (111%) | baseline |
+| Rust synchronous | 0.859 s | 349.2 | 0.501 s (58%) | -59.4% |
+| Rust depth 1 | 0.617 s | 486.2 | 0.470 s (76%) | -43.4% |
+| Rust depth 2 | **0.334 s** | **898.2** | 0.388 s (116%) | **+4.5%** |
 
 ## 2026-11-21 VEPU580 H.265 deferred queue
 
@@ -217,7 +217,7 @@ read/write lazily establish the mapping and preserve byte contents.
   substantially less CPU.
 - Native Rust has no FFmpeg demux/mux/frontend overhead. Decode is 2.4-2.6x
   faster than C FFmpeg while using roughly one-third of the CPU.
-- H.264 encode is about 7% faster than vendor C FFmpeg through the depth-2
+- H.264 encode is about 4.5% faster than vendor C FFmpeg through the depth-2
   session queue. H.265 depth 2 raises synchronous throughput by about 101% to
   676 FPS, matching C wall time while using less CPU and remaining byte-exact.
 - Encoded streams were not treated as byte-identical across all three APIs.

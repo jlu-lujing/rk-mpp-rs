@@ -692,7 +692,7 @@ H.265 level/temporal-MVP/GOP-boundary 状态，以及 H.264 在 FFmpeg 未提供
 逐字节一致。VEPU580 H.264 固定 QP 兼容路径现在默认 depth-2 deferred queue；
 每个 job 独立持有 batch/STATUS/output，三槽 recon 按 C 的 `0→1→2` 轮转，
 pipeline 完成必须使用 blocking `POLL_HW_FINISH`。300 帧 720p 为
-0.335 s / 896 FPS，C FFmpeg 为 0.358 s / 838 FPS，输出保持逐字节一致。
+0.334 s / 898 FPS，C FFmpeg 为 0.349 s / 860 FPS，输出保持逐字节一致。
 H.265 也已接入同一 queue contract，并补上 C `task_cnt == 2` 路径的
 `reg0193_dual_core` 跨任务握手。此前 depth 2 的 912 FPS 来自未同步双核路径，
 长 GOP 会在约第 41 帧分叉；现在 `txid/rxid/txe/rxe` 与 offset 9 按 C 的
@@ -705,8 +705,8 @@ H.265 也已接入同一 queue contract，并补上 C `task_cnt == 2` 路径的
 映射并通过 C object gate。
 原生 fixed-QP 文件编码也接入了 deferred queue。H.265 `h265-gop` 在普通
 GOP 下默认 depth 2，300 帧 720p 为 0.430 s / 698 FPS，C FFmpeg 为
-0.452 s / 664 FPS，320x240/1280x720 与同步路径逐字节。H.264 默认保持
-同步；显式 depth 2 达到 0.338 s / 888 FPS，但 scene-tune 统计晚一帧，
+0.454 s / 661 FPS，320x240/1280x720 与同步路径逐字节。H.264 默认保持
+同步；显式 depth 2 达到 0.331 s / 906 FPS，但 scene-tune 统计晚一帧，
 输出未经多 GOP 同步逐字节断言，因此只作为性能 opt-in。
 重复测试同时发现 120 帧/GOP60 跨第二个 IDR 后，C FFmpeg 会在不同进程产生
 多个码流且解码像素不同；相同参数的 60 帧在 8 次冷启动重复中全部一致，因此

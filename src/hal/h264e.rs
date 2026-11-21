@@ -723,7 +723,7 @@ pub struct Vepu580H264 {
     svc: MppService,
     config: EncoderConfig,
     input: DmaBuf,
-    outputs: [DmaBuf; 2],
+    outputs: [DmaBuf; 3],
     pipeline: bool,
     pipeline_depth: usize,
     pipeline_output: usize,
@@ -814,6 +814,7 @@ struct PendingH264Job {
     hw_status: Vec<u32>,
     output_slot: usize,
     state: FrameState,
+    tune_applied: bool,
     include_annex_b: bool,
 }
 
@@ -889,6 +890,8 @@ impl Vepu580H264 {
                 .map_err(|e| format!("allocate H.264 output 0: {e}"))?,
             DmaBuf::alloc("system-uncached", output_size, false)
                 .map_err(|e| format!("allocate H.264 output 1: {e}"))?,
+            DmaBuf::alloc("system-uncached", output_size, false)
+                .map_err(|e| format!("allocate H.264 output 2: {e}"))?,
         ];
         Ok(Self {
             svc: MppService::open(Client::RkvEnc as u32)
@@ -1423,7 +1426,7 @@ impl Vepu580H264 {
         include_annex_b: bool,
     ) -> Result<PendingH264Job, String> {
         let output_slot = self.pipeline_output;
-        self.pipeline_output ^= 1;
+        self.pipeline_output = (self.pipeline_output + 1) % self.outputs.len();
         let output_fd = self.outputs[output_slot].fd();
         let output_capacity = logical_output_size(&self.config)?;
         let job = Job {
@@ -1503,11 +1506,12 @@ impl Vepu580H264 {
             hw_status,
             output_slot,
             state,
+            tune_applied: false,
             include_annex_b,
         })
     }
 
-    fn finish_pipeline_job(&mut self, pending: PendingH264Job) -> Result<EncodedFrame, String> {
+    fn wait_pipeline_job(&mut self, pending: &PendingH264Job) -> Result<(), String> {
         if let Err(error) = self.svc.poll_hw_finish_blocking() {
             let recovery = self.svc.restart_after_hardware_error();
             return Err(format!(
@@ -1529,6 +1533,34 @@ impl Vepu580H264 {
                 pending.hw_status[0]
             ));
         }
+        Ok(())
+    }
+
+    fn apply_pipeline_tune(&mut self, pending: &mut PendingH264Job) -> Statistics {
+        let statistics = Statistics::from_words(&pending.status);
+        if !pending.tune_applied {
+            dump_statistics(&pending.state, &pending.status);
+            if self.defer_tune {
+                if let Some(previous) = self.pending_tune.replace(statistics.clone()) {
+                    self.tune.update(&previous);
+                }
+            } else {
+                self.tune.update(&statistics);
+            }
+            pending.tune_applied = true;
+        }
+        statistics
+    }
+
+    fn finish_pipeline_job(&mut self, pending: PendingH264Job) -> Result<EncodedFrame, String> {
+        self.wait_pipeline_job(&pending)?;
+        self.assemble_pipeline_job(pending)
+    }
+
+    fn assemble_pipeline_job(
+        &mut self,
+        mut pending: PendingH264Job,
+    ) -> Result<EncodedFrame, String> {
         let output = &self.outputs[pending.output_slot];
         let payload_len = pending.status[0] as usize;
         if payload_len < 8 || payload_len > output.len() {
@@ -1549,15 +1581,7 @@ impl Vepu580H264 {
             )?;
         }
 
-        let statistics = Statistics::from_words(&pending.status);
-        dump_statistics(&pending.state, &pending.status);
-        if self.defer_tune {
-            if let Some(previous) = self.pending_tune.replace(statistics.clone()) {
-                self.tune.update(&previous);
-            }
-        } else {
-            self.tune.update(&statistics);
-        }
+        let statistics = self.apply_pipeline_tune(&mut pending);
         let headers = if pending.state.is_idr {
             let mut out = if !self.hdr_added || self.headers_each_idr {
                 self.hdr_added = true;
@@ -1662,10 +1686,14 @@ impl Vepu580H264 {
             });
 
         let mut completed = Vec::new();
-        if self.pending_jobs.len() >= self.pipeline_depth {
-            let pending = self.pending_jobs.pop_front().unwrap();
-            completed.push(self.finish_pipeline_job(pending)?);
-        }
+        let ready = if self.pending_jobs.len() >= self.pipeline_depth {
+            let mut pending = self.pending_jobs.pop_front().unwrap();
+            self.wait_pipeline_job(&pending)?;
+            self.apply_pipeline_tune(&mut pending);
+            Some(pending)
+        } else {
+            None
+        };
         let mut pending =
             self.prepare_pipeline_job(state, self.slot, reference_slot, input_fd, false, false)?;
         self.svc
@@ -1675,6 +1703,9 @@ impl Vepu580H264 {
         self.state = state;
         self.last_non_reference = false;
         self.last_rate_control = None;
+        if let Some(pending) = ready {
+            completed.push(self.assemble_pipeline_job(pending)?);
+        }
         Ok(completed)
     }
 

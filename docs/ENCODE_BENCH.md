@@ -119,6 +119,11 @@ FFmpeg compatibility path. The input reader owns one extra DMA surface, two
 completed jobs may remain below the session, and packet output is released
 only after the corresponding input surface has completed.
 
+H.264 uses a third packet output surface so it can submit the next hardware job
+after waiting for the oldest one but before copying that completed packet. The
+same experiment regressed H.265 because its remaining limit is not output
+assembly, so H.265 stays on two packet buffers.
+
 H.265 fixed-QP file encoding enables depth 2 by default when the session has no
 refresh, low-delay split or tiles. H.264 remains synchronous by default because
 depth 1 adds no useful overlap while depth 2 legitimately exposes scene-tune
@@ -135,14 +140,14 @@ Eleven interleaved 300-frame 1280x720 samples, pinned to CPUs 4-7:
 
 | path | wall | FPS | CPU user+sys |
 |---|---:|---:|---:|
-| H.264 C FFmpeg | 0.350 s | 857 | 0.395 s |
-| H.264 Rust sync/default | 0.642 s | 467 | 0.279 s |
-| H.264 Rust depth 1 | 0.625 s | 480 | 0.281 s |
-| H.264 Rust depth 2, explicit | **0.338 s** | **888** | **0.212 s** |
-| H.265 C FFmpeg | 0.452 s | 664 | 0.448 s |
-| H.265 Rust sync | 0.691 s | 434 | 0.292 s |
-| H.265 Rust depth 1 | 0.678 s | 443 | 0.293 s |
-| H.265 Rust depth 2/default | **0.430 s** | **698** | **0.215 s** |
+| H.264 C FFmpeg | 0.362 s | 829 | 0.412 s |
+| H.264 Rust sync/default | 0.644 s | 466 | 0.276 s |
+| H.264 Rust depth 1 | 0.616 s | 487 | 0.288 s |
+| H.264 Rust depth 2, explicit | **0.331 s** | **906** | **0.209 s** |
+| H.265 C FFmpeg | 0.454 s | 661 | 0.419 s |
+| H.265 Rust sync | 0.683 s | 439 | 0.285 s |
+| H.265 Rust depth 1 | 0.677 s | 443 | 0.293 s |
+| H.265 Rust depth 2/default | **0.430 s** | **698** | **0.214 s** |
 
 The script `scripts/board_native_encoder_pipeline_bench.sh` also checks streams:
 H.264 depth 1 and H.265 depth 1/2 are byte-identical to sync for all 300

@@ -339,8 +339,8 @@
   queued. The non-blocking poll can return after one task while later queued
   STATUS destinations have not yet been filled, which changed the final
   packets even though all named registers matched.
-- The depth-2 H.264 FFmpeg path reaches 896 FPS on 300-frame 720p versus C
-  FFmpeg at 838 FPS, while 60-frame single-GOP output remains byte-identical.
+- The depth-2 H.264 FFmpeg path reaches 898 FPS on 300-frame 720p versus C
+  FFmpeg at 860 FPS, while 60-frame single-GOP output remains byte-identical.
   Depth 1 improves the synchronous 351 FPS path to 477 FPS but is still below
   C; depth 2 is therefore the default compatibility path.
 - H.265 FFmpeg uses a short-term GOP, unlike the standalone long-term IDR
@@ -364,10 +364,10 @@
   baseline. H.265 depth 2 is now the compatibility default.
 - The native file CLI now feeds the deferred session queue directly. H.265
   fixed-QP defaults to depth 2 when refresh/tiles/low-delay split are absent;
-  300-frame 720p rises from 434 to 698 FPS and remains byte-identical to sync
+  300-frame 720p rises from 439 to 698 FPS and remains byte-identical to sync
   at 320x240 and 1280x720.
 - H.264 native depth 1 is byte-exact but does not overlap enough work to beat
-  the existing input-copy pipeline. Depth 2 reaches 888 FPS versus C's 857,
+  the existing input-copy pipeline. Depth 2 reaches 906 FPS versus C's 829,
   but scene-tune observes STATUS one picture later, so it is opt-in rather than
   the default. The explicit high-throughput stream decodes all 300 frames but
   is not asserted byte-identical to sync across multiple GOPs.
