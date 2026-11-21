@@ -391,8 +391,10 @@ H.264/H.265/MJPEG 门仍全通过。`/usr/local/bin/mpi_enc_test` 不含
 MPP 路径：`-kmpp_mode 0` H.264 单帧 3 NAL 与新版 vendor 完全一致
 （`e18fe707…14bdbd`）。H.265 在补齐 full-range、CU-QP-delta、AQ/ROI/MD
 和 QP-bias 默认值后，4 NAL 也与新版 vendor 完全一致
-（`119bbf79…caa76d5`）；ioctl trace 仅剩 dma-buf 地址字不同。buffer/meta
-object 路径仍是兼容占位，完整 KMPP object ABI 尚未闭合。
+（`119bbf79…caa76d5`）；ioctl trace 仅剩 dma-buf 地址字不同。60 帧单 GOP
+的 H.264 62 NAL（`6a8cb407…3e3544`）和 H.265 63 NAL
+（`7eed6267…138b42`）也完全一致。buffer/meta object 路径仍是兼容占位，
+完整 KMPP object ABI 尚未闭合。
 
 `vdec_kcfg`/`venc_kcfg` 的句柄生命周期也已按 vendor 收紧：非法 type 返回
 `MPP_ERR_VALUE`，`init_by_name` 只接受 `KmppVdec*Cfg`/`KmppVenc*Cfg`

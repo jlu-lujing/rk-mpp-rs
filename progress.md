@@ -32,7 +32,7 @@
   task-clock / 75.4M instructions; vendor C is 66.5 ms / 80.0M. The remaining
   perf samples are file writes and process startup, not Rust decode hot spots.
 - The final host `cargo test --all-targets --offline` gate is
-  `1377 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
+  `1378 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
   legacy VDPU2/VP8 hardware is absent there by platform design.
 - Fixed the MPP option-trie ABI split: `mpp_opt_setup(..., 0x47, ...)` and
   two-argument `mpp_trie_add_info(info)` return the option context directly,
@@ -47,6 +47,8 @@
   `-kmpp_mode 0` H.264 is byte-identical to the new vendor stream
   (`e18fe707…14bdbd`, 3 NAL); H.265 is also byte-identical over four NALs
   (`119bbf79…caa76d5`) after carrying the new AQ/ROI/MD/QP-bias defaults.
+  A 60-frame GOP matches at 62 H.264 NALs (`6a8cb407…3e3544`) and 63 H.265
+  NALs (`7eed6267…138b42`).
   KMPP mode 1/2 is rejected because this RK3588 kernel has no `/dev/vcodec`
   or `/proc/kmpp` ctrl-cfg capability.
 

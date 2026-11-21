@@ -770,6 +770,10 @@ impl EncoderConfig {
         self.h264_syntax
     }
 
+    pub const fn h264_full_range(self) -> Option<bool> {
+        self.h264_full_range
+    }
+
     pub const fn h265_syntax(self) -> H265SyntaxOptions {
         self.h265_syntax
     }

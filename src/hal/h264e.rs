@@ -3055,6 +3055,37 @@ pub fn build_registers(job: &Job<'_>) -> Result<RegisterFile, String> {
     )?;
     file.apply_tune(job)?;
     file.apply_pass1(job)?;
+    if config.video_full_range {
+        file.set(&vepu580_regs::BASE_SRC_FMT_SRC_RANGE, 1)?;
+        for field in [
+            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA0,
+            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMAX_AREA0,
+            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA1,
+            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMAX_AREA1,
+            &vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA2,
+            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA2,
+            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMIN_AREA3,
+            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA3,
+            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMIN_AREA4,
+            &vepu580_regs::RCKLUT_ROI_QTHD1_QPMAX_AREA4,
+            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA5,
+            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMAX_AREA5,
+            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA6,
+            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMAX_AREA6,
+            &vepu580_regs::RCKLUT_ROI_QTHD2_QPMIN_AREA7,
+            &vepu580_regs::RCKLUT_ROI_QTHD3_QPMAX_AREA7,
+        ] {
+            file.set(field, u32::from(config.qp_init))?;
+        }
+        file.set(&vepu580_regs::RCKLUT_ROI_QTHD3_QPMAP_MODE, 1)?;
+        file.rc_klut[1044 - 1024] = 0x1919_140f;
+        if !job.state.is_idr {
+            file.rc_klut[1046 - 1024] = 0x3f3f_3e3c;
+            file.rc_klut[1047 - 1024] = 0x0403_0200;
+            file.rc_klut[1048 - 1024] = 0x0a09_0806;
+        }
+        file.param[1484 - 1472] = 0x0005_56ab;
+    }
     Ok(file)
 }
 
@@ -4494,6 +4525,42 @@ mod tests {
         assert_eq!(template::RDO_WORDS.len(), 122);
         assert_eq!(template::SCL_WORDS.len(), 679);
         assert_eq!(template::OSD_WORDS.len(), 288);
+    }
+
+    #[test]
+    fn upstream_object_defaults_match_the_new_fixed_qp_trace() {
+        let mut config = EncoderConfig::new(320, 240);
+        config.profile = 100;
+        config.qp_init = 26;
+        config.video_format = Some(5);
+        config.video_full_range = true;
+        let idr = registers_at(&config, FrameState::default());
+        assert_eq!(idr.get(&vepu580_regs::BASE_SRC_FMT_SRC_RANGE).unwrap(), 1);
+        assert_eq!(
+            idr.get(&vepu580_regs::RCKLUT_ROI_QTHD0_QPMIN_AREA0)
+                .unwrap(),
+            26
+        );
+        assert_eq!(
+            idr.get(&vepu580_regs::RCKLUT_ROI_QTHD3_QPMAP_MODE).unwrap(),
+            1
+        );
+        assert_eq!(idr.rc_klut[1044 - 1024], 0x1919_140f);
+        assert_eq!(idr.param[1484 - 1472], 0x0005_56ab);
+
+        let p = registers_at(
+            &config,
+            FrameState {
+                index: 1,
+                is_idr: false,
+                frame_num: 1,
+                poc: 2,
+                ..FrameState::default()
+            },
+        );
+        assert_eq!(p.rc_klut[1046 - 1024], 0x3f3f_3e3c);
+        assert_eq!(p.rc_klut[1047 - 1024], 0x0403_0200);
+        assert_eq!(p.rc_klut[1048 - 1024], 0x0a09_0806);
     }
 
     /// Spot values of the recorded image, which is now re-generated from a run of

@@ -81,7 +81,8 @@ For `-kmpp_mode 0`, one-frame H.264 is byte-identical to the new vendor stream
 (`e18fe707…14bdbd`, 3 NAL). H.265 carries the new full-range, VUI and
 CU-QP-delta plus AQ/ROI/MD/QP-bias defaults and is byte-identical over all four
 NALs (`119bbf79…caa76d5`). Its register trace differs only in dma-buf address
-words. Buffer and metadata object paths are currently link-compatible
+words. A 60-frame GOP is also exact: H.264 is 62 NAL (`6a8cb407…3e3544`) and
+H.265 is 63 NAL (`7eed6267…138b42`). Buffer and metadata object paths are currently link-compatible
 placeholders, not full implementations.
 
 The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no

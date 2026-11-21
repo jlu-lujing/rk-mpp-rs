@@ -302,6 +302,8 @@
   (`e18fe707…14bdbd`, 3 NAL). H.265 is byte-identical over four NALs after
   carrying the new full-range/VUI/CU-QP-delta and AQ/ROI/MD/QP-bias defaults
   (`119bbf79…caa76d5`); the register trace differs only in dma-buf addresses.
+  A 60-frame GOP is also exact: H.264 62 NAL (`6a8cb407…3e3544`) and H.265
+  63 NAL (`7eed6267…138b42`).
   The RK3588 kernel exposes neither
   `/dev/vcodec` nor `/proc/kmpp` ctrl-cfg support, so the tool rejects KMPP
   modes 1/2 before encoding.
