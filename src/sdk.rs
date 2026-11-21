@@ -1346,7 +1346,6 @@ struct LegacyBackend {
     stream_dts: i64,
     frame_number: u32,
     packet_decode: bool,
-    emitted_frames: usize,
     eos: bool,
 }
 
@@ -1361,6 +1360,39 @@ struct LegacyPicture {
     height: usize,
     yuv: Vec<u8>,
     err_info: u32,
+}
+
+impl From<m2v::decoder::Picture> for LegacyPicture {
+    fn from(picture: m2v::decoder::Picture) -> Self {
+        Self {
+            width: picture.width,
+            height: picture.height,
+            yuv: picture.yuv,
+            err_info: picture.err_info,
+        }
+    }
+}
+
+impl From<mpg4::decoder::Picture> for LegacyPicture {
+    fn from(picture: mpg4::decoder::Picture) -> Self {
+        Self {
+            width: picture.width,
+            height: picture.height,
+            yuv: picture.yuv,
+            err_info: picture.err_info,
+        }
+    }
+}
+
+impl From<h263::decoder::Picture> for LegacyPicture {
+    fn from(picture: h263::decoder::Picture) -> Self {
+        Self {
+            width: picture.width,
+            height: picture.height,
+            yuv: picture.yuv,
+            err_info: picture.err_info,
+        }
+    }
 }
 
 enum Av1Decoder {
@@ -2141,7 +2173,6 @@ impl LegacyBackend {
             stream_dts: 0,
             frame_number: 0,
             packet_decode: false,
-            emitted_frames: 0,
             eos: false,
         })
     }
@@ -2162,75 +2193,39 @@ impl LegacyBackend {
         if !eos && !self.packet_decode {
             return Ok(0);
         }
-        if self.packet_decode {
-            let decoded = self.decode_snapshot(output, eos)?;
-            if eos {
-                self.input.clear();
-                self.eos = true;
-            }
-            Ok(decoded)
-        } else {
-            let decoded = self.decode_buffered(output)?;
-            self.eos = true;
-            Ok(decoded)
+        let (pictures, consumed) = self
+            .decoder
+            .decode_incremental(&self.input, eos)
+            .map_err(classify_video_error)?;
+        if consumed != 0 {
+            self.input.drain(..consumed);
         }
+        let decoded = pictures.len();
+        for picture in pictures {
+            self.push_picture(picture, output)?;
+        }
+        if eos {
+            self.input.clear();
+            self.eos = true;
+        }
+        Ok(decoded)
     }
 
     fn flush(&mut self, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
         if self.eos && self.input.is_empty() {
             return Ok(0);
         }
-        let decoded = if self.packet_decode {
-            self.decode_snapshot(output, true)?
-        } else {
-            self.decode_buffered(output)?
-        };
+        let (pictures, consumed) = self
+            .decoder
+            .decode_incremental(&self.input, true)
+            .map_err(classify_video_error)?;
+        debug_assert_eq!(consumed, self.input.len());
         self.input.clear();
-        self.eos = true;
-        Ok(decoded)
-    }
-
-    fn decode_snapshot(&mut self, output: &mut VecDeque<Frame>, eos: bool) -> Result<usize, Error> {
-        if self.input.is_empty() {
-            return Ok(0);
-        }
-        let pictures = match LegacyDecoder::new(self.codec)?.decode(&self.input) {
-            Ok(pictures) => pictures,
-            // A fixed-size MPP packet usually ends in the middle of a picture.
-            // Replaying the accumulated prefix is allowed to fail until the
-            // next packet completes it; only the final packet must succeed.
-            Err(_) if !eos => return Ok(0),
-            Err(error) => return Err(classify_video_error(error)),
-        };
-        let valid = if eos {
-            pictures.len()
-        } else {
-            pictures
-                .iter()
-                .position(|picture| picture.err_info != 0)
-                .unwrap_or(pictures.len())
-        };
-        if valid < self.emitted_frames {
-            return Ok(0);
-        }
-        let decoded = valid - self.emitted_frames;
-        for picture in pictures.into_iter().take(valid).skip(self.emitted_frames) {
-            self.push_picture(picture, output)?;
-        }
-        self.emitted_frames = valid;
-        Ok(decoded)
-    }
-
-    fn decode_buffered(&mut self, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
-        if self.input.is_empty() {
-            return Ok(0);
-        }
-        let data = std::mem::take(&mut self.input);
-        let pictures = self.decoder.decode(&data).map_err(classify_video_error)?;
         let decoded = pictures.len();
         for picture in pictures {
             self.push_picture(picture, output)?;
         }
+        self.eos = true;
         Ok(decoded)
     }
 
@@ -2279,41 +2274,42 @@ impl LegacyDecoder {
         }
     }
 
-    fn decode(&mut self, data: &[u8]) -> Result<Vec<LegacyPicture>, String> {
+    fn decode_incremental(
+        &mut self,
+        data: &[u8],
+        eos: bool,
+    ) -> Result<(Vec<LegacyPicture>, usize), String> {
         match self {
-            Self::Mpeg2(decoder) => decoder.decode(data).map(|pictures| {
-                pictures
-                    .into_iter()
-                    .map(|picture| LegacyPicture {
-                        width: picture.width,
-                        height: picture.height,
-                        yuv: picture.yuv,
-                        err_info: picture.err_info,
+            Self::Mpeg2(decoder) => {
+                decoder
+                    .decode_incremental(data, eos)
+                    .map(|(pictures, consumed)| {
+                        (
+                            pictures.into_iter().map(LegacyPicture::from).collect(),
+                            consumed,
+                        )
                     })
-                    .collect()
-            }),
-            Self::Mpeg4(decoder) => decoder.decode(data).map(|pictures| {
-                pictures
-                    .into_iter()
-                    .map(|picture| LegacyPicture {
-                        width: picture.width,
-                        height: picture.height,
-                        yuv: picture.yuv,
-                        err_info: picture.err_info,
+            }
+            Self::Mpeg4(decoder) => {
+                decoder
+                    .decode_incremental(data, eos)
+                    .map(|(pictures, consumed)| {
+                        (
+                            pictures.into_iter().map(LegacyPicture::from).collect(),
+                            consumed,
+                        )
                     })
-                    .collect()
-            }),
-            Self::H263(decoder) => decoder.decode(data).map(|pictures| {
-                pictures
-                    .into_iter()
-                    .map(|picture| LegacyPicture {
-                        width: picture.width,
-                        height: picture.height,
-                        yuv: picture.yuv,
-                        err_info: picture.err_info,
+            }
+            Self::H263(decoder) => {
+                decoder
+                    .decode_incremental(data, eos)
+                    .map(|(pictures, consumed)| {
+                        (
+                            pictures.into_iter().map(LegacyPicture::from).collect(),
+                            consumed,
+                        )
                     })
-                    .collect()
-            }),
+            }
         }
     }
 }

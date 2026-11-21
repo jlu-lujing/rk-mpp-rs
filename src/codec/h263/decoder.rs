@@ -80,6 +80,7 @@ pub struct Decoder {
     slots: Vec<Option<Slot>>,
     stream: Option<DmaBuf>,
     dpb: Dpb,
+    found_i_vop: bool,
     /// `sw55` of the most recent job.
     pub last_irq: u32,
 }
@@ -91,6 +92,7 @@ impl Decoder {
             slots: Vec::new(),
             stream: None,
             dpb: Dpb::new(),
+            found_i_vop: false,
             last_irq: 0,
         })
     }
@@ -105,6 +107,27 @@ impl Decoder {
             Ok(())
         })?;
         Ok(output)
+    }
+
+    /// Decode complete pictures while retaining the final picture start until
+    /// the next start code proves its end.
+    pub fn decode_incremental(
+        &mut self,
+        data: &[u8],
+        eos: bool,
+    ) -> Result<(Vec<Picture>, usize), String> {
+        let units = parser::access_units(data);
+        let consumed = if eos {
+            data.len()
+        } else {
+            units.last().map_or(0, |unit| unit.0)
+        };
+        let prefix = &data[..consumed];
+        let mut output = Vec::new();
+        for picture in parser::parse_with_state(prefix, &mut self.found_i_vop) {
+            output.push(self.decode_picture(&picture, prefix)?);
+        }
+        Ok((output, consumed))
     }
 
     /// Decode a whole stream, handing each picture to `emit` as soon as it

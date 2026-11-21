@@ -785,6 +785,15 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
                 objects::frame_set_input_packet(frame_object, context.pending_input_packet)
             };
         }
+        if context.eos_submitted
+            && matches!(
+                context.coding,
+                MPP_VIDEO_CODING_MPEG2 | MPP_VIDEO_CODING_H263 | MPP_VIDEO_CODING_MPEG4
+            )
+            && decoder.is_finished()
+        {
+            let _ = unsafe { objects::mpp_frame_set_eos(frame_object, 1) };
+        }
         unsafe { *frame = frame_object };
         return MPP_OK;
     }

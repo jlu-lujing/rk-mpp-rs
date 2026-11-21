@@ -228,10 +228,13 @@ advanced MJPEG 不再报告 frame identity mismatch。vendor log/cfg/OSAL
 现在都能只加载 standalone `librk_mpp_rs.so` 运行。
 RK3588 的 standalone 解码门现已扩到 13/13：除 H.264/H.265/VP9/AV1/MJPEG
 外，还覆盖 VP8 IP/altref、MPEG-2、MPEG-4 IP/IPBB、H.263 CIF/QCIF。
-官方工具按 4 KiB packet 喂 elementary stream，因此 MPP object 兼容路径会
-重放当前累积流并只发布新增的无错误帧；不完整尾帧会等到后续 packet 再发。
-普通 SDK 仍保持 whole-stream/EOS 语义。每个 case 都校验精确 NV12 字节数，
-不依赖两个工具同时截断的错误输出；另有一格不带 `-n`，专门覆盖 EOS frame。
+官方工具按 4 KiB packet 喂 elementary stream，MPP object 兼容路径用持久
+parser state 增量消费完整 picture/VOP；MPEG-4 保留 VOL/timing，H.263 保留
+I-picture gate，普通 SDK 仍保持 whole-stream/EOS 语义。每个 case 都校验精确
+NV12 字节数，不依赖两个工具同时截断的错误输出；另有一格不带 `-n` 覆盖 EOS。
+100/96 帧相对基准中，MPEG-2/MPEG-4/H.263 比上一版 replay 快约
+18–19×/19–23×/53–56×，与 vendor C 的差距为 0.02–0.04 s（DMC performance、
+CPU 4–7；非 80% OPP 绝对性能声明）。
 
 第四个 slice 已把本地 `MppMeta` 扩成真正的 key-value 容器：
 s32/s64/ptr、frame/packet/buffer、`KEY_USER_DATA(S)` 深拷贝、

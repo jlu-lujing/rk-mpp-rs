@@ -67,6 +67,7 @@ pub struct Decoder {
     slots: Vec<Option<Slot>>,
     stream: Option<DmaBuf>,
     dpb: Dpb,
+    parser: parser::StreamState,
     /// `sw55` of the most recent job.
     pub last_irq: u32,
 }
@@ -78,6 +79,7 @@ impl Decoder {
             slots: Vec::new(),
             stream: None,
             dpb: Dpb::new(),
+            parser: parser::StreamState::new(),
             last_irq: 0,
         })
     }
@@ -91,6 +93,36 @@ impl Decoder {
             Ok(())
         })?;
         Ok(output)
+    }
+
+    /// Decode complete VOPs while retaining the unfinished tail. Parser state
+    /// carries the VOL, timing and DivX custom-version fields across packets.
+    pub fn decode_incremental(
+        &mut self,
+        data: &[u8],
+        eos: bool,
+    ) -> Result<(Vec<Picture>, usize), String> {
+        let consumed = if eos {
+            data.len()
+        } else {
+            parser::start_codes(data)
+                .into_iter()
+                .rev()
+                .find_map(|(start, code)| (code == parser::CODE_VOP).then_some(start))
+                .unwrap_or(0)
+        };
+        let mut output = Vec::new();
+        for item in parser::parse_with_state(&data[..consumed], &mut self.parser)
+            .map_err(|error| error.to_string())?
+        {
+            if let Item::Picture(picture) = item {
+                output.extend(self.decode_picture(&picture, &data[..consumed])?);
+            }
+        }
+        if eos {
+            output.extend(self.flush()?);
+        }
+        Ok((output, consumed))
     }
 
     /// Decode a whole elementary stream, handing every picture to `emit` as

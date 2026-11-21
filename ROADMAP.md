@@ -4548,10 +4548,18 @@ pipeline uses.
   all-targets gate is `1370 passed / 0 failed / 47 ignored`.
 - **2026-11-22: unchanged `mpi_dec_test` closes the legacy decode matrix.**
   Normal elementary streams arrive as 4 KiB packets, while the public legacy
-  SDK deliberately buffers whole streams. The MPP object path now replays its
-  accumulated prefix and publishes only newly completed, error-free frames;
-  partial decode failures are deferred until later bytes complete the picture.
+  SDK deliberately buffers whole streams. The MPP object path now keeps parser
+  state and consumes complete picture groups/VOPs incrementally; MPEG-4 keeps
+  VOL/timing and H.263 keeps its I-picture gate across packets.
   RK3588 passes 13/13: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
   H.263 CIF/QCIF, AV1, MJPEG and a no-`-n` MPEG-2 EOS case. Each case validates
   the exact NV12 size and byte-compares with vendor C. The regular SDK path is unchanged, and the host
-  gate remains `1370 passed / 0 failed / 47 ignored`.
+  gate is `1372 passed / 0 failed / 47 ignored`.
+- **2026-11-22: legacy packet path moves from replay to incremental parsing.**
+  The first compatibility implementation replayed the accumulated prefix on
+  every 4 KiB packet, which was correct but O(n²). The persistent parser state
+  cuts a 100-frame MPEG-2 sample from 2.62–2.73 s to 0.14–0.15 s, a 96-frame
+  MPEG-4 sample from 2.66–2.71 s to 0.12–0.14 s, and a 96-frame H.263 sample
+  from 8.45–8.46 s to 0.15–0.16 s. Vendor C is 0.10–0.14 s. Outputs are
+  byte-identical; the measurement uses DMC performance and CPU 4–7 and is not
+  an 80% OPP absolute claim.

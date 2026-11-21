@@ -266,12 +266,16 @@
 - `mpi_dec_test` reads non-IVF elementary streams in 4 KiB packets and expects
   pictures before EOS. The legacy Rust SDK retains whole streams, which made
   the official tool rewind forever with no output. The object compatibility
-  path now replays the accumulated bytes and publishes only a newly completed
-  error-free frame prefix; the public whole-stream SDK behavior is unchanged.
-- A partial legacy prefix can end in a failed picture. Publishing that frame
-  early loses it because `mpi_dec_test` does not dump frames carrying
-  `err_info`; delaying the error suffix until a later complete replay fixes
-  both frame count and pixels without requiring `reader_buf_size` overrides.
+  path now keeps parser state and consumes complete picture groups/VOPs
+  incrementally; the public whole-stream SDK behavior is unchanged.
+- MPEG-4 needs VOL, time-base and DivX custom-version state across packets;
+  H.263 needs its `found_i_vop` gate across packets. Replaying the whole prefix
+  was correct but O(n²). Incremental parser state preserves the same frame
+  bytes without re-decoding earlier pictures.
+- A 100-frame MPEG-2 stream takes 0.14–0.15 s with incremental parsing versus
+  2.62–2.73 s with replay. MPEG-4 (96 frames) improves from 2.66–2.71 s to
+  0.12–0.14 s, and H.263 (96 frames) from 8.45–8.46 s to 0.15–0.16 s. Vendor C
+  is 0.10–0.14 s under the same DMC-performance/CPU-4–7 relative setup.
 - The RK3588 standalone decoder matrix is now 13/13 with exact output-size
   checks: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
   H.263 CIF/QCIF, AV1 and MJPEG all match vendor C byte-for-byte; the extra

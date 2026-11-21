@@ -233,16 +233,23 @@ pub fn picture_header(au: &[u8]) -> Result<(usize, Picture), H263Error> {
 /// logs the failure and moves on to the next access unit, so a stream with one
 /// damaged picture still decodes the rest.
 pub fn parse(data: &[u8]) -> Vec<Picture> {
-    let mut pictures = Vec::new();
     let mut found_i_vop = false;
+    parse_with_state(data, &mut found_i_vop)
+}
+
+/// Streaming form of [`parse`]. `found_i_vop` carries the decoder's
+/// `found_i_vop` gate across packets, so later P pictures are not dropped just
+/// because a chunk no longer starts with the stream's first I picture.
+pub fn parse_with_state(data: &[u8], found_i_vop: &mut bool) -> Vec<Picture> {
+    let mut pictures = Vec::new();
     for (start, end) in access_units(data) {
         let au = &data[start..end];
         let Ok((_, mut picture)) = picture_header(au) else {
             continue;
         };
-        if !found_i_vop {
-            found_i_vop = picture.coding_type == VOP_I;
-            if !found_i_vop {
+        if !*found_i_vop {
+            *found_i_vop = picture.coding_type == VOP_I;
+            if !*found_i_vop {
                 continue;
             }
         }
@@ -381,5 +388,26 @@ mod tests {
         // The six filler bytes move every access unit of the real stream along.
         assert_eq!(pictures[0].au, (6, 6 + units[0].1));
         assert_eq!(pictures[1].coding_type, VOP_P);
+    }
+
+    #[test]
+    fn parse_with_state_continues_across_picture_packets() {
+        let data = std::fs::read("tests/data/h263_cif_12_ip.263").expect("test fixture");
+        let units = access_units(&data);
+        let split = units[5].0;
+        let mut found_i_vop = false;
+        let mut pictures = parse_with_state(&data[..split], &mut found_i_vop);
+        pictures.extend(parse_with_state(&data[split..], &mut found_i_vop));
+        let full = parse(&data);
+        assert_eq!(pictures.len(), full.len());
+        assert_eq!(
+            pictures
+                .iter()
+                .map(|p| (p.coding_type, p.temporal_reference, p.quant))
+                .collect::<Vec<_>>(),
+            full.iter()
+                .map(|p| (p.coding_type, p.temporal_reference, p.quant))
+                .collect::<Vec<_>>()
+        );
     }
 }

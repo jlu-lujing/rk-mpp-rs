@@ -453,7 +453,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       runs H.264/H.265/VP8/VP9/MPEG-2/MPEG-4/H.263/AV1/MJPEG through the
       standalone library. The 13-case gate includes VP8 altref, MPEG-4 IPBB,
       H.263 CIF/QCIF, and a no-`-n` EOS path with exact output-size and byte
-      checks. Vendor
+      checks. Legacy elementary streams use incremental parser state instead
+      of whole-prefix replay. Vendor
       log/cfg/OSAL helpers are supplied by the Rust library, and the same
       standalone library drives `mpi_enc_test`.
       **Encoder partial landed:** vendor `MppEncCfg`, `MppFrame` input and

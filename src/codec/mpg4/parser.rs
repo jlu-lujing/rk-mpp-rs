@@ -628,10 +628,36 @@ pub fn start_codes(data: &[u8]) -> Vec<(usize, u8)> {
 
 /// Walk an elementary stream into headers and pictures.
 pub fn parse(data: &[u8]) -> Result<Vec<Item>, Mpg4Error> {
+    let mut state = StreamState::new();
+    parse_with_state(data, &mut state)
+}
+
+/// State that survives packet boundaries for the incremental MPP object path.
+pub struct StreamState {
+    vol: Vol,
+    estimation: Estimation,
+    state: State,
+}
+
+impl StreamState {
+    pub fn new() -> Self {
+        Self {
+            vol: Vol::default(),
+            estimation: Estimation::default(),
+            state: State::new(),
+        }
+    }
+}
+
+/// Parse a new chunk while carrying VOL, timing and custom-version state from
+/// earlier chunks.
+pub fn parse_with_state(data: &[u8], stream: &mut StreamState) -> Result<Vec<Item>, Mpg4Error> {
     let codes = start_codes(data);
-    let mut vol = Vol::default();
-    let mut estimation = Estimation::default();
-    let mut state = State::new();
+    let StreamState {
+        vol,
+        estimation,
+        state,
+    } = stream;
     let mut items = Vec::new();
 
     for (index, (start, code)) in codes.iter().enumerate() {
@@ -643,7 +669,7 @@ pub fn parse(data: &[u8]) -> Result<Vec<Item>, Mpg4Error> {
         match *code {
             CODE_VOL..=CODE_VOL_LAST => {
                 let mut reader = Reader::new(&data[start + 4..next]);
-                vol = Vol::parse(&mut reader, &vol, &mut estimation)?;
+                *vol = Vol::parse(&mut reader, vol, &mut *estimation)?;
                 items.push(Item::Vol(vol.clone()));
             }
             CODE_USER_DATA => {
@@ -659,7 +685,7 @@ pub fn parse(data: &[u8]) -> Result<Vec<Item>, Mpg4Error> {
                 // The access unit runs to the next start code and the header is
                 // counted from the `00 00 01`, exactly as the C split presents it.
                 let mut reader = Reader::new(&data[start..next]);
-                let Some(vop) = parse_vop(&mut reader, &vol, &mut estimation, &mut state)? else {
+                let Some(vop) = parse_vop(&mut reader, vol, &mut *estimation, &mut *state)? else {
                     continue;
                 };
                 items.push(Item::Picture(Picture {
@@ -803,4 +829,44 @@ fn parse_vop(
         time_bp: time_bp as u32,
         time_pp: time_pp as u32,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_state_carries_vol_and_timing_across_vop_packets() {
+        let data = std::fs::read("tests/data/mp4_320x240_12_ibpb.m4v").expect("test fixture");
+        let split = start_codes(&data)
+            .into_iter()
+            .filter(|(_, code)| *code == CODE_VOP)
+            .nth(5)
+            .expect("sixth VOP")
+            .0;
+        let full = parse(&data).expect("full parse");
+        let mut state = StreamState::new();
+        let mut items = parse_with_state(&data[..split], &mut state).expect("first packet");
+        items.extend(parse_with_state(&data[split..], &mut state).expect("second packet"));
+
+        let full_pictures: Vec<_> = full
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Picture(picture) => Some(picture),
+                Item::Vol(_) => None,
+            })
+            .collect();
+        let packet_pictures: Vec<_> = items
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Picture(picture) => Some(picture),
+                Item::Vol(_) => None,
+            })
+            .collect();
+        assert_eq!(packet_pictures.len(), full_pictures.len());
+        for (packet, full) in packet_pictures.iter().zip(&full_pictures) {
+            assert_eq!(packet.vop, full.vop);
+            assert_eq!(packet.vol, full.vol);
+        }
+    }
 }

@@ -238,6 +238,36 @@ impl Decoder {
         Ok(output)
     }
 
+    /// Decode every complete picture group in a packet prefix. When `eos` is
+    /// false, the final group is retained because a following start code has
+    /// not yet proved that it is complete. The returned byte count is the
+    /// prefix the caller may discard.
+    pub fn decode_incremental(
+        &mut self,
+        data: &[u8],
+        eos: bool,
+    ) -> Result<(Vec<Picture>, usize), String> {
+        let groups = parser::picture_groups(data);
+        let complete = if eos {
+            groups.len()
+        } else {
+            groups.len().saturating_sub(1)
+        };
+        let consumed = if eos {
+            data.len()
+        } else {
+            groups.get(complete).map_or(0, |group| group.0)
+        };
+        let mut output = Vec::new();
+        for (start, end) in groups.iter().take(complete) {
+            output.extend(self.decode_group(&data[*start..*end])?);
+        }
+        if eos {
+            output.extend(self.flush()?);
+        }
+        Ok((output, consumed))
+    }
+
     /// Decode a whole stream, handing each picture to `emit` as soon as it
     /// exists so a CLI that writes immediately keeps one frame alive.
     pub fn decode_with(
