@@ -804,7 +804,7 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
     if context.ctx_type != MPP_CTX_ENC {
         return MPP_ERR_VALUE;
     }
-    if unsafe { objects::frame_is_eos(frame) } {
+    if frame.is_null() || unsafe { objects::frame_is_eos(frame) } {
         let Some(encoder) = context.encoder.as_mut() else {
             return MPP_ERR_VALUE;
         };
@@ -984,10 +984,10 @@ unsafe extern "C" fn compat_encode_get_packet(ctx: MppCtx, packet: *mut MppPacke
     if context.ctx_type != MPP_CTX_ENC {
         return MPP_ERR_VALUE;
     }
+    unsafe { *packet = std::ptr::null_mut() };
     let Some(encoder) = context.encoder.as_mut() else {
         return MPP_ERR_VALUE;
     };
-    unsafe { *packet = std::ptr::null_mut() };
     if let Some(encoded) = encoder.receive_packet() {
         let pts = encoded.pts();
         let dts = encoded.dts();
@@ -1014,7 +1014,11 @@ unsafe extern "C" fn compat_encode_get_packet(ctx: MppCtx, packet: *mut MppPacke
         context.encoder_eos_delivered = true;
         unsafe { *packet = objects::packet_eos() };
     }
-    MPP_OK
+    if unsafe { *packet }.is_null() {
+        MPP_NOK
+    } else {
+        MPP_OK
+    }
 }
 
 unsafe extern "C" fn compat_isp(_ctx: MppCtx, _dst: MppFrame, _src: MppFrame) -> c_int {

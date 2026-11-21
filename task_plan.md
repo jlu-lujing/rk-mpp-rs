@@ -6,9 +6,8 @@ prioritizing persistent H.264 and MJPEG decode sessions, then extending the
 same contract to the other implemented codecs and encoders.
 
 ## Current Phase
-Phases 1-8 are complete. The SDK is now installable and ABI-checked. Phase 9
-extends the stable encoder configuration surface without breaking old V1
-callers.
+Phase 26 is the active workstream: remove the remaining FFmpeg/MPP
+compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 
 ## Phases
 
@@ -343,6 +342,27 @@ callers.
 - [x] Measure the 50 MiB / 742-frame wall time, RSS and output count.
 - [x] Update docs and commit.
 - **Status:** complete; 742/742, flat wall time, RSS 59.5 -> 20.4 MiB.
+
+### Phase 26: FFmpeg Compatibility and Asynchronous Encoding
+- Goal: make the Rust MPP paths competitive with vendor FFmpeg and remove the
+  synchronous submit/poll gap that remains in VEPU580 encoding.
+- [x] Add FFmpeg decode/encode info-change, buffer-group, packet-meta and EOS
+  compatibility.
+- [x] Add `--mpp-compat` SDK packaging for rebuilding FFmpeg against Rust MPP.
+- [x] Benchmark vendor FFmpeg, FFmpeg+rkmpp-rs and native rkmpp-rs.
+- [x] Remove imported-input CPU staging and decoded-frame packing copies.
+- [x] Re-run byte-exact standalone, FFmpeg and workspace gates.
+- [ ] Split VEPU580 H.264 submit and completion into a deferred job.
+- [ ] Extend the same queue contract to VEPU580 H.265.
+- [ ] Feed deferred encoder completions through the FFmpeg C compatibility API.
+- [ ] Benchmark depth 1/2 and retain only byte-identical outputs.
+- [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
+  FFmpeg encoder loop.
+- [x] Reject the high-level cross-thread compatibility worker; it lost delayed
+  H.264/H.265 packets non-deterministically.
+- [ ] Implement the deferred queue below the encoder session so packet
+  generation and input ownership are explicit per job.
+- **Status:** in_progress
 
 ## Decisions Made
 

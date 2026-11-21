@@ -1,5 +1,31 @@
 # Progress Log
 
+## Session: 2026-11-21
+
+### Phase 26: FFmpeg Compatibility and Copy Removal
+- **Status:** completed copy phase; asynchronous encoder still in progress.
+- Added an unchanged-FFmpeg `rkmpp` compatibility path for the newer FFmpeg
+  info-change/external-buffer/control sequence.
+- Added optional `rockchip_mpp.pc` and `librockchip_mpp` aliases. FFmpeg source
+  configure and a minimal `make` both succeeded against the Rust library.
+- Benchmarked H.264/H.265 decode and encode across C FFmpeg,
+  FFmpeg+rkmpp-rs and native rkmpp-rs.
+- Removed encode input CPU staging and decode packed-frame allocation/copy.
+  H.264 FFmpeg+rkmpp-rs decode improved 0.901 -> 0.513 s; H.265 improved
+  0.927 -> 0.517 s. Static NV12 output remains byte-identical.
+- H.264/H.265 FFmpeg+rkmpp-rs encode improved about 12%; MJPEG remains exact
+  on the CPU fallback.
+- Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
+  C-level or below; no code from that experiment remains.
+- Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.
+  The attempt could not guarantee delayed H.264/H.265 packet ownership and was
+  rejected before commit.
+- Kept two verified compatibility fixes from that investigation: NULL frames
+  now request encoder EOS, and an empty packet queue returns `MPP_NOK`.
+- Final regression: FFmpeg 6/6, official encoder/TSVC all pass, and host
+  `cargo test --all-targets --offline` completes with 1199 passed, 0 failed,
+  2 ignored in the root library plus all integration suites green.
+
 ## Session: 2026-11-20
 
 ### Phase 21: Public H.264 Syntax and Deblock ABI

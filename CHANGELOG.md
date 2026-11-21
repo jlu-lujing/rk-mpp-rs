@@ -6,6 +6,15 @@ the C ABI version are independent: the crate is currently `0.1.x`, while
 
 ## [Unreleased]
 
+- The official MPP compatibility surface now follows the newer FFmpeg
+  `rkmpp` lifecycle: info-change frames, external-buffer controls, encoder
+  packet `KEY_INPUT_FRAME`, NULL-frame EOS and `MPP_NOK` for an empty packet
+  queue.
+- Imported encoder buffers now submit their DMA-BUF fd directly instead of
+  falling back to NV12 CPU staging. Canonical decoded NV12 surfaces are also
+  transferred into compatibility frames without packing and reallocating.
+  RK3588 FFmpeg+rkmpp-rs H.264/H.265 decode improved from about 0.90 s to
+  0.51 s over 600 720p frames and is slightly faster than vendor FFmpeg.
 - `h264_stream` now reads input in bounded 4 MiB chunks through a reusable
   incremental access-unit scanner instead of loading the complete Annex-B file.
   On a 50 MiB / 742-frame RK3588 stream, warm wall time remains effectively

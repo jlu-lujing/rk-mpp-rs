@@ -270,6 +270,47 @@
   `53bc3dd4…0abea69` (profile 0 I420), and
   `1c4c63f9…9a09` (profile 2 I420P10).
 
+## FFmpeg and Encoder Scheduling
+
+- RK3588 FFmpeg `c5e745e3c1` now runs unchanged with `librk_mpp_rs.so` as
+  `librockchip_mpp.so.1`. H.264/H.265/VP9 NV12 decode is byte-identical, and
+  H.264/H.265/MJPEG encode completes.
+- Before direct-buffer work, FFmpeg+rkmpp-rs decode used 1,512 `mmap`, 1,296
+  `munmap` and 211,580 page faults for 600 H.264 frames. The vendor path used
+  260/57/7,993.
+- `frame_from_sdk()` was packing every decoded frame into a new `Vec`,
+  allocating a dma-heap buffer, mapping it and copying again. Transferring the
+  canonical decoded DMA-BUF instead reduced H.264 decode from 0.901 s to
+  0.513 s and H.265 from 0.927 s to 0.517 s.
+- FFmpeg encode imports DRM input through `mpp_buffer_import()`. The old
+  `frame_input_view()` only inspected `buffer.dma`, so imported buffers looked
+  CPU-only and were staged through a full NV12 copy. Using `buffer.fd` reduced
+  H.264 encode 0.806 -> 0.711 s and H.265 0.838 -> 0.738 s.
+- The direct paths preserve MJPEG CPU fallback. `accepts_dmabuf_frame()` now
+  restricts direct encode input to VEPU580/VEPU510 H.264/H.265; allowing MJPEG
+  changed its bitstream.
+- Perf after the copy fixes shows FFmpeg+rkmpp-rs encode retired instructions
+  near vendor C (111M versus 108M), but CPU utilization is only about 50-60%.
+  The remaining wall-time gap is waiting, not memory traffic.
+- Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
+  worker thread advances submit, HAL start, HAL wait and packet publication.
+  The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline
+  for every picture.
+- A pooled-surface compatibility experiment avoiding `dup/mmap` regressed
+  decode because every access crossed `BufferPool` guards. It was fully
+  reverted; the owned DMA-BUF wrapper remains faster.
+- A first high-level async encoder worker moved the existing synchronous
+  `Encoder` into a Rust thread while FFmpeg queued frames. It compiled and
+  reduced direct blocking, but H.264/H.265 intermittently lost delayed packets
+  and passed stale MPP frames back through FFmpeg's four-frame queue. The
+  implementation was rejected. The proper design must split submit and finish
+  below the encoder session so packet generation, input ownership and
+  reconstruction lifetime are explicit per job.
+- Async probing found two real MPP API bugs worth keeping: `encode_put_frame`
+  must accept a NULL frame as EOS, and `encode_get_packet` must return
+  `MPP_NOK` when no packet is ready. Returning `MPP_OK` with a null packet made
+  the FFmpeg wrapper report `ENOMEM`.
+
 ## Technical Decisions
 
 | Decision | Rationale |
