@@ -1339,11 +1339,14 @@ struct Vp8Backend {
 
 struct LegacyBackend {
     decoder: LegacyDecoder,
+    codec: Codec,
     format: PixelFormat,
     input: Vec<u8>,
     stream_pts: i64,
     stream_dts: i64,
     frame_number: u32,
+    packet_decode: bool,
+    emitted_frames: usize,
     eos: bool,
 }
 
@@ -1451,6 +1454,17 @@ impl Decoder {
             Backend::Av1(backend) => backend.submit(packet, &mut self.frames),
             Backend::Vp8(backend) => backend.submit(packet, &mut self.frames),
             Backend::Legacy(backend) => backend.submit(packet, &mut self.frames),
+        }
+    }
+
+    /// The unchanged MPP tools submit elementary streams in fixed-size packets
+    /// and expect completed pictures before EOS. Legacy backends otherwise
+    /// retain the whole stream, so this opt-in compatibility mode replays the
+    /// accumulated bytes and emits only pictures not returned by an earlier
+    /// packet.
+    pub(crate) fn enable_legacy_packet_decode(&mut self) {
+        if let Backend::Legacy(backend) = &mut self.backend {
+            backend.packet_decode = true;
         }
     }
 
@@ -2117,27 +2131,17 @@ impl LegacyBackend {
                 "legacy MPEG/H.263 decoders support NV12 or I420 output".to_string(),
             ));
         }
-        let decoder = match config.codec {
-            Codec::Mpeg2 => LegacyDecoder::Mpeg2(
-                m2v::decoder::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?,
-            ),
-            Codec::Mpeg4 => LegacyDecoder::Mpeg4(
-                mpg4::decoder::Decoder::new()
-                    .map_err(|error| Error::Hardware(error.to_string()))?,
-            ),
-            Codec::H263 => LegacyDecoder::H263(
-                h263::decoder::Decoder::new()
-                    .map_err(|error| Error::Hardware(error.to_string()))?,
-            ),
-            _ => unreachable!("LegacyBackend is constructed only for legacy codecs"),
-        };
+        let decoder = LegacyDecoder::new(config.codec)?;
         Ok(Self {
             decoder,
+            codec: config.codec,
             format: config.output_format,
             input: Vec::new(),
             stream_pts: 0,
             stream_dts: 0,
             frame_number: 0,
+            packet_decode: false,
+            emitted_frames: 0,
             eos: false,
         })
     }
@@ -2154,20 +2158,66 @@ impl LegacyBackend {
             self.stream_dts = packet.dts;
         }
         self.input.extend_from_slice(packet.data);
-        if !packet.flags.contains(PacketFlags::EOS) {
+        let eos = packet.flags.contains(PacketFlags::EOS);
+        if !eos && !self.packet_decode {
             return Ok(0);
         }
-        let decoded = self.decode_buffered(output)?;
-        self.eos = true;
-        Ok(decoded)
+        if self.packet_decode {
+            let decoded = self.decode_snapshot(output, eos)?;
+            if eos {
+                self.input.clear();
+                self.eos = true;
+            }
+            Ok(decoded)
+        } else {
+            let decoded = self.decode_buffered(output)?;
+            self.eos = true;
+            Ok(decoded)
+        }
     }
 
     fn flush(&mut self, output: &mut VecDeque<Frame>) -> Result<usize, Error> {
         if self.eos && self.input.is_empty() {
             return Ok(0);
         }
-        let decoded = self.decode_buffered(output)?;
+        let decoded = if self.packet_decode {
+            self.decode_snapshot(output, true)?
+        } else {
+            self.decode_buffered(output)?
+        };
+        self.input.clear();
         self.eos = true;
+        Ok(decoded)
+    }
+
+    fn decode_snapshot(&mut self, output: &mut VecDeque<Frame>, eos: bool) -> Result<usize, Error> {
+        if self.input.is_empty() {
+            return Ok(0);
+        }
+        let pictures = match LegacyDecoder::new(self.codec)?.decode(&self.input) {
+            Ok(pictures) => pictures,
+            // A fixed-size MPP packet usually ends in the middle of a picture.
+            // Replaying the accumulated prefix is allowed to fail until the
+            // next packet completes it; only the final packet must succeed.
+            Err(_) if !eos => return Ok(0),
+            Err(error) => return Err(classify_video_error(error)),
+        };
+        let valid = if eos {
+            pictures.len()
+        } else {
+            pictures
+                .iter()
+                .position(|picture| picture.err_info != 0)
+                .unwrap_or(pictures.len())
+        };
+        if valid < self.emitted_frames {
+            return Ok(0);
+        }
+        let decoded = valid - self.emitted_frames;
+        for picture in pictures.into_iter().take(valid).skip(self.emitted_frames) {
+            self.push_picture(picture, output)?;
+        }
+        self.emitted_frames = valid;
         Ok(decoded)
     }
 
@@ -2176,32 +2226,59 @@ impl LegacyBackend {
             return Ok(0);
         }
         let data = std::mem::take(&mut self.input);
-        let codec_name = match &self.decoder {
-            LegacyDecoder::Mpeg2(_) => "MPEG-2",
-            LegacyDecoder::Mpeg4(_) => "MPEG-4",
-            LegacyDecoder::H263(_) => "H.263",
-        };
         let pictures = self.decoder.decode(&data).map_err(classify_video_error)?;
         let decoded = pictures.len();
         for picture in pictures {
-            output.push_back(Frame::from_legacy(
-                codec_name,
-                picture.width,
-                picture.height,
-                picture.yuv,
-                picture.err_info,
-                self.format,
-                self.stream_pts,
-                self.stream_dts,
-                self.frame_number as i32,
-            )?);
-            self.frame_number = self.frame_number.saturating_add(1);
+            self.push_picture(picture, output)?;
         }
         Ok(decoded)
+    }
+
+    fn push_picture(
+        &mut self,
+        picture: LegacyPicture,
+        output: &mut VecDeque<Frame>,
+    ) -> Result<(), Error> {
+        let codec_name = match self.codec {
+            Codec::Mpeg2 => "MPEG-2",
+            Codec::Mpeg4 => "MPEG-4",
+            Codec::H263 => "H.263",
+            _ => unreachable!("LegacyBackend is constructed only for legacy codecs"),
+        };
+        output.push_back(Frame::from_legacy(
+            codec_name,
+            picture.width,
+            picture.height,
+            picture.yuv,
+            picture.err_info,
+            self.format,
+            self.stream_pts,
+            self.stream_dts,
+            self.frame_number as i32,
+        )?);
+        self.frame_number = self.frame_number.saturating_add(1);
+        Ok(())
     }
 }
 
 impl LegacyDecoder {
+    fn new(codec: Codec) -> Result<Self, Error> {
+        match codec {
+            Codec::Mpeg2 => Ok(Self::Mpeg2(
+                m2v::decoder::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?,
+            )),
+            Codec::Mpeg4 => Ok(Self::Mpeg4(
+                mpg4::decoder::Decoder::new()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            )),
+            Codec::H263 => Ok(Self::H263(
+                h263::decoder::Decoder::new()
+                    .map_err(|error| Error::Hardware(error.to_string()))?,
+            )),
+            _ => unreachable!("LegacyBackend is constructed only for legacy codecs"),
+        }
+    }
+
     fn decode(&mut self, data: &[u8]) -> Result<Vec<LegacyPicture>, String> {
         match self {
             Self::Mpeg2(decoder) => decoder.decode(data).map(|pictures| {

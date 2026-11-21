@@ -327,7 +327,8 @@ V1 接口暂不宣称 RGB888，历史
 
 MPEG-2/MPEG-4/H.263 使用同一 handle 接收任意分块 elementary stream；现有
 内部 decoder 以完整 stream 为状态边界，因此这三类格式在 EOS/flush 时统一
-产出所有待显示帧。
+产出所有待显示帧。未修改 MPP 工具所走的 object 兼容路径是例外：它按
+官方 4 KiB packet 重放累积前缀，只发布新增且无错误的帧。
 
 板级 C/C++ 门：
 
@@ -432,6 +433,10 @@ surface，`show_existing` 则按参考帧语义复制历史 display surface。
 **未修改的** vendor `mpi_dec_test` 现在可以只把 `librk_mpp_rs.so`
 重命名为 `librockchip_mpp.so.1` 后直接运行，不再加载 vendor MPP。RK3588/RK3576
 的 H.264/H.265/VP9/AV1/MJPEG 输出均与 vendor C 逐字节一致。当前
+standalone 解码门在 RK3588 已扩到 **13/13**：新增 VP8 IP/altref、
+MPEG-2、MPEG-4 IP/B 帧和 H.263 CIF/QCIF。legacy elementary stream 在 MPP
+object 兼容路径按官方 4 KiB packet 重放当前前缀，只发布新增且无错误的帧；
+另有一格不带 `-n` 的 MPEG-2 EOS 路径。普通 SDK 的 whole-stream/EOS 语义不变。
 standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
 `vfprintf` helper，实际展开 printf 变参；
 未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG

@@ -1,5 +1,28 @@
 # Progress Log
 
+## Session: 2026-11-22
+
+### Phase 19: Legacy `mpi_dec_test` Packet Compatibility
+- **Status:** complete on RK3588.
+- The unchanged `mpi_dec_test` reads normal elementary streams in 4 KiB
+  packets. The Rust legacy SDK previously waited for EOS, so the tool saw no
+  frames and rewound the input indefinitely.
+- Added an opt-in MPP-object packet mode that replays the accumulated legacy
+  stream and emits only the newly completed error-free prefix. Partial-prefix
+  decode errors are expected and ignored until the next packet; the normal SDK
+  whole-stream path is unchanged.
+- `board_mpp_standalone.sh` now covers 13 cases: H.264, H.265, VP8 IP/altref,
+  VP9, MPEG-2, MPEG-4 IP/B, H.263 CIF/QCIF, AV1 and MJPEG. Each case checks the
+  exact NV12 output size and byte-compares vendor C with Rust. One MPEG-2 case
+  omits `-n` to exercise the EOS-frame path.
+- RK3588 passes 13/13. Representative hashes include VP8 altref
+  `ebaa4d7e…d819bc`, MPEG-4 IPBB `e9db8cb8…384b14`, MPEG-2
+  `2dc97045…af6371e`, H.263 CIF `4a2a9312…c2f45e`, and H.263 QCIF
+  `4957b0cc…619ceb`.
+- The final host `cargo test --all-targets --offline` gate remains
+  `1370 passed / 0 failed / 47 ignored`. RK3576 SSH is still unavailable;
+  legacy VDPU2/VP8 hardware is absent there by platform design.
+
 ## Session: 2026-11-21
 
 ### Phase 26: FFmpeg Compatibility and Copy Removal

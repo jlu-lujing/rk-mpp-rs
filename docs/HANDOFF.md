@@ -226,6 +226,12 @@ MJPEG 路径：vendor `mpi_dec_test`
 advanced MJPEG 不再报告 frame identity mismatch。vendor log/cfg/OSAL
 辅助符号后来也已由本库提供；未修改的 `mpi_dec_test` 和 `mpi_enc_test`
 现在都能只加载 standalone `librk_mpp_rs.so` 运行。
+RK3588 的 standalone 解码门现已扩到 13/13：除 H.264/H.265/VP9/AV1/MJPEG
+外，还覆盖 VP8 IP/altref、MPEG-2、MPEG-4 IP/IPBB、H.263 CIF/QCIF。
+官方工具按 4 KiB packet 喂 elementary stream，因此 MPP object 兼容路径会
+重放当前累积流并只发布新增的无错误帧；不完整尾帧会等到后续 packet 再发。
+普通 SDK 仍保持 whole-stream/EOS 语义。每个 case 都校验精确 NV12 字节数，
+不依赖两个工具同时截断的错误输出；另有一格不带 `-n`，专门覆盖 EOS frame。
 
 第四个 slice 已把本地 `MppMeta` 扩成真正的 key-value 容器：
 s32/s64/ptr、frame/packet/buffer、`KEY_USER_DATA(S)` 深拷贝、

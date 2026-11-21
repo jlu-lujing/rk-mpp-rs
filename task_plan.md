@@ -280,6 +280,8 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Interpose public MPP symbols into unchanged vendor `mpi_dec_test`.
 - [x] Preserve advanced MJPEG `KEY_OUTPUT_FRAME` through packet `MppMeta`.
 - [x] Validate H.264/H.265/MJPEG against native outputs on RK3588 and RK3576.
+- [x] Run the unchanged RK3588 `mpi_dec_test` over VP8 IP/altref, MPEG-2,
+      MPEG-4 IP/B and H.263 CIF/QCIF, with exact output-size and byte checks.
 - [x] Remove the remaining dependency on vendor log/cfg/OSAL helper symbols.
 - [x] Pass unchanged `mpi_enc_test`.
 - **Status:** complete with the standalone library on RK3588.

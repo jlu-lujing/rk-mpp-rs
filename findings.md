@@ -263,6 +263,19 @@
   EOS/flush. This is an explicit latency boundary, not packet-level decode.
 - Verified legacy NV12 hashes on RK3588 are MPEG-2 `2dc97045…6371e`, MPEG-4
   `33cde882…64580`, H.263 `4a2a9312…c2f45e`; I420 equivalents also match.
+- `mpi_dec_test` reads non-IVF elementary streams in 4 KiB packets and expects
+  pictures before EOS. The legacy Rust SDK retains whole streams, which made
+  the official tool rewind forever with no output. The object compatibility
+  path now replays the accumulated bytes and publishes only a newly completed
+  error-free frame prefix; the public whole-stream SDK behavior is unchanged.
+- A partial legacy prefix can end in a failed picture. Publishing that frame
+  early loses it because `mpi_dec_test` does not dump frames carrying
+  `err_info`; delaying the error suffix until a later complete replay fixes
+  both frame count and pixels without requiring `reader_buf_size` overrides.
+- The RK3588 standalone decoder matrix is now 13/13 with exact output-size
+  checks: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
+  H.263 CIF/QCIF, AV1 and MJPEG all match vendor C byte-for-byte; the extra
+  MPEG-2 case omits `-n` and exercises the EOS-frame path.
 - JPEG restart interval 20 matches the CLI output at RK3576
   `0ccf41ea…82997` and RK3588 `25254033…df748a`.
 - Verified VP9 SHA-256 values are

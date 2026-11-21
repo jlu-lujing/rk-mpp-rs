@@ -449,10 +449,13 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       lazy ownership. Imported DMABUF buffers, kernel meta and the complete
       standalone helper surface are now implemented.
 - [x] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
-      **Decode partial landed:** the unchanged vendor `mpi_dec_test` runs
-      H.264/H.265/MJPEG under `LD_PRELOAD` with byte-identical output on
-      RK3588/RK3576. Vendor log/cfg/OSAL helpers are now supplied by the Rust
-      library, and the same standalone library drives `mpi_enc_test`.
+      **Decode complete on RK3588:** the unchanged vendor `mpi_dec_test` now
+      runs H.264/H.265/VP8/VP9/MPEG-2/MPEG-4/H.263/AV1/MJPEG through the
+      standalone library. The 13-case gate includes VP8 altref, MPEG-4 IPBB,
+      H.263 CIF/QCIF, and a no-`-n` EOS path with exact output-size and byte
+      checks. Vendor
+      log/cfg/OSAL helpers are supplied by the Rust library, and the same
+      standalone library drives `mpi_enc_test`.
       **Encoder partial landed:** vendor `MppEncCfg`, `MppFrame` input and
       `MppPacket` output are bridged into `encoder::Encoder`. RK3588/RK3576 H.265 and
       MJPEG one/six-frame streams are byte-identical; H.264 one/six-frame

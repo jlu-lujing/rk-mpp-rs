@@ -4546,3 +4546,12 @@ pipeline uses.
   FFmpeg RKMPP gate 8/8. H.265 object streams compare parameter sets, rc-SEI,
   VCL and decoded YUV exactly; version-SEI build text is framing-only. The host
   all-targets gate is `1370 passed / 0 failed / 47 ignored`.
+- **2026-11-22: unchanged `mpi_dec_test` closes the legacy decode matrix.**
+  Normal elementary streams arrive as 4 KiB packets, while the public legacy
+  SDK deliberately buffers whole streams. The MPP object path now replays its
+  accumulated prefix and publishes only newly completed, error-free frames;
+  partial decode failures are deferred until later bytes complete the picture.
+  RK3588 passes 13/13: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
+  H.263 CIF/QCIF, AV1, MJPEG and a no-`-n` MPEG-2 EOS case. Each case validates
+  the exact NV12 size and byte-compares with vendor C. The regular SDK path is unchanged, and the host
+  gate remains `1370 passed / 0 failed / 47 ignored`.

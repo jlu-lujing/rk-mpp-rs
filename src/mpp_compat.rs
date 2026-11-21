@@ -1669,7 +1669,15 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
                     | MPP_VIDEO_CODING_AV1
             ));
         match sdk::Decoder::new(config) {
-            Ok(decoder) => Some(decoder),
+            Ok(mut decoder) => {
+                if matches!(
+                    codec,
+                    sdk::Codec::Mpeg2 | sdk::Codec::Mpeg4 | sdk::Codec::H263
+                ) {
+                    decoder.enable_legacy_packet_decode();
+                }
+                Some(decoder)
+            }
             Err(_) => return MPP_NOK,
         }
     } else {

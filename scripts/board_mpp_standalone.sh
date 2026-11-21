@@ -69,8 +69,38 @@ run_case() {
         < /dev/null > "/tmp/rk_mpp_standalone_${name}_ours.log" 2>&1
     grep -F "decoder test start w $width h $height type $coding" \
         "/tmp/rk_mpp_standalone_${name}_ours.log" >/dev/null
+    local expected_bytes=$((width * height * 3 / 2 * frames))
+    test "$(stat -c %s "$ours")" -eq "$expected_bytes"
     cmp "$golden" "$ours"
     printf 'PASS %-8s standalone decoder (%s, %s bytes)\n' \
+        "$name" "$(sha256sum "$ours" | cut -d' ' -f1)" "$(stat -c %s "$ours")"
+}
+
+run_eos_case() {
+    local name="$1"
+    local input="$2"
+    local coding="$3"
+    local frames="$4"
+    local width="$5"
+    local height="$6"
+    local golden="/tmp/rk_mpp_standalone_${name}_vendor.yuv"
+    local ours="/tmp/rk_mpp_standalone_${name}_ours.yuv"
+
+    sudo -n rm -f "$golden" "$ours"
+    sudo -n env LD_LIBRARY_PATH="$vendor_lib:${LD_LIBRARY_PATH:-}" \
+        timeout 120 "$dec_test" -i "$input" -o "$golden" \
+        -w "$width" -h "$height" -t "$coding" -f 0 -v q \
+        < /dev/null > "/tmp/rk_mpp_standalone_${name}_vendor.log" 2>&1
+    sudo -n env LD_LIBRARY_PATH="$overlay" \
+        timeout 120 "$dec_test" -i "$input" -o "$ours" \
+        -w "$width" -h "$height" -t "$coding" -f 0 -v q \
+        < /dev/null > "/tmp/rk_mpp_standalone_${name}_ours.log" 2>&1
+    grep -F "decoder test start w $width h $height type $coding" \
+        "/tmp/rk_mpp_standalone_${name}_ours.log" >/dev/null
+    local expected_bytes=$((width * height * 3 / 2 * frames))
+    test "$(stat -c %s "$ours")" -eq "$expected_bytes"
+    cmp "$golden" "$ours"
+    printf 'PASS %-8s standalone EOS decoder (%s, %s bytes)\n' \
         "$name" "$(sha256sum "$ours" | cut -d' ' -f1)" "$(stat -c %s "$ours")"
 }
 
@@ -82,7 +112,15 @@ ffmpeg -nostdin -y -hide_banner -loglevel error \
 run_case h264 "$h264" 7 6 640 480
 
 run_case h265 tests/data/h265e_c_fixqp_qp26_320x240.265 16777220 1 320 240
+run_case vp8 tests/data/vp8_320x240_12_ip.ivf 9 12 320 240
+run_case vp8_altref tests/data/vp8_320x240_24_altref.ivf 9 24 320 240
 run_case vp9 tests/data/vp9_p0_lossless_320x240_12.ivf 10 12 320 240
+run_case mpeg2 tests/data/m2v_320x240_12.m2v 2 10 320 240
+run_eos_case mpeg2_eos tests/data/m2v_320x240_12.m2v 2 10 320 240
+run_case mpeg4 tests/data/mp4_320x240_12_ip.m4v 4 12 320 240
+run_case mpeg4_b tests/data/mp4_320x240_12_ibpb.m4v 4 12 320 240
+run_case h263 tests/data/h263_cif_12_ip.263 3 12 352 288
+run_case h263_qcif tests/data/h263_qcif_6_ip.263 3 6 176 144
 run_case av1 tests/data/av1_320x240_10.ivf 16777224 10 320 240
 
 mjpeg=/tmp/rk_mpp_standalone_mjpeg.jpg
