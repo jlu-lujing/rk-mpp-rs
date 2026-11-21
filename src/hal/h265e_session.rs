@@ -24,6 +24,7 @@ use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
 
 use super::h265e::{
     build_registers, refresh_base_table, IdrJob, Picture, RateControl, RefreshJob, RefreshMode,
+    RegisterFile,
 };
 use super::h265e_regs as regs;
 
@@ -233,6 +234,11 @@ pub struct Vepu580H265 {
     pipeline: bool,
     pipeline_depth: usize,
     pipeline_output: usize,
+    /// VEPU580 frame-parallel dual-core handshake state. C's `task_cnt == 2`
+    /// path advances this on every `gen_regs`, independent of which task slot
+    /// later completes. An intra picture restarts both IDs at zero.
+    frame_parallel_curr: u32,
+    frame_parallel_prev: u32,
     pending_jobs: VecDeque<PendingH265Job>,
     /// Slot 0 is the opening IDR's reconstruction. Synchronous paths use one
     /// other slot; the depth-2 compatibility path alternates two P output
@@ -281,6 +287,31 @@ struct PendingH265Job {
     frame_num: u32,
     with_prefix: bool,
     include_annex_b: bool,
+}
+
+fn apply_frame_parallel_handshake(
+    registers: &mut RegisterFile,
+    is_intra: bool,
+    curr: &mut u32,
+    prev: &mut u32,
+) -> Result<(), String> {
+    if is_intra {
+        *curr = 0;
+        *prev = 0;
+    }
+    let rxe = if is_intra { 0 } else { 1 };
+    registers.set(&regs::BASE_DUAL_CORE_DCHS_TXID, *curr)?;
+    registers.set(&regs::BASE_DUAL_CORE_DCHS_RXID, *prev)?;
+    registers.set(&regs::BASE_DUAL_CORE_DCHS_TXE, 1)?;
+    registers.set(&regs::BASE_DUAL_CORE_DCHS_RXE, rxe)?;
+    registers.set(&regs::BASE_DUAL_CORE_DCHS_OFST, 9)?;
+
+    *prev = *curr;
+    *curr += 1;
+    if *curr > 3 {
+        *curr = 0;
+    }
+    Ok(())
 }
 
 impl Vepu580H265 {
@@ -392,6 +423,8 @@ impl Vepu580H265 {
             pipeline: false,
             pipeline_depth: 2,
             pipeline_output: 0,
+            frame_parallel_curr: 0,
+            frame_parallel_prev: 0,
             pending_jobs: VecDeque::new(),
             surfaces: [
                 Surface::alloc(sizes)?,
@@ -470,6 +503,14 @@ impl Vepu580H265 {
             reference_thumb_fd: reference_dsp,
         };
         let mut registers = build_registers(&job)?;
+        if self.pipeline_depth > 1 {
+            apply_frame_parallel_handshake(
+                &mut registers,
+                matches!(picture, Picture::Idr | Picture::ForcedIdrFromP { .. }),
+                &mut self.frame_parallel_curr,
+                &mut self.frame_parallel_prev,
+            )?;
+        }
         let input = input_fd as u32;
         let output = output_fd as u32;
         let base = &mut registers.base;
@@ -558,7 +599,7 @@ impl Vepu580H265 {
         })
     }
 
-    fn finish_pipeline_job(&mut self, pending: PendingH265Job) -> Result<EncodedFrame, String> {
+    fn wait_pipeline_job(&mut self, pending: &PendingH265Job) -> Result<(), String> {
         if let Err(error) = self.service.poll_hw_finish_blocking() {
             let recovery = self.service.restart_after_hardware_error();
             return Err(format!(
@@ -580,6 +621,15 @@ impl Vepu580H265 {
                 pending.hw_status[0]
             ));
         }
+        Ok(())
+    }
+
+    fn finish_pipeline_job(&mut self, pending: PendingH265Job) -> Result<EncodedFrame, String> {
+        self.wait_pipeline_job(&pending)?;
+        self.assemble_pipeline_job(pending)
+    }
+
+    fn assemble_pipeline_job(&mut self, pending: PendingH265Job) -> Result<EncodedFrame, String> {
         let output = &self.outputs[pending.output_slot];
         let length = pending.status[0] as usize;
         if length == 0 || length > output.len() {
@@ -1988,6 +2038,31 @@ mod tests {
             uniform_tile_widths(8256, 4),
             vec![(0, 32), (32, 32), (64, 32), (96, 33)]
         );
+    }
+
+    #[test]
+    fn frame_parallel_handshake_matches_the_c_trace() {
+        let mut registers = RegisterFile::default();
+        let mut curr = 0;
+        let mut prev = 0;
+        let mut words = Vec::new();
+        for intra in [true, false, false, false, false] {
+            apply_frame_parallel_handshake(&mut registers, intra, &mut curr, &mut prev).unwrap();
+            words.push(registers.base[33]);
+        }
+        assert_eq!(
+            words,
+            [
+                0x0009_0010,
+                0x0009_0031,
+                0x0009_0036,
+                0x0009_003b,
+                0x0009_003c
+            ]
+        );
+
+        apply_frame_parallel_handshake(&mut registers, true, &mut curr, &mut prev).unwrap();
+        assert_eq!(registers.base[33], 0x0009_0010);
     }
 
     #[test]

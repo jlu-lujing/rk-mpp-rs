@@ -428,6 +428,22 @@ pub struct RegisterFile {
     pub rcb: Vec<RcbInfo>,
 }
 
+impl Default for RegisterFile {
+    fn default() -> Self {
+        Self {
+            ctl: [0; 24],
+            base: [0; 94],
+            rc_klut: [0; 57],
+            param: [0; 180],
+            rdo: [0; 122],
+            scl: [0; 679],
+            osd: [0; 288],
+            offsets: Vec::new(),
+            rcb: Vec::new(),
+        }
+    }
+}
+
 impl RegisterFile {
     /// The section array and index a register word lives in.
     fn word_mut(&mut self, word: usize) -> Result<&mut u32, String> {
@@ -711,6 +727,11 @@ pub struct Vepu580H264 {
     pipeline: bool,
     pipeline_depth: usize,
     pipeline_output: usize,
+    /// VEPU580 frame-parallel dual-core handshake state. C's `task_cnt == 2`
+    /// path advances it for every generated frame; an I slice restarts both
+    /// IDs at zero.
+    frame_parallel_curr: u32,
+    frame_parallel_prev: u32,
     pending_jobs: VecDeque<PendingH264Job>,
     started: bool,
     /// Vendor scheduling walks all three reconstruction surfaces; slot zero
@@ -796,6 +817,31 @@ struct PendingH264Job {
     include_annex_b: bool,
 }
 
+fn apply_frame_parallel_handshake(
+    registers: &mut RegisterFile,
+    is_intra: bool,
+    curr: &mut u32,
+    prev: &mut u32,
+) -> Result<(), String> {
+    if is_intra {
+        *curr = 0;
+        *prev = 0;
+    }
+    let rxe = if is_intra { 0 } else { 1 };
+    registers.set(&vepu580_regs::BASE_DUAL_CORE_DCHS_TXID, *curr)?;
+    registers.set(&vepu580_regs::BASE_DUAL_CORE_DCHS_RXID, *prev)?;
+    registers.set(&vepu580_regs::BASE_DUAL_CORE_DCHS_TXE, 1)?;
+    registers.set(&vepu580_regs::BASE_DUAL_CORE_DCHS_RXE, rxe)?;
+    registers.set(&vepu580_regs::BASE_DUAL_CORE_DCHS_OFST, 9)?;
+
+    *prev = *curr;
+    *curr += 1;
+    if *curr > 3 {
+        *curr = 0;
+    }
+    Ok(())
+}
+
 impl Vepu580H264 {
     pub fn open(config: EncoderConfig) -> Result<Self, String> {
         require_video_encode(VideoEncodeHal::Vepu580)?;
@@ -856,6 +902,8 @@ impl Vepu580H264 {
             pipeline: false,
             pipeline_depth: 2,
             pipeline_output: 0,
+            frame_parallel_curr: 0,
+            frame_parallel_prev: 0,
             pending_jobs: VecDeque::new(),
             recons: [
                 Recon::alloc(pixel_size, thumb_size)?,
@@ -1403,7 +1451,15 @@ impl Vepu580H264 {
             current_long_term: false,
             pass1_fd: self.pass1.as_ref().map_or(-1, |b| b.fd()),
         };
-        let registers = build_registers(&job)?;
+        let mut registers = build_registers(&job)?;
+        if self.pipeline_depth > 1 {
+            apply_frame_parallel_handshake(
+                &mut registers,
+                state.is_idr || state.is_i_refresh,
+                &mut self.frame_parallel_curr,
+                &mut self.frame_parallel_prev,
+            )?;
+        }
         dump_job_registers(&job, &registers);
 
         let ctl = registers.ctl.to_vec();
@@ -6443,5 +6499,30 @@ mod rate_control_registers {
             [(-832i32) as u32, (-208i32) as u32, 208, 832,],
             "the thresholds are the C truncations, negatives and all"
         );
+    }
+
+    #[test]
+    fn frame_parallel_handshake_matches_the_c_trace() {
+        let mut registers = RegisterFile::default();
+        let mut curr = 0;
+        let mut prev = 0;
+        let mut words = Vec::new();
+        for intra in [true, false, false, false, false] {
+            apply_frame_parallel_handshake(&mut registers, intra, &mut curr, &mut prev).unwrap();
+            words.push(registers.base[33]);
+        }
+        assert_eq!(
+            words,
+            [
+                0x0009_0010,
+                0x0009_0031,
+                0x0009_0036,
+                0x0009_003b,
+                0x0009_003c
+            ]
+        );
+
+        apply_frame_parallel_handshake(&mut registers, true, &mut curr, &mut prev).unwrap();
+        assert_eq!(registers.base[33], 0x0009_0010);
     }
 }

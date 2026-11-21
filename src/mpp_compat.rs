@@ -1316,11 +1316,7 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                         context.custom_rc_sequence = 0;
                         context.custom_force_idr = false;
                     }
-                    let default_pipeline_depth = if context.coding == MPP_VIDEO_CODING_AVC {
-                        2
-                    } else {
-                        1
-                    };
+                    let default_pipeline_depth = 2;
                     let pipeline_depth = std::env::var("RKMPP_ENCODER_PIPELINE_DEPTH")
                         .ok()
                         .and_then(|value| value.parse::<usize>().ok())

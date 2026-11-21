@@ -688,17 +688,22 @@ SEI。另一个问题是 FFmpeg 默认请求非 cacheable MPP DRM group，而兼
 非 `MPP_BUFFER_FLAGS_CACHABLE` 的 group 必须走 `system-uncached`。后续又补通
 H.265 level/temporal-MVP/GOP-boundary 状态，以及 H.264 在 FFmpeg 未提供
 `KEY_MOTION_INFO` 时的 `mei_stor=0` 与 scene-tune 单帧延迟。现在 H.264/H.265
-的 12 帧门和 320x240/1280x720 的 120-frame GOP60 序列都与 vendor C 整条码流
+的 12 帧门和 320x240/1280x720 的 60 帧单 GOP 序列都与 vendor C 整条码流
 逐字节一致。VEPU580 H.264 固定 QP 兼容路径现在默认 depth-2 deferred queue；
 每个 job 独立持有 batch/STATUS/output，三槽 recon 按 C 的 `0→1→2` 轮转，
 pipeline 完成必须使用 blocking `POLL_HW_FINISH`。300 帧 720p 为
-0.306 s / 980 FPS，C FFmpeg 为 0.321 s / 935 FPS，输出保持逐字节一致。
-H.265 也已接入同一 queue contract，默认 depth 1；300 帧 720p 从同步
-0.752 s / 399 FPS 提升到 0.612 s / 490 FPS，长 GOP 保持逐字节。H.265
-depth 2 可到 912 FPS，但 immediate-reference 在 monitor 内仍可能在约第 41
-帧产生数据竞争，因此只保留为显式实验，不作为默认。
+0.337 s / 890 FPS，C FFmpeg 为 0.376 s / 798 FPS，输出保持逐字节一致。
+H.265 也已接入同一 queue contract，并补上 C `task_cnt == 2` 路径的
+`reg0193_dual_core` 跨任务握手。此前 depth 2 的 912 FPS 来自未同步双核路径，
+长 GOP 会在约第 41 帧分叉；现在 `txid/rxid/txe/rxe` 与 offset 9 按 C 的
+`0→1→2→3→0` 序列写入，320x240/1280x720 的 60 帧单 GOP 均逐字节。300 帧
+720p 为 0.453 s / 662 FPS，C 为 0.462 s / 649 FPS；Rust CPU user+sys
+0.418 s，C 0.442 s。H.265 depth 2 现在是兼容路径默认。
+重复测试同时发现 120 帧/GOP60 跨第二个 IDR 后，C FFmpeg 会在不同进程产生
+多个码流且解码像素不同；相同参数的 60 帧在 8 次冷启动重复中全部一致，因此
+精确门使用一个完整 60 帧 GOP，不用不稳定的 C 结果定义 Rust 正确性。
 回归入口：`scripts/board_ffmpeg_rkmpp.sh`（8/8）和
-`scripts/board_ffmpeg_h264_pipeline_bench.sh`。
+`scripts/board_ffmpeg_{h264,h265}_pipeline_bench.sh`。
 
 
 > **2026-11-02 事件：** 第一次尝试 `scripts/board_corpus_sweep.sh`（corpus 全量

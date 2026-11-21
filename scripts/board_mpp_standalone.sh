@@ -6,19 +6,30 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
 
 export PATH="$HOME/.cargo/bin:$PATH"
-mpp_root="${MPP_REF:-/tmp/mpp-develop}"
+mpp_root="${MPP_REF:-}"
+if [ -z "$mpp_root" ]; then
+    for candidate in /tmp/mpp-develop "$HOME/rk-mpp-oracles/mpp-develop" \
+        "$HOME/rk-mpp-oracles/mpp-old"; do
+        if [ -x "$candidate/build/test/mpi_dec_test" ] &&
+            [ -f "$candidate/build/mpp/librockchip_mpp.so.1" ]; then
+            mpp_root=$candidate
+            break
+        fi
+    done
+    mpp_root=${mpp_root:-/tmp/mpp-develop}
+fi
 dec_test="${DEC_TEST:-$mpp_root/build/test/mpi_dec_test}"
 vendor_lib="${MPP_LIB:-$mpp_root/build/mpp}"
 h264="${H264_STREAM:-/tmp/rk_mpp_standalone_h264.264}"
 overlay=$(mktemp -d /tmp/rk_mpp_standalone.XXXXXX)
 trap 'rm -rf "$overlay"' EXIT
 
-if [ -z "${DEC_TEST:-}" ] && [ ! -x "$dec_test" ] &&
-    [ -x /usr/local/bin/mpi_dec_test ]; then
-    dec_test=/usr/local/bin/mpi_dec_test
-fi
-if [ -z "${MPP_LIB:-}" ] && [ ! -f "$vendor_lib/librockchip_mpp.so.1" ] &&
+if [ -z "${MPP_REF:-}" ] && [ -z "${DEC_TEST:-}" ] &&
+    [ -z "${MPP_LIB:-}" ] && [ ! -x "$dec_test" ] &&
+    [ ! -f "$vendor_lib/librockchip_mpp.so.1" ] &&
+    [ -x /usr/local/bin/mpi_dec_test ] &&
     [ -f /usr/local/lib/librockchip_mpp.so.1 ]; then
+    dec_test=/usr/local/bin/mpi_dec_test
     vendor_lib=/usr/local/lib
 fi
 if [ ! -x "$dec_test" ] || [ ! -f "$vendor_lib/librockchip_mpp.so.1" ]; then

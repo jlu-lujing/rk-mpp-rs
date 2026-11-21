@@ -74,11 +74,14 @@
 - **RK3588 FFmpeg H.264 编码已达到并略超 C。** 固定 QP DMA-BUF 路径默认
   使用 VEPU580 session 内 depth-2 deferred queue；pending job 独立持有
   batch/STATUS/output，三槽 recon 按 `0→1→2` 轮转，并使用 blocking
-  `POLL_HW_FINISH`。300 帧 720p 中介为 **0.306 s / 980 FPS**，C FFmpeg 为
-  `0.321 s / 935 FPS`；120 帧 320x240/1280x720 GOP60 码流逐字节一致。
-  H.265 使用同一 queue contract 的默认 depth 1，300 帧 720p 从同步
-  **399 FPS** 提升到 **490 FPS** 且输出逐字节；depth 2 虽可达 912 FPS，
-  但 long-GOP 的 immediate-reference 仍有数据竞争，暂不设为默认。
+  `POLL_HW_FINISH`。最近五组交错 300 帧 720p 中位为
+  **0.337 s / 890 FPS**，C FFmpeg 为 `0.376 s / 798 FPS`；60 帧
+  320x240/1280x720 单 GOP 码流逐字节一致。
+  H.265 也默认使用 depth 2，并补上 C 侧 frame-parallel 硬件启动流程中的
+  `reg0193_dual_core` 跨任务握手；300 帧 720p 从同步 **341 FPS** 提升到
+  **662 FPS**，C FFmpeg 为 649 FPS。60 帧 320x240/1280x720 单 GOP 均逐字节，
+  且 CPU user+sys 为 0.418 s，低于 C 的 0.442 s。120 帧/GOP60 跨第二个
+  IDR 后 C 会因 VEPU580 遗留状态产生多个码流，不能作为逐字节 oracle。
 - 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
   rkvdec 拒收 H.265 4:2:2 / 4:4:4。
 - 未来扩展到其他 SoC 的工作与成本见 [docs/PLAN.md](docs/PLAN.md) 的 W12 与决策 D2；

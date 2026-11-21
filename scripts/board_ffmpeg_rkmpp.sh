@@ -53,25 +53,11 @@ pass_case() {
     passed=$((passed + 1))
 }
 
-warm_encoder_state() {
-    local codec=$1
-    local size=$2
-    local frames=${3:-2}
-    local mode=${4:-c}
-    for _ in 1 2; do
-        local prefix=()
-        if [ "$mode" = rust ] || [ "$mode" = cpu ]; then
-            prefix=(env LD_LIBRARY_PATH="$overlay")
-        fi
-        if [ "$mode" = cpu ]; then
-            prefix+=(RKMPP_COMPAT_CPU_INPUT=1)
-        fi
-        timeout 90 "${prefix[@]}" "$ffmpeg_bin" \
-            -nostdin -hide_banner -loglevel error \
-            -f lavfi -i "testsrc2=size=$size:rate=30" -frames:v "$frames" \
-            -pix_fmt nv12 -c:v "${codec}_rkmpp" -rc_mode CQP -qp_init 26 \
-            -g 60 -f null - >/dev/null 2>&1
-    done
+print_stream_mismatch() {
+    local vendor=$1
+    local ours=$2
+    sha256sum "$vendor" "$ours" >&2
+    cmp -l "$vendor" "$ours" 2>/dev/null | head -5 >&2 || true
 }
 
 decode_exact() {
@@ -134,26 +120,17 @@ encode_case() {
         -pix_fmt nv12 -c:v "${codec}_rkmpp" -rc_mode CQP -qp_init 26
         -g "$gop" -f "$muxer" -y)
 
-    if [ "$frames" -gt 12 ]; then
-        warm_encoder_state "$codec" "$size" "$frames" c
-    fi
     if ! timeout 90 "$ffmpeg_bin" "${common[@]}" "$vendor" \
         >"$vendor_log" 2>&1; then
         printf 'SKIP %-22s vendor encoder failed\n' "$name"
         skipped=$((skipped + 1))
         return
     fi
-    if [ "$frames" -gt 12 ]; then
-        warm_encoder_state "$codec" "$size" "$frames" rust
-    fi
     if ! timeout 90 env LD_LIBRARY_PATH="$overlay" "$ffmpeg_bin" \
         "${common[@]}" "$ours" >"$ours_log" 2>&1; then
         fail_case "$name encode" "Rust FFmpeg frontend failed"
         tail -20 "$ours_log" >&2
         return
-    fi
-    if [ "$frames" -gt 12 ]; then
-        warm_encoder_state "$codec" "$size" "$frames" cpu
     fi
     if ! timeout 90 env LD_LIBRARY_PATH="$overlay" RKMPP_COMPAT_CPU_INPUT=1 \
         "$ffmpeg_bin" "${common[@]}" "$cpu" >"$cpu_log" 2>&1; then
@@ -178,6 +155,7 @@ encode_case() {
     fi
     if [ "$require_exact" = 1 ] && ! cmp -s "$vendor" "$ours"; then
         fail_case "$name encode" "vendor and Rust bitstreams differ"
+        print_stream_mismatch "$vendor" "$ours"
         return
     fi
 
@@ -204,8 +182,8 @@ decode_exact vp9-decode vp9 tests/data/vp9_p0_lossless_320x240_12.ivf 12 nv12
 encode_case h264-encode h264 h264 h264 1
 encode_case hevc-encode hevc hevc h265 1
 encode_case mjpeg-encode mjpeg mjpeg mjpeg 1
-encode_case hevc-long-gop hevc hevc h265 1 120 320x240 60
-encode_case h264-long-gop h264 h264 h264 1 120 320x240 60
+encode_case hevc-long-gop hevc hevc h265 1 60 320x240 60
+encode_case h264-long-gop h264 h264 h264 1 60 320x240 60
 
 printf 'SUMMARY passed=%d skipped=%d failed=%d\n' \
     "$passed" "$skipped" "$fail"

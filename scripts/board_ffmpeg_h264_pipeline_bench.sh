@@ -32,7 +32,7 @@ common=(-nostdin -hide_banner -loglevel error
     -frames:v "$frames" -c:v h264_rkmpp -rc_mode CQP -qp_init 26
     -g 60 -profile:v high -f h264 -y)
 
-exact_frames=${EXACT_FRAMES:-120}
+exact_frames=${EXACT_FRAMES:-60}
 exact_common=(-nostdin -hide_banner -loglevel error
     -f rawvideo -pix_fmt nv12 -s "${width}x${height}" -r 30 -i "$raw"
     -frames:v "$exact_frames" -c:v h264_rkmpp -rc_mode CQP -qp_init 26

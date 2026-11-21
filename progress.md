@@ -21,30 +21,39 @@
   CPU-visible bytes matched the source.
 - Preserved SEI/header session controls when FFmpeg sends its second
   `MPP_ENC_SET_CFG` at the first frame.
-- H.264 and H.265 now match vendor C byte-for-byte for the 2/12-frame gates and
-  120-frame GOP60 sequences at 320x240 and 1280x720.
+- H.264 and H.265 match vendor C byte-for-byte for the 2/12-frame gates and
+  60-frame single-GOP sequences at 320x240 and 1280x720.
+- Repeated evidence found that VEPU580 C FFmpeg is not a stable stream oracle
+  after a second GOP boundary in the same encode. Eight cold H.264 60-frame runs
+  were identical, while 120-frame GOP60 runs produced four different streams
+  across processes; three separately decoded samples produced three different
+  YUVs. Rust is deterministic and reproduces one valid C mode; the exact gate
+  therefore stops at one complete 60-frame GOP.
 - H.265 now carries level into VPS/SPS, enables slice temporal MVP plus
   collocated/colmv state, and emits a fresh IDR at each GOP boundary.
 - H.264 compatibility now follows FFmpeg's absent `KEY_MOTION_INFO`: MD writeback
   is disabled and the scene-tune update is delayed one picture to match the
   vendor async encoder.
-- Added direct DMA-BUF versus CPU-fallback equality checks and 12/120-frame exact
-  H.264/H.265 cases to `board_ffmpeg_rkmpp.sh`; each long path gets a discarded
-  full-length warmup to neutralize RK3588 cross-process encoder state. The gate
-  is now 8/8.
+- Added direct DMA-BUF versus CPU-fallback equality checks plus 12-frame and
+  60-frame single-GOP exact H.264/H.265 cases to `board_ffmpeg_rkmpp.sh`.
+  A second GOP is excluded from the exact gate because the C stream becomes
+  process-state dependent on this hardware.
 - Implemented a VEPU580 H.264 fixed-QP depth-2 session queue for the FFmpeg
   compatibility path. Pending jobs own independent batch/STATUS/output state,
   input metadata stays in submission order, reconstruction slots rotate
   `0→1→2`, and pipeline completion uses blocking `POLL_HW_FINISH`.
-- H.264 120-frame GOP60 remains byte-identical at 320x240 and 1280x720. Seven
-  interleaved 300-frame 720p samples improved synchronous 0.711 s / 422 FPS to
-  depth-2 0.306 s / 980 FPS; C FFmpeg is 0.321 s / 935 FPS.
+- H.264 60-frame single-GOP remains byte-identical at 320x240 and 1280x720. Five
+  interleaved 300-frame 720p samples improved synchronous 0.904 s / 332 FPS to
+  depth-2 0.337 s / 890 FPS; C FFmpeg is 0.376 s / 798 FPS.
 - Added `board_ffmpeg_h264_pipeline_bench.sh` for C/sync/depth-1/depth-2
   comparison and retained only the byte-identical depth.
 - Extended the session queue to VEPU580 H.265. Its three-surface short-term P
   rotation is byte-exact at depth 1; 300-frame 720p improved from 0.752 s /
-  399 FPS synchronous to 0.612 s / 490 FPS. H.265 depth 2 reaches 912 FPS but
-  fails the 120-frame exact gate around frame 41 and remains opt-in.
+  399 FPS synchronous to 0.612 s / 490 FPS. The earlier 912 FPS depth-2 result
+  was unsafe: it omitted C's frame-parallel dual-core handshake and diverged
+  around frame 41. Modelling `reg0193_dual_core` (`txid/rxid/txe/rxe` and
+  offset 9) makes both 320x240 and 720p 60-frame single GOPs exact; 300-frame 720p is
+  now 0.453 s / 662 FPS versus C 0.462 s / 649 FPS. H.265 depth 2 is the default.
 - Rejected a pooled-surface decode variant after it regressed H.264/H.265 to
   C-level or below; no code from that experiment remains.
 - Tried a high-level FFmpeg compatibility encoder worker with an input FIFO.
@@ -52,6 +61,10 @@
   rejected before commit.
 - Kept two verified compatibility fixes from that investigation: NULL frames
   now request encoder EOS, and an empty packet queue returns `MPP_NOK`.
+- Hardened `board_mpp_standalone.sh` after a reboot removed `/tmp/mpp-develop`:
+  it now discovers a matching `mpi_dec_test`/library pair under
+  `~/rk-mpp-oracles` and refuses to mix the system test with another oracle's
+  library. The default gate is back to 5/5 after cold boot.
 - Final regression: FFmpeg 6/6, official encoder/TSVC all pass, and host
   `cargo test --all-targets --offline` completes with 1199 passed, 0 failed,
   2 ignored in the root library plus all integration suites green.

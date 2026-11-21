@@ -300,7 +300,7 @@
   Selecting `system-uncached` for non-cacheable MPP groups restores exact
   input visibility.
 - With uncached MPP DRM buffers, H.264 and H.265 are byte-identical to vendor C
-  for the 2/12-frame gates and 120-frame GOP60 sequences at both 320x240 and
+  for the 2/12-frame gates and 60-frame single-GOP sequences at both 320x240 and
   1280x720.
 - FFmpeg sends `MPP_ENC_SET_CFG` once during init and again on the first frame
   to add DRM-plane strides. Reconstructing `Encoder` on the second command
@@ -315,11 +315,14 @@
   `enc_pic.mei_stor` and `meiw_addr` clear. Matching that and delaying H.264
   scene-tune feedback by one picture reproduces the async encoder's state at
   frame 105, where a 120-frame fixture otherwise changes lambda/ATF rows early.
-- RK3588 carries codec state across processes. In a gate that runs H.264 and
-  H.265 long GOPs back-to-back, the second codec alternately failed unless each
-  measured path first ran a discarded 120-frame encode with the same codec. A
-  two-frame warmup was insufficient; the full-length warmup is part of the
-  board gate, not an output workaround.
+- A second GOP makes C FFmpeg an unstable stream oracle on this RK3588.
+  Immediately after a cold boot, eight consecutive H.264 120-frame/GOP60 runs
+  produced four hashes: `0c9e7106…`, `d7aba365…`, `cc460bf5…`, and
+  `38c89798…`. Three separately decoded samples produced three different YUVs.
+  Eight 60-frame H.264 runs all produced `77ec189d…`; eight 60-frame H.265 runs
+  all produced `6e634163…`. Warmups do not make the 120-frame case
+  deterministic. Rust is deterministic and matches the valid 60-frame C mode,
+  so exactness is defined over one complete GOP.
 - VEPU580 H.264 depth-2 needs three reconstruction surfaces in the vendor
   `0→1→2→0` rotation. The prior synchronous two-slot alternation stayed
   byte-exact only because each job had completed before the next was prepared;
@@ -328,19 +331,29 @@
   queued. The non-blocking poll can return after one task while later queued
   STATUS destinations have not yet been filled, which changed the final
   packets even though all named registers matched.
-- The depth-2 H.264 FFmpeg path reaches 980 FPS on 300-frame 720p versus C
-  FFmpeg at 935 FPS, while 120-frame CQP/GOP60 output remains byte-identical.
-  Depth 1 improves the synchronous 422 FPS path to 525 FPS but is still below
+- The depth-2 H.264 FFmpeg path reaches 890 FPS on 300-frame 720p versus C
+  FFmpeg at 798 FPS, while 60-frame single-GOP output remains byte-identical.
+  Depth 1 improves the synchronous 332 FPS path to 493 FPS but is still below
   C; depth 2 is therefore the default compatibility path.
 - H.265 FFmpeg uses a short-term GOP, unlike the standalone long-term IDR
   variant. Its P jobs rotate through three reconstruction surfaces and refer to
   the immediately preceding surface. Depth 1 is byte-exact and improves the
   synchronous FFmpeg frontend from roughly 399 to 490 FPS.
-- H.265 depth 2 reaches about 912 FPS, but the immediate-reference dependency
-  is not guaranteed once the older job has been reaped and the previous picture
-  is still in flight. Registers and address-rotation patterns match C, yet a
-  120-frame stream diverges around frame 41. Depth 2 remains experimental; the
-  default is depth 1 until the reference dependency is modelled explicitly.
+- The H.265 depth-2 divergence was the missing frame-parallel half of VEPU580
+  setup, not a reconstruction-slot mistake. C's `task_cnt == 2` path programs
+  `reg0193_dual_core` from its persistent `curr_idx/prev_idx` counters: an
+  intra picture restarts both at zero with `rxe=0`; later jobs use
+  `txid=curr`, `rxid=prev`, `txe=1`, `rxe=1`, offset 9, then advance
+  `prev=curr` and `curr=(curr+1)&3`.
+- The first five C trace words are `00090010`, `00090031`, `00090036`,
+  `0009003b`, and `0009003c`. Rust now emits the same sequence when depth 2 is
+  selected. Both 320x240 and 1280x720 60-frame single-GOP streams match C, including
+  the former divergence around frame 41.
+- With the handshake present, five interleaved 300-frame 720p samples give Rust
+  depth 2 **0.453 s / 662 FPS** and C **0.462 s / 649 FPS**. The earlier
+  912 FPS result was the unsafe unsynchronised path. Rust CPU user+sys is
+  0.418 s versus C 0.442 s, so there is no CPU-cost regression beyond the C
+  baseline. H.265 depth 2 is now the compatibility default.
 - Vendor MPP uses `mpp_enc_async_thread`: the caller queues frame tasks and a
   worker thread advances submit, HAL start, HAL wait and packet publication.
   The current Rust VEPU580 path still runs `submit -> poll(enc_done)` inline

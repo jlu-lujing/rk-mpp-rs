@@ -100,8 +100,8 @@ exact external-buffer behavior:
 
 - H.264 2-frame H.264 High/QP26 is byte-identical to vendor C and native Rust;
 - H.264 12-frame FFmpeg output is byte-identical to vendor C;
-- H.264 and H.265 are byte-identical to vendor C for both the 12-frame gate
-  and 120-frame GOP60 sequences at 320x240 and 1280x720;
+- H.264 and H.265 are byte-identical to vendor C for the 12-frame gate and
+  60-frame single-GOP sequences at 320x240 and 1280x720;
 - FFmpeg's second `MPP_ENC_SET_CFG` at the first frame now preserves the
   previously set SEI and per-IDR header modes instead of reconstructing an
   encoder with default controls. This removes the extra version/RC SEI NALs.
@@ -115,16 +115,20 @@ exact external-buffer behavior:
   detector first changes rows.
 
 The board gate compares DMA-BUF input with `RKMPP_COMPAT_CPU_INPUT=1` for
-H.264, H.265 and MJPEG. It requires 12-frame and 120-frame/GOP60 H.264 and H.265
-outputs to match vendor C byte for byte. The correct uncached mapping costs
-about 2-4% in the FFmpeg frontend rows versus the previous incorrect run; native
-Rust throughput is unchanged.
+H.264, H.265 and MJPEG. It requires 12-frame and 60-frame/single-GOP H.264 and
+H.265 outputs to match vendor C byte for byte. The correct uncached mapping
+costs about 2-4% in the FFmpeg frontend rows versus the previous incorrect run;
+native Rust throughput is unchanged.
 
-RK3588 retains encoder state across processes. A two-frame warmup was not
-enough after a preceding long H.264 run; the long-GOP gate therefore performs a
-discarded 120-frame encode with the same codec immediately before each measured
-path. This makes the C and Rust processes start from the same hardware state and
-removes alternating false failures between the two long cases.
+Further repetition invalidated the earlier 120-frame/GOP60 exactness claim.
+After a second IDR, C FFmpeg produces several different streams across fresh
+processes, and those streams decode to different YUV. A cold RK3588 test of
+eight 120-frame H.264 runs produced four hashes (`0c9e7106…`,
+`d7aba365…`, `cc460bf5…`, `38c89798…`), while eight 60-frame runs all produced
+`77ec189d…`. H.265 behaved the same way: eight 60-frame runs were stable at
+`6e634163…`. Rust stayed on its deterministic 60-frame-compatible mode. The
+exact gate therefore uses one complete 60-frame GOP rather than treating an
+unstable second-GOP C result as an oracle.
 
 ## 2026-11-21 VEPU580 H.264 deferred queue
 
@@ -139,15 +143,15 @@ rotation as vendor C. Completion uses the kernel's blocking
 `POLL_HW_FINISH`, which writes all queued readbacks before returning; the
 non-blocking poll is only safe for the single-job synchronous path.
 
-H.264 120-frame GOP60 output remains byte-identical at 320x240 and 1280x720.
-Seven interleaved 300-frame 720p encode samples:
+H.264 60-frame single-GOP output remains byte-identical at 320x240 and 1280x720.
+Five interleaved 300-frame 720p encode samples:
 
 | path | wall | FPS | CPU | vs C |
 |---|---:|---:|---:|---:|
-| C FFmpeg | 0.321 s | 934.6 | 0.372 s (116%) | baseline |
-| Rust synchronous | 0.711 s | 421.9 | 0.337 s (47%) | -54.9% |
-| Rust depth 1 | 0.571 s | 525.4 | 0.328 s (57%) | -43.8% |
-| Rust depth 2 | **0.306 s** | **980.4** | 0.334 s (109%) | **+4.9%** |
+| C FFmpeg | 0.376 s | 797.9 | 0.467 s (124%) | baseline |
+| Rust synchronous | 0.904 s | 331.9 | 0.663 s (73%) | -58.4% |
+| Rust depth 1 | 0.608 s | 493.4 | 0.550 s (90%) | -38.2% |
+| Rust depth 2 | **0.337 s** | **890.2** | 0.453 s (134%) | **+11.6%** |
 
 ## 2026-11-21 VEPU580 H.265 deferred queue
 
@@ -163,16 +167,25 @@ Five interleaved 300-frame 720p samples:
 
 | path | wall | FPS | result |
 |---|---:|---:|---|
-| C FFmpeg | 0.436 s | 688 FPS | baseline |
-| Rust synchronous | 0.752 s | 399 FPS | exact |
-| Rust depth 1 | **0.612 s** | **490 FPS** | **exact, default** |
-| Rust depth 2 | 0.329 s | 912 FPS | 120-frame long GOP differs |
+| C FFmpeg | 0.462 s | 649 FPS | baseline |
+| Rust synchronous | 0.880 s | 341 FPS | 60f exact |
+| Rust depth 1 | 0.655 s | 458 FPS | 60f exact |
+| Rust depth 2 | **0.453 s** | **662 FPS** | **60f exact, default** |
 
-Depth 2 removes enough hardware serialization to expose a reference-data race:
-named registers and surface addresses match C, but the long stream diverges
-around frame 41. It remains an explicit experimental setting and is not the
-default. Depth 1 is retained because it improves the synchronous path by about
-23% while remaining byte-identical.
+The earlier depth-2 result (0.329 s / 912 FPS) omitted one half of C's
+frame-parallel HAL setup and diverged around frame 41. `reg0193_dual_core` is a
+persistent cross-task handshake, not picture-local syntax. For C's
+`task_cnt == 2` path an intra picture restarts both IDs at zero with `rxe=0`;
+later jobs write `txid=curr`, `rxid=prev`, `txe=1`, `rxe=1`, offset 9, then
+advance `prev=curr` and `curr=(curr+1)&3`. The first five C words are
+`00090010`, `00090031`, `00090036`, `0009003b`, and `0009003c`; Rust now emits
+the same sequence.
+
+With the handshake modelled, the 60-frame 320x240 and 1280x720 single-GOP
+streams are byte-identical to C. Depth 2 is now the compatibility default. The
+median gain over synchronous H.265 is 94%, and Rust is 2.0% faster than C
+FFmpeg with no CPU-cost increase relative to C (0.418 s user+sys versus
+0.442 s).
 
 ## Interpretation
 
@@ -181,12 +194,9 @@ default. Depth 1 is retained because it improves the synchronous path by about
   substantially less CPU.
 - Native Rust has no FFmpeg demux/mux/frontend overhead. Decode is 2.4-2.6x
   faster than C FFmpeg while using roughly one-third of the CPU.
-- H.264 encode now beats vendor C FFmpeg by about 5% through the depth-2
-  session queue. H.265 depth 1 improves synchronous throughput by about 23% to
-  490 FPS but remains below C's 688 FPS; depth 2 is faster but not stable enough
-  for default use.
-- The next H.265 step is to model the reference dependency explicitly rather
-  than relying on hardware queue ordering, so depth 2 can become byte-exact.
+- H.264 encode now beats vendor C FFmpeg by about 12% through the depth-2
+  session queue. H.265 depth 2 raises synchronous throughput by about 94% to
+  662 FPS and is slightly faster than C's 649 FPS while remaining byte-exact.
 - Encoded streams were not treated as byte-identical across all three APIs.
   The established exactness gates remain the dedicated standalone and SDK
   tests.
@@ -199,4 +209,6 @@ Run on the board:
 SAMPLES=7 scripts/board_ffmpeg_rkmpp_bench.sh
 # H.264 sync/depth-1/depth-2 comparison:
 SAMPLES=7 scripts/board_ffmpeg_h264_pipeline_bench.sh
+# H.265 sync/depth-1 comparison:
+SAMPLES=5 scripts/board_ffmpeg_h265_pipeline_bench.sh
 ```
