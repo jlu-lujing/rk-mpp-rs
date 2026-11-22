@@ -401,8 +401,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 10. W6 解码器边缘与 conformance（L，约 10–15 天）
 
-- [ ] W6-1 AVS+ 解码（client 12；公开 I/P/B、raw/vproc、Rust SDK 与 C ABI
-      已完成，AEC/field picture 仍缺真实 oracle）
+- [ ] W6-1 AVS+ 解码（client 12；公开 I/P/B、raw/vproc、interlaced-frame、
+      Rust SDK 与 C ABI 已完成，AEC/独立 field-pair 仍缺真实 oracle）
 - [ ] W6-2 AVS2：RK3588 未暴露设备；有硬件和流再做
 - [ ] W6-3 损坏/截断/随机 bit-flip 流：与 C 的"输出帧数 + 错误码"一致（逐字节要求
       降级为可解释的差异）
@@ -451,8 +451,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       standalone helper surface are now implemented.
 - [x] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
       **Decode complete on RK3588:** the unchanged vendor `mpi_dec_test` now
-      runs H.264/H.265/VP8/VP9/MPEG-2/MPEG-4/H.263/AV1/MJPEG and two AVS+
-      vproc cycles through the standalone library. The 15-case gate includes
+      runs H.264/H.265/VP8/VP9/MPEG-2/MPEG-4/H.263/AV1/MJPEG, two AVS+
+      vproc cycles and an AVS interlaced-frame cycle through the standalone
+      library. The 16-case gate includes
       VP8 altref, MPEG-4 IPBB, H.263 CIF/QCIF, and a no-`-n` EOS path with exact
       output-size and byte checks. Legacy elementary streams use incremental parser state instead
       of whole-prefix replay, and object output writes directly into a normal

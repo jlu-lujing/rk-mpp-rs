@@ -135,6 +135,35 @@ ssh "$BOARD" "cmp -s /tmp/avs03_vproc_c.yuv /tmp/avs03_vproc_sdk.yuv"
 printf 'PASS AVS+ Rust stream03 7-frame default IEP2 vproc cycle is byte-identical to vendor C\n'
 printf 'PASS AVS+ public SDK stream03 vproc cycle is byte-identical to vendor C\n'
 
+ssh "$BOARD" "sudo rm -f /tmp/avs_i_c.nv12 /tmp/avs_i_c.yuv \
+  /tmp/avs_i_r.yuv /tmp/avs_i_cv.nv12 /tmp/avs_i_rv.nv12"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo env enable_deinterlace=0 \
+  LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
+  \"$mpp_ref/build/test/mpi_dec_test\" -i \
+  tests/data/avs_xavs_interlaced_352x288_8.avs -o /tmp/avs_i_c.nv12 \
+  -t 16777221 -n 8 </dev/null >/tmp/avs_i_c.log 2>&1"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/rk-mpp-rs avsdec \
+  tests/data/avs_xavs_interlaced_352x288_8.avs /tmp/avs_i_r.yuv 8 i420 \
+  >/tmp/avs_i_r.log 2>&1"
+ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  -video_size 352x288 -i /tmp/avs_i_c.nv12 -pix_fmt yuv420p -f rawvideo \
+  /tmp/avs_i_c.yuv"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_i_r.yuv)\" -eq 1216512"
+ssh "$BOARD" "cmp -s /tmp/avs_i_c.yuv /tmp/avs_i_r.yuv"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo env \
+  LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
+  \"$mpp_ref/build/test/mpi_dec_test\" -i \
+  tests/data/avs_xavs_interlaced_352x288_8.avs -o /tmp/avs_i_cv.nv12 \
+  -t 16777221 -n 11 </dev/null >/tmp/avs_i_cv.log 2>&1"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/rk-mpp-rs avsdec \
+  tests/data/avs_xavs_interlaced_352x288_8.avs /tmp/avs_i_rv.nv12 11 vproc \
+  >/tmp/avs_i_rv.log 2>&1"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_i_rv.nv12)\" -eq 1672704"
+ssh "$BOARD" "cmp -s /tmp/avs_i_cv.nv12 /tmp/avs_i_rv.nv12"
+printf 'PASS AVS+ interlaced-frame raw/vproc cycles are byte-identical to vendor C\n'
+
 ssh "$BOARD" "sudo rm -f /tmp/avs48_c.nv12 /tmp/avs48_c.yuv /tmp/avs48_r.nv12 /tmp/avs48_sdk.yuv"
 ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
   \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_plus_profile48.avs \

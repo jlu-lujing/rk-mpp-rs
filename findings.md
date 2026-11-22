@@ -311,12 +311,13 @@
   The RK3588 kernel exposes neither
   `/dev/vcodec` nor `/proc/kmpp` ctrl-cfg support, so the tool rejects KMPP
   modes 1/2 before encoding.
-- The RK3588 standalone decoder matrix is now 15/15 with exact output-size
+- The RK3588 standalone decoder matrix is now 16/16 with exact output-size
   checks: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
   H.263 CIF/QCIF, AV1, MJPEG and two AVS+ vproc cycles all match vendor C
   byte-for-byte; the extra MPEG-2 case omits `-n` and exercises the EOS path.
-  AVS uses coding type `16777221`; its two cycles are 9 frames
-  (`6ef29ca6…e169`) and 7 frames (`35ac81e6…f3d1`).
+  AVS uses coding type `16777221`; its public cycles are 9 frames
+  (`6ef29ca6…e169`) and 7 frames (`35ac81e6…f3d1`), plus an 11-frame
+  interlaced-frame vproc cycle (`1fa2e8ed…c2b0`).
 - Legacy SDK frames now carry their source layout. AVS vproc can therefore
   remain NV12 from the IEP output through `mpi_dec_test` instead of taking a
   needless NV12→I420→NV12 round trip; MPEG/H.263 still use the explicit
@@ -567,6 +568,12 @@
   Rust uses `DecoderConfig::with_vproc_output(true)` and C sets
   `RK_MPP_DECODER_FLAG_VPROC_OUTPUT`. The complete 9/7-frame outputs from both
   public fixtures match C through the Rust SDK and a compiled C consumer.
+- A locally patched XAVS encoder produced an eight-frame AVS interlaced-frame
+  stream (`progressive_sequence=0`, `progressive_frame=0`,
+  `picture_structure=FRAME`). RK3588 C and Rust match for all 8 raw I420 frames
+  (`508883d6…1416`) and the 11-frame IEP2-vproc sequence
+  (`1fa2e8ed…c2b0`). This validates interlaced frame syntax, not separate-field
+  pair scheduling.
 - The AVS parser has a deterministic 20,000-iteration mutation test covering
   truncation, byte flips, insertion and arbitrary inputs; all parser entry points
   return errors or partial parses without panicking.

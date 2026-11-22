@@ -424,6 +424,12 @@ cargo test --test fixture_manifest
   FFmpeg's little-endian `yuv420p10le` output.
 - `h265e_c_fixqp_*` are short fixed-QP streams emitted by the source-built C
   MPP encoder used as the H.265 header oracle.
+- `avs_xavs_interlaced_352x288_8.avs` is a project-generated eight-frame
+  interlaced-frame AVS stream. It was produced from a deterministic
+  `testsrc2` YUV sequence with the reference XAVS encoder and a local header
+  patch that sets `progressive_sequence=0`, `progressive_frame=0` and
+  `picture_structure=FRAME`. It exercises interlaced-frame syntax, not a
+  separate-field pair. The raw and IEP2-vproc outputs are gated against C MPP.
 
 ## C MPP captures
 

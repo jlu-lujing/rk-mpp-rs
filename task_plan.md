@@ -426,6 +426,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Keep AVS vproc anchors as descriptors and emit packed output without copies.
 - [x] Expose AVS vproc through the Rust SDK and C ABI.
 - [x] Run AVS+ vproc through the unchanged standalone `mpi_dec_test`.
+- [x] Validate an interlaced-frame AVS stream against C raw and vproc.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

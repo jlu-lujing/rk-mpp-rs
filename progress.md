@@ -145,12 +145,14 @@
   consumes complete picture groups, MPEG-4 carries VOL/timing across VOP
   packets, and H.263 carries its I-picture gate. The normal SDK whole-stream
   path is unchanged.
-- `board_mpp_standalone.sh` now covers 15 cases: H.264, H.265, VP8 IP/altref,
-  VP9, MPEG-2, MPEG-4 IP/B, H.263 CIF/QCIF, AV1, MJPEG and two AVS+ vproc
-  cycles. Each case checks the exact NV12 output size and byte-compares vendor C
-  with Rust. One MPEG-2 case omits `-n` to exercise the EOS-frame path.
-- RK3588 passes 15/15. Representative hashes include AVS+ 9-frame
-  `6ef29ca6…e169`, AVS+ 7-frame `35ac81e6…f3d1`, VP8 altref
+- `board_mpp_standalone.sh` now covers 16 cases: H.264, H.265, VP8 IP/altref,
+  VP9, MPEG-2, MPEG-4 IP/B, H.263 CIF/QCIF, AV1, MJPEG, two AVS+ vproc
+  cycles and an AVS interlaced-frame cycle. Each case checks the exact NV12
+  output size and byte-compares vendor C with Rust. One MPEG-2 case omits `-n`
+  to exercise the EOS-frame path.
+- RK3588 passes 16/16. Representative hashes include AVS+ 9-frame
+  `6ef29ca6…e169`, AVS+ 7-frame `35ac81e6…f3d1`, interlaced-frame vproc
+  `1fa2e8ed…c2b0`, VP8 altref
   `ebaa4d7e…d819bc`, MPEG-4 IPBB `e9db8cb8…384b14`, MPEG-2
   `2dc97045…af6371e`, H.263 CIF `4a2a9312…c2f45e`, and H.263 QCIF
   `4957b0cc…619ceb`.
@@ -158,6 +160,9 @@
   vproc now stays NV12 into the standalone `mpi_dec_test` path, avoiding the
   former NV12→I420→NV12 conversion while MPEG/H.263 retain their explicit
   I420→NV12 conversion.
+- Added an eight-frame XAVS-derived AVS interlaced-frame fixture. Raw I420
+  (`508883d6…1416`) and IEP2 vproc (`1fa2e8ed…c2b0`) outputs are byte-exact
+  against C; separate field-pair scheduling remains untested.
 - Replaced the first packet implementation's whole-prefix replay with
   incremental consumption. On concatenated 100/96-frame streams with DMC
   performance and CPU 4–7, the current path is 0.14–0.15 s for MPEG-2 versus

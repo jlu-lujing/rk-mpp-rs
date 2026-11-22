@@ -142,6 +142,8 @@ fi
 test "$(sha256sum "$avs2" | cut -d' ' -f1)" = \
     fa2055cfad0b1d554f2bb87ed4e02254c52b481a9b5b07d49c25a09533c83565
 run_case avs2 "$avs2" 16777221 7 352 288
+run_case avs_interlaced tests/data/avs_xavs_interlaced_352x288_8.avs \
+    16777221 11 352 288
 
 mjpeg=/tmp/rk_mpp_standalone_mjpeg.jpg
 ffmpeg -nostdin -y -hide_banner -loglevel error \

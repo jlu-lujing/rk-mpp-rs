@@ -805,6 +805,31 @@ mod tests {
     }
 
     #[test]
+    fn xavs_interlaced_frame_fixture_has_frame_structure() {
+        let data = include_bytes!("../../../tests/data/avs_xavs_interlaced_352x288_8.avs");
+        let sequence_unit = start_codes(data)
+            .into_iter()
+            .find(|unit| unit.code == 0xb0)
+            .unwrap();
+        let sequence = SequenceHeader::parse(&data[sequence_unit.payload..]).unwrap();
+        assert!(!sequence.progressive_sequence);
+
+        let mut sequence = Some(sequence);
+        let mut version = None;
+        let mut pictures = 0;
+        for (start, end) in split_access_units(data) {
+            let (access, next_version) =
+                AccessUnit::parse_with_sequence(&data[start..end], sequence, version).unwrap();
+            assert!(!access.picture.progressive_frame);
+            assert_eq!(access.picture.picture_structure, FRAME_PICTURE);
+            sequence = Some(access.sequence);
+            version = next_version;
+            pictures += 1;
+        }
+        assert_eq!(pictures, 8);
+    }
+
+    #[test]
     fn arbitrary_mutations_never_panic() {
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
         let mut next = || {

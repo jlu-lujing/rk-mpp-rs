@@ -226,9 +226,9 @@ MJPEG 路径：vendor `mpi_dec_test`
 advanced MJPEG 不再报告 frame identity mismatch。vendor log/cfg/OSAL
 辅助符号后来也已由本库提供；未修改的 `mpi_dec_test` 和 `mpi_enc_test`
 现在都能只加载 standalone `librk_mpp_rs.so` 运行。
-RK3588 的 standalone 解码门现已扩到 15/15：除 H.264/H.265/VP9/AV1/MJPEG
-外，还覆盖 VP8 IP/altref、MPEG-2、MPEG-4 IP/IPBB、H.263 CIF/QCIF 和两个
-AVS+ vproc 完整周期。
+RK3588 的 standalone 解码门现已扩到 16/16：除 H.264/H.265/VP9/AV1/MJPEG
+外，还覆盖 VP8 IP/altref、MPEG-2、MPEG-4 IP/IPBB、H.263 CIF/QCIF、两个
+AVS+ vproc 完整周期和 AVS interlaced-frame 周期。
 legacy frame 现在携带源布局；AVS vproc 以 NV12 直接进入官方工具，避免
 NV12→I420→NV12 往返，MPEG/H.263 仍按需做 I420→NV12。
 官方工具按 4 KiB packet 喂 elementary stream，MPP object 兼容路径用持久
@@ -1480,6 +1480,9 @@ colmv。下一步转到跨 SoC 验收和其余解码边界，不再重复队列�
   输出也已由 Rust `vproc` 模式逐字节复现；完整后处理周期为 9/7 帧，
   SHA-256 分别为 `6ef29ca6…e169` 和 `35ac81e6…f3d1`，Rust/C SDK 均可通过
   vproc 标志选择。AVS2 在当前 RK3588 无设备。
+  另有项目生成的 8 帧 interlaced-frame 流：raw I420
+  `508883d6…1416`、vproc NV12 11 帧 `1fa2e8ed…c2b0` 均与 C 逐字节；
+  独立 field-pair 仍未验证。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 
