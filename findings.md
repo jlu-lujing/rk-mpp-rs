@@ -547,6 +547,9 @@
 - The vproc CLI now writes the compact IEP result directly instead of copying it
   through a second reusable buffer. Three 700-frame samples were 525/523/790 ms;
   the output hash remains unchanged and timing remains bimodal.
+- The AVS parser has a deterministic 20,000-iteration mutation test covering
+  truncation, byte flips, insertion and arbitrary inputs; all parser entry points
+  return errors or partial parses without panicking.
 - `gen_avs_plus_profile.py` derives a syntax-equivalent profile 0x48 stream by
   preserving slice data and adding the AVS+ header bits with weighting/AEC
   disabled. Its first four raw frames match C exactly (`9eb0602a…5cfa4`).

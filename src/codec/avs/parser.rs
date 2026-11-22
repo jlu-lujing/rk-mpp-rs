@@ -803,4 +803,48 @@ mod tests {
         assert!(picture.skip_mode_flag);
         assert!(!picture.no_forward_reference_flag);
     }
+
+    #[test]
+    fn arbitrary_mutations_never_panic() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for iteration in 0..20_000usize {
+            let mut data = PREFIX.to_vec();
+            match iteration % 4 {
+                0 => {
+                    let length = (next() as usize) % (data.len() + 1);
+                    data.truncate(length);
+                }
+                1 => {
+                    let flips = 1 + (next() as usize % 12);
+                    for _ in 0..flips {
+                        let index = next() as usize % data.len();
+                        data[index] ^= (next() as u8) | 1;
+                    }
+                }
+                2 => {
+                    let index = next() as usize % (data.len() + 1);
+                    data.insert(index, next() as u8);
+                }
+                _ => {
+                    let length = next() as usize % 512;
+                    data.clear();
+                    data.extend((0..length).map(|_| next() as u8));
+                }
+            }
+
+            let _ = start_codes(&data);
+            let _ = split_access_units(&data);
+            let _ = SequenceHeader::parse(&data);
+            let _ = AccessUnit::parse(&data);
+            let _ = PictureHeader::parse_i(&data, &plus_sequence(), None);
+            let _ = PictureHeader::parse_pb(&data, &plus_sequence());
+        }
+    }
 }
