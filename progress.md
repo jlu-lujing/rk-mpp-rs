@@ -160,6 +160,9 @@
   vproc now stays NV12 into the standalone `mpi_dec_test` path, avoiding the
   former NV12→I420→NV12 conversion while MPEG/H.263 retain their explicit
   I420→NV12 conversion.
+- Compact CPU frames now move their owned storage into `MppBuffer` without a
+  second packed allocation/copy. All 16 standalone cases remain byte-exact;
+  timing remains noisy and is not used as a stable performance claim.
 - Added an eight-frame XAVS-derived AVS interlaced-frame fixture. Raw I420
   (`508883d6…1416`) and IEP2 vproc (`1fa2e8ed…c2b0`) outputs are byte-exact
   against C; separate field-pair scheduling remains untested.

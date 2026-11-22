@@ -1006,6 +1006,51 @@ unsafe fn new_internal_buffer(
     .cast())
 }
 
+unsafe fn new_internal_buffer_owned(
+    data: Vec<u8>,
+    group: MppBufferGroup,
+) -> Result<MppBuffer, c_int> {
+    let size = data.len();
+    if size == 0 {
+        return Err(MPP_ERR_VALUE);
+    }
+    if !group.is_null() {
+        let Some(group_object) = (unsafe { group_ref(group) }) else {
+            return Err(MPP_ERR_NULL_PTR);
+        };
+        if group_object.limit_size != 0 && size > group_object.limit_size {
+            return Err(MPP_NOK);
+        }
+        if group_object.limit_count > 0
+            && group_object.buffer_count >= group_object.limit_count as usize
+        {
+            return Err(MPP_NOK);
+        }
+        let Some(group_object) = (unsafe { group_mut(group) }) else {
+            return Err(MPP_ERR_NULL_PTR);
+        };
+        group_object.usage = group_object.usage.saturating_add(size);
+        group_object.buffer_count = group_object.buffer_count.saturating_add(1);
+    }
+    Ok(Box::into_raw(Box::new(CompatBuffer {
+        magic: BUFFER_MAGIC,
+        size,
+        data,
+        dma: None,
+        external_ptr: std::ptr::null_mut(),
+        external_size: 0,
+        mapped: false,
+        type_: 0,
+        hnd: std::ptr::null_mut(),
+        group,
+        fd: -1,
+        index: 0,
+        offset: 0,
+        refs: 1,
+    }))
+    .cast())
+}
+
 unsafe fn new_external_buffer(
     info: &CompatBufferInfo,
     group: MppBufferGroup,
@@ -1144,6 +1189,50 @@ unsafe fn frame_from_sdk_mode(
         }
     };
     let buffer_size = luma_size.checked_mul(3).ok_or(())? / 2;
+    let compact_layout =
+        hor_stride as usize == width as usize && ver_stride as usize == height as usize;
+    let direct = normal_buffer
+        && compact_layout
+        && matches!(
+            (format, input_format),
+            (MPP_FMT_YUV420SP, sdk::PixelFormat::Nv12) | (MPP_FMT_YUV420P, sdk::PixelFormat::I420)
+        );
+    if direct {
+        let packed = decoded
+            .into_cpu_storage()
+            .filter(|data| data.len() == buffer_size)
+            .ok_or(())?;
+        let buffer =
+            unsafe { new_internal_buffer_owned(packed, std::ptr::null_mut()) }.map_err(|_| ())?;
+        return Ok(Box::into_raw(Box::new(CompatFrame {
+            magic: FRAME_MAGIC,
+            width,
+            height,
+            hor_stride,
+            ver_stride,
+            format,
+            offset_x: 0,
+            offset_y: 0,
+            mode: 0,
+            discard: 0,
+            viewid: 0,
+            poc,
+            pts,
+            dts,
+            errinfo,
+            buffer_size,
+            eos: 0,
+            info_change: 0,
+            thumbnail: 0,
+            buffer,
+            meta: std::ptr::null_mut(),
+            sar: MppFrameRational::default(),
+            mastering: MppFrameMasteringDisplayMetadata::default(),
+            content_light: MppFrameContentLightMetadata::default(),
+            hdr_dynamic_meta: std::ptr::null_mut(),
+        }))
+        .cast());
+    }
     let mut packed = vec![0u8; buffer_size];
 
     let y = decoded.plane(0).ok_or(())?;

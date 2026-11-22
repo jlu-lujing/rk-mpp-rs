@@ -322,6 +322,11 @@
   remain NV12 from the IEP output through `mpi_dec_test` instead of taking a
   needless NV12→I420→NV12 round trip; MPEG/H.263 still use the explicit
   I420→NV12 conversion path when the caller asks for NV12.
+- Compact CPU legacy frames now transfer their owned storage directly into the
+  MPP compatibility buffer. This removes the temporary packed frame and the
+  second full-frame copy for AVS and other compact legacy outputs. The 16/16
+  standalone matrix remains byte-exact; repeated timing is still bimodal, so
+  the change is recorded as structural rather than a stable speed claim.
 - JPEG restart interval 20 matches the CLI output at RK3576
   `0ccf41ea…82997` and RK3588 `25254033…df748a`.
 - Verified VP9 SHA-256 values are
