@@ -544,6 +544,9 @@
   to C (`64b3df4c…be54a`). Repeated wall-clock samples are bimodal on both sides,
   so the DMA-BUF path is recorded as functionally exact without claiming a
   stable performance winner.
+- The vproc CLI now writes the compact IEP result directly instead of copying it
+  through a second reusable buffer. Three 700-frame samples were 525/523/790 ms;
+  the output hash remains unchanged and timing remains bimodal.
 - `gen_avs_plus_profile.py` derives a syntax-equivalent profile 0x48 stream by
   preserving slice data and adding the AVS+ header bits with weighting/AEC
   disabled. Its first four raw frames match C exactly (`9eb0602a…5cfa4`).

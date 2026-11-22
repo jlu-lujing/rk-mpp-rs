@@ -98,6 +98,8 @@
   remains byte-identical.
 - The 700-frame default-vproc stress stream is byte-identical; repeated timing
   is bimodal on both sides and is not used for a stable winner claim.
+- Removed the vproc CLI's second compact-frame copy; the 7-frame hash remains
+  `13e5e665…dad1d`.
 - Added a deterministic profile 0x48 stream generator and hardware gate. The
   derived four-frame raw/SDK output matches C (`9eb0602a…5cfa4`).
 - Added a base1 weighted-quant/chroma-delta/model2 derived stream; four raw

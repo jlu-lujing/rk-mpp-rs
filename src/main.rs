@@ -4867,18 +4867,13 @@ fn main() {
         let started = Instant::now();
         let mut failed = false;
         let result = if output_format == "vproc" {
-            let mut frame_buffer = Vec::new();
             decoder.decode_with_vproc(&data, max_frames, |bytes, err_info| {
                 if err_info != 0 {
                     failed = true;
                     eprintln!("vproc picture failed with err={err_info:#x}");
                     return Ok(());
                 }
-                frame_buffer.clear();
-                frame_buffer.extend_from_slice(bytes);
-                output
-                    .write_all(&frame_buffer)
-                    .map_err(|error| error.to_string())
+                output.write_all(bytes).map_err(|error| error.to_string())
             })
         } else if output_format == "nv12" {
             let mut frame_buffer = Vec::new();
