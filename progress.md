@@ -87,6 +87,9 @@
   value 10. `examples/sdk_decode avs` is included in the board gate.
 - Added public `stream03.avs` as a second 6-frame I/P/B regression; CLI output is
   byte-identical to C (`e6069fc1…78f29`).
+- Added raw NV12 CLI output, a zero-copy DMA callback and a reusable-buffer
+  writer. The 700-frame stress stream is byte-identical; three-run median is
+  Rust 694 ms / C 825 ms with C vproc disabled.
 
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.

@@ -837,7 +837,7 @@ scanner。50 MiB、742 帧的 1920x800 网络流在 RK3588 热态 wall median
 | `h264_stream <in.264> [out.yuv|-]` | 有界 POC 重排的流式 H.264 解码与输出 |
 | `hevc` / `hevcdec <in.265> <out.yuv>` / `hevcpps` / `hevcdpb` | H.265 语法、PPS、DPB 打印与解码 |
 | `av1dec <in.ivf> <out.yuv>` / `vp9dec <in.ivf> <out.yuv>` / `vp8dec <in.ivf> <out.yuv>` / `vp8` | AV1、VP9、VP8 |
-| `avsdec <in.avs> <out.yuv> [frames]` | AVS/AVS+ I/P/B 解码；默认 1 帧 |
+| `avsdec <in.avs> <out.yuv> [frames] [i420\|nv12]` | AVS/AVS+ I/P/B 解码；默认 1 帧、I420 |
 | `m2v` / `m2vdec <in.m2v> <out.yuv>` / `mp4dec <in.m4v> <out.yuv>` / `h263dec <in.263> <out.yuv>` | MPEG-2 / MPEG-4 / H.263 |
 | `h264-enc <in.nv12> <out.264> <w> <h> [qp] [profile] [frames] [gop] [cbr:\|vbr:bps:min:max] ... [cabac:0\|1] [trans8x8:0\|1] [splitout:lowdelay]` | H.264 编码；给码率三元组即进入码率控制，syntax 可显式覆盖 profile 默认，低延迟模式逐 slice 输出 packet |
 | `h265-idr ... [roi:x:y:w:h:intra:abs:qp]... [split:ctu:\|split:byte:arg] [splitout:lowdelay]` / `h265-gop ... [shortterm] ...` | H.265 固定 QP IDR/GOP、GDR、ROI/QP map 与逐 slice packet 输出 |

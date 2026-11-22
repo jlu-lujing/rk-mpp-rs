@@ -1483,7 +1483,9 @@ colmv。下一步转到跨 SoC 验收和其余解码边界，不再重复队列�
 - AVS+（client 12；Rust 公开 I/P/B cycle 逐字节，0x48/field/vproc 待做）；
   AVS2（当前 RK3588 无设备）
 - AVS+ 已进入普通 `sdk::Codec::Avs` 和 C ABI `RK_MPP_CODEC_AVS=10`；
-  `examples/sdk_decode avs` 与 `avsdec` 在公开流上输出相同。
+  `examples/sdk_decode avs` 与 `avsdec` 在公开流上输出相同。CLI 支持原生
+  NV12；`board_avs_plus_perf.sh` 的 700 帧压力流与 C 逐字节，当前 3 次中位数
+  Rust 694 ms / C 825 ms。
 - 损坏/截断码流的一致性（目前只测了"返回非零退出码"）
 - VP8 profile 1/3、AV1 更宽 conformance、VP9 边界矩阵
 - H.264/SCC 高 profile? 4:2:2/4:4:4 被 RK3588 rkvdec 拒收，属硬件限制（记录在 ROADMAP）

@@ -2209,7 +2209,9 @@ in what order the evidence gets produced.
       byte-for-byte with C vproc disabled (`47d05886…5fdb20` I420); C's default
       output is IEP2-vproc processed. Public `stream03.avs` adds a second
       6-frame cycle (`e6069fc1…78f29`) through the same CLI and SDK. AVS+
-      profile 0x48 extensions, field pictures and vproc remain open.
+      profile 0x48 extensions, field pictures and vproc remain open. A 700-frame
+      concatenated run is byte-identical in raw NV12; the current 3-run median is
+      Rust 694 ms versus C 825 ms on this board (`board_avs_plus_perf.sh`).
       AVS2 has no RK3588 device; RK3576 remains unavailable.
 
 ### Encoders

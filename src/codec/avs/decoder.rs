@@ -42,6 +42,11 @@ struct FrameSlot {
     hardware_error: bool,
 }
 
+struct OutputSlot {
+    index: usize,
+    release: bool,
+}
+
 impl Surface {
     fn alloc(width: usize, height: usize) -> io::Result<Self> {
         crate::hal::check_decode_geometry(width, height)?;
@@ -95,6 +100,7 @@ pub struct Decoder {
     last_picture_reference_flag: bool,
     previous_picture_structure: u32,
     future_to_previous_distance: u32,
+    output_nv12: bool,
     pub last_irq: u32,
 }
 
@@ -112,8 +118,14 @@ impl Decoder {
             last_picture_reference_flag: false,
             previous_picture_structure: parser::FIELD_PICTURE,
             future_to_previous_distance: 2,
+            output_nv12: false,
             last_irq: 0,
         })
+    }
+
+    /// Emit compact NV12 instead of planar I420.
+    pub fn set_output_nv12(&mut self, enabled: bool) {
+        self.output_nv12 = enabled;
     }
 
     /// Decode up to `max_frames` display-order pictures.
@@ -155,6 +167,50 @@ impl Decoder {
         Ok(decoded)
     }
 
+    /// Zero-copy NV12 display path for file/network sinks.
+    ///
+    /// The callback receives a compact NV12 slice backed directly by the
+    /// decoder's DMA mapping whenever the visible width equals the row stride.
+    pub fn decode_with_nv12(
+        &mut self,
+        data: &[u8],
+        max_frames: usize,
+        mut emit: impl FnMut(&[u8], u32) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        if max_frames == 0 {
+            return Ok(0);
+        }
+        let mut decoded = 0usize;
+        for (start, end) in parser::split_access_units(data) {
+            let Some(output) = self.decode_access_output(&data[start..end])? else {
+                continue;
+            };
+            self.emit_nv12_slot(output.index, &mut emit)?;
+            self.slots[output.index]
+                .as_mut()
+                .expect("output slot remains allocated")
+                .displayed = true;
+            if output.release {
+                self.slots[output.index] = None;
+            }
+            decoded += 1;
+            if decoded == max_frames {
+                break;
+            }
+        }
+        if decoded < max_frames {
+            for index in self.flush_slots() {
+                self.emit_nv12_slot(index, &mut emit)?;
+                self.slots[index] = None;
+                decoded += 1;
+                if decoded == max_frames {
+                    break;
+                }
+            }
+        }
+        Ok(decoded)
+    }
+
     /// Decode every complete access unit in `data`, retaining the final open
     /// unit until `eos` or the next start code proves it complete.
     pub fn decode_incremental(
@@ -184,6 +240,26 @@ impl Decoder {
     }
 
     fn decode_access(&mut self, access: &[u8]) -> Result<Option<Picture>, String> {
+        let Some(output) = self.decode_access_output(access)? else {
+            return Ok(None);
+        };
+        let picture = take_picture(
+            self.slots[output.index]
+                .as_ref()
+                .expect("output slot remains allocated"),
+            self.output_nv12,
+        )?;
+        self.slots[output.index]
+            .as_mut()
+            .expect("output slot remains allocated")
+            .displayed = true;
+        if output.release {
+            self.slots[output.index] = None;
+        }
+        Ok(Some(picture))
+    }
+
+    fn decode_access_output(&mut self, access: &[u8]) -> Result<Option<OutputSlot>, String> {
         let (parsed, version) =
             AccessUnit::parse_with_sequence(access, self.sequence, self.version)
                 .map_err(|error| error.to_string())?;
@@ -196,14 +272,14 @@ impl Decoder {
         ) {
             return Ok(None);
         }
-        self.decode_access_unit(access, &parsed)
+        self.decode_access_unit_slot(access, &parsed)
     }
 
-    fn decode_access_unit(
+    fn decode_access_unit_slot(
         &mut self,
         access: &[u8],
         parsed: &AccessUnit<'_>,
-    ) -> Result<Option<Picture>, String> {
+    ) -> Result<Option<OutputSlot>, String> {
         let sequence = parsed.sequence;
         let mut picture = parsed.picture;
         if picture.picture_coding_type == parser::P_PICTURE
@@ -297,24 +373,15 @@ impl Decoder {
             }
             self.dpb1 = output;
             self.dpb0 = Some(current);
-            if let Some(index) = output {
-                let picture = take_picture(self.slots[index].as_ref().expect("display slot"))?;
-                self.slots[index]
-                    .as_mut()
-                    .expect("display slot remains allocated")
-                    .displayed = true;
-                Ok(Some(picture))
-            } else {
-                Ok(None)
-            }
+            Ok(output.map(|index| OutputSlot {
+                index,
+                release: false,
+            }))
         } else {
-            let picture = take_picture(
-                self.slots[current]
-                    .as_ref()
-                    .expect("B picture slot remains allocated"),
-            )?;
-            self.slots[current] = None;
-            Ok(Some(picture))
+            Ok(Some(OutputSlot {
+                index: current,
+                release: true,
+            }))
         }
     }
 
@@ -409,17 +476,67 @@ impl Decoder {
 
     fn flush(&mut self) -> Result<Vec<Picture>, String> {
         let mut pictures = Vec::new();
-        for index in [self.dpb1.take(), self.dpb0.take()].into_iter().flatten() {
-            if let Some(slot) = self.slots.get(index).and_then(Option::as_ref) {
-                if !slot.displayed {
-                    pictures.push(take_picture(slot)?);
-                }
-            }
+        for index in self.flush_slots() {
+            pictures.push(take_picture(
+                self.slots[index]
+                    .as_ref()
+                    .expect("flush slot remains allocated"),
+                self.output_nv12,
+            )?);
             if let Some(slot) = self.slots.get_mut(index) {
                 *slot = None;
             }
         }
         Ok(pictures)
+    }
+
+    fn flush_slots(&mut self) -> Vec<usize> {
+        [self.dpb1.take(), self.dpb0.take()]
+            .into_iter()
+            .flatten()
+            .filter(|index| {
+                self.slots
+                    .get(*index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|slot| !slot.displayed)
+            })
+            .collect()
+    }
+
+    fn emit_nv12_slot(
+        &self,
+        index: usize,
+        emit: &mut impl FnMut(&[u8], u32) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let slot = self.slots[index]
+            .as_ref()
+            .expect("NV12 output slot remains allocated");
+        let err_info = if slot.invalid {
+            FRAME_ERR_DEC_INVALID
+        } else if slot.hardware_error {
+            FRAME_ERR_DEC_HW_ERR
+        } else {
+            0
+        };
+        let surface = &slot.surface;
+        surface
+            .texture
+            .sync_read_begin()
+            .map_err(|error| error.to_string())?;
+        let frame_size = surface.frame_size();
+        let bytes = &surface.texture.as_slice()[..frame_size];
+        let result = if surface.hor_stride == surface.width {
+            emit(bytes, err_info)
+        } else {
+            let compact = compact_nv12(bytes, surface.width, surface.height, surface.hor_stride);
+            emit(&compact, err_info)
+        };
+        let sync = surface
+            .texture
+            .sync_read_end()
+            .map_err(|error| error.to_string());
+        result?;
+        sync
     }
 
     fn load_stream(&mut self, access: &[u8]) -> Result<u32, String> {
@@ -484,7 +601,7 @@ fn picture_is_decodable(vec_flag: &mut u8, video_edit: bool, picture_coding_type
     }
 }
 
-fn take_picture(slot: &FrameSlot) -> Result<Picture, String> {
+fn take_picture(slot: &FrameSlot, output_nv12: bool) -> Result<Picture, String> {
     let surface = &slot.surface;
     surface
         .texture
@@ -496,13 +613,17 @@ fn take_picture(slot: &FrameSlot) -> Result<Picture, String> {
         std::fs::write(path, bytes).map_err(|error| error.to_string())?;
     }
     let luma_size = surface.hor_stride * surface.ver_stride;
-    let yuv = nv12_to_planar(
-        &bytes[..luma_size],
-        &bytes[luma_size..],
-        surface.width,
-        surface.height,
-        surface.hor_stride,
-    );
+    let yuv = if output_nv12 {
+        compact_nv12(bytes, surface.width, surface.height, surface.hor_stride)
+    } else {
+        nv12_to_planar(
+            &bytes[..luma_size],
+            &bytes[luma_size..],
+            surface.width,
+            surface.height,
+            surface.hor_stride,
+        )
+    };
     surface
         .texture
         .sync_read_end()
@@ -522,6 +643,20 @@ fn take_picture(slot: &FrameSlot) -> Result<Picture, String> {
         yuv,
         err_info,
     })
+}
+
+fn compact_nv12(source: &[u8], width: usize, height: usize, stride: usize) -> Vec<u8> {
+    let luma_size = stride * height;
+    let mut compact = Vec::with_capacity(width * height * 3 / 2);
+    for row in 0..height {
+        let start = row * stride;
+        compact.extend_from_slice(&source[start..start + width]);
+    }
+    for row in 0..height / 2 {
+        let start = luma_size + row * stride;
+        compact.extend_from_slice(&source[start..start + width]);
+    }
+    compact
 }
 
 #[cfg(test)]
@@ -566,5 +701,14 @@ mod tests {
             false,
             crate::codec::avs::parser::B_PICTURE
         ));
+    }
+
+    #[test]
+    fn compact_nv12_removes_row_padding() {
+        let source = [
+            1, 2, 99, 99, 3, 4, 99, 99, // luma
+            5, 6, 99, 99, // chroma
+        ];
+        assert_eq!(super::compact_nv12(&source, 2, 2, 4), [1, 2, 3, 4, 5, 6]);
     }
 }

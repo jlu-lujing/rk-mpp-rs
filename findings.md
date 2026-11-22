@@ -530,6 +530,10 @@
 - A second public fixture, `stream03.avs`, produces a 6-frame cycle that also
   matches C byte-for-byte (`e6069fc1…78f29`), so the result is not tied to the
   first sample's GOP shape.
+- A 100x concatenated `stream01.avs` produces 700 raw-NV12 frames byte-identical
+  to C. Three wall-clock samples had a large spread; the median was Rust 694 ms
+  versus C 825 ms with vproc disabled. The CLI now offers a reusable-buffer NV12
+  sink and a direct DMA-mapping callback path.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

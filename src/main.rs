@@ -4820,7 +4820,7 @@ fn main() {
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/avs.yuv");
         if src.is_empty() {
-            eprintln!("usage: rk-mpp-rs avsdec <in.avs> <out.yuv> [max-frames]");
+            eprintln!("usage: rk-mpp-rs avsdec <in.avs> <out.yuv> [max-frames] [i420|nv12]");
             std::process::exit(1);
         }
         let max_frames = match args.get(4) {
@@ -4847,6 +4847,14 @@ fn main() {
                 std::process::exit(1);
             }
         };
+        let output_nv12 = match args.get(5).map(String::as_str).unwrap_or("i420") {
+            "i420" => false,
+            "nv12" => true,
+            value => {
+                eprintln!("output format must be i420 or nv12, got {value}");
+                std::process::exit(2);
+            }
+        };
         use std::io::Write;
         let mut output = std::io::BufWriter::new(match std::fs::File::create(dst) {
             Ok(file) => file,
@@ -4857,18 +4865,33 @@ fn main() {
         });
         let started = Instant::now();
         let mut failed = false;
-        let result = decoder.decode_with(&data, max_frames, |picture| {
-            if picture.err_info != 0 {
-                failed = true;
-                eprintln!(
-                    "picture at distance {} failed with err={:#x}",
-                    picture.picture_distance, picture.err_info
-                );
-            }
-            output
-                .write_all(&picture.yuv)
-                .map_err(|error| error.to_string())
-        });
+        let result = if output_nv12 {
+            let mut frame_buffer = Vec::new();
+            decoder.decode_with_nv12(&data, max_frames, |bytes, err_info| {
+                if err_info != 0 {
+                    failed = true;
+                    eprintln!("picture failed with err={err_info:#x}");
+                }
+                frame_buffer.clear();
+                frame_buffer.extend_from_slice(bytes);
+                output
+                    .write_all(&frame_buffer)
+                    .map_err(|error| error.to_string())
+            })
+        } else {
+            decoder.decode_with(&data, max_frames, |picture| {
+                if picture.err_info != 0 {
+                    failed = true;
+                    eprintln!(
+                        "picture at distance {} failed with err={:#x}",
+                        picture.picture_distance, picture.err_info
+                    );
+                }
+                output
+                    .write_all(&picture.yuv)
+                    .map_err(|error| error.to_string())
+            })
+        };
         let shown = match result {
             Ok(shown) => shown,
             Err(error) => {
