@@ -4621,3 +4621,7 @@ pipeline uses.
 - **2026-11-22: compatible scene mode covers H.264 too.** The native H.264 CLI
   accepts `H264_SCENE_MODE=1`; a 60-frame noise fixture matches the C probe at
   64 NALs. The only file hash difference is the version-SEI build text.
+- **2026-11-22: object encode benchmark covers both codecs.** A shared
+  H.264/H.265 harness keeps wall and user+sys below independent 105% gates.
+  H.264 measures 320x240 Rust/C 157/152 ms with equal CPU and 720p 769/822 ms
+  with 232/278 ms CPU; H.265 remains parity/faster.

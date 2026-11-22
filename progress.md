@@ -18,6 +18,9 @@
   and SHA-256 `d577adc9…32edea`.
 - The final host gate is `1385 passed / 0 failed / 47 ignored`; the unchanged
   official H.264/H.265/MJPEG encoder gate remains green.
+- Added a shared H.264/H.265 object-path benchmark. H.264 is within the 5%
+  wall gate at 320x240 with equal CPU, and 6.4% faster with 16.5% less CPU at
+  720p. H.265 remains at parity/faster in the same harness.
 
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.

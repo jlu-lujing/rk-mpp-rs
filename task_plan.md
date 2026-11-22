@@ -404,6 +404,8 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Map compatible `tune:scene_mode` and implement H.265 IPC row 0/1.
 - [x] Add the IPC trace gate; 160 jobs have exact WGT/RDO/OSD sections.
 - [x] Validate the shared H.264 IPC scene mode at 60 frames / 64 NALs.
+- [x] Share the object-path performance gate across H.264/H.265 and keep both
+  wall and CPU within the 5% limit.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

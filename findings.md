@@ -489,6 +489,10 @@
   because the object probe's baseline framing differs from the native CLI.
   `H264_SCENE_MODE=1` produces 64 NALs over 60 frames and matches the C probe;
   the SHA difference is only the version SEI text.
+- The current H.264 object path is not slower than C in any material cell.
+  Five 300-frame samples at 80% OPP measure 320x240 Rust/C wall 157/152 ms and
+  equal 67 ms user+sys; 720p is 769/822 ms with user+sys 232/278 ms. The shared
+  benchmark treats CPU and wall as separate hard gates.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

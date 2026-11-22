@@ -25,8 +25,8 @@ commands were pinned to CPU 6. Five C/Rust samples were interleaved.
 
 | size | C wall | Rust wall | Rust wall gain | C user+sys | Rust user+sys | Rust CPU reduction |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 320x240 | 162 ms | **149 ms** | **8.0%** | 70 ms | **55 ms** | **21.4%** |
-| 1280x720 | 864 ms | **806 ms** | **6.7%** | 294 ms | **236 ms** | **19.7%** |
+| 320x240 | 164 ms | 164 ms | 0.0% | 69 ms | **67 ms** | **2.9%** |
+| 1280x720 | 868 ms | **802 ms** | **7.6%** | 291 ms | **226 ms** | **22.3%** |
 
 This is the current multi-GOP scene-tune path, not a single-GOP benchmark.
 The same 320x240 run is byte-identical to C at 315 NALs and SHA-256
@@ -35,6 +35,23 @@ gate fails if Rust exceeds C by more than 5% in either wall or user+sys:
 
 ```bash
 BOARD=my-rk3588-host SAMPLES=5 ./scripts/board_bench_h265_object_vs_mpp.sh
+```
+
+The same harness now covers H.264. Five interleaved 300-frame samples at the
+same 80% OPP/CPU6 conditions give:
+
+| size | C wall | Rust wall | Rust wall delta | C user+sys | Rust user+sys | Rust CPU delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 320x240 | 152 ms | 157 ms | -3.3% | 67 ms | 67 ms | 0.0% |
+| 1280x720 | 822 ms | **769 ms** | **+6.4%** | 278 ms | **232 ms** | **16.5% less** |
+
+The 320x240 cell is inside the existing 5% parity gate; 720p is faster with
+lower CPU. H.264 and H.265 now share one implementation:
+
+```bash
+BOARD=my-rk3588-host SAMPLES=5 ./scripts/board_bench_h264_object_vs_mpp.sh
+BOARD=my-rk3588-host SAMPLES=5 ./scripts/board_bench_h265_object_vs_mpp.sh
+# or: CODEC=h264|h265 BOARD=... ./scripts/board_bench_object_encode_vs_mpp.sh
 ```
 
 ## 2026-11-19: H.265 file-input pipeline
@@ -244,4 +261,5 @@ knobs; only the direction is claimed.
 SAMPLES=7 scripts/board_bench_encode_vs_mpp.sh
 SAMPLES=7 scripts/board_bench_h265_encode_vs_mpp.sh
 BOARD=my-rk3588-host SAMPLES=7 ./scripts/board_bench_h265_object_vs_mpp.sh
+BOARD=my-rk3588-host SAMPLES=7 ./scripts/board_bench_h264_object_vs_mpp.sh
 ```
