@@ -10,7 +10,7 @@
 
 static void usage(const char *program) {
     fprintf(stderr,
-            "usage: %s <h264|h265|mpeg2|mpeg4|h263|mjpeg> "
+            "usage: %s <h264|h265|mpeg2|mpeg4|h263|avs|mjpeg> "
             "<nv12|i420|i420p10> <chunk> <out> <in>...\n",
             program);
 }
@@ -46,6 +46,10 @@ static int parse_codec(const char *name, uint32_t *codec) {
     }
     if (!strcmp(name, "h263")) {
         *codec = RK_MPP_CODEC_H263;
+        return 0;
+    }
+    if (!strcmp(name, "avs")) {
+        *codec = RK_MPP_CODEC_AVS;
         return 0;
     }
     return -1;
@@ -256,6 +260,8 @@ int main(int argc, char **argv) {
     }
     if (getenv("REQUIRE_DMABUF"))
         config.flags |= RK_MPP_DECODER_FLAG_DMABUF_OUTPUT;
+    if (getenv("VPROC_OUTPUT"))
+        config.flags |= RK_MPP_DECODER_FLAG_VPROC_OUTPUT;
     if (config.struct_size != sizeof(config)) {
         fprintf(stderr, "config struct size mismatch\n");
         goto done;

@@ -537,9 +537,10 @@
 - C's default AVS path is now reproduced through a stateful Rust IEP2 pipeline:
   I1O1T for the first frame, one anchor-only frame, then alternating TFF/BFF
   I5O2 windows. Porting `iep2_update_gmv()` closed the last 164-word register
-  mismatch; both public fixtures match C byte-for-byte in `vproc` mode. The
-  decoder's three source frames are imported by duplicated dma-buf fd, avoiding
-  the previous CPU copies.
+  mismatch; both public fixtures match C byte-for-byte in `vproc` mode. Their
+  full post-processed cycles are 9 and 7 frames (`6ef29ca6…e169` and
+  `35ac81e6…f3d1`). The decoder's three source frames are passed as borrowed
+  dma-buf descriptors, avoiding the previous CPU copies.
 - A 100x concatenated public stream emits 700 default-vproc frames byte-identical
   to C (`64b3df4c…be54a`). Repeated wall-clock samples are bimodal on both sides,
   so the DMA-BUF path is recorded as functionally exact without claiming a
@@ -556,6 +557,10 @@
   Paired `time -p` samples used 0.13-0.22 s of Rust user+sys CPU versus 0.26 s
   for C's two fast runs, so the wall-time reduction does not trade more CPU for
   speed.
+- AVS vproc is now selectable through the stable API rather than only the CLI:
+  Rust uses `DecoderConfig::with_vproc_output(true)` and C sets
+  `RK_MPP_DECODER_FLAG_VPROC_OUTPUT`. The complete 9/7-frame outputs from both
+  public fixtures match C through the Rust SDK and a compiled C consumer.
 - The AVS parser has a deterministic 20,000-iteration mutation test covering
   truncation, byte flips, insertion and arbitrary inputs; all parser entry points
   return errors or partial parses without panicking.

@@ -91,18 +91,21 @@
   writer. The 700-frame stress stream is byte-identical; three-run median is
   Rust 694 ms / C 825 ms with C vproc disabled.
 - Ported the AVS default IEP2 vproc state machine, including I1O1T startup,
-  alternating field order, I5O2 windows and GMV candidate updates. Both public
-  fixtures now match C default output exactly (`13e5e665…dad1d`,
-  `d3fa0c0d…10180`).
-- Replaced vproc input copies with decoder DMA-BUF imports; the 7-frame output
-  remains byte-identical.
+  alternating field order, I5O2 windows and GMV candidate updates. The full
+  public cycles are 9 frames (`6ef29ca6…e169`) and 7 frames
+  (`35ac81e6…f3d1`), both matching C exactly.
+- Replaced vproc input copies with decoder DMA-BUF imports; the output remained
+  byte-identical before the later borrowed-descriptor optimization.
 - The 700-frame default-vproc stress stream is byte-identical; repeated timing
   is bimodal on both sides and is not used for a stable winner claim.
-- Removed the vproc CLI's second compact-frame copy; the 7-frame hash remains
-  `13e5e665…dad1d`.
+- Removed the vproc CLI's second compact-frame copy; the full-cycle hashes
+  remain `6ef29ca6…e169` and `35ac81e6…f3d1`.
 - Replaced per-job AVS source imports with borrowed dma-buf descriptors and
   direct compact-destination emission. The 700-frame output hash is unchanged;
   the five-run median is 490 ms versus C 809 ms, with the same bimodal spread.
+- Added `DecoderConfig::with_vproc_output(true)` and C ABI
+  `RK_MPP_DECODER_FLAG_VPROC_OUTPUT`. Both public AVS fixtures pass the full
+  9/7-frame vproc cycle through the Rust SDK and the compiled C consumer.
 - Added a deterministic 20,000-case AVS parser mutation test with no panics.
 - Added a deterministic profile 0x48 stream generator and hardware gate. The
   derived four-frame raw/SDK output matches C (`9eb0602a…5cfa4`).

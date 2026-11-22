@@ -41,7 +41,14 @@ COPYFILE_DISABLE=1 tar --no-xattrs \
   --exclude .git --exclude target --exclude .worktrees --exclude refs \
   -cf - . | ssh "$BOARD" "tar -xf - -C \"$remote_repo\""
 ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd "$HOME/rk-mpp-rs" && \
-  cargo build --release --bin rk-mpp-rs --example sdk_decode'
+  cargo build --release --lib --bin rk-mpp-rs --example sdk_decode && \
+  gcc -std=c11 -Wall -Wextra -Werror -Iinclude tests/c_api_decoder.c \
+    -Ltarget/release -lrk_mpp_rs -Wl,-rpath,"$PWD/target/release" \
+    -o /tmp/rk_mpp_c_api_decoder_avs && \
+  g++ -std=c++17 -Wall -Wextra -Werror -Iinclude \
+    tests/c_api_decoder_smoke.cpp -Ltarget/release -lrk_mpp_rs \
+    -Wl,-rpath,"$PWD/target/release" -o /tmp/rk_mpp_c_api_smoke_avs && \
+  /tmp/rk_mpp_c_api_smoke_avs'
 
 ssh "$BOARD" "sudo rm -f /tmp/avs_c.nv12 /tmp/avs_c.yuv /tmp/avs_rust.yuv /tmp/avs_sdk.yuv"
 ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
@@ -63,17 +70,33 @@ ssh "$BOARD" "cmp -s /tmp/avs_c.yuv /tmp/avs_rust.yuv"
 ssh "$BOARD" "cmp -s /tmp/avs_rust.yuv /tmp/avs_sdk.yuv"
 printf 'PASS AVS+ Rust CLI/SDK 7-frame cycle is byte-identical to vendor C (352x288 I420)\n'
 
-ssh "$BOARD" "sudo rm -f /tmp/avs_vproc_c.nv12 /tmp/avs_vproc_r.nv12"
+ssh "$BOARD" "sudo rm -f /tmp/avs_vproc_c.nv12 /tmp/avs_vproc_c.yuv \
+  /tmp/avs_vproc_r.nv12 /tmp/avs_vproc_sdk.yuv /tmp/avs_vproc_capi.yuv"
 ssh "$BOARD" "sudo env LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
   \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_stream01.avs \
-  -o /tmp/avs_vproc_c.nv12 -t 16777221 -n 7 \
+  -o /tmp/avs_vproc_c.nv12 -t 16777221 -n 9 \
   </dev/null >/tmp/avs_vproc_c.log 2>&1"
 ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
-  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream01.avs /tmp/avs_vproc_r.nv12 7 vproc \
+  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream01.avs /tmp/avs_vproc_r.nv12 9 vproc \
   >/tmp/avs_vproc_r.log 2>&1"
-ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_vproc_r.nv12)\" -eq 1064448"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_vproc_r.nv12)\" -eq 1368576"
 ssh "$BOARD" "cmp -s /tmp/avs_vproc_c.nv12 /tmp/avs_vproc_r.nv12"
-printf 'PASS AVS+ Rust default IEP2 vproc cycle is byte-identical to vendor C\n'
+ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  -video_size 352x288 -i /tmp/avs_vproc_c.nv12 -pix_fmt yuv420p -f rawvideo \
+  /tmp/avs_vproc_c.yuv"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/examples/sdk_decode avs-vproc /tmp/avs_stream01.avs \
+  /tmp/avs_vproc_sdk.yuv >/tmp/avs_vproc_sdk.log 2>&1"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_vproc_sdk.yuv)\" -eq 1368576"
+ssh "$BOARD" "cmp -s /tmp/avs_vproc_c.yuv /tmp/avs_vproc_sdk.yuv"
+ssh "$BOARD" "VPROC_OUTPUT=1 /tmp/rk_mpp_c_api_decoder_avs avs i420 65536 \
+  /tmp/avs_vproc_capi.yuv /tmp/avs_stream01.avs \
+  >/tmp/avs_vproc_capi.log 2>&1"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_vproc_capi.yuv)\" -eq 1368576"
+ssh "$BOARD" "cmp -s /tmp/avs_vproc_c.yuv /tmp/avs_vproc_capi.yuv"
+printf 'PASS AVS+ Rust 9-frame default IEP2 vproc cycle is byte-identical to vendor C\n'
+printf 'PASS AVS+ public SDK vproc flag is byte-identical to vendor C\n'
+printf 'PASS AVS+ public C ABI vproc flag is byte-identical to vendor C\n'
 
 ssh "$BOARD" "sudo rm -f /tmp/avs03_c.nv12 /tmp/avs03_c.yuv /tmp/avs03_r.yuv"
 ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
@@ -90,17 +113,27 @@ ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs03_r.yuv)\" -eq 912384"
 ssh "$BOARD" "cmp -s /tmp/avs03_c.yuv /tmp/avs03_r.yuv"
 printf 'PASS AVS+ Rust stream03 6-frame cycle is byte-identical to vendor C\n'
 
-ssh "$BOARD" "sudo rm -f /tmp/avs03_vproc_c.nv12 /tmp/avs03_vproc_r.nv12"
+ssh "$BOARD" "sudo rm -f /tmp/avs03_vproc_c.nv12 /tmp/avs03_vproc_c.yuv \
+  /tmp/avs03_vproc_r.nv12 /tmp/avs03_vproc_sdk.yuv"
 ssh "$BOARD" "sudo env LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
   \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_stream03.avs \
-  -o /tmp/avs03_vproc_c.nv12 -t 16777221 -n 6 \
+  -o /tmp/avs03_vproc_c.nv12 -t 16777221 -n 7 \
   </dev/null >/tmp/avs03_vproc_c.log 2>&1"
 ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
-  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream03.avs /tmp/avs03_vproc_r.nv12 6 vproc \
+  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream03.avs /tmp/avs03_vproc_r.nv12 7 vproc \
   >/tmp/avs03_vproc_r.log 2>&1"
-ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs03_vproc_r.nv12)\" -eq 912384"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs03_vproc_r.nv12)\" -eq 1064448"
 ssh "$BOARD" "cmp -s /tmp/avs03_vproc_c.nv12 /tmp/avs03_vproc_r.nv12"
-printf 'PASS AVS+ Rust stream03 default IEP2 vproc cycle is byte-identical to vendor C\n'
+ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  -video_size 352x288 -i /tmp/avs03_vproc_c.nv12 -pix_fmt yuv420p -f rawvideo \
+  /tmp/avs03_vproc_c.yuv"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/examples/sdk_decode avs-vproc /tmp/avs_stream03.avs \
+  /tmp/avs03_vproc_sdk.yuv >/tmp/avs03_vproc_sdk.log 2>&1"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs03_vproc_sdk.yuv)\" -eq 1064448"
+ssh "$BOARD" "cmp -s /tmp/avs03_vproc_c.yuv /tmp/avs03_vproc_sdk.yuv"
+printf 'PASS AVS+ Rust stream03 7-frame default IEP2 vproc cycle is byte-identical to vendor C\n'
+printf 'PASS AVS+ public SDK stream03 vproc cycle is byte-identical to vendor C\n'
 
 ssh "$BOARD" "sudo rm -f /tmp/avs48_c.nv12 /tmp/avs48_c.yuv /tmp/avs48_r.nv12 /tmp/avs48_sdk.yuv"
 ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \

@@ -15,8 +15,10 @@ int main() {
     if (RK_MPP_CODEC_H265 != 3 || RK_MPP_CODEC_VP9 != 4 ||
         RK_MPP_CODEC_AV1 != 5 || RK_MPP_CODEC_VP8 != 6 ||
         RK_MPP_CODEC_MPEG2 != 7 || RK_MPP_CODEC_MPEG4 != 8 ||
-        RK_MPP_CODEC_H263 != 9 ||
-        RK_MPP_PIXEL_FORMAT_I420P10 != 3)
+        RK_MPP_CODEC_H263 != 9 || RK_MPP_CODEC_AVS != 10 ||
+        RK_MPP_PIXEL_FORMAT_I420P10 != 3 ||
+        RK_MPP_DECODER_FLAG_DMABUF_OUTPUT != 1 ||
+        RK_MPP_DECODER_FLAG_VPROC_OUTPUT != 2)
         return 1;
     if (!rk_mpp_api_version_string() || !rk_mpp_strerror(RK_MPP_EOS))
         return 1;

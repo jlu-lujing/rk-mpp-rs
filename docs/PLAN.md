@@ -401,8 +401,8 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 10. W6 解码器边缘与 conformance（L，约 10–15 天）
 
-- [ ] W6-1 AVS+ 解码（client 12；公开流和 vendor-C oracle 已建立，Rust
-      parser/HAL 进行中）
+- [ ] W6-1 AVS+ 解码（client 12；公开 I/P/B、raw/vproc、Rust SDK 与 C ABI
+      已完成，AEC/field picture 仍缺真实 oracle）
 - [ ] W6-2 AVS2：RK3588 未暴露设备；有硬件和流再做
 - [ ] W6-3 损坏/截断/随机 bit-flip 流：与 C 的"输出帧数 + 错误码"一致（逐字节要求
       降级为可解释的差异）

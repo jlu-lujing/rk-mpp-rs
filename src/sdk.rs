@@ -120,6 +120,7 @@ pub struct DecoderConfig {
     output_format: PixelFormat,
     max_reorder_frames: u32,
     dmabuf_output: bool,
+    vproc_output: bool,
 }
 
 impl DecoderConfig {
@@ -129,6 +130,7 @@ impl DecoderConfig {
             output_format: PixelFormat::Nv12,
             max_reorder_frames: 0,
             dmabuf_output: false,
+            vproc_output: false,
         }
     }
 
@@ -160,6 +162,17 @@ impl DecoderConfig {
 
     pub const fn with_dmabuf_output(mut self, enabled: bool) -> Self {
         self.dmabuf_output = enabled;
+        self
+    }
+
+    /// Apply the platform's default IEP2 post-processing before returning
+    /// frames. Currently supported by the AVS decoder.
+    pub const fn vproc_output(self) -> bool {
+        self.vproc_output
+    }
+
+    pub const fn with_vproc_output(mut self, enabled: bool) -> Self {
+        self.vproc_output = enabled;
         self
     }
 }
@@ -1457,6 +1470,16 @@ impl Av1Decoder {
 
 impl Decoder {
     pub fn new(config: DecoderConfig) -> Result<Self, Error> {
+        if config.vproc_output && config.codec != Codec::Avs {
+            return Err(Error::Unsupported(
+                "vproc output is currently implemented for AVS only".to_string(),
+            ));
+        }
+        if config.vproc_output && config.dmabuf_output {
+            return Err(Error::Unsupported(
+                "vproc output does not support DMA-BUF frames".to_string(),
+            ));
+        }
         if config.dmabuf_output {
             if !matches!(
                 config.codec,
@@ -2181,7 +2204,13 @@ impl LegacyBackend {
                 "legacy MPEG/H.263/AVS decoders support NV12 or I420 output".to_string(),
             ));
         }
-        let decoder = LegacyDecoder::new(config.codec)?;
+        let mut decoder = LegacyDecoder::new(config.codec)?;
+        if config.vproc_output {
+            let LegacyDecoder::Avs(decoder) = &mut decoder else {
+                unreachable!("vproc output is restricted to AVS");
+            };
+            decoder.set_incremental_vproc(true);
+        }
         Ok(Self {
             decoder,
             codec: config.codec,
@@ -2867,20 +2896,39 @@ mod tests {
     fn configuration_api_is_explicit() {
         let config = DecoderConfig::new(Codec::H265)
             .with_output_format(PixelFormat::I420P10)
-            .with_max_reorder_frames(3);
+            .with_max_reorder_frames(3)
+            .with_vproc_output(false);
         assert_eq!(config.codec(), Codec::H265);
         assert_eq!(config.output_format(), PixelFormat::I420P10);
         assert_eq!(config.max_reorder_frames(), 3);
         assert!(!config.dmabuf_output());
+        assert!(!config.vproc_output());
         assert!(DecoderConfig::new(Codec::Mjpeg)
             .with_dmabuf_output(true)
             .dmabuf_output());
+        assert!(DecoderConfig::new(Codec::Avs)
+            .with_vproc_output(true)
+            .vproc_output());
         assert!(PacketFlags::empty().with_eos().contains(PacketFlags::EOS));
         assert_eq!(Codec::from_c_value(Codec::Avs.c_value()), Some(Codec::Avs));
     }
 
     #[test]
     fn dmabuf_output_rejects_unimplemented_codecs() {
+        assert!(matches!(
+            super::Decoder::new(
+                super::DecoderConfig::new(super::Codec::H264).with_vproc_output(true)
+            ),
+            Err(super::Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            super::Decoder::new(
+                super::DecoderConfig::new(super::Codec::Avs)
+                    .with_vproc_output(true)
+                    .with_dmabuf_output(true)
+            ),
+            Err(super::Error::Unsupported(_))
+        ));
         assert!(matches!(
             super::Decoder::new(
                 super::DecoderConfig::new(super::Codec::Vp8).with_dmabuf_output(true)

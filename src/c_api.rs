@@ -18,6 +18,7 @@ pub const RK_MPP_ERR_STATE: c_int = -6;
 pub const RK_MPP_ERR_IO: c_int = -7;
 pub const RK_MPP_ERR_TOO_LARGE: c_int = -8;
 pub const RK_MPP_DECODER_FLAG_DMABUF_OUTPUT: u32 = 1 << 0;
+pub const RK_MPP_DECODER_FLAG_VPROC_OUTPUT: u32 = 1 << 1;
 
 static VERSION: &[u8] = b"1.14\0";
 static OK: &[u8] = b"ok\0";
@@ -186,7 +187,9 @@ pub unsafe extern "C" fn rk_mpp_decoder_create(
         if config.struct_size != size_of::<RkMppDecoderConfig>() as u32 {
             return RK_MPP_ERR_INVALID;
         }
-        if config.flags & !RK_MPP_DECODER_FLAG_DMABUF_OUTPUT != 0 {
+        if config.flags & !(RK_MPP_DECODER_FLAG_DMABUF_OUTPUT | RK_MPP_DECODER_FLAG_VPROC_OUTPUT)
+            != 0
+        {
             return RK_MPP_ERR_UNSUPPORTED;
         }
         let Some(codec) = sdk::Codec::from_c_value(config.codec) else {
@@ -198,7 +201,8 @@ pub unsafe extern "C" fn rk_mpp_decoder_create(
         let decoder_config = sdk::DecoderConfig::new(codec)
             .with_output_format(output_format)
             .with_max_reorder_frames(config.max_reorder_frames)
-            .with_dmabuf_output(config.flags & RK_MPP_DECODER_FLAG_DMABUF_OUTPUT != 0);
+            .with_dmabuf_output(config.flags & RK_MPP_DECODER_FLAG_DMABUF_OUTPUT != 0)
+            .with_vproc_output(config.flags & RK_MPP_DECODER_FLAG_VPROC_OUTPUT != 0);
         match sdk::Decoder::new(decoder_config) {
             Ok(inner) => {
                 *out_decoder = Box::into_raw(Box::new(RkMppDecoder {

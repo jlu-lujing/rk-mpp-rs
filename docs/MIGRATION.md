@@ -232,6 +232,15 @@ rk_mpp_decoder_flush(dec);
 rk_mpp_decoder_close(dec);
 ```
 
+AVS 调用方若需要与 C 默认路径相同的 IEP2 输出，在 create 前追加：
+
+```c
+cfg.flags |= RK_MPP_DECODER_FLAG_VPROC_OUTPUT;
+```
+
+Rust 对应 `DecoderConfig::with_vproc_output(true)`。该 flag 当前只接受
+`RK_MPP_CODEC_AVS`，输出为 NV12 或 I420，不能与 DMA-BUF 输出同时设置。
+
 Rust 侧：
 
 ```toml

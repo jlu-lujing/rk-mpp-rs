@@ -47,14 +47,17 @@ enum rk_mpp_pixel_format {
 };
 
 enum rk_mpp_decoder_flags {
-    RK_MPP_DECODER_FLAG_DMABUF_OUTPUT = 1u << 0
+    RK_MPP_DECODER_FLAG_DMABUF_OUTPUT = 1u << 0,
+    /* AVS only: apply the platform's default IEP2 post-processing. */
+    RK_MPP_DECODER_FLAG_VPROC_OUTPUT = 1u << 1
 };
 
 /*
  * H.264/MJPEG accept NV12 or I420. H.265 accepts NV12/I420 for 8-bit streams
  * and I420P10 for Main10. VP9/AV1 accept NV12/I420 for 8-bit and I420P10 for
- * 10-bit. VP8, MPEG-2, MPEG-4 and H.263 accept NV12/I420. Incompatible
- * format/stream combinations are errors.
+ * 10-bit. VP8, MPEG-2, MPEG-4, H.263 and AVS accept NV12/I420. The AVS
+ * vproc flag emits the same post-processed sequence as the C default path.
+ * Incompatible format/stream combinations are errors.
  */
 
 enum rk_mpp_packet_flags {

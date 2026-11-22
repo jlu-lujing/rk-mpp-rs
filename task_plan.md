@@ -424,6 +424,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Add an AVS+ damaged/truncated-stream evidence matrix.
 - [x] Add deterministic mutation coverage for the AVS parser.
 - [x] Keep AVS vproc anchors as descriptors and emit packed output without copies.
+- [x] Expose AVS vproc through the Rust SDK and C ABI.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

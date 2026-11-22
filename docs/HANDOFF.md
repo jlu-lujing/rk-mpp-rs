@@ -1474,7 +1474,9 @@ colmv。下一步转到跨 SoC 验收和其余解码边界，不再重复队列�
   VDPP2 剩余组合。RK3588 client 12 的 Rust 公开 7 帧 I/P/B
   cycle 已与 C 原始输出逐字节一致（`47d05886…5fdb20`，vproc 关闭）；C
   第二个公开 6 帧 cycle 也一致（`e6069fc1…78f29`）。C 默认 IEP2 vproc
-  输出也已由 Rust `vproc` 模式逐字节复现。AVS2 在当前 RK3588 无设备。
+  输出也已由 Rust `vproc` 模式逐字节复现；完整后处理周期为 9/7 帧，
+  SHA-256 分别为 `6ef29ca6…e169` 和 `35ac81e6…f3d1`，Rust/C SDK 均可通过
+  vproc 标志选择。AVS2 在当前 RK3588 无设备。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 

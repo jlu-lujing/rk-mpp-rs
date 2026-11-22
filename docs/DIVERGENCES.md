@@ -37,7 +37,7 @@ Dispositions:
 | VP9 profile edge matrix | **NO-ORACLE** | The remaining VP9 profile edges have no differential fixture in the corpus. |
 | VP9 profile 1/3 hardware | **NO-ORACLE** | A vpxenc 1.9 profile-1 I422 stream is accepted by ffmpeg, but RK3588's C MPP reports `Invalid frame marker`, emits 0 frames and loops until timeout. The installed vpxenc build cannot emit profile 3. Rust still rejects profile 1/3 explicitly instead of inventing an unverified layout. |
 | H.263 field-coded PAFF | **NO-ORACLE** | No stream in the corpus. |
-| AVS+ | **PARTIAL** | RK3588 client 12 and two public 352x288 fixtures are byte-exact across their raw and C-default IEP2-vproc I/P/B cycles through both the Rust CLI and public SDK. Derived profile 0x48 and base1 weighted-quant/chroma-delta/model2 streams are also byte-exact; AEC and field pictures remain open. |
+| AVS+ | **PARTIAL** | RK3588 client 12 and two public 352x288 fixtures are byte-exact across their raw 7/6-frame and full C-default IEP2-vproc 9/7-frame I/P/B cycles through both the Rust CLI and public SDK. The Rust config and C ABI expose the vproc flag. Derived profile 0x48 and base1 weighted-quant/chroma-delta/model2 streams are also byte-exact; AEC and field pictures remain open. |
 | AVS+ damaged input | **NAMED** | In the eight-cell corruption matrix, valid 7k/10k truncations and an I-header bit flip match. Rust suppresses error frames from damaged slices/truncations while C's harness exits 0 with no frame. C times out on a 100-byte header-only truncation whereas Rust returns zero frames, and C accepts a mutated profile byte that Rust rejects as unsupported. |
 | AVS2 | **NO HARDWARE** | RK3588 does not expose an AVS2 device. Do not infer AVS2 support from the AVS+ client. |
 

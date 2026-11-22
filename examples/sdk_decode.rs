@@ -3,11 +3,12 @@ use std::io::Write;
 
 use rk_mpp_rs::sdk::{Codec, Decoder, DecoderConfig, Packet, PacketFlags, PixelFormat};
 
-fn parse_codec(name: &str) -> Option<Codec> {
+fn parse_codec(name: &str) -> Option<(Codec, bool)> {
     match name {
-        "h264" => Some(Codec::H264),
-        "mjpeg" | "jpeg" => Some(Codec::Mjpeg),
-        "avs" | "avsplus" => Some(Codec::Avs),
+        "h264" => Some((Codec::H264, false)),
+        "mjpeg" | "jpeg" => Some((Codec::Mjpeg, false)),
+        "avs" | "avsplus" => Some((Codec::Avs, false)),
+        "avs-vproc" => Some((Codec::Avs, true)),
         _ => None,
     }
 }
@@ -16,15 +17,18 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
         return Err(format!(
-            "usage: {} <h264|mjpeg|avs> <input> <output.yuv>",
+            "usage: {} <h264|mjpeg|avs|avs-vproc> <input> <output.yuv>",
             args[0]
         ));
     }
-    let codec =
+    let (codec, vproc) =
         parse_codec(&args[1]).ok_or_else(|| format!("unsupported example codec: {}", args[1]))?;
     let input = fs::read(&args[2]).map_err(|error| format!("{}: {error}", args[2]))?;
-    let mut decoder = Decoder::new(DecoderConfig::new(codec).with_output_format(PixelFormat::I420))
-        .map_err(|error| error.to_string())?;
+    let mut config = DecoderConfig::new(codec).with_output_format(PixelFormat::I420);
+    if vproc {
+        config = config.with_vproc_output(true);
+    }
+    let mut decoder = Decoder::new(config).map_err(|error| error.to_string())?;
     let mut output =
         std::io::BufWriter::new(fs::File::create(&args[3]).map_err(|error| error.to_string())?);
 

@@ -103,6 +103,8 @@ pub struct Decoder {
     previous_picture_structure: u32,
     future_to_previous_distance: u32,
     output_nv12: bool,
+    incremental_vproc: bool,
+    vproc: Option<Vproc>,
     pub last_irq: u32,
 }
 
@@ -121,6 +123,8 @@ impl Decoder {
             previous_picture_structure: parser::FIELD_PICTURE,
             future_to_previous_distance: 2,
             output_nv12: false,
+            incremental_vproc: false,
+            vproc: None,
             last_irq: 0,
         })
     }
@@ -128,6 +132,15 @@ impl Decoder {
     /// Emit compact NV12 instead of planar I420.
     pub fn set_output_nv12(&mut self, enabled: bool) {
         self.output_nv12 = enabled;
+    }
+
+    /// Apply C's default IEP2 post-processing to incremental decoding.
+    ///
+    /// This is the stateful form used by the public SDK. The explicit
+    /// [`Self::decode_with_vproc`] method remains a one-shot file helper.
+    pub fn set_incremental_vproc(&mut self, enabled: bool) {
+        self.incremental_vproc = enabled;
+        self.vproc = None;
     }
 
     /// Decode up to `max_frames` display-order pictures.
@@ -293,11 +306,13 @@ impl Decoder {
         }
         let mut pictures = Vec::new();
         for (start, end) in ranges {
-            if let Some(picture) = self.decode_access(&data[start..end])? {
+            if self.incremental_vproc {
+                pictures.extend(self.decode_access_vproc(&data[start..end])?);
+            } else if let Some(picture) = self.decode_access(&data[start..end])? {
                 pictures.push(picture);
             }
         }
-        if eos {
+        if eos && !self.incremental_vproc {
             pictures.extend(self.flush()?);
         }
         Ok((pictures, consumed))
@@ -321,6 +336,71 @@ impl Decoder {
             self.slots[output.index] = None;
         }
         Ok(Some(picture))
+    }
+
+    fn decode_access_vproc(&mut self, access: &[u8]) -> Result<Vec<Picture>, String> {
+        let Some(output) = self.decode_access_output(access)? else {
+            return Ok(Vec::new());
+        };
+        let slot = self.slots[output.index]
+            .as_ref()
+            .expect("output slot remains allocated");
+        let width = slot.surface.width;
+        let height = slot.surface.height;
+        let picture_coding_type = slot.picture_coding_type;
+        let picture_distance = slot.picture_distance;
+        let top_field_first = slot.top_field_first;
+        let output_nv12 = self.output_nv12;
+        let err_info = if slot.invalid {
+            FRAME_ERR_DEC_INVALID
+        } else if slot.hardware_error {
+            FRAME_ERR_DEC_HW_ERR
+        } else {
+            0
+        };
+        if self.vproc.is_none() {
+            self.vproc = Some(Vproc::new(
+                width,
+                height,
+                slot.surface.hor_stride,
+                slot.surface.ver_stride,
+            )?);
+        }
+        let mut pictures = Vec::new();
+        self.vproc
+            .as_mut()
+            .expect("vproc was initialized")
+            .push_with(&slot.surface.texture, top_field_first, |frame| {
+                let yuv = if output_nv12 {
+                    frame.to_vec()
+                } else {
+                    let luma_size = width * height;
+                    nv12_to_planar(
+                        &frame[..luma_size],
+                        &frame[luma_size..],
+                        width,
+                        height,
+                        width,
+                    )
+                };
+                pictures.push(Picture {
+                    width,
+                    height,
+                    picture_coding_type,
+                    picture_distance,
+                    yuv,
+                    err_info,
+                });
+                Ok(())
+            })?;
+        self.slots[output.index]
+            .as_mut()
+            .expect("output slot remains allocated")
+            .displayed = true;
+        if output.release {
+            self.slots[output.index] = None;
+        }
+        Ok(pictures)
     }
 
     fn decode_access_output(&mut self, access: &[u8]) -> Result<Option<OutputSlot>, String> {
