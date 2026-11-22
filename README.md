@@ -136,8 +136,8 @@ words。改为只重置并累加 word 0、3 和 64–75 后，500 帧 720p 的 w
 
 整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
 ROADMAP 顶层清单当前为
-128 项完成、4 项未完成（含缩进子项为 172 / 7）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 119 个
+128 项完成、4 项未完成（含缩进子项为 173 / 7）；未完成项里有硬件不存在、无 conformance
+流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 120 个
 slice（其中 117 个 AV1 slice）。第 110 slice 把 20 帧 B-pyramid 与高级 inter 工具组合起来：保留 global/warped
 motion、OBMC、inter-intra、masked/distance-weighted compound 和 reference-frame MVs，
 20 个显示帧仍全部与 `aomdec` 逐样本一致。第 115 slice 新增 20 帧、10-bit、
@@ -161,6 +161,9 @@ fixture 的 B 画面混合 direct/skip，开启 loop filter 后三帧仍与 FFmp
 L0/L1 reference 的 POC 距离计算 `w0`、`64-w0`，BI 以 6-bit 分母混合；
 未使用/等距权重保持 32/32。B_BI fixture 通过 PPS 两位改写进入该路径，
 完整显示帧仍与 FFmpeg 逐像素一致；非等距权重公式另有单测。
+第 120 slice 补上 weighted `P_Skip` 的真实码流门：PPS `weighted_pred_flag=1`，
+静态 IDR+P 的 P 帧仍为 100% skip，weight table 走默认 identity 权重。
+P_Skip 头解析、权重应用和整帧输出与 FFmpeg 逐样本一致。
 H.264 P/B-slice CABAC 也已开始闭合：首个 48×32 Main-profile IDR+P 门中 P 帧为
 100% `P_Skip`，验证 P-slice CABAC 上下文初始化、`mb_skip_flag`、slice 终止和
 IDR 参考帧复制；两帧 4,608 bytes 与 FFmpeg 逐样本一致。随后又闭合全 P16x16
@@ -187,7 +190,7 @@ coeff/4×4 MV 的边界强度、QP average、alpha/beta offset 和垂直优先�
 整帧仍与 FFmpeg 逐样本一致。多参考门再覆盖两个 active L0 refs、
 `ref_idx_l0` CABAC unary、逐 4×4 reference cache 和跨参考 MVP 回退，
 最终 P2 的参考索引模式为 `1,0,0,0,1,0` 并逐样本一致。weighted P_Skip
-仍未完成。B-slice 也从 `B_L0_16x16` 开始闭合：在 IDR+P+B 的真实三帧流中，
+随后也用 `weightp=1` 的静态 IDR+P 流闭合。B-slice 也从 `B_L0_16x16` 开始闭合：在 IDR+P+B 的真实三帧流中，
 list-0 ref/MVD、B skip/type CABAC 上下文和 forward-only MC 均与 FFmpeg
 逐样本一致；`B_L1_16x16` 和 `B_BI_16x16` 随后也通过双列表 MVD、独立
 方向预测及 `(L0+L1+1)>>1` blending。`B_Direct_16x16`/`B_Skip`

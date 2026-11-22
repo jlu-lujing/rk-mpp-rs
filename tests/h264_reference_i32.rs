@@ -162,6 +162,15 @@ fn cabac_p_skip_copies_reference_macroblocks_matches_ffmpeg_yuv420p() {
 }
 
 #[test]
+fn cabac_weighted_p_skip_matches_ffmpeg_yuv420p() {
+    compare_cabac_p_skip_fixture(
+        include_bytes!("../tests/data/h264_cabac_p_skip_weighted_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_p_skip_weighted_48x32.yuv"),
+    )
+    .unwrap();
+}
+
+#[test]
 fn cabac_p16_zero_mv_residuals_match_ffmpeg_yuv420p() {
     compare_cabac_p16_zero_mv_fixture(
         include_bytes!("../tests/data/h264_cabac_p16_48x32.264"),

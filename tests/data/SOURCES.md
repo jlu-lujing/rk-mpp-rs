@@ -307,6 +307,11 @@ cargo test --test fixture_manifest
   frame is repeated exactly, so x264 reports the P picture as 100% skip. The
   pair exercises P-slice `cabac_init_idc`, `mb_skip_flag` contexts, CABAC
   termination and reference-picture copy across six macroblocks.
+- `h264_cabac_p_skip_weighted_48x32` repeats the same static source with
+  `weightp=1`. The PPS has `weighted_pred_flag=1`, the P picture is still
+  100% skip, and the default luma/chroma weight flags select identity scaling.
+  The gate verifies weighted P_Skip header parsing and prediction application;
+  its decoded pixels equal the unweighted skip frame.
 - `h264_cabac_b_l0_16x16_48x32` is a three-frame IDR+P+B stream in coding
   order. Direct, B-skip, B subpartitions, weighted bi-prediction and deblocking
   are disabled, and a temporary x264 switch forces every B macroblock to
