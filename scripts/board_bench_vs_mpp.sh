@@ -16,6 +16,7 @@ set -uo pipefail
 
 rust_bin="${RUST_BIN:-$HOME/rk-mpp-rs/target/release/rk-mpp-rs}"
 mpp_bin="${MPP_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
+mpp_lib="${MPP_LIB:-}"
 samples="${SAMPLES:-5}"
 allow_skips="${ALLOW_SKIPS:-0}"
 fail=0
@@ -82,11 +83,19 @@ run_rust() {
 
 run_mpp() {
   local type="$1" stream="$2" width="$3" height="$4" frames="$5"
-  (cd "$(dirname "$mpp_bin")" &&
-    sudo env reader_buf_size="$mpp_reader_buf_size" \
-      "$mpp_bin" -i "$stream" -o /dev/null -w "$width" -h "$height" \
-      -t "$type" -n "$frames" -v q 2>&1) |
-    sed -nE 's/.*decode ([0-9]+) frames time ([0-9]+) ms.*/\1 \2/p' | tail -1
+  if [[ -n "$mpp_lib" ]]; then
+    (cd "$(dirname "$mpp_bin")" &&
+      sudo env LD_LIBRARY_PATH="$mpp_lib" reader_buf_size="$mpp_reader_buf_size" \
+        "$mpp_bin" -i "$stream" -o /dev/null -w "$width" -h "$height" \
+        -t "$type" -n "$frames" -v q 2>&1) |
+      sed -nE 's/.*decode ([0-9]+) frames time ([0-9]+) ms.*/\1 \2/p' | tail -1
+  else
+    (cd "$(dirname "$mpp_bin")" &&
+      sudo env reader_buf_size="$mpp_reader_buf_size" \
+        "$mpp_bin" -i "$stream" -o /dev/null -w "$width" -h "$height" \
+        -t "$type" -n "$frames" -v q 2>&1) |
+      sed -nE 's/.*decode ([0-9]+) frames time ([0-9]+) ms.*/\1 \2/p' | tail -1
+  fi
 }
 
 for entry in "${streams[@]}"; do
