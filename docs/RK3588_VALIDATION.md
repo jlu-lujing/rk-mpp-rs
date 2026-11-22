@@ -1502,10 +1502,12 @@ Standalone drop-in decode is also closed. `scripts/board_mpp_standalone.sh`
 creates an overlay directory whose only `librockchip_mpp.so.1` is a symlink to
 `librk_mpp_rs.so`, verifies the unchanged vendor `mpi_dec_test` resolves that
 symlink through `ldd`, and compares its output against a second run using the
-real vendor library. On both RK3588 and RK3576 all five cases match byte-for-byte:
-H.264 640x480/6 frames (`338214ea…f815`), H.265 (`fcedb435…05e0`), VP9
-12 frames (`c5381bbf…3949a`), AV1 10 frames (`88f34ea5…c5f8e`) and MJPEG
-(`98c5f9cc…a689f8`). The local shim covers log/data symbols, environment and
+real vendor library. RK3588 now passes 15/15 byte-exact cases: H.264
+640x480/6 frames (`338214ea…f815`), H.265 (`fcedb435…05e0`), VP9 12 frames
+(`c5381bbf…3949a`), AV1 10 frames (`88f34ea5…c5f8e`), MJPEG
+(`98c5f9cc…a689f8`), VP8 IP/altref, MPEG-2, MPEG-4 IP/IPBB, H.263 CIF/QCIF,
+and two AVS+ vproc cycles (`6ef29ca6…e169`, `35ac81e6…f3d1`). RK3576 passes
+its supported H.264/H.265/VP9/AV1/MJPEG subset. The local shim covers log/data symbols, environment and
 time services, OSAL allocation, SoC name/type, spinlocks, `MppDecCfg`,
 singleton/trie metadata and the kmpp/cfg startup objects. Logging currently
 uses Rust naked ABI trampolines to preserve the variadic registers before

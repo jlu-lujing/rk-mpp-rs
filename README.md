@@ -447,11 +447,13 @@ output/reference pool 上同样支持注入；coded `show_frame` 直接使用调
 surface，`show_existing` 则按参考帧语义复制历史 display surface。
 **未修改的** vendor `mpi_dec_test` 现在可以只把 `librk_mpp_rs.so`
 重命名为 `librockchip_mpp.so.1` 后直接运行，不再加载 vendor MPP。RK3588/RK3576
-的 H.264/H.265/VP9/AV1/MJPEG 输出均与 vendor C 逐字节一致。当前
-standalone 解码门在 RK3588 已扩到 **13/13**：新增 VP8 IP/altref、
-MPEG-2、MPEG-4 IP/B 帧和 H.263 CIF/QCIF。legacy elementary stream 在 MPP
-object 兼容路径按官方 4 KiB packet 增量解析，只消费完整前缀；另有一格不带
-`-n` 的 MPEG-2 EOS 路径。普通 SDK 的 whole-stream/EOS 语义不变。100/96 帧
+的 H.264/H.265/VP9/AV1/MJPEG 输出均与 vendor C 逐字节一致；RK3588 另有两个
+AVS+ vproc 周期。当前
+standalone 解码门在 RK3588 已扩到 **15/15**：新增 VP8 IP/altref、
+MPEG-2、MPEG-4 IP/B 帧、H.263 CIF/QCIF 和两个 AVS+ vproc 完整周期。
+legacy elementary stream 在 MPP object 兼容路径按官方 4 KiB packet 增量解析，
+只消费完整前缀；另有一格不带 `-n` 的 MPEG-2 EOS 路径。普通 SDK 的
+whole-stream/EOS 语义不变。100/96 帧
 相对基准中，新路径比上一版整段重放快约 18–56×，与 vendor C 的差距缩到
 0.02–0.04 s。进一步让 object 层直接写普通 CPU buffer 并在一次拷贝中交织
 UV 后，100 帧 MPEG-2 的 Rust task-clock 为 50.1 ms、instructions 75.4M，

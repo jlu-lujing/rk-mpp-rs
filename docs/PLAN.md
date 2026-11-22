@@ -451,10 +451,10 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
       standalone helper surface are now implemented.
 - [x] W7-3 `mpi_dec_test`/`mpi_enc_test` 兼容性验证（用官方测试工具链接我们的库）
       **Decode complete on RK3588:** the unchanged vendor `mpi_dec_test` now
-      runs H.264/H.265/VP8/VP9/MPEG-2/MPEG-4/H.263/AV1/MJPEG through the
-      standalone library. The 13-case gate includes VP8 altref, MPEG-4 IPBB,
-      H.263 CIF/QCIF, and a no-`-n` EOS path with exact output-size and byte
-      checks. Legacy elementary streams use incremental parser state instead
+      runs H.264/H.265/VP8/VP9/MPEG-2/MPEG-4/H.263/AV1/MJPEG and two AVS+
+      vproc cycles through the standalone library. The 15-case gate includes
+      VP8 altref, MPEG-4 IPBB, H.263 CIF/QCIF, and a no-`-n` EOS path with exact
+      output-size and byte checks. Legacy elementary streams use incremental parser state instead
       of whole-prefix replay, and object output writes directly into a normal
       CPU buffer while interleaving UV. Vendor
       log/cfg/OSAL helpers are supplied by the Rust library, and the same

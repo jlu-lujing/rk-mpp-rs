@@ -21,6 +21,8 @@ fi
 dec_test="${DEC_TEST:-$mpp_root/build/test/mpi_dec_test}"
 vendor_lib="${MPP_LIB:-$mpp_root/build/mpp}"
 h264="${H264_STREAM:-/tmp/rk_mpp_standalone_h264.264}"
+avs="${AVS_STREAM:-/tmp/rk_mpp_standalone_avs.avs}"
+avs2="${AVS_STREAM2:-/tmp/rk_mpp_standalone_avs2.avs}"
 overlay=$(mktemp -d /tmp/rk_mpp_standalone.XXXXXX)
 trap 'rm -rf "$overlay"' EXIT
 
@@ -122,6 +124,24 @@ run_case mpeg4_b tests/data/mp4_320x240_12_ibpb.m4v 4 12 320 240
 run_case h263 tests/data/h263_cif_12_ip.263 3 12 352 288
 run_case h263_qcif tests/data/h263_qcif_6_ip.263 3 6 176 144
 run_case av1 tests/data/av1_320x240_10.ivf 16777224 10 320 240
+
+if [ ! -s "$avs" ]; then
+    curl -L --fail --silent \
+        https://samples.ffmpeg.org/AVS/issue767/stream01.avs \
+        -o "$avs"
+fi
+test "$(sha256sum "$avs" | cut -d' ' -f1)" = \
+    d296affc27c5977565a18d85897be82a3b1c77c9165b8928e6e5eaad698a736e
+run_case avs "$avs" 16777221 9 352 288
+
+if [ ! -s "$avs2" ]; then
+    curl -L --fail --silent \
+        https://samples.ffmpeg.org/AVS/issue767/stream03.avs \
+        -o "$avs2"
+fi
+test "$(sha256sum "$avs2" | cut -d' ' -f1)" = \
+    fa2055cfad0b1d554f2bb87ed4e02254c52b481a9b5b07d49c25a09533c83565
+run_case avs2 "$avs2" 16777221 7 352 288
 
 mjpeg=/tmp/rk_mpp_standalone_mjpeg.jpg
 ffmpeg -nostdin -y -hide_banner -loglevel error \

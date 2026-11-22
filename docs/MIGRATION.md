@@ -79,7 +79,8 @@ LD_LIBRARY_PATH=/opt/rk-mpp-rs/lib ./mpi_dec_test -i in.h264 -t 7 -o out.yuv
 LD_PRELOAD=/opt/rk-mpp-rs/lib/librk_mpp_rs.so.1 ./mpi_dec_test ...
 ```
 
-已验证：RK3588/RK3576 上 H.264/H.265/VP9/AV1/MJPEG 的官方 `mpi_dec_test` 输出与
+已验证：RK3588/RK3576 上 H.264/H.265/VP9/AV1/MJPEG，以及 RK3588 上两个
+AVS+ vproc cycle 的官方 `mpi_dec_test` 输出与
 vendor 库逐字节一致；`mpi_enc_test` 可完成 H.264/H.265/MJPEG 单帧编码。
 
 ### FFmpeg

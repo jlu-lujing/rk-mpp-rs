@@ -145,11 +145,12 @@
   consumes complete picture groups, MPEG-4 carries VOL/timing across VOP
   packets, and H.263 carries its I-picture gate. The normal SDK whole-stream
   path is unchanged.
-- `board_mpp_standalone.sh` now covers 13 cases: H.264, H.265, VP8 IP/altref,
-  VP9, MPEG-2, MPEG-4 IP/B, H.263 CIF/QCIF, AV1 and MJPEG. Each case checks the
-  exact NV12 output size and byte-compares vendor C with Rust. One MPEG-2 case
-  omits `-n` to exercise the EOS-frame path.
-- RK3588 passes 13/13. Representative hashes include VP8 altref
+- `board_mpp_standalone.sh` now covers 15 cases: H.264, H.265, VP8 IP/altref,
+  VP9, MPEG-2, MPEG-4 IP/B, H.263 CIF/QCIF, AV1, MJPEG and two AVS+ vproc
+  cycles. Each case checks the exact NV12 output size and byte-compares vendor C
+  with Rust. One MPEG-2 case omits `-n` to exercise the EOS-frame path.
+- RK3588 passes 15/15. Representative hashes include AVS+ 9-frame
+  `6ef29ca6…e169`, AVS+ 7-frame `35ac81e6…f3d1`, VP8 altref
   `ebaa4d7e…d819bc`, MPEG-4 IPBB `e9db8cb8…384b14`, MPEG-2
   `2dc97045…af6371e`, H.263 CIF `4a2a9312…c2f45e`, and H.263 QCIF
   `4957b0cc…619ceb`.

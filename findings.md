@@ -311,10 +311,12 @@
   The RK3588 kernel exposes neither
   `/dev/vcodec` nor `/proc/kmpp` ctrl-cfg support, so the tool rejects KMPP
   modes 1/2 before encoding.
-- The RK3588 standalone decoder matrix is now 13/13 with exact output-size
+- The RK3588 standalone decoder matrix is now 15/15 with exact output-size
   checks: H.264, H.265, VP8 IP/altref, VP9, MPEG-2, MPEG-4 IP/IPBB,
-  H.263 CIF/QCIF, AV1 and MJPEG all match vendor C byte-for-byte; the extra
-  MPEG-2 case omits `-n` and exercises the EOS-frame path.
+  H.263 CIF/QCIF, AV1, MJPEG and two AVS+ vproc cycles all match vendor C
+  byte-for-byte; the extra MPEG-2 case omits `-n` and exercises the EOS path.
+  AVS uses coding type `16777221`; its two cycles are 9 frames
+  (`6ef29ca6…e169`) and 7 frames (`35ac81e6…f3d1`).
 - JPEG restart interval 20 matches the CLI output at RK3576
   `0ccf41ea…82997` and RK3588 `25254033…df748a`.
 - Verified VP9 SHA-256 values are

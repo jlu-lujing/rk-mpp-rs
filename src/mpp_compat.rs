@@ -42,6 +42,7 @@ const MPP_VIDEO_CODING_MJPEG: c_int = 8;
 const MPP_VIDEO_CODING_VP8: c_int = 9;
 const MPP_VIDEO_CODING_VP9: c_int = 10;
 const MPP_VIDEO_CODING_HEVC: c_int = 0x0100_0004;
+const MPP_VIDEO_CODING_AVS: c_int = 0x0100_0005;
 const MPP_VIDEO_CODING_AV1: c_int = 0x0100_0008;
 const MPP_FMT_YUV420SP: u32 = 0;
 const MPP_FMT_YUV420P: u32 = 4;
@@ -753,7 +754,10 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
         let height = u32::try_from(decoded.height()).unwrap_or(0);
         let legacy_planar = matches!(
             context.coding,
-            MPP_VIDEO_CODING_MPEG2 | MPP_VIDEO_CODING_H263 | MPP_VIDEO_CODING_MPEG4
+            MPP_VIDEO_CODING_MPEG2
+                | MPP_VIDEO_CODING_H263
+                | MPP_VIDEO_CODING_MPEG4
+                | MPP_VIDEO_CODING_AVS
         ) && decoded.format() == sdk::PixelFormat::I420;
         let format = if legacy_planar {
             MPP_FMT_YUV420SP
@@ -1597,6 +1601,7 @@ fn coding_supported(ctx_type: c_int, coding: c_int) -> bool {
                 | MPP_VIDEO_CODING_VP8
                 | MPP_VIDEO_CODING_VP9
                 | MPP_VIDEO_CODING_HEVC
+                | MPP_VIDEO_CODING_AVS
                 | MPP_VIDEO_CODING_AV1
         ),
         MPP_CTX_ENC => matches!(
@@ -1692,6 +1697,7 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
         };
         let config = sdk::DecoderConfig::new(codec)
             .with_output_format(sdk::PixelFormat::Nv12)
+            .with_vproc_output(coding == MPP_VIDEO_CODING_AVS)
             .with_dmabuf_output(matches!(
                 coding,
                 MPP_VIDEO_CODING_AVC
@@ -1704,7 +1710,7 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
             Ok(mut decoder) => {
                 if matches!(
                     codec,
-                    sdk::Codec::Mpeg2 | sdk::Codec::Mpeg4 | sdk::Codec::H263
+                    sdk::Codec::Mpeg2 | sdk::Codec::Mpeg4 | sdk::Codec::H263 | sdk::Codec::Avs
                 ) {
                     decoder.enable_legacy_packet_decode();
                 }
@@ -1749,6 +1755,7 @@ fn sdk_codec(coding: c_int) -> Option<sdk::Codec> {
         MPP_VIDEO_CODING_VP8 => Some(sdk::Codec::Vp8),
         MPP_VIDEO_CODING_VP9 => Some(sdk::Codec::Vp9),
         MPP_VIDEO_CODING_HEVC => Some(sdk::Codec::H265),
+        MPP_VIDEO_CODING_AVS => Some(sdk::Codec::Avs),
         MPP_VIDEO_CODING_AV1 => Some(sdk::Codec::Av1),
         _ => None,
     }
@@ -1759,6 +1766,12 @@ mod tests {
     use super::*;
     use std::ffi::CString;
     use std::ptr;
+
+    #[test]
+    fn avs_coding_type_maps_to_the_public_decoder() {
+        assert!(coding_supported(MPP_CTX_DEC, MPP_VIDEO_CODING_AVS));
+        assert_eq!(sdk_codec(MPP_VIDEO_CODING_AVS), Some(sdk::Codec::Avs));
+    }
 
     fn step(
         non_reference: bool,
