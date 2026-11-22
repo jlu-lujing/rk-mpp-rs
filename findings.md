@@ -547,6 +547,15 @@
 - The vproc CLI now writes the compact IEP result directly instead of copying it
   through a second reusable buffer. Three 700-frame samples were 525/523/790 ms;
   the output hash remains unchanged and timing remains bimodal.
+- AVS vproc no longer remaps decoder frames for every IEP job. The three source
+  pictures now borrow their descriptors for one run, while the two retained
+  anchors hold only duplicated fds. Packed IEP destinations are emitted directly
+  instead of allocating two `Vec<u8>` copies per I5O2 window. The same 700-frame
+  stream remains byte-identical; five-run medians moved from Rust 556 ms before
+  the change to 490 ms after it, versus C 809 ms. Timing is still bimodal.
+  Paired `time -p` samples used 0.13-0.22 s of Rust user+sys CPU versus 0.26 s
+  for C's two fast runs, so the wall-time reduction does not trade more CPU for
+  speed.
 - The AVS parser has a deterministic 20,000-iteration mutation test covering
   truncation, byte flips, insertion and arbitrary inputs; all parser entry points
   return errors or partial parses without panicking.

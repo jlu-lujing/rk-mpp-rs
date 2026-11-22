@@ -233,8 +233,8 @@ board's `av1_rkmpp` frontend cannot convert the stream at all and
 | MPEG-4 | 320x240, 120f verified | 105 ms | **71 ms** | **+47.9 %** |
 | H.263 | CIF, 120f verified | 118 ms | **104 ms** | **+13.5 %** |
 | AV1 | 720p, 60f, vs `mpi_dec_test` | 182 ms | **149 ms** | **+22.1 %** |
-| AVS+ | 352x288, 700f verified, raw NV12 | 825 ms | **694 ms** | **+18.9 %** |
-| AVS+ | 352x288, 700f verified, default IEP2 vproc | bimodal | bimodal | no stable winner |
+| AVS+ | 352x288, 700f verified, raw NV12, 5-run median | 808 ms | **606 ms** | **+33.3 %** |
+| AVS+ | 352x288, 700f verified, default IEP2 vproc, 5-run median | 809 ms | **490 ms** | **+65.1 %** |
 
 The 120-frame VP8/MPEG-2/MPEG-4/H.263 streams are ten-times concatenations of
 the corpus fixtures (VP8 keeps a corrected IVF frame count); each was verified
@@ -247,9 +247,9 @@ on both sides), so its 15-sample median is quoted.
 
 The AVS+ raw row disables C's IEP2 vproc so both sides write the same decoder
 NV12. The vproc row uses C's default path and Rust's decoder-DMA-BUF import
-pipeline. Both 700-frame outputs are byte-identical, but repeated runs are
-bimodal on both sides; the performance gate reports the samples rather than
-claiming a stable winner.
+pipeline. Both 700-frame outputs are byte-identical. Individual runs remain
+bimodal, so the table quotes five-run medians; paired CPU samples put Rust at
+0.13-0.22 s user+sys versus 0.26 s for C's two fast runs.
 
 ## 2026-11-17 NEON chroma split and VP9 streamed output
 

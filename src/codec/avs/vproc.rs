@@ -4,19 +4,17 @@
 //! only fills the second anchor. From then on each three-frame window runs
 //! I5O2 and emits its two destination slots in field-order order.
 
+use std::os::fd::{AsFd, OwnedFd};
+
 use crate::hal::iep::{Iep2DilMode, Iep2FieldOrder, Iep2Fmt, Iep2OutMode, Iep2YuvSwap};
 use crate::service::dma_heap::DmaBuf;
 use crate::service::iep_session::{DeinterlaceConfig, IepDeinterlace};
 
 pub struct Vproc {
     iep: IepDeinterlace,
-    width: usize,
-    height: usize,
-    hor_stride: usize,
-    ver_stride: usize,
     frame_bytes: usize,
-    prev0: Option<DmaBuf>,
-    prev1: Option<DmaBuf>,
+    prev0: Option<OwnedFd>,
+    prev1: Option<OwnedFd>,
 }
 
 impl Vproc {
@@ -43,10 +41,6 @@ impl Vproc {
         let iep = IepDeinterlace::open(cfg).map_err(|error| error.to_string())?;
         Ok(Self {
             iep,
-            width,
-            height,
-            hor_stride,
-            ver_stride,
             frame_bytes: width * height * 3 / 2,
             prev0: None,
             prev1: None,
@@ -54,6 +48,25 @@ impl Vproc {
     }
 
     pub fn push(&mut self, frame: &DmaBuf, top_field_first: bool) -> Result<Vec<Vec<u8>>, String> {
+        let mut frames = Vec::new();
+        self.push_with(frame, top_field_first, |bytes| {
+            frames.push(bytes.to_vec());
+            Ok(())
+        })?;
+        Ok(frames)
+    }
+
+    /// Run the state machine and visit each compact output frame.
+    ///
+    /// Packed destinations are passed directly from their dma-buf mapping.
+    /// The retained anchors keep only duplicated descriptors, not additional
+    /// CPU mappings.
+    pub fn push_with(
+        &mut self,
+        frame: &DmaBuf,
+        top_field_first: bool,
+        mut visit: impl FnMut(&[u8]) -> Result<(), String>,
+    ) -> Result<usize, String> {
         if frame.len() < self.frame_bytes {
             return Err(format!(
                 "AVS vproc frame is {} bytes, needs {}",
@@ -63,38 +76,37 @@ impl Vproc {
         }
 
         if self.prev0.is_none() {
-            for slot in 0..3 {
-                self.import(slot, frame)?;
-            }
+            let current = retain(frame)?;
             self.iep.set_mode(Iep2DilMode::I1O1T);
             self.iep.set_field_order(if top_field_first {
                 Iep2FieldOrder::Tff
             } else {
                 Iep2FieldOrder::Bff
             });
-            self.iep.run()?;
-            self.prev0 = Some(frame.try_clone().map_err(|error| error.to_string())?);
-            return Ok(vec![self.iep.dst_frame_compact(0)?]);
+            self.iep.run_imported_fds([frame.as_fd(); 3])?;
+            self.prev0 = Some(current);
+            self.iep.visit_dst_frame(0, visit)?;
+            return Ok(1);
         }
 
         if self.prev1.is_none() {
+            let current = retain(frame)?;
             self.prev1 = self.prev0.take();
-            self.prev0 = Some(frame.try_clone().map_err(|error| error.to_string())?);
-            return Ok(Vec::new());
+            self.prev0 = Some(current);
+            return Ok(0);
         }
 
+        let current = retain(frame)?;
         let prev0 = self.prev0.take().expect("prev0 checked above");
         let prev1 = self.prev1.take().expect("prev1 checked above");
-        self.import(0, &prev0)?;
-        self.import(1, frame)?;
-        self.import(2, &prev1)?;
         self.iep.set_mode(Iep2DilMode::I5O2);
         self.iep.set_field_order(if top_field_first {
             Iep2FieldOrder::Tff
         } else {
             Iep2FieldOrder::Bff
         });
-        self.iep.run()?;
+        self.iep
+            .run_imported_fds([prev0.as_fd(), frame.as_fd(), prev1.as_fd()])?;
 
         let order = self.iep.field_order();
         if std::env::var_os("RFI_AVS_VPROC_TRACE").is_some() {
@@ -109,23 +121,16 @@ impl Vproc {
         }
         let first = if order == Iep2FieldOrder::Bff { 1 } else { 0 };
         let second = 1 - first;
-        let output = vec![
-            self.iep.dst_frame_compact(first)?,
-            self.iep.dst_frame_compact(second)?,
-        ];
+        self.iep.visit_dst_frame(first, &mut visit)?;
+        self.iep.visit_dst_frame(second, visit)?;
         self.prev1 = Some(prev0);
-        self.prev0 = Some(frame.try_clone().map_err(|error| error.to_string())?);
-        Ok(output)
+        self.prev0 = Some(current);
+        Ok(2)
     }
+}
 
-    fn import(&mut self, slot: usize, frame: &DmaBuf) -> Result<(), String> {
-        self.iep.import_src_dmabuf(
-            slot,
-            frame,
-            self.width,
-            self.height,
-            self.hor_stride,
-            self.ver_stride,
-        )
-    }
+fn retain(frame: &DmaBuf) -> Result<OwnedFd, String> {
+    frame
+        .dup_fd()
+        .map_err(|error| format!("retain AVS vproc frame: {error}"))
 }

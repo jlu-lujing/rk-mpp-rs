@@ -249,10 +249,18 @@ impl Decoder {
             } else {
                 0
             };
-            let frames = vproc
-                .as_mut()
-                .expect("vproc was initialized")
-                .push(&slot.surface.texture, top_field_first)?;
+            vproc.as_mut().expect("vproc was initialized").push_with(
+                &slot.surface.texture,
+                top_field_first,
+                |frame| {
+                    if decoded == max_frames {
+                        return Ok(());
+                    }
+                    emit(frame, err_info)?;
+                    decoded += 1;
+                    Ok(())
+                },
+            )?;
             self.slots[output.index]
                 .as_mut()
                 .expect("output slot remains allocated")
@@ -260,12 +268,8 @@ impl Decoder {
             if output.release {
                 self.slots[output.index] = None;
             }
-            for frame in frames {
-                emit(&frame, err_info)?;
-                decoded += 1;
-                if decoded == max_frames {
-                    return Ok(decoded);
-                }
+            if decoded == max_frames {
+                return Ok(decoded);
             }
         }
         Ok(decoded)

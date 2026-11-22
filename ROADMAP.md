@@ -2212,7 +2212,11 @@ in what order the evidence gets produced.
       `vproc` output now reproduces C's default IEP2 state machine, GMV,
       field-order and output slots byte-for-byte on both public fixtures
       (`13e5e665…dad1d` and `d3fa0c0d…10180`). The three I5O2 inputs are
-      imported as decoder DMA-BUFs rather than copied through CPU memory.
+      passed to IEP2 as borrowed decoder DMA-BUF descriptors; the two retained
+      anchors keep duplicated fds without extra CPU mappings. Packed vproc
+      destinations are emitted directly instead of copied into two temporary
+      vectors. The 700-frame output hash is unchanged and the five-run median
+      is Rust 490 ms versus C 809 ms, although individual samples remain bimodal.
       A syntax-equivalent profile
       0x48 stream derived from the public fixture also matches C on four raw
       frames (`9eb0602a…5cfa4`), and a base1 weighted-quant/chroma-delta/model2
@@ -2220,8 +2224,8 @@ in what order the evidence gets produced.
       A 700-frame concatenated run is byte-identical in raw
       NV12; the current 3-run median is Rust 694 ms versus C 825 ms on this board
       (`board_avs_plus_perf.sh`). The default-vproc 700-frame output is also
-      byte-identical; its timing is bimodal on both sides, so no stable winner
-      is claimed.
+      byte-identical and is faster than C by median wall time, with a documented
+      bimodal distribution.
 - [ ] Damaged and truncated AVS+ streams
       `scripts/board_avs_plus_corrupt.sh` covers eight variants. Both decoders
       output the same valid frame for the 7,000/10,000-byte truncations and an

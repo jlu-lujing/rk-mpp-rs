@@ -12,7 +12,7 @@
 //! `scripts/board_iep_dei_vs_mpp.sh`, never in a host unit test.
 
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
 
 use super::dma_heap::DmaBuf;
 use super::{Batch, Client, MppService};
@@ -219,6 +219,27 @@ impl IepDeinterlace {
     /// when a tightly packed picture is required.
     pub fn dst_frame(&self, i: usize) -> &[u8] {
         self.dst[i].as_slice()
+    }
+
+    /// Visit one output slot in the compact layout without allocating when
+    /// the destination has no stride or vertical padding.
+    pub fn visit_dst_frame(
+        &self,
+        i: usize,
+        mut visit: impl FnMut(&[u8]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if i >= self.dst.len() {
+            return Err(format!("IEP destination index {i} is out of range"));
+        }
+        if self.cfg.hor_stride == self.cfg.width && self.cfg.ver_stride == self.cfg.height {
+            let frame = self.dst[i]
+                .as_slice()
+                .get(..self.dst_frame_bytes())
+                .ok_or_else(|| "IEP destination frame is truncated".to_string())?;
+            return visit(frame);
+        }
+        let frame = self.dst_frame_compact(i)?;
+        visit(&frame)
     }
 
     /// Repack one output slot into the compact layout returned by
@@ -460,7 +481,7 @@ impl IepDeinterlace {
 
     /// Clear both destinations and make the sources visible to the engine, once
     /// per picture - `iep2_test` memsets before `RUN_SYNC`, not before every job.
-    fn prepare(&mut self) -> Result<(), String> {
+    fn prepare(&mut self, sync_sources: bool) -> Result<(), String> {
         for dst in self.dst.iter_mut() {
             dst.sync_write_begin()
                 .map_err(|e| format!("dst clear sync: {e}"))?;
@@ -469,19 +490,25 @@ impl IepDeinterlace {
                 .map_err(|e| format!("dst clear flush: {e}"))?;
         }
 
-        for i in 0..3 {
-            self.src[i]
-                .sync_read_begin()
-                .map_err(|e| format!("src{i} invalidate-before-DMA: {e}"))?;
-            self.src[i]
-                .sync_read_end()
-                .map_err(|e| format!("src{i} sync end: {e}"))?;
+        if sync_sources {
+            for i in 0..3 {
+                self.src[i]
+                    .sync_read_begin()
+                    .map_err(|e| format!("src{i} invalidate-before-DMA: {e}"))?;
+                self.src[i]
+                    .sync_read_end()
+                    .map_err(|e| format!("src{i} sync end: {e}"))?;
+            }
         }
         Ok(())
     }
 
     /// One `iep2_start()` + `iep2_wait()` with the given mode.
-    fn submit(&mut self, mode: Iep2DilMode) -> Result<[u32; iep::OUTPUT_WORDS], String> {
+    fn submit(
+        &mut self,
+        mode: Iep2DilMode,
+        src_fds: [RawFd; 3],
+    ) -> Result<[u32; iep::OUTPUT_WORDS], String> {
         let c = self.cfg;
         let job = DeinterlaceJob {
             width: c.width,
@@ -495,7 +522,7 @@ impl IepDeinterlace {
             dil_mode: mode,
             out_mode: c.out_mode,
             field_order: self.field_order,
-            src_fds: [self.src[0].fd(), self.src[1].fd(), self.src[2].fd()],
+            src_fds,
             dst_fds: [self.dst[0].fd(), self.dst[1].fd()],
             mv_fd: self.mv.fd(),
             md_fd: self.md.fd(),
@@ -551,12 +578,37 @@ impl IepDeinterlace {
     ///
     /// The returned counters belong to the last job.
     pub fn run(&mut self) -> Result<[u32; iep::OUTPUT_WORDS], String> {
+        let src_fds = [self.src[0].fd(), self.src[1].fd(), self.src[2].fd()];
+        self.run_with_src_fds(src_fds, true)
+    }
+
+    /// Run one picture from three imported dma-buf descriptors.
+    ///
+    /// The descriptors only need to remain valid for this call. Unlike
+    /// [`Self::import_src_dmabuf`], this path does not duplicate or mmap them.
+    pub fn run_imported_fds(
+        &mut self,
+        src_fds: [BorrowedFd<'_>; 3],
+    ) -> Result<[u32; iep::OUTPUT_WORDS], String> {
+        let src_fds = [
+            src_fds[0].as_raw_fd(),
+            src_fds[1].as_raw_fd(),
+            src_fds[2].as_raw_fd(),
+        ];
+        self.run_with_src_fds(src_fds, false)
+    }
+
+    fn run_with_src_fds(
+        &mut self,
+        src_fds: [RawFd; 3],
+        sync_sources: bool,
+    ) -> Result<[u32; iep::OUTPUT_WORDS], String> {
         let mode = self.mode;
-        self.prepare()?;
-        let first = self.submit(mode)?;
+        self.prepare(sync_sources)?;
+        let first = self.submit(mode, src_fds)?;
         let output = if mode == Iep2DilMode::Pd {
             self.mode = Iep2DilMode::Dect;
-            self.submit(Iep2DilMode::Dect)?
+            self.submit(Iep2DilMode::Dect, src_fds)?
         } else {
             first
         };

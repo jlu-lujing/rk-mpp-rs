@@ -100,6 +100,9 @@
   is bimodal on both sides and is not used for a stable winner claim.
 - Removed the vproc CLI's second compact-frame copy; the 7-frame hash remains
   `13e5e665…dad1d`.
+- Replaced per-job AVS source imports with borrowed dma-buf descriptors and
+  direct compact-destination emission. The 700-frame output hash is unchanged;
+  the five-run median is 490 ms versus C 809 ms, with the same bimodal spread.
 - Added a deterministic 20,000-case AVS parser mutation test with no panics.
 - Added a deterministic profile 0x48 stream generator and hardware gate. The
   derived four-frame raw/SDK output matches C (`9eb0602a…5cfa4`).

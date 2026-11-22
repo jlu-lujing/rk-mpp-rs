@@ -423,6 +423,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Add enabled weighted-quant/chroma-delta/model2 hardware coverage.
 - [x] Add an AVS+ damaged/truncated-stream evidence matrix.
 - [x] Add deterministic mutation coverage for the AVS parser.
+- [x] Keep AVS vproc anchors as descriptors and emit packed output without copies.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.
