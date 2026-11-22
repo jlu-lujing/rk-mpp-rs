@@ -318,7 +318,14 @@ impl Decoder {
                     )),
                 )
             } else {
-                (copy_planar(frame, reusable.unwrap_or_default())?, None)
+                (
+                    copy_planar(
+                        frame,
+                        sequence.color_config.mono_chrome,
+                        reusable.unwrap_or_default(),
+                    )?,
+                    None,
+                )
             }
         } else {
             (Vec::new(), None)
@@ -498,6 +505,10 @@ impl Decoder {
         {
             return Err("AV1 DMA-BUF output supports only 8-bit NV12".to_string());
         }
+        let sequence = self
+            .parser
+            .sequence()
+            .ok_or("missing AV1 sequence header")?;
         let reference = self
             .reference_slots
             .get(slot)
@@ -524,7 +535,14 @@ impl Decoder {
                     )),
                 )
             } else {
-                (copy_planar(frame, reusable.unwrap_or_default())?, None)
+                (
+                    copy_planar(
+                        frame,
+                        sequence.color_config.mono_chrome,
+                        reusable.unwrap_or_default(),
+                    )?,
+                    None,
+                )
             }
         } else {
             (Vec::new(), None)
@@ -557,7 +575,7 @@ impl Decoder {
     }
 }
 
-fn copy_planar(frame: &Frame, out: Vec<u8>) -> Result<Vec<u8>, String> {
+fn copy_planar(frame: &Frame, mono_chrome: bool, out: Vec<u8>) -> Result<Vec<u8>, String> {
     let traced = std::env::var_os("RK_MPP_AV1_TRACE").is_some();
     let start = Instant::now();
     let display = frame
@@ -571,6 +589,7 @@ fn copy_planar(frame: &Frame, out: Vec<u8>) -> Result<Vec<u8>, String> {
         frame.height,
         frame.display_hor_stride,
         frame.bit_depth,
+        mono_chrome,
         &display[..size],
         &display[size..size + size / 2],
         out,
@@ -594,10 +613,33 @@ fn copy_planar_data(
     height: usize,
     stride: usize,
     bit_depth: u32,
+    mono_chrome: bool,
     y: &[u8],
     uv: &[u8],
     mut out: Vec<u8>,
 ) -> Vec<u8> {
+    if mono_chrome {
+        let chroma_width = width.div_ceil(2);
+        let chroma_height = height.div_ceil(2);
+        let chroma_samples = chroma_width * chroma_height;
+        if bit_depth == 8 {
+            out.clear();
+            out.reserve(width * height + 2 * chroma_samples);
+            for row in 0..height {
+                let start = row * stride;
+                out.extend_from_slice(&y[start..start + width]);
+            }
+            out.extend(std::iter::repeat_n(128, 2 * chroma_samples));
+        } else {
+            crate::codec::yuv::packed10_nv12_to_planar_into(&mut out, y, uv, width, height, stride);
+            let neutral = 1u16 << (bit_depth - 1);
+            let luma_bytes = width * height * 2;
+            for sample in out[luma_bytes..].chunks_exact_mut(2) {
+                sample.copy_from_slice(&neutral.to_le_bytes());
+            }
+        }
+        return out;
+    }
     // The shared readback covers the 8-bit 4:2:0 case with even dimensions, which
     // is the only shape where its truncated halves match the div_ceil chroma
     // size used here.
@@ -678,7 +720,7 @@ mod tests {
                 data[uv + row * stride + column * 2 + 1] = 20 + column as u8;
             }
         }
-        let planar = copy_planar_data(4, 4, stride, 8, &data[..uv], &data[uv..], Vec::new());
+        let planar = copy_planar_data(4, 4, stride, 8, false, &data[..uv], &data[uv..], Vec::new());
         assert_eq!(
             &planar[..16],
             &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -711,6 +753,7 @@ mod tests {
             height,
             stride,
             8,
+            false,
             &data[..uv],
             &data[uv..],
             Vec::new(),
@@ -750,6 +793,7 @@ mod tests {
             height,
             stride,
             10,
+            false,
             &data[..stride * height],
             &data[stride * height..],
             Vec::new(),
@@ -765,6 +809,32 @@ mod tests {
                 202, 203
             ]
         );
+    }
+
+    #[test]
+    fn monochrome_output_uses_neutral_chroma() {
+        let width = 4;
+        let height = 2;
+        let stride = 8;
+        let mut data = vec![0u8; stride * height + stride];
+        for row in 0..height {
+            for column in 0..width {
+                data[row * stride + column] = (row * width + column) as u8;
+            }
+        }
+        let planar = copy_planar_data(
+            width,
+            height,
+            stride,
+            8,
+            true,
+            &data[..stride * height],
+            &data[stride * height..],
+            Vec::new(),
+        );
+        assert_eq!(&planar[..8], &[0, 1, 2, 3, 4, 5, 6, 7]);
+        assert!(planar[8..].iter().all(|sample| *sample == 128));
+        assert_eq!(planar.len(), 8 + 2 * 2);
     }
 
     fn write_packed_10bit(dst: &mut [u8], samples: &[u16]) {

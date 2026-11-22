@@ -67,6 +67,11 @@ hardware reference map 现在包含当前 tile-output frame，消除了 `0x2109`
 `cdfs_ndvc`，regular MV CDF 必须保留。修复后 320x320 key+P+P 的 460,800 bytes
 三帧与 C 逐字节一致（`5298dbfb…c22ad`），门为
 `scripts/board_av1_intrabc_palette.sh`。
+第 117 slice 关闭 AV1 monochrome 显示输出。C harness 对 `PIX_FMT_GRAY` 直接报
+不支持并循环到超时；Rust hardware 的 Y 平面已经与 libaom 一致，但未使用 U/V
+表面为 0。现在单色输出填充 neutral 128（10-bit 为 512），320x240 I420
+115,200 bytes 与 `aomdec` 逐字节一致（`df3a2fe1…e909b`），门为
+`scripts/board_av1_monochrome.sh`。
 同日 M11 也开始闭合 H.264 P-slice CABAC。首个严格门是 48×32 Main-profile
 IDR+P：P 帧六个宏块全部为 `P_Skip`，验证 P 的 `cabac_init_idc` 上下文、
 left/top“已解码且非 skip”条件都为 0 时选择 ctxIdx 11、逐宏块终止位和

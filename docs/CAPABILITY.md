@@ -122,6 +122,7 @@
 | AV1 多尺寸 / 4:4:4 conformance | 完成：96×96、128×128、192×192 各 10 帧 inter 流与 libaom 逐样本一致；新增 320×240 profile-1 I444 key+P+P，覆盖 one-sided compound、inter-intra、OBMC、warped motion 和相邻 NEWMV 候选。该门修正 `interintra_allowed()` 对 `8×32/32×8` 的错误尺寸门，以及单参考 MV-stack 扫描 compound 邻块时未计入 NEWMV 的 `newmv_count`/`mode_context` 偏差 |
 | AV1 单列多行 tile | 完成：320×320 key+P+P 均为 `tile_cols_log2=0 / tile_rows_log2=1`；两个全宽 row tile 的熵状态都从 frame CDF 重新开始，帧级 inter 邻居状态跨 tile 延续，三帧 Y/U/V 与 `aomdec` 逐样本一致。AV1 没有独立 WPP 语法或 HEVC 式 entry-point 链，此前的 WPP 项按该 tile-row shape 验收 |
 | AV1 screen-content IntraBC | 完成：`CdfState` 为 intra-block DV 保留独立 `ndvc`；解析 `use_intrabc`、整数 DV、tile 内源矩形校验、inter variable-transform tree/`TXFM_SPLIT`、inter tx type 和 IntraBC 残差，并从当前帧已解码区域复制 Y/U/V。默认 320×320 key+P+P 流的 20 个 IntraBC block、4/4 色 Y/UV palette 和三帧最终 YUV 与 `aomdec` 逐样本一致。RK3588 hardware gate 另修正了 `coding.intrabc` 的当前 tile-output reference 映射，以及 intra CDF 更新只写 `cdfs_ndvc` 而不覆盖 regular MV CDF；三帧 460,800 bytes 与 C 逐字节（`5298dbfb…c22ad`） |
+| AV1 monochrome display output | 完成：硬件 Y 平面与 libaom 一致，输出层为未使用色度填充 neutral 128（10-bit 为 512），避免把 DMA 表面的 0 当成合法 chroma。320×240 monochrome delta-LF fixture 的完整 I420 为 115,200 bytes，与 `aomdec` 逐字节一致（`df3a2fe1…e909b`）；`board_av1_monochrome.sh` 为板级门 |
 | AV1 B-pyramid / reference reorder | 完成：20 帧 320×240 `lag-in-frames=19` 流包含多组隐藏 showable frame、显式 slot refresh、order-hint 重排和重复 `show_existing_frame`；八槽 reference store 同步轮换 pixel、SavedCdf 与 temporal motion state。20 个最终显示 YUV 与 `aomdec` 逐样本一致 |
 | AV1 advanced B-pyramid | 完成：同一 20 帧重排序列保留 global/warped motion、OBMC、inter-intra、masked/distance-weighted compound 和 reference-frame MVs，多个帧使用至少三个非零 order-hint reference。20 个最终显示 YUV 与 `aomdec` 逐样本一致 |
 | AV1 10-bit B-pyramid | 完成：320×240、12 帧 10-bit B 流的 coded frame 全部 showable，order-hint history 最多包含 7 个非零 slot，预测仍为单参考，覆盖 10-bit 运动补偿、残差与八槽参考轮换。12 个显示 I420P10 帧共 2,764,800 bytes，Y/U/V 所有 16-bit 样本与 stock `aomdec` 一致 |
@@ -191,8 +192,8 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
-当前 ROADMAP：**128 完成 / 4 未完成**（含缩进子项为 169 / 7）。未完成项均属于上表的
-平台/不存在边界；M11 的软件 AV1 tile entropy 项已关闭。M11 已落地 116 个 slice（含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、simple/advanced 20 帧 8-bit B-pyramid、12 帧单参考 10-bit B、20 帧 advanced 10-bit B、deblock/CDEF、10-bit I444P10 和 inter-LR 组合也已落地）：符号解码、默认
+当前 ROADMAP：**128 完成 / 4 未完成**（含缩进子项为 170 / 7）。未完成项均属于上表的
+平台/不存在边界；M11 的软件 AV1 tile entropy 项已关闭。M11 已落地 117 个 slice（含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、monochrome display、simple/advanced 20 帧 8-bit B-pyramid、12 帧单参考 10-bit B、20 帧 advanced 10-bit B、deblock/CDEF、10-bit I444P10 和 inter-LR 组合也已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
