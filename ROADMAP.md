@@ -2218,6 +2218,13 @@ in what order the evidence gets produced.
       A 700-frame concatenated run is byte-identical in raw
       NV12; the current 3-run median is Rust 694 ms versus C 825 ms on this board
       (`board_avs_plus_perf.sh`).
+- [ ] Damaged and truncated AVS+ streams
+      `scripts/board_avs_plus_corrupt.sh` covers eight variants. Both decoders
+      output the same valid frame for the 7,000/10,000-byte truncations and an
+      I-header bit flip. Rust suppresses hardware-error frames for damaged
+      slices/truncations; C's harness exits 0 with no frame. A 100-byte header
+      truncation times out in C but returns cleanly in Rust, and C accepts a
+      mutated profile byte that Rust rejects explicitly.
       AVS2 has no RK3588 device; RK3576 remains unavailable.
 
 ### Encoders

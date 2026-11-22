@@ -4872,6 +4872,7 @@ fn main() {
                 if err_info != 0 {
                     failed = true;
                     eprintln!("vproc picture failed with err={err_info:#x}");
+                    return Ok(());
                 }
                 frame_buffer.clear();
                 frame_buffer.extend_from_slice(bytes);
@@ -4885,6 +4886,7 @@ fn main() {
                 if err_info != 0 {
                     failed = true;
                     eprintln!("picture failed with err={err_info:#x}");
+                    return Ok(());
                 }
                 frame_buffer.clear();
                 frame_buffer.extend_from_slice(bytes);
@@ -4900,6 +4902,7 @@ fn main() {
                         "picture at distance {} failed with err={:#x}",
                         picture.picture_distance, picture.err_info
                     );
+                    return Ok(());
                 }
                 output
                     .write_all(&picture.yuv)

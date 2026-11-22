@@ -98,6 +98,9 @@
   derived four-frame raw/SDK output matches C (`9eb0602a…5cfa4`).
 - Added a base1 weighted-quant/chroma-delta/model2 derived stream; four raw
   frames match C exactly (`669ae431…4ff9f`).
+- Added an eight-cell AVS+ corruption matrix and changed the CLI to suppress
+  hardware-error frames. Rust bounds malformed inputs; remaining C-harness
+  differences are named in DIVERGENCES.
 
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.

@@ -544,6 +544,10 @@
 - Enabling base1 weighted quant with chroma deltas and model2 also decodes
   byte-exactly through C and Rust (`669ae431…4ff9f`). AEC cannot be validated by
   header derivation because it changes slice entropy coding.
+- The AVS+ corruption matrix separates valid behavior from harness behavior:
+  Rust suppresses hardware-error frames and bounds malformed inputs, while C's
+  `mpi_dec_test` can report success with no frame, hang on a 100-byte truncation,
+  or accept a mutated profile byte.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

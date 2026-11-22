@@ -421,6 +421,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Reproduce C's default AVS IEP2 vproc output on both public fixtures.
 - [x] Add a derived profile 0x48 stream and byte-exact C/SDK gate.
 - [x] Add enabled weighted-quant/chroma-delta/model2 hardware coverage.
+- [x] Add an AVS+ damaged/truncated-stream evidence matrix.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.
