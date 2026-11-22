@@ -4,7 +4,7 @@ use super::standalone;
 use crate::codec::h265::encoder::SyntaxOptions as H265SyntaxOptions;
 use crate::encoder::{
     EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning, H264SyntaxConfig,
-    RateControlConfig, RateControlMode,
+    QbiasConfig, RateControlConfig, RateControlMode,
 };
 use crate::sdk::{Codec, PixelFormat};
 use crate::service::soc::{SocProfile, VideoEncodeHal};
@@ -106,6 +106,9 @@ pub(super) unsafe fn encoder_config(
     let fps_den = unsafe { cfg.get_or("rc:fps_in_denom", 1) }.max(1) as u32;
     let qp = unsafe { cfg.get_or("rc:qp_init", 26) }.clamp(0, 51) as u8;
     let scene_mode = scene_mode(unsafe { cfg.get_or("tune:scene_mode", 0) })?;
+    let qbias_en = unsafe { cfg.get("hw:qbias_en") };
+    let qbias_i = unsafe { cfg.get("hw:qbias_i") };
+    let qbias_p = unsafe { cfg.get("hw:qbias_p") };
     let profile_key = if codec == Codec::H265 {
         "h265:profile"
     } else {
@@ -145,6 +148,19 @@ pub(super) unsafe fn encoder_config(
         .with_profile(profile)
         .with_level(level)
         .with_scene_mode(scene_mode);
+    if qbias_en.is_some() || qbias_i.is_some() || qbias_p.is_some() {
+        if qbias_en.is_some_and(|value| value < 0) {
+            return Err(format!(
+                "hw:qbias_en must be non-negative, got {}",
+                qbias_en.unwrap()
+            ));
+        }
+        result = result.with_qbias(QbiasConfig::new(
+            qbias_en.unwrap_or(0) != 0,
+            qbias_value("hw:qbias_i", qbias_i)?,
+            qbias_value("hw:qbias_p", qbias_p)?,
+        ));
+    }
     if codec == Codec::Mjpeg {
         result = result.with_jpeg_qfactor(jpeg_qfactor);
     }
@@ -393,6 +409,11 @@ fn scene_mode(value: i32) -> Result<u8, String> {
         .ok_or_else(|| format!("tune:scene_mode must be 0..=2, got {value}"))
 }
 
+fn qbias_value(name: &str, value: Option<i32>) -> Result<u32, String> {
+    let value = value.unwrap_or(0);
+    u32::try_from(value).map_err(|_| format!("{name} must be non-negative, got {value}"))
+}
+
 fn level_or_default(codec: Codec, level: Option<u8>, h265_unset_level: u8) -> u8 {
     match (codec, level) {
         (Codec::H264, None) => 30,
@@ -407,7 +428,7 @@ fn level_or_default(codec: Codec, level: Option<u8>, h265_unset_level: u8) -> u8
 
 #[cfg(test)]
 mod tests {
-    use super::{gdr_config, level_or_default, scene_mode};
+    use super::{gdr_config, level_or_default, qbias_value, scene_mode};
     use crate::encoder::GdrMode;
     use crate::sdk::Codec;
 
@@ -436,6 +457,15 @@ mod tests {
         assert_eq!(scene_mode(2).unwrap(), 2);
         assert!(scene_mode(-1).unwrap_err().contains("0..=2"));
         assert!(scene_mode(3).unwrap_err().contains("0..=2"));
+    }
+
+    #[test]
+    fn qbias_values_are_non_negative() {
+        assert_eq!(qbias_value("hw:qbias_i", Some(700)).unwrap(), 700);
+        assert_eq!(qbias_value("hw:qbias_p", None).unwrap(), 0);
+        assert!(qbias_value("hw:qbias_i", Some(-1))
+            .unwrap_err()
+            .contains("non-negative"));
     }
 
     #[test]

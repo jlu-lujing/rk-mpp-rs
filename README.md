@@ -95,6 +95,8 @@
   fixture 验证 160 个 job 的 WGT/RDO/OSD 与 C 逐字一致，row 0 在第 0 帧、
   row 1 在第 5 帧切入。H.264 的同一配置也已用 60 帧验证，64 NAL 与 C
   一致，整文件差异仅为 version-SEI 文本。
+  `hw:qbias_en/i/p` 也已接通：H.264 60 帧整码流一致；H.265 的启用/关闭
+  两条路径在 2 帧 trace 中 WGT/RDO 逐字一致。
   H.264 默认保持同步（depth 1 无有效收益）；显式设置
   `RKMPP_ENCODER_PIPELINE=1 RKMPP_ENCODER_PIPELINE_DEPTH=2` 可到
   **0.331 s / 906 FPS**，C 为 0.362 s / 829 FPS。depth 2 的 scene-tune

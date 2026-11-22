@@ -428,6 +428,16 @@ BOARD=my-rk3588-host ./scripts/board_h265_scene_mode_ipc.sh
 BOARD=my-rk3588-host ./scripts/board_h264_scene_mode_ipc.sh
 ```
 
+`hw:qbias_en/i/p` 也已进入 typed config。H.264 的 fallback 是 683/341，
+H.265 是 171/85；`en=0` 时不覆盖 scene row 的默认 bias。H.264 60 帧
+64 NAL 与 C 一致；H.265 在 `en=1` 和 `en=0` 两格中 WGT/RDO 都与 C
+逐字一致，word1484 分别为 `0x190c8` 和 `0x15480`：
+
+```bash
+BOARD=my-rk3588-host ./scripts/board_h264_qbias_vs_mpp.sh
+BOARD=my-rk3588-host ./scripts/board_h265_qbias_vs_mpp.sh
+```
+
 同一路径的当前吞吐已在 RK3588 80% OPP、DDR `performance` @2.112 GHz、
 CPU6 固定下交错采样。300 帧多 GOP fixed-QP26 的五次中位数为：320x240
 C/Rust wall 164/164 ms、user+sys 69/67 ms；1280x720 wall 868/802 ms、

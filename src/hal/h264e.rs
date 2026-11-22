@@ -3343,6 +3343,16 @@ impl RegisterFile {
         self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI0, rime[0])?;
         self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI1, rime[1])?;
         self.set_param(&vepu580_regs::S3_RIME_SQI_MULTI_RIME_MULTI2, rime[2])?;
+        if let Some((true, qbias_i, qbias_p)) = job.config.qbias {
+            self.set_param(
+                &vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_I,
+                (if qbias_i == 0 { 683 } else { qbias_i }) & 0x3ff,
+            )?;
+            self.set_param(
+                &vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_P,
+                (if qbias_p == 0 { 341 } else { qbias_p }) & 0x3ff,
+            )?;
+        }
         Ok(())
     }
     /// `setup_vepu580_roi`, which runs whenever the task carries ROI data:
@@ -5740,6 +5750,36 @@ mod tests {
         ] {
             assert_eq!(file.get(field).unwrap(), want, "{}", field.name);
         }
+    }
+
+    #[test]
+    fn h264_qbias_override_matches_the_vendor_fallback() {
+        let mut cfg = config();
+        cfg.qbias = Some((true, 700, 300));
+        let file = registers_at(&cfg, FrameState::default().next(60, 0));
+        assert_eq!(
+            file.get(&vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_I)
+                .unwrap(),
+            700
+        );
+        assert_eq!(
+            file.get(&vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_P)
+                .unwrap(),
+            300
+        );
+
+        cfg.qbias = Some((true, 0, 0));
+        let file = registers_at(&cfg, FrameState::default().next(60, 0));
+        assert_eq!(
+            file.get(&vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_I)
+                .unwrap(),
+            683
+        );
+        assert_eq!(
+            file.get(&vepu580_regs::S3_RDO_QUANT_QUANT_F_BIAS_P)
+                .unwrap(),
+            341
+        );
     }
 
     #[test]

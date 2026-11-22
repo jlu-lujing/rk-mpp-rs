@@ -234,6 +234,7 @@ pub struct Vepu580H265 {
     video_full_range: bool,
     force_cu_qp_delta: bool,
     tune: SceneTune,
+    qbias: Option<(bool, u32, u32)>,
     fixed_qp_header_override: Option<u32>,
     /// Emit the GOP SPS variant (long-term reference entry) and let `encode_frame`
     /// produce P pictures.
@@ -414,6 +415,7 @@ impl Vepu580H265 {
             video_full_range: false,
             force_cu_qp_delta: false,
             tune: SceneTune::new_h265(false),
+            qbias: None,
             fixed_qp_header_override: None,
             long_term,
             rc_sei: None,
@@ -505,6 +507,7 @@ impl Vepu580H265 {
             temporal_mvp: self.temporal_mvp,
             force_cu_qp_delta: self.force_cu_qp_delta,
             scene_motion_flag: self.tune.scene_motion_flag(),
+            qbias: self.qbias,
             rc: None,
             refresh: None,
             split: self.split,
@@ -1000,6 +1003,10 @@ impl Vepu580H265 {
 
     pub fn set_scene_mode(&mut self, ipc_scene_mode: bool) {
         self.tune = SceneTune::new_h265(ipc_scene_mode);
+    }
+
+    pub fn set_qbias(&mut self, qbias: Option<(bool, u32, u32)>) {
+        self.qbias = qbias;
     }
 
     fn update_tune(&mut self, statistics: &Statistics) {
@@ -1633,6 +1640,7 @@ impl Vepu580H265 {
                 temporal_mvp: self.temporal_mvp,
                 force_cu_qp_delta: self.force_cu_qp_delta,
                 scene_motion_flag: self.tune.scene_motion_flag(),
+                qbias: self.qbias,
                 rc,
                 refresh: refresh_job,
                 split: self.split,

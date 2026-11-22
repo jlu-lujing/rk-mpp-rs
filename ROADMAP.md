@@ -4625,3 +4625,7 @@ pipeline uses.
   H.264/H.265 harness keeps wall and user+sys below independent 105% gates.
   H.264 measures 320x240 Rust/C 157/152 ms with equal CPU and 720p 769/822 ms
   with 232/278 ms CPU; H.265 remains parity/faster.
+- **2026-11-22: scalar quantisation bias reaches both encoders.**
+  `hw:qbias_en/i/p` maps into typed config with codec-specific fallbacks.
+  H.264 is exact over a 60-frame stream; H.265 WGT/RDO is exact for enabled
+  and disabled overrides, including word1484 `0x190c8` / `0x15480`.

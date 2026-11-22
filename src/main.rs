@@ -528,6 +528,24 @@ fn encode_h264(
         config.split_arg = arg;
     }
     config.split_out = split_out;
+    if std::env::var_os("H264_QBIAS_EN").is_some()
+        || std::env::var_os("H264_QBIAS_I").is_some()
+        || std::env::var_os("H264_QBIAS_P").is_some()
+    {
+        let read = |name: &str| -> Result<u32, String> {
+            match std::env::var(name) {
+                Ok(value) => value
+                    .parse()
+                    .map_err(|_| format!("{name} must be an unsigned integer, got {value}")),
+                Err(_) => Ok(0),
+            }
+        };
+        config.qbias = Some((
+            read("H264_QBIAS_EN")? != 0,
+            read("H264_QBIAS_I")?,
+            read("H264_QBIAS_P")?,
+        ));
+    }
     let frame_bytes = h264e::input_size(&config)?;
     let mut encoder = h264e::Vepu580H264::open(config)?;
     if let Ok(value) = std::env::var("H264_SCENE_MODE") {
@@ -729,6 +747,7 @@ fn encode_h265_headers(
         temporal_mvp: false,
         force_cu_qp_delta: false,
         scene_motion_flag: 2,
+        qbias: None,
         rc: None,
         refresh: None,
         split: h265_syntax::SliceSplit::default(),
@@ -2844,6 +2863,7 @@ fn main() {
             temporal_mvp: false,
             force_cu_qp_delta: false,
             scene_motion_flag: 2,
+            qbias: None,
             rc,
             refresh: None,
             split: h265_syntax::SliceSplit::default(),

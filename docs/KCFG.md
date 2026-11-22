@@ -105,6 +105,12 @@ verified over 160 jobs with `scripts/board_h265_scene_mode_ipc.sh`.
 H.264 accepts the same key through `H264_SCENE_MODE`; its 60-frame IPC cell is
 64 NALs and matches C except for the build-identity version SEI.
 
+The scalar `hw:qbias_en`, `hw:qbias_i` and `hw:qbias_p` keys now reach the
+typed encoder. H.264 uses 683/341 fallbacks and H.265 uses 171/85. Disabling
+the override leaves the scene-row defaults intact. Both codecs have board
+gates in `scripts/board_h264_qbias_vs_mpp.sh` and
+`scripts/board_h265_qbias_vs_mpp.sh`.
+
 The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no
 `/dev/vcodec` and no `/proc/kmpp` ctrl-cfg capability. Full KMPP-object
 compatibility is therefore not claimed.

@@ -502,6 +502,15 @@ int main(int argc, char **argv)
     if (getenv("SCENE_MODE"))
         CHECK(mpp_enc_cfg_set_s32(cfg, "tune:scene_mode",
                                   atoi(getenv("SCENE_MODE"))));
+    if (getenv("QBIAS_EN"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "hw:qbias_en",
+                                  atoi(getenv("QBIAS_EN"))));
+    if (getenv("QBIAS_I"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "hw:qbias_i",
+                                  atoi(getenv("QBIAS_I"))));
+    if (getenv("QBIAS_P"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "hw:qbias_p",
+                                  atoi(getenv("QBIAS_P"))));
     CHECK(mpp_enc_cfg_set_s32(cfg,
                               "rc:mode",
                               mode == 0 ? MPP_ENC_RC_MODE_FIXQP

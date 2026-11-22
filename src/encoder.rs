@@ -627,6 +627,32 @@ impl SliceSplitConfig {
     }
 }
 
+/// `MppEncHwCfg::qbias_*`: explicit quantisation-bias overrides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QbiasConfig {
+    enabled: bool,
+    i: u32,
+    p: u32,
+}
+
+impl QbiasConfig {
+    pub const fn new(enabled: bool, i: u32, p: u32) -> Self {
+        Self { enabled, i, p }
+    }
+
+    pub const fn enabled(self) -> bool {
+        self.enabled
+    }
+
+    pub const fn i(self) -> u32 {
+        self.i
+    }
+
+    pub const fn p(self) -> u32 {
+        self.p
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderConfig {
     codec: Codec,
@@ -654,6 +680,7 @@ pub struct EncoderConfig {
     h265_full_range: Option<bool>,
     h265_force_cu_qp_delta: Option<bool>,
     scene_mode: u8,
+    qbias: Option<QbiasConfig>,
     roi: Option<RoiConfig>,
     gdr: Option<GdrConfig>,
     slice_split: Option<SliceSplitConfig>,
@@ -698,6 +725,7 @@ impl EncoderConfig {
             h265_full_range: None,
             h265_force_cu_qp_delta: None,
             scene_mode: 0,
+            qbias: None,
             roi: None,
             gdr: None,
             slice_split: None,
@@ -794,6 +822,10 @@ impl EncoderConfig {
 
     pub const fn scene_mode(self) -> u8 {
         self.scene_mode
+    }
+
+    pub const fn qbias(self) -> Option<QbiasConfig> {
+        self.qbias
     }
 
     pub const fn slice_split(self) -> Option<SliceSplitConfig> {
@@ -899,6 +931,11 @@ impl EncoderConfig {
 
     pub const fn with_scene_mode(mut self, scene_mode: u8) -> Self {
         self.scene_mode = scene_mode;
+        self
+    }
+
+    pub const fn with_qbias(mut self, qbias: QbiasConfig) -> Self {
+        self.qbias = Some(qbias);
         self
     }
 
@@ -2657,6 +2694,9 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
     h264.fps_num = config.fps_num;
     h264.fps_den = config.fps_den;
     h264.aq_step_i = config.h264_aq_step_i;
+    if let Some(qbias) = config.qbias() {
+        h264.qbias = Some((qbias.enabled(), qbias.i(), qbias.p()));
+    }
     if let Some(deblock) = config.h264_deblock {
         h264.deblock_disable = deblock.disable;
         h264.deblock_offset_alpha = deblock.alpha_offset_div2;
@@ -2883,6 +2923,11 @@ fn open_h265_vepu580(
     encoder.set_level(config.level());
     encoder.set_temporal_mvp(mpi_compat);
     encoder.set_scene_mode(config.scene_mode() == 1);
+    encoder.set_qbias(
+        config
+            .qbias()
+            .map(|qbias| (qbias.enabled(), qbias.i(), qbias.p())),
+    );
     encoder.set_video_signal(
         config.h265_full_range.map(|_| 5),
         config.h265_full_range.unwrap_or(false),
@@ -3160,8 +3205,8 @@ mod tests {
         format_nv12_input, h264_encoder_config, insert_user_data_seis, validate_dmabuf_layout,
         BlockStatistics, Codec, CustomUserData, DmaBufInput, EncoderConfig, GdrConfig, GdrMode,
         H264DeblockConfig, H264RcTuning, H264SyntaxConfig, H265SyntaxOptions, PacketMeta,
-        PixelFormat, RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
-        SliceSplitConfig, SliceSplitMode, DEFAULT_USER_DATA_UUID,
+        PixelFormat, QbiasConfig, RateControlConfig, RateControlMode, RoiConfig, RoiRegion,
+        SliceOutputMode, SliceSplitConfig, SliceSplitMode, DEFAULT_USER_DATA_UUID,
     };
     use crate::sdk::Error;
     use crate::service::dma_heap::DmaBuf;
@@ -3493,6 +3538,7 @@ mod tests {
             .with_h264_syntax(syntax)
             .with_h264_rc_tuning(h264_tuning)
             .with_scene_mode(1)
+            .with_qbias(QbiasConfig::new(true, 700, 300))
             .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
         assert_eq!(config.input_format(), PixelFormat::I420);
@@ -3510,6 +3556,7 @@ mod tests {
         assert_eq!(config.h264_deblock(), Some(deblock));
         assert_eq!(config.h264_syntax(), Some(syntax));
         assert_eq!(config.scene_mode(), 1);
+        assert_eq!(config.qbias(), Some(QbiasConfig::new(true, 700, 300)));
         assert_eq!(config.rate_control(), Some(rate_control));
         assert!(rate_control.hier_qp_enabled());
         assert_eq!(rate_control.hier_qp_delta(), [1, 2, 3, 4]);

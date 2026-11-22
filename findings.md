@@ -493,6 +493,10 @@
   Five 300-frame samples at 80% OPP measure 320x240 Rust/C wall 157/152 ms and
   equal 67 ms user+sys; 720p is 769/822 ms with user+sys 232/278 ms. The shared
   benchmark treats CPU and wall as separate hard gates.
+- `hw:qbias_*` is not just an SEI or config-store field. H.264 writes
+  `RDO_QUANT.quant_f_bias_I/P`; H.265 packs both values into WGT word 1484.
+  The vendor fallback differs by codec (683/341 vs 171/85), and disabling the
+  override must preserve the active scene row instead of forcing either pair.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

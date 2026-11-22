@@ -193,6 +193,8 @@ pub struct IdrJob {
     pub force_cu_qp_delta: bool,
     /// Scene-tune row selected from the previous picture's feedback.
     pub scene_motion_flag: usize,
+    /// `hw:qbias_en/i/p`; `None` preserves the reference defaults.
+    pub qbias: Option<(bool, u32, u32)>,
     /// Rate control for this picture, `None` for fixed QP.
     pub rc: Option<RateControl>,
     /// Intra-refresh (GDR) picture: the base-table fd, its sweep, and the index.
@@ -238,6 +240,7 @@ impl IdrJob {
             temporal_mvp: false,
             force_cu_qp_delta: false,
             scene_motion_flag: 2,
+            qbias: None,
             rc: None,
             refresh: None,
             split: SliceSplit::default(),
@@ -893,6 +896,16 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         file.set(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I, 171)?;
     }
     apply_scene_motion_row(&mut file, job.scene_motion_flag);
+    if let Some((true, qbias_i, qbias_p)) = job.qbias {
+        file.set(
+            &regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I,
+            (if qbias_i == 0 { 171 } else { qbias_i }) & 0x3ff,
+        )?;
+        file.set(
+            &regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_P,
+            (if qbias_p == 0 { 85 } else { qbias_p }) & 0x3ff,
+        )?;
+    }
 
     Ok(file)
 }
@@ -1577,6 +1590,36 @@ mod tests {
         assert_eq!(row1.rdo[2078 - 2048], 0x0011_1212);
         assert_eq!(row1.rdo[2167 - 2048], 0x0014_0017);
         assert_eq!(row1.rc_klut[1056 - 1024], 0);
+    }
+
+    #[test]
+    fn h265_qbias_override_matches_the_vendor_fallback() {
+        let mut job = IdrJob::reference(26);
+        job.qbias = Some((true, 200, 100));
+        let file = build_registers(&job).unwrap();
+        assert_eq!(
+            file.get(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I)
+                .unwrap(),
+            200
+        );
+        assert_eq!(
+            file.get(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_P)
+                .unwrap(),
+            100
+        );
+
+        job.qbias = Some((true, 0, 0));
+        let file = build_registers(&job).unwrap();
+        assert_eq!(
+            file.get(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I)
+                .unwrap(),
+            171
+        );
+        assert_eq!(
+            file.get(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_P)
+                .unwrap(),
+            85
+        );
     }
 
     /// The generated section table and this struct's arrays state the same hardware

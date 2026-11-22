@@ -406,6 +406,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Validate the shared H.264 IPC scene mode at 60 frames / 64 NALs.
 - [x] Share the object-path performance gate across H.264/H.265 and keep both
   wall and CPU within the 5% limit.
+- [x] Map `hw:qbias_en/i/p` into H.264/H.265 and verify enabled/disabled paths.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

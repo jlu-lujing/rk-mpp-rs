@@ -22,6 +22,16 @@
   wall gate at 320x240 with equal CPU, and 6.4% faster with 16.5% less CPU at
   720p. H.265 remains at parity/faster in the same harness.
 
+### Phase 22: Encoder Quantisation Bias
+- **Status:** complete on RK3588 VEPU580.
+- Added typed `QbiasConfig` and mapped `hw:qbias_en/i/p` from `MppEncCfg`.
+- H.264 applies 683/341 fallbacks; H.265 applies 171/85. An explicit disable
+  leaves the scene-row bias unchanged.
+- H.264 60-frame IPC output matches C at 64 NALs. H.265 WGT/RDO is exact for
+  both enabled and disabled paths; word1484 is `0x190c8` / `0x15480`.
+- The final host gate is `1388 passed / 0 failed / 47 ignored`; the unchanged
+  official H.264/H.265/MJPEG encoder gate remains green.
+
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.
 - The H.265 object path was reusing H.264's 192/128/64 mean-MADP gate. Vendor
