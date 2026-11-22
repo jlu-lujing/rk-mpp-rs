@@ -3073,6 +3073,40 @@ fn main() {
         };
         let result = opened.and_then(|mut encoder| {
             encoder.set_syntax_options(syntax);
+            if let Ok(value) = std::env::var("H265_SCENE_MODE") {
+                let scene_mode = value
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|value| *value <= 2)
+                    .ok_or_else(|| format!("H265_SCENE_MODE must be 0, 1 or 2, got {value}"))?;
+                encoder.set_scene_mode(scene_mode == 1);
+            }
+            if std::env::var_os("H265_QBIAS_EN").is_some()
+                || std::env::var_os("H265_QBIAS_I").is_some()
+                || std::env::var_os("H265_QBIAS_P").is_some()
+            {
+                let read = |name: &str| -> Result<u32, String> {
+                    match std::env::var(name) {
+                        Ok(value) => value.parse().map_err(|_| {
+                            format!("{name} must be an unsigned integer, got {value}")
+                        }),
+                        Err(_) => Ok(0),
+                    }
+                };
+                encoder.set_qbias(Some((
+                    read("H265_QBIAS_EN")? != 0,
+                    read("H265_QBIAS_I")?,
+                    read("H265_QBIAS_P")?,
+                )));
+            }
+            if let Ok(value) = std::env::var("H265_VMAF_OPT") {
+                let enabled = match value.as_str() {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(format!("H265_VMAF_OPT must be 0 or 1, got {value}")),
+                };
+                encoder.set_vmaf_opt(enabled);
+            }
             if let Ok(gop) = std::env::var("H265_GOP") {
                 let gop = gop
                     .parse::<u32>()

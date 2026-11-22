@@ -116,6 +116,10 @@ and disables RDO segment/smear without changing the rest of the active scene
 row. The exact 20-word overlay is checked by
 `scripts/board_h265_vmaf_opt_vs_mpp.sh`.
 
+The native `h265-gop` CLI now exposes the same compatible controls through
+`H265_SCENE_MODE`, `H265_QBIAS_EN/I/P` and `H265_VMAF_OPT`. All three paths
+are trace-checked against the C probe by `scripts/board_h265_cli_tune_trace.sh`.
+
 The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no
 `/dev/vcodec` and no `/proc/kmpp` ctrl-cfg capability. Full KMPP-object
 compatibility is therefore not claimed.

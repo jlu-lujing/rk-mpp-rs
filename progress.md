@@ -42,6 +42,14 @@
 - The final host gate is `1389 passed / 0 failed / 47 ignored`; the official
   H.264/H.265/MJPEG encoder gate remains green.
 
+### Phase 24: Native H.265 Tune CLI
+- **Status:** complete on RK3588 VEPU580.
+- Exposed scene mode, scalar quantisation bias and VMAF tuning through the
+  native `h265-gop` CLI.
+- Scene, qbias and vmaf cells each match C WGT/RDO traces for two jobs; the
+  scene cell also matches OSD and `RC_KLUT[1056]`.
+- Added `scripts/board_h265_cli_tune_trace.sh`.
+
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.
 - The H.265 object path was reusing H.264's 192/128/64 mean-MADP gate. Vendor

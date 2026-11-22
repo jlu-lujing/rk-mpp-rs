@@ -501,6 +501,10 @@
   changes four WGT pre-intra words and 16 RDO words, while leaving row3's
   2167/2169 thresholds untouched. Treating it as a full row patch would change
   unrelated tuning state.
+- The compatible tune controls also need native CLI exposure; otherwise users
+  must route through the MPP object API to reach already-supported hardware
+  behavior. `H265_SCENE_MODE`, `H265_QBIAS_*` and `H265_VMAF_OPT` now match C
+  in the same trace gate.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

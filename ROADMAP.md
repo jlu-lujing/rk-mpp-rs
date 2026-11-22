@@ -4632,3 +4632,6 @@ pipeline uses.
 - **2026-11-22: H.265 VMAF tune reaches the hardware.** `tune:vmaf_opt` now
   applies the exact pre-intra/ATF row-3 and segment/smear overlay without
   changing unrelated row-3 thresholds. Two C/R trace jobs are WGT/RDO exact.
+- **2026-11-22: native H.265 CLI exposes the tune controls.** `h265-gop`
+  accepts scene, scalar qbias and VMAF environment controls. Three two-frame
+  cells match C WGT/RDO; scene also matches OSD and the row KLUT offset.

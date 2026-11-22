@@ -446,6 +446,16 @@ BOARD=my-rk3588-host ./scripts/board_h265_qbias_vs_mpp.sh
 BOARD=my-rk3588-host ./scripts/board_h265_vmaf_opt_vs_mpp.sh
 ```
 
+原生 `h265-gop` 也暴露了同样的 tunable：
+
+```bash
+H265_SCENE_MODE=1 rk-mpp-rs h265-gop in.nv12 out.265 320 240 300 26
+H265_QBIAS_EN=1 H265_QBIAS_I=200 H265_QBIAS_P=100 \
+  rk-mpp-rs h265-gop in.nv12 out.265 320 240 300 26
+H265_VMAF_OPT=1 rk-mpp-rs h265-gop in.nv12 out.265 320 240 300 26
+BOARD=my-rk3588-host ./scripts/board_h265_cli_tune_trace.sh
+```
+
 同一路径的当前吞吐已在 RK3588 80% OPP、DDR `performance` @2.112 GHz、
 CPU6 固定下交错采样。300 帧多 GOP fixed-QP26 的五次中位数为：320x240
 C/Rust wall 164/164 ms、user+sys 69/67 ms；1280x720 wall 868/802 ms、
