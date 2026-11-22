@@ -367,10 +367,12 @@ H.265 session 的 CPU fallback 输入原先仍是 `system` 并在每帧 copy 前
 从 2.379 s 降到 1.412 s，user+sys 从 1.287 s 降到 0.455 s；只切 heap
 时是 2.006 s，说明主要收益来自去掉 ioctl。旧/新码流均为
 `6fea6748…da157dc`。H.264 做同类删除没有稳定收益，已撤回，不能机械套用。
-H.265 aggregate feedback 又收紧了清零范围：`Statistics::from_words` 只读取
-word 0/1/2/3 和 64..75，原先每帧 `fill(0)` 整个 180-word STATUS。现在共享
-索引表只清零并累加 0、3、64..75 共 14 words，word 1/2 随后由 SSE 覆盖；
-500 帧 wall median 再降到 1.318 s，user+sys 0.366 s，码流哈希不变。
+H.265 aggregate feedback 又收紧了清零范围：`Statistics::from_words` 需要
+word 0/1/2/3、64–84，原先每帧 `fill(0)` 整个 180-word STATUS。现在共享
+索引表只清零并累加 0、3、64–84 共 23 words，word 1/2 随后由 SSE 覆盖。
+64–84 必须保留 `md_sad_b16num[4]` 和 `madi_b16num[4]`，否则 scene-tune
+每帧都看到空直方图；500 帧 wall median 仍为 1.318 s，user+sys 0.366 s，
+码流哈希不变。
 
 上游 `mpi_enc_test` 的 `MPP_SET_VENC_INIT_KCFG` 已接通。兼容层复制
 type/coding/max dimensions 到 `mpp_init`/`MPP_ENC_SET_CFG`，保留所有已知
@@ -397,6 +399,20 @@ MPP 路径：`-kmpp_mode 0` H.264 单帧 3 NAL 与新版 vendor 完全一致
 MppMeta 接入；2 帧 user-data 为 H.264 10 NAL、H.265 11 NAL，全部一致。
 userspace `KmppBuffer` 已实现分配、setup、`KmppShmPtr` 导出和释放；kernel
 buffer-group ioctl 仍是平台边界，完整 KMPP object ABI 尚未闭合。
+
+VEPU580 H.265 的 scene-tune 状态机也已与新版 object 路径闭合。H.265 与
+H.264 共用状态转移，但 mean-MADP 门是 `ctu_avg_madp_thd` 的
+896/640/384，不是 H.264 的 192/128/64；`fb->st_mb_num` 则来自 STATUS
+`st_bnum_b16.num_b16`。row 3 必须同时覆盖 WGT 1479–1482/1496/1498/
+1499/1501/1503 和 RDO 2048/2065–2067/2075–2077/2095–2097/
+2105–2107/2135–2137/2167/2169。320x240 运动 fixture 的 300 帧跨 5 个
+GOP，在 107/227 帧进入 row 3 后回到 row 2；C/Rust 为 315 NAL 且整文件
+SHA-256 都是 `d577adc9…32edea`。ioctl trace 的 300 个 job 只剩 13 个
+dma-buf 地址字不同，所有非地址寄存器一致。复跑命令：
+
+```bash
+BOARD=my-rk3588-host ./scripts/board_h265_scene_tune_300.sh
+```
 
 `vdec_kcfg`/`venc_kcfg` 的句柄生命周期也已按 vendor 收紧：非法 type 返回
 `MPP_ERR_VALUE`，`init_by_name` 只接受 `KmppVdec*Cfg`/`KmppVenc*Cfg`

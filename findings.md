@@ -460,6 +460,19 @@
 - H.264 has a separate explicit-zero rule: FFmpeg's `h264:level=0` starts at
   1.0 and lets the SPS builder raise it to the minimum level that fits.
   Treating that zero as an unset reference level breaks FFmpeg at config time.
+- H.265 scene-tune shares H.264's transition rules but not its mean-MADP gate.
+  Vendor H.265 uses 896/640/384; reusing 192/128/64 keeps the detector in the
+  wrong row even though single-GOP streams remain exact.
+- The aggregate STATUS path must retain words 77–84. Words 64–75 include
+  `madp`/`madi`/block counts, but the motion detector also needs the four
+  `md_sad_b16num` and four `madi_b16num` histograms.
+- The complete row-3 overlay is not just WGT 1479–1482. It also changes WGT
+  1496/1498/1499/1501/1503 and 18 RDO words. The earlier captured values mixed
+  row 2 and row 3, so the C job 106 -> 107 differential is the authoritative
+  source.
+- With those fixes, a 320x240 moving 300-frame/five-GOP stream matches C at
+  315 NALs and SHA-256 `d577adc9…32edea`. Across 300 ioctl jobs only the 13
+  DMA-BUF address words differ; every non-address register word is identical.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

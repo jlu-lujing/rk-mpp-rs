@@ -191,6 +191,8 @@ pub struct IdrJob {
     pub temporal_mvp: bool,
     /// Force `cu_qp_delta_enabled_flag` for the new upstream object defaults.
     pub force_cu_qp_delta: bool,
+    /// Scene-tune row selected from the previous picture's feedback.
+    pub scene_motion_flag: usize,
     /// Rate control for this picture, `None` for fixed QP.
     pub rc: Option<RateControl>,
     /// Intra-refresh (GDR) picture: the base-table fd, its sweep, and the index.
@@ -235,6 +237,7 @@ impl IdrJob {
             long_term: false,
             temporal_mvp: false,
             force_cu_qp_delta: false,
+            scene_motion_flag: 2,
             rc: None,
             refresh: None,
             split: SliceSplit::default(),
@@ -875,13 +878,48 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         }
         file.set(&regs::RC_ROI_QTHD3_QPMAP_MODE, 1)?;
         file.rc_klut[1044 - 1024] = 0x1919_140f;
-        file.rc_klut[1046 - 1024] = 0x3f3e_3d3c;
-        file.rc_klut[1047 - 1024] = 0x0302_0100;
-        file.rc_klut[1048 - 1024] = 0x0807_0705;
+        if matches!(job.picture, Picture::Idr) {
+            file.rc_klut[1046 - 1024] = 0x3f3e_3d3c;
+            file.rc_klut[1047 - 1024] = 0x0302_0100;
+            file.rc_klut[1048 - 1024] = 0x0807_0705;
+        } else {
+            file.rc_klut[1046 - 1024] = 0x3f3f_3e3c;
+            file.rc_klut[1047 - 1024] = 0x0403_0200;
+            file.rc_klut[1048 - 1024] = 0x0a09_0806;
+        }
         file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD0, 7)?;
         file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD1, 15)?;
         file.set(&regs::RC_MD_SAD_THD_MD_SAD_THD2, 25)?;
         file.set(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I, 171)?;
+    }
+    if job.scene_motion_flag == 3 {
+        file.wgt[1479 - 1472] = 0x1010_1010;
+        file.wgt[1480 - 1472] = 0x1010_1010;
+        file.wgt[1481 - 1472] = 0x1010_1010;
+        file.wgt[1482 - 1472] = 0x1010_1010;
+        file.wgt[1496 - 1472] = 0x0000_0300;
+        file.wgt[1498 - 1472] = 0x0004_0004;
+        file.wgt[1499 - 1472] = 0x0004_0004;
+        file.wgt[1501 - 1472] = 0x0040_1004;
+        file.wgt[1503 - 1472] = 0x0008_0000;
+        file.rdo[2048 - 2048] = 0;
+        file.rdo[2065 - 2048] = 0x1010_1010;
+        file.rdo[2066 - 2048] = 0x0010_1010;
+        file.rdo[2067 - 2048] = 0x0010_1010;
+        file.rdo[2075 - 2048] = 0x0010_1010;
+        file.rdo[2076 - 2048] = 0x0010_1010;
+        file.rdo[2077 - 2048] = 0x0010_1010;
+        file.rdo[2095 - 2048] = 0x1010_1010;
+        file.rdo[2096 - 2048] = 0x0010_1010;
+        file.rdo[2097 - 2048] = 0x0010_1010;
+        file.rdo[2105 - 2048] = 0x0010_1010;
+        file.rdo[2106 - 2048] = 0x0010_1010;
+        file.rdo[2107 - 2048] = 0x0010_1010;
+        file.rdo[2135 - 2048] = 0x0010_1010;
+        file.rdo[2136 - 2048] = 0x0010_1010;
+        file.rdo[2137 - 2048] = 0x0010_1010;
+        file.rdo[2167 - 2048] = 0x0014_0017;
+        file.rdo[2169 - 2048] = 0x0014_0017;
     }
 
     Ok(file)
@@ -1107,6 +1145,12 @@ mod tests {
                 .unwrap(),
             171
         );
+
+        job.picture = Picture::P { poc_lsb: 2 };
+        let p = build_registers(&job).unwrap();
+        assert_eq!(p.rc_klut[1046 - 1024], 0x3f3f_3e3c);
+        assert_eq!(p.rc_klut[1047 - 1024], 0x0403_0200);
+        assert_eq!(p.rc_klut[1048 - 1024], 0x0a09_0806);
     }
 
     #[test]
@@ -1368,6 +1412,48 @@ mod tests {
             file.wgt.iter().any(|&w| w != 0),
             "the captured weight window is not blank"
         );
+    }
+
+    #[test]
+    fn scene_motion_row_three_matches_the_c_trace() {
+        let mut job = IdrJob::reference(26);
+        job.scene_motion_flag = 3;
+        let file = build_registers(&job).unwrap();
+        for (word, want) in [
+            (1479, 0x1010_1010),
+            (1480, 0x1010_1010),
+            (1481, 0x1010_1010),
+            (1482, 0x1010_1010),
+            (1496, 0x0000_0300),
+            (1498, 0x0004_0004),
+            (1499, 0x0004_0004),
+            (1501, 0x0040_1004),
+            (1503, 0x0008_0000),
+        ] {
+            assert_eq!(file.wgt[word - 1472], want, "sw{word}");
+        }
+        for (word, want) in [
+            (2048, 0),
+            (2065, 0x1010_1010),
+            (2066, 0x0010_1010),
+            (2067, 0x0010_1010),
+            (2075, 0x0010_1010),
+            (2076, 0x0010_1010),
+            (2077, 0x0010_1010),
+            (2095, 0x1010_1010),
+            (2096, 0x0010_1010),
+            (2097, 0x0010_1010),
+            (2105, 0x0010_1010),
+            (2106, 0x0010_1010),
+            (2107, 0x0010_1010),
+            (2135, 0x0010_1010),
+            (2136, 0x0010_1010),
+            (2137, 0x0010_1010),
+            (2167, 0x0014_0017),
+            (2169, 0x0014_0017),
+        ] {
+            assert_eq!(file.rdo[word - 2048], want, "sw{word}");
+        }
     }
 
     /// The generated section table and this struct's arrays state the same hardware

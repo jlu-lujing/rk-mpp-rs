@@ -4599,3 +4599,12 @@ pipeline uses.
   `/dev/vcodec` and `/proc/kmpp` ctrl-cfg support are absent. The userspace
   `KmppBuffer` allocation/setup/pointer/export/release path is implemented;
   kernel buffer-group ioctl compatibility remains platform-limited.
+- **2026-11-22: upstream H.265 scene-tune closes over multiple GOPs.** The
+  aggregate STATUS now retains words 0, 3 and 64–84 so the detector receives
+  `md_sad_b16num[4]` and `madi_b16num[4]`; H.265 uses vendor's 896/640/384
+  CTU MADP gate instead of H.264's 192/128/64 gate. The full row-3 WGT/RDO
+  overlay is applied at the 107th and 227th pictures. A 320x240 moving
+  300-frame stream across five GOPs is 315 NALs and SHA-256
+  `d577adc9…32edea` on both sides. Its 300-job ioctl trace has zero
+  non-address differences and only 13 DMA-buffer address words differ.
+  `scripts/board_h265_scene_tune_300.sh` reproduces the gate.

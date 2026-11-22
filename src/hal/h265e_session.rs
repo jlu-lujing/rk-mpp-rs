@@ -22,6 +22,7 @@ use crate::service::dma_heap::DmaBuf;
 use crate::service::soc::{require_video_encode, VideoEncodeHal};
 use crate::service::{Batch, Client, MppService, RegOffsetInfo, SliceInfo};
 
+use super::h264e::SceneTune;
 use super::h265e::{
     build_registers, refresh_base_table, IdrJob, Picture, RateControl, RefreshJob, RefreshMode,
     RegisterFile,
@@ -38,7 +39,9 @@ const STATUS_OFFSET: u32 = 16384;
 /// `VEPU580_REG_BASE_HW_STATUS` = 0x2c bytes.
 const HW_STATUS_OFFSET: u32 = 44;
 const STATUS_WORDS: usize = 180;
-const AGGREGATE_STATUS_WORDS: [usize; 14] = [0, 3, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75];
+const AGGREGATE_STATUS_WORDS: [usize; 23] = [
+    0, 3, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84,
+];
 const HW_ERROR_MASK: u32 = 0x3f0;
 const OUTPUT_MARGIN: usize = 4096;
 /// `h265e_init`'s intra GOP default, which the harness keeps. The rate-control SEI
@@ -70,6 +73,8 @@ pub struct Statistics {
     pub madp_sum: u32,
     pub num_b16: u32,
     pub num_ctu: u32,
+    pub md_sad_b16num: [u32; 4],
+    pub madi_b16num: [u32; 4],
     pub sse: u64,
     pub pnum_p64: u32,
     pub pnum_p32: u32,
@@ -91,6 +96,8 @@ impl Statistics {
             madp_sum: at(4168),
             num_b16: at(4171) & 0x7f_ffff,
             num_ctu: at(4169) & 0x1f_ffff,
+            md_sad_b16num: [at(4173), at(4174), at(4175), at(4176)],
+            madi_b16num: [at(4177), at(4178), at(4179), at(4180)],
             sse: (u64::from(at(4098)) << 16) | u64::from((at(4097) >> 16) & 0xffff),
             pnum_p64: at(4160) & 0x1ffff,
             pnum_p32: at(4161) & 0x7ffff,
@@ -226,6 +233,7 @@ pub struct Vepu580H265 {
     video_format: Option<u8>,
     video_full_range: bool,
     force_cu_qp_delta: bool,
+    tune: SceneTune,
     fixed_qp_header_override: Option<u32>,
     /// Emit the GOP SPS variant (long-term reference entry) and let `encode_frame`
     /// produce P pictures.
@@ -405,6 +413,7 @@ impl Vepu580H265 {
             video_format: None,
             video_full_range: false,
             force_cu_qp_delta: false,
+            tune: SceneTune::new_h265(false),
             fixed_qp_header_override: None,
             long_term,
             rc_sei: None,
@@ -495,6 +504,7 @@ impl Vepu580H265 {
             long_term: self.long_term,
             temporal_mvp: self.temporal_mvp,
             force_cu_qp_delta: self.force_cu_qp_delta,
+            scene_motion_flag: self.tune.scene_motion_flag(),
             rc: None,
             refresh: None,
             split: self.split,
@@ -648,6 +658,7 @@ impl Vepu580H265 {
         }
         let payload = output.as_slice()[..length].to_vec();
         let statistics = Statistics::from_words(&pending.status);
+        self.update_tune(&statistics);
         let mut config = crate::codec::h265::encoder::EncoderConfig::new(self.width, self.height);
         config.level = self.level;
         config.tmvp_enable = self.temporal_mvp;
@@ -985,6 +996,17 @@ impl Vepu580H265 {
 
     pub fn set_force_cu_qp_delta(&mut self, enabled: bool) {
         self.force_cu_qp_delta = enabled;
+    }
+
+    fn update_tune(&mut self, statistics: &Statistics) {
+        self.tune.update_values(
+            statistics.madi_sum,
+            statistics.madp_sum,
+            statistics.num_b16,
+            statistics.num_ctu,
+            statistics.md_sad_b16num,
+            i64::from(statistics.num_b16),
+        );
     }
 
     pub fn set_pipeline(&mut self, enabled: bool) {
@@ -1606,6 +1628,7 @@ impl Vepu580H265 {
                 long_term: self.long_term,
                 temporal_mvp: self.temporal_mvp,
                 force_cu_qp_delta: self.force_cu_qp_delta,
+                scene_motion_flag: self.tune.scene_motion_flag(),
                 rc,
                 refresh: refresh_job,
                 split: self.split,
@@ -1756,12 +1779,13 @@ impl Vepu580H265 {
         let mut status = aggregate_status;
         status[1] = (sse_sum & 0xffff) as u32;
         status[2] = (sse_sum >> 16) as u32;
-        let statistics = Statistics::from_words(&status);
         // STATUS measurement, `vepu580_h265_set_feedback`: madp/num_ctu, madi/num_b16
         // and quality over the 8x8 block count (`mb64_num << 6`), not the 16x16
         // macroblock count the H.264 path divides by.
         self.last_measured = Some(measured_from_status(self.width, self.height, &status));
         self.aggregate_status_scratch = status;
+        let statistics = Statistics::from_words(&self.aggregate_status_scratch);
+        self.update_tune(&statistics);
 
         // The hardware writes the slice NAL; the parameter sets and the two SEIs
         // are software output, exactly as `mpp_enc_impl.cpp` prepends them ahead
@@ -1977,9 +2001,9 @@ mod tests {
 
     #[test]
     fn aggregate_status_resets_only_feedback_words() {
-        assert_eq!(AGGREGATE_STATUS_WORDS.len(), 14);
+        assert_eq!(AGGREGATE_STATUS_WORDS.len(), 23);
         assert_eq!(AGGREGATE_STATUS_WORDS[..2], [0, 3]);
-        assert_eq!(AGGREGATE_STATUS_WORDS[2..], (64..=75).collect::<Vec<_>>());
+        assert_eq!(AGGREGATE_STATUS_WORDS[2..], (64..=84).collect::<Vec<_>>());
     }
 
     #[test]

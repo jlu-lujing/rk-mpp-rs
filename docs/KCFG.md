@@ -88,6 +88,15 @@ H.265 11 NAL, both exact. The userspace KMPP buffer object now supports
 allocation, setup, `KmppShmPtr` export and release; kernel buffer-group ioctl
 compatibility remains platform-limited.
 
+The H.265 object path also keeps the complete scene-tune feedback. Its STATUS
+aggregate covers words 0, 3 and 64–84: the extra 76–84 range carries
+`num_madi_max_b16`, `md_sad_b16num[4]` and `madi_b16num[4]`. H.265 uses the
+vendor 896/640/384 CTU MADP gate rather than H.264's 192/128/64 gate. A
+320x240 moving 300-frame stream crosses the row-2/row-3 transitions at frames
+107 and 227 and matches C exactly: 315 NALs and SHA-256
+`d577adc9…32edea`. The full ioctl trace has only 13 dma-buf address words
+different and zero non-address register differences.
+
 The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no
 `/dev/vcodec` and no `/proc/kmpp` ctrl-cfg capability. Full KMPP-object
 compatibility is therefore not claimed.

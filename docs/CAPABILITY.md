@@ -38,6 +38,7 @@
 |---|---|---|
 | H.264（VEPU580） | 完成 | 固定 QP 24 格、P 帧 11 尺寸（含 FBC 阈值两侧）、CBR/VBR/AVBR、hier QP、SMART_P、two-pass deflicker、level、deblock、ROI/QP map、GDR 4/4、slice split 4/4、逐 slice 输出 5/5，全部逐字节或逐 job STATUS。GDR 用确定性 ROI 表对照：stock C 的未初始化栈字段会导致跨进程输出不同，修表后 C/Rust 35 NAL 全一致。输出 packet 使用 uncached DMA heap，省掉逐帧 cache-sync ioctl；500 帧 720p A/B 快 2.53%，码流不变 |
 | H.265（VEPU580） | 完成 | IDR/P GOP、CBR/VBR/AVBR、GDR 4/4、ROI 4/4、deblock/SAO 4/4、BY_CTU/BY_BYTE 3/3、low-delay 4/4、水平 tiles 2/2。输出 packet 和 session CPU 输入都使用 uncached DMA heap；输入路径不再发每帧两次无效 sync。aggregate feedback 只重置 14 个实际 word，不再清 180-word STATUS。500 帧 720p 的 wall median 2.379s→1.318s，user+sys 1.287s→0.366s，码流哈希不变；输出 packet 的既有 A/B 仍快 2.41% |
+| H.265 scene-tune（VEPU580 object path） | 2026-11-22 完成 | 这一行取代上一行的 14-word 表述。状态聚合保留 0、3、64–84 共 23 个 word，其中 77–84 是 `md_sad_b16num[4]`/`madi_b16num[4]`；H.265 使用 vendor 的 896/640/384 CTU MADP 门和完整 row-3 WGT/RDO 覆盖。320x240 300 帧跨 5 个 GOP 与 C **315 NAL、整文件 SHA-256 `d577adc9…32edea`** 完全一致；300 个 job 仅 13 个 dma-buf 地址字不同，非地址寄存器差异为 0。复跑：`BOARD=my-rk3588-host ./scripts/board_h265_scene_tune_300.sh` |
 | JPEG（vepu） | 完成 | baseline 4:2:0、restart、90/270 旋转、RGB/YUV 输入、低延迟 slices、RK3588 四 band 多核，逐字节/逐 packet |
 | WPP / B 帧 / 多参考 | 不存在 | C 参考没有实现（标志恒 0、无 entry point、无 B_FRAME、`num_ref = 1`），不是本 crate 的缺口 |
 | harness `-g 60` | BY-DESIGN | harness 解析成 `gop_len=0` 的病态 smart-GOP；本 crate 拒绝 `gop=0`，有效形式逐字节 |

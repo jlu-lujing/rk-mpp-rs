@@ -396,6 +396,9 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Match the new upstream H.264 default stream byte-for-byte.
 - [x] Match the new upstream H.265 fixed-QP stream and register trace.
 - [x] Match new upstream H.264/H.265 60-frame single-GOP streams.
+- [x] Carry the H.265 motion histograms through the 23-word aggregate STATUS.
+- [x] Use the H.265 896/640/384 CTU gate and complete the row-3 WGT/RDO overlay.
+- [x] Match a 320x240 moving 300-frame/five-GOP stream and add the board gate.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

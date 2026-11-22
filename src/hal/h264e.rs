@@ -2538,6 +2538,10 @@ const MOTION_LEVEL_UNKNOWN: i32 = 3;
 /// the base index moves between the modes, so they stay spelled out.
 const MB_AVG_MADP_THD: [i32; 6] = [192, 128, 64, 192, 128, 64];
 
+/// H.265's `ctu_avg_madp_thd`. The state machine is otherwise the same as the
+/// H.264 path, but VEPU580 H.265 uses a larger per-CTU motion gate.
+const H265_CTU_AVG_MADP_THD: [i32; 6] = [896, 640, 384, 896, 640, 384];
+
 /// `ctu_madp_cnt_thd` of `common/vepu580_tune.c`, the eight per-row count
 /// thresholds the motion level is decided against.
 const CTU_MADP_CNT_THD: [[i32; 8]; 6] = [
@@ -2599,10 +2603,21 @@ pub struct SceneTune {
     scene_motion_flag_matrix: [i32; SCENE_FLAG_MATRIX_LEN],
     pre_madp: [i32; 2],
     pre_madi: [i32; 2],
+    avg_madp_thd: [i32; 6],
 }
 
 impl SceneTune {
     pub fn new(ipc_scene_mode: bool) -> SceneTune {
+        Self::with_avg_madp_thd(ipc_scene_mode, MB_AVG_MADP_THD)
+    }
+
+    /// The VEPU580 H.265 state machine differs from H.264 only in the
+    /// per-picture mean-MADP gate.
+    pub fn new_h265(ipc_scene_mode: bool) -> SceneTune {
+        Self::with_avg_madp_thd(ipc_scene_mode, H265_CTU_AVG_MADP_THD)
+    }
+
+    fn with_avg_madp_thd(ipc_scene_mode: bool, avg_madp_thd: [i32; 6]) -> SceneTune {
         SceneTune {
             ipc_scene_mode,
             curr_scene_motion_flag: 0,
@@ -2613,6 +2628,7 @@ impl SceneTune {
             // -1 until the first picture, exactly as `tune_init` leaves them.
             pre_madp: [-1, -1],
             pre_madi: [-1, -1],
+            avg_madp_thd,
         }
     }
 
@@ -2631,26 +2647,45 @@ impl SceneTune {
     /// finished picture wrote. The statistics arrive exactly as the C reads them
     /// out of `regs->reg_st` - same fields, same divisors, same zero guards.
     pub fn update(&mut self, stats: &Statistics) {
+        let mb_num = stats.madi_b16num.iter().map(|v| i64::from(*v)).sum();
+        self.update_values(
+            stats.madi,
+            stats.madp,
+            stats.num_b16,
+            stats.num_ctu,
+            stats.md_sad_b16num,
+            mb_num,
+        );
+    }
+
+    pub fn update_values(
+        &mut self,
+        madi: u32,
+        madp_value: u32,
+        num_b16: u32,
+        num_ctu: u32,
+        md_sad_b16num: [u32; 4],
+        mut mb_num: i64,
+    ) {
         self.ap_motion_flag = if self.ipc_scene_mode { 0 } else { 1 };
         let mut cnt = [0i64; 5];
         for (i, window) in MADP_NUM_MAP.iter().enumerate() {
             for (k, weight) in window.iter().enumerate() {
-                cnt[i] += i64::from(stats.md_sad_b16num[k]) * i64::from(*weight);
+                cnt[i] += i64::from(md_sad_b16num[k]) * i64::from(*weight);
             }
         }
 
-        self.pre_madi[0] = if stats.num_b16 == 0 {
+        self.pre_madi[0] = if num_b16 == 0 {
             0
         } else {
-            (stats.madi / stats.num_b16) as i32
+            (madi / num_b16) as i32
         };
-        self.pre_madp[0] = if stats.num_ctu == 0 {
+        self.pre_madp[0] = if num_ctu == 0 {
             0
         } else {
-            (stats.madp / stats.num_ctu) as i32
+            (madp_value / num_ctu) as i32
         };
 
-        let mut mb_num: i64 = stats.madi_b16num.iter().map(|v| i64::from(*v)).sum();
         if mb_num == 0 {
             mb_num = 1;
         }
@@ -2660,7 +2695,7 @@ impl SceneTune {
         if cnt[4] != 0 {
             let mut base = (self.ap_motion_flag * 3) as usize;
             for _ in 0..3 {
-                if self.pre_madp[0] >= MB_AVG_MADP_THD[base] {
+                if self.pre_madp[0] >= self.avg_madp_thd[base] {
                     let thd = CTU_MADP_CNT_THD[base];
                     let scaled = |i: usize| (mb_num * i64::from(thd[i])) >> mvbit;
                     if cnt[0] > scaled(0) || cnt[1] > scaled(1) || cnt[2] > scaled(2) {
@@ -5892,6 +5927,15 @@ mod tests {
             p.rc_klut[vepu580_regs::RCKLUT_KLUT_WGT0_CHRM_KLUT_WGT0.word - 1024],
             CHROMA_KLUT_WEIGHT[0],
             "the current-motion row of the chroma weights"
+        );
+    }
+
+    #[test]
+    fn h265_scene_tune_uses_the_ctu_motion_gate() {
+        assert_eq!(SceneTune::new(false).avg_madp_thd, MB_AVG_MADP_THD);
+        assert_eq!(
+            SceneTune::new_h265(false).avg_madp_thd,
+            H265_CTU_AVG_MADP_THD
         );
     }
 

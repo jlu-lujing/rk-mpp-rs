@@ -2,6 +2,24 @@
 
 ## Session: 2026-11-22
 
+### Phase 20: VEPU580 H.265 Scene-Tune Closure
+- **Status:** complete on RK3588.
+- The H.265 object path was reusing H.264's 192/128/64 mean-MADP gate. Vendor
+  H.265 uses 896/640/384, and its `fb->st_mb_num` is STATUS
+  `st_bnum_b16.num_b16`.
+- Aggregate feedback only retained words 64–75, dropping the
+  `md_sad_b16num[4]` and `madi_b16num[4]` histograms at 77–84. The aggregate
+  now covers 0, 3 and 64–84 (23 words).
+- Completed the row-3 WGT/RDO register overlay from the C trace. The state
+  machine enters row 3 at frames 107 and 227 and returns to row 2 afterward.
+- A 320x240 moving 300-frame stream across five GOPs is 315 NALs and
+  SHA-256 `d577adc9…32edea` on both C and Rust. The 300-job ioctl trace has
+  zero non-address differences; only 13 dma-buf address words differ.
+- Added `scripts/board_h265_scene_tune_300.sh` as the repeatable board gate.
+- The unchanged official encoder gate passes H.264 one/six frames, H.265
+  one/six frames and MJPEG. The host gate is
+  `1383 passed / 0 failed / 47 ignored`.
+
 ### Phase 19: Legacy `mpi_dec_test` Packet Compatibility
 - **Status:** complete on RK3588.
 - The unchanged `mpi_dec_test` reads normal elementary streams in 4 KiB
