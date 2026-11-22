@@ -47,3 +47,25 @@ c_median=$(ssh "$BOARD" "sort -n $c_times | sed -n '$(((runs + 1) / 2))p'")
 r_median=$(ssh "$BOARD" "sort -n $r_times | sed -n '$(((runs + 1) / 2))p'")
 printf 'MEDIAN 700 frames: C=%sms Rust=%sms (raw NV12, vproc disabled)\n' \
   "$c_median" "$r_median"
+
+c_vproc_times=/tmp/avs_vproc_perf_c.txt
+r_vproc_times=/tmp/avs_vproc_perf_r.txt
+ssh "$BOARD" "rm -f $c_vproc_times $r_vproc_times"
+for _ in $(seq 1 "$runs"); do
+  c_ms=$(ssh "$BOARD" "start=\$(date +%s%N); \
+    sudo env LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 180 \
+    \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_stream01.avs -o /dev/null \
+    -t 16777221 -n 700 </dev/null >/tmp/avs_vproc_perf_c.log 2>&1; \
+    end=\$(date +%s%N); echo \$(( (end-start)/1000000 ))")
+  r_ms=$(ssh "$BOARD" "start=\$(date +%s%N); cd \"$remote_repo\"; \
+    sudo timeout 180 ./target/release/rk-mpp-rs avsdec \
+    /tmp/avs_stream01_x100.avs /dev/null 700 vproc >/tmp/avs_vproc_perf_r.log 2>&1; \
+    end=\$(date +%s%N); echo \$(( (end-start)/1000000 ))")
+  ssh "$BOARD" "echo $c_ms >>$c_vproc_times; echo $r_ms >>$r_vproc_times"
+  printf 'vproc run: C=%sms Rust=%sms\n' "$c_ms" "$r_ms"
+done
+
+c_vproc_median=$(ssh "$BOARD" "sort -n $c_vproc_times | sed -n '$(((runs + 1) / 2))p'")
+r_vproc_median=$(ssh "$BOARD" "sort -n $r_vproc_times | sed -n '$(((runs + 1) / 2))p'")
+printf 'MEDIAN 700 vproc frames: C=%sms Rust=%sms\n' \
+  "$c_vproc_median" "$r_vproc_median"

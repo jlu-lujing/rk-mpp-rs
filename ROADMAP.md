@@ -2219,7 +2219,9 @@ in what order the evidence gets produced.
       stream matches C (`669ae431…4ff9f`). AEC and field pictures remain open.
       A 700-frame concatenated run is byte-identical in raw
       NV12; the current 3-run median is Rust 694 ms versus C 825 ms on this board
-      (`board_avs_plus_perf.sh`).
+      (`board_avs_plus_perf.sh`). The default-vproc 700-frame output is also
+      byte-identical; its timing is bimodal on both sides, so no stable winner
+      is claimed.
 - [ ] Damaged and truncated AVS+ streams
       `scripts/board_avs_plus_corrupt.sh` covers eight variants. Both decoders
       output the same valid frame for the 7,000/10,000-byte truncations and an

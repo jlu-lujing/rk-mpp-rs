@@ -96,6 +96,8 @@
   `d3fa0c0d…10180`).
 - Replaced vproc input copies with decoder DMA-BUF imports; the 7-frame output
   remains byte-identical.
+- The 700-frame default-vproc stress stream is byte-identical; repeated timing
+  is bimodal on both sides and is not used for a stable winner claim.
 - Added a deterministic profile 0x48 stream generator and hardware gate. The
   derived four-frame raw/SDK output matches C (`9eb0602a…5cfa4`).
 - Added a base1 weighted-quant/chroma-delta/model2 derived stream; four raw

@@ -540,6 +540,10 @@
   mismatch; both public fixtures match C byte-for-byte in `vproc` mode. The
   decoder's three source frames are imported by duplicated dma-buf fd, avoiding
   the previous CPU copies.
+- A 100x concatenated public stream emits 700 default-vproc frames byte-identical
+  to C (`64b3df4c…be54a`). Repeated wall-clock samples are bimodal on both sides,
+  so the DMA-BUF path is recorded as functionally exact without claiming a
+  stable performance winner.
 - `gen_avs_plus_profile.py` derives a syntax-equivalent profile 0x48 stream by
   preserving slice data and adding the AVS+ header bits with weighting/AEC
   disabled. Its first four raw frames match C exactly (`9eb0602a…5cfa4`).

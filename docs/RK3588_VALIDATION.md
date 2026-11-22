@@ -234,6 +234,7 @@ board's `av1_rkmpp` frontend cannot convert the stream at all and
 | H.263 | CIF, 120f verified | 118 ms | **104 ms** | **+13.5 %** |
 | AV1 | 720p, 60f, vs `mpi_dec_test` | 182 ms | **149 ms** | **+22.1 %** |
 | AVS+ | 352x288, 700f verified, raw NV12 | 825 ms | **694 ms** | **+18.9 %** |
+| AVS+ | 352x288, 700f verified, default IEP2 vproc | bimodal | bimodal | no stable winner |
 
 The 120-frame VP8/MPEG-2/MPEG-4/H.263 streams are ten-times concatenations of
 the corpus fixtures (VP8 keeps a corrected IVF frame count); each was verified
@@ -244,9 +245,11 @@ concatenation hits the documented C input-wrap bug, so its evidence stays the
 Every row above is ahead of C. VP9 720p is bimodal on this board (144-245 ms
 on both sides), so its 15-sample median is quoted.
 
-AVS+ disables C's IEP2 vproc so both sides write the same raw decoder NV12.
-Its three-run timing spread is larger than the other rows; the quoted figures
-are the median and the 700-frame byte comparison is the acceptance gate.
+The AVS+ raw row disables C's IEP2 vproc so both sides write the same decoder
+NV12. The vproc row uses C's default path and Rust's decoder-DMA-BUF import
+pipeline. Both 700-frame outputs are byte-identical, but repeated runs are
+bimodal on both sides; the performance gate reports the samples rather than
+claiming a stable winner.
 
 ## 2026-11-17 NEON chroma split and VP9 streamed output
 
