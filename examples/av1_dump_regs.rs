@@ -125,6 +125,9 @@ fn main() {
         for reference in reference_frames.iter().flatten().copied() {
             reference_fds[reference] = Some(0x1100 + reference as u32);
         }
+        if coded.header.allow_intrabc {
+            reference_fds[current_slot] = Some(0x1000);
+        }
         let buffers = Av1DmaBuffers {
             current_output: 0x1000,
             references: reference_fds,

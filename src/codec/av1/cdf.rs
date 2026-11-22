@@ -347,8 +347,6 @@ impl Av1CdfStore {
         if frame_is_intra {
             let regular = cdf.regular.as_bytes_mut();
             regular[..MV_CDF_OFFSET].copy_from_slice(&hardware[..MV_CDF_OFFSET]);
-            regular[MV_CDF_OFFSET..MV_CDF_OFFSET + MV_CDF_SIZE]
-                .copy_from_slice(&hardware[MV_CDF_OFFSET..MV_CDF_OFFSET + MV_CDF_SIZE]);
             cdf.intrabc_mv = from_bytes(&hardware[MV_CDF_OFFSET..MV_CDF_OFFSET + MV_CDF_SIZE]);
             cdf.regular.as_bytes_mut()[MV_CDF_OFFSET + MV_CDF_SIZE..]
                 .copy_from_slice(&hardware[MV_CDF_OFFSET + MV_CDF_SIZE..]);

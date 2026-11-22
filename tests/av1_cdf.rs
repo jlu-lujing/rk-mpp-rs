@@ -122,6 +122,10 @@ fn intra_hardware_update_keeps_intrabc_mv_outside_the_regular_mv_region() {
         &hardware[..MV_CDF_OFFSET]
     );
     assert_eq!(
+        &updated.regular.as_bytes()[MV_CDF_OFFSET..MV_CDF_OFFSET + MV_CDF_SIZE],
+        &original.regular.as_bytes()[MV_CDF_OFFSET..MV_CDF_OFFSET + MV_CDF_SIZE]
+    );
+    assert_eq!(
         updated.intrabc_mv.as_bytes(),
         &hardware[MV_CDF_OFFSET..MV_CDF_OFFSET + MV_CDF_SIZE]
     );

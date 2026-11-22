@@ -479,6 +479,13 @@ impl Decoder {
             physical_slots[slot] = frame.texture_index;
             hardware[frame.texture_index as usize] = Some(reference.frame);
         }
+        // IntraBC predicts from the current tile output surface. C maps every
+        // logical reference register to CurrPicTextureIndex for this case; the
+        // HAL already selects that index, so the current frame must be present
+        // in the hardware reference table as well.
+        if coded.header.allow_intrabc {
+            hardware[current_slot as usize] = Some(current_frame);
+        }
         Ok((current_slot, physical_slots, hardware))
     }
 
@@ -602,6 +609,10 @@ fn copy_planar_data(
         crate::codec::yuv::packed10_nv12_to_planar_into(&mut out, y, uv, width, height, stride);
         return out;
     }
+    // AV1 4:2:0 chroma uses rounded-up plane dimensions. This intentionally
+    // differs from the vendor mpi_dec_test odd-width YUV420SP dump, which
+    // writes `width` bytes per chroma row and therefore emits an invalid
+    // fractional pair count for coded widths such as 213.
     let chroma_width = width.div_ceil(2);
     let chroma_height = height.div_ceil(2);
     let sample_bytes = if bit_depth > 8 { 2 } else { 1 };
@@ -674,6 +685,48 @@ mod tests {
         );
         assert_eq!(&planar[16..20], &[10, 11, 10, 11]);
         assert_eq!(&planar[20..24], &[20, 21, 20, 21]);
+    }
+
+    #[test]
+    fn copies_odd_nv12_with_normative_rounded_chroma() {
+        let width = 5;
+        let height = 3;
+        let stride = 8;
+        let mut data = vec![0u8; stride * height + stride * 2];
+        for row in 0..height {
+            for column in 0..width {
+                data[row * stride + column] = (row * width + column) as u8;
+            }
+        }
+        let uv = stride * height;
+        for row in 0..2 {
+            for column in 0..3 {
+                data[uv + row * stride + column * 2] = 40 + column as u8;
+                data[uv + row * stride + column * 2 + 1] = 60 + column as u8;
+            }
+        }
+
+        let planar = copy_planar_data(
+            width,
+            height,
+            stride,
+            8,
+            &data[..uv],
+            &data[uv..],
+            Vec::new(),
+        );
+        assert_eq!(
+            planar.len(),
+            width * height + 2 * width.div_ceil(2) * height.div_ceil(2)
+        );
+        assert_eq!(
+            &planar[..width * height],
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        );
+        assert_eq!(
+            &planar[width * height..],
+            &[40, 41, 42, 40, 41, 42, 60, 61, 62, 60, 61, 62]
+        );
     }
 
     #[test]
