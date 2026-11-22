@@ -537,7 +537,9 @@
 - C's default AVS path is now reproduced through a stateful Rust IEP2 pipeline:
   I1O1T for the first frame, one anchor-only frame, then alternating TFF/BFF
   I5O2 windows. Porting `iep2_update_gmv()` closed the last 164-word register
-  mismatch; both public fixtures match C byte-for-byte in `vproc` mode.
+  mismatch; both public fixtures match C byte-for-byte in `vproc` mode. The
+  decoder's three source frames are imported by duplicated dma-buf fd, avoiding
+  the previous CPU copies.
 - `gen_avs_plus_profile.py` derives a syntax-equivalent profile 0x48 stream by
   preserving slice data and adding the AVS+ header bits with weighting/AEC
   disabled. Its first four raw frames match C exactly (`9eb0602a…5cfa4`).

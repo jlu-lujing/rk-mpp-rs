@@ -5,13 +5,18 @@
 //! I5O2 and emits its two destination slots in field-order order.
 
 use crate::hal::iep::{Iep2DilMode, Iep2FieldOrder, Iep2Fmt, Iep2OutMode, Iep2YuvSwap};
+use crate::service::dma_heap::DmaBuf;
 use crate::service::iep_session::{DeinterlaceConfig, IepDeinterlace};
 
 pub struct Vproc {
     iep: IepDeinterlace,
+    width: usize,
+    height: usize,
+    hor_stride: usize,
+    ver_stride: usize,
     frame_bytes: usize,
-    prev0: Option<Vec<u8>>,
-    prev1: Option<Vec<u8>>,
+    prev0: Option<DmaBuf>,
+    prev1: Option<DmaBuf>,
 }
 
 impl Vproc {
@@ -38,16 +43,20 @@ impl Vproc {
         let iep = IepDeinterlace::open(cfg).map_err(|error| error.to_string())?;
         Ok(Self {
             iep,
+            width,
+            height,
+            hor_stride,
+            ver_stride,
             frame_bytes: width * height * 3 / 2,
             prev0: None,
             prev1: None,
         })
     }
 
-    pub fn push(&mut self, frame: &[u8], top_field_first: bool) -> Result<Vec<Vec<u8>>, String> {
-        if frame.len() != self.frame_bytes {
+    pub fn push(&mut self, frame: &DmaBuf, top_field_first: bool) -> Result<Vec<Vec<u8>>, String> {
+        if frame.len() < self.frame_bytes {
             return Err(format!(
-                "AVS vproc frame is {} bytes, expected {}",
+                "AVS vproc frame is {} bytes, needs {}",
                 frame.len(),
                 self.frame_bytes
             ));
@@ -55,7 +64,7 @@ impl Vproc {
 
         if self.prev0.is_none() {
             for slot in 0..3 {
-                self.copy_src(slot, frame)?;
+                self.import(slot, frame)?;
             }
             self.iep.set_mode(Iep2DilMode::I1O1T);
             self.iep.set_field_order(if top_field_first {
@@ -64,21 +73,21 @@ impl Vproc {
                 Iep2FieldOrder::Bff
             });
             self.iep.run()?;
-            self.prev0 = Some(frame.to_vec());
+            self.prev0 = Some(frame.try_clone().map_err(|error| error.to_string())?);
             return Ok(vec![self.iep.dst_frame_compact(0)?]);
         }
 
         if self.prev1.is_none() {
             self.prev1 = self.prev0.take();
-            self.prev0 = Some(frame.to_vec());
+            self.prev0 = Some(frame.try_clone().map_err(|error| error.to_string())?);
             return Ok(Vec::new());
         }
 
         let prev0 = self.prev0.take().expect("prev0 checked above");
         let prev1 = self.prev1.take().expect("prev1 checked above");
-        self.copy_src(0, &prev0)?;
-        self.copy_src(1, frame)?;
-        self.copy_src(2, &prev1)?;
+        self.import(0, &prev0)?;
+        self.import(1, frame)?;
+        self.import(2, &prev1)?;
         self.iep.set_mode(Iep2DilMode::I5O2);
         self.iep.set_field_order(if top_field_first {
             Iep2FieldOrder::Tff
@@ -105,18 +114,18 @@ impl Vproc {
             self.iep.dst_frame_compact(second)?,
         ];
         self.prev1 = Some(prev0);
-        self.prev0 = Some(frame.to_vec());
+        self.prev0 = Some(frame.try_clone().map_err(|error| error.to_string())?);
         Ok(output)
     }
 
-    fn copy_src(&mut self, slot: usize, frame: &[u8]) -> Result<(), String> {
-        let src = self.iep.src_frame_mut(slot);
-        src.sync_write_begin()
-            .map_err(|error| format!("AVS vproc src{slot} begin: {error}"))?;
-        let count = frame.len().min(src.len());
-        src.as_mut_slice()[..count].copy_from_slice(&frame[..count]);
-        self.iep
-            .flush_src(slot)
-            .map_err(|error| format!("AVS vproc src{slot} flush: {error}"))
+    fn import(&mut self, slot: usize, frame: &DmaBuf) -> Result<(), String> {
+        self.iep.import_src_dmabuf(
+            slot,
+            frame,
+            self.width,
+            self.height,
+            self.hor_stride,
+            self.ver_stride,
+        )
     }
 }

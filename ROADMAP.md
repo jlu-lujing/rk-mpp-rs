@@ -2211,7 +2211,9 @@ in what order the evidence gets produced.
       6-frame cycle (`e6069fc1…78f29`) through the same CLI and SDK. AVS+
       `vproc` output now reproduces C's default IEP2 state machine, GMV,
       field-order and output slots byte-for-byte on both public fixtures
-      (`13e5e665…dad1d` and `d3fa0c0d…10180`). A syntax-equivalent profile
+      (`13e5e665…dad1d` and `d3fa0c0d…10180`). The three I5O2 inputs are
+      imported as decoder DMA-BUFs rather than copied through CPU memory.
+      A syntax-equivalent profile
       0x48 stream derived from the public fixture also matches C on four raw
       frames (`9eb0602a…5cfa4`), and a base1 weighted-quant/chroma-delta/model2
       stream matches C (`669ae431…4ff9f`). AEC and field pictures remain open.

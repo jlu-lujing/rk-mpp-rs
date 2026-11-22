@@ -308,9 +308,6 @@ impl IepDeinterlace {
     /// copied through CPU memory. All three source frames must use the same
     /// dimensions and horizontal stride.
     pub fn import_src_frame(&mut self, i: usize, frame: &crate::sdk::Frame) -> Result<(), String> {
-        if i >= 3 {
-            return Err(format!("IEP source index {i} is out of range"));
-        }
         if self.cfg.src_fmt != Iep2Fmt::Yuv420 || self.cfg.src_swap != Iep2YuvSwap::SpUv {
             return Err("decoder-frame import requires NV12 source format".to_string());
         }
@@ -353,6 +350,44 @@ impl IepDeinterlace {
         if y.size() < y_size as u64 || uv.size() < uv_size as u64 {
             return Err("decoder NV12 planes are shorter than their strides".to_string());
         }
+        let owned = frame
+            .duplicate_dmabuf()
+            .map_err(|error| format!("duplicate decoder dma-buf: {error}"))?
+            .ok_or_else(|| "decoder frame is not DMA-BUF backed".to_string())?;
+        let imported = DmaBuf::import_fd(owned.as_raw_fd(), frame.data().len(), false)
+            .map_err(|error| format!("import decoder dma-buf: {error}"))?;
+        self.import_src_dmabuf(
+            i,
+            &imported,
+            frame.width(),
+            frame.height(),
+            stride,
+            ver_stride,
+        )
+    }
+
+    /// Import a decoder-owned NV12 dma-buf without copying its pixels.
+    pub fn import_src_dmabuf(
+        &mut self,
+        i: usize,
+        buffer: &DmaBuf,
+        width: usize,
+        height: usize,
+        stride: usize,
+        ver_stride: usize,
+    ) -> Result<(), String> {
+        if i >= 3 {
+            return Err(format!("IEP source index {i} is out of range"));
+        }
+        if self.cfg.src_fmt != Iep2Fmt::Yuv420 || self.cfg.src_swap != Iep2YuvSwap::SpUv {
+            return Err("dma-buf import requires NV12 source format".to_string());
+        }
+        if width != self.cfg.width || height != self.cfg.height {
+            return Err("decoder frame and IEP geometry differ".to_string());
+        }
+        if stride < self.cfg.width || ver_stride < self.cfg.height {
+            return Err("decoder frame stride is shorter than its visible size".to_string());
+        }
         if let Some(expected) = self.imported_stride {
             if stride != expected || self.imported_ver_stride != Some(ver_stride) {
                 return Err("decoder source frames use different strides".to_string());
@@ -388,13 +423,8 @@ impl IepDeinterlace {
                 self.cfg.ver_stride = ver_stride;
             }
         }
-        let owned = frame
-            .duplicate_dmabuf()
-            .map_err(|error| format!("duplicate decoder dma-buf: {error}"))?
-            .ok_or_else(|| "decoder frame is not DMA-BUF backed".to_string())?;
-        let imported = DmaBuf::import_fd(owned.as_raw_fd(), frame.data().len(), false)
+        self.src[i] = DmaBuf::import_fd(buffer.fd(), buffer.len(), false)
             .map_err(|error| format!("import decoder dma-buf: {error}"))?;
-        self.src[i] = imported;
         Ok(())
     }
 

@@ -94,6 +94,8 @@
   alternating field order, I5O2 windows and GMV candidate updates. Both public
   fixtures now match C default output exactly (`13e5e665…dad1d`,
   `d3fa0c0d…10180`).
+- Replaced vproc input copies with decoder DMA-BUF imports; the 7-frame output
+  remains byte-identical.
 - Added a deterministic profile 0x48 stream generator and hardware gate. The
   derived four-frame raw/SDK output matches C (`9eb0602a…5cfa4`).
 - Added a base1 weighted-quant/chroma-delta/model2 derived stream; four raw

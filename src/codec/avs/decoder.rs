@@ -242,7 +242,17 @@ impl Decoder {
                 )?);
             }
             let top_field_first = slot.top_field_first;
-            let raw = take_picture(slot, true)?;
+            let err_info = if slot.invalid {
+                FRAME_ERR_DEC_INVALID
+            } else if slot.hardware_error {
+                FRAME_ERR_DEC_HW_ERR
+            } else {
+                0
+            };
+            let frames = vproc
+                .as_mut()
+                .expect("vproc was initialized")
+                .push(&slot.surface.texture, top_field_first)?;
             self.slots[output.index]
                 .as_mut()
                 .expect("output slot remains allocated")
@@ -250,12 +260,8 @@ impl Decoder {
             if output.release {
                 self.slots[output.index] = None;
             }
-            for frame in vproc
-                .as_mut()
-                .expect("vproc was initialized")
-                .push(&raw.yuv, top_field_first)?
-            {
-                emit(&frame, raw.err_info)?;
+            for frame in frames {
+                emit(&frame, err_info)?;
                 decoded += 1;
                 if decoded == max_frames {
                     return Ok(decoded);

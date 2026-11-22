@@ -24,7 +24,7 @@
 | VP9（rkvdec） | 完成 | profile 0/2、10-bit、lossless、tiles、errres、resize、show-existing、hidden alt-ref；边界两格由 libvpx 判定为 C bug |
 | AV1（av1d） | 完成 | Main 8/10-bit、film grain、2x2 tile、96×96–1920×1080、长 GOP、多 sequence、320↔640 切换；C/Rust/libaom 三方逐字节；64×64 为 C bug |
 | MPEG-2 / MPEG-4 / H.263 / VP8 | 完成 | 逐字节；隔行 MPEG-2 用 FFmpeg 作 oracle（C 会错误回绕输入）；VP8 profile 1/3 为派生流验证 |
-| AVS+ / AVS2 | AVS+ 公开流完成，扩展部分验证；AVS2 不可达 | RK3588 client 12 的两个公开 352×288 流已由 Rust sequence/PB parser、60-word HAL、两锚 DPB、SDK 和 `avsdec` 完成 7 帧与 6 帧 I/P/B 显示周期。关闭 C vproc 时 raw I420 SHA 为 `47d05886…5fdb20`、`e6069fc1…78f29`；`vproc` 模式复现 C 默认 IEP2 状态机、GMV 和 field-order，输出 SHA 为 `13e5e665…dad1d`、`d3fa0c0d…10180`。派生 profile 0x48 流四帧 raw/SDK 与 C 一致（`9eb0602a…5cfa4`）；base1 weighted-quant、chroma delta 和 model2 流也与 C 一致（`669ae431…4ff9f`）。AEC 和 field picture 仍待验证。700 帧 raw NV12 压力流逐字节一致，当前 3 次中位数为 Rust 694 ms / C 825 ms。AVS2 在 RK3588 无设备 |
+| AVS+ / AVS2 | AVS+ 公开流完成，扩展部分验证；AVS2 不可达 | RK3588 client 12 的两个公开 352×288 流已由 Rust sequence/PB parser、60-word HAL、两锚 DPB、SDK 和 `avsdec` 完成 7 帧与 6 帧 I/P/B 显示周期。关闭 C vproc 时 raw I420 SHA 为 `47d05886…5fdb20`、`e6069fc1…78f29`；`vproc` 模式复现 C 默认 IEP2 状态机、GMV 和 field-order，输入帧直接导入解码器 DMA-BUF，输出 SHA 为 `13e5e665…dad1d`、`d3fa0c0d…10180`。派生 profile 0x48 流四帧 raw/SDK 与 C 一致（`9eb0602a…5cfa4`）；base1 weighted-quant、chroma delta 和 model2 流也与 C 一致（`669ae431…4ff9f`）。AEC 和 field picture 仍待验证。700 帧 raw NV12 压力流逐字节一致，当前 3 次中位数为 Rust 694 ms / C 825 ms。AVS2 在 RK3588 无设备 |
 | H.265 SCC | 不存在 | MPP 源码没有 palette/SCC 路径 |
 
 ## 编码
