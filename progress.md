@@ -169,6 +169,9 @@
 - Fixed production AV1 global-motion parsing so non-identity ROTZOOM clears
   the default identity flag. The global-warped fixture now matches C/libaom
   (`ce1e081f…f6f5`) and has a dedicated board gate.
+- Fixed AV1 `swreg5` preskip/delta-LF field overlap. Preskip now uses bit 20,
+  preserving bit 21 for `delta_lf_present`; both delta-LF fixtures match
+  C/libaom and have a board gate.
 - Replaced the first packet implementation's whole-prefix replay with
   incremental consumption. On concatenated 100/96-frame streams with DMC
   performance and CPU 4–7, the current path is 0.14–0.15 s for MPEG-2 versus

@@ -585,6 +585,10 @@
   `av1_inter_global_warped_320x240.ivf` differed from both C and libaom;
   clearing the flag restores all 230,400 bytes to
   `ce1e081f…f6f5`.
+- The same matrix exposed a second register-layout bug: preskip segmentation
+  was written to `swreg5` bit 21, overwriting `sw_delta_lf_present`. Preskip is
+  bit 20. Moving it restores both delta-LF fixtures to C/libaom
+  (`55d42329…84d2` and `4fd081ed…da79`).
 - The AVS parser has a deterministic 20,000-iteration mutation test covering
   truncation, byte flips, insertion and arbitrary inputs; all parser entry points
   return errors or partial parses without panicking.

@@ -263,6 +263,28 @@ fn av1_register_file_has_the_512_word_c_layout_and_address_offsets() {
 }
 
 #[test]
+fn av1_preskip_segmentation_does_not_overwrite_delta_lf_present() {
+    let mut params = key_params();
+    params.loop_filter.delta_lf_present = 1;
+    params.segmentation.enabled = 1;
+    params.segmentation.feature_mask[0] = 1 << 5;
+
+    let regs = Av1Registers::build(
+        &params,
+        &Av1DmaBuffers::default(),
+        &mut Av1RegisterState::default(),
+    )
+    .unwrap();
+
+    assert_eq!(regs.field(5, 20, 1), 1, "preskip uses swreg5 bit 20");
+    assert_eq!(
+        regs.field(5, 21, 1),
+        1,
+        "delta_lf_present uses swreg5 bit 21"
+    );
+}
+
+#[test]
 fn av1_inter_reference_registers_use_texture_slots_and_mpp_scaling() {
     let mut params = key_params();
     params.format.frame_type = FrameType::Inter as u8;

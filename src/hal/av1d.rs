@@ -924,7 +924,7 @@ impl Av1Registers {
         }
 
         self.set_field(9, 17, 3, last_active);
-        self.set_field(5, 21, 1, preskip);
+        self.set_field(5, 20, 1, preskip);
         self.set_field(12, 2, 8, quant_sign);
         for segment in 0..8 {
             let value_register = if segment < 6 {

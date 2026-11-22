@@ -595,6 +595,11 @@ the warp and diverged from C/libaom on the second frame of
 output. `scripts/board_av1_global_warped.sh` compares C and Rust and pins
 SHA-256 `ce1e081f…f6f5`.
 
+The broader 8-bit AV1 matrix also found a `swreg5` field collision: preskip
+segmentation was written to bit 21, which is `sw_delta_lf_present`, instead of
+bit 20. Both delta-LF fixtures now match vendor C and libaom:
+`55d42329…84d2` and `4fd081ed…da79`.
+
 ## 2026-11-11 AV1 software film-grain synthesis
 
 - The independent M11 decoder now applies film grain only to displayed copies.

@@ -52,9 +52,16 @@ fn main() {
     if std::env::var_os("AV1_HEADER_TRACE").is_some() {
         for (index, (coded, _)) in jobs.iter().enumerate() {
             eprintln!(
-                "job {index}: primary={} allow_warped={} global={:?}",
+                "job {index}: primary={} allow_warped={} q={} dq={}/{} dlf={}/{}/{} intrabc={} global={:?}",
                 coded.header.primary_ref_frame,
                 coded.header.allow_warped_motion,
+                coded.header.base_q_idx,
+                coded.header.delta_q_present,
+                coded.header.delta_q_res,
+                coded.header.delta_lf_present,
+                coded.header.delta_lf_res,
+                coded.header.delta_lf_multi,
+                coded.header.allow_intrabc,
                 coded.header.global_motion
             );
             for (slot, reference) in coded.references_at_header.iter().enumerate() {
