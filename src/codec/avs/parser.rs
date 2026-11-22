@@ -589,6 +589,66 @@ mod tests {
         0x00, 0x00, 0x01, 0xb6, 0xff, 0xff, 0x80, 0x6e, 0x80, 0xbc, 0x00, 0x00, 0x01, 0x00,
     ];
 
+    struct TestBits {
+        bytes: Vec<u8>,
+        position: usize,
+    }
+
+    impl TestBits {
+        fn new() -> Self {
+            Self {
+                bytes: Vec::new(),
+                position: 0,
+            }
+        }
+
+        fn put(&mut self, value: u32, bits: u32) {
+            for shift in (0..bits).rev() {
+                if self.position % 8 == 0 {
+                    self.bytes.push(0);
+                }
+                if (value >> shift) & 1 != 0 {
+                    let index = self.position / 8;
+                    self.bytes[index] |= 1 << (7 - self.position % 8);
+                }
+                self.position += 1;
+            }
+        }
+
+        fn ue(&mut self, value: u32) {
+            let code = value + 1;
+            let bits = 32 - code.leading_zeros();
+            self.put(0, bits - 1);
+            self.put(code, bits);
+        }
+
+        fn se(&mut self, value: i32) {
+            let code = if value > 0 {
+                (value as u32) * 2 - 1
+            } else {
+                (-value as u32) * 2
+            };
+            self.ue(code);
+        }
+    }
+
+    fn plus_sequence() -> SequenceHeader {
+        SequenceHeader {
+            profile_id: 0x48,
+            level_id: 0x10,
+            progressive_sequence: true,
+            horizontal_size: 352,
+            vertical_size: 288,
+            chroma_format: 1,
+            sample_precision: 1,
+            aspect_ratio: 1,
+            frame_rate_code: 3,
+            bit_rate: 0,
+            low_delay: true,
+            bbv_buffer_size: 7,
+        }
+    }
+
     #[test]
     fn public_avs_i_header_matches_vendor_fields() {
         let access = AccessUnit::parse(PREFIX).expect("parse public AVS prefix");
@@ -659,5 +719,88 @@ mod tests {
         assert!(b_picture.picture.loop_filter_parameter_flag);
         assert_eq!(b_picture.picture.header_bits, 45);
         assert_eq!(b_picture.slice_start, 10);
+    }
+
+    #[test]
+    fn profile_48_weighting_and_aec_fields_are_parsed() {
+        let mut bits = TestBits::new();
+        bits.put(0xffff, 16);
+        bits.put(1, 1); // marker
+        bits.put(0x12, 7); // bbv_delay_extension
+        bits.put(0, 1); // time_code_flag
+        bits.put(1, 1); // version marker
+        bits.put(7, 8); // picture_distance
+        bits.ue(0); // bbv_check_times
+        bits.put(1, 1); // progressive_frame
+        bits.put(0, 1); // top_field_first
+        bits.put(0, 1); // repeat_first_field
+        bits.put(1, 1); // fixed_picture_qp
+        bits.put(33, 6);
+        bits.put(0, 4); // reserved
+        bits.put(0, 1); // loop_filter_disable
+        bits.put(1, 1); // loop_filter_parameter_flag
+        bits.se(0);
+        bits.se(0);
+        bits.put(1, 1); // weighting_quant_flag
+        bits.put(0, 1); // reserved
+        bits.put(0, 1); // chroma_quant_param_disable
+        bits.se(1);
+        bits.se(-1);
+        bits.put(1, 2); // weighting_quant_param_index
+        bits.put(2, 2); // weighting_quant_model
+        for delta in [0, 1, -1, 2, -2, 3] {
+            bits.se(delta);
+        }
+        bits.put(1, 1); // aec_enable
+
+        let (picture, version) =
+            PictureHeader::parse_i(&bits.bytes, &plus_sequence(), None).unwrap();
+        assert_eq!(version, Some(true));
+        assert_eq!(picture.bbv_delay_extension, 0x12);
+        assert_eq!(picture.picture_distance, 7);
+        assert_eq!(picture.picture_qp, 33);
+        assert!(picture.weighting_quant_flag);
+        assert_eq!(picture.chroma_quant_param_delta_cb, 1);
+        assert_eq!(picture.chroma_quant_param_delta_cr, -1);
+        assert_eq!(picture.weighting_quant_param_index, 1);
+        assert_eq!(picture.weighting_quant_model, 2);
+        assert_eq!(
+            picture.weighting_quant_param,
+            [135, 144, 142, 162, 158, 216]
+        );
+        assert!(picture.aec_enable);
+    }
+
+    #[test]
+    fn field_picture_header_keeps_field_structure_and_skip_mode() {
+        let mut bits = TestBits::new();
+        bits.put(0xffff, 16);
+        bits.put(P_PICTURE, 2);
+        bits.put(7, 8);
+        bits.ue(0); // bbv_check_times
+        bits.put(0, 1); // progressive_frame
+        bits.put(0, 1); // field picture
+        bits.put(0, 1); // advanced_pred_mode_disable
+        bits.put(1, 1); // top_field_first
+        bits.put(0, 1); // repeat_first_field
+        bits.put(1, 1); // fixed_picture_qp
+        bits.put(33, 6);
+        bits.put(1, 1); // picture_reference_flag
+        bits.put(1, 1); // no_forward_reference_flag
+        bits.put(0, 1); // pb_field_enhanced_flag
+        bits.put(0, 2); // reserved
+        bits.put(1, 1); // skip_mode_flag
+        bits.put(1, 1); // loop_filter_disable
+
+        let sequence = SequenceHeader {
+            profile_id: 0x20,
+            low_delay: true,
+            ..plus_sequence()
+        };
+        let picture = PictureHeader::parse_pb(&bits.bytes, &sequence).unwrap();
+        assert_eq!(picture.picture_structure, FIELD_PICTURE);
+        assert!(picture.top_field_first);
+        assert!(picture.skip_mode_flag);
+        assert!(!picture.no_forward_reference_flag);
     }
 }

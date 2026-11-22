@@ -336,6 +336,9 @@ impl Decoder {
     ) -> Result<Option<OutputSlot>, String> {
         let sequence = parsed.sequence;
         let mut picture = parsed.picture;
+        if picture.picture_structure != parser::FRAME_PICTURE {
+            return Err("AVS field-picture scheduling is not implemented".to_string());
+        }
         if picture.picture_coding_type == parser::P_PICTURE
             || (picture.picture_coding_type == parser::B_PICTURE
                 && picture.picture_structure == parser::FIELD_PICTURE)

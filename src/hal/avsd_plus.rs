@@ -578,4 +578,21 @@ mod tests {
         assert_eq!(regs[30], 0x0006_0006);
         assert_eq!(regs[31], 0x0006_0006);
     }
+
+    #[test]
+    fn field_picture_sets_interlace_and_reference_flags() {
+        let mut job = public_i_job();
+        job.picture.picture_coding_type = P_PICTURE;
+        job.picture.picture_structure = FIELD_PICTURE;
+        job.picture.top_field_first = true;
+        job.picture.skip_mode_flag = true;
+        job.picture.picture_reference_flag = true;
+        let regs = build_registers(&job);
+        assert_eq!(regs[3] & (1 << 19), 1 << 19, "pic_topfiled_e");
+        assert_eq!(regs[3] & (1 << 20), 1 << 20, "pic_inter_e");
+        assert_eq!(regs[3] & (1 << 22), 1 << 22, "pic_fieldmode_e");
+        assert_eq!(regs[3] & (1 << 23), 1 << 23, "pic_interlace_e");
+        assert_eq!(regs[3] & (1 << 26), 1 << 26, "skip_mode");
+        assert_eq!(regs[4] & 1, 1, "pic_refer_flag");
+    }
 }
