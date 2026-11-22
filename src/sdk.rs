@@ -1011,6 +1011,7 @@ impl Frame {
         yuv: Vec<u8>,
         err_info: u32,
         format: PixelFormat,
+        source_format: PixelFormat,
         pts: i64,
         dts: i64,
         poc: i32,
@@ -1027,12 +1028,18 @@ impl Frame {
         if yuv.len() < expected {
             return Err(Error::State("legacy planar frame is truncated"));
         }
-        let storage = if format == PixelFormat::Nv12 {
+        let storage = if format == source_format {
+            if yuv.len() == expected {
+                yuv
+            } else {
+                yuv[..expected].to_vec()
+            }
+        } else if format == PixelFormat::Nv12 {
             i420_to_nv12(&yuv[..expected], width, height)
-        } else if yuv.len() == expected {
-            yuv
         } else {
-            yuv[..expected].to_vec()
+            return Err(Error::Unsupported(format!(
+                "{codec} source {source_format:?} cannot become {format:?}"
+            )));
         };
         let mut frame = Self {
             width,
@@ -1378,6 +1385,7 @@ enum LegacyDecoder {
 struct LegacyPicture {
     width: usize,
     height: usize,
+    source_format: PixelFormat,
     yuv: Vec<u8>,
     err_info: u32,
 }
@@ -1387,6 +1395,7 @@ impl From<m2v::decoder::Picture> for LegacyPicture {
         Self {
             width: picture.width,
             height: picture.height,
+            source_format: PixelFormat::I420,
             yuv: picture.yuv,
             err_info: picture.err_info,
         }
@@ -1398,6 +1407,7 @@ impl From<mpg4::decoder::Picture> for LegacyPicture {
         Self {
             width: picture.width,
             height: picture.height,
+            source_format: PixelFormat::I420,
             yuv: picture.yuv,
             err_info: picture.err_info,
         }
@@ -1409,6 +1419,7 @@ impl From<h263::decoder::Picture> for LegacyPicture {
         Self {
             width: picture.width,
             height: picture.height,
+            source_format: PixelFormat::I420,
             yuv: picture.yuv,
             err_info: picture.err_info,
         }
@@ -1420,6 +1431,11 @@ impl From<avs::decoder::Picture> for LegacyPicture {
         Self {
             width: picture.width,
             height: picture.height,
+            source_format: if picture.nv12 {
+                PixelFormat::Nv12
+            } else {
+                PixelFormat::I420
+            },
             yuv: picture.yuv,
             err_info: picture.err_info,
         }
@@ -2211,6 +2227,9 @@ impl LegacyBackend {
             };
             decoder.set_incremental_vproc(true);
         }
+        if let LegacyDecoder::Avs(decoder) = &mut decoder {
+            decoder.set_output_nv12(config.output_format == PixelFormat::Nv12);
+        }
         Ok(Self {
             decoder,
             codec: config.codec,
@@ -2294,11 +2313,8 @@ impl LegacyBackend {
             picture.height,
             picture.yuv,
             picture.err_info,
-            if self.packet_decode {
-                PixelFormat::I420
-            } else {
-                self.format
-            },
+            self.format,
+            picture.source_format,
             self.stream_pts,
             self.stream_dts,
             self.frame_number as i32,
@@ -2814,6 +2830,44 @@ mod tests {
             super::i420_to_nv12(&planar, 4, 2),
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 10, 12]
         );
+    }
+
+    #[test]
+    fn legacy_frames_preserve_nv12_source_without_reinterleaving() {
+        let packed = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let frame = super::Frame::from_legacy(
+            "AVS+",
+            4,
+            2,
+            packed.to_vec(),
+            0,
+            super::PixelFormat::Nv12,
+            super::PixelFormat::Nv12,
+            0,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(frame.data(), packed);
+    }
+
+    #[test]
+    fn legacy_frames_convert_i420_source_to_nv12() {
+        let planar = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let frame = super::Frame::from_legacy(
+            "MPEG-2",
+            4,
+            2,
+            planar.to_vec(),
+            0,
+            super::PixelFormat::Nv12,
+            super::PixelFormat::I420,
+            0,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(frame.data(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 10, 12]);
     }
 
     #[test]

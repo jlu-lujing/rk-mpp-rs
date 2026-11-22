@@ -317,6 +317,10 @@
   byte-for-byte; the extra MPEG-2 case omits `-n` and exercises the EOS path.
   AVS uses coding type `16777221`; its two cycles are 9 frames
   (`6ef29ca6…e169`) and 7 frames (`35ac81e6…f3d1`).
+- Legacy SDK frames now carry their source layout. AVS vproc can therefore
+  remain NV12 from the IEP output through `mpi_dec_test` instead of taking a
+  needless NV12→I420→NV12 round trip; MPEG/H.263 still use the explicit
+  I420→NV12 conversion path when the caller asks for NV12.
 - JPEG restart interval 20 matches the CLI output at RK3576
   `0ccf41ea…82997` and RK3588 `25254033…df748a`.
 - Verified VP9 SHA-256 values are

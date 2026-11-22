@@ -21,6 +21,7 @@ pub struct Picture {
     pub height: usize,
     pub picture_coding_type: u32,
     pub picture_distance: u32,
+    pub nv12: bool,
     pub yuv: Vec<u8>,
     pub err_info: u32,
 }
@@ -388,6 +389,7 @@ impl Decoder {
                     height,
                     picture_coding_type,
                     picture_distance,
+                    nv12: output_nv12,
                     yuv,
                     err_info,
                 });
@@ -789,6 +791,7 @@ fn take_picture(slot: &FrameSlot, output_nv12: bool) -> Result<Picture, String> 
         height: surface.height,
         picture_coding_type: slot.picture_coding_type,
         picture_distance: slot.picture_distance,
+        nv12: output_nv12,
         yuv,
         err_info,
     })

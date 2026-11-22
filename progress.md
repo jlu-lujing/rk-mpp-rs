@@ -154,6 +154,10 @@
   `ebaa4d7e…d819bc`, MPEG-4 IPBB `e9db8cb8…384b14`, MPEG-2
   `2dc97045…af6371e`, H.263 CIF `4a2a9312…c2f45e`, and H.263 QCIF
   `4957b0cc…619ceb`.
+- Preserved legacy source layout through the public SDK frame builder. AVS
+  vproc now stays NV12 into the standalone `mpi_dec_test` path, avoiding the
+  former NV12→I420→NV12 conversion while MPEG/H.263 retain their explicit
+  I420→NV12 conversion.
 - Replaced the first packet implementation's whole-prefix replay with
   incremental consumption. On concatenated 100/96-frame streams with DMC
   performance and CPU 4–7, the current path is 0.14–0.15 s for MPEG-2 versus

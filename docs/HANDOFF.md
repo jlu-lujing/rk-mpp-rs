@@ -229,6 +229,8 @@ advanced MJPEG 不再报告 frame identity mismatch。vendor log/cfg/OSAL
 RK3588 的 standalone 解码门现已扩到 15/15：除 H.264/H.265/VP9/AV1/MJPEG
 外，还覆盖 VP8 IP/altref、MPEG-2、MPEG-4 IP/IPBB、H.263 CIF/QCIF 和两个
 AVS+ vproc 完整周期。
+legacy frame 现在携带源布局；AVS vproc 以 NV12 直接进入官方工具，避免
+NV12→I420→NV12 往返，MPEG/H.263 仍按需做 I420→NV12。
 官方工具按 4 KiB packet 喂 elementary stream，MPP object 兼容路径用持久
 parser state 增量消费完整 picture/VOP；MPEG-4 保留 VOL/timing，H.263 保留
 I-picture gate，普通 SDK 仍保持 whole-stream/EOS 语义。每个 case 都校验精确
