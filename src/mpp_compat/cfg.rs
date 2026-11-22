@@ -109,6 +109,7 @@ pub(super) unsafe fn encoder_config(
     let qbias_en = unsafe { cfg.get("hw:qbias_en") };
     let qbias_i = unsafe { cfg.get("hw:qbias_i") };
     let qbias_p = unsafe { cfg.get("hw:qbias_p") };
+    let h265_vmaf_opt = unsafe { cfg.get_or("tune:vmaf_opt", 0) } != 0;
     let profile_key = if codec == Codec::H265 {
         "h265:profile"
     } else {
@@ -147,7 +148,8 @@ pub(super) unsafe fn encoder_config(
         .with_fps(fps_num, fps_den)
         .with_profile(profile)
         .with_level(level)
-        .with_scene_mode(scene_mode);
+        .with_scene_mode(scene_mode)
+        .with_h265_vmaf_opt(h265_vmaf_opt);
     if qbias_en.is_some() || qbias_i.is_some() || qbias_p.is_some() {
         if qbias_en.is_some_and(|value| value < 0) {
             return Err(format!(

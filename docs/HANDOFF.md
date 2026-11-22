@@ -438,6 +438,14 @@ BOARD=my-rk3588-host ./scripts/board_h264_qbias_vs_mpp.sh
 BOARD=my-rk3588-host ./scripts/board_h265_qbias_vs_mpp.sh
 ```
 
+`tune:vmaf_opt` 只覆盖 pre-intra/ATF row 3 和 RDO segment/smear，不能直接
+当成完整 row 3：RDO 2167/2169 仍保持默认。2 帧 C/R trace 的 WGT/RDO 已逐字
+一致，复跑：
+
+```bash
+BOARD=my-rk3588-host ./scripts/board_h265_vmaf_opt_vs_mpp.sh
+```
+
 同一路径的当前吞吐已在 RK3588 80% OPP、DDR `performance` @2.112 GHz、
 CPU6 固定下交错采样。300 帧多 GOP fixed-QP26 的五次中位数为：320x240
 C/Rust wall 164/164 ms、user+sys 69/67 ms；1280x720 wall 868/802 ms、

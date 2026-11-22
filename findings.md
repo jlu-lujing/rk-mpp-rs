@@ -497,6 +497,10 @@
   `RDO_QUANT.quant_f_bias_I/P`; H.265 packs both values into WGT word 1484.
   The vendor fallback differs by codec (683/341 vs 171/85), and disabling the
   override must preserve the active scene row instead of forcing either pair.
+- `tune:vmaf_opt` is not equivalent to selecting the full scene row 3. It
+  changes four WGT pre-intra words and 16 RDO words, while leaving row3's
+  2167/2169 thresholds untouched. Treating it as a full row patch would change
+  unrelated tuning state.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

@@ -111,6 +111,11 @@ the override leaves the scene-row defaults intact. Both codecs have board
 gates in `scripts/board_h264_qbias_vs_mpp.sh` and
 `scripts/board_h265_qbias_vs_mpp.sh`.
 
+`tune:vmaf_opt` is H.265-specific on VEPU580. It forces pre-intra/ATF row 3
+and disables RDO segment/smear without changing the rest of the active scene
+row. The exact 20-word overlay is checked by
+`scripts/board_h265_vmaf_opt_vs_mpp.sh`.
+
 The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no
 `/dev/vcodec` and no `/proc/kmpp` ctrl-cfg capability. Full KMPP-object
 compatibility is therefore not claimed.

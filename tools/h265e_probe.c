@@ -397,6 +397,9 @@ int main(int argc, char **argv)
     if (getenv("QBIAS_P"))
         CHECK(mpp_enc_cfg_set_s32(cfg, "hw:qbias_p",
                                   atoi(getenv("QBIAS_P"))));
+    if (getenv("VMAF_OPT"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "tune:vmaf_opt",
+                                  atoi(getenv("VMAF_OPT"))));
     CHECK(mpp_enc_cfg_set_s32(
         cfg, "rc:mode",
         mode == 0 ? MPP_ENC_RC_MODE_FIXQP

@@ -4629,3 +4629,6 @@ pipeline uses.
   `hw:qbias_en/i/p` maps into typed config with codec-specific fallbacks.
   H.264 is exact over a 60-frame stream; H.265 WGT/RDO is exact for enabled
   and disabled overrides, including word1484 `0x190c8` / `0x15480`.
+- **2026-11-22: H.265 VMAF tune reaches the hardware.** `tune:vmaf_opt` now
+  applies the exact pre-intra/ATF row-3 and segment/smear overlay without
+  changing unrelated row-3 thresholds. Two C/R trace jobs are WGT/RDO exact.

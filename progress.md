@@ -32,6 +32,16 @@
 - The final host gate is `1388 passed / 0 failed / 47 ignored`; the unchanged
   official H.264/H.265/MJPEG encoder gate remains green.
 
+### Phase 23: H.265 VMAF Tune
+- **Status:** complete on RK3588 VEPU580 object path.
+- Added `tune:vmaf_opt` to the typed encoder config and H.265 session.
+- The overlay only forces pre-intra/ATF row 3 and disables RDO segment/smear.
+  It deliberately leaves row3 words 2167/2169 at their default values.
+- Two C/R trace jobs have exact WGT/RDO sections; the new board gate is
+  `board_h265_vmaf_opt_vs_mpp.sh`.
+- The final host gate is `1389 passed / 0 failed / 47 ignored`; the official
+  H.264/H.265/MJPEG encoder gate remains green.
+
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.
 - The H.265 object path was reusing H.264's 192/128/64 mean-MADP gate. Vendor

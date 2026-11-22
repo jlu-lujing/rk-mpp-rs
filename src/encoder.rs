@@ -679,6 +679,7 @@ pub struct EncoderConfig {
     h265_syntax: H265SyntaxOptions,
     h265_full_range: Option<bool>,
     h265_force_cu_qp_delta: Option<bool>,
+    h265_vmaf_opt: bool,
     scene_mode: u8,
     qbias: Option<QbiasConfig>,
     roi: Option<RoiConfig>,
@@ -724,6 +725,7 @@ impl EncoderConfig {
             h265_syntax: H265_SYNTAX_DEFAULT,
             h265_full_range: None,
             h265_force_cu_qp_delta: None,
+            h265_vmaf_opt: false,
             scene_mode: 0,
             qbias: None,
             roi: None,
@@ -822,6 +824,10 @@ impl EncoderConfig {
 
     pub const fn scene_mode(self) -> u8 {
         self.scene_mode
+    }
+
+    pub const fn h265_vmaf_opt(self) -> bool {
+        self.h265_vmaf_opt
     }
 
     pub const fn qbias(self) -> Option<QbiasConfig> {
@@ -926,6 +932,11 @@ impl EncoderConfig {
 
     pub const fn with_h265_force_cu_qp_delta(mut self, enabled: bool) -> Self {
         self.h265_force_cu_qp_delta = Some(enabled);
+        self
+    }
+
+    pub const fn with_h265_vmaf_opt(mut self, enabled: bool) -> Self {
+        self.h265_vmaf_opt = enabled;
         self
     }
 
@@ -2928,6 +2939,7 @@ fn open_h265_vepu580(
             .qbias()
             .map(|qbias| (qbias.enabled(), qbias.i(), qbias.p())),
     );
+    encoder.set_vmaf_opt(config.h265_vmaf_opt());
     encoder.set_video_signal(
         config.h265_full_range.map(|_| 5),
         config.h265_full_range.unwrap_or(false),
@@ -3539,6 +3551,7 @@ mod tests {
             .with_h264_rc_tuning(h264_tuning)
             .with_scene_mode(1)
             .with_qbias(QbiasConfig::new(true, 700, 300))
+            .with_h265_vmaf_opt(true)
             .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
         assert_eq!(config.input_format(), PixelFormat::I420);
@@ -3557,6 +3570,7 @@ mod tests {
         assert_eq!(config.h264_syntax(), Some(syntax));
         assert_eq!(config.scene_mode(), 1);
         assert_eq!(config.qbias(), Some(QbiasConfig::new(true, 700, 300)));
+        assert!(config.h265_vmaf_opt());
         assert_eq!(config.rate_control(), Some(rate_control));
         assert!(rate_control.hier_qp_enabled());
         assert_eq!(rate_control.hier_qp_delta(), [1, 2, 3, 4]);

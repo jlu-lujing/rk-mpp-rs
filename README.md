@@ -97,6 +97,8 @@
   一致，整文件差异仅为 version-SEI 文本。
   `hw:qbias_en/i/p` 也已接通：H.264 60 帧整码流一致；H.265 的启用/关闭
   两条路径在 2 帧 trace 中 WGT/RDO 逐字一致。
+  H.265 `tune:vmaf_opt` 同样已接通：只覆盖 pre-intra/ATF row 3 和
+  segment/smear，不影响 row3 的其余 WGT/RDO 字段。
   H.264 默认保持同步（depth 1 无有效收益）；显式设置
   `RKMPP_ENCODER_PIPELINE=1 RKMPP_ENCODER_PIPELINE_DEPTH=2` 可到
   **0.331 s / 906 FPS**，C 为 0.362 s / 829 FPS。depth 2 的 scene-tune

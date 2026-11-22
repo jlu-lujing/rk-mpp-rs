@@ -407,6 +407,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Share the object-path performance gate across H.264/H.265 and keep both
   wall and CPU within the 5% limit.
 - [x] Map `hw:qbias_en/i/p` into H.264/H.265 and verify enabled/disabled paths.
+- [x] Map H.265 `tune:vmaf_opt` and verify the 20-word register overlay.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

@@ -195,6 +195,8 @@ pub struct IdrJob {
     pub scene_motion_flag: usize,
     /// `hw:qbias_en/i/p`; `None` preserves the reference defaults.
     pub qbias: Option<(bool, u32, u32)>,
+    /// `tune:vmaf_opt`: force pre-intra/ATF row 3 and disable segment/smear.
+    pub vmaf_opt: bool,
     /// Rate control for this picture, `None` for fixed QP.
     pub rc: Option<RateControl>,
     /// Intra-refresh (GDR) picture: the base-table fd, its sweep, and the index.
@@ -241,6 +243,7 @@ impl IdrJob {
             force_cu_qp_delta: false,
             scene_motion_flag: 2,
             qbias: None,
+            vmaf_opt: false,
             rc: None,
             refresh: None,
             split: SliceSplit::default(),
@@ -896,6 +899,19 @@ pub fn build_registers(job: &IdrJob) -> Result<RegisterFile, String> {
         file.set(&regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I, 171)?;
     }
     apply_scene_motion_row(&mut file, job.scene_motion_flag);
+    if job.vmaf_opt {
+        for word in 1479..=1482 {
+            file.wgt[word - 1472] = 0x1010_1010;
+        }
+        file.rdo[2048 - 2048] = 0;
+        file.rdo[2065 - 2048] = 0x1010_1010;
+        file.rdo[2095 - 2048] = 0x1010_1010;
+        for word in [
+            2066, 2067, 2075, 2076, 2077, 2096, 2097, 2105, 2106, 2107, 2135, 2136, 2137,
+        ] {
+            file.rdo[word - 2048] = 0x0010_1010;
+        }
+    }
     if let Some((true, qbias_i, qbias_p)) = job.qbias {
         file.set(
             &regs::WGT_REG1484_QNT_BIAS_COMB_QNT_BIAS_I,
@@ -1620,6 +1636,26 @@ mod tests {
                 .unwrap(),
             85
         );
+    }
+
+    #[test]
+    fn h265_vmaf_opt_only_overrides_pre_intra_and_segment_smear() {
+        let mut job = IdrJob::reference(26);
+        job.vmaf_opt = true;
+        let file = build_registers(&job).unwrap();
+        for word in 1479..=1482 {
+            assert_eq!(file.wgt[word - 1472], 0x1010_1010, "sw{word}");
+        }
+        assert_eq!(file.rdo[2048 - 2048], 0);
+        assert_eq!(file.rdo[2065 - 2048], 0x1010_1010);
+        assert_eq!(file.rdo[2095 - 2048], 0x1010_1010);
+        for word in [
+            2066, 2067, 2075, 2076, 2077, 2096, 2097, 2105, 2106, 2107, 2135, 2136, 2137,
+        ] {
+            assert_eq!(file.rdo[word - 2048], 0x0010_1010, "sw{word}");
+        }
+        assert_eq!(file.rdo[2167 - 2048], 0x001e_001f);
+        assert_eq!(file.rdo[2169 - 2048], 0x001e_001f);
     }
 
     /// The generated section table and this struct's arrays state the same hardware
