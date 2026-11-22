@@ -397,7 +397,8 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Match the new upstream H.265 fixed-QP stream and register trace.
 - [x] Match new upstream H.264/H.265 60-frame single-GOP streams.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
-- [ ] Finish the remaining KMPP buffer object paths.
+- [x] Implement the userspace KMPP buffer object.
+- [ ] Finish kernel KMPP buffer-group/ioctl compatibility.
 - [x] Correct NULL-frame EOS and empty-packet `MPP_NOK` semantics needed by the
   FFmpeg encoder loop.
 - [x] Reject the high-level cross-thread compatibility worker; it lost delayed

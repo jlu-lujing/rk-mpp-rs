@@ -4596,5 +4596,6 @@ pipeline uses.
   `user_data_enable` bridge through MppMeta; two-frame user-data output is
   H.264 10 NAL and H.265 11 NAL, both exact. The tool rejects KMPP mode 1/2 on
   this kernel because
-  `/dev/vcodec` and `/proc/kmpp` ctrl-cfg support are absent. Buffer and
-  KMPP buffer object paths remain incomplete.
+  `/dev/vcodec` and `/proc/kmpp` ctrl-cfg support are absent. The userspace
+  `KmppBuffer` allocation/setup/pointer/export/release path is implemented;
+  kernel buffer-group ioctl compatibility remains platform-limited.

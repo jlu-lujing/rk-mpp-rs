@@ -305,6 +305,9 @@
   A 60-frame GOP is also exact: H.264 62 NAL (`6a8cb407…3e3544`) and H.265
   63 NAL (`7eed6267…138b42`). OSD, ROI and `user_data_enable` use the existing
   MppMeta path; two-frame user-data output is H.264 10 NAL and H.265 11 NAL.
+  The userspace KMPP buffer object now allocates, sets up, exports a
+  `KmppShmPtr`, and releases its memory. Kernel buffer-group ioctl remains
+  unavailable on the current platform.
   The RK3588 kernel exposes neither
   `/dev/vcodec` nor `/proc/kmpp` ctrl-cfg support, so the tool rejects KMPP
   modes 1/2 before encoding.

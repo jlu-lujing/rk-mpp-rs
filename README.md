@@ -478,7 +478,8 @@ AQ/ROI/MD/QP-bias 默认值后，整条 4 NAL 输出也完全一致
 哈希相同。OSD、ROI 与 `user_data_enable` 也已通过；2 帧 user-data 输出为
 H.264 10 NAL、H.265 11 NAL，全部一致。KMPP mode 1/2 由工具自身因内核没有
 `/dev/vcodec` 或 `/proc/kmpp` 的 `ctrl_cfg` 能力拒绝；buffer/meta 对象路径
-中的 KMPP buffer 对象仍未完整实现。
+中的 userspace buffer 已实现分配、setup、`KmppShmPtr` 导出和释放；kernel
+buffer group/ioctl 路径仍受平台限制。
 同一套 scalar/array `get/set/extract/apply` 也工作在
 `MPP_VENC_KCFG_TYPE_ST_CFG` 句柄上，且 `mpp_enc_cfg_deinit()` 会按 vendor
 路径释放该句柄。

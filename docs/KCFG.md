@@ -84,8 +84,9 @@ NALs (`119bbf79…caa76d5`). Its register trace differs only in dma-buf address
 words. A 60-frame GOP is also exact: H.264 is 62 NAL (`6a8cb407…3e3544`) and
 H.265 is 63 NAL (`7eed6267…138b42`). OSD, ROI and user-data metadata bridge
 through the existing MppMeta store; two-frame user data is H.264 10 NAL and
-H.265 11 NAL, both exact. The KMPP buffer object remains a link-compatible
-placeholder, not a full implementation.
+H.265 11 NAL, both exact. The userspace KMPP buffer object now supports
+allocation, setup, `KmppShmPtr` export and release; kernel buffer-group ioctl
+compatibility remains platform-limited.
 
 The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no
 `/dev/vcodec` and no `/proc/kmpp` ctrl-cfg capability. Full KMPP-object

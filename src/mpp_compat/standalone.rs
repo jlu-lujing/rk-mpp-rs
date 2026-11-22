@@ -1033,37 +1033,104 @@ pub unsafe extern "C" fn kmpp_buffer_get(buffer: *mut *mut c_void) -> i32 {
     if buffer.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    unsafe { buffer.write(ptr::null_mut()) };
-    MPP_NOK
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn kmpp_buffer_put(_buffer: *mut c_void) -> i32 {
+    let buffer_stub = Box::new(KmppBufferStub {
+        magic: KMPP_BUFFER_MAGIC,
+        cfg: Box::new(KmppBufCfgStub {
+            magic: KMPP_BUFFER_MAGIC,
+            size: 0,
+            sptr: [0; 2],
+        }),
+        data: None,
+    });
+    let cfg = (&*buffer_stub.cfg as *const KmppBufCfgStub).cast_mut() as usize;
+    let pointer = Box::into_raw(buffer_stub);
+    kmpp_buffers().lock().unwrap().push(pointer as usize);
+    kmpp_buffer_cfgs().lock().unwrap().push(cfg);
+    unsafe { buffer.write(pointer as *mut c_void) };
     MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_buffer_setup(_buffer: *mut c_void) -> i32 {
-    MPP_NOK
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn kmpp_buffer_to_cfg(_buffer: *mut c_void) -> *mut c_void {
-    ptr::null_mut()
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn kmpp_buf_cfg_set_size(_config: *mut c_void, _size: u32) -> i32 {
+pub unsafe extern "C" fn kmpp_buffer_put(buffer: *mut c_void) -> i32 {
+    let Some(pointer) = kmpp_buffers()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|pointer| *pointer == buffer as usize)
+    else {
+        return MPP_NOK;
+    };
+    let pointer = pointer as *mut KmppBufferStub;
+    let buffer = unsafe { &mut *pointer };
+    if buffer.magic != KMPP_BUFFER_MAGIC {
+        return MPP_NOK;
+    }
+    let cfg = (&*buffer.cfg as *const KmppBufCfgStub) as usize;
+    buffer.magic = 0;
+    buffer.cfg.magic = 0;
+    kmpp_buffers()
+        .lock()
+        .unwrap()
+        .retain(|item| *item != pointer as usize);
+    kmpp_buffer_cfgs()
+        .lock()
+        .unwrap()
+        .retain(|item| *item != cfg);
+    drop(unsafe { Box::from_raw(pointer) });
     MPP_OK
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_buf_cfg_get_sptr(_config: *mut c_void, pointer: *mut c_void) -> i32 {
+pub unsafe extern "C" fn kmpp_buffer_setup(buffer: *mut c_void) -> i32 {
+    let Some(buffer) = kmpp_buffer_mut(buffer) else {
+        return MPP_NOK;
+    };
+    if buffer.cfg.size == 0 {
+        return MPP_ERR_VALUE;
+    }
+    if buffer
+        .data
+        .as_ref()
+        .is_none_or(|data| data.len() != buffer.cfg.size as usize)
+    {
+        buffer.data = Some(vec![0; buffer.cfg.size as usize].into_boxed_slice());
+    }
+    let pointer = buffer
+        .data
+        .as_mut()
+        .map_or(ptr::null_mut(), |data| data.as_mut_ptr())
+        .cast::<c_void>();
+    buffer.cfg.sptr = [pointer as usize as u64, 0];
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buffer_to_cfg(buffer: *mut c_void) -> *mut c_void {
+    kmpp_buffer_mut(buffer).map_or(ptr::null_mut(), |buffer| {
+        (&*buffer.cfg as *const KmppBufCfgStub).cast_mut().cast()
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buf_cfg_set_size(config: *mut c_void, size: u32) -> i32 {
+    let Some(config) = kmpp_buf_cfg_mut(config) else {
+        return MPP_NOK;
+    };
+    config.size = size;
+    MPP_OK
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kmpp_buf_cfg_get_sptr(config: *mut c_void, pointer: *mut c_void) -> i32 {
     if pointer.is_null() {
         return MPP_ERR_NULL_PTR;
     }
-    unsafe { pointer.cast::<[u64; 2]>().write([0; 2]) };
-    MPP_NOK
+    let Some(config) = kmpp_buf_cfg_mut(config) else {
+        return MPP_NOK;
+    };
+    unsafe { pointer.cast::<[u64; 2]>().write(config.sptr) };
+    MPP_OK
 }
 
 fn new_cfg_object() -> *mut c_void {
@@ -1748,6 +1815,8 @@ static ENV_STRINGS: OnceLock<Mutex<Vec<CString>>> = OnceLock::new();
 static SOC_NAME: OnceLock<CString> = OnceLock::new();
 static OBJ_DEFS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 static OBJECTS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
+static KMPP_BUFFERS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
+static KMPP_BUFFER_CFGS: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 static TRIES: OnceLock<Mutex<Vec<usize>>> = OnceLock::new();
 static KMPP_ARGS_SEEN: AtomicU32 = AtomicU32::new(0);
 
@@ -1762,6 +1831,20 @@ struct ObjStub {
     def: usize,
     entry: Vec<u8>,
     flags: Vec<u8>,
+}
+
+const KMPP_BUFFER_MAGIC: u64 = 0x524b_4d50_5042_5546;
+
+struct KmppBufCfgStub {
+    magic: u64,
+    size: u32,
+    sptr: [u64; 2],
+}
+
+struct KmppBufferStub {
+    magic: u64,
+    cfg: Box<KmppBufCfgStub>,
+    data: Option<Box<[u8]>>,
 }
 
 struct TrieStub {
@@ -1786,6 +1869,14 @@ fn obj_defs() -> &'static Mutex<Vec<usize>> {
 
 fn objects() -> &'static Mutex<Vec<usize>> {
     OBJECTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn kmpp_buffers() -> &'static Mutex<Vec<usize>> {
+    KMPP_BUFFERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn kmpp_buffer_cfgs() -> &'static Mutex<Vec<usize>> {
+    KMPP_BUFFER_CFGS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 fn tries() -> &'static Mutex<Vec<usize>> {
@@ -1845,6 +1936,32 @@ fn obj_mut(object: *mut c_void) -> Option<&'static mut ObjStub> {
         .copied()
         .find(|pointer| *pointer == object as usize)
         .map(|pointer| unsafe { &mut *(pointer as *mut ObjStub) })
+}
+
+fn kmpp_buffer_mut(buffer: *mut c_void) -> Option<&'static mut KmppBufferStub> {
+    if buffer.is_null() {
+        return None;
+    }
+    kmpp_buffers()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|pointer| *pointer == buffer as usize)
+        .map(|pointer| unsafe { &mut *(pointer as *mut KmppBufferStub) })
+}
+
+fn kmpp_buf_cfg_mut(config: *mut c_void) -> Option<&'static mut KmppBufCfgStub> {
+    if config.is_null() {
+        return None;
+    }
+    kmpp_buffer_cfgs()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .find(|pointer| *pointer == config as usize)
+        .map(|pointer| unsafe { &mut *(pointer as *mut KmppBufCfgStub) })
 }
 
 fn parse_u32(value: &str) -> Option<u32> {
@@ -4457,6 +4574,29 @@ mod tests {
         );
         assert_eq!(value, 7);
         assert_eq!(unsafe { super::super::objects::mpp_meta_put(meta) }, MPP_OK);
+    }
+
+    #[test]
+    fn kmpp_buffer_allocates_setup_and_exports_memory() {
+        let mut buffer = std::ptr::null_mut();
+        assert_eq!(unsafe { kmpp_buffer_get(&mut buffer) }, MPP_OK);
+        assert!(!buffer.is_null());
+        let config = unsafe { kmpp_buffer_to_cfg(buffer) };
+        assert!(!config.is_null());
+        assert_eq!(unsafe { kmpp_buf_cfg_set_size(config, 32) }, MPP_OK);
+        assert_eq!(unsafe { kmpp_buffer_setup(buffer) }, MPP_OK);
+        let mut pointer = [0u64; 2];
+        assert_eq!(
+            unsafe { kmpp_buf_cfg_get_sptr(config, pointer.as_mut_ptr().cast()) },
+            MPP_OK
+        );
+        assert_ne!(pointer[0], 0);
+        unsafe {
+            let data = pointer[0] as *mut u8;
+            data.write(0x5a);
+            assert_eq!(data.read(), 0x5a);
+        }
+        assert_eq!(unsafe { kmpp_buffer_put(buffer) }, MPP_OK);
     }
 
     #[test]
