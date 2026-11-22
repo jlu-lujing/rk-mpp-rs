@@ -401,8 +401,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 
 ## 10. W6 解码器边缘与 conformance（L，约 10–15 天）
 
-- [ ] W6-1 AVS+ 解码（client 12；需要 conformance 流，见 W10）
-- [ ] W6-2 AVS2：本板 rkvdec 声明支持，但无流；有流再做
+- [ ] W6-1 AVS+ 解码（client 12；公开流和 vendor-C oracle 已建立，Rust
+      parser/HAL 进行中）
+- [ ] W6-2 AVS2：RK3588 未暴露设备；有硬件和流再做
 - [ ] W6-3 损坏/截断/随机 bit-flip 流：与 C 的"输出帧数 + 错误码"一致（逐字节要求
       降级为可解释的差异）
 - [ ] W6-4 VP9 全矩阵：profile 0/1/2/3、10-bit、分辨率/分块边界
@@ -533,7 +534,9 @@ CBR、VBR（逐 NAL）；JPEG 编码 baseline；自研 RGB 缩放。
 - [x] W10-1 流语料清单与来源：[`tests/data/SOURCES.md`](../tests/data/SOURCES.md)
       按 x264/x265/libvpx/libaom/FFmpeg 生成流、C MPP captures 和本项目
       pixel gates 分类；没有把第三方大 conformance corpus 收入仓库。
-- [ ] W10-2 AVS+/AVS2 conformance 流获取（或明确"无法获得"）
+- [x] W10-2 AVS+ 公开 fixture 与 oracle：
+      `scripts/board_avs_plus_oracle.sh` 固定输入/输出 SHA；AVS2 在当前
+      RK3588 无设备
 - [x] W10-3 hash 清单：`scripts/update_fixture_hashes.sh` 生成
       `tests/data/SHA256SUMS`，`tests/fixture_manifest.rs` 同时检查文件集合和
       每个文件的 SHA-256。158 个 fixture，总计约 2.7 MiB。

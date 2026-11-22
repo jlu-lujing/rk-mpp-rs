@@ -1470,13 +1470,17 @@ colmv。下一步转到跨 SoC 验收和其余解码边界，不再重复队列�
   功能/边界矩阵现在为 **15/15**。
 - RK3588 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：处理 AV1/AVS2、VPU720 tile input 与 VDPP2。
+- 下一步：实现 AVS+ Rust parser/HAL（vendor oracle 已固定），以及 VPU720
+  tile input 与 VDPP2 剩余组合。RK3588 实际有 AVS+ client 12；公开
+  352×288 流已解出 152064-byte NV12，SHA `9b9a6dc9…39088b`。AVS2 在当前
+  RK3588 无设备。
   RK3576 未被硬件暴露的
   VP8/MPEG-2/MPEG-4/H.263 要由能力矩阵明确拒绝。
 
 ### 5.7 解码器边缘
 
-- AVS+/AVS2（client 12 可绑定，但无 conformance 流；AVS2 该板无）
+- AVS+（client 12 可绑定，公开流 oracle 已建立，Rust 实现待做）；
+  AVS2（当前 RK3588 无设备）
 - 损坏/截断码流的一致性（目前只测了"返回非零退出码"）
 - VP8 profile 1/3、AV1 更宽 conformance、VP9 边界矩阵
 - H.264/SCC 高 profile? 4:2:2/4:4:4 被 RK3588 rkvdec 拒收，属硬件限制（记录在 ROADMAP）

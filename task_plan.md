@@ -411,6 +411,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Expose scene/qbias/vmaf through native `h265-gop` and add a trace gate.
 - [x] Add selectable benchmark sizes and verify 1000-frame 320x240 steady state.
 - [x] Close the completed AV1 software tile entropy item and correct counts.
+- [x] Establish a reproducible AVS+ vendor-C oracle on RK3588.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

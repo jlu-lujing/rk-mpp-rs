@@ -37,7 +37,8 @@ Dispositions:
 | VP9 profile edge matrix | **NO-ORACLE** | The remaining VP9 profile edges have no differential fixture in the corpus. |
 | VP9 profile 1/3 hardware | **NO-ORACLE** | A vpxenc 1.9 profile-1 I422 stream is accepted by ffmpeg, but RK3588's C MPP reports `Invalid frame marker`, emits 0 frames and loops until timeout. The installed vpxenc build cannot emit profile 3. Rust still rejects profile 1/3 explicitly instead of inventing an unverified layout. |
 | H.263 field-coded PAFF | **NO-ORACLE** | No stream in the corpus. |
-| AVS+ / AVS2 | **NO-ORACLE** | No conformance stream and no hardware on RK3588. |
+| AVS+ | **PENDING RUST PATH** | RK3588 client 12 is present and binds. The public 352x288 `stream01.avs` fixture produces a stable 152064-byte NV12 frame through vendor C; Rust parser/HAL support remains to be implemented. |
+| AVS2 | **NO HARDWARE** | RK3588 does not expose an AVS2 device. Do not infer AVS2 support from the AVS+ client. |
 
 ## Encoders
 

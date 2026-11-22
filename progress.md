@@ -66,6 +66,14 @@
 - Corrected top-level counts to 128 completed / 4 open and nested counts to
   168 / 7.
 
+### Phase 27: AVS+ Vendor Oracle
+- **Status:** oracle established; Rust parser/HAL still open.
+- Confirmed RK3588 `/proc/mpp_service/supports-device` exposes AVS+ client 12.
+- Public 352x288 Chinese AVS stream decodes through vendor C coding type
+  `16777221` to exactly 152064-byte NV12, SHA
+  `9b9a6dc9f934a5a5617dbbd68e13dda7675fe985f578e40ce209fbed5397088b`.
+- Added `scripts/board_avs_plus_oracle.sh`. AVS2 is not present on this SoC.
+
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.
 - The H.265 object path was reusing H.264's 192/128/64 mean-MADP gate. Vendor
