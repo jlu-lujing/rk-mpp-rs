@@ -648,6 +648,38 @@ pub(super) unsafe fn frame_input_view(frame: MppFrame) -> Option<FrameInputView>
     })
 }
 
+pub(super) unsafe fn frame_user_data(frame: MppFrame) -> Vec<(Option<[u8; 16]>, Vec<u8>)> {
+    let Some(frame) = (unsafe { frame_ref(frame) }) else {
+        return Vec::new();
+    };
+    let Some(meta) = (unsafe { meta_ref(frame.meta) }) else {
+        return Vec::new();
+    };
+    let mut output = Vec::new();
+    if let Some(data) = meta.user_data.as_ref() {
+        output.push((None, data.data.to_vec()));
+    }
+    if let Some(set) = meta.user_data_set.as_ref() {
+        for entry in &set.entries {
+            let uuid = (!entry.uuid.is_null()).then(|| unsafe {
+                let mut value = [0u8; 16];
+                value.copy_from_slice(std::slice::from_raw_parts(entry.uuid, 16));
+                value
+            });
+            let payload = if entry.pdata.is_null() || entry.len == 0 {
+                Vec::new()
+            } else {
+                unsafe { std::slice::from_raw_parts(entry.pdata.cast::<u8>(), entry.len as usize) }
+                    .to_vec()
+            };
+            if !payload.is_empty() {
+                output.push((uuid, payload));
+            }
+        }
+    }
+    output
+}
+
 pub(super) unsafe fn ensure_frame_input_mapped(frame: MppFrame) -> bool {
     let Some(frame) = (unsafe { frame_mut(frame) }) else {
         return false;

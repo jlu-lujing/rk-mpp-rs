@@ -1019,17 +1019,13 @@ pub extern "C" fn kmpp_cap_version(_id: u32) -> u32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_meta_set_s32(_meta: *mut c_void, _key: i32, _value: i32) -> i32 {
-    MPP_OK
+pub unsafe extern "C" fn kmpp_meta_set_s32(meta: *mut c_void, key: i32, value: i32) -> i32 {
+    unsafe { super::objects::mpp_meta_set_s32(meta, key, value) }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn kmpp_meta_set_ptr(
-    _meta: *mut c_void,
-    _key: i32,
-    _value: *mut c_void,
-) -> i32 {
-    MPP_OK
+pub unsafe extern "C" fn kmpp_meta_set_ptr(meta: *mut c_void, key: i32, value: *mut c_void) -> i32 {
+    unsafe { super::objects::mpp_meta_set_ptr(meta, key, value) }
 }
 
 #[no_mangle]
@@ -4437,6 +4433,30 @@ mod tests {
         assert_eq!(value, 0x1234_5678);
         assert_eq!(unsafe { kmpp_obj_to_objdef(object) }, def);
         assert_eq!(unsafe { kmpp_obj_put(object, c"test".as_ptr()) }, MPP_OK);
+    }
+
+    #[test]
+    fn kmpp_meta_setters_bridge_to_the_frame_meta_store() {
+        let mut meta = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                super::super::objects::mpp_meta_get_with_tag(
+                    &mut meta,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            MPP_OK
+        );
+        let key = i32::from_be_bytes(*b"iblk");
+        assert_eq!(unsafe { kmpp_meta_set_s32(meta, key, 7) }, MPP_OK);
+        let mut value = 0;
+        assert_eq!(
+            unsafe { super::super::objects::mpp_meta_get_s32(meta, key, &mut value) },
+            MPP_OK
+        );
+        assert_eq!(value, 7);
+        assert_eq!(unsafe { super::super::objects::mpp_meta_put(meta) }, MPP_OK);
     }
 
     #[test]

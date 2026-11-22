@@ -4592,7 +4592,9 @@ pipeline uses.
   new full-range, CU-QP-delta, AQ/ROI/MD and QP-bias defaults
   (`119bbf79…caa76d5`, 4 NAL); its register trace differs only in DMA-buffer
   address words. A 60-frame GOP also matches exactly: H.264 62 NAL
-  (`6a8cb407…3e3544`) and H.265 63 NAL (`7eed6267…138b42`). The tool rejects
-  KMPP mode 1/2 on this kernel because
+  (`6a8cb407…3e3544`) and H.265 63 NAL (`7eed6267…138b42`). OSD, ROI and
+  `user_data_enable` bridge through MppMeta; two-frame user-data output is
+  H.264 10 NAL and H.265 11 NAL, both exact. The tool rejects KMPP mode 1/2 on
+  this kernel because
   `/dev/vcodec` and `/proc/kmpp` ctrl-cfg support are absent. Buffer and
-  metadata object paths remain incomplete.
+  KMPP buffer object paths remain incomplete.

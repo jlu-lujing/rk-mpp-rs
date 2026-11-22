@@ -1011,6 +1011,66 @@ pub struct InputFrame<'a> {
     pub pts: i64,
     pub dts: i64,
     pub(crate) osd: Option<osd::Config>,
+    pub(crate) user_data: Vec<CustomUserData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CustomUserData {
+    pub uuid: [u8; 16],
+    pub payload: Vec<u8>,
+}
+
+pub(crate) const DEFAULT_USER_DATA_UUID: [u8; 16] = [
+    0xfe, 0x39, 0xac, 0x4c, 0x4a, 0x8e, 0x4b, 0x4b, 0x85, 0xd9, 0xb2, 0xa2, 0x4f, 0xa1, 0x19, 0x5b,
+];
+
+fn insert_user_data_seis(codec: Codec, packets: &mut [Vec<u8>], user_data: &[CustomUserData]) {
+    let Some(packet) = packets.first_mut() else {
+        return;
+    };
+    if user_data.is_empty() {
+        return;
+    }
+    let mut seis = Vec::new();
+    for data in user_data {
+        let sei = match codec {
+            Codec::H264 => crate::codec::h264::sei::user_data(&data.uuid, &data.payload),
+            Codec::H265 => {
+                crate::codec::h265::sei::user_data_unregistered(&data.uuid, &data.payload)
+            }
+            _ => return,
+        };
+        seis.extend_from_slice(&sei);
+    }
+    let offset = first_vcl_start(codec, packet).unwrap_or(packet.len());
+    packet.splice(offset..offset, seis);
+}
+
+fn first_vcl_start(codec: Codec, data: &[u8]) -> Option<usize> {
+    let mut index = 0;
+    while index + 3 < data.len() {
+        let (start, header) = if data[index..].starts_with(&[0, 0, 0, 1]) {
+            (index, index + 4)
+        } else if data[index..].starts_with(&[0, 0, 1]) {
+            (index, index + 3)
+        } else {
+            index += 1;
+            continue;
+        };
+        let Some(&byte) = data.get(header) else {
+            return None;
+        };
+        let vcl = match codec {
+            Codec::H264 => (1..=5).contains(&(byte & 0x1f)),
+            Codec::H265 => ((byte >> 1) & 0x3f) < 32,
+            _ => false,
+        };
+        if vcl {
+            return Some(start);
+        }
+        index = header + 1;
+    }
+    None
 }
 
 impl<'a> InputFrame<'a> {
@@ -1020,6 +1080,7 @@ impl<'a> InputFrame<'a> {
             pts: 0,
             dts: 0,
             osd: None,
+            user_data: Vec::new(),
         }
     }
 
@@ -1035,6 +1096,11 @@ impl<'a> InputFrame<'a> {
 
     pub(crate) fn with_osd(mut self, osd: Option<osd::Config>) -> Self {
         self.osd = osd;
+        self
+    }
+
+    pub(crate) fn with_user_data(mut self, user_data: Vec<CustomUserData>) -> Self {
+        self.user_data = user_data;
         self
     }
 }
@@ -1778,6 +1844,7 @@ impl Encoder {
         }
         let external_rc = self.next_rate_control.take();
         let osd = frame.osd.clone();
+        let custom_user_data = frame.user_data.clone();
         let use_rate_control_registers = self
             .config
             .rate_control
@@ -1795,7 +1862,7 @@ impl Encoder {
                         qp_delta_row_i: 2,
                     });
                 }
-                let encoded = if needs_visible_nv12_copy(self.config) {
+                let mut encoded = if needs_visible_nv12_copy(self.config) {
                     encoder
                         .load_visible_input_frame(frame.data)
                         .map_err(Error::Hardware)?;
@@ -1808,6 +1875,7 @@ impl Encoder {
                         .encode_frame_for_queue(&input)
                         .map_err(|error| Error::Hardware(error.to_string()))?
                 };
+                insert_user_data_seis(Codec::H264, &mut encoded.packets, &custom_user_data);
                 let count = encoded.packets.len();
                 let coded_width = self.config.width().div_ceil(16) * 16;
                 let coded_height = self.config.height().div_ceil(16) * 16;
@@ -1862,7 +1930,7 @@ impl Encoder {
             }
             Backend::H265Vepu580(encoder) => {
                 encoder.set_next_osd(osd.clone());
-                let encoded = if needs_visible_nv12_copy(self.config) {
+                let mut encoded = if needs_visible_nv12_copy(self.config) {
                     if let Some(rc) = external_rc.filter(|_| use_rate_control_registers) {
                         encoder
                             .encode_visible_frame_with_rc_packets_for_queue(
@@ -1895,6 +1963,7 @@ impl Encoder {
                         .encode_frame_packets_for_queue(&input)
                         .map_err(|error| Error::Hardware(error.to_string()))?
                 };
+                insert_user_data_seis(Codec::H265, &mut encoded.packets, &custom_user_data);
                 let count = encoded.packets.len();
                 let meta =
                     PacketMeta::from_h265(&encoded, self.config.width(), self.config.height());
@@ -3058,10 +3127,11 @@ fn format_nv12_padded<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        format_nv12_input, h264_encoder_config, validate_dmabuf_layout, BlockStatistics, Codec,
-        DmaBufInput, EncoderConfig, GdrConfig, GdrMode, H264DeblockConfig, H264RcTuning,
-        H264SyntaxConfig, H265SyntaxOptions, PacketMeta, PixelFormat, RateControlConfig,
-        RateControlMode, RoiConfig, RoiRegion, SliceOutputMode, SliceSplitConfig, SliceSplitMode,
+        format_nv12_input, h264_encoder_config, insert_user_data_seis, validate_dmabuf_layout,
+        BlockStatistics, Codec, CustomUserData, DmaBufInput, EncoderConfig, GdrConfig, GdrMode,
+        H264DeblockConfig, H264RcTuning, H264SyntaxConfig, H265SyntaxOptions, PacketMeta,
+        PixelFormat, RateControlConfig, RateControlMode, RoiConfig, RoiRegion, SliceOutputMode,
+        SliceSplitConfig, SliceSplitMode, DEFAULT_USER_DATA_UUID,
     };
     use crate::sdk::Error;
     use crate::service::dma_heap::DmaBuf;
@@ -3163,6 +3233,51 @@ mod tests {
         assert_eq!(h264.video_format, Some(5));
         assert!(h264.video_full_range);
         assert_eq!(h264.vui_log2_max_mv_length, 15);
+    }
+
+    #[test]
+    fn custom_user_data_is_inserted_before_the_first_vcl_nal() {
+        let data = vec![CustomUserData {
+            uuid: DEFAULT_USER_DATA_UUID,
+            payload: b"user data\0".to_vec(),
+        }];
+
+        let mut h264 = vec![b"\0\0\0\x01\x67sps\0\0\0\x01\x68pps\0\0\0\x01\x65slice".to_vec()];
+        insert_user_data_seis(Codec::H264, &mut h264, &data);
+        let h264_types = annex_b_types(Codec::H264, &h264[0]);
+        assert_eq!(h264_types, vec![7, 8, 6, 5]);
+
+        let mut h265 = vec![
+            b"\0\0\0\x01\x40vps\0\0\0\x01\x42sps\0\0\0\x01\x44pps\0\0\0\x01\x26slice".to_vec(),
+        ];
+        insert_user_data_seis(Codec::H265, &mut h265, &data);
+        let h265_types = annex_b_types(Codec::H265, &h265[0]);
+        assert_eq!(h265_types, vec![32, 33, 34, 39, 19]);
+    }
+
+    fn annex_b_types(codec: Codec, data: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        let mut index = 0;
+        while index + 3 < data.len() {
+            let header = if data[index..].starts_with(&[0, 0, 0, 1]) {
+                index + 4
+            } else if data[index..].starts_with(&[0, 0, 1]) {
+                index + 3
+            } else {
+                index += 1;
+                continue;
+            };
+            let Some(&byte) = data.get(header) else {
+                break;
+            };
+            output.push(match codec {
+                Codec::H264 => byte & 0x1f,
+                Codec::H265 => (byte >> 1) & 0x3f,
+                _ => unreachable!(),
+            });
+            index = header + 1;
+        }
+        output
     }
 
     #[test]

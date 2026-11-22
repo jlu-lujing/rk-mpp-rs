@@ -393,8 +393,9 @@ MPP 路径：`-kmpp_mode 0` H.264 单帧 3 NAL 与新版 vendor 完全一致
 和 QP-bias 默认值后，4 NAL 也与新版 vendor 完全一致
 （`119bbf79…caa76d5`）；ioctl trace 仅剩 dma-buf 地址字不同。60 帧单 GOP
 的 H.264 62 NAL（`6a8cb407…3e3544`）和 H.265 63 NAL
-（`7eed6267…138b42`）也完全一致。buffer/meta object 路径仍是兼容占位，
-完整 KMPP object ABI 尚未闭合。
+（`7eed6267…138b42`）也完全一致。OSD、ROI 和 `user_data_enable` 已通过
+MppMeta 接入；2 帧 user-data 为 H.264 10 NAL、H.265 11 NAL，全部一致。
+KMPP buffer object 仍是兼容占位，完整 KMPP object ABI 尚未闭合。
 
 `vdec_kcfg`/`venc_kcfg` 的句柄生命周期也已按 vendor 收紧：非法 type 返回
 `MPP_ERR_VALUE`，`init_by_name` 只接受 `KmppVdec*Cfg`/`KmppVenc*Cfg`

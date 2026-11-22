@@ -859,6 +859,13 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         eprintln!("rk-mpp-rs mpp: encode frame has no readable buffer");
         return MPP_ERR_NULL_PTR;
     };
+    let user_data = unsafe { objects::frame_user_data(input_frame) }
+        .into_iter()
+        .map(|(uuid, payload)| encoder::CustomUserData {
+            uuid: uuid.unwrap_or(encoder::DEFAULT_USER_DATA_UUID),
+            payload,
+        })
+        .collect::<Vec<_>>();
     let motion_info = frame.motion_info;
     if frame.width == 0
         || frame.height == 0
@@ -914,6 +921,7 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
         && frame.dma_fd >= 0
         && !force_cpu_encoder_input()
         && (!osd.is_some() || osd_dmabuf_enabled())
+        && user_data.is_empty()
         && context.custom_rc.is_none()
         && context.encoder.as_ref().is_some_and(|encoder| {
             encoder.config().input_format() == sdk::PixelFormat::Nv12
@@ -971,7 +979,8 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
             let input = encoder::InputFrame::new(&scratch)
                 .with_pts(frame.pts)
                 .with_dts(frame.dts)
-                .with_osd(osd);
+                .with_osd(osd)
+                .with_user_data(user_data.clone());
             context.submit_custom_rc_frame(input)
         } else {
             match context.encoder.as_mut() {
@@ -995,7 +1004,8 @@ unsafe extern "C" fn compat_encode_put_frame(ctx: MppCtx, frame: MppFrame) -> c_
                     encoder::InputFrame::new(&scratch)
                         .with_pts(frame.pts)
                         .with_dts(frame.dts)
-                        .with_osd(osd),
+                        .with_osd(osd)
+                        .with_user_data(user_data.clone()),
                 ),
                 None => return Err(MPP_ERR_VALUE),
             }
