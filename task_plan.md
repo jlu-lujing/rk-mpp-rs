@@ -416,6 +416,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Decode the public AVS+ first I picture byte-exactly with `avsdec`.
 - [x] Add AVS PB parsing, two-anchor rotation and a 7-frame byte-exact C gate.
 - [x] Expose AVS+ through the public SDK and C codec enum.
+- [x] Add a second public AVS fixture and compare its full display cycle.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

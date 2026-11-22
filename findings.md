@@ -527,6 +527,9 @@
   displayed-slot-aware EOS flush (`47d05886…5fdb20` I420).
 - The same AVS cycle passes through the public SDK and C ABI codec value 10, not
   just the direct CLI path; `examples/sdk_decode avs` and `avsdec` are identical.
+- A second public fixture, `stream03.avs`, produces a 6-frame cycle that also
+  matches C byte-for-byte (`e6069fc1…78f29`), so the result is not tied to the
+  first sample's GOP shape.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

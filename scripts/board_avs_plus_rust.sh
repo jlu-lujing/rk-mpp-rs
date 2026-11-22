@@ -6,15 +6,24 @@ BOARD="${BOARD:?set BOARD to the RK3588 SSH alias}"
 remote_repo="${REMOTE_REPO:-\$HOME/rk-mpp-rs}"
 mpp_ref="${MPP_REF:-\$HOME/rk-mpp-oracles/mpp-develop}"
 fixture="${FIXTURE:-/tmp/avs_stream01.avs}"
+fixture2="${FIXTURE2:-/tmp/avs_stream03.avs}"
 fixture_sha=d296affc27c5977565a18d85897be82a3b1c77c9165b8928e6e5eaad698a736e
+fixture2_sha=fa2055cfad0b1d554f2bb87ed4e02254c52b481a9b5b07d49c25a09533c83565
 
 if [ ! -s "$fixture" ]; then
   curl -L --fail --silent \
     https://samples.ffmpeg.org/AVS/issue767/stream01.avs \
     -o "$fixture"
 fi
+if [ ! -s "$fixture2" ]; then
+  curl -L --fail --silent \
+    https://samples.ffmpeg.org/AVS/issue767/stream03.avs \
+    -o "$fixture2"
+fi
 test "$(sha256sum "$fixture" | cut -d' ' -f1)" = "$fixture_sha"
+test "$(sha256sum "$fixture2" | cut -d' ' -f1)" = "$fixture2_sha"
 scp -q "$fixture" "$BOARD":/tmp/avs_stream01.avs
+scp -q "$fixture2" "$BOARD":/tmp/avs_stream03.avs
 
 COPYFILE_DISABLE=1 tar --no-xattrs \
   --exclude .git --exclude target --exclude .worktrees --exclude refs \
@@ -41,3 +50,18 @@ ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_rust.yuv)\" -eq 1064448"
 ssh "$BOARD" "cmp -s /tmp/avs_c.yuv /tmp/avs_rust.yuv"
 ssh "$BOARD" "cmp -s /tmp/avs_rust.yuv /tmp/avs_sdk.yuv"
 printf 'PASS AVS+ Rust CLI/SDK 7-frame cycle is byte-identical to vendor C (352x288 I420)\n'
+
+ssh "$BOARD" "sudo rm -f /tmp/avs03_c.nv12 /tmp/avs03_c.yuv /tmp/avs03_r.yuv"
+ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
+  \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_stream03.avs \
+  -o /tmp/avs03_c.nv12 -t 16777221 -n 6 \
+  </dev/null >/tmp/avs03_c.log 2>&1"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream03.avs /tmp/avs03_r.yuv 6 \
+  >/tmp/avs03_r.log 2>&1"
+ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  -video_size 352x288 -i /tmp/avs03_c.nv12 -pix_fmt yuv420p -f rawvideo \
+  /tmp/avs03_c.yuv"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs03_r.yuv)\" -eq 912384"
+ssh "$BOARD" "cmp -s /tmp/avs03_c.yuv /tmp/avs03_r.yuv"
+printf 'PASS AVS+ Rust stream03 6-frame cycle is byte-identical to vendor C\n'

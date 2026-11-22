@@ -84,7 +84,7 @@ but has no driver behind it cannot be driven - the C tools say so as
 | 3 | vdpu2 post-processor | yes | binds | nothing in this source - see M9 |
 | 4 | av1d | yes | binds | AV1 |
 | 9 | rkvdec | yes | binds | H.264, H.265, VP9, AVS2 |
-| 12 | AVS+ decoder | yes | binds | AVS+ (Rust public 7-frame I/P/B cycle byte-exact; wider profile/vproc pending) |
+| 12 | AVS+ decoder | yes | binds | AVS+ (Rust two public I/P/B fixtures byte-exact; wider profile/vproc pending) |
 | 13 | jpegd | yes | binds | baseline JPEG decode, with its own post-processor |
 | 16 | rkv-enc | yes | binds | H.264, H.265 encode |
 | 19 | vepu JPEG | yes | binds | JPEG encode |
@@ -2207,8 +2207,9 @@ in what order the evidence gets produced.
       SHA-256 `9b9a6dc9…39088b`. The Rust sequence/I-picture parser, 60-word HAL
       and `avsdec` CLI now reproduce the complete 7-frame I/P/B display cycle
       byte-for-byte with C vproc disabled (`47d05886…5fdb20` I420); C's default
-      output is IEP2-vproc processed. AVS+ profile 0x48 extensions, field
-      pictures and vproc remain open.
+      output is IEP2-vproc processed. Public `stream03.avs` adds a second
+      6-frame cycle (`e6069fc1…78f29`) through the same CLI and SDK. AVS+
+      profile 0x48 extensions, field pictures and vproc remain open.
       AVS2 has no RK3588 device; RK3576 remains unavailable.
 
 ### Encoders
