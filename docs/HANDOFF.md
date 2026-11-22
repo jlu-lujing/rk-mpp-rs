@@ -72,6 +72,10 @@ hardware reference map 现在包含当前 tile-output frame，消除了 `0x2109`
 表面为 0。现在单色输出填充 neutral 128（10-bit 为 512），320x240 I420
 115,200 bytes 与 `aomdec` 逐字节一致（`df3a2fe1…e909b`），门为
 `scripts/board_av1_monochrome.sh`。
+AV1 4:4:4 硬件边界也已收口：C `mpi_dec_test` 在 20 帧 10-bit 4:4:4 fixture
+上会在 AV1 parser 内 segfault，而 Rust hardware 之前会静默降成 4:2:0。现在
+hardware CLI 显式拒绝非 4:2:0，软件参考解码器仍以 9,216,000-byte 输出对齐
+stock `aomdec`。该边界记入 DIVERGENCES，不能把 4:4:4 的软件门当成硬件支持。
 同日 M11 也开始闭合 H.264 P-slice CABAC。首个严格门是 48×32 Main-profile
 IDR+P：P 帧六个宏块全部为 `P_Skip`，验证 P 的 `cabac_init_idc` 上下文、
 left/top“已解码且非 skip”条件都为 0 时选择 ctxIdx 11、逐宏块终止位和

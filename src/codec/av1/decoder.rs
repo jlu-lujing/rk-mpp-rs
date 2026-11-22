@@ -143,6 +143,7 @@ impl Decoder {
             .sequence()
             .cloned()
             .ok_or("missing AV1 sequence header")?;
+        ensure_hardware_chroma(&sequence)?;
         if self.output_dmabuf && sequence.bit_depth != 8 {
             return Err(format!(
                 "AV1 DMA-BUF output supports only 8-bit NV12, got {}-bit",
@@ -608,6 +609,13 @@ fn copy_planar(frame: &Frame, mono_chrome: bool, out: Vec<u8>) -> Result<Vec<u8>
     Ok(output)
 }
 
+fn ensure_hardware_chroma(sequence: &SequenceHeader) -> Result<(), String> {
+    if !sequence.color_config.subsampling_x || !sequence.color_config.subsampling_y {
+        return Err("AV1 hardware output supports only 4:2:0".into());
+    }
+    Ok(())
+}
+
 fn copy_planar_data(
     width: usize,
     height: usize,
@@ -835,6 +843,19 @@ mod tests {
         assert_eq!(&planar[..8], &[0, 1, 2, 3, 4, 5, 6, 7]);
         assert!(planar[8..].iter().all(|sample| *sample == 128));
         assert_eq!(planar.len(), 8 + 2 * 2);
+    }
+
+    #[test]
+    fn hardware_rejects_non_420_av1_sequences() {
+        let data =
+            include_bytes!("../../../tests/data/av1_b_pyramid_10bit_444_advanced_320x240_20.ivf");
+        let ivf = crate::codec::av1::parser::parse_ivf(data).unwrap();
+        let mut parser = Av1PacketParser::new();
+        parser.parse_packet(ivf.frames[0].data).unwrap();
+        assert_eq!(
+            ensure_hardware_chroma(parser.sequence().unwrap()).unwrap_err(),
+            "AV1 hardware output supports only 4:2:0"
+        );
     }
 
     fn write_packed_10bit(dst: &mut [u8], samples: &[u16]) {
