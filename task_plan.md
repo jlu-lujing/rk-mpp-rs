@@ -410,6 +410,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Map H.265 `tune:vmaf_opt` and verify the 20-word register overlay.
 - [x] Expose scene/qbias/vmaf through native `h265-gop` and add a trace gate.
 - [x] Add selectable benchmark sizes and verify 1000-frame 320x240 steady state.
+- [x] Close the completed AV1 software tile entropy item and correct counts.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

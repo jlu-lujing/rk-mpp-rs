@@ -839,10 +839,11 @@ in what order the evidence gets produced.
       real content and this crate reports the hardware error; and a
       profile-0+10-bit stream is invalid per the AV1 spec (10-bit needs profile
       2) and differs from C in one byte at offset 76802.
-- [ ] AV1 software tile entropy decoder (M11). The hardware path hands tile
-      payloads to rkvdec; `src/reference/` has no complete AV1 decode, so an
-      independent software AV1 bit-exact decode remains software-reference-
-      decoder work. This is not a gap in the hardware path closed above.
+- [x] AV1 software tile entropy decoder (M11). The hardware path hands tile
+      payloads to rkvdec; `src/reference/` now decodes them independently and
+      is pixel-exact against libaom across the recorded tile and inter matrix.
+      This closes the software-reference item without changing the hardware
+      path above.
       **First slice landed (2026-11-04):** `src/reference/av1/symbol.rs` is the
       specification's symbol decoder (section 8.2): `init_symbol`'s complemented
       15-bit seed, `read_symbol` with `EC_PROB_SHIFT = 6` / `EC_MIN_PROB = 4`,

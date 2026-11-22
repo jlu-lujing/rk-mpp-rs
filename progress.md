@@ -58,6 +58,14 @@
 - This shows the 300-frame H.264 320x240 result is startup-share noise rather
   than a hot-path deficit.
 
+### Phase 26: Close AV1 Software Tile Entropy Roadmap Item
+- **Status:** complete; stale top-level ROADMAP checkbox closed.
+- Current AV1 software-reference suite is 365/365.
+- Real 2x2 and 1x2 tile streams, simple/advanced B-pyramids, 10-bit CDEF/LR and
+  4:4:4 fixtures are pixel-exact against libaom.
+- Corrected top-level counts to 128 completed / 4 open and nested counts to
+  168 / 7.
+
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.
 - The H.265 object path was reusing H.264's 192/128/64 mean-MADP gate. Vendor

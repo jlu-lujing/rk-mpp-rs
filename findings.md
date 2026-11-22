@@ -509,6 +509,10 @@
   H.264 Rust is 9.1% faster with 31.7% less user+sys, and H.265 is 5.6% faster
   with 24.3% less CPU. The earlier 300-frame H.264 3.3% deficit is not a
   steady-state regression.
+- The top-level AV1 software tile entropy checkbox was stale. The current
+  reference suite has 365 passing tests, including real multi-tile and advanced
+  B-pyramid fixtures; the hardware/speculative rows are now the only remaining
+  top-level items.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

@@ -191,8 +191,8 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
-当前 ROADMAP：**125 完成 / 6 未完成**（含缩进子项为 165 / 9）。未完成项里 5 项属于上表的
-平台/不存在边界，1 项是 M11 的完整 AV1 软件解码。M11 已落地 115 个 slice（含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、simple/advanced 20 帧 8-bit B-pyramid、12 帧单参考 10-bit B、20 帧 advanced 10-bit B、deblock/CDEF、10-bit I444P10 和 inter-LR 组合也已落地）：符号解码、默认
+当前 ROADMAP：**128 完成 / 4 未完成**（含缩进子项为 168 / 7）。未完成项均属于上表的
+平台/不存在边界；M11 的软件 AV1 tile entropy 项已关闭。M11 已落地 115 个 slice（含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、simple/advanced 20 帧 8-bit B-pyramid、12 帧单参考 10-bit B、20 帧 advanced 10-bit B、deblock/CDEF、10-bit I444P10 和 inter-LR 组合也已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在
