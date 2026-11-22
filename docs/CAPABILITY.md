@@ -24,7 +24,7 @@
 | VP9（rkvdec） | 完成 | profile 0/2、10-bit、lossless、tiles、errres、resize、show-existing、hidden alt-ref；边界两格由 libvpx 判定为 C bug |
 | AV1（av1d） | 完成 | Main 8/10-bit、film grain、2x2 tile、96×96–1920×1080、长 GOP、多 sequence、320↔640 切换；C/Rust/libaom 三方逐字节；64×64 为 C bug |
 | MPEG-2 / MPEG-4 / H.263 / VP8 | 完成 | 逐字节；隔行 MPEG-2 用 FFmpeg 作 oracle（C 会错误回绕输入）；VP8 profile 1/3 为派生流验证 |
-| AVS+ / AVS2 | AVS+ 进行中，AVS2 不可达 | RK3588 client 12 的 AVS+ 已确认可绑定，并用公开 352×288 中文 AVS 流建立 vendor C oracle：单帧 NV12 152064 bytes、SHA `9b9a6dc9…39088b`。Rust parser/HAL 尚未实现。AVS2 在 RK3588 无设备，RK3576 当前不可达且仍需 conformance 流 |
+| AVS+ / AVS2 | AVS+ I 图完成，PB 进行中；AVS2 不可达 | RK3588 client 12 的公开 352×288 流已由 Rust sequence/I-picture parser、60-word HAL 和 `avsdec` 解出；关闭 C 默认 IEP2 vproc 后，Rust 与 C 原始 NV12 逐字节一致，SHA `3acac415…2e11c2`。C 默认后处理输出为 `9b9a6dc9…39088b`。PB 图片、参考轮转和 vproc 仍待完成。AVS2 在 RK3588 无设备 |
 | H.265 SCC | 不存在 | MPP 源码没有 palette/SCC 路径 |
 
 ## 编码

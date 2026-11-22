@@ -4816,6 +4816,78 @@ fn main() {
         println!("output order by POC: {:?}", out_order);
         return;
     }
+    if args.len() > 1 && args[1] == "avsdec" {
+        let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
+        let dst = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/avs.yuv");
+        if src.is_empty() {
+            eprintln!("usage: rk-mpp-rs avsdec <in.avs> <out.yuv> [max-i-frames]");
+            std::process::exit(1);
+        }
+        let max_frames = match args.get(4) {
+            Some(value) => match value.parse::<usize>() {
+                Ok(value) if value > 0 => value,
+                _ => {
+                    eprintln!("max-i-frames must be a positive integer, got {value}");
+                    std::process::exit(2);
+                }
+            },
+            None => 1,
+        };
+        let data = match std::fs::read(src) {
+            Ok(data) => data,
+            Err(error) => {
+                eprintln!("{src}: {error}");
+                std::process::exit(1);
+            }
+        };
+        let mut decoder = match rk_mpp_rs::codec::avs::decoder::Decoder::new() {
+            Ok(decoder) => decoder,
+            Err(error) => {
+                eprintln!("open AVS+ client failed: {error}");
+                std::process::exit(1);
+            }
+        };
+        use std::io::Write;
+        let mut output = std::io::BufWriter::new(match std::fs::File::create(dst) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("{dst}: {error}");
+                std::process::exit(1);
+            }
+        });
+        let started = Instant::now();
+        let mut failed = false;
+        let result = decoder.decode_with(&data, max_frames, |picture| {
+            if picture.err_info != 0 {
+                failed = true;
+                eprintln!(
+                    "picture at distance {} failed with err={:#x}",
+                    picture.picture_distance, picture.err_info
+                );
+            }
+            output
+                .write_all(&picture.yuv)
+                .map_err(|error| error.to_string())
+        });
+        let shown = match result {
+            Ok(shown) => shown,
+            Err(error) => {
+                eprintln!("{src}: {error}");
+                std::process::exit(1);
+            }
+        };
+        let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+        output.flush().ok();
+        println!(
+            "decoded {shown} AVS I frames in {decode_ms:.1} ms ({:.1} fps), irq={:#010x}",
+            shown as f64 / (decode_ms / 1000.0).max(f64::EPSILON),
+            decoder.last_irq
+        );
+        if failed {
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.len() > 1 && args[1] == "m2vdec" {
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/m2v.yuv");

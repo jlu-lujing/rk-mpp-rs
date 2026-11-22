@@ -513,9 +513,14 @@
   reference suite has 365 passing tests, including real multi-tile and advanced
   B-pyramid fixtures; the hardware/speculative rows are now the only remaining
   top-level items.
-- AVS+ is not hardware-absent on RK3588. Client 12 binds and vendor C decodes a
-  public 352x288 stream to exact NV12; the missing piece is the Rust parser/HAL.
-  AVS2 is genuinely absent from this SoC and must not be conflated with AVS+.
+- AVS+ is not hardware-absent on RK3588. Client 12 binds, vendor C decodes a
+  public 352x288 stream to exact NV12, and the Rust sequence/I-picture parser
+  and 60-word HAL now match that raw frame. AVS2 is genuinely absent from this
+  SoC and must not be conflated with AVS+.
+- C's default AVS+ harness runs IEP2 vproc after client 12, so its single-frame
+  oracle is post-processed. With `enable_deinterlace=0`, the raw Rust and C
+  decoder outputs are byte-identical (`3acac415…2e11c2`); the 60-word register
+  files match exactly apart from dma-buf fds.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

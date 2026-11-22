@@ -9,6 +9,7 @@
 //! which is why it is not under `hal`.
 
 pub mod av1;
+pub mod avs;
 pub mod h263;
 pub mod h264;
 pub mod h265;

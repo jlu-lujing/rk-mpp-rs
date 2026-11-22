@@ -412,6 +412,8 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Add selectable benchmark sizes and verify 1000-frame 320x240 steady state.
 - [x] Close the completed AV1 software tile entropy item and correct counts.
 - [x] Establish a reproducible AVS+ vendor-C oracle on RK3588.
+- [x] Parse AVS sequence/I-picture headers and reproduce the C 60-word register file.
+- [x] Decode the public AVS+ first I picture byte-exactly with `avsdec`.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

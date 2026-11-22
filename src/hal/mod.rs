@@ -128,6 +128,7 @@ mod tests {
 
 pub mod av1d;
 pub mod av1d383;
+pub mod avsd_plus;
 pub mod h263d;
 pub mod h264d;
 pub mod h264d383;
