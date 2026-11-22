@@ -790,6 +790,7 @@ BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
 |---|---|
 | 解码 / 编码 | 以固定 governor、80% OPP、C/Rust 交错采样和输出 SHA 为前提；当前逐尺寸结果见 [docs/ENCODE_BENCH.md](docs/ENCODE_BENCH.md) 与 [docs/RK3588_VALIDATION.md](docs/RK3588_VALIDATION.md)。同一二进制的单次结果仍会漂移，未交错采样的旧百分比不作为结论 |
 | 编解码新版 object 路径 | 80% OPP、DDR performance、CPU6 固定，300 帧交错 5 次。H.265：320x240 Rust/C wall 164/164 ms、user+sys 67/69 ms；720p 802/868 ms、226/291 ms。H.264：320x240 157/152 ms（5% 门内）、CPU 持平；720p 769/822 ms、CPU 232/278 ms。两条路径都不以增加 CPU 换吞吐 |
+| 320x240 稳定态 | 1000 帧、7 次交错：H.264 Rust/C wall 448/493 ms、user+sys 138/202 ms；H.265 457/484 ms、140/185 ms。300 帧 H.264 的轻微落后来自进程启动占比，热路径两者均快于 C |
 | RGB letterbox（替换 RGA） | 1080p→640: 0.84 ms vs RGA 3.21 ms；1:1: 0.53 vs 1.50 |
 
 ### H.264 流式播放路径

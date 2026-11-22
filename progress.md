@@ -50,6 +50,14 @@
   scene cell also matches OSD and `RC_KLUT[1056]`.
 - Added `scripts/board_h265_cli_tune_trace.sh`.
 
+### Phase 25: 320x240 Steady-State Encode
+- **Status:** complete on RK3588 80% OPP.
+- Extended the shared object benchmark with selectable `SIZES` and `FRAMES`.
+- At 1000 frames, seven interleaved samples give H.264 Rust/C wall 448/493 ms
+  and user+sys 138/202 ms; H.265 457/484 ms and 140/185 ms.
+- This shows the 300-frame H.264 320x240 result is startup-share noise rather
+  than a hot-path deficit.
+
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.
 - The H.265 object path was reusing H.264's 192/128/64 mean-MADP gate. Vendor

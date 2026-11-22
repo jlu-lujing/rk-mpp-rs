@@ -45,6 +45,7 @@
 | H.265 native CLI tune | 2026-11-22 完成（VEPU580） | 原生 `h265-gop` 支持 `H265_SCENE_MODE`、`H265_QBIAS_EN/I/P`、`H265_VMAF_OPT`。scene/qbias/vmaf 三格各 2 帧，与 C probe 的 WGT/RDO 逐字一致；scene 格的 OSD 与 `RC_KLUT[1056]` 也一致。复跑：`board_h265_cli_tune_trace.sh` |
 | H.265 object throughput | 2026-11-22 完成（RK3588 80% OPP） | 新版 `mpi_enc_test` 的 300 帧、多 GOP、fixed-QP26 路径在 CPU6 交错 5 次：320x240 C/Rust wall 164/164 ms、user+sys 69/67 ms；1280x720 wall 868/802 ms、user+sys 291/226 ms。320x240 为 wall 持平，720p Rust 快 7.6%，CPU 少 22.3%。脚本把 wall 和 user+sys 都限制在 C 的 105% 内：`BOARD=my-rk3588-host SAMPLES=5 ./scripts/board_bench_h265_object_vs_mpp.sh` |
 | H.264 object throughput | 2026-11-22 完成（RK3588 80% OPP） | 同一通用 object benchmark 的 300 帧、CPU6、交错 5 次结果：320x240 C/Rust wall 152/157 ms（Rust 慢 3.3%，在 5% 门内），user+sys 67/67 ms；1280x720 wall 822/769 ms（Rust 快 6.4%），user+sys 278/232 ms（少 16.5%）。`board_bench_object_encode_vs_mpp.sh` 对 H.264/H.265 共用 wall 和 CPU 双重门槛 |
+| 320x240 steady-state encode | 2026-11-22 完成（RK3588 80% OPP） | 1000 帧、7 次交错：H.264 Rust/C wall 448/493 ms、user+sys 138/202 ms；H.265 457/484 ms、140/185 ms。Rust 分别快 9.1%/5.6%，CPU 少 31.7%/24.3%。300 帧 H.264 的小幅落后属于进程启动占比；通用脚本支持 `SIZES`/`FRAMES` |
 | JPEG（vepu） | 完成 | baseline 4:2:0、restart、90/270 旋转、RGB/YUV 输入、低延迟 slices、RK3588 四 band 多核，逐字节/逐 packet |
 | WPP / B 帧 / 多参考 | 不存在 | C 参考没有实现（标志恒 0、无 entry point、无 B_FRAME、`num_ref = 1`），不是本 crate 的缺口 |
 | harness `-g 60` | BY-DESIGN | harness 解析成 `gop_len=0` 的病态 smart-GOP；本 crate 拒绝 `gop=0`，有效形式逐字节 |

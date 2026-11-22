@@ -505,6 +505,10 @@
   must route through the MPP object API to reach already-supported hardware
   behavior. `H265_SCENE_MODE`, `H265_QBIAS_*` and `H265_VMAF_OPT` now match C
   in the same trace gate.
+- Short 320x240 encodes are dominated by process startup. At 1000 frames,
+  H.264 Rust is 9.1% faster with 31.7% less user+sys, and H.265 is 5.6% faster
+  with 24.3% less CPU. The earlier 300-frame H.264 3.3% deficit is not a
+  steady-state regression.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

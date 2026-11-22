@@ -54,6 +54,17 @@ BOARD=my-rk3588-host SAMPLES=5 ./scripts/board_bench_h265_object_vs_mpp.sh
 # or: CODEC=h264|h265 BOARD=... ./scripts/board_bench_object_encode_vs_mpp.sh
 ```
 
+A 1000-frame steady-state run removes the 300-frame process-startup share.
+Seven interleaved 320x240 samples give:
+
+| codec | C wall | Rust wall | Rust wall gain | C user+sys | Rust user+sys | Rust CPU reduction |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| H.264 | 493 ms | **448 ms** | **9.1%** | 202 ms | **138 ms** | **31.7%** |
+| H.265 | 484 ms | **457 ms** | **5.6%** | 185 ms | **140 ms** | **24.3%** |
+
+The benchmark accepts `SIZES=320x240,1280x720` and `FRAMES=N`, so a focused
+steady-state cell can be rerun without changing the script.
+
 ## 2026-11-19: H.265 file-input pipeline
 
 `h265-gop` previously read each frame into a temporary `Vec` and then copied

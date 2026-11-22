@@ -467,6 +467,9 @@ H.264 新版 object 路径用同一脚本测得：320x240 Rust 157 ms 对 C 152 
 （慢 3.3%，仍在 5% 门内），user+sys 都是 67 ms；720p Rust 769 ms 对 C
 822 ms（快 6.4%），user+sys 232 对 278 ms。实现已收敛为
 `board_bench_object_encode_vs_mpp.sh`，H.264/H.265 入口只是薄包装。
+1000 帧稳定态消除了 300 帧启动占比：320x240 七次交错中 H.264 Rust/C
+wall 448/493 ms、user+sys 138/202 ms；H.265 457/484 ms、140/185 ms。
+脚本现在接受 `SIZES=320x240,1280x720` 和 `FRAMES=N`。
 
 `vdec_kcfg`/`venc_kcfg` 的句柄生命周期也已按 vendor 收紧：非法 type 返回
 `MPP_ERR_VALUE`，`init_by_name` 只接受 `KmppVdec*Cfg`/`KmppVenc*Cfg`

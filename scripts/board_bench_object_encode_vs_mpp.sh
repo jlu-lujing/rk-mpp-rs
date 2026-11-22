@@ -17,12 +17,13 @@ case "$CODEC" in
 esac
 samples="${SAMPLES:-7}"
 frames="${FRAMES:-300}"
+sizes="${SIZES:-320x240,1280x720}"
 remote_repo="${REMOTE_REPO:-\$HOME/rk-mpp-rs}"
 mpp_ref="${MPP_REF:-\$HOME/rk-mpp-oracles/mpp-develop}"
 
 ssh "$BOARD" \
   "REMOTE_REPO=\"$remote_repo\" MPP_REF=\"$mpp_ref\" CODEC=$CODEC \
-   MPP_TYPE=$mpp_type SAMPLES=$samples FRAMES=$frames bash -s" \
+   MPP_TYPE=$mpp_type SAMPLES=$samples FRAMES=$frames SIZES=\"$sizes\" bash -s" \
   <<'REMOTE'
 set -euo pipefail
 repo="$REMOTE_REPO"
@@ -72,12 +73,11 @@ measure_rust() {
 }
 
 fail=0
-for spec in "320 240 /tmp/rk_mpp_${CODEC}_object_320x240_${FRAMES}.nv12" \
-            "1280 720 /tmp/rk_mpp_${CODEC}_object_1280x720_${FRAMES}.nv12"; do
-  set -- $spec
-  width=$1
-  height=$2
-  fixture=$3
+IFS=',' read -r -a size_list <<<"$SIZES"
+for entry in "${size_list[@]}"; do
+  width=${entry%x*}
+  height=${entry#*x}
+  fixture="/tmp/rk_mpp_${CODEC}_object_${width}x${height}_${FRAMES}.nv12"
   if [ ! -s "$fixture" ]; then
     ffmpeg -nostdin -y -hide_banner -loglevel error \
       -f lavfi -i "testsrc2=size=${width}x${height}:rate=30" \

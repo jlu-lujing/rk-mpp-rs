@@ -4635,3 +4635,7 @@ pipeline uses.
 - **2026-11-22: native H.265 CLI exposes the tune controls.** `h265-gop`
   accepts scene, scalar qbias and VMAF environment controls. Three two-frame
   cells match C WGT/RDO; scene also matches OSD and the row KLUT offset.
+- **2026-11-22: 320x240 steady-state encode is ahead of C.** A selectable
+  size/frame object benchmark measures 1000 frames over seven interleaved
+  samples. H.264 is 9.1% faster with 31.7% less CPU; H.265 is 5.6% faster with
+  24.3% less CPU.
