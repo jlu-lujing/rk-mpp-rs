@@ -94,6 +94,8 @@
   alternating field order, I5O2 windows and GMV candidate updates. Both public
   fixtures now match C default output exactly (`13e5e665…dad1d`,
   `d3fa0c0d…10180`).
+- Added a deterministic profile 0x48 stream generator and hardware gate. The
+  derived four-frame raw/SDK output matches C (`9eb0602a…5cfa4`).
 
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.

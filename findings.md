@@ -538,6 +538,9 @@
   I1O1T for the first frame, one anchor-only frame, then alternating TFF/BFF
   I5O2 windows. Porting `iep2_update_gmv()` closed the last 164-word register
   mismatch; both public fixtures match C byte-for-byte in `vproc` mode.
+- `gen_avs_plus_profile.py` derives a syntax-equivalent profile 0x48 stream by
+  preserving slice data and adding the AVS+ header bits with weighting/AEC
+  disabled. Its first four raw frames match C exactly (`9eb0602a…5cfa4`).
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

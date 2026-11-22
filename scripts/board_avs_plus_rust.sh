@@ -9,6 +9,8 @@ fixture="${FIXTURE:-/tmp/avs_stream01.avs}"
 fixture2="${FIXTURE2:-/tmp/avs_stream03.avs}"
 fixture_sha=d296affc27c5977565a18d85897be82a3b1c77c9165b8928e6e5eaad698a736e
 fixture2_sha=fa2055cfad0b1d554f2bb87ed4e02254c52b481a9b5b07d49c25a09533c83565
+profile48="${PROFILE48:-/tmp/avs_plus_profile48.avs}"
+profile48_sha=50d88acc3e37efa6a2112a01aebee540a317295986036e21104f98621ac8e7cc
 
 if [ ! -s "$fixture" ]; then
   curl -L --fail --silent \
@@ -22,8 +24,12 @@ if [ ! -s "$fixture2" ]; then
 fi
 test "$(sha256sum "$fixture" | cut -d' ' -f1)" = "$fixture_sha"
 test "$(sha256sum "$fixture2" | cut -d' ' -f1)" = "$fixture2_sha"
+python3 "$(dirname "$0")/gen_avs_plus_profile.py" \
+  "$fixture" "$profile48" first-sequence >/dev/null
+test "$(sha256sum "$profile48" | cut -d' ' -f1)" = "$profile48_sha"
 scp -q "$fixture" "$BOARD":/tmp/avs_stream01.avs
 scp -q "$fixture2" "$BOARD":/tmp/avs_stream03.avs
+scp -q "$profile48" "$BOARD":/tmp/avs_plus_profile48.avs
 
 COPYFILE_DISABLE=1 tar --no-xattrs \
   --exclude .git --exclude target --exclude .worktrees --exclude refs \
@@ -89,3 +95,22 @@ ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
 ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs03_vproc_r.nv12)\" -eq 912384"
 ssh "$BOARD" "cmp -s /tmp/avs03_vproc_c.nv12 /tmp/avs03_vproc_r.nv12"
 printf 'PASS AVS+ Rust stream03 default IEP2 vproc cycle is byte-identical to vendor C\n'
+
+ssh "$BOARD" "sudo rm -f /tmp/avs48_c.nv12 /tmp/avs48_c.yuv /tmp/avs48_r.nv12 /tmp/avs48_sdk.yuv"
+ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
+  \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_plus_profile48.avs \
+  -o /tmp/avs48_c.nv12 -t 16777221 -n 4 \
+  </dev/null >/tmp/avs48_c.log 2>&1"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/rk-mpp-rs avsdec /tmp/avs_plus_profile48.avs /tmp/avs48_r.nv12 4 nv12 \
+  >/tmp/avs48_r.log 2>&1"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/examples/sdk_decode avs /tmp/avs_plus_profile48.avs /tmp/avs48_sdk.yuv \
+  >/tmp/avs48_sdk.log 2>&1"
+ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
+  -video_size 352x288 -i /tmp/avs48_c.nv12 -pix_fmt yuv420p -f rawvideo \
+  /tmp/avs48_c.yuv"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs48_r.nv12)\" -eq 608256"
+ssh "$BOARD" "cmp -s /tmp/avs48_c.nv12 /tmp/avs48_r.nv12"
+ssh "$BOARD" "cmp -s /tmp/avs48_c.yuv /tmp/avs48_sdk.yuv"
+printf 'PASS AVS+ profile 0x48 raw CLI/SDK cycle is byte-identical to vendor C\n'
