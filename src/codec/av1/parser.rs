@@ -1616,6 +1616,7 @@ fn read_global_motion(r: &mut BitReader<'_>, header: &mut FrameHeader) -> Result
             global.identity = true;
             continue;
         }
+        global.identity = false;
         global.rotation_zoom = r.read_bit()?;
         let model = if global.rotation_zoom {
             2
@@ -2495,5 +2496,28 @@ mod tests {
         assert_eq!(header.film_grain.grain_scale_shift, 3);
         assert!(header.film_grain.overlap_flag);
         assert!(header.film_grain.update_grain);
+    }
+
+    #[test]
+    fn non_identity_global_motion_clears_the_default_identity_flag() {
+        use crate::codec::av1::assembler::{Av1PacketEvent, Av1PacketParser};
+
+        let data = include_bytes!("../../../tests/data/av1_inter_global_warped_320x240.ivf");
+        let ivf = parse_ivf(data).unwrap();
+        let mut parser = Av1PacketParser::new();
+        let mut frames = Vec::new();
+        for packet in &ivf.frames {
+            for event in parser.parse_packet(packet.data).unwrap() {
+                if let Av1PacketEvent::Coded(frame) = event {
+                    frames.push(frame);
+                }
+            }
+        }
+
+        assert_eq!(frames.len(), 2);
+        let global = frames[1].header.global_motion[1];
+        assert!(!global.identity);
+        assert!(global.rotation_zoom);
+        assert_eq!(global.parameters, [1868, 73, 2271, 2761, -2761, 2271]);
     }
 }

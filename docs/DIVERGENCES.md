@@ -34,6 +34,7 @@ Dispositions:
 | VP8 key-frame scale bits | **FIXED** | The two bits are display-only: libvpx (FFmpeg) and C both decode at the coded size. The parser no longer refuses them; `board_vp8_profile_vs_mpp.sh` derives a scaled key frame and compares 12 frames, byte-identical to C. |
 | AV1 damaged container / half-last OBU | **BY-DESIGN** | C emits eight pictures and then blocks until the 60-second timeout. Rust rejects the truncated container before decode or names the oversized OBU after nine pictures, keeping both operations bounded. |
 | AV1 mid-packet bit flip | **FIXED** | C and Rust both complete ten pictures and the planar outputs are byte-identical (`af41ab70…01bc`). |
+| AV1 global-warped motion | **FIXED** | The production parser kept the default `identity=true` flag after reading a non-identity ROTZOOM model, so the hardware global-model buffer erased the warp. Clearing the flag restores the two-frame output to C/libaom (`ce1e081f…f6f5`); `board_av1_global_warped.sh` is the regression gate. |
 | VP9 profile edge matrix | **NO-ORACLE** | The remaining VP9 profile edges have no differential fixture in the corpus. |
 | VP9 profile 1/3 hardware | **NO-ORACLE** | A vpxenc 1.9 profile-1 I422 stream is accepted by ffmpeg, but RK3588's C MPP reports `Invalid frame marker`, emits 0 frames and loops until timeout. The installed vpxenc build cannot emit profile 3. Rust still rejects profile 1/3 explicitly instead of inventing an unverified layout. |
 | H.263 field-coded PAFF | **NO-ORACLE** | No stream in the corpus. |

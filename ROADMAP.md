@@ -755,6 +755,9 @@ in what order the evidence gets produced.
   - [x] non-identity translation/ROTZOOM/AFFINE global-motion conversion,
         primary-reference inheritance, shear quantization and invalid/scaled
         reference fallback match the C MPP integer rules
+  - [x] the real global-warped fixture exposed a production parser bug where
+        non-identity motion retained the default `identity=true`; clearing it
+        restores the 2-frame output to C/libaom (`ce1e081f…f6f5`)
   - [ ] tile entropy decoding and a wider AV1 conformance matrix
   - [x] all 11 hardware jobs in the 2x2 tile fixture have byte-identical
         PicParams and input CDFs. Ten comparable 512-word AV1D_VPU register

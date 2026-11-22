@@ -166,6 +166,9 @@
 - Added an eight-frame XAVS-derived AVS interlaced-frame fixture. Raw I420
   (`508883d6…1416`) and IEP2 vproc (`1fa2e8ed…c2b0`) outputs are byte-exact
   against C; separate field-pair scheduling remains untested.
+- Fixed production AV1 global-motion parsing so non-identity ROTZOOM clears
+  the default identity flag. The global-warped fixture now matches C/libaom
+  (`ce1e081f…f6f5`) and has a dedicated board gate.
 - Replaced the first packet implementation's whole-prefix replay with
   incremental consumption. On concatenated 100/96-frame streams with DMC
   performance and CPU 4–7, the current path is 0.14–0.15 s for MPEG-2 versus

@@ -586,6 +586,15 @@ bimodal, so the table quotes five-run medians; paired CPU samples put Rust at
   10,283 / 8,660 bytes; H.265 are 11,192 / 11,795 / 9,676 bytes, all
   byte-identical. The RK3588 VEPU580 command remains part of the same script.
 
+## 2026-11-23 AV1 global-warped motion
+
+The production AV1 parser was leaving `identity=true` set after reading a
+non-identity ROTZOOM model. The hardware global-model buffer therefore erased
+the warp and diverged from C/libaom on the second frame of
+`av1_inter_global_warped_320x240.ivf`. Clearing the flag fixes the two-frame
+output. `scripts/board_av1_global_warped.sh` compares C and Rust and pins
+SHA-256 `ce1e081f…f6f5`.
+
 ## 2026-11-11 AV1 software film-grain synthesis
 
 - The independent M11 decoder now applies film grain only to displayed copies.

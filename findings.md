@@ -579,6 +579,12 @@
   (`508883d6…1416`) and the 11-frame IEP2-vproc sequence
   (`1fa2e8ed…c2b0`). This validates interlaced frame syntax, not separate-field
   pair scheduling.
+- Expanding the AV1 hardware matrix found a production-parser bug: a
+  non-identity ROTZOOM model retained the default `identity=true` flag, so the
+  hardware global-model buffer erased the warp. The second frame of
+  `av1_inter_global_warped_320x240.ivf` differed from both C and libaom;
+  clearing the flag restores all 230,400 bytes to
+  `ce1e081f…f6f5`.
 - The AVS parser has a deterministic 20,000-iteration mutation test covering
   truncation, byte flips, insertion and arbitrary inputs; all parser entry points
   return errors or partial parses without panicking.

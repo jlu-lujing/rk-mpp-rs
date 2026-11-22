@@ -5,15 +5,21 @@
 #
 # Usage:
 #   BOARD=my-rk3588-host scripts/board_av1_presubmit_compare.sh
+#   FIXTURE=tests/data/av1_inter_global_warped_320x240.ivf JOBS=2 FRAMES=2 \
+#     BOARD=my-rk3588-host scripts/board_av1_presubmit_compare.sh
 #
 # The C side is built in a separate shared clone at
 # ~/rk-mpp-oracles/mpp-av1-dump so the normal mpp-develop oracle is left
-# untouched. Both dump directories remain on the board for inspection.
+# untouched. A non-git MPP source snapshot is copied before patching. Both dump
+# directories remain on the board for inspection.
 set -euo pipefail
 
 board="${BOARD:-t62}"
 jobs="${JOBS:-11}"
 frames="${FRAMES:-10}"
+fixture="${FIXTURE:-tests/data/av1_tiles_320x240_10.ivf}"
+oracle_src="${ORACLE_SRC:-}"
+dump_oracle="${DUMP_ORACLE:-}"
 here="$(cd "$(dirname "$0")" && pwd)"
 archive="$(mktemp /tmp/rk-mpp-rs-av1.XXXXXX.tar)"
 
@@ -37,36 +43,50 @@ scp -q "$here/../tools/av1/compare_input_dumps.py" \
   "$board:$remote_root/compare_input_dumps.py"
 
 ssh "$board" \
-  env REMOTE_ROOT="$remote_root" JOBS="$jobs" FRAMES="$frames" \
+  env REMOTE_ROOT="$remote_root" JOBS="$jobs" FRAMES="$frames" FIXTURE="$fixture" \
+  ORACLE_SRC="$oracle_src" DUMP_ORACLE="$dump_oracle" \
   bash -s <<'REMOTE'
 set -euo pipefail
 
 repo="$REMOTE_ROOT/rk-mpp-rs"
 oracle_src="${ORACLE_SRC:-$HOME/rk-mpp-oracles/mpp-develop}"
 dump_oracle="${DUMP_ORACLE:-$HOME/rk-mpp-oracles/mpp-av1-dump-v2}"
-fixture="$repo/tests/data/av1_tiles_320x240_10.ivf"
+case "$FIXTURE" in
+  /*) fixture="$FIXTURE" ;;
+  *) fixture="$repo/$FIXTURE" ;;
+esac
 
 mkdir "$repo"
 tar -xf "$REMOTE_ROOT/source.tar" -C "$repo"
 
-if [ ! -d "$oracle_src/.git" ]; then
-  printf 'missing C oracle checkout: %s\n' "$oracle_src" >&2
+if [ ! -d "$oracle_src/.git" ] && [ ! -d "$oracle_src/mpp" ]; then
+    printf 'missing C oracle source: %s\n' "$oracle_src" >&2
   exit 1
 fi
 mkdir -p "$(dirname "$dump_oracle")"
-if [ ! -e "$dump_oracle" ]; then
+if [ -d "$oracle_src/.git" ] && [ ! -e "$dump_oracle" ]; then
   git clone --shared "$oracle_src" "$dump_oracle"
-elif [ ! -d "$dump_oracle/.git" ]; then
+elif [ -d "$oracle_src/.git" ] && [ ! -d "$dump_oracle/.git" ]; then
   printf 'refusing non-git dump oracle path: %s\n' "$dump_oracle" >&2
   exit 1
+elif [ ! -e "$dump_oracle" ]; then
+    mkdir "$dump_oracle"
+    tar -C "$oracle_src" --exclude build-dump -cf - . |
+        tar -C "$dump_oracle" -xf -
 fi
 
 source_file="$dump_oracle/mpp/hal/vpu/av1d/hal_av1d_vdpu.c"
 if grep -q '^#define DUMP_AV1_DATAS 0$' "$source_file"; then
-  git -C "$dump_oracle" apply --unidiff-zero \
-    --check "$REMOTE_ROOT/av1_reg_dump.patch"
-  git -C "$dump_oracle" apply --unidiff-zero \
-    "$REMOTE_ROOT/av1_reg_dump.patch"
+    if [ -d "$dump_oracle/.git" ]; then
+        git -C "$dump_oracle" apply --unidiff-zero \
+            --check "$REMOTE_ROOT/av1_reg_dump.patch"
+        git -C "$dump_oracle" apply --unidiff-zero \
+            "$REMOTE_ROOT/av1_reg_dump.patch"
+    else
+        patch -d "$dump_oracle" -p1 --dry-run \
+            <"$REMOTE_ROOT/av1_reg_dump.patch"
+        patch -d "$dump_oracle" -p1 <"$REMOTE_ROOT/av1_reg_dump.patch"
+    fi
 elif ! grep -q '^#define DUMP_AV1_DATAS 1$' "$source_file"; then
   printf 'unexpected DUMP_AV1_DATAS setting in %s\n' "$source_file" >&2
   exit 1
@@ -77,7 +97,12 @@ if ! grep -q 'getenv("AV1_DATA_DUMP_DIR")' "$source_file"; then
   exit 1
 fi
 
-printf 'building C dump oracle at %s\n' "$(git -C "$dump_oracle" rev-parse --short HEAD)"
+if [ -d "$dump_oracle/.git" ]; then
+    printf 'building C dump oracle at %s\n' \
+        "$(git -C "$dump_oracle" rev-parse --short HEAD)"
+else
+    printf 'building C dump oracle from a source snapshot\n'
+fi
 cmake -S "$dump_oracle" -B "$dump_oracle/build-dump" \
   -DCMAKE_BUILD_TYPE=Release >/dev/null
 cmake --build "$dump_oracle/build-dump" -j"$(nproc)" >/dev/null

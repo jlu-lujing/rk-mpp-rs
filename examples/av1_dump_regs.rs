@@ -49,6 +49,24 @@ fn main() {
             break;
         }
     }
+    if std::env::var_os("AV1_HEADER_TRACE").is_some() {
+        for (index, (coded, _)) in jobs.iter().enumerate() {
+            eprintln!(
+                "job {index}: primary={} allow_warped={} global={:?}",
+                coded.header.primary_ref_frame,
+                coded.header.allow_warped_motion,
+                coded.header.global_motion
+            );
+            for (slot, reference) in coded.references_at_header.iter().enumerate() {
+                if reference.valid {
+                    eprintln!(
+                        "  slot {slot}: order={} warped={:?}",
+                        reference.order_hint, reference.warped_motion
+                    );
+                }
+            }
+        }
+    }
 
     let mut state = Av1RegisterState::default();
     let mut reference_frames: [Option<usize>; 8] = [None; 8];
