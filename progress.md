@@ -96,6 +96,8 @@
   `d3fa0c0d…10180`).
 - Added a deterministic profile 0x48 stream generator and hardware gate. The
   derived four-frame raw/SDK output matches C (`9eb0602a…5cfa4`).
+- Added a base1 weighted-quant/chroma-delta/model2 derived stream; four raw
+  frames match C exactly (`669ae431…4ff9f`).
 
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.

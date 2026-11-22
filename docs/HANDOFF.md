@@ -1470,7 +1470,7 @@ colmv。下一步转到跨 SoC 验收和其余解码边界，不再重复队列�
   功能/边界矩阵现在为 **15/15**。
 - RK3588 回退门仍使用 VDPU34x：既有 7/7 H.264 回归通过，证明分派没有破坏
   RK3588。
-- 下一步：完成 AVS+ profile 0x48 的 weighting-quant/AEC 和 field picture，以及 VPU720 tile input 与
+- 下一步：完成 AVS+ profile 0x48 的 AEC 和 field picture，以及 VPU720 tile input 与
   VDPP2 剩余组合。RK3588 client 12 的 Rust 公开 7 帧 I/P/B
   cycle 已与 C 原始输出逐字节一致（`47d05886…5fdb20`，vproc 关闭）；C
   第二个公开 6 帧 cycle 也一致（`e6069fc1…78f29`）。C 默认 IEP2 vproc
@@ -1480,7 +1480,7 @@ colmv。下一步转到跨 SoC 验收和其余解码边界，不再重复队列�
 
 ### 5.7 解码器边缘
 
-- AVS+（client 12；raw/vproc 与派生 0x48 raw 逐字节，0x48 扩展/field 待做）；
+- AVS+（client 12；raw/vproc、派生 0x48 与 weighted-quant 逐字节，AEC/field 待做）；
   AVS2（当前 RK3588 无设备）
 - AVS+ 已进入普通 `sdk::Codec::Avs` 和 C ABI `RK_MPP_CODEC_AVS=10`；
   `examples/sdk_decode avs` 与 `avsdec` 在公开流上输出相同。CLI 支持原生

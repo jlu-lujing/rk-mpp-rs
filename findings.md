@@ -541,6 +541,9 @@
 - `gen_avs_plus_profile.py` derives a syntax-equivalent profile 0x48 stream by
   preserving slice data and adding the AVS+ header bits with weighting/AEC
   disabled. Its first four raw frames match C exactly (`9eb0602a…5cfa4`).
+- Enabling base1 weighted quant with chroma deltas and model2 also decodes
+  byte-exactly through C and Rust (`669ae431…4ff9f`). AEC cannot be validated by
+  header derivation because it changes slice entropy coding.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

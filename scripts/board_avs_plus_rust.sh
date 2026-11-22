@@ -11,6 +11,8 @@ fixture_sha=d296affc27c5977565a18d85897be82a3b1c77c9165b8928e6e5eaad698a736e
 fixture2_sha=fa2055cfad0b1d554f2bb87ed4e02254c52b481a9b5b07d49c25a09533c83565
 profile48="${PROFILE48:-/tmp/avs_plus_profile48.avs}"
 profile48_sha=50d88acc3e37efa6a2112a01aebee540a317295986036e21104f98621ac8e7cc
+profile48_weighted="${PROFILE48_WEIGHTED:-/tmp/avs_plus_profile48_weighted.avs}"
+profile48_weighted_sha=5142083a95fb5235de025785c3c8dece67c93832e0cd70392a6fa37e373cdf99
 
 if [ ! -s "$fixture" ]; then
   curl -L --fail --silent \
@@ -26,10 +28,14 @@ test "$(sha256sum "$fixture" | cut -d' ' -f1)" = "$fixture_sha"
 test "$(sha256sum "$fixture2" | cut -d' ' -f1)" = "$fixture2_sha"
 python3 "$(dirname "$0")/gen_avs_plus_profile.py" \
   "$fixture" "$profile48" first-sequence >/dev/null
+python3 "$(dirname "$0")/gen_avs_plus_profile.py" \
+  "$fixture" "$profile48_weighted" weighted-base1-first >/dev/null
 test "$(sha256sum "$profile48" | cut -d' ' -f1)" = "$profile48_sha"
+test "$(sha256sum "$profile48_weighted" | cut -d' ' -f1)" = "$profile48_weighted_sha"
 scp -q "$fixture" "$BOARD":/tmp/avs_stream01.avs
 scp -q "$fixture2" "$BOARD":/tmp/avs_stream03.avs
 scp -q "$profile48" "$BOARD":/tmp/avs_plus_profile48.avs
+scp -q "$profile48_weighted" "$BOARD":/tmp/avs_plus_profile48_weighted.avs
 
 COPYFILE_DISABLE=1 tar --no-xattrs \
   --exclude .git --exclude target --exclude .worktrees --exclude refs \
@@ -114,3 +120,15 @@ ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs48_r.nv12)\" -eq 608256"
 ssh "$BOARD" "cmp -s /tmp/avs48_c.nv12 /tmp/avs48_r.nv12"
 ssh "$BOARD" "cmp -s /tmp/avs48_c.yuv /tmp/avs48_sdk.yuv"
 printf 'PASS AVS+ profile 0x48 raw CLI/SDK cycle is byte-identical to vendor C\n'
+
+ssh "$BOARD" "sudo rm -f /tmp/avs48w_c.nv12 /tmp/avs48w_r.nv12"
+ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
+  \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_plus_profile48_weighted.avs \
+  -o /tmp/avs48w_c.nv12 -t 16777221 -n 4 \
+  </dev/null >/tmp/avs48w_c.log 2>&1"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/rk-mpp-rs avsdec /tmp/avs_plus_profile48_weighted.avs \
+  /tmp/avs48w_r.nv12 4 nv12 >/tmp/avs48w_r.log 2>&1"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs48w_r.nv12)\" -eq 608256"
+ssh "$BOARD" "cmp -s /tmp/avs48w_c.nv12 /tmp/avs48w_r.nv12"
+printf 'PASS AVS+ profile 0x48 weighted-quant cycle is byte-identical to vendor C\n'

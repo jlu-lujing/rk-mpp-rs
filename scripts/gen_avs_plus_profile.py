@@ -101,7 +101,15 @@ def append_bits(out: bytearray, position: int, value: int, count: int) -> int:
     return position
 
 
-def transform_header(payload: bytes, end: int) -> bytes:
+def append_se(out: bytearray, position: int, value: int) -> int:
+    code = value * 2 - 1 if value > 0 else -value * 2
+    encoded = code + 1
+    width = encoded.bit_length()
+    position = append_bits(out, position, 0, width - 1)
+    return append_bits(out, position, encoded, width)
+
+
+def transform_header(payload: bytes, end: int, weight_mode: str) -> bytes:
     out = bytearray()
     position = 0
     for start, stop in ((0, 16), (16, end)):
@@ -111,14 +119,30 @@ def transform_header(payload: bytes, end: int) -> bytes:
         if start == 0:
             position = append_bits(out, position, 1, 1)  # marker bit
             position = append_bits(out, position, 0, 7)  # bbv delay extension
-    position = append_bits(out, position, 0, 1)  # weighting_quant_flag
+    if weight_mode != "none":
+        position = append_bits(out, position, 1, 1)  # weighting_quant_flag
+        position = append_bits(out, position, 0, 1)  # reserved
+        if weight_mode == "default":
+            position = append_bits(out, position, 1, 1)  # chroma disable
+            position = append_bits(out, position, 0, 2)  # default table
+            position = append_bits(out, position, 0, 2)  # model
+        else:
+            position = append_bits(out, position, 0, 1)
+            position = append_se(out, position, 1)
+            position = append_se(out, position, -1)
+            position = append_bits(out, position, 1, 2)  # base1 table
+            position = append_bits(out, position, 2, 2)  # model
+            for delta in (0, 1, -1, 2, -2, 3):
+                position = append_se(out, position, delta)
+    else:
+        position = append_bits(out, position, 0, 1)  # weighting_quant_flag
     position = append_bits(out, position, 0, 1)  # aec_enable
     if position % 8:
         position = append_bits(out, position, 0, 8 - position % 8)
     return bytes(out)
 
 
-def derive(source: bytes) -> bytes:
+def derive(source: bytes, weight_mode: str = "none") -> bytes:
     units = []
     index = 0
     while index + 3 < len(source):
@@ -149,7 +173,7 @@ def derive(source: bytes) -> bytes:
         out.extend(source[cursor : picture_start + 4])
         payload = source[picture_start + 4 : slice_start]
         end = parse_i_end(payload) if code == 0xB3 else parse_pb_end(payload)
-        out.extend(transform_header(payload, end))
+        out.extend(transform_header(payload, end, weight_mode))
         cursor = slice_start
     out.extend(source[cursor:])
 
@@ -162,11 +186,17 @@ def derive(source: bytes) -> bytes:
 def main() -> None:
     if len(sys.argv) not in (3, 4):
         raise SystemExit(
-            "usage: gen_avs_plus_profile.py <base.avs> <avs-plus.avs> [first-sequence]"
+            "usage: gen_avs_plus_profile.py <base.avs> <avs-plus.avs> "
+            "[first-sequence|weighted-first|weighted-base1-first]"
         )
     source = Path(sys.argv[1]).read_bytes()
-    output = derive(source)
-    if len(sys.argv) == 4 and sys.argv[3] == "first-sequence":
+    mode = sys.argv[3] if len(sys.argv) == 4 else "first-sequence"
+    weight_mode = {
+        "weighted-first": "default",
+        "weighted-base1-first": "base1",
+    }.get(mode, "none")
+    output = derive(source, weight_mode)
+    if mode in ("first-sequence", "weighted-first", "weighted-base1-first"):
         video_edit = output.find(b"\0\0\1\xb7", 0x100)
         if video_edit < 0:
             raise ValueError("first sequence has no video-edit boundary")
