@@ -67,7 +67,7 @@
   168 / 7.
 
 ### Phase 27: AVS+ Decoder
-- **Status:** public 7-frame I/P/B cycle complete; wider profiles and vproc open.
+- **Status:** public raw and default-vproc I/P/B cycles complete; wider profiles open.
 - Confirmed RK3588 `/proc/mpp_service/supports-device` exposes AVS+ client 12.
 - Public 352x288 Chinese AVS stream decodes through vendor C coding type
   `16777221` to exactly 152064-byte NV12, SHA
@@ -77,8 +77,8 @@
   decoder and `avsdec` CLI. `scripts/board_avs_plus_rust.sh` passes on RK3588:
   the raw NV12 output is byte-identical to C with vproc disabled
   (`3acac4154ddb203f52335baa74210357a0e9a83d7116e21e20be6897712e11c2`).
-- C's default IEP2 vproc runs after the decoder and produces the earlier
-  `9b9a6dc9…39088b` output; reproducing that pipeline remains separate work.
+- C's default IEP2 vproc runs after the decoder; the Rust `vproc` path now
+  reproduces its state machine, GMV and field-order output exactly.
 - Added PB header parsing, persistent C picture-header state, two-anchor
   reference rotation, video-edit chain resets, B-picture discard rules and
   displayed-slot-aware flush. The full public 7-frame I/P/B cycle now matches C
@@ -90,6 +90,10 @@
 - Added raw NV12 CLI output, a zero-copy DMA callback and a reusable-buffer
   writer. The 700-frame stress stream is byte-identical; three-run median is
   Rust 694 ms / C 825 ms with C vproc disabled.
+- Ported the AVS default IEP2 vproc state machine, including I1O1T startup,
+  alternating field order, I5O2 windows and GMV candidate updates. Both public
+  fixtures now match C default output exactly (`13e5e665…dad1d`,
+  `d3fa0c0d…10180`).
 
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.

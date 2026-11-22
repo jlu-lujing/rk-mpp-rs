@@ -51,6 +51,18 @@ ssh "$BOARD" "cmp -s /tmp/avs_c.yuv /tmp/avs_rust.yuv"
 ssh "$BOARD" "cmp -s /tmp/avs_rust.yuv /tmp/avs_sdk.yuv"
 printf 'PASS AVS+ Rust CLI/SDK 7-frame cycle is byte-identical to vendor C (352x288 I420)\n'
 
+ssh "$BOARD" "sudo rm -f /tmp/avs_vproc_c.nv12 /tmp/avs_vproc_r.nv12"
+ssh "$BOARD" "sudo env LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
+  \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_stream01.avs \
+  -o /tmp/avs_vproc_c.nv12 -t 16777221 -n 7 \
+  </dev/null >/tmp/avs_vproc_c.log 2>&1"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream01.avs /tmp/avs_vproc_r.nv12 7 vproc \
+  >/tmp/avs_vproc_r.log 2>&1"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_vproc_r.nv12)\" -eq 1064448"
+ssh "$BOARD" "cmp -s /tmp/avs_vproc_c.nv12 /tmp/avs_vproc_r.nv12"
+printf 'PASS AVS+ Rust default IEP2 vproc cycle is byte-identical to vendor C\n'
+
 ssh "$BOARD" "sudo rm -f /tmp/avs03_c.nv12 /tmp/avs03_c.yuv /tmp/avs03_r.yuv"
 ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
   \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_stream03.avs \
@@ -65,3 +77,15 @@ ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
 ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs03_r.yuv)\" -eq 912384"
 ssh "$BOARD" "cmp -s /tmp/avs03_c.yuv /tmp/avs03_r.yuv"
 printf 'PASS AVS+ Rust stream03 6-frame cycle is byte-identical to vendor C\n'
+
+ssh "$BOARD" "sudo rm -f /tmp/avs03_vproc_c.nv12 /tmp/avs03_vproc_r.nv12"
+ssh "$BOARD" "sudo env LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
+  \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_stream03.avs \
+  -o /tmp/avs03_vproc_c.nv12 -t 16777221 -n 6 \
+  </dev/null >/tmp/avs03_vproc_c.log 2>&1"
+ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
+  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream03.avs /tmp/avs03_vproc_r.nv12 6 vproc \
+  >/tmp/avs03_vproc_r.log 2>&1"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs03_vproc_r.nv12)\" -eq 912384"
+ssh "$BOARD" "cmp -s /tmp/avs03_vproc_c.nv12 /tmp/avs03_vproc_r.nv12"
+printf 'PASS AVS+ Rust stream03 default IEP2 vproc cycle is byte-identical to vendor C\n'

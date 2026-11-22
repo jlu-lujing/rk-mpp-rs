@@ -313,6 +313,10 @@ pub struct DeinterlaceJob<'a> {
     /// machine derived for this picture (`iep2_pd_get_output`). Zero unless the
     /// session runs PD/DECT.
     pub pd_mode: u32,
+    /// `mv_tru_list[8]` and `mv_tru_vld[8]` updated from the previous job's MV
+    /// histogram.
+    pub mv_tru_list: [i8; 8],
+    pub mv_tru_vld: [u32; 8],
     pub _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -393,6 +397,19 @@ pub fn build_deinterlace(job: &DeinterlaceJob) -> [u32; PARAMS_WORDS] {
     w[DIL_MODE] = job.dil_mode as u32;
     w[DIL_OUT_MODE] = job.out_mode as u32;
     w[DIL_FIELD_ORDER] = job.field_order as u32;
+    w[MV_TRU_LIST] = u32::from_le_bytes([
+        job.mv_tru_list[0] as u8,
+        job.mv_tru_list[1] as u8,
+        job.mv_tru_list[2] as u8,
+        job.mv_tru_list[3] as u8,
+    ]);
+    w[MV_TRU_LIST + 1] = u32::from_le_bytes([
+        job.mv_tru_list[4] as u8,
+        job.mv_tru_list[5] as u8,
+        job.mv_tru_list[6] as u8,
+        job.mv_tru_list[7] as u8,
+    ]);
+    w[MV_TRU_VLD..MV_TRU_VLD + 8].copy_from_slice(&job.mv_tru_vld);
 
     // Buffer addresses: three source frames, two output frames, mv/md scratch.
     set_img_addr(
@@ -459,6 +476,8 @@ mod tests {
             md_fd: 9,
             md_lambda: 4,
             pd_mode: 0,
+            mv_tru_list: [0; 8],
+            mv_tru_vld: [0; 8],
             _marker: std::marker::PhantomData,
         }
     }
@@ -579,5 +598,17 @@ mod tests {
         assert!(MTN_TAB >= DIL_MODE);
         // And the buffer block must sit at or below DIL_MODE.
         assert!(MD_ADDR < DIL_MODE);
+    }
+
+    #[test]
+    fn gmv_candidates_pack_into_the_c_byte_arrays() {
+        let mut job = job();
+        job.mv_tru_list = [-1, 2, 0, 0, 3, 0, 0, 0];
+        job.mv_tru_vld = [1, 1, 0, 0, 0, 0, 0, 0];
+        let w = build_deinterlace(&job);
+        assert_eq!(w[MV_TRU_LIST], 0x0000_02ff);
+        assert_eq!(w[MV_TRU_LIST + 1], 0x0000_0003);
+        assert_eq!(w[MV_TRU_VLD], 1);
+        assert_eq!(w[MV_TRU_VLD + 1], 1);
     }
 }

@@ -4820,7 +4820,7 @@ fn main() {
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/avs.yuv");
         if src.is_empty() {
-            eprintln!("usage: rk-mpp-rs avsdec <in.avs> <out.yuv> [max-frames] [i420|nv12]");
+            eprintln!("usage: rk-mpp-rs avsdec <in.avs> <out.yuv> [max-frames] [i420|nv12|vproc]");
             std::process::exit(1);
         }
         let max_frames = match args.get(4) {
@@ -4847,11 +4847,12 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        let output_nv12 = match args.get(5).map(String::as_str).unwrap_or("i420") {
-            "i420" => false,
-            "nv12" => true,
+        let output_format = match args.get(5).map(String::as_str).unwrap_or("i420") {
+            "i420" => "i420",
+            "nv12" => "nv12",
+            "vproc" => "vproc",
             value => {
-                eprintln!("output format must be i420 or nv12, got {value}");
+                eprintln!("output format must be i420, nv12 or vproc, got {value}");
                 std::process::exit(2);
             }
         };
@@ -4865,7 +4866,20 @@ fn main() {
         });
         let started = Instant::now();
         let mut failed = false;
-        let result = if output_nv12 {
+        let result = if output_format == "vproc" {
+            let mut frame_buffer = Vec::new();
+            decoder.decode_with_vproc(&data, max_frames, |bytes, err_info| {
+                if err_info != 0 {
+                    failed = true;
+                    eprintln!("vproc picture failed with err={err_info:#x}");
+                }
+                frame_buffer.clear();
+                frame_buffer.extend_from_slice(bytes);
+                output
+                    .write_all(&frame_buffer)
+                    .map_err(|error| error.to_string())
+            })
+        } else if output_format == "nv12" {
             let mut frame_buffer = Vec::new();
             decoder.decode_with_nv12(&data, max_frames, |bytes, err_info| {
                 if err_info != 0 {

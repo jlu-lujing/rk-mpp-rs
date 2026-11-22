@@ -7,6 +7,7 @@
 use std::io;
 
 use crate::codec::avs::parser::{self, AccessUnit};
+use crate::codec::avs::vproc::Vproc;
 use crate::codec::yuv::nv12_to_planar;
 use crate::hal::avsd_plus::{AvsdPlus, PictureJob, IRQ_BUFFER, IRQ_ERROR, IRQ_RDY};
 use crate::service::dma_heap::DmaBuf;
@@ -37,6 +38,7 @@ struct FrameSlot {
     picture_coding_type: u32,
     picture_distance: u32,
     is_i_picture: bool,
+    top_field_first: bool,
     displayed: bool,
     invalid: bool,
     hardware_error: bool,
@@ -211,6 +213,58 @@ impl Decoder {
         Ok(decoded)
     }
 
+    /// Decode and run the same stateful IEP2 post-process sequence as C MPP's
+    /// default AVS decoder path.
+    pub fn decode_with_vproc(
+        &mut self,
+        data: &[u8],
+        max_frames: usize,
+        mut emit: impl FnMut(&[u8], u32) -> Result<(), String>,
+    ) -> Result<usize, String> {
+        if max_frames == 0 {
+            return Ok(0);
+        }
+        let mut decoded = 0usize;
+        let mut vproc: Option<Vproc> = None;
+        for (start, end) in parser::split_access_units(data) {
+            let Some(output) = self.decode_access_output(&data[start..end])? else {
+                continue;
+            };
+            let slot = self.slots[output.index]
+                .as_ref()
+                .expect("output slot remains allocated");
+            if vproc.is_none() {
+                vproc = Some(Vproc::new(
+                    slot.surface.width,
+                    slot.surface.height,
+                    slot.surface.hor_stride,
+                    slot.surface.ver_stride,
+                )?);
+            }
+            let top_field_first = slot.top_field_first;
+            let raw = take_picture(slot, true)?;
+            self.slots[output.index]
+                .as_mut()
+                .expect("output slot remains allocated")
+                .displayed = true;
+            if output.release {
+                self.slots[output.index] = None;
+            }
+            for frame in vproc
+                .as_mut()
+                .expect("vproc was initialized")
+                .push(&raw.yuv, top_field_first)?
+            {
+                emit(&frame, raw.err_info)?;
+                decoded += 1;
+                if decoded == max_frames {
+                    return Ok(decoded);
+                }
+            }
+        }
+        Ok(decoded)
+    }
+
     /// Decode every complete access unit in `data`, retaining the final open
     /// unit until `eos` or the next start code proves it complete.
     pub fn decode_incremental(
@@ -351,6 +405,7 @@ impl Decoder {
             slot.picture_distance = picture.picture_distance;
             slot.picture_coding_type = picture.picture_coding_type;
             slot.is_i_picture = picture.picture_coding_type == parser::I_PICTURE;
+            slot.top_field_first = picture.top_field_first;
             slot.hardware_error = hard_error;
             slot.invalid = references_invalid;
         }
@@ -412,6 +467,7 @@ impl Decoder {
             picture_coding_type: parser::I_PICTURE,
             picture_distance: 0,
             is_i_picture: false,
+            top_field_first: false,
             displayed: false,
             invalid: false,
             hardware_error: false,

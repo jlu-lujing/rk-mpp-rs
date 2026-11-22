@@ -129,6 +129,8 @@ pub struct IepDeinterlace {
     /// `pd_mode` handed to the hardware for this frame, which is what the
     /// reference reports as `pd_flag` (it is captured before `iep2_done`).
     submitted_pd: u32,
+    mv_tru_list: [i8; 8],
+    mv_tru_vld: [u32; 8],
 }
 
 impl IepDeinterlace {
@@ -164,6 +166,8 @@ impl IepDeinterlace {
             imported_ver_stride: None,
             pd_mode: 0,
             submitted_pd: 0,
+            mv_tru_list: [0; 8],
+            mv_tru_vld: [0; 8],
             cfg,
         })
     }
@@ -189,6 +193,18 @@ impl IepDeinterlace {
     /// Row count stride used by the source and destination allocations.
     pub fn ver_stride(&self) -> usize {
         self.cfg.ver_stride
+    }
+
+    /// Select the next deinterlace mode. The vproc state machine uses this to
+    /// start with I1O1T and then switch to I5O2 after two anchors exist.
+    pub fn set_mode(&mut self, mode: Iep2DilMode) {
+        self.mode = mode;
+    }
+
+    /// Override the field order for the next picture, matching the syntax
+    /// side of C vproc's `fo_from_syntax` decision.
+    pub fn set_field_order(&mut self, field_order: Iep2FieldOrder) {
+        self.field_order = field_order;
     }
 
     /// Mutable view of source frame `i` ([current, next, previous]) for the
@@ -455,10 +471,25 @@ impl IepDeinterlace {
             md_fd: self.md.fd(),
             md_lambda: c.md_lambda,
             pd_mode: self.pd_mode,
+            mv_tru_list: self.mv_tru_list,
+            mv_tru_vld: self.mv_tru_vld,
             _marker: std::marker::PhantomData,
         };
         self.submitted_pd = self.pd_mode;
         let params = iep::build_deinterlace(&job);
+        if std::env::var_os("RFI_IEP_REG_DUMP").is_some() {
+            use std::io::Write as _;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/our_iep_regs.txt")
+            {
+                let _ = writeln!(file, "IEP");
+                for (index, word) in params.iter().enumerate() {
+                    let _ = writeln!(file, "reg[{index:03}] = {word:08x}");
+                }
+            }
+        }
 
         let mut output = [0u32; iep::OUTPUT_WORDS];
         let mut batch = Batch::new();
@@ -512,6 +543,18 @@ impl IepDeinterlace {
         ) {
             let stats = Iep2DectStats::from_words(&output);
             self.apply_stats(&stats);
+            if matches!(
+                mode,
+                Iep2DilMode::I5O2 | Iep2DilMode::I5O1T | Iep2DilMode::I5O1B
+            ) {
+                iep_pd::update_gmv(
+                    &output,
+                    self.cfg.height.div_ceil(4),
+                    self.cfg.width.div_ceil(16),
+                    &mut self.mv_tru_list,
+                    &mut self.mv_tru_vld,
+                );
+            }
             if self.pulldown.pdtype != iep_pd::PD_TYPES_UNKNOWN {
                 self.pd_mode = iep_pd::pulldown_mode(&self.pulldown).unwrap_or(-1) as u32;
                 self.mode = Iep2DilMode::Pd;

@@ -13,9 +13,10 @@
 //! final pixels.
 
 use crate::hal::iep::{
-    Iep2FieldOrder, OUTPUT_WORDS, OUT_DECT_FF_BLE_BCNT, OUT_DECT_FF_BLE_TCNT, OUT_DECT_FF_COMB_F,
-    OUT_DECT_FF_CUR_BCNT, OUT_DECT_FF_CUR_TCNT, OUT_DECT_FF_NXT_BCNT, OUT_DECT_FF_NXT_TCNT,
-    OUT_DECT_FF_NZ, OUT_DECT_PD_BCNT, OUT_DECT_PD_TCNT, OUT_FF_GRADT_BCNT, OUT_FF_GRADT_TCNT,
+    Iep2FieldOrder, MVL, MVR, OUTPUT_WORDS, OUT_DECT_FF_BLE_BCNT, OUT_DECT_FF_BLE_TCNT,
+    OUT_DECT_FF_COMB_F, OUT_DECT_FF_CUR_BCNT, OUT_DECT_FF_CUR_TCNT, OUT_DECT_FF_NXT_BCNT,
+    OUT_DECT_FF_NXT_TCNT, OUT_DECT_FF_NZ, OUT_DECT_PD_BCNT, OUT_DECT_PD_TCNT, OUT_FF_GRADT_BCNT,
+    OUT_FF_GRADT_TCNT, OUT_MV_HIST,
 };
 
 /// `FIELD_DIFF_SUM_THR` from `iep2_pd.c`.
@@ -102,6 +103,48 @@ impl Iep2DectStats {
             ff_comb_f: words[OUT_DECT_FF_COMB_F],
             gradt_tcnt: words[OUT_FF_GRADT_TCNT],
             gradt_bcnt: words[OUT_FF_GRADT_BCNT],
+        }
+    }
+}
+
+/// Port of `iep2_update_gmv()` with OSD disabled (`mv_ls` is empty).
+pub fn update_gmv(
+    output: &[u32; OUTPUT_WORDS],
+    tile_rows: usize,
+    tile_cols: usize,
+    mv_tru_list: &mut [i8; 8],
+    mv_tru_vld: &mut [u32; 8],
+) {
+    let bins = MVL + MVR + 1;
+    let mut bins_value = [0u32; MVL + MVR + 1];
+    bins_value.copy_from_slice(&output[OUT_MV_HIST..OUT_MV_HIST + bins]);
+    bins_value[MVL] = 0;
+
+    let mut map: [usize; MVL + MVR + 1] = std::array::from_fn(|index| index);
+    for start in 0..bins {
+        let mut maximum = start;
+        for candidate in start + 1..bins {
+            if bins_value[map[candidate]] > bins_value[map[maximum]] {
+                maximum = candidate;
+            }
+        }
+        map.swap(start, maximum);
+    }
+
+    mv_tru_list.fill(0);
+    mv_tru_vld.fill(0);
+    let threshold = 6 * ((tile_rows * tile_cols) >> 7) as u32;
+    for index in 0..8 {
+        let value = map[index];
+        if bins_value[value] > threshold {
+            mv_tru_list[index] = (value as i32 - MVL as i32) as i8;
+            mv_tru_vld[index] = 1;
+        } else {
+            if index == 0 {
+                mv_tru_list[0] = 0;
+                mv_tru_vld[0] = 1;
+            }
+            break;
         }
     }
 }
@@ -360,6 +403,18 @@ mod tests {
             gradt_bcnt: 31,
             ..Iep2DectStats::default()
         }
+    }
+
+    #[test]
+    fn gmv_tracks_the_strongest_nonzero_motion_bin() {
+        let mut output = [0u32; OUTPUT_WORDS];
+        output[OUT_MV_HIST + MVL + 2] = 49;
+        let mut list = [0i8; 8];
+        let mut valid = [0u32; 8];
+        update_gmv(&output, 32, 32, &mut list, &mut valid);
+        assert_eq!(list[0], 2);
+        assert_eq!(valid[0], 1);
+        assert_eq!(&valid[1..], &[0; 7]);
     }
 
     #[test]

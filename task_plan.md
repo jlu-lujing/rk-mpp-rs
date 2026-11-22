@@ -418,6 +418,7 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Expose AVS+ through the public SDK and C codec enum.
 - [x] Add a second public AVS fixture and compare its full display cycle.
 - [x] Add raw-NV12 CLI output and a 700-frame AVS performance gate.
+- [x] Reproduce C's default AVS IEP2 vproc output on both public fixtures.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

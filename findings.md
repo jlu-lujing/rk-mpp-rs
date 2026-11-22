@@ -534,6 +534,10 @@
   to C. Three wall-clock samples had a large spread; the median was Rust 694 ms
   versus C 825 ms with vproc disabled. The CLI now offers a reusable-buffer NV12
   sink and a direct DMA-mapping callback path.
+- C's default AVS path is now reproduced through a stateful Rust IEP2 pipeline:
+  I1O1T for the first frame, one anchor-only frame, then alternating TFF/BFF
+  I5O2 windows. Porting `iep2_update_gmv()` closed the last 164-word register
+  mismatch; both public fixtures match C byte-for-byte in `vproc` mode.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;
