@@ -327,6 +327,13 @@ cargo test --test fixture_manifest
   differences, spatial neighbor MV derivation, per-list direct MC, the BI
   blend, zero-residual skip reconstruction and coded direct residual syntax.
   The displayed B frame matches FFmpeg sample-exactly.
+- `h264_cabac_b_deblock_48x32` re-encodes the same three decoded frames with
+  libx264 Main-profile CABAC and `bframes=1:b-adapt=0:direct=spatial`,
+  `weightp=0:weightb=0:8x8dct=0:partitions=none:ref=1:deblock=1,0,0`.
+  Its B picture mixes direct and skip blocks and enables the loop filter. The
+  gate exercises B boundary strength across both motion lists, B luma/chroma
+  deblocking and the legal chroma AC-only residual layout. All three decoded
+  frames match FFmpeg sample-exactly.
 - `h264_cabac_b_temporal_direct_skip_48x32` keeps the same forced macroblock
   mix but selects temporal direct. The IDR/P/B POCs are 0/4/2, so the colocated
   P-frame list-0 motion is projected with scale factor 128 into the B frame's

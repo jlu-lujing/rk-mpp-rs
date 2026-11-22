@@ -72,6 +72,11 @@ hardware reference map 现在包含当前 tile-output frame，消除了 `0x2109`
 表面为 0。现在单色输出填充 neutral 128（10-bit 为 512），320x240 I420
 115,200 bytes 与 `aomdec` 逐字节一致（`df3a2fe1…e909b`），门为
 `scripts/board_av1_monochrome.sh`。
+第 118 slice 完成 H.264 CABAC B-frame deblocking。`DeblockMap` 现在同时携带
+L0/L1 的 reference 和 4×4 MV；B boundary strength 按双列表规则计算，未使用列表
+用 sentinel 表示。新的 48x32 IDR+P+B fixture 混合 direct/skip 并开启 loop filter，
+三帧与 FFmpeg 逐像素一致。该门还修正 chroma AC-only residual：AC 存在而 DC
+缺省时，DC 变换块应按全零处理，而不是拒绝宏块。
 AV1 4:4:4 硬件边界也已收口：C `mpi_dec_test` 在 20 帧 10-bit 4:4:4 fixture
 上会在 AV1 parser 内 segfault，而 Rust hardware 之前会静默降成 4:2:0。现在
 hardware CLI 显式拒绝非 4:2:0，软件参考解码器仍以 9,216,000-byte 输出对齐
@@ -121,7 +126,7 @@ temporal direct 再通过 POC 0/4/2 的 distance scale 与 colocated P 16×16
 四个 MVD 和逐象限 MC；同一结构下的 L1/BI 8x8 子分区也已闭合双列表 MVD
 和临时双向预测；mixed L0 8x4/4x8/4x4 又覆盖完整的 2/2/4/1 MVD 几何。
 当前仍缺 weighted P_Skip、col-zero B reference、mixed-list/BI B 宏块分区、
-direct 与 L1/BI 非 8x8 B_8x8、weighted/deblock B。
+direct 与 L1/BI 非 8x8 B_8x8、weighted B。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 

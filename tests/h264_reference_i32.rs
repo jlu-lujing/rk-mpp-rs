@@ -4,7 +4,7 @@ use rk_mpp_rs::reference::h264_cabac::{
     decode_cabac_p_skip_slice, decode_cabac_p_slice, CabacReferenceFrame,
     CabacReferenceMotionFrame, DecodedMotionPartition,
 };
-use rk_mpp_rs::reference::h264_deblock::{deblock_i_picture, deblock_p_picture};
+use rk_mpp_rs::reference::h264_deblock::{deblock_b_picture, deblock_i_picture, deblock_p_picture};
 use rk_mpp_rs::reference::h264_recon::PlaneMut;
 use rk_mpp_rs::reference::h264_slice::decode_i_slice;
 
@@ -376,6 +376,16 @@ fn cabac_b_8x8_mixed_l0_matches_ffmpeg_yuv420p() {
         include_bytes!("../tests/data/h264_cabac_b_8x8_mixed_l0_48x32.264"),
         include_bytes!("../tests/data/h264_cabac_b_8x8_mixed_l0_48x32.yuv"),
         Some(0),
+    )
+    .unwrap();
+}
+
+#[test]
+fn cabac_b_deblocking_matches_ffmpeg_yuv420p() {
+    compare_cabac_b16_fixture_with_deblock(
+        include_bytes!("../tests/data/h264_cabac_b_deblock_48x32.264"),
+        include_bytes!("../tests/data/h264_cabac_b_deblock_48x32.yuv"),
+        None,
     )
     .unwrap();
 }
@@ -1166,6 +1176,23 @@ fn compare_cabac_b16_fixture(
     expected: &[u8],
     expected_prediction_list: Option<u8>,
 ) -> Result<(), String> {
+    compare_cabac_b16_fixture_inner(stream, expected, expected_prediction_list, false)
+}
+
+fn compare_cabac_b16_fixture_with_deblock(
+    stream: &[u8],
+    expected: &[u8],
+    expected_prediction_list: Option<u8>,
+) -> Result<(), String> {
+    compare_cabac_b16_fixture_inner(stream, expected, expected_prediction_list, true)
+}
+
+fn compare_cabac_b16_fixture_inner(
+    stream: &[u8],
+    expected: &[u8],
+    expected_prediction_list: Option<u8>,
+    apply_deblock: bool,
+) -> Result<(), String> {
     let nals = split_annex_b(stream);
     let sps = parse_sps(
         &nals
@@ -1293,6 +1320,40 @@ fn compare_cabac_b16_fixture(
                 "B fixture did not decode as prediction list {expected_prediction_list}"
             ));
         }
+    }
+    if apply_deblock {
+        if !pps.deblocking_filter_control || headers[b_index].deblocking_disable_idc == 1 {
+            return Err("B deblock fixture does not enable deblocking".into());
+        }
+        let mut yp = PlaneMut {
+            data: &mut b_y,
+            width,
+            height,
+            stride: width,
+        };
+        let mut up = PlaneMut {
+            data: &mut b_u,
+            width: cw,
+            height: ch,
+            stride: cw,
+        };
+        let mut vp = PlaneMut {
+            data: &mut b_v,
+            width: cw,
+            height: ch,
+            stride: cw,
+        };
+        deblock_b_picture(
+            &mut yp,
+            Some(&mut up),
+            Some(&mut vp),
+            &decoded.deblock,
+            sps.bit_depth_luma as u8,
+            headers[b_index].deblocking_alpha * 2,
+            headers[b_index].deblocking_beta * 2,
+            [pps.chroma_qp_offset, pps.second_chroma_qp_offset],
+        )
+        .map_err(str::to_owned)?;
     }
     let mut actual = Vec::with_capacity(frame_len);
     for plane in [&b_y, &b_u, &b_v] {

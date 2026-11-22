@@ -314,6 +314,8 @@ pub fn decode_cabac_p_skip_slice(
             chroma_non_zero: [vec![vec![0; 4]; total_mbs], vec![vec![0; 4]; total_mbs]],
             motion_vectors: Some(vec![[[0, 0]; 16]; total_mbs]),
             reference_indices: Some(vec![[0; 16]; total_mbs]),
+            motion_vectors_l1: None,
+            reference_indices_l1: None,
         },
         motion_partitions: Vec::new(),
     })
@@ -626,7 +628,7 @@ pub fn decode_cabac_p_multi_ref_slice(
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
-        deblock: state.deblock_map(Some(motion_vectors), Some(reference_indices)),
+        deblock: state.deblock_map(Some(motion_vectors), Some(reference_indices), None, None),
         motion_partitions,
     })
 }
@@ -820,8 +822,8 @@ pub fn decode_cabac_b16_slice(
     if pps.weighted_bipred_idc != 0 {
         return Err(H264CabacError::Unsupported("weighted B16"));
     }
-    if slice.deblocking_disable_idc != 1 {
-        return Err(H264CabacError::Unsupported("B16 deblocking"));
+    if slice.deblocking_disable_idc > 1 {
+        return Err(H264CabacError::Unsupported("B16 slice-edge deblocking"));
     }
     if slice
         .mod_l0
@@ -1470,7 +1472,30 @@ pub fn decode_cabac_b16_slice(
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
-        deblock: state.deblock_map(Some(motion_vectors), Some(reference_indices)),
+        deblock: {
+            let mut motion_l0 = motion_vectors;
+            let mut references_l0 = reference_indices;
+            let mut motion_l1 = motion_vectors_l1;
+            let mut references_l1 = reference_indices_l1;
+            for mb in 0..total_mbs {
+                for block in 0..16 {
+                    if !motion_valid[mb][block] {
+                        motion_l0[mb][block] = [0, 0];
+                        references_l0[mb][block] = 0xff;
+                    }
+                    if !motion_valid_l1[mb][block] {
+                        motion_l1[mb][block] = [0, 0];
+                        references_l1[mb][block] = 0xff;
+                    }
+                }
+            }
+            state.deblock_map(
+                Some(motion_l0),
+                Some(references_l0),
+                Some(motion_l1),
+                Some(references_l1),
+            )
+        },
         motion_partitions,
     })
 }
@@ -2415,6 +2440,8 @@ impl CabacPictureState {
         &self,
         motion_vectors: Option<Vec<[[i32; 2]; 16]>>,
         reference_indices: Option<Vec<[u8; 16]>>,
+        motion_vectors_l1: Option<Vec<[[i32; 2]; 16]>>,
+        reference_indices_l1: Option<Vec<[u8; 16]>>,
     ) -> DeblockMap {
         DeblockMap {
             mb_width: self.mb_width,
@@ -2425,6 +2452,8 @@ impl CabacPictureState {
             chroma_non_zero: self.chroma_counts.clone(),
             motion_vectors,
             reference_indices,
+            motion_vectors_l1,
+            reference_indices_l1,
         }
     }
 }
@@ -2544,6 +2573,8 @@ pub fn decode_cabac_i_slice(
                     ],
                     motion_vectors: None,
                     reference_indices: None,
+                    motion_vectors_l1: None,
+                    reference_indices_l1: None,
                 },
                 motion_partitions: Vec::new(),
             });
@@ -2800,6 +2831,8 @@ pub fn decode_cabac_i_slice(
         ],
         motion_vectors: None,
         reference_indices: None,
+        motion_vectors_l1: None,
+        reference_indices_l1: None,
     };
     if !decoder.decode_terminate() {
         return Err(H264CabacError::Malformed("missing end_of_slice_flag"));
@@ -2892,7 +2925,7 @@ pub fn decode_cabac_i_picture_slices(
                 macroblocks,
                 end_bit,
                 final_qp,
-                deblock: state.deblock_map(None, None),
+                deblock: state.deblock_map(None, None, None, None),
                 motion_partitions: Vec::new(),
             });
         }
@@ -2901,7 +2934,7 @@ pub fn decode_cabac_i_picture_slices(
         macroblocks,
         end_bit,
         final_qp,
-        deblock: state.deblock_map(None, None),
+        deblock: state.deblock_map(None, None, None, None),
         motion_partitions: Vec::new(),
     })
 }
@@ -3060,7 +3093,7 @@ fn decode_cabac_i_slice_into_picture(
         macroblocks,
         end_bit: slice.data_offset_bits + decoder.bit_pos(),
         final_qp: qp as u8,
-        deblock: state.deblock_map(None, None),
+        deblock: state.deblock_map(None, None, None, None),
         motion_partitions: Vec::new(),
     })
 }

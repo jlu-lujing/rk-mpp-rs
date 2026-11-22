@@ -478,14 +478,11 @@ pub fn assemble_i_macroblock_residual(
 
     if let Some((grid_width, grid_height)) = chroma_geometry {
         for plane in 0..2 {
-            if residual.chroma_ac[plane].iter().any(Option::is_some)
-                && residual.chroma_dc[plane].is_none()
-            {
-                return Err(H264ResidualError::InvalidPlane("chroma AC without DC"));
-            }
-            let Some(dc) = &residual.chroma_dc[plane] else {
+            let has_ac = residual.chroma_ac[plane].iter().any(Option::is_some);
+            let dc = residual.chroma_dc[plane].as_ref();
+            if dc.is_none() && !has_ac {
                 continue;
-            };
+            }
             let chroma_qp = chroma_qp(
                 i32::from(options.qp),
                 options.chroma_qp_offset[plane],
@@ -493,30 +490,34 @@ pub fn assemble_i_macroblock_residual(
             )
             .map_err(H264ResidualError::Dequant)?;
             let block_count = grid_width * grid_height;
-            let dc_values = if options.transform_bypass {
-                chroma_dc_transform_bypass(&dc.scan[..block_count], options.scan8)
-                    .map_err(H264ResidualError::Dequant)?
-            } else {
-                let scale = options.chroma_4x4_scaling[plane].map_or(16, |matrix| matrix[0]);
-                if context.chroma_format_idc == 1 {
-                    dequant_chroma_dc_420(
-                        dc.scan[..4].try_into().unwrap(),
-                        chroma_qp,
-                        options.bit_depth_chroma,
-                        scale,
-                    )
-                    .map_err(H264ResidualError::Dequant)?
-                    .to_vec()
+            let dc_values = if let Some(dc) = dc {
+                if options.transform_bypass {
+                    chroma_dc_transform_bypass(&dc.scan[..block_count], options.scan8)
+                        .map_err(H264ResidualError::Dequant)?
                 } else {
-                    dequant_chroma_dc_422(
-                        dc.scan[..8].try_into().unwrap(),
-                        chroma_qp + 3,
-                        options.bit_depth_chroma,
-                        scale,
-                    )
-                    .map_err(H264ResidualError::Dequant)?
-                    .to_vec()
+                    let scale = options.chroma_4x4_scaling[plane].map_or(16, |matrix| matrix[0]);
+                    if context.chroma_format_idc == 1 {
+                        dequant_chroma_dc_420(
+                            dc.scan[..4].try_into().unwrap(),
+                            chroma_qp,
+                            options.bit_depth_chroma,
+                            scale,
+                        )
+                        .map_err(H264ResidualError::Dequant)?
+                        .to_vec()
+                    } else {
+                        dequant_chroma_dc_422(
+                            dc.scan[..8].try_into().unwrap(),
+                            chroma_qp + 3,
+                            options.bit_depth_chroma,
+                            scale,
+                        )
+                        .map_err(H264ResidualError::Dequant)?
+                        .to_vec()
+                    }
                 }
+            } else {
+                vec![0; block_count]
             };
             for block in 0..block_count {
                 let mut coefficients = if let Some(syntax) = &residual.chroma_ac[plane][block] {
@@ -626,14 +627,11 @@ pub fn assemble_inter_macroblock_residual(
 
     if let Some((grid_width, grid_height)) = chroma_geometry {
         for plane in 0..2 {
-            if residual.chroma_ac[plane].iter().any(Option::is_some)
-                && residual.chroma_dc[plane].is_none()
-            {
-                return Err(H264ResidualError::InvalidPlane("chroma AC without DC"));
-            }
-            let Some(dc) = &residual.chroma_dc[plane] else {
+            let has_ac = residual.chroma_ac[plane].iter().any(Option::is_some);
+            let dc = residual.chroma_dc[plane].as_ref();
+            if dc.is_none() && !has_ac {
                 continue;
-            };
+            }
             let chroma_qp = chroma_qp(
                 i32::from(options.qp),
                 options.chroma_qp_offset[plane],
@@ -641,30 +639,34 @@ pub fn assemble_inter_macroblock_residual(
             )
             .map_err(H264ResidualError::Dequant)?;
             let block_count = grid_width * grid_height;
-            let dc_values = if options.transform_bypass {
-                chroma_dc_transform_bypass(&dc.scan[..block_count], options.scan8)
-                    .map_err(H264ResidualError::Dequant)?
-            } else {
-                let scale = options.chroma_4x4_scaling[plane].map_or(16, |matrix| matrix[0]);
-                if context.chroma_format_idc == 1 {
-                    dequant_chroma_dc_420(
-                        dc.scan[..4].try_into().unwrap(),
-                        chroma_qp,
-                        options.bit_depth_chroma,
-                        scale,
-                    )
-                    .map_err(H264ResidualError::Dequant)?
-                    .to_vec()
+            let dc_values = if let Some(dc) = dc {
+                if options.transform_bypass {
+                    chroma_dc_transform_bypass(&dc.scan[..block_count], options.scan8)
+                        .map_err(H264ResidualError::Dequant)?
                 } else {
-                    dequant_chroma_dc_422(
-                        dc.scan[..8].try_into().unwrap(),
-                        chroma_qp + 3,
-                        options.bit_depth_chroma,
-                        scale,
-                    )
-                    .map_err(H264ResidualError::Dequant)?
-                    .to_vec()
+                    let scale = options.chroma_4x4_scaling[plane].map_or(16, |matrix| matrix[0]);
+                    if context.chroma_format_idc == 1 {
+                        dequant_chroma_dc_420(
+                            dc.scan[..4].try_into().unwrap(),
+                            chroma_qp,
+                            options.bit_depth_chroma,
+                            scale,
+                        )
+                        .map_err(H264ResidualError::Dequant)?
+                        .to_vec()
+                    } else {
+                        dequant_chroma_dc_422(
+                            dc.scan[..8].try_into().unwrap(),
+                            chroma_qp + 3,
+                            options.bit_depth_chroma,
+                            scale,
+                        )
+                        .map_err(H264ResidualError::Dequant)?
+                        .to_vec()
+                    }
                 }
+            } else {
+                vec![0; block_count]
             };
             for block in 0..block_count {
                 let mut coefficients = if let Some(syntax) = &residual.chroma_ac[plane][block] {
