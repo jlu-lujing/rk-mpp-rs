@@ -399,6 +399,8 @@ compatibility bottlenecks and make VEPU580 encode scheduling asynchronous.
 - [x] Carry the H.265 motion histograms through the 23-word aggregate STATUS.
 - [x] Use the H.265 896/640/384 CTU gate and complete the row-3 WGT/RDO overlay.
 - [x] Match a 320x240 moving 300-frame/five-GOP stream and add the board gate.
+- [x] Add an interleaved object-path benchmark with independent wall and CPU
+  limits; Rust is faster with lower user+sys at 320x240 and 720p.
 - [x] Bridge new upstream OSD, ROI and user-data metadata.
 - [x] Implement the userspace KMPP buffer object.
 - [ ] Finish kernel KMPP buffer-group/ioctl compatibility.

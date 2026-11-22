@@ -19,6 +19,9 @@
 - The unchanged official encoder gate passes H.264 one/six frames, H.265
   one/six frames and MJPEG. The host gate is
   `1383 passed / 0 failed / 47 ignored`.
+- Added an interleaved object-path benchmark at the persistent RK3588 80% OPP
+  cap. Across 300 frames and five samples, Rust is 8.0% faster in wall time at
+  320x240 and 6.7% faster at 720p; user+sys is 21.4% and 19.7% lower.
 
 ### Phase 19: Legacy `mpi_dec_test` Packet Compatibility
 - **Status:** complete on RK3588.

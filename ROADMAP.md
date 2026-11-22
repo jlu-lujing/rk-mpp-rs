@@ -4608,3 +4608,8 @@ pipeline uses.
   `d577adc9…32edea` on both sides. Its 300-job ioctl trace has zero
   non-address differences and only 13 DMA-buffer address words differ.
   `scripts/board_h265_scene_tune_300.sh` reproduces the gate.
+- **2026-11-22: upstream H.265 object throughput is ahead of C.** Five
+  interleaved 300-frame samples at the RK3588 80% OPP cap measure 320x240
+  Rust/C wall 149/162 ms and user+sys 55/70 ms; 1280x720 wall 806/864 ms and
+  user+sys 236/294 ms. Rust is 8.0%/6.7% faster in wall time and uses
+  21.4%/19.7% less user+sys CPU. The gate checks both metrics.

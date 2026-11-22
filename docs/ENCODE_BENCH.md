@@ -15,6 +15,28 @@ Board: RK3588, CPU and DDR governors pinned to `performance`.
   `scripts/strip_version_sei.py` removes exactly that NAL and the remaining
   streams are identical.
 
+## 2026-11-22: upstream H.265 object path after scene-tune closure
+
+The unchanged upstream `mpp_enc_test` was run once with vendor C and once with
+`librk_mpp_rs.so` preloaded. Both used the same 300-frame moving `testsrc2`
+input, fixed QP 26 and `-g 0:60`. RK3588 was at the persistent 80% OPP cap
+(little 1.416 GHz, big 1.8 GHz), DDR was `performance` at 2.112 GHz, and both
+commands were pinned to CPU 6. Five C/Rust samples were interleaved.
+
+| size | C wall | Rust wall | Rust wall gain | C user+sys | Rust user+sys | Rust CPU reduction |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 320x240 | 162 ms | **149 ms** | **8.0%** | 70 ms | **55 ms** | **21.4%** |
+| 1280x720 | 864 ms | **806 ms** | **6.7%** | 294 ms | **236 ms** | **19.7%** |
+
+This is the current multi-GOP scene-tune path, not a single-GOP benchmark.
+The same 320x240 run is byte-identical to C at 315 NALs and SHA-256
+`d577adc9…32edea`; see `scripts/board_h265_scene_tune_300.sh`. The benchmark
+gate fails if Rust exceeds C by more than 5% in either wall or user+sys:
+
+```bash
+BOARD=my-rk3588-host SAMPLES=5 ./scripts/board_bench_h265_object_vs_mpp.sh
+```
+
 ## 2026-11-19: H.265 file-input pipeline
 
 `h265-gop` previously read each frame into a temporary `Vec` and then copied
@@ -221,4 +243,5 @@ knobs; only the direction is claimed.
 ```bash
 SAMPLES=7 scripts/board_bench_encode_vs_mpp.sh
 SAMPLES=7 scripts/board_bench_h265_encode_vs_mpp.sh
+BOARD=my-rk3588-host SAMPLES=7 ./scripts/board_bench_h265_object_vs_mpp.sh
 ```

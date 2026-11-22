@@ -473,6 +473,11 @@
 - With those fixes, a 320x240 moving 300-frame/five-GOP stream matches C at
   315 NALs and SHA-256 `d577adc9…32edea`. Across 300 ioctl jobs only the 13
   DMA-BUF address words differ; every non-address register word is identical.
+- The current upstream object path is already faster than C without spending
+  more CPU. Five interleaved 300-frame samples at the RK3588 80% OPP cap give
+  320x240 Rust/C wall 149/162 ms and user+sys 55/70 ms; 720p wall 806/864 ms
+  and user+sys 236/294 ms. The benchmark gate treats both wall and CPU as
+  hard limits rather than optimizing only elapsed time.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

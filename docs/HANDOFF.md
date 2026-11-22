@@ -414,6 +414,13 @@ dma-buf 地址字不同，所有非地址寄存器一致。复跑命令：
 BOARD=my-rk3588-host ./scripts/board_h265_scene_tune_300.sh
 ```
 
+同一路径的当前吞吐已在 RK3588 80% OPP、DDR `performance` @2.112 GHz、
+CPU6 固定下交错采样。300 帧多 GOP fixed-QP26 的五次中位数为：320x240
+C/Rust wall 162/149 ms、user+sys 70/55 ms；1280x720 wall 864/806 ms、
+user+sys 294/236 ms。Rust wall 快 8.0%/6.7%，CPU 少 21.4%/19.7%。
+`scripts/board_bench_h265_object_vs_mpp.sh` 对 wall 和 user+sys 都执行
+“Rust 不超过 C 的 105%”门槛，防止吞吐优势来自忙等或额外 CPU。
+
 `vdec_kcfg`/`venc_kcfg` 的句柄生命周期也已按 vendor 收紧：非法 type 返回
 `MPP_ERR_VALUE`，`init_by_name` 只接受 `KmppVdec*Cfg`/`KmppVenc*Cfg`
 规范族名，CTRL_CFG 初始化 `cmd/val/arg/ret`，flex base/set 仅允许 CTRL_CFG；
