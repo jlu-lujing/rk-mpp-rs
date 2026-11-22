@@ -1023,6 +1023,10 @@ impl Vepu580H264 {
         self.defer_tune = enabled;
     }
 
+    pub fn set_scene_mode(&mut self, ipc_scene_mode: bool) {
+        self.tune = SceneTune::new(ipc_scene_mode);
+    }
+
     pub fn set_pipeline(&mut self, enabled: bool) {
         self.pipeline = enabled;
     }

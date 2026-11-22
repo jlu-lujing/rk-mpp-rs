@@ -4613,3 +4613,11 @@ pipeline uses.
   Rust/C wall 149/162 ms and user+sys 55/70 ms; 1280x720 wall 806/864 ms and
   user+sys 236/294 ms. Rust is 8.0%/6.7% faster in wall time and uses
   21.4%/19.7% less user+sys CPU. The gate checks both metrics.
+- **2026-11-22: compatible encoder scene mode reaches H.265 row 0/1.**
+  `tune:scene_mode` now maps vendor modes 0/1/2 into the typed encoder config.
+  IPC row 0/1 WGT/RDO and the row-0 `RC_KLUT[1056]` offset were captured from
+  C. A 160-job trace gate has exact WGT/RDO/OSD sections, with row 0 at job 0
+  and row 1 at job 5. Default-mode 300-frame stream identity is unchanged.
+- **2026-11-22: compatible scene mode covers H.264 too.** The native H.264 CLI
+  accepts `H264_SCENE_MODE=1`; a 60-frame noise fixture matches the C probe at
+  64 NALs. The only file hash difference is the version-SEI build text.

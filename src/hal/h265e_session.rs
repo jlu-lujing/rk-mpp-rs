@@ -998,6 +998,10 @@ impl Vepu580H265 {
         self.force_cu_qp_delta = enabled;
     }
 
+    pub fn set_scene_mode(&mut self, ipc_scene_mode: bool) {
+        self.tune = SceneTune::new_h265(ipc_scene_mode);
+    }
+
     fn update_tune(&mut self, statistics: &Statistics) {
         self.tune.update_values(
             statistics.madi_sum,

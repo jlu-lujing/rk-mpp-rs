@@ -653,6 +653,7 @@ pub struct EncoderConfig {
     h265_syntax: H265SyntaxOptions,
     h265_full_range: Option<bool>,
     h265_force_cu_qp_delta: Option<bool>,
+    scene_mode: u8,
     roi: Option<RoiConfig>,
     gdr: Option<GdrConfig>,
     slice_split: Option<SliceSplitConfig>,
@@ -696,6 +697,7 @@ impl EncoderConfig {
             h265_syntax: H265_SYNTAX_DEFAULT,
             h265_full_range: None,
             h265_force_cu_qp_delta: None,
+            scene_mode: 0,
             roi: None,
             gdr: None,
             slice_split: None,
@@ -788,6 +790,10 @@ impl EncoderConfig {
 
     pub const fn gdr(self) -> Option<GdrConfig> {
         self.gdr
+    }
+
+    pub const fn scene_mode(self) -> u8 {
+        self.scene_mode
     }
 
     pub const fn slice_split(self) -> Option<SliceSplitConfig> {
@@ -891,6 +897,11 @@ impl EncoderConfig {
         self
     }
 
+    pub const fn with_scene_mode(mut self, scene_mode: u8) -> Self {
+        self.scene_mode = scene_mode;
+        self
+    }
+
     pub const fn with_h264_rc_tuning(mut self, tuning: H264RcTuning) -> Self {
         self.h264_rc_tuning = Some(tuning);
         self
@@ -912,6 +923,11 @@ impl EncoderConfig {
     }
 
     fn validate_advanced_controls(self) -> Result<(), Error> {
+        if self.scene_mode > 2 {
+            return Err(Error::InvalidInput(
+                "encoder scene_mode must be 0 (default), 1 (IPC) or 2 (IPC PTZ)".to_string(),
+            ));
+        }
         if self.roi.is_some() && self.gdr.is_some() {
             return Err(Error::Unsupported(
                 "ROI and GDR are not verified together".to_string(),
@@ -2613,7 +2629,10 @@ fn validate_h264_input(config: EncoderConfig) -> Result<(), Error> {
 
 fn open_h264_vepu580(config: EncoderConfig) -> Result<h264e::Vepu580H264, Error> {
     let h264 = h264_encoder_config(config)?;
-    h264e::Vepu580H264::open(h264).map_err(|error| Error::Hardware(error.to_string()))
+    let mut encoder =
+        h264e::Vepu580H264::open(h264).map_err(|error| Error::Hardware(error.to_string()))?;
+    encoder.set_scene_mode(config.scene_mode() == 1);
+    Ok(encoder)
 }
 
 fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error> {
@@ -2741,6 +2760,11 @@ fn h264_encoder_config(config: EncoderConfig) -> Result<H264EncoderConfig, Error
 }
 
 fn open_h264_vepu510(config: EncoderConfig) -> Result<vepu510_h264::Vepu510H264, Error> {
+    if config.scene_mode() != 0 {
+        return Err(Error::Unsupported(
+            "RK3576 H.264 scene-mode tuning is not exposed yet".to_string(),
+        ));
+    }
     if config.roi.is_some() || config.gdr.is_some() || config.slice_split.is_some() {
         return Err(Error::Unsupported(
             "RK3576 H.264 streaming ROI/GDR/slice controls are not exposed yet".to_string(),
@@ -2858,6 +2882,7 @@ fn open_h265_vepu580(
         .map_err(|error| Error::Hardware(error.to_string()))?;
     encoder.set_level(config.level());
     encoder.set_temporal_mvp(mpi_compat);
+    encoder.set_scene_mode(config.scene_mode() == 1);
     encoder.set_video_signal(
         config.h265_full_range.map(|_| 5),
         config.h265_full_range.unwrap_or(false),
@@ -2915,6 +2940,11 @@ fn open_h265_vepu510(
     config: EncoderConfig,
     _mpi_compat: bool,
 ) -> Result<vepu510_h265::Vepu510H265, Error> {
+    if config.scene_mode() != 0 {
+        return Err(Error::Unsupported(
+            "RK3576 H.265 scene-mode tuning is not exposed yet".to_string(),
+        ));
+    }
     if config.h265_syntax != H265SyntaxOptions::default() {
         return Err(Error::Unsupported(
             "RK3576 H.265 syntax tuning is not exposed yet".to_string(),
@@ -3462,6 +3492,7 @@ mod tests {
             .with_h264_deblock(deblock)
             .with_h264_syntax(syntax)
             .with_h264_rc_tuning(h264_tuning)
+            .with_scene_mode(1)
             .with_rate_control(rate_control);
         assert_eq!(config.codec(), Codec::H264);
         assert_eq!(config.input_format(), PixelFormat::I420);
@@ -3478,6 +3509,7 @@ mod tests {
         assert_eq!(config.h264_rc_tuning(), Some(h264_tuning));
         assert_eq!(config.h264_deblock(), Some(deblock));
         assert_eq!(config.h264_syntax(), Some(syntax));
+        assert_eq!(config.scene_mode(), 1);
         assert_eq!(config.rate_control(), Some(rate_control));
         assert!(rate_control.hier_qp_enabled());
         assert_eq!(rate_control.hier_qp_delta(), [1, 2, 3, 4]);
@@ -3497,6 +3529,11 @@ mod tests {
             .with_h264_deblock(H264DeblockConfig::new(0, 7, 0));
         assert!(matches!(
             invalid.validate_advanced_controls(),
+            Err(Error::InvalidInput(_))
+        ));
+        let invalid_scene = EncoderConfig::new(Codec::H265, 320, 240).with_scene_mode(3);
+        assert!(matches!(
+            invalid_scene.validate_advanced_controls(),
             Err(Error::InvalidInput(_))
         ));
     }

@@ -91,6 +91,10 @@
   的 300 帧跨 5 个 GOP，C/Rust 均为 **315 NAL**，整文件 SHA-256 同为
   `d577adc9…32edea`。状态机在第 107/227 帧切入 row 3、随后回到 row 2；
   300 个 ioctl job 仅剩 13 个 dma-buf 地址字不同，非地址寄存器差异为 0。
+  `tune:scene_mode` 现已接受 vendor 的 0/1/2；IPC 模式 row 0/1 另用高噪声
+  fixture 验证 160 个 job 的 WGT/RDO/OSD 与 C 逐字一致，row 0 在第 0 帧、
+  row 1 在第 5 帧切入。H.264 的同一配置也已用 60 帧验证，64 NAL 与 C
+  一致，整文件差异仅为 version-SEI 文本。
   H.264 默认保持同步（depth 1 无有效收益）；显式设置
   `RKMPP_ENCODER_PIPELINE=1 RKMPP_ENCODER_PIPELINE_DEPTH=2` 可到
   **0.331 s / 906 FPS**，C 为 0.362 s / 829 FPS。depth 2 的 scene-tune

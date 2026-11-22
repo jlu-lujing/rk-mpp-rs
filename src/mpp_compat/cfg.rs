@@ -105,6 +105,7 @@ pub(super) unsafe fn encoder_config(
     let fps_num = unsafe { cfg.get_or("rc:fps_in_num", 30) }.max(1) as u32;
     let fps_den = unsafe { cfg.get_or("rc:fps_in_denom", 1) }.max(1) as u32;
     let qp = unsafe { cfg.get_or("rc:qp_init", 26) }.clamp(0, 51) as u8;
+    let scene_mode = scene_mode(unsafe { cfg.get_or("tune:scene_mode", 0) })?;
     let profile_key = if codec == Codec::H265 {
         "h265:profile"
     } else {
@@ -142,7 +143,8 @@ pub(super) unsafe fn encoder_config(
         .with_qp(qp)
         .with_fps(fps_num, fps_den)
         .with_profile(profile)
-        .with_level(level);
+        .with_level(level)
+        .with_scene_mode(scene_mode);
     if codec == Codec::Mjpeg {
         result = result.with_jpeg_qfactor(jpeg_qfactor);
     }
@@ -384,6 +386,13 @@ fn gdr_config(enabled: i32, mode: i32, refresh_blocks: i32) -> Result<Option<Gdr
     Ok(Some(GdrConfig::new(mode, refresh_blocks as u32)))
 }
 
+fn scene_mode(value: i32) -> Result<u8, String> {
+    u8::try_from(value)
+        .ok()
+        .filter(|value| *value <= 2)
+        .ok_or_else(|| format!("tune:scene_mode must be 0..=2, got {value}"))
+}
+
 fn level_or_default(codec: Codec, level: Option<u8>, h265_unset_level: u8) -> u8 {
     match (codec, level) {
         (Codec::H264, None) => 30,
@@ -398,7 +407,7 @@ fn level_or_default(codec: Codec, level: Option<u8>, h265_unset_level: u8) -> u8
 
 #[cfg(test)]
 mod tests {
-    use super::{gdr_config, level_or_default};
+    use super::{gdr_config, level_or_default, scene_mode};
     use crate::encoder::GdrMode;
     use crate::sdk::Codec;
 
@@ -418,6 +427,15 @@ mod tests {
         assert!(gdr_config(1, 0, 0)
             .unwrap_err()
             .contains("refresh_num must be positive"));
+    }
+
+    #[test]
+    fn scene_mode_accepts_the_vendor_enum_only() {
+        assert_eq!(scene_mode(0).unwrap(), 0);
+        assert_eq!(scene_mode(1).unwrap(), 1);
+        assert_eq!(scene_mode(2).unwrap(), 2);
+        assert!(scene_mode(-1).unwrap_err().contains("0..=2"));
+        assert!(scene_mode(3).unwrap_err().contains("0..=2"));
     }
 
     #[test]

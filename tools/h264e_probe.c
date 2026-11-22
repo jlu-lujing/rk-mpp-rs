@@ -499,6 +499,9 @@ int main(int argc, char **argv)
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", hor_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", ver_stride));
     CHECK(mpp_enc_cfg_set_s32(cfg, "prep:format", input_format));
+    if (getenv("SCENE_MODE"))
+        CHECK(mpp_enc_cfg_set_s32(cfg, "tune:scene_mode",
+                                  atoi(getenv("SCENE_MODE"))));
     CHECK(mpp_enc_cfg_set_s32(cfg,
                               "rc:mode",
                               mode == 0 ? MPP_ENC_RC_MODE_FIXQP

@@ -478,6 +478,17 @@
   320x240 Rust/C wall 149/162 ms and user+sys 55/70 ms; 720p wall 806/864 ms
   and user+sys 236/294 ms. The benchmark gate treats both wall and CPU as
   hard limits rather than optimizing only elapsed time.
+- `tune:scene_mode` has three vendor values, but only IPC (`1`) changes the
+  VEPU580 tune branch. IPC-PTZ (`2`) still compares unequal to IPC in the HAL
+  and therefore follows the default path.
+- IPC row 0 is not just a different pre-intra table. It also changes WGT words
+  1793–1828 and `RC_KLUT[1056]`; row 1 returns the KLUT offset to zero but keeps
+  its own WGT/RDO tables. A 160-job C/Rust trace has exact WGT/RDO/OSD sections,
+  with row 0 at job 0 and row 1 at job 5.
+- H.264 shares the compatible scene-mode key but needs its own probe entry
+  because the object probe's baseline framing differs from the native CLI.
+  `H264_SCENE_MODE=1` produces 64 NALs over 60 frames and matches the C probe;
+  the SHA difference is only the version SEI text.
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

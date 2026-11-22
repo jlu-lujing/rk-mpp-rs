@@ -2,6 +2,23 @@
 
 ## Session: 2026-11-22
 
+### Phase 21: H.265 IPC Scene Mode
+- **Status:** complete on RK3588 VEPU580 object path.
+- Added `tune:scene_mode` parsing to the compatible `MppEncCfg` path and a
+  typed `EncoderConfig::with_scene_mode()` value accepting vendor modes 0/1/2.
+- Captured IPC row 0/1 from a noise fixture rather than inferring the WGT/RDO
+  tables from source. Row 0 includes `RC_KLUT[1056] = 3`; row 1 returns it to
+  the default zero.
+- A 160-job C/Rust trace gate has byte-identical WGT/RDO/OSD sections. Row 0
+  starts at job 0 and row 1 begins at job 5. The new probe `SCENE_MODE`
+  environment variable and `board_h265_scene_mode_ipc.sh` reproduce the gate.
+- H.264 accepts the same scene mode through `H264_SCENE_MODE`; its 60-frame IPC
+  cell matches C at 64 NALs, with only the version-SEI text differing.
+- The existing default-mode 300-frame/five-GOP stream remains exact at 315 NALs
+  and SHA-256 `d577adc9…32edea`.
+- The final host gate is `1385 passed / 0 failed / 47 ignored`; the unchanged
+  official H.264/H.265/MJPEG encoder gate remains green.
+
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.
 - The H.265 object path was reusing H.264's 192/128/64 mean-MADP gate. Vendor

@@ -414,6 +414,20 @@ dma-buf 地址字不同，所有非地址寄存器一致。复跑命令：
 BOARD=my-rk3588-host ./scripts/board_h265_scene_tune_300.sh
 ```
 
+`tune:scene_mode` 现在从 vendor `MppEncCfg` 进入公共 `EncoderConfig`，接受
+0/1/2。H.265 IPC 模式（1）会从 default 的 row 2/3 切到 row 0/1；row 0
+还包含 RC_KLUT `chrm_klut_ofst=3`，row 1 保留 default 的 0。row 0/1 的
+WGT/RDO 值不是按源码猜的，而是从同一高噪声 fixture 的 C trace 差分得到。
+RK3588 160-job 门禁中 WGT/RDO/OSD 逐字一致，row 0 在第 0 帧、row 1 在第
+5 帧切换；H.264 的 `H264_SCENE_MODE=1` 也已用 60 帧验证，C/Rust 64 NAL
+一致，整文件差异仅为 version-SEI 文本。`h264e_probe` / `h265e_probe`
+新增 `SCENE_MODE` 环境变量用于复现：
+
+```bash
+BOARD=my-rk3588-host ./scripts/board_h265_scene_mode_ipc.sh
+BOARD=my-rk3588-host ./scripts/board_h264_scene_mode_ipc.sh
+```
+
 同一路径的当前吞吐已在 RK3588 80% OPP、DDR `performance` @2.112 GHz、
 CPU6 固定下交错采样。300 帧多 GOP fixed-QP26 的五次中位数为：320x240
 C/Rust wall 162/149 ms、user+sys 70/55 ms；1280x720 wall 864/806 ms、

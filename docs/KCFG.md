@@ -97,6 +97,14 @@ vendor 896/640/384 CTU MADP gate rather than H.264's 192/128/64 gate. A
 `d577adc9…32edea`. The full ioctl trace has only 13 dma-buf address words
 different and zero non-address register differences.
 
+`tune:scene_mode` is now part of the compatible encoder configuration. Values
+0/1/2 map to the vendor default, IPC and IPC-PTZ modes. As in the reference HAL,
+only IPC (`1`) flips `ap_motion_flag`; IPC-PTZ remains on the default branch.
+The IPC row-0/row-1 WGT/RDO overlay and `RC_KLUT[1056]` were captured from C and
+verified over 160 jobs with `scripts/board_h265_scene_mode_ipc.sh`.
+H.264 accepts the same key through `H264_SCENE_MODE`; its 60-frame IPC cell is
+64 NALs and matches C except for the build-identity version SEI.
+
 The tool rejects KMPP mode 1/2 on the RK3588 test kernel because there is no
 `/dev/vcodec` and no `/proc/kmpp` ctrl-cfg capability. Full KMPP-object
 compatibility is therefore not claimed.

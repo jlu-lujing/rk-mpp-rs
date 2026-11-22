@@ -530,6 +530,14 @@ fn encode_h264(
     config.split_out = split_out;
     let frame_bytes = h264e::input_size(&config)?;
     let mut encoder = h264e::Vepu580H264::open(config)?;
+    if let Ok(value) = std::env::var("H264_SCENE_MODE") {
+        let scene_mode = value
+            .parse::<u8>()
+            .ok()
+            .filter(|value| *value <= 2)
+            .ok_or_else(|| format!("H264_SCENE_MODE must be 0, 1 or 2, got {value}"))?;
+        encoder.set_scene_mode(scene_mode == 1);
+    }
     let started = Instant::now();
     // Repeated pictures, which is what the C harness does with a one-frame raw
     // file too: every frame it wants and the file is short, it re-reads the same
