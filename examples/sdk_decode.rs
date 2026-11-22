@@ -7,6 +7,7 @@ fn parse_codec(name: &str) -> Option<Codec> {
     match name {
         "h264" => Some(Codec::H264),
         "mjpeg" | "jpeg" => Some(Codec::Mjpeg),
+        "avs" | "avsplus" => Some(Codec::Avs),
         _ => None,
     }
 }
@@ -15,7 +16,7 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
         return Err(format!(
-            "usage: {} <h264|mjpeg> <input> <output.yuv>",
+            "usage: {} <h264|mjpeg|avs> <input> <output.yuv>",
             args[0]
         ));
     }

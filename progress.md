@@ -83,6 +83,8 @@
   reference rotation, video-edit chain resets, B-picture discard rules and
   displayed-slot-aware flush. The full public 7-frame I/P/B cycle now matches C
   raw output byte-for-byte (`47d05886…5fdb20` I420).
+- Exposed AVS+ through `sdk::Codec::Avs`, incremental SDK decode and C ABI codec
+  value 10. `examples/sdk_decode avs` is included in the board gate.
 
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.

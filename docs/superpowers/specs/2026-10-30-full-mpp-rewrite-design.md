@@ -188,7 +188,7 @@ A→G 合计约 9 万行量级，属数月工程。按上表顺序推进，每�
 | rkvdec（9）VP9 | profile 0/2、lossless、tiles、error-resilient 逐字节；边界矩阵未完 |
 | rkvdec（9）AVS2 | 当前 RK3588 未暴露 AVS2 设备，未做 |
 | av1d（4） | Main 8/10-bit、film grain 逐字节；更宽 conformance 未完 |
-| vdpu2（1） | H.264/MPEG2/MPEG4/H.263/VP8 解码全部逐字节；AVS+ 已建立公开 vendor-C oracle，Rust 实现待做 |
+| vdpu2（1） | H.264/MPEG2/MPEG4/H.263/VP8 解码全部逐字节；AVS+ 公开 7 帧 I/P/B cycle 已由 Rust CLI/SDK 逐字节复现 |
 | vdpu2-pp（3） | 本源码中无解码器使用；该板的通用后处理是 IEP（28），未移植 |
 | rkv-enc（16）H.264 | 固定 QP / CBR / VBR 逐 NAL 相同；AVBR、ROI/GDR、slice split、>4096 未完 |
 | rkv-enc（16）H.265 | 未开始 |

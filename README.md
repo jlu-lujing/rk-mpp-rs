@@ -323,7 +323,7 @@ partition/mode/skip/tx_depth、
 - Raw FFI：workspace crate `rk-mpp-rs-sys`
 - 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
 - 优先编解码器：H.264、H.265/HEVC、VP9、AV1、VP8、MPEG-2、MPEG-4、
-  H.263 和 MJPEG/JPEG decode；
+  H.263、AVS+ 和 MJPEG/JPEG decode；
   H.264/H.265 VEPU580/VEPU510 及 JPEG VEPU2/VPU720 encode
 
 接口接受内存中的任意分块码流，不绑定文件路径。一个 decoder handle 可持续
@@ -339,10 +339,11 @@ C MPP 和 Rust 都不存在该 decoder。新的
 V1 接口暂不宣称 RGB888，历史
 `rk_jpeg_open/frame/close` RGB 接口继续保留给 `rknn-fastinfer`。
 
-MPEG-2/MPEG-4/H.263 使用同一 handle 接收任意分块 elementary stream；现有
-内部 decoder 以完整 stream 为状态边界，因此这三类格式在 EOS/flush 时统一
-产出所有待显示帧。未修改 MPP 工具所走的 object 兼容路径另做增量解析：
-保留未完成尾部和 MPEG-4 VOL/timing 状态，只消费已经完整的 picture group。
+MPEG-2/MPEG-4/H.263/AVS+ 使用同一 handle 接收任意分块 elementary stream。
+AVS+ 增量解析只消费完整 access unit，并跨 packet 保留 sequence、version、
+参考锚点和 `vec_flag`；MPEG-2/MPEG-4/H.263 普通 SDK 仍以完整 stream 为状态
+边界，在 EOS/flush 时统一产出所有待显示帧。未修改 MPP 工具所走的 object
+兼容路径另做增量解析：保留未完成尾部和 MPEG-4 VOL/timing 状态。
 
 板级 C/C++ 门：
 
@@ -836,6 +837,7 @@ scanner。50 MiB、742 帧的 1920x800 网络流在 RK3588 热态 wall median
 | `h264_stream <in.264> [out.yuv|-]` | 有界 POC 重排的流式 H.264 解码与输出 |
 | `hevc` / `hevcdec <in.265> <out.yuv>` / `hevcpps` / `hevcdpb` | H.265 语法、PPS、DPB 打印与解码 |
 | `av1dec <in.ivf> <out.yuv>` / `vp9dec <in.ivf> <out.yuv>` / `vp8dec <in.ivf> <out.yuv>` / `vp8` | AV1、VP9、VP8 |
+| `avsdec <in.avs> <out.yuv> [frames]` | AVS/AVS+ I/P/B 解码；默认 1 帧 |
 | `m2v` / `m2vdec <in.m2v> <out.yuv>` / `mp4dec <in.m4v> <out.yuv>` / `h263dec <in.263> <out.yuv>` | MPEG-2 / MPEG-4 / H.263 |
 | `h264-enc <in.nv12> <out.264> <w> <h> [qp] [profile] [frames] [gop] [cbr:\|vbr:bps:min:max] ... [cabac:0\|1] [trans8x8:0\|1] [splitout:lowdelay]` | H.264 编码；给码率三元组即进入码率控制，syntax 可显式覆盖 profile 默认，低延迟模式逐 slice 输出 packet |
 | `h265-idr ... [roi:x:y:w:h:intra:abs:qp]... [split:ctu:\|split:byte:arg] [splitout:lowdelay]` / `h265-gop ... [shortterm] ...` | H.265 固定 QP IDR/GOP、GDR、ROI/QP map 与逐 slice packet 输出 |

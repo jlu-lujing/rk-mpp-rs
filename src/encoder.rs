@@ -1547,7 +1547,13 @@ impl Encoder {
                 encoder: open_jpeg()?,
                 frame_number: 0,
             },
-            Codec::Vp8 | Codec::Vp9 | Codec::Av1 | Codec::Mpeg2 | Codec::Mpeg4 | Codec::H263 => {
+            Codec::Vp8
+            | Codec::Vp9
+            | Codec::Av1
+            | Codec::Mpeg2
+            | Codec::Mpeg4
+            | Codec::H263
+            | Codec::Avs => {
                 return Err(Error::Unsupported(format!(
                     "encoder backend for {:?} is not implemented",
                     config.codec

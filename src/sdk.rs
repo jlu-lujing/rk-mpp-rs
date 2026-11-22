@@ -10,6 +10,7 @@ use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 
 use crate::codec::av1;
+use crate::codec::avs;
 use crate::codec::h263;
 use crate::codec::h264::{
     self,
@@ -47,6 +48,7 @@ pub enum Codec {
     Mpeg2,
     Mpeg4,
     H263,
+    Avs,
 }
 
 impl Codec {
@@ -61,6 +63,7 @@ impl Codec {
             Self::Mpeg2 => 7,
             Self::Mpeg4 => 8,
             Self::H263 => 9,
+            Self::Avs => 10,
         }
     }
 
@@ -75,6 +78,7 @@ impl Codec {
             7 => Some(Self::Mpeg2),
             8 => Some(Self::Mpeg4),
             9 => Some(Self::H263),
+            10 => Some(Self::Avs),
             _ => None,
         }
     }
@@ -1355,6 +1359,7 @@ enum LegacyDecoder {
     Mpeg2(m2v::decoder::Decoder),
     Mpeg4(mpg4::decoder::Decoder),
     H263(h263::decoder::Decoder),
+    Avs(avs::decoder::Decoder),
 }
 
 struct LegacyPicture {
@@ -1388,6 +1393,17 @@ impl From<mpg4::decoder::Picture> for LegacyPicture {
 
 impl From<h263::decoder::Picture> for LegacyPicture {
     fn from(picture: h263::decoder::Picture) -> Self {
+        Self {
+            width: picture.width,
+            height: picture.height,
+            yuv: picture.yuv,
+            err_info: picture.err_info,
+        }
+    }
+}
+
+impl From<avs::decoder::Picture> for LegacyPicture {
+    fn from(picture: avs::decoder::Picture) -> Self {
         Self {
             width: picture.width,
             height: picture.height,
@@ -1464,7 +1480,7 @@ impl Decoder {
             Codec::Vp9 => Backend::Vp9(Vp9Backend::new(config)?),
             Codec::Av1 => Backend::Av1(Av1Backend::new(config)?),
             Codec::Vp8 => Backend::Vp8(Vp8Backend::new(config)?),
-            Codec::Mpeg2 | Codec::Mpeg4 | Codec::H263 => {
+            Codec::Mpeg2 | Codec::Mpeg4 | Codec::H263 | Codec::Avs => {
                 Backend::Legacy(LegacyBackend::new(config)?)
             }
         };
@@ -2162,7 +2178,7 @@ impl LegacyBackend {
     fn new(config: DecoderConfig) -> Result<Self, Error> {
         if config.output_format == PixelFormat::I420P10 {
             return Err(Error::Unsupported(
-                "legacy MPEG/H.263 decoders support NV12 or I420 output".to_string(),
+                "legacy MPEG/H.263/AVS decoders support NV12 or I420 output".to_string(),
             ));
         }
         let decoder = LegacyDecoder::new(config.codec)?;
@@ -2240,6 +2256,7 @@ impl LegacyBackend {
             Codec::Mpeg2 => "MPEG-2",
             Codec::Mpeg4 => "MPEG-4",
             Codec::H263 => "H.263",
+            Codec::Avs => "AVS+",
             _ => unreachable!("LegacyBackend is constructed only for legacy codecs"),
         };
         output.push_back(Frame::from_legacy(
@@ -2276,6 +2293,9 @@ impl LegacyDecoder {
                 h263::decoder::Decoder::new()
                     .map_err(|error| Error::Hardware(error.to_string()))?,
             )),
+            Codec::Avs => Ok(Self::Avs(
+                avs::decoder::Decoder::new().map_err(|error| Error::Hardware(error.to_string()))?,
+            )),
             _ => unreachable!("LegacyBackend is constructed only for legacy codecs"),
         }
     }
@@ -2307,6 +2327,16 @@ impl LegacyDecoder {
                     })
             }
             Self::H263(decoder) => {
+                decoder
+                    .decode_incremental(data, eos)
+                    .map(|(pictures, consumed)| {
+                        (
+                            pictures.into_iter().map(LegacyPicture::from).collect(),
+                            consumed,
+                        )
+                    })
+            }
+            Self::Avs(decoder) => {
                 decoder
                     .decode_incremental(data, eos)
                     .map(|(pictures, consumed)| {
@@ -2846,6 +2876,7 @@ mod tests {
             .with_dmabuf_output(true)
             .dmabuf_output());
         assert!(PacketFlags::empty().with_eos().contains(PacketFlags::EOS));
+        assert_eq!(Codec::from_c_value(Codec::Avs.c_value()), Some(Codec::Avs));
     }
 
     #[test]

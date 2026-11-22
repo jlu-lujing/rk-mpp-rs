@@ -35,7 +35,8 @@ enum rk_mpp_codec {
     RK_MPP_CODEC_VP8 = 6,
     RK_MPP_CODEC_MPEG2 = 7,
     RK_MPP_CODEC_MPEG4 = 8,
-    RK_MPP_CODEC_H263 = 9
+    RK_MPP_CODEC_H263 = 9,
+    RK_MPP_CODEC_AVS = 10
 };
 
 enum rk_mpp_pixel_format {

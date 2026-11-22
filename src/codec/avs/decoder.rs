@@ -129,19 +129,7 @@ impl Decoder {
         let mut decoded = 0usize;
         for (start, end) in parser::split_access_units(data) {
             let access = &data[start..end];
-            let (parsed, version) =
-                AccessUnit::parse_with_sequence(access, self.sequence, self.version)
-                    .map_err(|error| error.to_string())?;
-            self.sequence = Some(parsed.sequence);
-            self.version = version;
-            if !picture_is_decodable(
-                &mut self.vec_flag,
-                parsed.has_video_edit,
-                parsed.picture.picture_coding_type,
-            ) {
-                continue;
-            }
-            if let Some(picture) = self.decode_access_unit(access, &parsed)? {
+            if let Some(picture) = self.decode_access(access)? {
                 if std::env::var_os("RFI_AVS_TRACE").is_some() {
                     eprintln!(
                         "display type={} distance={}",
@@ -165,6 +153,50 @@ impl Decoder {
             }
         }
         Ok(decoded)
+    }
+
+    /// Decode every complete access unit in `data`, retaining the final open
+    /// unit until `eos` or the next start code proves it complete.
+    pub fn decode_incremental(
+        &mut self,
+        data: &[u8],
+        eos: bool,
+    ) -> Result<(Vec<Picture>, usize), String> {
+        let mut ranges = parser::split_access_units(data);
+        let consumed = if eos {
+            data.len()
+        } else {
+            ranges.last().map_or(0, |range| range.0)
+        };
+        if !eos {
+            ranges.pop();
+        }
+        let mut pictures = Vec::new();
+        for (start, end) in ranges {
+            if let Some(picture) = self.decode_access(&data[start..end])? {
+                pictures.push(picture);
+            }
+        }
+        if eos {
+            pictures.extend(self.flush()?);
+        }
+        Ok((pictures, consumed))
+    }
+
+    fn decode_access(&mut self, access: &[u8]) -> Result<Option<Picture>, String> {
+        let (parsed, version) =
+            AccessUnit::parse_with_sequence(access, self.sequence, self.version)
+                .map_err(|error| error.to_string())?;
+        self.sequence = Some(parsed.sequence);
+        self.version = version;
+        if !picture_is_decodable(
+            &mut self.vec_flag,
+            parsed.has_video_edit,
+            parsed.picture.picture_coding_type,
+        ) {
+            return Ok(None);
+        }
+        self.decode_access_unit(access, &parsed)
     }
 
     fn decode_access_unit(
