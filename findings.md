@@ -521,6 +521,10 @@
   oracle is post-processed. With `enable_deinterlace=0`, the raw Rust and C
   decoder outputs are byte-identical (`3acac415…2e11c2`); the 60-word register
   files match exactly apart from dma-buf fds.
+- The public AVS sample's complete 7-frame display cycle is byte-identical after
+  implementing the C parser's persistent `picture_reference_flag`, ref2/ref3
+  field-offset rule, video-edit `vec_flag` reset, two-anchor rotation and
+  displayed-slot-aware EOS flush (`47d05886…5fdb20` I420).
 - The official H.265 encoder's version SEI contains the producing binary's
   build identity, so whole-file `cmp` is not a valid correctness gate. On
   RK3588 the parameter sets, rc-SEI, VCL NALs and decoded reconstruction match;

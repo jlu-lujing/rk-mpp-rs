@@ -201,6 +201,7 @@ pub struct PictureHeader {
     pub bbv_check_times: u32,
     pub progressive_frame: bool,
     pub picture_structure: u32,
+    pub advanced_pred_mode_disable: bool,
     pub top_field_first: bool,
     pub repeat_first_field: bool,
     pub fixed_picture_qp: bool,
@@ -297,20 +298,10 @@ fn parse_extensions(
 }
 
 impl PictureHeader {
-    /// Parse the I-picture header that follows `00 00 01 B3`.
-    ///
-    /// `version_checked` mirrors the C parser's per-sequence latch. The first
-    /// I picture peeks at the next 9/11 bits to choose whether the optional
-    /// marker bit is present; later I pictures reuse that choice.
-    pub fn parse_i(
-        data: &[u8],
-        sequence: &SequenceHeader,
-        version_checked: bool,
-    ) -> Result<(Self, bool), AvsError> {
-        let mut reader = Reader::new(data);
-        let mut picture = PictureHeader {
-            picture_coding_type: I_PICTURE,
-            bbv_delay: reader.bits(16)?,
+    fn empty(picture_coding_type: u32) -> Self {
+        Self {
+            picture_coding_type,
+            bbv_delay: 0,
             bbv_delay_extension: 0,
             time_code_flag: false,
             time_code: 0,
@@ -318,6 +309,7 @@ impl PictureHeader {
             bbv_check_times: 0,
             progressive_frame: false,
             picture_structure: FRAME_PICTURE,
+            advanced_pred_mode_disable: false,
             top_field_first: false,
             repeat_first_field: false,
             fixed_picture_qp: false,
@@ -339,7 +331,22 @@ impl PictureHeader {
             weighting_quant_param: [128; 6],
             aec_enable: false,
             header_bits: 0,
-        };
+        }
+    }
+
+    /// Parse the I-picture header that follows `00 00 01 B3`.
+    ///
+    /// `version` mirrors the C parser's per-sequence latch. `None` makes the
+    /// first I picture peek at the next 9/11 bits; later I pictures reuse the
+    /// detected value and still consume its optional marker bit.
+    pub fn parse_i(
+        data: &[u8],
+        sequence: &SequenceHeader,
+        version: Option<bool>,
+    ) -> Result<(Self, Option<bool>), AvsError> {
+        let mut reader = Reader::new(data);
+        let mut picture = Self::empty(I_PICTURE);
+        picture.bbv_delay = reader.bits(16)?;
 
         if sequence.is_avs_plus() {
             reader.skip(1)?;
@@ -350,16 +357,13 @@ impl PictureHeader {
             picture.time_code = reader.bits(24)?;
         }
 
-        let detected_version = if version_checked {
-            false
-        } else if sequence.low_delay {
-            true
-        } else if reader.peek(9)? & 1 == 0 {
-            true
-        } else {
-            reader.peek(11)? & 3 != 0
+        let version = match version {
+            Some(version) => version,
+            None if sequence.low_delay => true,
+            None if reader.peek(9)? & 1 == 0 => true,
+            None => reader.peek(11)? & 3 != 0,
         };
-        if detected_version {
+        if version {
             reader.skip(1)?;
         }
 
@@ -382,7 +386,63 @@ impl PictureHeader {
         reader.skip(4)?;
         parse_extensions(&mut reader, sequence, &mut picture)?;
         picture.header_bits = reader.bit_pos();
-        Ok((picture, detected_version || version_checked))
+        Ok((picture, Some(version)))
+    }
+
+    /// Parse the common PB-picture header that follows `00 00 01 B6`.
+    pub fn parse_pb(data: &[u8], sequence: &SequenceHeader) -> Result<Self, AvsError> {
+        let mut reader = Reader::new(data);
+        let bbv_delay = reader.bits(16)?;
+        let bbv_delay_extension = if sequence.is_avs_plus() {
+            reader.skip(1)?;
+            reader.bits(7)?
+        } else {
+            0
+        };
+        let picture_coding_type = reader.bits(2)?;
+        if picture_coding_type != P_PICTURE && picture_coding_type != B_PICTURE {
+            return Err(AvsError::Invalid(
+                "PB picture coding type is neither P nor B",
+            ));
+        }
+        let mut picture = Self::empty(picture_coding_type);
+        picture.bbv_delay = bbv_delay;
+        picture.bbv_delay_extension = bbv_delay_extension;
+        picture.picture_distance = reader.bits(8)?;
+        if sequence.low_delay {
+            picture.bbv_check_times = reader.ue()?;
+        }
+        picture.progressive_frame = reader.flag()?;
+        if picture.progressive_frame {
+            picture.picture_structure = FRAME_PICTURE;
+        } else {
+            picture.picture_structure = reader.flag()? as u32;
+            if picture.picture_structure == FIELD_PICTURE {
+                picture.advanced_pred_mode_disable = reader.flag()?;
+            }
+        }
+        picture.top_field_first = reader.flag()?;
+        picture.repeat_first_field = reader.flag()?;
+        picture.fixed_picture_qp = reader.flag()?;
+        picture.picture_qp = reader.bits(6)?;
+        // The C parser compares `picture_structure` with `P_PICTURE` here.
+        // Both constants are numerically 1, so a frame-coded B picture omits
+        // `picture_reference_flag`; a field-coded B picture carries it.
+        if !(picture.picture_coding_type == B_PICTURE && picture.picture_structure == FRAME_PICTURE)
+        {
+            picture.picture_reference_flag = reader.flag()?;
+        }
+        picture.no_forward_reference_flag = reader.flag()?;
+        picture.pb_field_enhanced_flag = reader.flag()?;
+        if !sequence.is_avs_plus() {
+            picture.no_forward_reference_flag = false;
+            picture.pb_field_enhanced_flag = false;
+        }
+        reader.skip(2)?;
+        picture.skip_mode_flag = reader.flag()?;
+        parse_extensions(&mut reader, sequence, &mut picture)?;
+        picture.header_bits = reader.bit_pos();
+        Ok(picture)
     }
 }
 
@@ -443,6 +503,8 @@ pub fn split_access_units(data: &[u8]) -> Vec<(usize, usize)> {
 pub struct AccessUnit<'a> {
     pub sequence: SequenceHeader,
     pub picture: PictureHeader,
+    pub picture_start_code: u8,
+    pub has_video_edit: bool,
     /// Byte of the first slice's `00 00 01`, relative to this access unit.
     pub slice_start: usize,
     /// Bytes between the I-picture start code and the picture payload.
@@ -451,30 +513,54 @@ pub struct AccessUnit<'a> {
 
 impl<'a> AccessUnit<'a> {
     pub fn parse(data: &'a [u8]) -> Result<Self, AvsError> {
+        Self::parse_with_sequence(data, None, None).map(|(access, _)| access)
+    }
+
+    /// Parse one access unit while carrying sequence state across picture-only
+    /// units. The bool is the C parser's I-picture version latch.
+    pub fn parse_with_sequence(
+        data: &'a [u8],
+        previous_sequence: Option<SequenceHeader>,
+        version: Option<bool>,
+    ) -> Result<(Self, Option<bool>), AvsError> {
         let units = start_codes(data);
         let sequence = units
             .iter()
             .find(|unit| unit.code == VIDEO_SEQUENCE_START_CODE)
-            .ok_or(AvsError::Invalid("access unit has no sequence header"))
-            .and_then(|unit| SequenceHeader::parse(&data[unit.payload..]))?;
+            .map(|unit| SequenceHeader::parse(&data[unit.payload..]))
+            .transpose()?
+            .or(previous_sequence)
+            .ok_or(AvsError::Invalid("access unit has no sequence header"))?;
         let picture_unit = units
             .iter()
-            .find(|unit| unit.code == I_PICTURE_START_CODE)
-            .ok_or(AvsError::Unsupported("PB picture header"))?;
+            .find(|unit| unit.code == I_PICTURE_START_CODE || unit.code == PB_PICTURE_START_CODE)
+            .ok_or(AvsError::Invalid("access unit has no picture header"))?;
         let picture_payload = &data[picture_unit.payload..];
-        let (picture, _) = PictureHeader::parse_i(picture_payload, &sequence, false)?;
+        let (picture, version) = if picture_unit.code == I_PICTURE_START_CODE {
+            PictureHeader::parse_i(picture_payload, &sequence, version)?
+        } else {
+            (
+                PictureHeader::parse_pb(picture_payload, &sequence)?,
+                version,
+            )
+        };
         let slice_start = units
             .iter()
             .skip_while(|unit| unit.start <= picture_unit.start)
             .find(|unit| unit.code >= SLICE_MIN_START_CODE && unit.code <= SLICE_MAX_START_CODE)
             .map(|unit| unit.start)
             .ok_or(AvsError::Invalid("I picture has no slice"))?;
-        Ok(Self {
-            sequence,
-            picture,
-            slice_start,
-            picture_payload,
-        })
+        Ok((
+            Self {
+                sequence,
+                picture,
+                picture_start_code: picture_unit.code,
+                has_video_edit: units.iter().any(|unit| unit.code == VIDEO_EDIT_CODE),
+                slice_start,
+                picture_payload,
+            },
+            version,
+        ))
     }
 }
 
@@ -495,6 +581,12 @@ mod tests {
         0x40, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x01, 0xb2, 0x41, 0x56, 0x53,
         0x20, 0x74, 0x65, 0x73, 0x74, 0x20, 0x73, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x80, 0x00, 0x00,
         0x01, 0xb3, 0xff, 0xff, 0x80, 0x00, 0x00, 0x40, 0x26, 0x80, 0x20, 0x00, 0x00, 0x01, 0x00,
+    ];
+    const P_PICTURE_PREFIX: &[u8] = &[
+        0x00, 0x00, 0x01, 0xb6, 0xff, 0xff, 0x40, 0xe6, 0x88, 0x48, 0x00, 0x00, 0x01, 0x00,
+    ];
+    const B_PICTURE_PREFIX: &[u8] = &[
+        0x00, 0x00, 0x01, 0xb6, 0xff, 0xff, 0x80, 0x6e, 0x80, 0xbc, 0x00, 0x00, 0x01, 0x00,
     ];
 
     #[test]
@@ -541,5 +633,31 @@ mod tests {
         let units = start_codes(PREFIX);
         assert_eq!(units[0].code, VIDEO_SEQUENCE_START_CODE);
         assert_eq!(units.last().unwrap().code, SLICE_MIN_START_CODE);
+    }
+
+    #[test]
+    fn public_p_and_b_headers_match_vendor_fields() {
+        let sequence = AccessUnit::parse(PREFIX).unwrap().sequence;
+        let (p_picture, version) =
+            AccessUnit::parse_with_sequence(P_PICTURE_PREFIX, Some(sequence), Some(true)).unwrap();
+        assert_eq!(version, Some(true));
+        assert_eq!(p_picture.picture_start_code, PB_PICTURE_START_CODE);
+        assert_eq!(p_picture.picture.picture_coding_type, P_PICTURE);
+        assert_eq!(p_picture.picture.picture_distance, 3);
+        assert_eq!(p_picture.picture.picture_qp, 40);
+        assert!(p_picture.picture.fixed_picture_qp);
+        assert!(p_picture.picture.picture_reference_flag);
+        assert!(p_picture.picture.skip_mode_flag);
+        assert_eq!(p_picture.picture.header_bits, 44);
+        assert_eq!(p_picture.slice_start, 10);
+
+        let (b_picture, _) =
+            AccessUnit::parse_with_sequence(B_PICTURE_PREFIX, Some(sequence), Some(true)).unwrap();
+        assert_eq!(b_picture.picture.picture_coding_type, B_PICTURE);
+        assert_eq!(b_picture.picture.picture_distance, 1);
+        assert!(!b_picture.picture.picture_reference_flag);
+        assert!(b_picture.picture.loop_filter_parameter_flag);
+        assert_eq!(b_picture.picture.header_bits, 45);
+        assert_eq!(b_picture.slice_start, 10);
     }
 }

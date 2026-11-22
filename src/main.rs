@@ -4820,14 +4820,14 @@ fn main() {
         let src = args.get(2).map(|s| s.as_str()).unwrap_or("");
         let dst = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/avs.yuv");
         if src.is_empty() {
-            eprintln!("usage: rk-mpp-rs avsdec <in.avs> <out.yuv> [max-i-frames]");
+            eprintln!("usage: rk-mpp-rs avsdec <in.avs> <out.yuv> [max-frames]");
             std::process::exit(1);
         }
         let max_frames = match args.get(4) {
             Some(value) => match value.parse::<usize>() {
                 Ok(value) if value > 0 => value,
                 _ => {
-                    eprintln!("max-i-frames must be a positive integer, got {value}");
+                    eprintln!("max-frames must be a positive integer, got {value}");
                     std::process::exit(2);
                 }
             },
@@ -4879,7 +4879,7 @@ fn main() {
         let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         output.flush().ok();
         println!(
-            "decoded {shown} AVS I frames in {decode_ms:.1} ms ({:.1} fps), irq={:#010x}",
+            "decoded {shown} AVS frames in {decode_ms:.1} ms ({:.1} fps), irq={:#010x}",
             shown as f64 / (decode_ms / 1000.0).max(f64::EPSILON),
             decoder.last_irq
         );

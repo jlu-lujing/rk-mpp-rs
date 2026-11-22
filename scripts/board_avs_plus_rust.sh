@@ -25,15 +25,15 @@ ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd "$HOME/rk-mpp-rs" && \
 ssh "$BOARD" "sudo rm -f /tmp/avs_c.nv12 /tmp/avs_c.yuv /tmp/avs_rust.yuv"
 ssh "$BOARD" "sudo env enable_deinterlace=0 LD_LIBRARY_PATH=\"$mpp_ref/build/mpp\" timeout 30 \
   \"$mpp_ref/build/test/mpi_dec_test\" -i /tmp/avs_stream01.avs \
-  -o /tmp/avs_c.nv12 -t 16777221 -n 1 \
+  -o /tmp/avs_c.nv12 -t 16777221 -n 7 \
   </dev/null >/tmp/avs_c.log 2>&1"
 ssh "$BOARD" "cd \"$remote_repo\" && sudo timeout 30 \
-  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream01.avs /tmp/avs_rust.yuv 1 \
+  ./target/release/rk-mpp-rs avsdec /tmp/avs_stream01.avs /tmp/avs_rust.yuv 7 \
   >/tmp/avs_rust.log 2>&1"
 
 ssh "$BOARD" "ffmpeg -loglevel error -y -f rawvideo -pixel_format nv12 \
   -video_size 352x288 -i /tmp/avs_c.nv12 -pix_fmt yuv420p -f rawvideo \
   /tmp/avs_c.yuv"
-ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_rust.yuv)\" -eq 152064"
+ssh "$BOARD" "test \"\$(stat -c %s /tmp/avs_rust.yuv)\" -eq 1064448"
 ssh "$BOARD" "cmp -s /tmp/avs_c.yuv /tmp/avs_rust.yuv"
-printf 'PASS AVS+ Rust I picture is byte-identical to vendor C (352x288 I420)\n'
+printf 'PASS AVS+ Rust 7-frame cycle is byte-identical to vendor C (352x288 I420)\n'

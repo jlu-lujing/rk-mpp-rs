@@ -66,8 +66,8 @@
 - Corrected top-level counts to 128 completed / 4 open and nested counts to
   168 / 7.
 
-### Phase 27: AVS+ Vendor Oracle
-- **Status:** Rust sequence/I-picture path complete; PB pictures and vproc open.
+### Phase 27: AVS+ Decoder
+- **Status:** public 7-frame I/P/B cycle complete; wider profiles and vproc open.
 - Confirmed RK3588 `/proc/mpp_service/supports-device` exposes AVS+ client 12.
 - Public 352x288 Chinese AVS stream decodes through vendor C coding type
   `16777221` to exactly 152064-byte NV12, SHA
@@ -79,6 +79,10 @@
   (`3acac4154ddb203f52335baa74210357a0e9a83d7116e21e20be6897712e11c2`).
 - C's default IEP2 vproc runs after the decoder and produces the earlier
   `9b9a6dc9…39088b` output; reproducing that pipeline remains separate work.
+- Added PB header parsing, persistent C picture-header state, two-anchor
+  reference rotation, video-edit chain resets, B-picture discard rules and
+  displayed-slot-aware flush. The full public 7-frame I/P/B cycle now matches C
+  raw output byte-for-byte (`47d05886…5fdb20` I420).
 
 ### Phase 20: VEPU580 H.265 Scene-Tune Closure
 - **Status:** complete on RK3588.

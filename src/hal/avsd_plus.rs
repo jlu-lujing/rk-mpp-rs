@@ -8,7 +8,7 @@
 use std::io;
 
 use crate::codec::avs::parser::{
-    PictureHeader, SequenceHeader, B_PICTURE, FRAME_PICTURE, I_PICTURE, P_PICTURE,
+    PictureHeader, SequenceHeader, B_PICTURE, FIELD_PICTURE, FRAME_PICTURE, I_PICTURE, P_PICTURE,
 };
 use crate::hal::vdpu2::Word;
 use crate::service::dma_heap::DmaBuf;
@@ -48,6 +48,9 @@ pub struct PictureJob {
     /// Resolved reference fds; I pictures use the output surface.
     pub refs: [u32; 4],
     pub prev_anchor_type: bool,
+    /// Structure of the previous non-B picture. C adds ref2/ref3 field offsets
+    /// only while this is still the initial field state.
+    pub previous_picture_structure: u32,
     /// Previous decoded distances, used by P/B pictures.
     pub work0_distance: Option<u32>,
     pub work1_distance: Option<u32>,
@@ -204,6 +207,7 @@ pub fn build_registers(job: &PictureJob) -> [u32; REG_NUM] {
             current_0 = 2;
         }
         current_1 = current_0;
+        current_2 = current_0;
         if let Some(work1) = job.work1_distance {
             current_2 = (2 * picture.picture_distance).wrapping_sub(2 * work1 + 512) & 0x1ff;
         }
@@ -366,16 +370,16 @@ pub fn build_offsets(job: &PictureJob) -> Vec<RegOffsetInfo> {
             offset: job.stream_offset,
         });
     }
-    // C leaves `prev_pic_structure` at zero on the first frame and applies
-    // these field offsets to the duplicated reference addresses.
-    offsets.push(RegOffsetInfo {
-        reg_idx: REG_REF2 as u32,
-        offset: 2,
-    });
-    offsets.push(RegOffsetInfo {
-        reg_idx: REG_REF3 as u32,
-        offset: 3,
-    });
+    if job.previous_picture_structure == FIELD_PICTURE {
+        offsets.push(RegOffsetInfo {
+            reg_idx: REG_REF2 as u32,
+            offset: 2,
+        });
+        offsets.push(RegOffsetInfo {
+            reg_idx: REG_REF3 as u32,
+            offset: 3,
+        });
+    }
     offsets
 }
 
@@ -423,7 +427,14 @@ impl AvsdPlus {
             for (index, word) in readback.iter().enumerate() {
                 text.push_str(&format!("reg[{index:02}] = {word:08x}\n"));
             }
-            let _ = std::fs::write("/tmp/our_avs_regs.txt", text);
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/our_avs_regs.txt")
+            {
+                use std::io::Write as _;
+                let _ = file.write_all(text.as_bytes());
+            }
         }
         if self.last_irq & (IRQ_ERROR | IRQ_BUFFER) != 0 || self.last_irq & IRQ_RDY == 0 {
             self.service.restart_after_hardware_error()?;
@@ -463,6 +474,7 @@ mod tests {
                 bbv_check_times: 0,
                 progressive_frame: true,
                 picture_structure: FRAME_PICTURE,
+                advanced_pred_mode_disable: false,
                 top_field_first: false,
                 repeat_first_field: false,
                 fixed_picture_qp: true,
@@ -493,6 +505,7 @@ mod tests {
             mv_fd: 0x10,
             refs: [0x17; 4],
             prev_anchor_type: true,
+            previous_picture_structure: FIELD_PICTURE,
             work0_distance: None,
             work1_distance: None,
             future_to_previous_distance: 2,
@@ -526,5 +539,43 @@ mod tests {
         assert_eq!(regs[3] & (1 << 12), 1 << 12, "write_mvs_e");
         assert_eq!(regs[44] & (1 << 26), 1 << 26, "dec_avsp_ena");
         assert_eq!(regs[45], job.mv_fd);
+    }
+
+    #[test]
+    fn frame_references_do_not_receive_the_initial_field_offsets() {
+        let mut job = public_i_job();
+        job.previous_picture_structure = FRAME_PICTURE;
+        assert_eq!(
+            build_offsets(&job),
+            vec![RegOffsetInfo {
+                reg_idx: REG_STREAM_BASE as u32,
+                offset: 128
+            }]
+        );
+    }
+
+    #[test]
+    fn first_p_picture_matches_the_c_distance_fields() {
+        let mut job = public_i_job();
+        job.picture.picture_coding_type = P_PICTURE;
+        job.picture.picture_distance = 3;
+        job.picture.picture_reference_flag = true;
+        job.picture.skip_mode_flag = true;
+        job.stream_len = 798;
+        job.stream_offset = 8;
+        job.stream_start_bit = 16;
+        job.prev_anchor_type = false;
+        job.previous_picture_structure = FRAME_PICTURE;
+        job.work0_distance = Some(0);
+        job.work1_distance = None;
+        let regs = build_registers(&job);
+        assert_eq!(regs[3], 0xb410_3000);
+        assert_eq!(regs[4], 0x0b00_9001);
+        assert_eq!(regs[5], 0x4000_0000);
+        assert_eq!(regs[6], 0x5000_031e);
+        assert_eq!(regs[18], 0);
+        assert_eq!(regs[28], 0x0055_0055);
+        assert_eq!(regs[30], 0x0006_0006);
+        assert_eq!(regs[31], 0x0006_0006);
     }
 }
