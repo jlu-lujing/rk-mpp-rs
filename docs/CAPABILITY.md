@@ -102,6 +102,7 @@
 | H.264 CAVLC I-slice（预测/变换/DC Hadamard/deblock） | 完成，与原始合成源逐像素 |
 | H.264 CABAC（I16/I4x4/I8x8/I_PCM/mb_qp_delta/混合宏块） | 完成；P-slice `P_Skip`、零运动/整数/分数 `P_L0_16x16`、`P_L0_L0_16x8` / `P_L0_L0_8x16`、`P_8x8`、explicit luma/双 chroma weighted `P_L0_16x16`、P deblocking、双参考 P16、B16 `L0/L1/BI`、spatial/temporal `B_Direct_16x16`/`B_Skip`、`B_L0_L0_16x8`/`B_L0_L0_8x16`、L0/L1/BI `B_8x8` 8x8 子分区和 mixed L0 8x4/4x8/4x4 已与 FFmpeg 逐像素闭合。P16 覆盖 mb_type、有符号 MVD 与绝对幅值邻居缓存、MVP 传播、CBP、QP、inter 4×4 residual、quarter-pel luma 六抽头（含 `(2,2)` 二维路径）、1/8-sample chroma 插值和边界扩展；分区门覆盖 scan-order A/B/C MVP、双 MVD context、上下/左右独立 MC 与共享宏块 residual；P_8x8 门覆盖四种 sub_mb_type、4×4 MVD cache/context 和逐子分区 luma/chroma MC；weighted 门覆盖 scale/round/clip、三平面 offset 和 CABAC 字节对齐边界；P deblock 覆盖 coeff/MV/ref 边界强度、QP average 与三平面滤波；多参考门覆盖 ref_idx unary、逐 4×4 reference cache、参考相关 MC 与 MVP fallback；B16 门覆盖 L0/L1 独立 cache、双 MVD 顺序、BI temporary prediction 与规范平均；direct/skip 门覆盖 skip 与 type 的独立邻域上下文、spatial A/B/C 参考与 MV 选择、POC distance scaling、colocated P motion map、逐 list direct MC、编码 direct residual 和零 residual skip；B 16x8/8x16 门覆盖 CABAC mb_type 前缀、顺序双 MVD、逐分区 MC 和共享 residual；B_8x8 门覆盖 mb_type 15、完整 sub_mb_type tree、L0/L1/BI 8x8 与 mixed L0 8x4/4x8/4x4 的逐列表 MVD、临时双预测、逐叶 MC 和共享 residual。过程中修正 inter CBF 不可用邻块规则、MVD bypass 符号、MVD 幅值缓存及跨字节 header 对齐；weighted P_Skip、col-zero B reference、mixed-list/BI B 宏块分区、direct 与 L1/BI 非 8x8 B_8x8、weighted B 未做 |
 | H.264 CABAC B-frame deblocking | 完成：`DeblockMap` 同时保存 L0/L1 的 4×4 reference/MV，B boundary strength 按双列表系数、reference 和 MV 规则计算，未使用列表以 sentinel 表示；真实 48×32 IDR+P+B direct/skip fixture 开启 loop filter 后三帧与 FFmpeg 逐像素一致。同一门修正合法 chroma AC-only residual 的隐式零 DC |
+| H.264 CABAC implicit weighted B | 完成：`weighted_bipred_idc=2` 按 `Clip3(-128,127)` 后的当前/L0/L1 POC 距离计算 `w0`，`w1=64-w0`，BI 以 6-bit 分母混合并裁剪；等距 POC 为 32/32。B_BI fixture 仅改写 PPS 两位进入该路径，显示帧与 FFmpeg 逐像素一致；explicit `weighted_bipred_idc=1` 仍未实现 |
 | HEVC 变换 | 完成 |
 | AV1 符号解码器（规范 §8.2） | 完成：init_symbol/read_symbol/CDF 自适应/read_bool/read_literal/exit_symbol |
 | AV1 默认 CDF 表 | 完成：97 张、19,697 个值，生成器 + FNV 校验（含 3D 表与 `128 * 125` 乘积更正；当前 FNV `0x7e85769cd6cb2bdc`） |
@@ -195,8 +196,8 @@ ONLY=gop ./scripts/board_h264_qp_vs_mpp.sh
 BENCH_FILTER=vp9 SAMPLES=5 ./scripts/board_bench_vs_mpp.sh
 ```
 
-当前 ROADMAP：**128 完成 / 4 未完成**（含缩进子项为 171 / 7）。未完成项均属于上表的
-平台/不存在边界；M11 的软件 AV1 tile entropy 项已关闭。M11 已落地 118 个参考解码 slice（其中 117 个 AV1 slice；含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、monochrome display、simple/advanced 20 帧 8-bit B-pyramid、12 帧单参考 10-bit B、20 帧 advanced 10-bit B、deblock/CDEF、10-bit I444P10 和 inter-LR 组合也已落地）：符号解码、默认
+当前 ROADMAP：**128 完成 / 4 未完成**（含缩进子项为 172 / 7）。未完成项均属于上表的
+平台/不存在边界；M11 的软件 AV1 tile entropy 项已关闭。M11 已落地 119 个参考解码 slice（其中 117 个 AV1 slice；含真实 2×2 与 1×2 tile tile-group 的逐 tile 熵闭合与像素门；inter 的 tile-group 驱动、帧级邻居携带、temporal/MV/chroma-mask 修正和 10 帧三平面门均已落地；8/10-bit film-grain 显示合成、多尺寸/4:4:4、screen-content IntraBC、monochrome display、simple/advanced 20 帧 8-bit B-pyramid、12 帧单参考 10-bit B、20 帧 advanced 10-bit B、deblock/CDEF、10-bit I444P10 和 inter-LR 组合也已落地）：符号解码、默认
 CDF、partition/块模式、系数语法、Round2 逆变换与 libaom 矩形向量、量化、重建、帧内预测、CDEF、loop
 restoration 滤波与 subexp/tile-CDF 参数解码、帧/条带驱动、`read_lr`/`read_lr_unit` 码流层、
 §7.14 去块滤波、§8.1/§5.2/§5.5 位流层（描述符、OBU+IVF 解复用、完整序列头，已在

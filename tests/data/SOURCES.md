@@ -320,6 +320,12 @@ cargo test --test fixture_manifest
   100%. The pair exercises independent list-1 MV prediction, dual list-0/list-1
   MVD order, temporary per-list prediction planes and normative
   `(L0 + L1 + 1) >> 1` blending. Both displayed B frames match FFmpeg.
+- `h264_cabac_b_weighted_bi_48x32` changes only the two PPS bits
+  `weighted_bipred_idc` from 0 to 2 in the B_BI fixture. The B picture remains
+  100% BI and the CABAC payload is unchanged. Equal POC distances make the
+  implicit weights 32/32, so the decoded pixels equal the unweighted BI frame;
+  the gate verifies the weighted-bipred path and a unit test pins the
+  non-equal-distance weight formula.
 - `h264_cabac_b_direct_skip_48x32` reuses the same I/B/P source with spatial
   direct prediction enabled. A temporary x264 switch forces one BI macroblock,
   then alternates `B_Direct_16x16` and `B_Skip`; x264 reports B16 direct 50%,

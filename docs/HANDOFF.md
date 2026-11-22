@@ -77,6 +77,10 @@ L0/L1 的 reference 和 4×4 MV；B boundary strength 按双列表规则计算�
 用 sentinel 表示。新的 48x32 IDR+P+B fixture 混合 direct/skip 并开启 loop filter，
 三帧与 FFmpeg 逐像素一致。该门还修正 chroma AC-only residual：AC 存在而 DC
 缺省时，DC 变换块应按全零处理，而不是拒绝宏块。
+第 119 slice 接通 implicit weighted B：`weighted_bipred_idc=2` 用 clipped
+POC 距离计算 `w0`，`w1 = 64 - w0`，BI 以 6-bit 分母混合。B_BI fixture
+只改写 PPS 两位进入该路径，显示帧与 FFmpeg 逐像素一致；等距权重和
+非等距权重公式均有单测。Explicit `weighted_bipred_idc=1` 仍待做。
 AV1 4:4:4 硬件边界也已收口：C `mpi_dec_test` 在 20 帧 10-bit 4:4:4 fixture
 上会在 AV1 parser 内 segfault，而 Rust hardware 之前会静默降成 4:2:0。现在
 hardware CLI 显式拒绝非 4:2:0，软件参考解码器仍以 9,216,000-byte 输出对齐
@@ -126,7 +130,7 @@ temporal direct 再通过 POC 0/4/2 的 distance scale 与 colocated P 16×16
 四个 MVD 和逐象限 MC；同一结构下的 L1/BI 8x8 子分区也已闭合双列表 MVD
 和临时双向预测；mixed L0 8x4/4x8/4x4 又覆盖完整的 2/2/4/1 MVD 几何。
 当前仍缺 weighted P_Skip、col-zero B reference、mixed-list/BI B 宏块分区、
-direct 与 L1/BI 非 8x8 B_8x8、weighted B。
+direct 与 L1/BI 非 8x8 B_8x8、explicit weighted B。
 口径本身（不一致即缺陷）没有放松：tiles 的残留状态问题就是靠登记
 `docs/DIVERGENCES.md` 而不是靠放宽判据处理的。
 

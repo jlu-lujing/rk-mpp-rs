@@ -819,8 +819,8 @@ pub fn decode_cabac_b16_slice(
     if pps.transform_8x8 {
         return Err(H264CabacError::Unsupported("B16 transform8x8"));
     }
-    if pps.weighted_bipred_idc != 0 {
-        return Err(H264CabacError::Unsupported("weighted B16"));
+    if !matches!(pps.weighted_bipred_idc, 0 | 2) {
+        return Err(H264CabacError::Unsupported("explicit weighted B16"));
     }
     if slice.deblocking_disable_idc > 1 {
         return Err(H264CabacError::Unsupported("B16 slice-edge deblocking"));
@@ -844,6 +844,13 @@ pub fn decode_cabac_b16_slice(
     if references_l0.is_empty() || references_l1.is_empty() {
         return Err(H264CabacError::Malformed("B16 reference list"));
     }
+    let implicit_weights = (pps.weighted_bipred_idc == 2).then(|| {
+        implicit_b_weights(
+            current_picture_order_count,
+            references_l0[0].picture_order_count,
+            references_l1[0].picture_order_count,
+        )
+    });
 
     let context =
         MacroblockContext::from_sps_pps(sps, pps).map_err(|_| H264CabacError::Malformed("SPS"))?;
@@ -1309,10 +1316,12 @@ pub fn decode_cabac_b16_slice(
                             for column in 0..8 {
                                 luma_plane.data[(partition_y + row) * luma_plane.stride
                                     + partition_x
-                                    + column] = ((u32::from(l0_y[row * 8 + column])
-                                    + u32::from(l1_y[row * 8 + column])
-                                    + 1)
-                                    >> 1) as u16;
+                                    + column] = blend_b_prediction(
+                                    l0_y[row * 8 + column],
+                                    l1_y[row * 8 + column],
+                                    implicit_weights,
+                                    bit_depth,
+                                );
                             }
                         }
                         for row in 0..4 {
@@ -1320,16 +1329,18 @@ pub fn decode_cabac_b16_slice(
                                 let destination = (partition_y / 2 + row) * cb_plane.stride
                                     + partition_x / 2
                                     + column;
-                                cb_plane.data[destination] = ((u32::from(l0_u[row * 4 + column])
-                                    + u32::from(l1_u[row * 4 + column])
-                                    + 1)
-                                    >> 1)
-                                    as u16;
-                                cr_plane.data[destination] = ((u32::from(l0_v[row * 4 + column])
-                                    + u32::from(l1_v[row * 4 + column])
-                                    + 1)
-                                    >> 1)
-                                    as u16;
+                                cb_plane.data[destination] = blend_b_prediction(
+                                    l0_u[row * 4 + column],
+                                    l1_u[row * 4 + column],
+                                    implicit_weights,
+                                    bit_depth,
+                                );
+                                cr_plane.data[destination] = blend_b_prediction(
+                                    l0_v[row * 4 + column],
+                                    l1_v[row * 4 + column],
+                                    implicit_weights,
+                                    bit_depth,
+                                );
                             }
                         }
                     }
@@ -1384,23 +1395,29 @@ pub fn decode_cabac_b16_slice(
             for row in 0..16 {
                 for column in 0..16 {
                     luma_plane.data[(mb_y + row) * luma_plane.stride + mb_x + column] =
-                        ((u32::from(l0_y[row * 16 + column])
-                            + u32::from(l1_y[row * 16 + column])
-                            + 1)
-                            >> 1) as u16;
+                        blend_b_prediction(
+                            l0_y[row * 16 + column],
+                            l1_y[row * 16 + column],
+                            implicit_weights,
+                            bit_depth,
+                        );
                 }
             }
             for row in 0..8 {
                 for column in 0..8 {
                     let destination = (mb_y / 2 + row) * cb_plane.stride + mb_x / 2 + column;
-                    cb_plane.data[destination] = ((u32::from(l0_u[row * 8 + column])
-                        + u32::from(l1_u[row * 8 + column])
-                        + 1)
-                        >> 1) as u16;
-                    cr_plane.data[destination] = ((u32::from(l0_v[row * 8 + column])
-                        + u32::from(l1_v[row * 8 + column])
-                        + 1)
-                        >> 1) as u16;
+                    cb_plane.data[destination] = blend_b_prediction(
+                        l0_u[row * 8 + column],
+                        l1_u[row * 8 + column],
+                        implicit_weights,
+                        bit_depth,
+                    );
+                    cr_plane.data[destination] = blend_b_prediction(
+                        l0_v[row * 8 + column],
+                        l1_v[row * 8 + column],
+                        implicit_weights,
+                        bit_depth,
+                    );
                 }
             }
         }
@@ -1890,6 +1907,24 @@ fn weighted_prediction(
     Ok(Some(predictions))
 }
 
+fn implicit_b_weights(
+    current_poc: i32,
+    reference_l0_poc: i32,
+    reference_l1_poc: i32,
+) -> (i32, i32) {
+    let td = (reference_l1_poc - reference_l0_poc).clamp(-128, 127);
+    let mut weight0 = 32;
+    if td != 0 {
+        let tb = (current_poc - reference_l0_poc).clamp(-128, 127);
+        let tx = (16384 + (td.abs() >> 1)) / td;
+        let distance_scale = (tb * tx + 32) >> 8;
+        if (-64..=128).contains(&distance_scale) {
+            weight0 = 64 - distance_scale;
+        }
+    }
+    (weight0, 64 - weight0)
+}
+
 fn weighted_sample(sample: u16, prediction: WeightedPredictionPlane) -> u16 {
     let scaled = i32::from(sample) * prediction.weight;
     let scaled = if prediction.log2_denom == 0 {
@@ -2184,6 +2219,20 @@ fn luma_half_center(
 
 fn average_predictions(first: u16, second: u16) -> u16 {
     ((u32::from(first) + u32::from(second) + 1) >> 1) as u16
+}
+
+fn blend_b_prediction(
+    first: u16,
+    second: u16,
+    implicit_weights: Option<(i32, i32)>,
+    bit_depth: u8,
+) -> u16 {
+    if let Some((weight0, weight1)) = implicit_weights {
+        let value = (i32::from(first) * weight0 + i32::from(second) * weight1 + 32) >> 6;
+        interpolate_sample(value, bit_depth)
+    } else {
+        average_predictions(first, second)
+    }
 }
 
 fn fractional_luma_prediction(
@@ -4771,5 +4820,12 @@ mod tests {
             ),
             255
         );
+    }
+
+    #[test]
+    fn implicit_b_weights_follow_picture_order_distance() {
+        assert_eq!(implicit_b_weights(2, 0, 4), (32, 32));
+        assert_eq!(implicit_b_weights(1, 0, 4), (48, 16));
+        assert_eq!(blend_b_prediction(100, 200, Some((48, 16)), 8), 125);
     }
 }
