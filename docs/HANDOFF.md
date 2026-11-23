@@ -945,7 +945,7 @@ VPXENC=/path/to/vpxenc scripts/board_4k_matrix.sh
 FFmpeg 4K 解码必须加 `-fps_mode passthrough`。`-frames:v 1` 会让 vendor 和
 Rust 都可能因 EOF/时间基丢帧而写出 0 字节，这不是 Rust 独有回归。
 
-扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **22/22** 门禁组
+扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **24/24** 门禁组
 通过。它串起 H.264/H.265 的 RC、hier QP、ROI、slice、tiles、GDR、force-IDR、
 custom RC callback、OSD，以及 MJPEG 多核/旋转/RGB。4K H.264 BY_CTU/BY_BYTE 分别为 680/403 NAL，
 H.265 为 260/205 NAL；H.265 4K auto-tile 为 9 NAL，GDR row/column 均为
@@ -970,6 +970,12 @@ H.264 4K force-IDR/header 模式也已接通到同一门禁。探针在 2024-04 
 C/Rust 均为 12 NAL，解码 YUV 逐字节一致。4K decode scale 另以 CPU 与
 DMA-BUF 两路 H.264 帧直接缩到 640×640 letterbox，实际画面为 640×360、
 顶部 padding 140，两路 RGB 完全一致。
+
+SDK DMA-BUF 面也扩到 4K。编码器用同一批 NV12 分别走 copied-input 和
+调用方 dma-buf input，H.264/H.265 的 3 帧码流与 JPEG 单帧均整条逐字节
+一致；解码器用 C consumer 同时要求 CPU frame 和 DMA frame，H.264/H.265/
+VP9/AV1 三帧输出均为 37,324,800 bytes 且逐字节一致。门禁保留原有
+`F_DUPFD_CLOEXEC` 检查，确认提交期间没有复制调用方 fd。
 
 IEP2 的 4K 结果不是可用路径。C `iep2_test` 把尺寸限制为 1920×1088，
 3840×2160 会在参数检查阶段拒绝；直接调用 C 底层 probe 虽然返回成功，但

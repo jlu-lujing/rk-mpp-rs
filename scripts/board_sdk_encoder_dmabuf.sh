@@ -6,7 +6,9 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
 
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo build --release --offline --lib
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+    cargo build --release --offline --lib
+fi
 
 library="$repo/target/release/librk_mpp_rs.so"
 libdir=$(mktemp -d)
@@ -21,30 +23,35 @@ gcc -std=c11 -Wall -Wextra -Werror \
     -Wl,-rpath,"$libdir" \
     -o /tmp/rk_mpp_encoder_dmabuf
 
+size="${SIZE:-320x240}"
+width="${size%%x*}"
+height="${size##*x}"
+frames="${FRAMES:-6}"
+jpeg_frames="${JPEG_FRAMES:-1}"
 ffmpeg -nostdin -y -hide_banner -loglevel error \
-    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
+    -f lavfi -i "testsrc2=size=${size}:rate=30" -frames:v "$frames" \
     -pix_fmt nv12 -f rawvideo "$raw_dir/frames.nv12"
 
 for codec in h264 h265; do
-    copied="/tmp/rk_mpp_sdk_encoder_${codec}_copied.bin"
-    dmabuf="/tmp/rk_mpp_sdk_encoder_${codec}_dmabuf.bin"
+    copied="/tmp/rk_mpp_sdk_encoder_${codec}_${size}_copied.bin"
+    dmabuf="/tmp/rk_mpp_sdk_encoder_${codec}_${size}_dmabuf.bin"
     LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
         /tmp/rk_mpp_encoder_dmabuf "$codec" nv12 "$copied" \
-            320 240 26 6 6 "$raw_dir/frames.nv12"
+            "$width" "$height" 26 "$frames" "$frames" "$raw_dir/frames.nv12"
     DMABUF_INPUT=1 LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
         /tmp/rk_mpp_encoder_dmabuf "$codec" nv12 "$dmabuf" \
-            320 240 26 6 6 "$raw_dir/frames.nv12"
+            "$width" "$height" 26 "$frames" "$frames" "$raw_dir/frames.nv12"
     cmp "$copied" "$dmabuf"
 done
 
-jpeg_copied=/tmp/rk_mpp_sdk_encoder_jpeg_copied.jpg
-jpeg_dmabuf=/tmp/rk_mpp_sdk_encoder_jpeg_dmabuf.jpg
+jpeg_copied="/tmp/rk_mpp_sdk_encoder_jpeg_${size}_copied.jpg"
+jpeg_dmabuf="/tmp/rk_mpp_sdk_encoder_jpeg_${size}_dmabuf.jpg"
 LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_encoder_dmabuf jpeg nv12 "$jpeg_copied" \
-        320 240 10 1 1 "$raw_dir/frames.nv12"
+        "$width" "$height" 10 "$jpeg_frames" 1 "$raw_dir/frames.nv12"
 DMABUF_INPUT=1 LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" \
     /tmp/rk_mpp_encoder_dmabuf jpeg nv12 "$jpeg_dmabuf" \
-        320 240 10 1 1 "$raw_dir/frames.nv12"
+        "$width" "$height" 10 "$jpeg_frames" 1 "$raw_dir/frames.nv12"
 cmp "$jpeg_copied" "$jpeg_dmabuf"
 
 if command -v strace >/dev/null 2>&1; then
@@ -52,7 +59,8 @@ if command -v strace >/dev/null 2>&1; then
     strace -f -e trace=fcntl -o "$trace" \
         env LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH:-}" DMABUF_INPUT=1 \
         /tmp/rk_mpp_encoder_dmabuf h264 nv12 /tmp/rk_mpp_sdk_encoder_strace.bin \
-            320 240 26 6 6 "$raw_dir/frames.nv12" >/dev/null
+            "$width" "$height" 26 "$frames" "$frames" \
+            "$raw_dir/frames.nv12" >/dev/null
     if grep -q F_DUPFD_CLOEXEC "$trace"; then
         echo "FAIL dma-buf C submit duplicated the caller fd" >&2
         grep F_DUPFD_CLOEXEC "$trace" >&2
@@ -60,4 +68,5 @@ if command -v strace >/dev/null 2>&1; then
     fi
 fi
 
-printf 'PASS copied and dma-buf encoder input match for H.264, H.265 and JPEG\n'
+printf 'PASS copied and dma-buf encoder input match for H.264, H.265 and JPEG (%s, %s frames)\n' \
+    "$size" "$frames"

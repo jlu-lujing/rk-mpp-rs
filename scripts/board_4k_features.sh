@@ -109,6 +109,12 @@ run_gate "4K decode concurrency 1-16 streams" \
 run_remote "4K CPU/DMA NV12 letterbox" \
     "SIZE=3840x2160 FRAMES=3 SKIP_BUILD=1 scripts/board_sdk_decode_scale.sh"
 
+run_remote "4K SDK DMA-BUF encoder input" \
+    "SIZE=3840x2160 FRAMES=3 SKIP_BUILD=1 scripts/board_sdk_encoder_dmabuf.sh"
+
+run_remote "4K SDK DMA-BUF decoder output" \
+    "RUN_4K=1 SKIP_BUILD=1 scripts/board_sdk_dmabuf.sh"
+
 run_gate "IEP2 maximum 1920x1088 parity" \
     env SKIP_BUILD=1 scripts/board_iep_dei_vs_mpp.sh 1920 1088
 

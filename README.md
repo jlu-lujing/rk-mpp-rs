@@ -39,7 +39,7 @@
   FFmpeg 解码 4K 时必须使用 `-fps_mode passthrough`；`-frames:v 1` 可能让
   vendor 和 Rust 都因 EOF/时间基丢帧而写出 0 字节。
 - **4K 扩展功能门禁也已完成。** `scripts/board_4k_features.sh` 在 RK3588
-  一次跑完 **22/22** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
+  一次跑完 **24/24** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
   hierarchical QP、ROI、超出 slice FIFO 的 4K split；H.265 RC、ROI、slice、
   tiles、GDR、H.264/H.265 强制 IDR/header 模式；自定义 RC callback；4K OSD
   direct/fallback；MJPEG 4K 多核、90° 旋转和 RGB565/ARGB8888/BGRA8888
@@ -48,7 +48,9 @@
   4K 的 1/1、1/2、1/4、1/8 RGB888/NV12 缩放，输出尺寸、重复哈希和软件
   参考 PSNR 均通过；H.264/H.265/VP9 另在 1/2/4/8/16 个独立进程下逐路
   与单路 C/Rust 输出比对，15/15 组无丢帧、无错帧、无输出差异。4K
-  CPU/DMA NV12→RGB letterbox 输出一致；IEP2 在 1920×1088 上限与 C
+  CPU/DMA NV12→RGB letterbox 输出一致；SDK 的 copied/DMA 编码输入和
+  CPU/DMA 解码输出也为逐字节一致，覆盖 H.264/H.265/VP9/AV1/MJPEG 的现有
+  DMA 能力；IEP2 在 1920×1088 上限与 C
   逐字节一致，3840×2160 现在明确拒绝，不再提交后写出半帧。
   该门禁同时修复了 4K 低码率下 H.265 首帧缺少 C 的 RC re-encode：
   QP26 超目标后会按 C 重新提交 QP29，再推进下一帧；H.265 自定义 RC 的
