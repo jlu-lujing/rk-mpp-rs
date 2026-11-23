@@ -7,6 +7,7 @@ set -euo pipefail
 board="${BOARD:?set BOARD to a Rockchip SSH alias}"
 mpp="${MPP_REF:-/tmp/mpp-old}"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
+size="${SIZE:-320x240}"
 
 if ! ssh "$board" "test -f $mpp/inc/rk_venc_cfg.h"; then
     source "$repo/scripts/board_dependency.sh" \
@@ -25,11 +26,17 @@ ssh "$board" 'mkdir -p "$HOME/rk-mpp-rs"'
         -cf - .
 ) | ssh "$board" 'tar -xf - --strip-components=1 -C "$HOME/rk-mpp-rs"'
 
-ssh "$board" "MPP_REF='$mpp' bash -s" <<'REMOTE'
+ssh "$board" "MPP_REF='$mpp' SIZE='$size' SKIP_BUILD='${SKIP_BUILD:-0}' bash -s" <<'REMOTE'
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
 cd "$HOME/rk-mpp-rs"
-cargo build --release --lib --bin rk-mpp-rs >/dev/null
+size="${SIZE:-320x240}"
+width="${size%%x*}"
+height="${size##*x}"
+bps=$((width * height * 30 / 8))
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+    cargo build --release --lib --bin rk-mpp-rs >/dev/null
+fi
 
 overlay="$(mktemp -d /tmp/rk_mpp_enc_cfg_i420.XXXXXX)"
 trap 'rm -rf "$overlay"' EXIT
@@ -60,26 +67,29 @@ cc -O2 -w -pthread \
     -o /tmp/rk_mpp_h265_i420_probe
 
 ffmpeg -nostdin -v error -y -f lavfi \
-    -i testsrc=size=320x240:rate=30 -frames:v 1 \
+    -i testsrc=size=${size}:rate=30 -frames:v 1 \
     -pix_fmt nv12 -f rawvideo /tmp/rk_mpp_i420_nv12.yuv
 ffmpeg -nostdin -v error -y -f lavfi \
-    -i testsrc=size=320x240:rate=30 -frames:v 1 \
+    -i testsrc=size=${size}:rate=30 -frames:v 1 \
     -pix_fmt yuv420p -f rawvideo /tmp/rk_mpp_i420_planar.yuv
 ffmpeg -nostdin -v error -y -f lavfi \
-    -i testsrc=size=320x240:rate=30 -frames:v 1 \
+    -i testsrc=size=${size}:rate=30 -frames:v 1 \
     -pix_fmt nv21 -f rawvideo /tmp/rk_mpp_i420_nv21.yuv
 
-sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=0 \
+sudo -n env LD_LIBRARY_PATH="$overlay" RKMPP_ENCODER_PIPELINE=0 MPP_INPUT_FORMAT=0 \
     /tmp/rk_mpp_h264_i420_probe /tmp/rk_mpp_i420_nv12.yuv \
-    /tmp/rk_mpp_i420_nv12.264 320 240 1 0 26 288000:1500000:2500000 \
+    /tmp/rk_mpp_i420_nv12.264 "$width" "$height" 1 0 26 \
+    "$bps:1500000:2500000" \
     >/tmp/rk_mpp_i420_nv12.log 2>&1
-sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=4 \
+sudo -n env LD_LIBRARY_PATH="$overlay" RKMPP_ENCODER_PIPELINE=0 MPP_INPUT_FORMAT=4 \
     /tmp/rk_mpp_h264_i420_probe /tmp/rk_mpp_i420_planar.yuv \
-    /tmp/rk_mpp_i420_planar.264 320 240 1 0 26 288000:1500000:2500000 \
+    /tmp/rk_mpp_i420_planar.264 "$width" "$height" 1 0 26 \
+    "$bps:1500000:2500000" \
     >/tmp/rk_mpp_i420_planar.log 2>&1
-sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=5 \
+sudo -n env LD_LIBRARY_PATH="$overlay" RKMPP_ENCODER_PIPELINE=0 MPP_INPUT_FORMAT=5 \
     /tmp/rk_mpp_h264_i420_probe /tmp/rk_mpp_i420_nv21.yuv \
-    /tmp/rk_mpp_i420_nv21.264 320 240 1 0 26 288000:1500000:2500000 \
+    /tmp/rk_mpp_i420_nv21.264 "$width" "$height" 1 0 26 \
+    "$bps:1500000:2500000" \
     >/tmp/rk_mpp_i420_nv21.log 2>&1
 python3 scripts/compare_streams.py \
     /tmp/rk_mpp_i420_nv12.264 /tmp/rk_mpp_i420_planar.264
@@ -88,18 +98,18 @@ python3 scripts/compare_streams.py \
 printf 'PASS H.264 MppEncCfg NV12/I420/NV21 produce identical stream (%s)\n' \
     "$(sha256sum /tmp/rk_mpp_i420_planar.264 | cut -d' ' -f1)"
 
-sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=0 FRAMES=1 GOP=1 \
+sudo -n env LD_LIBRARY_PATH="$overlay" RKMPP_ENCODER_PIPELINE=0 MPP_INPUT_FORMAT=0 FRAMES=1 GOP=1 \
     /tmp/rk_mpp_h265_i420_probe /tmp/rk_mpp_i420_nv12.yuv \
-    /tmp/rk_mpp_h265_i420_nv12.265 320 240 0 26 \
-    288000:1500000:2500000 >/tmp/rk_mpp_h265_i420_nv12.log 2>&1
-sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=4 FRAMES=1 GOP=1 \
+    /tmp/rk_mpp_h265_i420_nv12.265 "$width" "$height" 0 26 \
+    "$bps:1500000:2500000" >/tmp/rk_mpp_h265_i420_nv12.log 2>&1
+sudo -n env LD_LIBRARY_PATH="$overlay" RKMPP_ENCODER_PIPELINE=0 MPP_INPUT_FORMAT=4 FRAMES=1 GOP=1 \
     /tmp/rk_mpp_h265_i420_probe /tmp/rk_mpp_i420_planar.yuv \
-    /tmp/rk_mpp_h265_i420_planar.265 320 240 0 26 \
-    288000:1500000:2500000 >/tmp/rk_mpp_h265_i420_planar.log 2>&1
-sudo -n env LD_LIBRARY_PATH="$overlay" MPP_INPUT_FORMAT=5 FRAMES=1 GOP=1 \
+    /tmp/rk_mpp_h265_i420_planar.265 "$width" "$height" 0 26 \
+    "$bps:1500000:2500000" >/tmp/rk_mpp_h265_i420_planar.log 2>&1
+sudo -n env LD_LIBRARY_PATH="$overlay" RKMPP_ENCODER_PIPELINE=0 MPP_INPUT_FORMAT=5 FRAMES=1 GOP=1 \
     /tmp/rk_mpp_h265_i420_probe /tmp/rk_mpp_i420_nv21.yuv \
-    /tmp/rk_mpp_h265_i420_nv21.265 320 240 0 26 \
-    288000:1500000:2500000 >/tmp/rk_mpp_h265_i420_nv21.log 2>&1
+    /tmp/rk_mpp_h265_i420_nv21.265 "$width" "$height" 0 26 \
+    "$bps:1500000:2500000" >/tmp/rk_mpp_h265_i420_nv21.log 2>&1
 cmp /tmp/rk_mpp_h265_i420_nv12.265 /tmp/rk_mpp_h265_i420_planar.265
 cmp /tmp/rk_mpp_h265_i420_nv12.265 /tmp/rk_mpp_h265_i420_nv21.265
 printf 'PASS H.265 MppEncCfg NV12/I420/NV21 produce identical stream (%s)\n' \
