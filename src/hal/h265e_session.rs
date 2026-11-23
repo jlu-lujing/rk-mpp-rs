@@ -834,57 +834,69 @@ impl Vepu580H265 {
             } else {
                 rc_model::FrameType::InterP
             };
-            let (bit_target, qp) = self.rc.as_mut().unwrap().start(frame);
+            let mut model = self.rc.take().unwrap();
+            let (bit_target, qp) = model.start(frame);
             if std::env::var_os("H265_RC_DEBUG").is_some() {
                 eprintln!(
                     "h265 rc: frame {} bit_target {} qp {}",
                     self.frames, bit_target, qp
                 );
             }
-            let recovery_prefix =
-                !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
-            let (picture, prefix) = if is_idr {
-                (
-                    Picture::Idr,
-                    self.frames == 0 || self.headers_each_idr || recovery_restart,
-                )
-            } else {
-                (
-                    Picture::P {
-                        poc_lsb: self.frames.saturating_sub(self.idr_frame),
-                    },
-                    false,
-                )
-            };
-            let rc = RateControl {
+            let initial = ExternalRateControl {
                 bit_target,
                 qp_target: qp as u32,
                 qp_min: self.rc_band.0,
                 qp_max: self.rc_band.1,
-                qp_delta_row: 2,
-                qp_delta_row_i: 2,
             };
-            let mut encoded = self.encode_picture_rc(
+            let rc_band = self.rc_band;
+            let mut current_qp = qp;
+            let mut reencode = |feedback: RateControlFeedback| {
+                let measured = rc_model::Measured {
+                    bits: feedback.bit_real,
+                    quality: feedback.quality_real,
+                    madi: 0,
+                    madp: 0,
+                    iblk4_prop: 0,
+                };
+                let Some(next_qp) =
+                    model.reencode_quality(frame, bit_target, current_qp, measured, 1)
+                else {
+                    return Ok(None);
+                };
+                current_qp = next_qp;
+                Ok(Some(RateControlReencode {
+                    target: ExternalRateControl {
+                        bit_target,
+                        qp_target: next_qp as u32,
+                        qp_min: rc_band.0,
+                        qp_max: rc_band.1,
+                    },
+                    is_intra: frame == rc_model::FrameType::Intra,
+                    is_idr,
+                }))
+            };
+            let mut encoded = self.encode_frame_with_rc_policy(
                 nv12,
-                picture,
-                prefix,
-                recovery_prefix,
-                Some(rc),
+                Some(initial),
+                Some(&mut reencode),
                 include_annex_b,
             )?;
-            if let Some(measured) = self.last_measured.take() {
-                if std::env::var_os("H265_RC_DEBUG").is_some() {
-                    eprintln!("h265 rc measured: {:?}", measured);
-                }
-                self.rc
-                    .as_mut()
-                    .unwrap()
-                    .end_with(frame, bit_target, measured);
-                encoded.rt_bits = self.rc.as_ref().unwrap().ins_bps();
+            let measured = self
+                .last_measured
+                .take()
+                .unwrap_or_else(|| rc_model::Measured {
+                    bits: encoded.statistics.bitstream_bytes as i32 * 8,
+                    quality: encoded.statistics.quality_real(self.width, self.height),
+                    madi: 0,
+                    madp: 0,
+                    iblk4_prop: 0,
+                });
+            if std::env::var_os("H265_RC_DEBUG").is_some() {
+                eprintln!("h265 rc measured: {measured:?}");
             }
-            self.slot = 1 - self.slot;
-            self.frames += 1;
-            self.recovery_pending = false;
+            model.end_with(frame, bit_target, measured);
+            encoded.rt_bits = model.ins_bps();
+            self.rc = Some(model);
             return Ok(encoded);
         }
         let recovery_prefix = !is_idr && self.refresh_length != 0 && self.frames % self.gop == 0;
@@ -1388,8 +1400,10 @@ impl Vepu580H265 {
         let saved_osd = self.next_osd.clone();
         let original_fixed_qp = self.qp;
         let previous_header_qp = self.fixed_qp_header_override;
+        let input_fd_override = self.input_fd_override.take();
         let mut fixed_qp_override = None;
         let encoded = loop {
+            self.input_fd_override = input_fd_override;
             let rc = target.map(|target| RateControl {
                 bit_target: target.bit_target,
                 qp_target: target.qp_target,

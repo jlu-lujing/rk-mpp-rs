@@ -18,22 +18,34 @@ else
     printf 'missing reference MPP headers or library\n' >&2
     exit 2
 fi
+if grep -q 'bit_target_fix' "$inc/mpp_rc_defs.h"; then
+    rc_has_bit_target_fix=1
+else
+    rc_has_bit_target_fix=0
+fi
 probe=/tmp/rk_mpp_h265_force_idr_probe
-raw=/tmp/rk_mpp_h265_force_idr_6.nv12
-vendor=/tmp/rk_mpp_h265_force_idr_vendor.265
-ours=/tmp/rk_mpp_h265_force_idr_ours.265
+frames="${FRAMES:-6}"
+size="${SIZE:-320x240}"
+width="${size%%x*}"
+height="${size##*x}"
+raw="/tmp/rk_mpp_h265_force_idr_${frames}_${size}.nv12"
+vendor="/tmp/rk_mpp_h265_force_idr_vendor_${size}.265"
+ours="/tmp/rk_mpp_h265_force_idr_ours_${size}.265"
 overlay=$(mktemp -d /tmp/rk_mpp_h265_force_idr.XXXXXX)
 trap 'rm -rf "$overlay"' EXIT
 
-cargo build --release --offline --lib --bin rk-mpp-rs
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+    cargo build --release --offline --lib --bin rk-mpp-rs
+fi
 ln -s "$repo/target/release/librk_mpp_rs.so" "$overlay/librockchip_mpp.so.1"
 
 cc -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra -Werror -pthread \
-    -I"$inc" "$repo/tools/h265e_probe.c" \
+    -DCUSTOM_RC_HAS_BIT_TARGET_FIX="$rc_has_bit_target_fix" \
+    -I"$repo/tools" -I"$inc" "$repo/tools/h265e_probe.c" \
     "$lib/librockchip_mpp.so.1" -o "$probe"
 
 ffmpeg -nostdin -y -hide_banner -loglevel error \
-    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 6 \
+    -f lavfi -i "testsrc2=size=${size}:rate=30" -frames:v "$frames" \
     -pix_fmt nv12 -f rawvideo "$raw"
 
 run_probe() {
@@ -41,8 +53,10 @@ run_probe() {
     local output="$2"
 
     sudo -n rm -f "$output"
-    sudo -n env FRAMES=6 GOP=60 LD_LIBRARY_PATH="$library" timeout 60 \
-        "$probe" "$raw" "$output" 320 240 0 26 288000:1500000:2500000 \
+    local bps=$((width * height * 30 / 8))
+    sudo -n env FRAMES="$frames" GOP=60 LD_LIBRARY_PATH="$library" timeout 120 \
+        "$probe" "$raw" "$output" "$width" "$height" 0 26 \
+        "$bps:1500000:2500000" \
         forceidr 2,4 headereach seioff \
         < /dev/null > "$output.log" 2>&1
 }

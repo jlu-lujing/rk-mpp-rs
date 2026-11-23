@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # H.265 fixed-QP GDR / intra refresh against the C reference.
 #
 # h265e_probe now supplies both the refresh RC keys and an explicit short-term
@@ -9,9 +9,11 @@ BOARD="${BOARD:-t6}"
 # Usage: scripts/board_h265_gdr_vs_mpp.sh
 set -uo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |
-  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+fi
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
@@ -20,12 +22,19 @@ if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1"; then
     "H.265 GDR" "reference build missing at $mpp_ref"
 fi
 
-scp -q tools/h265e_probe.c "$BOARD":/tmp/h265e_probe_gdr.c
-ssh "$BOARD" "cc -O2 -w -pthread -I$mpp_ref/inc /tmp/h265e_probe_gdr.c \
+if ssh "$BOARD" "grep -q 'bit_target_fix' $mpp_ref/inc/mpp_rc_defs.h"; then
+  rc_has_bit_target_fix=1
+else
+  rc_has_bit_target_fix=0
+fi
+scp -q tools/h265e_probe.c tools/custom_rc_probe.h "$BOARD":/tmp/
+scp -q scripts/compare_streams.py "$BOARD":/tmp/
+ssh "$BOARD" "cp /tmp/h265e_probe.c /tmp/h265e_probe_gdr.c &&
+    cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I/tmp -I$mpp_ref/inc /tmp/h265e_probe_gdr.c \
     $mpp_lib/librockchip_mpp.so.1 -o /tmp/h265e_probe_gdr"
 
-frames=8
-gop=4
+frames="${FRAMES:-8}"
+gop="${GOP:-4}"
 fail=0
 run_cell() {
   local size="$1" mode="$2" num="$3"
@@ -50,7 +59,8 @@ run_cell() {
     fail=1
     return
   fi
-  if ! ssh "$BOARD" "sudo cmp -s $c_out $rust_out"; then
+  if ! ssh "$BOARD" "python3 /tmp/compare_streams.py $c_out $rust_out" \
+      >/dev/null 2>&1 < /dev/null; then
     printf 'FAIL h265-gdr/%s-%s%s (streams differ)\n' "$size" "$cli_mode" "$num"
     ssh "$BOARD" "sudo stat -c '%n %s' $c_out $rust_out" 2>/dev/null
     fail=1
@@ -68,5 +78,9 @@ run_cell 320x240 0 1
 run_cell 320x240 1 1
 run_cell 640x480 0 2
 run_cell 640x480 1 2
+if [ "${RUN_4K:-0}" = 1 ]; then
+  run_cell 3840x2160 0 1
+  run_cell 3840x2160 1 1
+fi
 
 exit "$fail"

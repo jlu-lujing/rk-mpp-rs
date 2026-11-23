@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # JPEG VEPU2 multi-core band partitioning above C's 1280x720 area gate.
 #
 # C submits up to four register sets as streaming MULTI_MSG requests, writes
@@ -9,9 +9,11 @@ BOARD="${BOARD:-t6}"
 # Usage: scripts/board_jpege_multicore_vs_mpp.sh
 set -uo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |
-  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+fi
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
@@ -93,5 +95,11 @@ run_cell 1920x1080 90 2040 $((120 * 68))
 run_cell 1288x722 90 972 $((81 * 46))
 run_rot_cell 1920x1080 50 1 rot90
 run_rot_cell 1920x1080 50 3 rot270
+if [ "${RUN_4K:-0}" = 1 ]; then
+  # 240x135 MCUs. RK3588's four-band split gives 34,34,34,33 MCU rows.
+  run_cell 3840x2160 50 8160 $((240 * 135))
+  run_rot_cell 3840x2160 50 1 rot90
+  run_rot_cell 3840x2160 50 3 rot270
+fi
 
 exit "$fail"

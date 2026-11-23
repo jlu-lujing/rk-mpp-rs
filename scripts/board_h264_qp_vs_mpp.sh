@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # H.264: our VEPU580 driver vs the C encoder, NAL by NAL, over QP and profile.
 #
 # The reference is MPP built from source at the vintage of the library installed
@@ -29,9 +29,11 @@ BOARD="${BOARD:-t6}"
 # Usage: scripts/board_h264_qp_vs_mpp.sh
 set -uo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
-  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+fi
 
 # No `-bps` on either side: the C harness derives a bit rate target from the
 # frame size when the option is absent, and that number is printed into the
@@ -40,6 +42,7 @@ ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo buil
 # ONLY=sizes|gop runs one phase; the sizes phase rebuilds the reference harness
 # per profile and takes minutes, so the GOP phase can be checked alone.
 only="${ONLY:-all}"
+sizes="${SIZES:-64x64 320x240 640x480 1280x720}"
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_src="$mpp_ref/test/mpi_enc_test.c"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
@@ -81,7 +84,7 @@ compare() {
 }
 
 if [ "$only" = all ] || [ "$only" = sizes ]; then
-for size in 64x64 320x240 640x480 1280x720; do
+for size in $sizes; do
   width="${size%%x*}"; height="${size##*x}"
   frame="/tmp/rk-mpp-rs-probe-${size}.nv12"
   ssh "$BOARD" "cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame $frame $width $height" >/dev/null
@@ -115,6 +118,7 @@ fi
 # Multi-frame: the same comparison over a GOP, so the P path stays byte-exact and
 # the slice-type dependent tables cannot silently regress. Still and moving
 # fixtures, because the finetune module reads motion statistics between frames.
+if [ "$only" = all ] || [ "$only" = gop ]; then
 configure_reference_profile baseline
 still6=/tmp/rk-mpp-rs-probe6-320x240.nv12
 ssh "$BOARD" 'cd ~/rk-mpp-rs && ./target/release/rk-mpp-rs probe-frame /tmp/rk-mpp-rs-probe-1f.nv12 320 240 >/dev/null'
@@ -149,6 +153,7 @@ for fixture in "$still6 still" "$mv_fixture moving"; do
     fi
   done
 done
+fi
 
 # Leave the reference harness on the Baseline pin the patch documents.
 configure_reference_profile baseline

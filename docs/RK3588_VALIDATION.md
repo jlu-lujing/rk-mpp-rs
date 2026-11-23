@@ -33,6 +33,27 @@ with `--enable-vp9-highbitdepth`; pass it through `VPXENC=`. For FFmpeg 4K
 decode, use `-fps_mode passthrough`; `-frames:v 1` can otherwise produce an
 empty output on both vendor and Rust paths.
 
+`scripts/board_4k_features.sh` extends the baseline to **13/13** feature-gate
+groups:
+
+- H.264 Baseline/Main/High at QP26/QP18: 6/6 one-frame streams, five NALs each.
+- H.264 CBR/VBR/AVBR, MPI quality band and hierarchical QP: 7/7.
+- H.264 fixed-QP and CBR ROI/QP maps: 2/2.
+- H.264 4K slice split: 680 NAL for BY_CTU=96 and 403 for BY_BYTE=256.
+- H.265 CBR/VBR/AVBR/smart-GOP: 4/4 after the RC re-encode fix below.
+- H.265 ROI, slice, auto-tile, GDR and forced-IDR/header mode.
+- H.264/H.265 4K OSD direct and CPU fallback: streams and decoded YUV match.
+- MJPEG 4K multi-core (DRI=8160), 90/270-degree rotation, RGB565, ARGB8888 and
+  BGRA8888 at qf50/qf90.
+
+The 4K H.265 rate-control case found a real policy difference. With a 300 kbps
+target, C's first IDR exceeds the 86,956-bit allocation and is resubmitted at
+QP29; the previous Rust path encoded once at QP26 and moved QP32 to the next
+picture. The resulting first IDR was 20,615 bytes instead of C's 12,150. The
+model-driven H.265 path now uses the same re-encode policy loop and retains its
+DMA-BUF input fd across retries. CBR/VBR/AVBR and smart-GOP are byte-identical
+after version-SEI normalization at both 320×240 and 3840×2160.
+
 ## 2026-11-20 Public H.264/H.265 syntax API V1.13/V1.14
 
 `scripts/board_sdk_encoder_controls.sh` now creates the encoder through the

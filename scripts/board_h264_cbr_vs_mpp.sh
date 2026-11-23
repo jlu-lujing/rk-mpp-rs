@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # CBR, VBR and AVBR: our encoder against the reference library, NAL by NAL.
 #
 # The reference is driven through `tools/rc_probe.c`. The first three cells keep
@@ -15,12 +15,13 @@ BOARD="${BOARD:-t6}"
 # Usage: scripts/board_h264_cbr_vs_mpp.sh
 set -uo pipefail
 
-BPS_TARGET=300000
-BPS_MIN=250000
-BPS_MAX=350000
-FRAMES=6
-SIZE="320 240"
+BPS_TARGET="${BPS_TARGET:-300000}"
+BPS_MIN="${BPS_MIN:-250000}"
+BPS_MAX="${BPS_MAX:-350000}"
+FRAMES="${FRAMES:-6}"
+SIZE="${SIZE:-320 240}"
 HIER="1:2:3:4:1:1:1:1"
+read -r width height <<< "$SIZE"
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
@@ -28,7 +29,7 @@ ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo buil
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
-fixture=/tmp/rk-mpp-rs-move-320x240.nv12
+fixture="${FIXTURE:-/tmp/rk-mpp-rs-move-${width}x${height}.nv12}"
 
 if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/librockchip_mpp.so.0"; then
   source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
@@ -41,7 +42,7 @@ scp -q tools/rc_probe.c "$BOARD":/tmp/
 ssh "$BOARD" "cc -O2 -w -I$mpp_ref/inc /tmp/rc_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/rc_probe 2>/dev/null ||
         cc -O2 -w -I$mpp_ref/inc /tmp/rc_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/rc_probe" || true
 
-ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
+ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=${width}x${height}:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
 
 fail=0

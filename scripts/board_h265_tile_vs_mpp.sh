@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # H.265 horizontal tiles. RK3588 emits two uniform columns for auto_tile below
 # 4K and for any width above 4096. Four columns exist only above 8192, which is
 # outside the H.265 13-bit picture-width limit, so the reachable matrix is two.
@@ -9,10 +9,16 @@ GOP=60
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
 
-scp -q tools/h265e_probe.c "$BOARD":/tmp/h265e_probe_tile.c
-ssh "$BOARD" "cc -O2 -w -pthread -I$mpp_ref/inc /tmp/h265e_probe_tile.c \
+if ssh "$BOARD" "grep -q 'bit_target_fix' $mpp_ref/inc/mpp_rc_defs.h"; then
+  rc_has_bit_target_fix=1
+else
+  rc_has_bit_target_fix=0
+fi
+scp -q tools/h265e_probe.c tools/custom_rc_probe.h "$BOARD":/tmp/
+ssh "$BOARD" "cp /tmp/h265e_probe.c /tmp/h265e_probe_tile.c &&
+  cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I/tmp -I$mpp_ref/inc /tmp/h265e_probe_tile.c \
   $mpp_lib/librockchip_mpp.so.1 -o /tmp/h265e_probe_tile 2>/dev/null ||
-  cc -O2 -w -pthread -I$mpp_ref/inc /tmp/h265e_probe_tile.c \
+  cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I/tmp -I$mpp_ref/inc /tmp/h265e_probe_tile.c \
   $mpp_lib/librockchip_mpp.so.0 -o /tmp/h265e_probe_tile" || true
 
 fail=0
@@ -65,10 +71,15 @@ run_cell() {
 }
 
 # AUTO_TILE=1 at 320x240 covers two tiles across an IDR and P picture.
-run_cell auto320 320 240 2 1 "tile:auto"
+if [ "${RUN_4K_ONLY:-0}" != 1 ]; then
+  run_cell auto320 320 240 2 1 "tile:auto"
 # 4608x64 automatically selects two tiles. Neither encoder produces a second
 # picture at that shape - the C stream stays at its one-picture size and Rust
 # reports int_sta=0x00000100 - so the reachable cell here is IDR-only.
-run_cell wide4608 4608 64 1 0 ""
+  run_cell wide4608 4608 64 1 0 ""
+fi
+if [ "${RUN_4K:-0}" = 1 ]; then
+  run_cell auto4k 3840 2160 2 1 "tile:auto"
+fi
 
 exit "$fail"

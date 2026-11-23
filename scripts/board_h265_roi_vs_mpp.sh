@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # H.265 encoder ROI/QP-map boards against the 2024-04 C oracle.
 #
 # The C probe links the reference's own mpp_enc_roi_utils.c, so region rounding,
@@ -9,9 +9,11 @@ BOARD="${BOARD:-t6}"
 # Usage: BOARD=my-rk3588-host scripts/board_h265_roi_vs_mpp.sh
 set -uo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |
-  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs --exclude '._*' -cf - . |
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+fi
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
@@ -19,13 +21,19 @@ if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/lib
   source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
     "H.265 ROI" "reference build missing at $mpp_ref"
 fi
+if ssh "$BOARD" "grep -q 'bit_target_fix' $mpp_ref/inc/mpp_rc_defs.h"; then
+  rc_has_bit_target_fix=1
+else
+  rc_has_bit_target_fix=0
+fi
 
-scp -q tools/h265e_probe.c "$BOARD":/tmp/h265e_probe_roi.c
-ssh "$BOARD" "cc -O2 -w -pthread -DH265E_ROI \
+scp -q tools/h265e_probe.c tools/custom_rc_probe.h "$BOARD":/tmp/
+ssh "$BOARD" "cp /tmp/h265e_probe.c /tmp/h265e_probe_roi.c &&
+      cc -O2 -w -pthread -DH265E_ROI -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I/tmp \
         -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc \
         $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h265e_probe_roi.c \
         $mpp_lib/librockchip_mpp.so.1 -o /tmp/h265e_probe_roi 2>/dev/null ||
-      cc -O2 -w -pthread -DH265E_ROI \
+      cc -O2 -w -pthread -DH265E_ROI -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I/tmp \
         -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc \
         $mpp_ref/utils/mpp_enc_roi_utils.c /tmp/h265e_probe_roi.c \
         $mpp_lib/librockchip_mpp.so.0 -o /tmp/h265e_probe_roi"
@@ -81,5 +89,9 @@ run_cell absolute_intra 320 240 6 64:32:128:96:1:1:20
 run_cell multi_region 320 240 6 0:0:64:64:1:0:2 128:96:160:128:0:1:30
 # A larger CTU grid pins the per-CTU 64-byte/256-byte record strides.
 run_cell large_640 640 480 6 64:64:320:192:1:1:20
+if [ "${RUN_4K:-0}" = 1 ]; then
+  run_cell relative_4k 3840 2160 2 192:192:1152:768:0:0:-3
+  run_cell absolute_intra_4k 3840 2160 2 768:384:1536:1152:1:1:20
+fi
 
 exit "$fail"

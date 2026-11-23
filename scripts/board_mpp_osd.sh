@@ -21,7 +21,10 @@ fi
 
 overlay=$(mktemp -d /tmp/rk_mpp_osd.XXXXXX)
 frames="${FRAMES:-2}"
-raw="/tmp/rk_mpp_osd_${frames}.nv12"
+size="${SIZE:-320x240}"
+width="${size%%x*}"
+height="${size##*x}"
+raw="/tmp/rk_mpp_osd_${frames}-${size}.nv12"
 trap 'rm -rf "$overlay"' EXIT
 
 if grep -qi rk3576 /proc/device-tree/compatible 2>/dev/null; then
@@ -29,11 +32,13 @@ if grep -qi rk3576 /proc/device-tree/compatible 2>/dev/null; then
     exit 0
 fi
 
-cargo build --release --offline --lib --bin rk-mpp-rs
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+    cargo build --release --offline --lib --bin rk-mpp-rs
+fi
 ln -s "$repo/target/release/librk_mpp_rs.so" \
     "$overlay/librockchip_mpp.so.1"
 ffmpeg -nostdin -y -hide_banner -loglevel error \
-    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v "$frames" \
+    -f lavfi -i "testsrc2=size=${size}:rate=30" -frames:v "$frames" \
     -pix_fmt nv12 -f rawvideo "$raw"
 
 run_encoder() {
@@ -55,7 +60,7 @@ run_encoder() {
     sudo -n env osd_enable=1 "${input_mode[@]}" \
         LD_PRELOAD="$preload" LD_LIBRARY_PATH="$library" \
         timeout 60 "$enc_test" -i "$raw" -o "$output" \
-        -w 320 -h 240 -n "$frames" -rc 2 -fps 30 -g 0:60 -t "$type" -qc 26 \
+        -w "$width" -h "$height" -n "$frames" -rc 2 -fps 30 -g 0:60 -t "$type" -qc 26 \
         < /dev/null > "$output.log" 2>&1
     sudo -n "$repo/target/release/rk-mpp-rs" "$decoder" "$output" "$yuv" \
         > /dev/null

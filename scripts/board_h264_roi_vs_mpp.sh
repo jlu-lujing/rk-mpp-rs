@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # ROI / QP map: forced-intra and QP-adjusted regions against the reference.
 #
 # The regions are the `mpi_enc_test` pair scaled into 320x240 - an absolute
@@ -23,18 +23,22 @@ BOARD="${BOARD:-t6}"
 # Usage: scripts/board_h264_roi_vs_mpp.sh
 set -uo pipefail
 
-SIZE="320 240"
-FRAMES=6
-BPS="300000:250000:350000"
-ROI1="48 32 128 160 0 1 24"
-ROI2="160 64 96 128 1 1 10"
-OURS_ROI1="roi:48:32:128:160:0:1:24"
-OURS_ROI2="roi:160:64:96:128:1:1:10"
-fixture=/tmp/rk-mpp-rs-move-320x240.nv12
+SIZE="${SIZE:-320 240}"
+FRAMES="${FRAMES:-6}"
+BPS="${BPS:-300000:250000:350000}"
+BPS_FIXQP="${BPS_FIXQP:-288000}"
+ROI1="${ROI1:-48 32 128 160 0 1 24}"
+ROI2="${ROI2:-160 64 96 128 1 1 10}"
+OURS_ROI1="${OURS_ROI1:-roi:48:32:128:160:0:1:24}"
+OURS_ROI2="${OURS_ROI2:-roi:160:64:96:128:1:1:10}"
+read -r width height <<< "$SIZE"
+fixture="${FIXTURE:-/tmp/rk-mpp-rs-move-${width}x${height}.nv12}"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
-  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+fi
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
@@ -43,16 +47,21 @@ if ! ssh "$BOARD" "test -f $mpp_lib/librockchip_mpp.so.1 || test -f $mpp_lib/lib
   source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
     "H.264 ROI" "reference build missing at $mpp_ref"
 fi
+if ssh "$BOARD" "grep -q 'bit_target_fix' $mpp_ref/inc/mpp_rc_defs.h"; then
+  rc_has_bit_target_fix=1
+else
+  rc_has_bit_target_fix=0
+fi
 
 # The probe is linked against the reference tree's own ROI helper; on mpp-old
 # that file exists next to the same header.
-scp -q tools/h264e_probe.c "$BOARD":/tmp/ 2>/dev/null
-ssh "$BOARD" "cc -O2 -w -pthread -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
+scp -q tools/h264e_probe.c tools/custom_rc_probe.h "$BOARD":/tmp/ 2>/dev/null
+ssh "$BOARD" "cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I/tmp -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.1 -o /tmp/h264e_probe 2>/dev/null ||
-        cc -O2 -w -pthread -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
+        cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I/tmp -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
 
-ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
+ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=${width}x${height}:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
 
 fail=0
@@ -62,7 +71,7 @@ run_cell() {
           cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
             /tmp/roi_ours_$name.264 $SIZE $ours_args >/dev/null &&
           sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/h264e_probe $fixture \
-            /tmp/roi_c_$name.264 320 240 $probe_args >/dev/null 2>&1 &&
+            /tmp/roi_c_$name.264 $width $height $probe_args >/dev/null 2>&1 &&
           sudo chmod 644 /tmp/roi_ours_$name.264 /tmp/roi_c_$name.264"
   if ! ssh "$BOARD" "test -s /tmp/roi_ours_$name.264 && test -s /tmp/roi_c_$name.264"; then
     printf 'FAIL roi/%s (one side produced no stream)\n' "$name"; fail=1; return
@@ -78,7 +87,7 @@ run_cell() {
 # Fixed QP 26 with both regions: the force-intra blocks and the absolute-QP
 # blocks change the coded picture, and every byte of it is compared.
 run_cell fixqp "26 baseline $FRAMES 60 $OURS_ROI1 $OURS_ROI2" \
-  "$FRAMES 0 26 288000:1500000:2500000 roi $ROI1 roi $ROI2"
+  "$FRAMES 0 26 $BPS_FIXQP:1500000:2500000 roi $ROI1 roi $ROI2"
 # The same regions under CBR, where the QP map rides on top of the rate
 # controller's own trajectory.
 run_cell cbr "auto baseline $FRAMES 60 cbr:$BPS $OURS_ROI1 $OURS_ROI2" \

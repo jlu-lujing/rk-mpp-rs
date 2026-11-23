@@ -36,6 +36,13 @@
   1080p 以上错误自动启用多核 restart band 的问题。
   FFmpeg 解码 4K 时必须使用 `-fps_mode passthrough`；`-frames:v 1` 可能让
   vendor 和 Rust 都因 EOF/时间基丢帧而写出 0 字节。
+- **4K 编码功能门禁也已完成。** `scripts/board_4k_features.sh` 在 RK3588
+  一次跑完 **13/13** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
+  hierarchical QP、ROI、超出 slice FIFO 的 4K split；H.265 RC、ROI、slice、
+  tiles、GDR、强制 IDR/header 模式；H.264/H.265 4K OSD direct/fallback；
+  MJPEG 4K 多核、90° 旋转和 RGB565/ARGB8888/BGRA8888 输入。该门禁同时修复
+  了 4K 低码率下 H.265 首帧缺少 C 的 RC re-encode：QP26 超目标后会按 C
+  重新提交 QP29，再推进下一帧。
 
 - RK3588 的"完成 / 逐字节一致 / 性能"结论只针对它暴露的硬件块：
   client 1（vdpu2）、4（av1d）、9（rkvdec）、13（jpegd）、16（rkv-enc）、

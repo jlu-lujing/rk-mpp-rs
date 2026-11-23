@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Slice split (BY_CTU and BY_BYTE) against the reference, one AU per picture.
 #
 # What the registers have to say is `setup_vepu580_split` with `split_out = 0`:
@@ -24,14 +24,18 @@ BOARD="${BOARD:-t6}"
 # Usage: scripts/board_h264_slice_vs_mpp.sh
 set -uo pipefail
 
-SIZE="320 240"
-FRAMES=6
-GOP=60
-fixture=/tmp/rk-mpp-rs-move-320x240.nv12
+SIZE="${SIZE:-320 240}"
+FRAMES="${FRAMES:-6}"
+GOP="${GOP:-60}"
+BPS_FIXQP="${BPS_FIXQP:-288000}"
+read -r width height <<< "$SIZE"
+fixture="${FIXTURE:-/tmp/rk-mpp-rs-move-${width}x${height}.nv12}"
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
-  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release 2>&1 | tail -1'
+fi
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_lib="$mpp_ref/build/mpp"
@@ -53,7 +57,7 @@ ssh "$BOARD" "cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_targ
         cc -O2 -w -pthread -DCUSTOM_RC_HAS_BIT_TARGET_FIX=$rc_has_bit_target_fix -I$mpp_ref/inc -I$mpp_ref/utils -I$mpp_ref/osal/inc $mpp_ref/utils/mpp_enc_roi_utils.c \
         /tmp/h264e_probe.c $mpp_lib/librockchip_mpp.so.0 -o /tmp/h264e_probe" || true
 
-ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=320x240:rate=30 -frames:v $FRAMES \
+ssh "$BOARD" "ffmpeg -v error -y -f lavfi -i testsrc=size=${width}x${height}:rate=30 -frames:v $FRAMES \
     -pix_fmt nv12 -f rawvideo -an $fixture" >/dev/null 2>&1
 
 fail=0
@@ -63,7 +67,7 @@ run_cell() {
           cd ~/rk-mpp-rs && sudo ./target/release/rk-mpp-rs h264-enc $fixture \
             /tmp/sli_ours_$name.264 $SIZE $ours_args >/dev/null &&
           sudo env LD_LIBRARY_PATH=$mpp_lib /tmp/h264e_probe $fixture \
-            /tmp/sli_c_$name.264 320 240 $probe_args >/dev/null 2>&1 &&
+            /tmp/sli_c_$name.264 $width $height $probe_args >/dev/null 2>&1 &&
           sudo chmod 644 /tmp/sli_ours_$name.264 /tmp/sli_c_$name.264"
   if ! ssh "$BOARD" "test -s /tmp/sli_ours_$name.264 && test -s /tmp/sli_c_$name.264"; then
     printf 'FAIL slice/%s (one side produced no stream)\n' "$name"; fail=1; return
@@ -76,20 +80,34 @@ run_cell() {
   fi
 }
 
-# BY_CTU, 96 macroblocks a slice: 300/96 is 4 slices over the picture, every
-# picture in the run carries 4 (IDR) or 4 (P) slice NALs where it carried 1.
-run_cell ctu_96 "26 baseline $FRAMES $GOP split:mb:96" \
-  "$FRAMES 0 26 288000:1500000:2500000 split 2 96"
-# BY_CTU past the slice FIFO: 8 blocks a slice, 38 slices, the branch that
-# arms `slc_done_en` for BY_CTU.
-run_cell ctu_8 "26 baseline $FRAMES $GOP split:mb:8" \
-  "$FRAMES 0 26 288000:1500000:2500000 split 2 8"
-# BY_CTU an exact divisor: 150 macroblocks, two slices per picture.
-run_cell ctu_150 "26 baseline $FRAMES $GOP split:mb:150" \
-  "$FRAMES 0 26 288000:1500000:2500000 split 2 150"
-# BY_BYTE, 256 bytes a slice: the cap branch, mode 0, `sli_splt_byte`, and the
-# always-on slice interrupt.
-run_cell byte_256 "26 baseline $FRAMES $GOP split:byte:256" \
-  "$FRAMES 0 26 288000:1500000:2500000 split 1 256"
+cells="${SLICE_CELLS:-ctu_96 ctu_8 ctu_150 byte_256}"
+case " $cells " in
+  *" ctu_96 "*)
+    # BY_CTU, 96 macroblocks a slice: 300/96 is 4 slices over the picture.
+    run_cell ctu_96 "26 baseline $FRAMES $GOP split:mb:96" \
+      "$FRAMES 0 26 $BPS_FIXQP:1500000:2500000 split 2 96"
+    ;;
+esac
+case " $cells " in
+  *" ctu_8 "*)
+    # BY_CTU past the slice FIFO: 8 blocks a slice crosses the 32-entry FIFO.
+    run_cell ctu_8 "26 baseline $FRAMES $GOP split:mb:8" \
+      "$FRAMES 0 26 $BPS_FIXQP:1500000:2500000 split 2 8"
+    ;;
+esac
+case " $cells " in
+  *" ctu_150 "*)
+    # BY_CTU an exact divisor: 150 macroblocks, two slices per picture.
+    run_cell ctu_150 "26 baseline $FRAMES $GOP split:mb:150" \
+      "$FRAMES 0 26 $BPS_FIXQP:1500000:2500000 split 2 150"
+    ;;
+esac
+case " $cells " in
+  *" byte_256 "*)
+    # BY_BYTE, 256 bytes a slice: the cap branch and slice interrupt.
+    run_cell byte_256 "26 baseline $FRAMES $GOP split:byte:256" \
+      "$FRAMES 0 26 $BPS_FIXQP:1500000:2500000 split 1 256"
+    ;;
+esac
 
 exit "$fail"

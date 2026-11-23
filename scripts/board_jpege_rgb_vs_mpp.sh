@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # JPEG RGB input: our VEPU2 JPEG encoder vs the C encoder.
 #
 # VEPU2 converts RGB to YCbCr in hardware (colour-conversion coefficients
@@ -20,9 +20,11 @@ BOARD="${BOARD:-t6}"
 # Usage: scripts/board_jpege_rgb_vs_mpp.sh
 set -uo pipefail
 
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
-  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
+    ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+fi
 
 mpp_ref="${MPP_REF:-/tmp/mpp-old}"
 mpp_bin="$mpp_ref/build/test/mpi_enc_test"
@@ -37,7 +39,11 @@ fi
 # format token, -f argument (MppFrameFormat hex)
 for fmt in "rgb565:0x10000" "argb8888:0x1000A" "bgra8888:0x1000C"; do
   IFS=":" read -r name fmt_hex <<< "$fmt"
-  for size in 320x240 640x480; do
+  sizes="320x240 640x480"
+  if [ "${RUN_4K:-0}" = 1 ]; then
+    sizes="$sizes 3840x2160"
+  fi
+  for size in $sizes; do
     width="${size%%x*}"; height="${size##*x}"
     case "$name" in
       rgb565) stride=$((width * 2));;
