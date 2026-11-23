@@ -38,15 +38,17 @@
   FFmpeg 解码 4K 时必须使用 `-fps_mode passthrough`；`-frames:v 1` 可能让
   vendor 和 Rust 都因 EOF/时间基丢帧而写出 0 字节。
 - **4K 扩展功能门禁也已完成。** `scripts/board_4k_features.sh` 在 RK3588
-  一次跑完 **18/18** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
+  一次跑完 **22/22** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
   hierarchical QP、ROI、超出 slice FIFO 的 4K split；H.265 RC、ROI、slice、
-  tiles、GDR、强制 IDR/header 模式；H.264/H.265 自定义 RC callback；4K OSD
+  tiles、GDR、H.264/H.265 强制 IDR/header 模式；自定义 RC callback；4K OSD
   direct/fallback；MJPEG 4K 多核、90° 旋转和 RGB565/ARGB8888/BGRA8888
   输入；4K `MppEncCfg` 的 NV12/I420/NV21 输入；另有 30 帧
   H.264/H.265/VP9 与 10 帧 Main10 的长 GOP/DPB soak。JPEG 解码补了
   4K 的 1/1、1/2、1/4、1/8 RGB888/NV12 缩放，输出尺寸、重复哈希和软件
   参考 PSNR 均通过；H.264/H.265/VP9 另在 1/2/4/8/16 个独立进程下逐路
-  与单路 C/Rust 输出比对，15/15 组无丢帧、无错帧、无输出差异。
+  与单路 C/Rust 输出比对，15/15 组无丢帧、无错帧、无输出差异。4K
+  CPU/DMA NV12→RGB letterbox 输出一致；IEP2 在 1920×1088 上限与 C
+  逐字节一致，3840×2160 现在明确拒绝，不再提交后写出半帧。
   该门禁同时修复了 4K 低码率下 H.265 首帧缺少 C 的 RC re-encode：
   QP26 超目标后会按 C 重新提交 QP29，再推进下一帧；H.265 自定义 RC 的
   I-frame band 也恢复为 C 的 `[15:51]`、`delta_ip=4`。
@@ -151,7 +153,7 @@
 | H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；hier QP 的四层计数器和 1–4 QP 偏移在 CBR/VBR/AVBR 三格均**逐字节**；SMART_P 的 VI 分配、长期 IDR、参考重排和 2-QP delta 在 33 帧 × 三种 RC 下均为 37 NAL **逐字节**；同帧重编、super-frame re-encode、NORMAL drop、CAVLC/CABAC software PSKIP 和 two-pass deflicker 在强制过码格中达到最终码流和全部逐 job STATUS **一致**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落）。stock C 的 GDR ROI 结构体含未初始化栈字段，同一输入连跑会产生不同码流；板级脚本只规范化这些未定义位，Rust 使用同一确定性表和 35 NAL 逐项相同。slice split **板上 4/4 逐字节**（BY_CTU 96/8/150 与 BY_BYTE 256；8 块那格 38 个 slice 越过 32 项 slice FIFO，同时钉住 `slc_done_en`）。逐 slice 输出也已接通：`MPP_ENC_SPLIT_OUT_LOWDELAY` 的 BY_CTU 96/150/8、BY_BYTE 256 和 6 帧 IDR+P **5/5** 通过，32 项 FIFO 之外仍是 38 个数据 packet，所有实际 slice 边界逐项相同。>4096 的 CIME 扩展行与 P 帧 **板上逐字节**（4160x64、4608x256）。P 帧另有 11 个尺寸的扫描（`scripts/board_h264_p_size_probe.sh`，含 FBC 阈值两侧）。原生文件编码默认保持同步；显式 depth 2 通过第三输出槽重叠 packet 组装与下一 job 提交，可达 300 帧 720p 906 FPS；因 scene-tune 晚一帧作为高性能 opt-in，不冒充同步逐字节模式。输出 packet 改用 `system-uncached` DMA heap，省掉逐帧 cache-sync ioctl；500 帧 720p A/B 快 **2.53%**，码流不变。 |
 | JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices 的 5-packet 与 10-packet 矩阵**逐 packet 一致**。RK3588 默认四 band 多核路径已实现，1920x1080/1288x722、旋转 90/270 以及 322x242/1366x768 stride 矩阵**逐字节** |
 | H.265 编码 | 固定 QP 的 **IDR + P GOP**（最多 5 帧、含动画面）、**CBR/VBR/AVBR**、**GDR/intra-refresh**、**ROI/QP map** 与 **deblock/SAO 细调** 均**板上整条逐字节**；GDR 覆盖 320x240/640x480 × row/column 4/4，ROI 覆盖相对/绝对 QP、force-intra、多 region 与 640x480 4/4，deblock beta/tc、disable、SAO luma/chroma 与 loop-filter 为 4/4。**水平 tiles** 为 **2/2 逐字节**（`auto_tile` 320x240 覆盖 IDR+P 共 9 NAL、4608x64 强制两列共 7 NAL），tile 作业的寄存器镜像与 C trace 除 dma-buf fd 外**无一个非地址字不同**；C 对 tile 首帧没有跨会话稳定结果（同参数连跑两次连解码像素都不同），两侧各先跑一趟丢弃作业后才可比，见 DIVERGENCES。BY_CTU/BY_BYTE slice split 普通整 AU **3/3**；`MPP_ENC_SPLIT_OUT_LOWDELAY` 为 **4/4 逐字节、逐 packet 一致**，覆盖 320x240、640x480 和 6 帧 IDR+P，其中 40-slice 格跨越 32 项 FIFO。吞吐 4/4 不慢于 C：320x240/640x480/720p Rust 快 15.8%/3.6%/13.8%，1080p 为 149 ms vs C 147 ms（慢 1.3%，平手门内）。H.265 session 的 CPU 输入 surface 与 CLI 一致改为 `system-uncached`，并去掉两次无效 sync ioctl；500 帧 720p wall median 2.379s→1.412s（-40.7%），user+sys 1.287s→0.455s（-64.7%），码流 SHA 不变。原生 `h265-gop` 固定 QP 在无 refresh/tiles/low-delay split 时默认 depth 2，300 帧 720p 为 0.430 s / 698 FPS（C FFmpeg 0.452 s / 664 FPS），320x240/1280x720 的 300 帧与同步路径逐字节。10-bit 经 C 探针确认 RK3588 VEPU580 以 `int_sta=0x100` 拒绝、无 packet，Rust 显式拒绝。**WPP、B 帧与多参考在 C 参考里就不存在**（`m_entropyCodingSyncEnabledFlag` 恒为 0、编码层无 `B_FRAME`、`num_ref = 1`），没有可重写的目标；tiles 与逐 slice low-delay 输出的组合被显式拒绝（C 侧行为未证）；harness 的 `-g 60`（解析成 `gop_len=0` 的病态 smart-GOP）按 BY-DESIGN 拒绝，有效 GOP 形式逐字节 |
-| 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；strided NV12 直缩直接从 CPU/DMA Frame 读取 Y/UV 并转换 RGB，不生成整帧中间副本。1080p→640 在 RK3588/RK3576 为 4.93/5.95 ms。IEP2 PD/DECT、9/9 模式与 6/6 格式矩阵均与 C probe 逐字节；解码 NV12 dma-buf 可通过 `import_src_frame()` 直接进入 IEP2，不经 CPU 拷贝，源/目标分配和 Y/UV 地址现在同时按 horizontal/vertical stride 计算；50×34、H=64/V=48 的 rkvdec padded-frame 与显式 strided source 两路输出逐字节一致。`Frame::convert_format()` 完成 NV12/I420↔I420P10 的 8/10-bit 双向转换、chroma 解交织/回打包及元数据保留。RK3576 VDPP2 client 29 已用 Luckfox SDK 250301 的精确 6.1.75 vendor 内核真机验收：板 config 只改成 `CONFIG_ROCKCHIP_MPP_VDPP=y`，`mpp_vdpp 27961000.vdpp` 成功绑定，C/Rust 的 scale-only、默认 enhancement、YUV420 split、YUV444 split 和 10240-byte packed histogram **5/5 逐字节**；histogram 解析为 4096 local + 256 global bin，mean luma U10 为 513。FIT 保留原 FDT/resource、external-data 布局、load/entry、rollback index 和 vendor 签名声明。client 28 只有 deinterlace，legacy `/dev/iep` scale 和 VDPP/HDR/CSC 硬件在 RK3588 不存在 |
+| 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；strided NV12 直缩直接从 CPU/DMA Frame 读取 Y/UV 并转换 RGB，不生成整帧中间副本。1080p→640 在 RK3588/RK3576 为 4.93/5.95 ms；4K CPU/DMA 两路→640×360 letterbox 逐字节一致。IEP2 PD/DECT、9/9 模式与 6/6 格式矩阵均与 C probe 逐字节；解码 NV12 dma-buf 可通过 `import_src_frame()` 直接进入 IEP2，不经 CPU 拷贝，源/目标分配和 Y/UV 地址现在同时按 horizontal/vertical stride 计算；50×34、H=64/V=48 的 rkvdec padded-frame 与显式 strided source 两路输出逐字节一致。IEP2 的正式上限为 1920×1088，最大值两路输出 6,266,880 字节逐字节一致；4K 输入在 C 测试中直接拒绝，而 C 底层探针会返回成功但输出全 0，Rust 现在也在打开会话/分配缓冲前返回明确错误。`Frame::convert_format()` 完成 NV12/I420↔I420P10 的 8/10-bit 双向转换、chroma 解交织/回打包及元数据保留。RK3576 VDPP2 client 29 已用 Luckfox SDK 250301 的精确 6.1.75 vendor 内核真机验收：板 config 只改成 `CONFIG_ROCKCHIP_MPP_VDPP=y`，`mpp_vdpp 27961000.vdpp` 成功绑定，C/Rust 的 scale-only、默认 enhancement、YUV420 split、YUV444 split 和 10240-byte packed histogram **5/5 逐字节**；histogram 解析为 4096 local + 256 global bin，mean luma U10 为 513。FIT 保留原 FDT/resource、external-data 布局、load/entry、rollback index 和 vendor 签名声明。client 28 只有 deinterlace，legacy `/dev/iep` scale 和 VDPP/HDR/CSC 硬件在 RK3588 不存在 |
 | framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件、排队/执行/端到端耗时与成功/失败/取消累计统计）、引用计数 dma-heap 缓冲池；pooled JPEG 保证先关闭 MPP service 再归还共享 dma-buf，RK3588 连续 3000 jobs 压测通过；VP8 与 H.264/HEVC/AV1/VP9 的 DPB surface 已持有 RAII lease，四类解码边界回归在 RK3588 通过。submit/poll 硬件错误走 close-before-open 会话替换；真实 `int_sta=0` STATUS 注入后，H.265 tile 会话会清空 line buffer、重新丢弃预跑，并把下一帧升级为带参数集的 IDR，最终码流与全新会话逐字节一致。CCU 路径会探测 vdec/venc/jpeg 设备树节点，用 `SET_SESSION_FD` 把最多 8 个独立 session 合成一个提交批次；RK3588 两个 VEPU2 JPEG session、RK3576 两个 VEPU510 H.264 session 的批量输出都与各自单会话逐字节一致，无 CCU/命令时自动回退。`board_framework_recovery.sh` 4/4，`board_framework_ccu.sh` 两板各 3/3；fence/secure 仍受内核/TA 限制（见 docs/framework-m10.md） |
 
 H.265 aggregate feedback 原先每帧清零完整 180-word STATUS，实际只消费 14
@@ -979,7 +981,7 @@ tests/data/       C 侧真实输出构成的 golden / fixture
   参考面因此被从错误位置读取；IDR 不读参考，所以完全无感。现在 P 的证明在
   `scripts/board_h264_p_size_probe.sh`（11 个尺寸，阈值两侧各有格子），它应当并进矩阵，而不是与矩阵平行存在。
 - **H.265 编码**的 IDR、P GOP、CBR/VBR/AVBR 与 GDR 都已有板上整条码流逐字节证据。
-- IEP2 去隔行**已逐字节**：720x480 I5O2 TFF 与 C `iep2_test` 的 1,036,800 字节完全相同。
+- IEP2 去隔行**已逐字节**：720x480 I5O2 TFF 与 C `iep2_test` 的 1,036,800 字节完全相同；1920x1088 上限为 6,266,880 字节。4K 不属于 IEP2 能力范围，C 测试拒绝，C 底层探针会静默全 0，Rust 现在明确拒绝。
   之前"像素不同"的根因不是场配对，而是提交批次最后一个请求多带了
   `MPP_FLAGS_REG_OFFSET_ALONE`，驱动没有真正执行作业（`iep2_output` 全 0）；IEP 走
   `submit_batch_plain`（只带 MULTI_MSG|LAST_MSG）后硬件开始工作，输出立即与 C 一致。

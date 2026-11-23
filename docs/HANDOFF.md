@@ -944,7 +944,7 @@ VPXENC=/path/to/vpxenc scripts/board_4k_matrix.sh
 FFmpeg 4K 解码必须加 `-fps_mode passthrough`。`-frames:v 1` 会让 vendor 和
 Rust 都可能因 EOF/时间基丢帧而写出 0 字节，这不是 Rust 独有回归。
 
-扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **18/18** 门禁组
+扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **22/22** 门禁组
 通过。它串起 H.264/H.265 的 RC、hier QP、ROI、slice、tiles、GDR、force-IDR、
 custom RC callback、OSD，以及 MJPEG 多核/旋转/RGB。4K H.264 BY_CTU/BY_BYTE 分别为 680/403 NAL，
 H.265 为 260/205 NAL；H.265 4K auto-tile 为 9 NAL，GDR row/column 均为
@@ -963,6 +963,19 @@ FFmpeg `area` 软件缩放的 PSNR 为 60.52/30.82/33.00/27.61 dB。C
 个独立解码进程。每个 codec 先要求单路 C `mpi_dec_test` 与 Rust CLI 的
 planar 输出逐字节一致，然后要求所有并发输出与 golden 逐字节一致；共
 15/15 组通过，16 路每组没有启动失败、丢帧或错帧。
+
+H.264 4K force-IDR/header 模式也已接通到同一门禁。探针在 2024-04 头文件下
+关闭 `bit_target_fix` 日志字段，并使用阻塞队列语义；帧 2、4 强制 IDR 后
+C/Rust 均为 12 NAL，解码 YUV 逐字节一致。4K decode scale 另以 CPU 与
+DMA-BUF 两路 H.264 帧直接缩到 640×640 letterbox，实际画面为 640×360、
+顶部 padding 140，两路 RGB 完全一致。
+
+IEP2 的 4K 结果不是可用路径。C `iep2_test` 把尺寸限制为 1920×1088，
+3840×2160 会在参数检查阶段拒绝；直接调用 C 底层 probe 虽然返回成功，但
+两份输出全 0，因为库的 md scratch buffer 固定为 `1920 * 1088`。Rust 原先
+也会提交 4K，最终只写出部分行。现在 `IepDeinterlace::open()` 在打开
+client 28 前返回明确的 `InvalidInput`，上限 1920×1088 的 C/Rust 输出则
+是 6,266,880 bytes 逐字节一致。
 
 4K `MppEncCfg` 输入格式门禁也已通过：同一画面分别以 NV12、I420、NV21 输入，
 H.264 与 H.265 都产生完全相同的 5-NAL 码流。对象探针必须显式设置

@@ -27,26 +27,60 @@ H="${2:-480}"
 
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target --exclude Cargo.lock --exclude .worktrees --exclude refs -cf - . |
   ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
+fi
 
 # The IEP2 oracle lives with whichever reference build carries vproc tests.
-for ref in /tmp/mpp-old /tmp/mpp-develop '~/rk-mpp-oracles/mpp-old' '~/rk-mpp-oracles/mpp-develop'; do
+remote_home=$(ssh "$BOARD" 'printf %s "$HOME"')
+for ref in /tmp/mpp-old /tmp/mpp-develop \
+    "$remote_home/rk-mpp-oracles/mpp-old" \
+    "$remote_home/rk-mpp-oracles/mpp-develop"; do
   for cand in "$ref/build/test/iep2_test" "$ref/build/mpp/vproc/iep2/test/iep2_test"; do
-  lib="$ref/build/mpp"
-  if ssh "$BOARD" "test -x $cand && test -f $lib/librockchip_mpp.so.0"; then
-    MPP_BIN="$cand"; MPP_LIB="$lib"; break
-  fi
-  if ssh "$BOARD" "test -x $cand && test -f $lib/librockchip_mpp.so.1"; then
-    MPP_BIN="$cand"; MPP_LIB="$lib"; break
-  fi
-  if [ -n "${MPP_BIN:-}" ]; then break; fi
- done
+    lib="$ref/build/mpp"
+    if ssh "$BOARD" "test -x $cand && test -f $lib/librockchip_mpp.so.0"; then
+      MPP_BIN="$cand"; MPP_LIB="$lib"; break
+    fi
+    if ssh "$BOARD" "test -x $cand && test -f $lib/librockchip_mpp.so.1"; then
+      MPP_BIN="$cand"; MPP_LIB="$lib"; break
+    fi
+    if [ -n "${MPP_BIN:-}" ]; then break; fi
+  done
   if [ -n "${MPP_BIN:-}" ]; then break; fi
 done
 
 if [ -z "${MPP_BIN:-}" ]; then
   source "$(cd "$(dirname "$0")" && pwd)/board_dependency.sh" \
     "IEP deinterlace" "no iep2_test oracle build found"
+fi
+
+if [ "$W" -gt 1920 ] || [ "$H" -gt 1088 ]; then
+  rust_log=/tmp/rk-mpp-rs-iep-limit-rust.log
+  c_log=/tmp/rk-mpp-rs-iep-limit-c.log
+  if ssh "$BOARD" "cd ~/rk-mpp-rs && sudo timeout 30 ./target/release/rk-mpp-rs \
+      iep-dei /dev/null /tmp/rk-mpp-rs-iep-limit.yuv $W $H TFF \
+      >$rust_log 2>&1"; then
+    printf 'FAIL IEP limit (%sx%s was accepted by Rust)\n' "$W" "$H"
+    exit 1
+  fi
+  if ! ssh "$BOARD" "grep -F 'exceed hardware limit 1920x1088' $rust_log"; then
+    printf 'FAIL IEP limit (Rust rejected without the hardware-limit diagnostic)\n'
+    exit 1
+  fi
+  if ssh "$BOARD" "cd ~/rk-mpp-rs && sudo env LD_LIBRARY_PATH=$MPP_LIB \
+      timeout 30 $MPP_BIN -w $W -h $H -c yuv420sp -i /dev/null \
+      -C yuv420sp -o /tmp/rk-mpp-rs-iep-limit-c.yuv -f TFF \
+      >$c_log 2>&1"; then
+    printf 'FAIL IEP limit (%sx%s was accepted by C iep2_test)\n' "$W" "$H"
+    exit 1
+  fi
+  if ! ssh "$BOARD" "grep -E 'invalid (width|height)' $c_log"; then
+    printf 'FAIL IEP limit (C oracle did not report its size limit)\n'
+    exit 1
+  fi
+  printf 'PASS IEP limit (%sx%s rejected by C oracle and Rust before submission)\n' \
+    "$W" "$H"
+  exit 0
 fi
 
 in=/tmp/rk-mpp-rs-iep-in.yuv

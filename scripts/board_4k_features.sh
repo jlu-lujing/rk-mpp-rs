@@ -91,6 +91,9 @@ run_remote "H.264/H.265 4K OSD" \
 run_remote "H.265 forced IDR / header mode" \
     "SIZE=3840x2160 FRAMES=6 SKIP_BUILD=1 scripts/board_h265_force_idr.sh"
 
+run_remote "H.264 forced IDR / header mode" \
+    "SIZE=3840x2160 FRAMES=6 SKIP_BUILD=1 scripts/board_h264_force_idr.sh"
+
 run_remote "H.264/H.265 custom RC" \
     "SIZE=3840x2160 SKIP_BUILD=1 scripts/board_mpp_custom_rc.sh"
 
@@ -102,6 +105,15 @@ run_gate "JPEG decoder 1/2-1/8 scaling" \
 
 run_gate "4K decode concurrency 1-16 streams" \
     env SKIP_BUILD=1 scripts/board_4k_multistream.sh
+
+run_remote "4K CPU/DMA NV12 letterbox" \
+    "SIZE=3840x2160 FRAMES=3 SKIP_BUILD=1 scripts/board_sdk_decode_scale.sh"
+
+run_gate "IEP2 maximum 1920x1088 parity" \
+    env SKIP_BUILD=1 scripts/board_iep_dei_vs_mpp.sh 1920 1088
+
+run_gate "IEP2 4K out-of-range rejection" \
+    env SKIP_BUILD=1 scripts/board_iep_dei_vs_mpp.sh 3840 2160
 
 run_remote "4K long GOP / DPB soak" \
     "SKIP_BUILD=1 scripts/board_4k_soak.sh"

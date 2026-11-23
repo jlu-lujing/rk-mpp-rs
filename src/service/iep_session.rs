@@ -136,6 +136,7 @@ pub struct IepDeinterlace {
 impl IepDeinterlace {
     /// Announce client 28 and reserve every buffer the deinterlace path needs.
     pub fn open(cfg: DeinterlaceConfig) -> io::Result<Self> {
+        validate_config(&cfg)?;
         let svc = MppService::open(IEP_CLIENT)?;
         let heap = std::env::var("IEP_HEAP").unwrap_or_else(|_| "system".to_string());
         let alloc = |len: usize| DmaBuf::alloc(&heap, len, false);
@@ -646,6 +647,37 @@ impl IepDeinterlace {
     }
 }
 
+fn validate_config(cfg: &DeinterlaceConfig) -> io::Result<()> {
+    if cfg.width == 0 || cfg.height == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IEP2 dimensions must be non-zero",
+        ));
+    }
+    if cfg.width > iep::MAX_PICTURE_WIDTH || cfg.height > iep::MAX_PICTURE_HEIGHT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "IEP2 dimensions {}x{} exceed hardware limit {}x{}",
+                cfg.width,
+                cfg.height,
+                iep::MAX_PICTURE_WIDTH,
+                iep::MAX_PICTURE_HEIGHT
+            ),
+        ));
+    }
+    if cfg.hor_stride < cfg.width || cfg.ver_stride < cfg.height {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "IEP2 stride {}x{} is smaller than visible {}x{}",
+                cfg.hor_stride, cfg.ver_stride, cfg.width, cfg.height
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn append_rows(
     out: &mut Vec<u8>,
     src: &[u8],
@@ -728,5 +760,42 @@ mod tests {
         );
         assert_eq!(c.dil_mode, Iep2DilMode::I5O2);
         assert_eq!(c.src_fmt.frame_bytes(720, 480), 720 * 480 * 3 / 2);
+    }
+
+    #[test]
+    fn config_rejects_pictures_above_the_iep2_hardware_limit() {
+        let config = DeinterlaceConfig {
+            width: 3840,
+            height: 2160,
+            hor_stride: 3840,
+            ver_stride: 2160,
+            ..DeinterlaceConfig::default()
+        };
+        let error = validate_config(&config).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error
+            .to_string()
+            .contains("exceed hardware limit 1920x1088"));
+    }
+
+    #[test]
+    fn config_accepts_the_maximum_iep2_picture_and_rejects_short_strides() {
+        let maximum = DeinterlaceConfig {
+            width: iep::MAX_PICTURE_WIDTH,
+            height: iep::MAX_PICTURE_HEIGHT,
+            hor_stride: iep::MAX_PICTURE_WIDTH,
+            ver_stride: iep::MAX_PICTURE_HEIGHT,
+            ..DeinterlaceConfig::default()
+        };
+        assert!(validate_config(&maximum).is_ok());
+
+        let short = DeinterlaceConfig {
+            hor_stride: maximum.width - 2,
+            ..maximum
+        };
+        assert_eq!(
+            validate_config(&short).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

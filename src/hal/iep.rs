@@ -280,6 +280,9 @@ pub fn strides(hor_stride: usize, swap: Iep2YuvSwap) -> (u32, u32, u32) {
 pub const MV_BUF_BYTES: usize = 120 * 480;
 /// The md scratch buffer size: the driver allocates `1920 * 1088` unconditionally.
 pub const MD_BUF_BYTES: usize = 1920 * 1088;
+/// Maximum picture accepted by the IEP2 library and sized by its md buffer.
+pub const MAX_PICTURE_WIDTH: usize = 1920;
+pub const MAX_PICTURE_HEIGHT: usize = 1088;
 
 /// One deinterlace job: the three source frames and two output frames, as
 /// dma-buf fds, plus the format/mode knobs the C library sets through

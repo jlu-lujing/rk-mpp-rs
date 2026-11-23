@@ -33,7 +33,7 @@ with `--enable-vp9-highbitdepth`; pass it through `VPXENC=`. For FFmpeg 4K
 decode, use `-fps_mode passthrough`; `-frames:v 1` can otherwise produce an
 empty output on both vendor and Rust paths.
 
-`scripts/board_4k_features.sh` extends the baseline to **18/18** feature-gate
+`scripts/board_4k_features.sh` extends the baseline to **22/22** feature-gate
 groups:
 
 - H.264 Baseline/Main/High at QP26/QP18: 6/6 one-frame streams, five NALs each.
@@ -59,6 +59,15 @@ groups:
 - Independent-process 4K H.264/H.265/VP9 decode at 1, 2, 4, 8 and 16 streams.
   Every codec first matches the single-stream C decoder, then every concurrent
   output matches that golden byte for byte: 15/15 cells, no missing frames.
+- H.264 and H.265 forced-IDR/header mode at 4K. H.264 produces 12 NALs,
+  H.265 produces 15 NALs, and the C/Rust decoded YUV agrees in both.
+- Decode 4K H.264 through both CPU and DMA-BUF frames, scale strided NV12
+  directly into the 640x640 RGB model input, and require byte equality at
+  geometry 640x360 with top padding 140.
+- IEP2 deinterlace at its 1920x1088 maximum is byte-identical to C. A 4K
+  request is rejected by the C test harness and now rejected by Rust before
+  session open; a direct C probe otherwise returns success with two all-zero
+  outputs, confirming that 4K is unsupported rather than a valid hidden mode.
 
 The 4K H.265 rate-control case found a real policy difference. With a 300 kbps
 target, C's first IDR exceeds the 86,956-bit allocation and is resubmitted at
