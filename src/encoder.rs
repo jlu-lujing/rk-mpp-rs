@@ -1763,6 +1763,21 @@ impl Encoder {
         }
     }
 
+    pub(crate) fn set_h265_rate_control_sei(
+        &mut self,
+        sei: h265e_session::RcSei,
+    ) -> Result<(), Error> {
+        match &mut self.backend {
+            Backend::H265Vepu580(encoder) => {
+                encoder.set_rate_control_sei(sei);
+                Ok(())
+            }
+            _ => Err(Error::Unsupported(
+                "the custom H.265 RC SEI requires a VEPU580 encoder".to_string(),
+            )),
+        }
+    }
+
     pub(crate) fn supports_h264_reference_layout(&self) -> bool {
         matches!(
             &self.backend,

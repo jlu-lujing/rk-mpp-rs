@@ -91,6 +91,9 @@ run_remote "H.264/H.265 4K OSD" \
 run_remote "H.265 forced IDR / header mode" \
     "SIZE=3840x2160 FRAMES=6 SKIP_BUILD=1 scripts/board_h265_force_idr.sh"
 
+run_remote "H.264/H.265 custom RC" \
+    "SIZE=3840x2160 SKIP_BUILD=1 scripts/board_mpp_custom_rc.sh"
+
 run_gate "MJPEG multi-core and rotation" \
     env SKIP_BUILD=1 RUN_4K=1 scripts/board_jpege_multicore_vs_mpp.sh
 

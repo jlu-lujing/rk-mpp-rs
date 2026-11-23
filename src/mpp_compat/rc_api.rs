@@ -4,6 +4,7 @@ use std::ptr;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::encoder::{EncoderConfig, RateControlMode};
+use crate::sdk::Codec;
 use crate::service::soc::{SocProfile, VideoEncodeHal};
 
 use super::{
@@ -181,6 +182,14 @@ impl RcCfg {
         let init_quality = rate_control.map_or(config.qp() as i32, |rate| rate.initial_qp() as i32);
         let min_quality = rate_control.map_or(config.qp() as i32, |rate| rate.min_qp() as i32);
         let max_quality = rate_control.map_or(config.qp() as i32, |rate| rate.max_qp() as i32);
+        let (min_i_quality, max_i_quality, i_quality_delta, vi_quality_delta) =
+            if config.codec() == Codec::H265 {
+                // h265e_api.c defaults; H.264 leaves the intra band at the
+                // general band and only sets delta_ip = 2.
+                (15, 51, 4, 2)
+            } else {
+                (min_quality, max_quality, 2, 0)
+            };
         Self {
             width: config.width() as i32,
             height: config.height() as i32,
@@ -200,11 +209,13 @@ impl RcCfg {
             init_quality,
             max_quality,
             min_quality,
-            max_i_quality: max_quality,
-            min_i_quality: min_quality,
-            fqp_min_i: min_quality,
+            max_i_quality,
+            min_i_quality,
+            i_quality_delta,
+            vi_quality_delta,
+            fqp_min_i: min_i_quality,
             fqp_min_p: min_quality,
-            fqp_max_i: max_quality,
+            fqp_max_i: max_i_quality,
             fqp_max_p: max_quality,
             max_reencode_times: 1,
             ..Self::default()
@@ -1009,8 +1020,37 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoder::RateControlConfig;
 
     static CALLBACK_STAGES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+    #[test]
+    fn rc_cfg_uses_codec_specific_intra_defaults() {
+        let rate = RateControlConfig::vbr(1_000_000, 800_000, 1_200_000).with_qp_range(10, 51);
+        let h265 =
+            RcCfg::from_encoder(EncoderConfig::new(Codec::H265, 320, 240).with_rate_control(rate));
+        assert_eq!(
+            (
+                h265.min_i_quality,
+                h265.max_i_quality,
+                h265.i_quality_delta,
+                h265.vi_quality_delta,
+            ),
+            (15, 51, 4, 2)
+        );
+
+        let h264 =
+            RcCfg::from_encoder(EncoderConfig::new(Codec::H264, 320, 240).with_rate_control(rate));
+        assert_eq!(
+            (
+                h264.min_i_quality,
+                h264.max_i_quality,
+                h264.i_quality_delta,
+                h264.vi_quality_delta,
+            ),
+            (10, 51, 2, 0)
+        );
+    }
 
     unsafe extern "C" fn record_frame_start(_: *mut c_void, _: *mut c_void) -> c_int {
         CALLBACK_STAGES

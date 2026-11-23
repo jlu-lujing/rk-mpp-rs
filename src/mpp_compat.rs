@@ -5,7 +5,7 @@ use std::ffi::{c_int, c_void};
 use std::mem::size_of;
 use std::sync::OnceLock;
 
-use crate::{encoder, sdk};
+use crate::{encoder, hal::h265e_session, sdk};
 
 mod cfg;
 mod compat_table;
@@ -1356,6 +1356,27 @@ unsafe extern "C" fn compat_control(ctx: MppCtx, command: c_int, param: MppParam
                                 return MPP_NOK;
                             }
                         };
+                        if context.coding == MPP_VIDEO_CODING_HEVC
+                            && config.rate_control().is_some_and(|rate| {
+                                rate.mode() != encoder::RateControlMode::FixedQp
+                            })
+                        {
+                            let sei = h265e_session::RcSei {
+                                target: i64::from(rc_cfg.bps_target),
+                                min: i64::from(rc_cfg.bps_min),
+                                max: i64::from(rc_cfg.bps_max),
+                                init_quality: rc_cfg.init_quality,
+                                qp_min: rc_cfg.min_quality.max(0) as u32,
+                                qp_max: rc_cfg.max_quality.max(0) as u32,
+                                qp_min_i: rc_cfg.min_i_quality.max(0) as u32,
+                                qp_max_i: rc_cfg.max_i_quality.max(0) as u32,
+                                i_quality_delta: rc_cfg.i_quality_delta,
+                            };
+                            if let Err(error) = encoder.set_h265_rate_control_sei(sei) {
+                                eprintln!("rk-mpp-rs mpp: H.265 RC SEI rejected: {error}");
+                                return MPP_NOK;
+                            }
+                        }
                         context.custom_rc = Some(session);
                         context.custom_rc_pending = None;
                         context.custom_rc_max_reencodes = rc_cfg.max_reencode_times.max(0);

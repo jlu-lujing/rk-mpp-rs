@@ -33,7 +33,7 @@ with `--enable-vp9-highbitdepth`; pass it through `VPXENC=`. For FFmpeg 4K
 decode, use `-fps_mode passthrough`; `-frames:v 1` can otherwise produce an
 empty output on both vendor and Rust paths.
 
-`scripts/board_4k_features.sh` extends the baseline to **13/13** feature-gate
+`scripts/board_4k_features.sh` extends the baseline to **14/14** feature-gate
 groups:
 
 - H.264 Baseline/Main/High at QP26/QP18: 6/6 one-frame streams, five NALs each.
@@ -42,6 +42,8 @@ groups:
 - H.264 4K slice split: 680 NAL for BY_CTU=96 and 403 for BY_BYTE=256.
 - H.265 CBR/VBR/AVBR/smart-GOP: 4/4 after the RC re-encode fix below.
 - H.265 ROI, slice, auto-tile, GDR and forced-IDR/header mode.
+- H.264/H.265 custom RC callbacks, range changes, same-frame re-encode and
+  frame-type re-encode.
 - H.264/H.265 4K OSD direct and CPU fallback: streams and decoded YUV match.
 - MJPEG 4K multi-core (DRI=8160), 90/270-degree rotation, RGB565, ARGB8888 and
   BGRA8888 at qf50/qf90.

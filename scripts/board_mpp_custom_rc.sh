@@ -44,7 +44,10 @@ fi
 
 probe=/tmp/rk_mpp_custom_rc_probe
 h264_probe=/tmp/rk_mpp_custom_rc_h264_probe
-raw=/tmp/rk_mpp_custom_rc_2.nv12
+size="${SIZE:-320x240}"
+width="${size%%x*}"
+height="${size##*x}"
+raw="/tmp/rk_mpp_custom_rc_3-${size}.nv12"
 vendor=/tmp/rk_mpp_custom_rc_vendor.265
 ours=/tmp/rk_mpp_custom_rc_ours.265
 vendor_log=/tmp/rk_mpp_custom_rc_vendor.log
@@ -60,7 +63,9 @@ h264_range_ours=/tmp/rk_mpp_custom_rc_h264_range_ours.264
 overlay=$(mktemp -d /tmp/rk_mpp_custom_rc.XXXXXX)
 trap 'rm -rf "$overlay"' EXIT
 
-cargo build --release --offline --lib --bin rk-mpp-rs
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+    cargo build --release --offline --lib --bin rk-mpp-rs
+fi
 ln -s "$repo/target/release/librk_mpp_rs.so" \
     "$overlay/librockchip_mpp.so.1"
 
@@ -74,7 +79,7 @@ cc -D_GNU_SOURCE -DCUSTOM_RC_HAS_BIT_TARGET_FIX="$rc_has_bit_target_fix" \
     "$lib/librockchip_mpp.so.1" -o "$h264_probe"
 
 ffmpeg -nostdin -y -hide_banner -loglevel error \
-    -f lavfi -i "testsrc2=size=320x240:rate=30" -frames:v 3 \
+    -f lavfi -i "testsrc2=size=${size}:rate=30" -frames:v 3 \
     -pix_fmt nv12 -f rawvideo "$raw"
 
 run_probe() {
@@ -83,9 +88,11 @@ run_probe() {
     local log="$3"
 
     sudo -n rm -f "$output" "$log" "$output.yuv"
-    local rate="288000:1500000:2500000"
+    local rate
     if [ "${CUSTOM_RC_MODE:-0}" != 0 ]; then
-        rate="1000000:800000:1200000"
+        rate="${CUSTOM_RC_MODE_RATE:-1000000:800000:1200000}"
+    else
+        rate="${CUSTOM_RC_RATE:-$((width * height * 30 / 8)):1500000:2500000}"
     fi
     sudo -n env CUSTOM_RC=1 CUSTOM_RC_LOG="$log" \
         FRAMES="${CUSTOM_RC_FRAMES:-2}" GOP=60 \
@@ -94,7 +101,7 @@ run_probe() {
         CUSTOM_RC_QP_MIN="${CUSTOM_RC_QP_MIN:-26}" \
         CUSTOM_RC_QP_MAX="${CUSTOM_RC_QP_MAX:-26}" \
         LD_LIBRARY_PATH="$library" timeout 60 \
-        "$probe" "$raw" "$output" 320 240 "${CUSTOM_RC_MODE:-0}" 26 \
+        "$probe" "$raw" "$output" "$width" "$height" "${CUSTOM_RC_MODE:-0}" 26 \
         "$rate" "${sei_off[@]}" \
         < /dev/null > "$output.stdout" 2>&1
 }
@@ -141,7 +148,7 @@ decode_partial_h265() {
     rc=$?
     set -e
     : "$rc"
-    test "$(sudo -n stat -c %s "$output")" -eq 230400
+    test "$(sudo -n stat -c %s "$output")" -eq $((width * height * 3))
 }
 
 run_probe "$lib" "$vendor" "$vendor_log"
@@ -168,9 +175,11 @@ run_h264_probe() {
     local output="$2"
     local log="$3"
 
-    local rate="288000:1500000:2500000"
+    local rate
     if [ "${CUSTOM_RC_MODE:-0}" != 0 ]; then
-        rate="1000000:800000:1200000"
+        rate="${CUSTOM_RC_MODE_RATE:-1000000:800000:1200000}"
+    else
+        rate="${CUSTOM_RC_RATE:-$((width * height * 30 / 8)):1500000:2500000}"
     fi
     sudo -n rm -f "$output" "$log" "$output.yuv"
     sudo -n env CUSTOM_RC=1 CUSTOM_RC_LOG="$log" \
@@ -179,7 +188,7 @@ run_h264_probe() {
         CUSTOM_RC_QP_MIN="${CUSTOM_RC_QP_MIN:-26}" \
         CUSTOM_RC_QP_MAX="${CUSTOM_RC_QP_MAX:-26}" \
         LD_LIBRARY_PATH="$library" timeout 60 \
-        "$h264_probe" "$raw" "$output" 320 240 "${CUSTOM_RC_FRAMES:-2}" \
+        "$h264_probe" "$raw" "$output" "$width" "$height" "${CUSTOM_RC_FRAMES:-2}" \
         "${CUSTOM_RC_MODE:-0}" 26 \
         "$rate" "${sei_off[@]}" \
         < /dev/null > "$output.stdout" 2>&1
