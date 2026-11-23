@@ -5,9 +5,9 @@ second RK3588 validation system back to the primary RK3588 board.
 
 ## 2026-11-23 4K codec matrix
 
-`scripts/board_4k_matrix.sh` passes **20/20** at 3840×2160. The matrix covers
+`scripts/board_4k_matrix.sh` passes **22/22** at 3840×2160. The matrix covers
 H.264/H.265/VP9 8-bit one- and three-frame decode, H.265/VP9/AV1 Main10,
-AV1 8-bit one/three-frame decode, H.264/H.265 4K encode, MJPEG
+AV1 8-bit one/three-frame decode, AV1 8/10-bit film grain, H.264/H.265 4K encode, MJPEG
 1080p/1440p/4K encode, and 4K MJPEG decode. Hardware decode is compared byte
 for byte with both C MPP and an independent software oracle; H.264/H.265/MJPEG
 FFmpeg drop-in encode is byte-identical to vendor.
