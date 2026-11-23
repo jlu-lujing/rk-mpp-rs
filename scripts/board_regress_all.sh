@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # One command that answers "did anything regress?".
 #
 # Every suite below is an existing gate with its own evidence; this script only

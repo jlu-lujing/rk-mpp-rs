@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # PD/DECT inverse-telecine path of IEP2 client 28.
 #
 # `iep2_test` hard-codes IEP2_DIL_MODE_I5O2, which never reaches iep2_check_pd or

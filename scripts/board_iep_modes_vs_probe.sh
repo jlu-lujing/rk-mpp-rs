@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Compare every usable IEP2 client-28 deinterlace mode against a minimal C probe
 # built on the reference library.
 #

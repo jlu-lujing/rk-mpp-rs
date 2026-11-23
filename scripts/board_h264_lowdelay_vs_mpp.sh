@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # H.264 low-delay packet output against the 2024-04 C oracle.
 #
 # The comparison pins both halves of MPP_ENC_SPLIT_OUT_LOWDELAY:

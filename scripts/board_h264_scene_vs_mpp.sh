@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Scene changes: the detector's register patch, our encoder against the reference.
 #
 # The fixture is a hard cut: the first half of the clip is `testsrc`, the second

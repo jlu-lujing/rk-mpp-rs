@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Damaged-stream comparison against the C decoder, on the selected board.
 #
 # The damage is built ON THE BOARD from the repo fixtures, per the plan: the

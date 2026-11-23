@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # M10 framework: the async task queue + buffer pool against the sync path.
 #
 # The claim under test is semantic, not byte-vs-C: N JPEG decodes submitted

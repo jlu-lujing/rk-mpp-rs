@@ -6,7 +6,7 @@
 #   BOARD=my-rk3588-host scripts/board_info.sh docs/board.md
 set -euo pipefail
 
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 OUTPUT="${1:-docs/board.md}"
 TMP="$(mktemp "${TMPDIR:-/tmp}/rk-mpp-board.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT

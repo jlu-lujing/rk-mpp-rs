@@ -1,5 +1,5 @@
 # rc_model_v2's own state, printed by the reference library (rc_debug=0x40
-# mpp_syslog_perror=1) over two CBR runs on t6 at 320x240, 30 fps, GOP 60,
+# mpp_syslog_perror=1) over two CBR runs on RK3588 at 320x240, 30 fps, GOP 60,
 # -bps 300000:250000:350000. Regenerate with:
 #   tools/rc_probe.c            # the direct-API caller
 #   mpi_enc_test from /tmp/mpp-old

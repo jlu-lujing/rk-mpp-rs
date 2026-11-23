@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-board="${BOARD:-luck2}"
+board="${BOARD:?set BOARD to a Rockchip SSH alias}"
 
 ssh "$board" 'mkdir -p "$HOME/rk-mpp-rs"'
 COPYFILE_DISABLE=1 tar \

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Force a CBR overshoot on the opening IDR. The reference submits the same
 # picture twice (QP 26, then 46), then commits only the second payload. The
 # trace and status dump also prove the RC state after each attempt.

@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-board="${BOARD:-lf1}"
+board="${BOARD:?set BOARD to a Rockchip SSH alias}"
 action="${1:-status}"
 overlay=tools/rk3576-vdpp2-overlay.dts
 

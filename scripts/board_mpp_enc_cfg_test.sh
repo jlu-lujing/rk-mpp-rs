@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-board="${BOARD:-t6}"
+board="${BOARD:?set BOARD to a Rockchip SSH alias}"
 mpp="${MPP_REF:-/tmp/mpp-develop}"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 test_bin="$mpp/build/mpp/base/test/mpp_enc_cfg_test"

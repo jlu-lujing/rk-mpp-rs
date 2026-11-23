@@ -1,4 +1,4 @@
-# `rc_model_v2` printing its own rate-control state, captured on t6 with
+# `rc_model_v2` printing its own rate-control state, captured on RK3588 with
 #   rc_debug=0xf0 mpp_syslog_perror=1 tools/rc_probe <fixture> out.264 320 240 6 300000 250000 350000
 # CBR, GOP 60, 30 fps, 320x240. `ins_ratio` is printed as `ins_ratio - bit_diff_ratio`
 # (as the reference prints it), so the term itself is the sum of the first two.

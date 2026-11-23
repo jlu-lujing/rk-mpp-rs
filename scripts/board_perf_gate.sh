@@ -10,7 +10,7 @@
 # rows use the shipped NEON vector_ms from board_perf_hotpaths_vs_mpp.sh.
 set -euo pipefail
 
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 PERF_SAMPLES="${PERF_SAMPLES:-11}"
 PERF_SCALE_ITERS="${PERF_SCALE_ITERS:-30}"
 PERF_BENCH_FILTER="${PERF_BENCH_FILTER:-test720}"

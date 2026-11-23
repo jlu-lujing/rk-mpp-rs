@@ -14,7 +14,7 @@
 # directories remain on the board for inspection.
 set -euo pipefail
 
-board="${BOARD:-t62}"
+board="${BOARD:?set BOARD to a Rockchip SSH alias}"
 jobs="${JOBS:-11}"
 frames="${FRAMES:-10}"
 fixture="${FIXTURE:-tests/data/av1_tiles_320x240_10.ivf}"

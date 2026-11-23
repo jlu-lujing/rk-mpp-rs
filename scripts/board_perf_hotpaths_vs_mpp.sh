@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Hot-path performance record: decode throughput + RGB scale rows.
 #
 # Runs on the board (`bash scripts/board_perf_hotpaths_vs_mpp.sh`, or from

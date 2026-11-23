@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Drive one IEP2 (client 28) I5O2 deinterlace and compare it against the C
 # `iep2_test` that ships in the reference MPP build.
 #

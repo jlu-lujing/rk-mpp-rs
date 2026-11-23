@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # MPEG-2 regression: the vdpu2 path must reproduce the C HAL byte for byte.
 #
 # The progressive fixtures are locked against mpi_dec_test -t 2, whose NV12 dump

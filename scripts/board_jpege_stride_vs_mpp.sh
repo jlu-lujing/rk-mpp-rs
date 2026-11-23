@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Non-multiple-of-8 widths and non-multiple-of-16 heights.
 #
 # mpi_enc_test consumes a tight NV12 file and copies each row into its own

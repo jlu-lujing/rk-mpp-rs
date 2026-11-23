@@ -21,7 +21,7 @@ EOF
 
 [ "$#" -eq 2 ] || usage
 
-board=${BOARD:-luck2}
+board="${BOARD:?set BOARD to a Rockchip SSH alias}"
 image=$1
 expected_sha=$2
 apply=${APPLY:-0}

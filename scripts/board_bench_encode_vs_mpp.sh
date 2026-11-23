@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Encode throughput: this crate vs the C encoder, on the same input frames.
 #
 # Nothing has ever measured the encoder against MPP, which leaves "never slower

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Deblocking and the unset initial quality: our encoder against the reference.
 #
 # Both features are configuration the existing harnesses never touch:

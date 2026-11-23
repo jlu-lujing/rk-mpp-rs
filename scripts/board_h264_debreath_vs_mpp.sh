@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Two-pass deflicker: every IDR after the first first encodes a non-reference P
 # picture into the linear pass1 buffer, then uses that reconstruction as the
 # source for the real IDR. The stream and every attempted-job STATUS are the

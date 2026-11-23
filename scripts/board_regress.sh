@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # H.264 regression: sync, build on the board, decode every stream, compare
 # with the reference decoder output.
 # Fixtures may live in /tmp or in the oracle corpus; both roots are searched so

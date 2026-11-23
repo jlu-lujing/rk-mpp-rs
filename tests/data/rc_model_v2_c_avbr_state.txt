@@ -1,4 +1,4 @@
-# `rc_model_v2` in AVBR mode printing its own state, captured on t6 with
+# `rc_model_v2` in AVBR mode printing its own state, captured on RK3588 with
 #   rc_debug=0xf0 mpp_syslog_perror=1 /tmp/rc_probe2 <fixture> out.264 320 240 6
 #   300000 250000 350000 2
 # (mode 2 = AVBR). Only the lines the AVBR unit test replays are kept.

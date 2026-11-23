@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Where does the P picture stop matching the reference? A size sweep, not a guess.
 #
 # `board_h264_qp_vs_mpp.sh` proves the P path byte-exact at 320x240 and

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # JPEG 90/270-degree rotation: our VEPU2 JPEG encoder vs the C encoder.
 #
 # Both sides get the same unrotated NV12 fixture. The C harness takes the

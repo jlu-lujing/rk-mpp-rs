@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # GDR / progressive intra refresh against the reference.
 #
 # The mechanism under test, all three pieces at once:

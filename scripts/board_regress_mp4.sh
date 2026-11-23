@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # MPEG-4 Part 2 regression: the vdpu2 path must reproduce the C HAL byte for byte.
 #
 # mpi_dec_test -t 4 dumps NV12, which goes through ffmpeg before the compare.

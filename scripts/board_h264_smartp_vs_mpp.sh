@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # SMART_P: one VI picture at `vi_len=31`, then P pictures. The 33-frame run
 # crosses the VI and its first ordinary successor, so the retained IDR reference,
 # reordered slice header, vi_bit window and QP delta are all compared.

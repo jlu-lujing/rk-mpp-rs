@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # W5-8 recovery gate: failed session replacement, fd lifecycle, H.264 reuse
 # after recovery, and the legacy VDPU2 STATUS-error path.
 #

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # VEPU2 JPEG low-delay packet output against the 2024-04 C oracle.
 #
 # C's low-delay mode runs one hardware job per MCU band but produces the same

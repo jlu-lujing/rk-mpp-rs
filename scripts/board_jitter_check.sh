@@ -6,7 +6,7 @@
 # a nondeterministic reference, independent of our Rust implementation.
 set -euo pipefail
 
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 DEC_BIN="${DEC_BIN:-/tmp/mpp-develop/build/test/mpi_dec_test}"
 DEC_LIB="${DEC_LIB:-/tmp/mpp-develop/build/mpp}"
 ENC_BIN="${ENC_BIN:-/tmp/mpp-old/build/test/mpi_enc_test}"

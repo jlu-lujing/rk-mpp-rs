@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # H.265 deblock/SAO/loop-filter controls against the C encoder. The C probe and
 # Rust use the same harness bps triple so the rc-cfg SEI is comparable too.
 set -uo pipefail

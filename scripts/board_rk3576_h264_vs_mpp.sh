@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-board="${BOARD:-luck2}"
+board="${BOARD:?set BOARD to a Rockchip SSH alias}"
 source_stream=/tmp/rk3576_h264_640x480.264
 c_nv12=/tmp/rk3576_h264_640x480_c.nv12
 c_yuv=/tmp/rk3576_h264_640x480_c.yuv

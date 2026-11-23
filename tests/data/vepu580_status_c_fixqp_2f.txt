@@ -1,5 +1,5 @@
 # STATUS windows the 2024-04 C encoder read back for a 320x240 Baseline FIXQP26
-# two-picture encode (IDR then a P of the same frame), captured on t6 with
+# two-picture encode (IDR then a P of the same frame), captured on RK3588 with
 # tools/mpp_ioctl_trace.c and reduced to the window only: 180 hex words per line,
 # the first being reg4096. Note the tracer prefixes the words with a decimal count
 # on the same line; dropping it shifts the whole window by one word.

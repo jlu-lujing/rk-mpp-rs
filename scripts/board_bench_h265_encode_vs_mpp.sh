@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # H.265 fixed-QP encode throughput against the same official C harness used by
 # the correctness matrix. The h265e_probe is not suitable as a benchmark oracle:
 # it leaves a different rc-cfg SEI target and its first P length differs from

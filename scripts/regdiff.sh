@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Compare our rkvdec H.264 register file with the reference MPP dump.
 # Usage: scripts/regdiff.sh <stream> [frame_index]
 set -euo pipefail

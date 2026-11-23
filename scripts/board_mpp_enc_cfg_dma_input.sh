@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-board="${BOARD:-t6}"
+board="${BOARD:?set BOARD to a Rockchip SSH alias}"
 mpp="${MPP_REF:-/tmp/mpp-old}"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 frames="${FRAMES:-120}"

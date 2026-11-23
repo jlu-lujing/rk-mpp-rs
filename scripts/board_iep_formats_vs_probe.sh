@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # IEP2 client-28 input/output format matrix against the C probe.
 #
 # The same format and swap are configured as both source and destination. Raw

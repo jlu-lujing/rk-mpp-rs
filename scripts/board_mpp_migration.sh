@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # C consumer that uses only official MPP headers plus this crate's library.
 # Covers the migration-critical surface added for the drop-in path: log
 # level/callback, frame SAR/HDR metadata and the mpp_compat table.

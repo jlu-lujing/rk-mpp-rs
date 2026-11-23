@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Widths above 4096 - the CIME extension lines - against the reference.
 #
 # The path under test is `setup_hal_bufs` plus `setup_vepu580_ext_line_buf`:

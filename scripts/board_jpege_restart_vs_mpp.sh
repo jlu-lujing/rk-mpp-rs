@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # JPEG restart markers: our VEPU2 JPEG encoder vs the C encoder, byte by byte.
 #
 # The restart interval is C's MPP_ENC_SPLIT_BY_CTU knob: split_arg counts

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Generate a reproducible 10-bit HEVC stream with the board's libx265.
 set -euo pipefail
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # VP9 boundary matrix on the board: every fixture in one pass, both decoders,
 # byte-for-byte where both can produce comparable output.
 #

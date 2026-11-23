@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BOARD="${BOARD:-t6}"
+BOARD="${BOARD:?set BOARD to a Rockchip SSH alias}"
 # Capture what the C encoder's rate control writes, as the target for the port.
 #
 # Nothing here compares anything yet - this crate cannot produce a rate-controlled
