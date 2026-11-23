@@ -87,7 +87,7 @@ impl Frame {
         height: usize,
         bit_depth: u32,
     ) -> io::Result<Frame> {
-        let (hor_stride, ver_stride, frame_size) = frame_layout(width, height, bit_depth);
+        let (hor_stride, ver_stride, frame_size) = frame_layout_383(width, height, bit_depth);
         let video = video_pool
             .acquire_lease_reclaiming_idle(frame_size)
             .map_err(|error| io::Error::other(format!("VP9 video pool: {error}")))?;
@@ -142,6 +142,27 @@ pub fn frame_layout(width: usize, height: usize, bit_depth: u32) -> (usize, usiz
     // may write into the extra tail, so allocating only the visible NV12 size
     // can overrun the DMA buffer and corrupt following decoder state.
     (hor_stride, ver_stride, y_size * 9 / 5)
+}
+
+/// VDPU383 uses the "128 odd plus 64" horizontal layout. At 4K 8-bit this is
+/// 4032 bytes, while the shared VDPU34x layout yields 3840. The decoder's
+/// hardware stride registers are derived from this value, so using the visible
+/// width produces a zero STATUS even though the stream parsed correctly.
+pub fn frame_layout_383(width: usize, height: usize, bit_depth: u32) -> (usize, usize, usize) {
+    let hor_bytes = width * bit_depth as usize / 8;
+    let hor_stride = align_128_odd_plus_64(hor_bytes);
+    let ver_stride = align(height, 16);
+    let y_size = hor_stride * ver_stride;
+    (hor_stride, ver_stride, y_size * 9 / 5)
+}
+
+fn align_128_odd_plus_64(value: usize) -> usize {
+    let value = align(value, 64);
+    if (value - 64) % 256 == 128 {
+        value
+    } else {
+        (align(value, 128) | 128) + 64
+    }
 }
 
 /// `vdpu34x_get_colmv_size(width, height, 64, 16, 8, 1)`.
@@ -293,18 +314,8 @@ struct RcbInfo383 {
 
 impl RcbInfo383 {
     fn compute(header: &Header) -> Self {
-        const COEFFICIENTS: [usize; 11] = [3, 3, 6, 6, 5, 5, 60, 60, 60, 90, 0];
-
         let width = align(header.width as usize, 64);
         let height = align(header.height as usize, 64);
-        let mut offsets = [0usize; 11];
-        let mut allocation_size = 0usize;
-        for (index, &coefficient) in COEFFICIENTS.iter().enumerate() {
-            offsets[index] = allocation_size;
-            let axis = if index >= 9 { height } else { width };
-            allocation_size += 2 * align(axis * coefficient, RCB_ALIGNMENT);
-        }
-
         let bit_depth = header.bit_depth as usize;
         let tile_rows = 1usize << header.log2_tile_rows;
         let tile_cols = 1usize << header.log2_tile_cols;
@@ -343,6 +354,13 @@ impl RcbInfo383 {
         } else {
             0
         };
+
+        let mut offsets = [0usize; 11];
+        let mut allocation_size = 0usize;
+        for (offset, size) in offsets.iter_mut().zip(sizes) {
+            *offset = allocation_size;
+            allocation_size += size;
+        }
 
         Self {
             sizes,
@@ -1066,6 +1084,12 @@ impl Vp9d {
                 r.w[170 + index] = frame.video_fd();
                 r.w[195 + index] = frame.video_fd();
             } else {
+                // The C HAL fills stride fields for absent references from the
+                // coded reference dimensions. A key frame therefore still sees
+                // the full output layout (4032x2160 at 4K 8-bit), not zero.
+                r.w[83 + index * 3] = (current.hor_stride / 16) as u32;
+                r.w[84 + index * 3] = (current.hor_stride / 16) as u32;
+                r.w[85 + index * 3] = ((current.hor_stride / 16) * current.ver_stride) as u32;
                 r.w[170 + index] = current.video_fd();
                 r.w[195 + index] = current.video_fd();
             }
@@ -1534,6 +1558,14 @@ mod tests {
     }
 
     #[test]
+    fn vdpu383_frame_layout_uses_128_odd_plus_64() {
+        assert_eq!(frame_layout_383(3840, 2160, 8).0, 4032);
+        assert_eq!(frame_layout_383(3840, 2160, 10).0, 4800);
+        assert_eq!(frame_layout_383(3840, 2160, 8).1, 2160);
+        assert_eq!(frame_layout_383(320, 240, 8).0, 448);
+    }
+
+    #[test]
     fn colmv_size_matches_vdpu34x_formula() {
         assert_eq!(colmv_size(64, 64), 1152);
     }
@@ -1619,10 +1651,9 @@ mod tests {
     }
 
     #[test]
-    fn vdpu383_rcb_refines_the_320x240_layout() {
+    fn vdpu383_rcb_uses_sequential_region_offsets() {
         let info = RcbInfo383::compute(&header(320, 240, 8));
-        assert_eq!(info.total(), 180224);
-        assert_eq!(info.offsets[0], 0);
+        assert_eq!(info.total(), 36864);
         assert_eq!(info.sizes[2], 1536);
         assert_eq!(info.sizes[4], 1920);
         assert_eq!(info.sizes[6], 15040);
@@ -1630,6 +1661,10 @@ mod tests {
         assert_eq!(info.sizes[1], 0);
         assert_eq!(info.sizes[3], 0);
         assert_eq!(info.sizes[9], 0);
+        assert_eq!(
+            info.offsets,
+            [0, 0, 0, 1536, 1536, 3456, 3456, 18496, 33536, 33536, 33536]
+        );
     }
 
     #[test]

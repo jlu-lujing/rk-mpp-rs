@@ -7,6 +7,7 @@
 set -euo pipefail
 
 board="${BOARD:?set BOARD to a Rockchip SSH alias}"
+export RUN_4K="${RUN_4K:-0}"
 
 ssh "$board" 'mkdir -p "$HOME/rk-mpp-rs"'
 COPYFILE_DISABLE=1 tar \
@@ -18,7 +19,7 @@ COPYFILE_DISABLE=1 tar \
     -cf - . |
     ssh "$board" 'tar -xf - -C "$HOME/rk-mpp-rs"'
 
-ssh "$board" 'bash -s' <<'REMOTE'
+ssh "$board" "RUN_4K='$RUN_4K' bash -s" <<'REMOTE'
 set -euo pipefail
 
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -108,6 +109,39 @@ check_case vp9_p0_lossless_320x240_12 320 240 8
 check_case vp9_p2_10bit_lossless_320x240_12 320 240 10
 check_case vp9_p0_errres_tiles_640x360_12 640 360 8
 check_case vp9_p0_720p_errres_seg 1280 720 8
+
+if [ "${RUN_4K:-0}" = 1 ]; then
+    width=3840
+    height=2160
+    raw=/tmp/rk3576_vp9_4k.yuv
+    input=/tmp/rk3576_vp9_4k.ivf
+    rust=/tmp/rk3576_vp9_4k_rust.yuv
+    c_raw=/tmp/rk3576_vp9_4k_c.nv12
+    c_planar=/tmp/rk3576_vp9_4k_c.yuv
+
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -f lavfi -i "testsrc2=size=${width}x${height}:rate=30" \
+        -frames:v 1 -pix_fmt yuv420p -f rawvideo "$raw"
+    vpxenc --quiet --codec=vp9 --profile=0 --passes=1 --good --cpu-used=8 \
+        --threads=4 --lag-in-frames=0 --kf-max-dist=30 --limit=1 \
+        --width="$width" --height="$height" --fps=30/1 --ivf \
+        -o "$input" "$raw"
+
+    timeout 300 ./target/debug/rk-mpp-rs vp9dec "$input" "$rust" \
+        >/tmp/rk3576_vp9_4k_rust.log 2>&1
+    test "$(stat -c %s "$rust")" -eq $((width * height * 3 / 2))
+
+    LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu \
+        /usr/local/bin/mpi_dec_test \
+        -i "$input" -t 10 -o "$c_raw" -n 1 -v q < /dev/null \
+        >/tmp/rk3576_vp9_4k_c.log 2>&1
+    ffmpeg -nostdin -hide_banner -loglevel error -y \
+        -f rawvideo -pixel_format nv12 -video_size "${width}x${height}" \
+        -i "$c_raw" -pix_fmt yuv420p -f rawvideo "$c_planar"
+    cmp "$c_planar" "$rust"
+    printf 'PASS %-28s %sx%s 1 frame depth=8\n' "vp9_p0_4k_generated" \
+        "$width" "$height"
+fi
 
 printf 'PASS RK3576 VDPU383 VP9 matrix\n'
 REMOTE

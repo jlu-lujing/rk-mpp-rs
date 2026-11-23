@@ -40,7 +40,11 @@ impl JpegEncoder {
     ) -> Result<EncodedJpeg, String> {
         match self {
             Self::Vepu2(encoder) => encoder.encode_packets(input, config),
-            Self::Vpu720(encoder) => encoder.encode_packets(input, config),
+            // VPU720 is a single JPEG engine and has no CCU topology. C keeps
+            // one image at 4K, while VEPU2's area rule requests four bands.
+            Self::Vpu720(encoder) => {
+                encoder.encode_packets(input, config.with_auto_multi_core(false))
+            }
         }
     }
 
@@ -51,7 +55,9 @@ impl JpegEncoder {
     ) -> Result<EncodedJpeg, String> {
         match self {
             Self::Vepu2(encoder) => encoder.encode_fd_packets(input_fd, config),
-            Self::Vpu720(encoder) => encoder.encode_fd_packets(input_fd, config),
+            Self::Vpu720(encoder) => {
+                encoder.encode_fd_packets(input_fd, config.with_auto_multi_core(false))
+            }
         }
     }
 
@@ -70,14 +76,14 @@ impl JpegEncoder {
     pub fn encode_nv12(&mut self, input: &[u8], config: EncoderConfig) -> Result<Vec<u8>, String> {
         match self {
             Self::Vepu2(encoder) => encoder.encode_nv12(input, config),
-            Self::Vpu720(encoder) => encoder.encode_nv12(input, config),
+            Self::Vpu720(encoder) => encoder.encode_nv12(input, config.with_auto_multi_core(false)),
         }
     }
 
     pub fn encode(&mut self, input: &[u8], config: EncoderConfig) -> Result<Vec<u8>, String> {
         match self {
             Self::Vepu2(encoder) => encoder.encode(input, config),
-            Self::Vpu720(encoder) => encoder.encode(input, config),
+            Self::Vpu720(encoder) => encoder.encode(input, config.with_auto_multi_core(false)),
         }
     }
 }

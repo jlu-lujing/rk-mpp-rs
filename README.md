@@ -38,6 +38,12 @@
   1080p 以上错误自动启用多核 restart band 的问题。
   FFmpeg 解码 4K 时必须使用 `-fps_mode passthrough`；`-frames:v 1` 可能让
   vendor 和 Rust 都因 EOF/时间基丢帧而写出 0 字节。
+- **2026-11-24 RK3576 4K 矩阵通过。** 同一入口在 RK3576 上为
+  **17 PASS / 0 FAIL / 5 SKIP**：H.264/H.265/VP9/AV1 的 8/10-bit 解码、
+  三帧状态、Main10 和 AV1 film-grain 非 grain 基线均与 C 或软件 oracle
+  逐字节一致；VP9 的 VDPU383 4K 行 stride、参考帧 stride 和 RCB 顺序偏移
+  已修正。RK3576 未实现或不适用的 FFmpeg 4K drop-in、H.264/H.265 4K 编码和
+  MJPEG 对象编码明确记为 SKIP，不冒充通过。
 - **4K 扩展功能门禁也已完成。** `scripts/board_4k_features.sh` 在 RK3588
   一次跑完 **25/25** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
   hierarchical QP、ROI、超出 slice FIFO 的 4K split；H.265 RC、ROI、slice、

@@ -4714,3 +4714,10 @@ pipeline uses.
   size/frame object benchmark measures 1000 frames over seven interleaved
   samples. H.264 is 9.1% faster with 31.7% less CPU; H.265 is 5.6% faster with
   24.3% less CPU.
+- **2026-11-24: RK3576's applicable 4K matrix is byte-clean.** The same
+  `scripts/board_4k_matrix.sh` gate reports 17 PASS / 0 FAIL / 5 SKIP on
+  VDPU383/VEPU510/VPU720. H.264/H.265/VP9/AV1 8/10-bit and three-frame
+  sequences match C or the software oracle; VP9 now uses the VDPU383
+  128-odd-plus-64 stride and sequential RCB region offsets. The skips are
+  explicit platform boundaries: RK3576 has no matching Rust 4K encoder/drop-in
+  target, and its MJPEG 4K decode is covered by the separate VPU720 matrix.

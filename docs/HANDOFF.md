@@ -926,6 +926,24 @@ MJPEG 1080p/1440p/4K 编码和 4K MJPEG 解码；
 `aomdec` 的带 grain 输出，H.264/H.265/MJPEG 编码逐字节对齐 vendor FFmpeg。AV1 的软件 oracle
 固定使用 `aomdec --rawvideo`，因为该板 FFmpeg 构建没有可用的 AV1 软件解码器。
 
+**2026-11-24 RK3576 4K 矩阵：** 同一门禁在 RK3576 上为
+**17 PASS / 0 FAIL / 5 SKIP**。H.264、H.265、VP9、AV1 的 4K 8/10-bit
+解码和三帧序列均与 C/软件 oracle 逐字节一致；AV1 film grain 在 VDPU383
+上按硬件不启用 FGS 的实际行为，与不带 grain 的 C/`aomdec` 基线逐字节一致。
+VP9 新增 VDPU383 的 `128 odd + 64` 行 stride、缺失参考帧的 coded stride
+填充，以及 RCB 区域的顺序偏移；VPU720 JPEG 4K 编码/解码专项门为
+**21/21 PASS**。RK3576 没有相应 Rust 4K 编码器或 drop-in 目标，5 个 SKIP
+分别对应 FFmpeg 4K drop-in、H.264 4K、H.265 4K、MJPEG 对象编码和已由
+JPEG 专项门覆盖的 MJPEG 4K 解码。
+
+复跑 RK3576（使用板上的系统 C oracle，不依赖未构建的 `mpp-develop`）：
+
+```bash
+ssh BOARD 'cd ~/rk-mpp-rs && \
+  MPP_REF=/usr/local DEC_TEST=/usr/local/bin/mpi_dec_test \
+  MPP_LIB=/usr/local/lib ./scripts/board_4k_matrix.sh'
+```
+
 这轮定位并修复了三个实际问题。第一，MPP object/FFmpeg 路径原先对所有解码器
 请求 NV12 DMA-BUF，10-bit H.265/VP9/AV1 在解码器内被提前拒绝，FFmpeg 只能
 看到 EOS；现在 10-bit 4:2:0 硬件 surface 暴露为 MPP `YUV420SP_10BIT`

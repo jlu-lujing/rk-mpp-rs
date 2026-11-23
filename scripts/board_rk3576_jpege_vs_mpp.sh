@@ -6,6 +6,7 @@
 set -euo pipefail
 
 board="${BOARD:?set BOARD to a Rockchip SSH alias}"
+export RUN_4K="${RUN_4K:-0}"
 
 ssh "$board" 'mkdir -p "$HOME/rk-mpp-rs"'
 COPYFILE_DISABLE=1 tar \
@@ -17,7 +18,7 @@ COPYFILE_DISABLE=1 tar \
     -cf - . |
     ssh "$board" 'tar -xf - -C "$HOME/rk-mpp-rs"'
 
-ssh "$board" 'bash -s' <<'REMOTE'
+ssh "$board" "RUN_4K='$RUN_4K' bash -s" <<'REMOTE'
 set -euo pipefail
 
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -188,5 +189,21 @@ check_case 320 240 0 yuv400
 check_case 320 240 0 nv12 400
 check_case 320 240 0 nv12 422
 check_case 320 240 0 nv12 444
+
+if [ "$RUN_4K" = 1 ]; then
+    check_case 3840 2160 0 nv12
+
+    jpeg=/tmp/vpu720_3840x2160_nv12_out420_rust.jpg
+    c_nv12=/tmp/vpu720_4k_c.nv12
+    rust_nv12=/tmp/vpu720_4k_rust.nv12
+    LD_LIBRARY_PATH=/usr/local/lib timeout 120 /usr/local/bin/mpi_dec_test \
+        -i "$jpeg" -o "$c_nv12" -w 3840 -h 2160 -t 8 -f 0 -n 1 -v q \
+        < /dev/null >/tmp/vpu720_4k_c_decode.log 2>&1
+    RKMPP_NV12=1 timeout 120 ./target/debug/rk-mpp-rs decode \
+        "$jpeg" "$rust_nv12" 1 >/tmp/vpu720_4k_rust_decode.log 2>&1
+    test "$(stat -c %s "$rust_nv12")" -eq $((3840 * 2160 * 3 / 2))
+    cmp "$c_nv12" "$rust_nv12"
+    printf 'PASS 3840x2160_jpeg_decode C/Rust NV12 exact\n'
+fi
 printf 'PASS RK3576 VPU720 JPEG baseline matrix\n'
 REMOTE

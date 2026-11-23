@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run on an RK3588 board. Covers the 4K paths that differ materially from
-# smaller frames: codec decode state, Main10/P010 output, JPEG band splitting,
-# and the FFmpeg-RKMPP drop-in surface.
+# Run on an RK3588 or RK3576 board. Covers the 4K paths that differ materially
+# from smaller frames: codec decode state, Main10/P010 output, JPEG band
+# splitting, and the FFmpeg-RKMPP drop-in surface.
 set -euo pipefail
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -29,6 +29,11 @@ frame_bytes=12441600
 frame_bytes_10=24883200
 passed=0
 failed=0
+skipped=0
+rk3576=0
+if grep -qi rk3576 /proc/device-tree/compatible 2>/dev/null; then
+    rk3576=1
+fi
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -47,6 +52,11 @@ pass_case() {
 fail_case() {
     printf 'FAIL %-28s %s\n' "$1" "$2" >&2
     failed=$((failed + 1))
+}
+
+skip_case() {
+    printf 'SKIP %-28s %s\n' "$1" "$2"
+    skipped=$((skipped + 1))
 }
 
 same_file() {
@@ -89,7 +99,9 @@ fi
 [ -f "$mpp_lib/librockchip_mpp.so.0" ] ||
     die "missing C MPP library under: $mpp_lib"
 
-cargo build --release --offline --lib --bin rk-mpp-rs
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+    cargo build --release --offline --lib --bin rk-mpp-rs
+fi
 ln -s "$rust_lib" "$overlay/librockchip_mpp.so.1"
 
 if ! LD_LIBRARY_PATH="$overlay" ldd "$ffmpeg_bin" |
@@ -307,6 +319,7 @@ av1_grain_exact() {
     local input="$2"
     local expected="$3"
     local frames="$4"
+    local oracle_input="${5:-$2}"
     local rust="$work/${name}-rust.yuv"
     local oracle="$work/${name}-aom.yuv"
 
@@ -316,14 +329,19 @@ av1_grain_exact() {
         return
     fi
     if ! timeout 120 aomdec --rawvideo --limit="$frames" \
-        -o "$oracle" "$input" >"$work/${name}-aom.log" 2>&1; then
+        -o "$oracle" "$oracle_input" >"$work/${name}-aom.log" 2>&1; then
         fail_case "$name" "aomdec oracle failed"
         return
     fi
     size_is "$name" "$rust" "$expected" || return 0
     same_file "$name" "$rust" "$oracle" || return 0
-    pass_case "$name" \
-        "$frames frame(s), Rust/aomdec grain synthesis exact $(sha256sum "$rust" | cut -d' ' -f1)"
+    if [ "$oracle_input" = "$input" ]; then
+        pass_case "$name" \
+            "$frames frame(s), Rust/aomdec grain synthesis exact $(sha256sum "$rust" | cut -d' ' -f1)"
+    else
+        pass_case "$name" \
+            "$frames frame(s), VDPU383 grain ignored; Rust matches non-grain C/aomdec $(sha256sum "$rust" | cut -d' ' -f1)"
+    fi
 }
 
 oracle_dropin_exact() {
@@ -478,23 +496,45 @@ av1_decode_exact av1-4k-1 "$work/av1-1.ivf" 1 8
 av1_decode_exact av1-4k-3 "$work/av1-3.ivf" 3 8
 av1_decode_exact av1-4k-main10 "$work/av1-10.ivf" 1 10
 av1_decode_exact av1-4k-main10-3 "$work/av1-10-3.ivf" 3 10
-av1_grain_exact av1-4k-grain8 "$work/av1-grain-8.ivf" "$frame_bytes" 1
-av1_grain_exact av1-4k-grain10 "$work/av1-grain-10.ivf" "$frame_bytes_10" 1
+grain8_oracle="$work/av1-grain-8.ivf"
+grain10_oracle="$work/av1-grain-10.ivf"
+grain8_3_oracle="$work/av1-grain-8-3.ivf"
+grain10_3_oracle="$work/av1-grain-10-3.ivf"
+if [ "$rk3576" = 1 ]; then
+    grain8_oracle="$work/av1-1.ivf"
+    grain10_oracle="$work/av1-10.ivf"
+    grain8_3_oracle="$work/av1-3.ivf"
+    grain10_3_oracle="$work/av1-10-3.ivf"
+fi
+av1_grain_exact av1-4k-grain8 "$work/av1-grain-8.ivf" "$frame_bytes" 1 \
+    "$grain8_oracle"
+av1_grain_exact av1-4k-grain10 "$work/av1-grain-10.ivf" "$frame_bytes_10" 1 \
+    "$grain10_oracle"
 av1_grain_exact av1-4k-grain8-3 "$work/av1-grain-8-3.ivf" \
-    "$((frame_bytes * 3))" 3
+    "$((frame_bytes * 3))" 3 "$grain8_3_oracle"
 av1_grain_exact av1-4k-grain10-3 "$work/av1-grain-10-3.ivf" \
-    "$((frame_bytes_10 * 3))" 3
-oracle_dropin_exact av1-dropin-4k-1 "$work/av1-1.ivf" 1 "$frame_bytes"
-oracle_dropin_exact av1-dropin-4k-3 "$work/av1-3.ivf" 3 \
-    "$((frame_bytes * 3))"
-oracle_dropin_exact av1-dropin-4k-main10 "$work/av1-10.ivf" 1 "$frame_bytes_10"
+    "$((frame_bytes_10 * 3))" 3 "$grain10_3_oracle"
 
-ffmpeg_encode_exact h264-4k-encode h264 h264 264 3
-ffmpeg_encode_exact hevc-4k-encode hevc hevc 265 3
-mjpeg_encode_exact 1920x1080
-mjpeg_encode_exact 2560x1440
-mjpeg_encode_exact 3840x2160
-mjpeg_oracle_decode_exact
+if [ "$rk3576" = 0 ]; then
+    oracle_dropin_exact av1-dropin-4k-1 "$work/av1-1.ivf" 1 "$frame_bytes"
+    oracle_dropin_exact av1-dropin-4k-3 "$work/av1-3.ivf" 3 \
+        "$((frame_bytes * 3))"
+    oracle_dropin_exact av1-dropin-4k-main10 "$work/av1-10.ivf" 1 "$frame_bytes_10"
 
-printf 'SUMMARY passed=%d failed=%d\n' "$passed" "$failed"
+    ffmpeg_encode_exact h264-4k-encode h264 h264 264 3
+    ffmpeg_encode_exact hevc-4k-encode hevc hevc 265 3
+    mjpeg_encode_exact 1920x1080
+    mjpeg_encode_exact 2560x1440
+    mjpeg_encode_exact 3840x2160
+    mjpeg_oracle_decode_exact
+else
+    skip_case "av1-dropin-4k" "RK3576 system mpi_dec_test/Rust ABI is not a drop-in target"
+    skip_case "h264-4k-encode" "RK3576 Rust VEPU510 4K encode is not implemented"
+    skip_case "hevc-4k-encode" "RK3576 Rust VEPU510 4K encode is not implemented"
+    skip_case "mjpeg-4k-encode" "RK3576 FFmpeg object encode path is not covered"
+    skip_case "mjpeg-4k-decode" "covered by the RK3576 JPEG matrix"
+fi
+
+printf 'SUMMARY passed=%d failed=%d skipped=%d soc=%s\n' \
+    "$passed" "$failed" "$skipped" "$([ "$rk3576" = 1 ] && echo RK3576 || echo RK3588)"
 exit "$failed"
