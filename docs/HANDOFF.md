@@ -963,7 +963,11 @@ FFmpeg `area` 软件缩放的 PSNR 为 60.52/30.82/33.00/27.61 dB。C
 `board_4k_multistream.sh` 用 3 帧 4K H.264、H.265 和 VP9 测试 1/2/4/8/16
 个独立解码进程。每个 codec 先要求单路 C `mpi_dec_test` 与 Rust CLI 的
 planar 输出逐字节一致，然后要求所有并发输出与 golden 逐字节一致；共
-15/15 组通过，16 路每组没有启动失败、丢帧或错帧。
+15/15 组通过，16 路每组没有启动失败、丢帧或错帧。H.264/H.265 的 job-ring
+深度 0/1/2/3 也逐字节一致；H.264 packed NV12 与 C raw NV12 相同。这里修了
+一个真实问题：H.265 的单槽 submit-without-wait 先提交再检查 ring，会拿错
+pending 元数据并丢掉最后一帧；现在 depth 1 明确回退 blocking，depth 2/3
+继续异步。
 
 H.264 4K force-IDR/header 模式也已接通到同一门禁。探针在 2024-04 头文件下
 关闭 `bit_target_fix` 日志字段，并使用阻塞队列语义；帧 2、4 强制 IDR 后

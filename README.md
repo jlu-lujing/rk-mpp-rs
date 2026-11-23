@@ -47,7 +47,8 @@
   H.264/H.265/VP9、H.265 B 帧与 10 帧 Main10 的长 GOP/DPB soak。JPEG 解码补了
   4K 的 1/1、1/2、1/4、1/8 RGB888/NV12 缩放，输出尺寸、重复哈希和软件
   参考 PSNR 均通过；H.264/H.265/VP9 另在 1/2/4/8/16 个独立进程下逐路
-  与单路 C/Rust 输出比对，15/15 组无丢帧、无错帧、无输出差异。4K
+  与单路 C/Rust 输出比对，15/15 组无丢帧、无错帧、无输出差异；H.264/H.265
+  的 pipeline 深度 0/1/2/3 也一致，H.264 packed NV12 与 C 相同。4K
   CPU/DMA NV12→RGB letterbox 输出一致；SDK 的 copied/DMA 编码输入和
   CPU/DMA 解码输出也为逐字节一致，覆盖 H.264/H.265/VP9/AV1/MJPEG 的现有
   DMA 能力；4K fixed-QP H.264/H.265 packet metadata 与 JPEG q-factor meta

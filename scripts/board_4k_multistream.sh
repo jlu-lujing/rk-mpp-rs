@@ -110,6 +110,33 @@ for cell in "${cases[@]}"; do
         exit 1
     fi
 
+    if [ "$name" = h264 ] || [ "$name" = h265 ]; then
+        pipeline_var=RKMPP_H264_PIPELINE
+        [ "$name" = h265 ] && pipeline_var=RKMPP_HEVC_PIPELINE
+        for depth in 0 1 2 3; do
+            sudo -n env "$pipeline_var=$depth" timeout 180 \
+                "$cli" "$cmd" "$input" "$work/${name}-pipeline-${depth}.yuv" \
+                >"$work/${name}-pipeline-${depth}.log" 2>&1
+            if ! cmp -s "$golden" "$work/${name}-pipeline-${depth}.yuv"; then
+                printf 'FAIL multistream/%s pipeline depth %s differs\n' \
+                    "$name" "$depth" >&2
+                exit 1
+            fi
+        done
+        printf 'PASS multistream/%-4s pipeline depths=0,1,2,3\n' "$name"
+    fi
+
+    if [ "$name" = h264 ]; then
+        sudo -n env RKMPP_DECODE_NV12=1 timeout 180 \
+            "$cli" "$cmd" "$input" "$work/h264-nv12.yuv" \
+            >"$work/h264-nv12.log" 2>&1
+        if ! cmp -s "$vendor" "$work/h264-nv12.yuv"; then
+            printf 'FAIL multistream/h264 packed NV12 differs from C\n' >&2
+            exit 1
+        fi
+        printf 'PASS multistream/h264 packed NV12 == C\n'
+    fi
+
     for streams in $counts; do
         run="$work/${name}-${streams}"
         mkdir "$run"

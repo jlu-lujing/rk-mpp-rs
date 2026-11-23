@@ -75,6 +75,9 @@ groups:
 - Independent-process 4K H.264/H.265/VP9 decode at 1, 2, 4, 8 and 16 streams.
   Every codec first matches the single-stream C decoder, then every concurrent
   output matches that golden byte for byte: 15/15 cells, no missing frames.
+  H.264/H.265 job-ring depths 0, 1, 2 and 3 also match the same golden;
+  H.264 packed NV12 matches C. H.265 depth 1 falls back to blocking because a
+  one-entry submit-without-wait ring otherwise loses the final frame.
 - H.264 and H.265 forced-IDR/header mode at 4K. H.264 produces 12 NALs,
   H.265 produces 15 NALs, and the C/Rust decoded YUV agrees in both.
 - Decode 4K H.264 through both CPU and DMA-BUF frames, scale strided NV12

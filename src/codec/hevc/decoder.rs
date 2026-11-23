@@ -811,6 +811,15 @@ impl Decoder {
     /// without a ring (RK3576 VDPU383).
     pub fn set_pipeline_depth(&mut self, enabled: bool, depth: usize) -> bool {
         self.depth = depth.max(1);
+        // The submit-without-wait path checks the ring after arming the current
+        // job. A one-entry ring therefore reaps the current job while its
+        // pending metadata still names the previous picture, losing the final
+        // frame. Treat it as the blocking path instead of pretending depth 1 is
+        // a valid asynchronous ring.
+        if depth < 2 {
+            self.pipeline = false;
+            return false;
+        }
         self.pipeline = enabled && self.hw.set_pipeline(true, self.depth);
         self.pipeline
     }
