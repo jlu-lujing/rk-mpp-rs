@@ -44,7 +44,7 @@
   tiles、GDR、H.264/H.265 强制 IDR/header 模式；自定义 RC callback；4K OSD
   direct/fallback；MJPEG 4K 多核、90° 旋转和 RGB565/ARGB8888/BGRA8888
   输入；4K `MppEncCfg` 的 NV12/I420/NV21 输入；另有 30 帧
-  H.264/H.265/VP9 与 10 帧 Main10 的长 GOP/DPB soak。JPEG 解码补了
+  H.264/H.265/VP9、H.265 B 帧与 10 帧 Main10 的长 GOP/DPB soak。JPEG 解码补了
   4K 的 1/1、1/2、1/4、1/8 RGB888/NV12 缩放，输出尺寸、重复哈希和软件
   参考 PSNR 均通过；H.264/H.265/VP9 另在 1/2/4/8/16 个独立进程下逐路
   与单路 C/Rust 输出比对，15/15 组无丢帧、无错帧、无输出差异。4K

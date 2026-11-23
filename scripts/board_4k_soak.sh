@@ -61,6 +61,10 @@ ffmpeg "${ffmpeg_base[@]}" -c:v libx265 -preset ultrafast -profile:v main \
     -x265-params \
     "log-level=error:keyint=30:min-keyint=30:bframes=0:scenecut=0:repeat-headers=1" \
     -f hevc "$work/hevc-30.265"
+ffmpeg "${ffmpeg_base[@]}" -c:v libx265 -preset ultrafast -profile:v main \
+    -x265-params \
+    "log-level=error:keyint=30:min-keyint=30:bframes=3:b-pyramid=1:scenecut=0:repeat-headers=1" \
+    -f hevc "$work/hevc-b-30.265"
 ffmpeg -nostdin -hide_banner -loglevel error \
     -f lavfi -i "testsrc2=size=${width}x${height}:rate=30" \
     -frames:v "$frames" -pix_fmt yuv420p -f rawvideo "$work/vp9-30.yuv"
@@ -159,6 +163,7 @@ encode_case() {
 
 decode_case h264-30 h264 h264 "$work/h264-30.264" "$frames" nv12
 decode_case hevc-30 hevc hevc "$work/hevc-30.265" "$frames" nv12
+decode_case hevc-b-30 hevc hevc "$work/hevc-b-30.265" "$frames" nv12
 decode_case vp9-30 vp9 vp9 "$work/vp9-30.ivf" "$frames" nv12
 decode_case hevc-main10-10 hevc hevc "$work/hevc-10-10.265" 10 yuv420p10le
 encode_case h264-encode-30 h264 h264 264

@@ -997,8 +997,10 @@ H.264 与 H.265 都产生完全相同的 5-NAL 码流。对象探针必须显式
 `RKMPP_ENCODER_PIPELINE=0`，因为它的每帧立即取 packet 语义对应阻塞式编码；
 默认 depth-2 队列会让首帧暂时无 packet。
 
-长 GOP/DPB soak 门禁 `board_4k_soak.sh` 为 6/6：H.264/H.265/VP9 各 30 帧
-的 C/Rust/software 解码哈希一致；H.265 Main10 10 帧三方一致；H.264/H.265
+长 GOP/DPB soak 门禁 `board_4k_soak.sh` 为 7/7：H.264/H.265/VP9 各 30 帧
+和 H.265 B 帧 30 帧的 C/Rust/software 解码哈希一致（B 帧哈希
+`6d3a36a2c6097ac004f1f3cd8b7b5b6d48ba49a94468ee013b49ee2f79f6120f`）；
+H.265 Main10 10 帧三方一致；H.264/H.265
 30 帧编码与 vendor 整条码流逐字节一致。解码数据直接经 pipe 做 SHA-256，
 不落数百 MB 的临时 YUV。
 

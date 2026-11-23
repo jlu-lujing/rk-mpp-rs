@@ -55,8 +55,9 @@ groups:
   frame-type re-encode.
 - 4K `MppEncCfg` NV12/I420/NV21 inputs produce identical H.264 and H.265
   streams.
-- `board_4k_soak.sh`: 30-frame H.264/H.265/VP9 three-way decode, 10-frame
-  H.265 Main10 three-way decode, and 30-frame H.264/H.265 byte-exact encode.
+- `board_4k_soak.sh`: 30-frame H.264/H.265/VP9 and 30-frame H.265 B-frame
+  three-way decode, 10-frame H.265 Main10 three-way decode, and 30-frame
+  H.264/H.265 byte-exact encode.
 - H.264/H.265 4K OSD direct and CPU fallback: streams and decoded YUV match.
 - MJPEG 4K multi-core (DRI=8160), 90/270-degree rotation, RGB565, ARGB8888 and
   BGRA8888 at qf50/qf90.
@@ -80,6 +81,9 @@ groups:
   block counts, SSE, PSKIP, intra flag and QP fields are compared packet by
   packet. JPEG's 4K q-factor metadata matches; its restart-band stream layout
   remains covered by the dedicated direct/object encoder gates.
+- A 30-frame H.265 Main-profile stream with three B frames and B-pyramid
+  enabled matches C MPP and software FFmpeg exactly, SHA-256
+  `6d3a36a2c6097ac004f1f3cd8b7b5b6d48ba49a94468ee013b49ee2f79f6120f`.
 - IEP2 deinterlace at its 1920x1088 maximum is byte-identical to C. A 4K
   request is rejected by the C test harness and now rejected by Rust before
   session open; a direct C probe otherwise returns success with two all-zero
