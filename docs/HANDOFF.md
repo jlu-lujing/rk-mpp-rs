@@ -944,12 +944,25 @@ VPXENC=/path/to/vpxenc scripts/board_4k_matrix.sh
 FFmpeg 4K 解码必须加 `-fps_mode passthrough`。`-frames:v 1` 会让 vendor 和
 Rust 都可能因 EOF/时间基丢帧而写出 0 字节，这不是 Rust 独有回归。
 
-扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **16/16** 门禁组
+扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **18/18** 门禁组
 通过。它串起 H.264/H.265 的 RC、hier QP、ROI、slice、tiles、GDR、force-IDR、
 custom RC callback、OSD，以及 MJPEG 多核/旋转/RGB。4K H.264 BY_CTU/BY_BYTE 分别为 680/403 NAL，
 H.265 为 260/205 NAL；H.265 4K auto-tile 为 9 NAL，GDR row/column 均为
 17 NAL（1 IDR + 7 P + recovery SEI），OSD direct/fallback 与 vendor 的
-6/7 NAL 和解码 YUV 一致.
+6/7 NAL 和解码 YUV 一致。
+
+新增的 `board_4k_jpegd_scale.sh` 覆盖 JPEG IDCT 的 1/1、1/2、1/4、1/8
+缩放：4K RGB888 和 NV12 输出尺寸分别为
+24,883,200/12,441,600、6,220,800/3,110,400、
+1,555,200/777,600、388,800/194,400 bytes，两次运行哈希一致；RGB 对
+FFmpeg `area` 软件缩放的 PSNR 为 60.52/30.82/33.00/27.61 dB。C
+`mpi_dec_test` 没有 JPEG scale 参数，因此该门禁明确是几何、DMA 可见性、
+确定性和内容回归，不宣称与软件缩放逐字节相同。
+
+`board_4k_multistream.sh` 用 3 帧 4K H.264、H.265 和 VP9 测试 1/2/4/8/16
+个独立解码进程。每个 codec 先要求单路 C `mpi_dec_test` 与 Rust CLI 的
+planar 输出逐字节一致，然后要求所有并发输出与 golden 逐字节一致；共
+15/15 组通过，16 路每组没有启动失败、丢帧或错帧。
 
 4K `MppEncCfg` 输入格式门禁也已通过：同一画面分别以 NV12、I420、NV21 输入，
 H.264 与 H.265 都产生完全相同的 5-NAL 码流。对象探针必须显式设置

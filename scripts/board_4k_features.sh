@@ -97,6 +97,12 @@ run_remote "H.264/H.265 custom RC" \
 run_gate "MppEncCfg 4K input formats" \
     env SIZE=3840x2160 SKIP_BUILD=1 scripts/board_mpp_enc_cfg_i420.sh
 
+run_gate "JPEG decoder 1/2-1/8 scaling" \
+    env SKIP_BUILD=1 scripts/board_4k_jpegd_scale.sh
+
+run_gate "4K decode concurrency 1-16 streams" \
+    env SKIP_BUILD=1 scripts/board_4k_multistream.sh
+
 run_remote "4K long GOP / DPB soak" \
     "SKIP_BUILD=1 scripts/board_4k_soak.sh"
 

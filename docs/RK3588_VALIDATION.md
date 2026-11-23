@@ -33,7 +33,7 @@ with `--enable-vp9-highbitdepth`; pass it through `VPXENC=`. For FFmpeg 4K
 decode, use `-fps_mode passthrough`; `-frames:v 1` can otherwise produce an
 empty output on both vendor and Rust paths.
 
-`scripts/board_4k_features.sh` extends the baseline to **16/16** feature-gate
+`scripts/board_4k_features.sh` extends the baseline to **18/18** feature-gate
 groups:
 
 - H.264 Baseline/Main/High at QP26/QP18: 6/6 one-frame streams, five NALs each.
@@ -51,6 +51,14 @@ groups:
 - H.264/H.265 4K OSD direct and CPU fallback: streams and decoded YUV match.
 - MJPEG 4K multi-core (DRI=8160), 90/270-degree rotation, RGB565, ARGB8888 and
   BGRA8888 at qf50/qf90.
+- JPEG decoder 4K IDCT scaling at 1/1, 1/2, 1/4 and 1/8 for RGB888 and NV12.
+  Geometry and repeated-run hashes are exact; RGB PSNR against the software
+  `area` scaler is 60.52/30.82/33.00/27.61 dB. The stock C test CLI has no
+  JPEG scale option, so this is a deterministic content/DMA regression gate
+  rather than a byte-exact C comparison.
+- Independent-process 4K H.264/H.265/VP9 decode at 1, 2, 4, 8 and 16 streams.
+  Every codec first matches the single-stream C decoder, then every concurrent
+  output matches that golden byte for byte: 15/15 cells, no missing frames.
 
 The 4K H.265 rate-control case found a real policy difference. With a 300 kbps
 target, C's first IDR exceeds the 86,956-bit allocation and is resubmitted at
