@@ -94,6 +94,9 @@ run_remote "H.265 forced IDR / header mode" \
 run_remote "H.264/H.265 custom RC" \
     "SIZE=3840x2160 SKIP_BUILD=1 scripts/board_mpp_custom_rc.sh"
 
+run_remote "4K long GOP / DPB soak" \
+    "SKIP_BUILD=1 scripts/board_4k_soak.sh"
+
 run_gate "MJPEG multi-core and rotation" \
     env SKIP_BUILD=1 RUN_4K=1 scripts/board_jpege_multicore_vs_mpp.sh
 

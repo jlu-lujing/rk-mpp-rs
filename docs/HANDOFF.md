@@ -944,12 +944,17 @@ VPXENC=/path/to/vpxenc scripts/board_4k_matrix.sh
 FFmpeg 4K 解码必须加 `-fps_mode passthrough`。`-frames:v 1` 会让 vendor 和
 Rust 都可能因 EOF/时间基丢帧而写出 0 字节，这不是 Rust 独有回归。
 
-扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **14/14** 门禁组
+扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **15/15** 门禁组
 通过。它串起 H.264/H.265 的 RC、hier QP、ROI、slice、tiles、GDR、force-IDR、
 custom RC callback、OSD，以及 MJPEG 多核/旋转/RGB。4K H.264 BY_CTU/BY_BYTE 分别为 680/403 NAL，
 H.265 为 260/205 NAL；H.265 4K auto-tile 为 9 NAL，GDR row/column 均为
 17 NAL（1 IDR + 7 P + recovery SEI），OSD direct/fallback 与 vendor 的
 6/7 NAL 和解码 YUV 一致.
+
+长 GOP/DPB soak 门禁 `board_4k_soak.sh` 为 6/6：H.264/H.265/VP9 各 30 帧
+的 C/Rust/software 解码哈希一致；H.265 Main10 10 帧三方一致；H.264/H.265
+30 帧编码与 vendor 整条码流逐字节一致。解码数据直接经 pipe 做 SHA-256，
+不落数百 MB 的临时 YUV。
 
 这轮还修了 4K H.265 RC 的首帧策略：300 kbps 目标下 C 的 RC 会对首 IDR
 re-encode，从 QP26 改为 QP29；Rust 旧路径只编码一次、把 QP32 留给下一帧，
