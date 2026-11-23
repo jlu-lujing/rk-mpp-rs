@@ -3,6 +3,36 @@
 This is the current integrated validation checkpoint after moving work from a
 second RK3588 validation system back to the primary RK3588 board.
 
+## 2026-11-23 4K codec matrix
+
+`scripts/board_4k_matrix.sh` passes **20/20** at 3840×2160. The matrix covers
+H.264/H.265/VP9 8-bit one- and three-frame decode, H.265/VP9/AV1 Main10,
+AV1 8-bit one/three-frame decode, H.264/H.265 4K encode, MJPEG
+1080p/1440p/4K encode, and 4K MJPEG decode. Hardware decode is compared byte
+for byte with both C MPP and an independent software oracle; H.264/H.265/MJPEG
+FFmpeg drop-in encode is byte-identical to vendor.
+
+The matrix found two compatibility defects that do not reproduce below 10-bit
+or below 1080p:
+
+- The MPP object path requested NV12 DMA-BUF for every decoder. H.265/VP9/AV1
+  Main10 therefore failed before a picture was returned. Ten-bit 4:2:0
+  hardware surfaces now use MPP `YUV420SP_10BIT` (FFmpeg `NV15`).
+- VP9 used the pixel width as the 10-bit byte stride. A 4K Main10 row needs
+  4,800 bytes and MPP's 256-odd alignment yields 4,864; the old 3,840-byte
+  stride panicked while reading packed samples.
+
+The same run fixes JPEG object-path output above 720p. FFmpeg only configures
+quality, so the compatibility path must not auto-enable the direct
+`jpeg-enc` multi-core bands. At 1920×1080, 2560×1440 and 3840×2160 the Rust
+and vendor JPEGs are identical and have no DRI marker.
+
+The matrix uses `aomdec --rawvideo` for AV1 because this FFmpeg build has no
+usable AV1 software decoder. VP9 Main10 generation requires a `vpxenc` built
+with `--enable-vp9-highbitdepth`; pass it through `VPXENC=`. For FFmpeg 4K
+decode, use `-fps_mode passthrough`; `-frames:v 1` can otherwise produce an
+empty output on both vendor and Rust paths.
+
 ## 2026-11-20 Public H.264/H.265 syntax API V1.13/V1.14
 
 `scripts/board_sdk_encoder_controls.sh` now creates the encoder through the

@@ -3088,7 +3088,8 @@ fn jpeg_config(config: EncoderConfig) -> Result<jpege::EncoderConfig, Error> {
             "JPEG restart MCU count must fit in 16 bits".to_string(),
         ));
     }
-    let mut jpeg = jpege::EncoderConfig::new(config.width, config.height);
+    let mut jpeg =
+        jpege::EncoderConfig::new(config.width, config.height).with_auto_multi_core(false);
     jpeg.quality = match config.jpeg_qfactor {
         Some(qfactor) => jpege::Quality::QFactor(qfactor as u8),
         None => jpege::Quality::Quant(config.jpeg_quality as u8),

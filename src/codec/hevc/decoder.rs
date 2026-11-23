@@ -381,10 +381,11 @@ impl Decoder {
         let picture_slices = parse_picture_slices(&slices, &self.sps, &self.pps)?;
         let sps = picture_slices.sps;
         self.active_sps_id = (sps.sps_id as usize) % 16;
-        if self.output_dmabuf && (self.bit_depth != 8 || self.chroma_format != ChromaFormat::Yuv420)
+        if self.output_dmabuf
+            && (self.chroma_format != ChromaFormat::Yuv420 || !matches!(self.bit_depth, 8 | 10))
         {
             return Err(format!(
-                "H.265 DMA-BUF output supports only 8-bit 4:2:0 NV12, got {}-bit {:?}",
+                "H.265 DMA-BUF output supports only 8/10-bit 4:2:0, got {}-bit {:?}",
                 self.bit_depth, self.chroma_format
             ));
         }

@@ -144,9 +144,9 @@ impl Decoder {
             .cloned()
             .ok_or("missing AV1 sequence header")?;
         ensure_hardware_chroma(&sequence)?;
-        if self.output_dmabuf && sequence.bit_depth != 8 {
+        if self.output_dmabuf && !matches!(sequence.bit_depth, 8 | 10) {
             return Err(format!(
-                "AV1 DMA-BUF output supports only 8-bit NV12, got {}-bit",
+                "AV1 DMA-BUF output supports only 8/10-bit YUV420, got {}-bit",
                 sequence.bit_depth
             ));
         }
@@ -502,9 +502,9 @@ impl Decoder {
             && self
                 .parser
                 .sequence()
-                .is_some_and(|sequence| sequence.bit_depth != 8)
+                .is_some_and(|sequence| !matches!(sequence.bit_depth, 8 | 10))
         {
-            return Err("AV1 DMA-BUF output supports only 8-bit NV12".to_string());
+            return Err("AV1 DMA-BUF output supports only 8/10-bit YUV420".to_string());
         }
         let sequence = self
             .parser

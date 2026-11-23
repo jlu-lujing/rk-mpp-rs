@@ -129,8 +129,9 @@ pub fn align_256_odd(value: usize) -> usize {
     align(value, 256) | 256
 }
 
-pub fn frame_layout(width: usize, height: usize, _bit_depth: u32) -> (usize, usize, usize) {
-    let hor_stride = align_256_odd(width);
+pub fn frame_layout(width: usize, height: usize, bit_depth: u32) -> (usize, usize, usize) {
+    let hor_bytes = width * bit_depth as usize / 8;
+    let hor_stride = align_256_odd(hor_bytes);
     // VP9 leaves the codec vertical stride at zero, so MPP's decoder buffer
     // slots apply their default 16-row alignment. A 240-line picture therefore
     // uses a 240-line stride, not the 64-row alignment used by VP9 coding
@@ -1528,6 +1529,8 @@ mod tests {
         assert_eq!(frame_layout(64, 64, 10), (256, 64, 29491));
         assert_eq!(frame_layout(320, 240, 8), (768, 240, 331776));
         assert_eq!(frame_layout(1920, 1080, 8), (2304, 1088, 4512153));
+        assert_eq!(frame_layout(1920, 1080, 10), (2816, 1088, 5514854));
+        assert_eq!(frame_layout(3840, 2160, 10), (4864, 2160, 18911232));
     }
 
     #[test]

@@ -917,6 +917,32 @@ GOP 下默认 depth 2，300 帧 720p 为 0.430 s / 698 FPS，C FFmpeg 为
 > 再运行 CPU-only Rust 导出器并比较全部输入镜像。它不会向 Rust AV1 提交硬件
 > 作业；只有打印 `PRE-SUBMIT DETERMINISTIC INPUTS MATCH` 后才恢复板级 AV1 调试。
 
+**2026-11-23 4K 编解码矩阵：** `scripts/board_4k_matrix.sh` 在 RK3588 上
+**20/20 PASS**。矩阵覆盖 3840×2160 的 H.264/H.265/VP9 8-bit 单帧与三帧、
+H.265/VP9/AV1 Main10、AV1 8-bit 单帧/三帧、AV1 10-bit、H.264/H.265 编码、
+MJPEG 1080p/1440p/4K 编码和 4K MJPEG 解码；解码逐字节对齐 C MPP 与软件
+oracle，H.264/H.265/MJPEG 编码逐字节对齐 vendor FFmpeg。AV1 的软件 oracle
+固定使用 `aomdec --rawvideo`，因为该板 FFmpeg 构建没有可用的 AV1 软件解码器。
+
+这轮定位并修复了三个实际问题。第一，MPP object/FFmpeg 路径原先对所有解码器
+请求 NV12 DMA-BUF，10-bit H.265/VP9/AV1 在解码器内被提前拒绝，FFmpeg 只能
+看到 EOS；现在 10-bit 4:2:0 硬件 surface 暴露为 MPP `YUV420SP_10BIT`
+（FFmpeg `NV15`），4K Main10 输出与 vendor 一致。第二，VP9 的帧分配器把
+像素宽度当成了 10-bit 行字节数，4K 时 3,840-byte stride 不足以容纳
+4,800-byte packed row；现在先换算字节再做 MPP 256-odd 对齐。第三，JPEG
+object/FFmpeg 路径不应继承直接 `jpeg-enc` CLI 的自动多核 band 策略；
+1080p/1440p/4K 未显式请求 split 时不再写 DRI，三档输出均与 vendor 逐字节。
+
+复跑需要 high-bit-depth `vpxenc`；系统包没有高比特深度支持时，用
+`VPXENC=/path/to/vpxenc` 指向启用 `--enable-vp9-highbitdepth` 的构建：
+
+```bash
+VPXENC=/path/to/vpxenc scripts/board_4k_matrix.sh
+```
+
+FFmpeg 4K 解码必须加 `-fps_mode passthrough`。`-frames:v 1` 会让 vendor 和
+Rust 都可能因 EOF/时间基丢帧而写出 0 字节，这不是 Rust 独有回归。
+
 ## 第二台 RK3588 验证机（2026-11-02 起）
 
 另一台 RK3588 验证板：内核 6.1.141、`/dev/mpp_service` 可用、`hw_support mask =

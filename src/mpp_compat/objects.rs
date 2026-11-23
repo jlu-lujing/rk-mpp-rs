@@ -18,6 +18,7 @@ const MPP_BUFFER_INTERNAL: c_int = 0;
 const MPP_BUFFER_EXTERNAL: c_int = 1;
 
 const MPP_FMT_YUV420SP: u32 = 0;
+const MPP_FMT_YUV420SP_10BIT: u32 = 1;
 const MPP_FMT_YUV420P: u32 = 4;
 
 const BUFFER_MAGIC: u64 = 0x4d50_5052_4246_4652;
@@ -1120,57 +1121,69 @@ unsafe fn frame_from_sdk_mode(
     let dts = decoded.dts();
     let poc = decoded.poc().max(0) as u32;
     let errinfo = decoded.err_info();
-    let decoded = match decoded.into_nv12_dmabuf() {
-        Ok((mapping, hor_stride, ver_stride)) => {
-            let buffer_size = mapping.len();
-            let fd = mapping.fd();
-            let buffer = Box::into_raw(Box::new(CompatBuffer {
-                magic: BUFFER_MAGIC,
-                size: buffer_size,
-                data: Vec::new(),
-                dma: Some(mapping),
-                external_ptr: std::ptr::null_mut(),
-                external_size: 0,
-                mapped: false,
-                type_: MPP_BUFFER_TYPE_DMA_HEAP,
-                hnd: std::ptr::null_mut(),
-                group: std::ptr::null_mut(),
-                fd,
-                index: 0,
-                offset: 0,
-                refs: 1,
-            }))
-            .cast();
-            return Ok(Box::into_raw(Box::new(CompatFrame {
-                magic: FRAME_MAGIC,
-                width,
-                height,
-                hor_stride: u32::try_from(hor_stride).map_err(|_| ())?,
-                ver_stride: u32::try_from(ver_stride).map_err(|_| ())?,
-                format: MPP_FMT_YUV420SP,
-                offset_x: 0,
-                offset_y: 0,
-                mode: 0,
-                discard: 0,
-                viewid: 0,
-                poc,
-                pts,
-                dts,
-                errinfo,
-                buffer_size,
-                eos: 0,
-                info_change: 0,
-                thumbnail: 0,
-                buffer,
-                meta: std::ptr::null_mut(),
-                sar: MppFrameRational::default(),
-                mastering: MppFrameMasteringDisplayMetadata::default(),
-                content_light: MppFrameContentLightMetadata::default(),
-                hdr_dynamic_meta: std::ptr::null_mut(),
-            }))
-            .cast());
-        }
-        Err(decoded) => decoded,
+    let input_format = decoded.format();
+    let dmabuf_frame = |mapping: DmaBuf, hor_stride: usize, ver_stride: usize, format: u32| {
+        let buffer_size = mapping.len();
+        let fd = mapping.fd();
+        let buffer = Box::into_raw(Box::new(CompatBuffer {
+            magic: BUFFER_MAGIC,
+            size: buffer_size,
+            data: Vec::new(),
+            dma: Some(mapping),
+            external_ptr: std::ptr::null_mut(),
+            external_size: 0,
+            mapped: false,
+            type_: MPP_BUFFER_TYPE_DMA_HEAP,
+            hnd: std::ptr::null_mut(),
+            group: std::ptr::null_mut(),
+            fd,
+            index: 0,
+            offset: 0,
+            refs: 1,
+        }))
+        .cast();
+        Ok(Box::into_raw(Box::new(CompatFrame {
+            magic: FRAME_MAGIC,
+            width,
+            height,
+            hor_stride: u32::try_from(hor_stride).map_err(|_| ())?,
+            ver_stride: u32::try_from(ver_stride).map_err(|_| ())?,
+            format,
+            offset_x: 0,
+            offset_y: 0,
+            mode: 0,
+            discard: 0,
+            viewid: 0,
+            poc,
+            pts,
+            dts,
+            errinfo,
+            buffer_size,
+            eos: 0,
+            info_change: 0,
+            thumbnail: 0,
+            buffer,
+            meta: std::ptr::null_mut(),
+            sar: MppFrameRational::default(),
+            mastering: MppFrameMasteringDisplayMetadata::default(),
+            content_light: MppFrameContentLightMetadata::default(),
+            hdr_dynamic_meta: std::ptr::null_mut(),
+        }))
+        .cast())
+    };
+    let decoded = match input_format {
+        sdk::PixelFormat::Nv15 => match decoded.into_nv15_dmabuf() {
+            Ok((mapping, hor_stride, ver_stride)) => {
+                return dmabuf_frame(mapping, hor_stride, ver_stride, MPP_FMT_YUV420SP_10BIT);
+            }
+            Err(decoded) => decoded,
+        },
+        _ => match decoded.into_nv12_dmabuf() {
+            Ok((mapping, hor_stride, ver_stride)) => {
+                return dmabuf_frame(mapping, hor_stride, ver_stride, MPP_FMT_YUV420SP);
+            }
+            Err(decoded) => decoded,
+        },
     };
     let hor_stride = align(width, 16);
     let ver_stride = align(height, 16);
@@ -1178,7 +1191,6 @@ unsafe fn frame_from_sdk_mode(
         .ok()
         .and_then(|stride| stride.checked_mul(ver_stride as usize))
         .ok_or(())?;
-    let input_format = decoded.format();
     let format = if force_nv12 {
         MPP_FMT_YUV420SP
     } else {
@@ -1186,6 +1198,7 @@ unsafe fn frame_from_sdk_mode(
             sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
             sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
             sdk::PixelFormat::I420P10 => return Err(()),
+            sdk::PixelFormat::Nv15 => MPP_FMT_YUV420SP_10BIT,
         }
     };
     let buffer_size = luma_size.checked_mul(3).ok_or(())? / 2;
@@ -1373,6 +1386,7 @@ pub(super) unsafe fn frame_fill_from_sdk(
             sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
             sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
             sdk::PixelFormat::I420P10 => return Err(()),
+            sdk::PixelFormat::Nv15 => MPP_FMT_YUV420SP_10BIT,
         }
     };
     let buffer_size = packed_luma_size.checked_mul(3).ok_or(())? / 2;
@@ -1395,6 +1409,69 @@ pub(super) unsafe fn frame_fill_from_sdk(
         target.dts = decoded.dts();
         target.errinfo = decoded.err_info();
         target.buffer_size = buffer_len(target_buffer);
+        target.eos = 0;
+        target.info_change = 0;
+        return Ok(());
+    }
+
+    if format == MPP_FMT_YUV420SP_10BIT {
+        let plane = decoded.dmabuf_plane(0).ok_or(())?;
+        let hor_stride = usize::try_from(plane.stride()).map_err(|_| ())?;
+        let luma_size = usize::try_from(plane.size()).map_err(|_| ())?;
+        if hor_stride < width as usize || luma_size < hor_stride || luma_size % hor_stride != 0 {
+            return Err(());
+        }
+        let ver_stride = luma_size / hor_stride;
+        let buffer_size = luma_size.checked_mul(3).ok_or(())? / 2;
+        if decoded.data().len() < buffer_size {
+            return Err(());
+        }
+        let mut target_buffer = target.buffer;
+        if target_buffer.is_null() {
+            target_buffer = unsafe {
+                new_internal_buffer(
+                    buffer_size,
+                    None,
+                    MPP_BUFFER_TYPE_DMA_HEAP,
+                    std::ptr::null_mut(),
+                )
+            }
+            .map_err(|_| ())?;
+            target.buffer = target_buffer;
+        }
+        let Some(buffer) = (unsafe { buffer_mut(target_buffer) }) else {
+            return Err(());
+        };
+        if buffer_len(buffer) < buffer_size {
+            return Err(());
+        }
+        if buffer
+            .dma
+            .as_ref()
+            .is_some_and(|dma| dma.sync_write_begin().is_err())
+        {
+            return Err(());
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(decoded.data().as_ptr(), buffer_ptr(buffer), buffer_size);
+        }
+        if buffer
+            .dma
+            .as_ref()
+            .is_some_and(|dma| dma.sync_write_end().is_err())
+        {
+            return Err(());
+        }
+        target.width = width;
+        target.height = height;
+        target.hor_stride = u32::try_from(hor_stride).map_err(|_| ())?;
+        target.ver_stride = u32::try_from(ver_stride).map_err(|_| ())?;
+        target.format = format;
+        target.poc = decoded.poc().max(0) as u32;
+        target.pts = decoded.pts();
+        target.dts = decoded.dts();
+        target.errinfo = decoded.err_info();
+        target.buffer_size = buffer_len(buffer);
         target.eos = 0;
         target.info_change = 0;
         return Ok(());

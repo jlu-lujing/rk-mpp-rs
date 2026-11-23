@@ -26,6 +26,17 @@
 **主验证平台是 RK3588 参考平台；RK3576 作为第二硬件平台，
 只对能力矩阵中有板级证据的 block 做保证。**
 
+- **2026-11-23 4K 编解码矩阵通过。** `scripts/board_4k_matrix.sh` 在 RK3588
+  上为 **20/20 PASS**：3840×2160 的 H.264/H.265/VP9 8-bit 单帧与三帧、
+  H.265/VP9/AV1 Main10、AV1 8-bit 单帧/三帧、AV1 10-bit、H.264/H.265 4K
+  编码、MJPEG 1080p/1440p/4K 编码和 4K MJPEG 解码。解码像素均与 C MPP
+  及独立软件 oracle 逐字节一致；FFmpeg drop-in 的 H.264/H.265/MJPEG 编码
+  也与 vendor 逐字节一致。该矩阵同时修复了 10-bit DMA-BUF 的 MPP
+  `YUV420SP_10BIT`/FFmpeg `NV15` 暴露路径，以及 JPEG object path 在
+  1080p 以上错误自动启用多核 restart band 的问题。
+  FFmpeg 解码 4K 时必须使用 `-fps_mode passthrough`；`-frames:v 1` 可能让
+  vendor 和 Rust 都因 EOF/时间基丢帧而写出 0 字节。
+
 - RK3588 的"完成 / 逐字节一致 / 性能"结论只针对它暴露的硬件块：
   client 1（vdpu2）、4（av1d）、9（rkvdec）、13（jpegd）、16（rkv-enc）、
   19（vepu JPEG）、28（IEP）。client 12（AVS+）能绑定，公开流已建立 vendor C oracle，

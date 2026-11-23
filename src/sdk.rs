@@ -92,6 +92,11 @@ pub enum PixelFormat {
     I420,
     /// Planar 4:2:0 with little-endian 16-bit samples.
     I420P10,
+    /// Semi-planar 4:2:0 with 10-bit samples packed at ten bits per pixel.
+    ///
+    /// This is MPP's `YUV420SP_10BIT` and FFmpeg's `NV15` layout. It is
+    /// produced for hardware DMA-BUF output; CPU output remains `I420P10`.
+    Nv15,
 }
 
 impl PixelFormat {
@@ -100,6 +105,7 @@ impl PixelFormat {
             Self::Nv12 => 1,
             Self::I420 => 2,
             Self::I420P10 => 3,
+            Self::Nv15 => 4,
         }
     }
 
@@ -108,6 +114,7 @@ impl PixelFormat {
             1 => Some(Self::Nv12),
             2 => Some(Self::I420),
             3 => Some(Self::I420P10),
+            4 => Some(Self::Nv15),
             _ => None,
         }
     }
@@ -503,6 +510,35 @@ impl Frame {
         Ok((mapping, first.stride, first.len / first.stride))
     }
 
+    /// Transfer the packed 10-bit semi-planar DMA-BUF storage out of this
+    /// frame. The layout is MPP `YUV420SP_10BIT` / FFmpeg `NV15`.
+    pub(crate) fn into_nv15_dmabuf(self) -> Result<(DmaBuf, usize, usize), Self> {
+        let first = self.planes[0];
+        let second = self.planes[1];
+        let canonical = self.format == PixelFormat::Nv15
+            && first.offset == 0
+            && first.stride != 0
+            && first.len % first.stride == 0
+            && second.offset == first.len
+            && second.len == first.len / 2
+            && second.stride == first.stride;
+        if !canonical {
+            return Err(self);
+        }
+        if !matches!(
+            self.storage,
+            FrameStorage::DmaBuf(_) | FrameStorage::DecodedDmaBuf { .. }
+        ) {
+            return Err(self);
+        }
+        let mapping = match self.storage {
+            FrameStorage::DmaBuf(buffer) => buffer,
+            FrameStorage::DecodedDmaBuf { mapping, .. } => mapping,
+            FrameStorage::Cpu(_) => unreachable!("DMA-BUF storage was checked above"),
+        };
+        Ok((mapping, first.stride, first.len / first.stride))
+    }
+
     /// Convert between the supported 8-bit NV12/I420 layouts and planar
     /// 10-bit I420 using CPU-accessible storage.
     ///
@@ -513,6 +549,11 @@ impl Frame {
     pub fn convert_format(&self, format: PixelFormat) -> Result<Self, Error> {
         if format == self.format {
             return Ok(self.clone());
+        }
+        if matches!(self.format, PixelFormat::Nv15) || matches!(format, PixelFormat::Nv15) {
+            return Err(Error::Unsupported(
+                "packed 10-bit semi-planar conversion is not exposed by the SDK".to_string(),
+            ));
         }
         let width = self.width;
         let height = self.height;
@@ -578,6 +619,7 @@ impl Frame {
                 read_u16(1, chroma_width, chroma_height)?,
                 read_u16(2, chroma_width, chroma_height)?,
             ),
+            PixelFormat::Nv15 => unreachable!("NV15 was rejected above"),
         };
         let source_is_ten_bit = self.format == PixelFormat::I420P10;
         let to_8bit = |sample: u16| {
@@ -619,6 +661,7 @@ impl Frame {
                 }
                 bytes
             }
+            PixelFormat::Nv15 => unreachable!("NV15 was rejected above"),
         };
         let mut frame = Self {
             width,
@@ -684,6 +727,11 @@ impl Frame {
             PixelFormat::I420P10 => {
                 return Err(Error::Unsupported(
                     "H.264 I420P10 output is not implemented".to_string(),
+                ));
+            }
+            PixelFormat::Nv15 => {
+                return Err(Error::Unsupported(
+                    "H.264 NV15 output is not implemented".to_string(),
                 ));
             }
         };
@@ -760,6 +808,64 @@ impl Frame {
         })
     }
 
+    fn from_nv15_dmabuf(
+        codec: &str,
+        width: usize,
+        height: usize,
+        poc: i32,
+        err_info: u32,
+        source: DmaBufSurface,
+        pts: i64,
+        dts: i64,
+    ) -> Result<Self, Error> {
+        let hor_stride = source.hor_stride;
+        let ver_stride = source.ver_stride;
+        let y_size = hor_stride
+            .checked_mul(ver_stride)
+            .ok_or_else(|| Error::Hardware(format!("{codec} DMA-BUF size overflow")))?;
+        let uv_size = y_size / 2;
+        let duplicate = source
+            .dup_fd()
+            .map_err(|error| Error::Resource(format!("{codec} fd duplicate: {error}")))?;
+        let len = source
+            .data_len()
+            .map_err(|error| Error::Hardware(format!("{codec} surface mapping: {error}")))?;
+        if len < y_size + uv_size {
+            return Err(Error::Hardware(format!(
+                "{codec} DMA-BUF surface is truncated"
+            )));
+        }
+        let mapping = DmaBuf::import_fd(duplicate.as_raw_fd(), len, false).map_err(Error::from)?;
+        mapping.sync_read_begin().map_err(Error::from)?;
+        mapping.sync_read_end().map_err(Error::from)?;
+        Ok(Self {
+            width,
+            height,
+            format: PixelFormat::Nv15,
+            pts,
+            dts,
+            poc,
+            err_info,
+            storage: FrameStorage::DecodedDmaBuf {
+                mapping,
+                surface: source,
+            },
+            planes: [
+                PlaneLayout {
+                    offset: 0,
+                    len: y_size,
+                    stride: hor_stride,
+                },
+                PlaneLayout {
+                    offset: y_size,
+                    len: uv_size,
+                    stride: hor_stride,
+                },
+                PlaneLayout::default(),
+            ],
+        })
+    }
+
     fn from_h265(
         picture: hevc::Picture,
         format: PixelFormat,
@@ -767,6 +873,18 @@ impl Frame {
         dts: i64,
     ) -> Result<Self, Error> {
         if let Some(dmabuf) = picture.dmabuf {
+            if picture.bit_depth == 10 && picture.chroma_format == ChromaFormat::Yuv420 {
+                return Self::from_nv15_dmabuf(
+                    "H.265",
+                    picture.width,
+                    picture.height,
+                    picture.poc,
+                    picture.err_info,
+                    dmabuf,
+                    pts,
+                    dts,
+                );
+            }
             if format != PixelFormat::Nv12 {
                 return Err(Error::Unsupported(
                     "H.265 DMA-BUF output requires NV12".to_string(),
@@ -792,6 +910,11 @@ impl Frame {
         let sample_bytes = match (picture.bit_depth, format) {
             (8, PixelFormat::Nv12 | PixelFormat::I420) => 1,
             (10, PixelFormat::I420P10) => 2,
+            (10, PixelFormat::Nv15) => {
+                return Err(Error::Unsupported(
+                    "NV15 output requires a hardware DMA-BUF".to_string(),
+                ));
+            }
             (depth, format) => {
                 return Err(Error::Unsupported(format!(
                     "{depth}-bit H.265 cannot be exposed as {format:?}"
@@ -839,6 +962,18 @@ impl Frame {
         dts: i64,
     ) -> Result<Self, Error> {
         if let Some(dmabuf) = picture.dmabuf {
+            if picture.bit_depth == 10 {
+                return Self::from_nv15_dmabuf(
+                    "VP9",
+                    picture.width,
+                    picture.height,
+                    picture.poc as i32,
+                    picture.err_info,
+                    dmabuf,
+                    pts,
+                    dts,
+                );
+            }
             if format != PixelFormat::Nv12 {
                 return Err(Error::Unsupported(
                     "VP9 DMA-BUF output requires NV12".to_string(),
@@ -858,6 +993,11 @@ impl Frame {
         let sample_bytes = match (picture.bit_depth, format) {
             (8, PixelFormat::Nv12 | PixelFormat::I420) => 1,
             (10, PixelFormat::I420P10) => 2,
+            (10, PixelFormat::Nv15) => {
+                return Err(Error::Unsupported(
+                    "NV15 output requires a hardware DMA-BUF".to_string(),
+                ));
+            }
             (depth, format) => {
                 return Err(Error::Unsupported(format!(
                     "{depth}-bit VP9 cannot be exposed as {format:?}"
@@ -905,6 +1045,18 @@ impl Frame {
         dts: i64,
     ) -> Result<Self, Error> {
         if let Some(dmabuf) = picture.dmabuf {
+            if picture.bit_depth == 10 {
+                return Self::from_nv15_dmabuf(
+                    "AV1",
+                    picture.width,
+                    picture.height,
+                    picture.poc as i32,
+                    picture.err_info,
+                    dmabuf,
+                    pts,
+                    dts,
+                );
+            }
             if format != PixelFormat::Nv12 {
                 return Err(Error::Unsupported(
                     "AV1 DMA-BUF output requires NV12".to_string(),
@@ -924,6 +1076,11 @@ impl Frame {
         let sample_bytes = match (picture.bit_depth, format) {
             (8, PixelFormat::Nv12 | PixelFormat::I420) => 1,
             (10, PixelFormat::I420P10) => 2,
+            (10, PixelFormat::Nv15) => {
+                return Err(Error::Unsupported(
+                    "NV15 output requires a hardware DMA-BUF".to_string(),
+                ));
+            }
             (depth, format) => {
                 return Err(Error::Unsupported(format!(
                     "{depth}-bit AV1 cannot be exposed as {format:?}"
@@ -1184,11 +1341,17 @@ impl Frame {
     }
 
     fn layout_yuv(&mut self) -> Result<(), Error> {
+        if self.format == PixelFormat::Nv15 {
+            return Err(Error::Unsupported(
+                "NV15 is available only as hardware DMA-BUF storage".to_string(),
+            ));
+        }
         let chroma_width = self.width.div_ceil(2);
         let chroma_height = self.height.div_ceil(2);
         let sample_bytes = match self.format {
             PixelFormat::I420P10 => 2,
             PixelFormat::Nv12 | PixelFormat::I420 => 1,
+            PixelFormat::Nv15 => unreachable!("NV15 was rejected above"),
         };
         let y_size = self
             .width
@@ -1241,6 +1404,7 @@ impl Frame {
                     },
                 ];
             }
+            PixelFormat::Nv15 => unreachable!("NV15 was rejected above"),
         }
         Ok(())
     }
@@ -2756,6 +2920,18 @@ mod tests {
         };
         frame.layout_yuv().unwrap();
         frame
+    }
+
+    #[test]
+    fn pixel_formats_round_trip_through_c_values() {
+        for format in [
+            PixelFormat::Nv12,
+            PixelFormat::I420,
+            PixelFormat::I420P10,
+            PixelFormat::Nv15,
+        ] {
+            assert_eq!(PixelFormat::from_c_value(format.c_value()), Some(format));
+        }
     }
 
     #[test]

@@ -45,6 +45,7 @@ const MPP_VIDEO_CODING_HEVC: c_int = 0x0100_0004;
 const MPP_VIDEO_CODING_AVS: c_int = 0x0100_0005;
 const MPP_VIDEO_CODING_AV1: c_int = 0x0100_0008;
 const MPP_FMT_YUV420SP: u32 = 0;
+const MPP_FMT_YUV420SP_10BIT: u32 = 1;
 const MPP_FMT_YUV420P: u32 = 4;
 const MPP_FMT_YUV420SP_VU: u32 = 5;
 
@@ -766,6 +767,7 @@ unsafe extern "C" fn compat_decode_get_frame(ctx: MppCtx, frame: *mut MppFrame) 
                 sdk::PixelFormat::Nv12 => MPP_FMT_YUV420SP,
                 sdk::PixelFormat::I420 => MPP_FMT_YUV420P,
                 sdk::PixelFormat::I420P10 => return MPP_NOK,
+                sdk::PixelFormat::Nv15 => MPP_FMT_YUV420SP_10BIT,
             }
         };
         let output_info = (width, height, format);

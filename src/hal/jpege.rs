@@ -405,6 +405,10 @@ pub struct EncoderConfig {
     /// MCUs per band, the `MPP_ENC_SPLIT_BY_CTU` `split_arg`. `None` or an
     /// argument that yields no band disables the restart interval.
     pub split_mcus: Option<u16>,
+    /// The direct `jpeg-enc` path mirrors the C harness and enables its
+    /// multi-core band plan automatically above 720p. Object/FFmpeg callers
+    /// must only split when `MPP_ENC_SET_CFG` explicitly requests it.
+    pub auto_multi_core: bool,
     /// Expose each restart band as its own packet. The assembled JPEG is the
     /// same single-job stream; this is the output view C's low-delay part loop
     /// produces.
@@ -441,6 +445,7 @@ impl EncoderConfig {
             chroma: ChromaFormat::default(),
             rotation: Rotation::default(),
             split_mcus: None,
+            auto_multi_core: true,
             low_delay: false,
         }
     }
@@ -451,6 +456,11 @@ impl EncoderConfig {
         config.hor_stride = align(width * input.bytes_per_pixel(), 8);
         config.chroma = ChromaFormat::Yuv420;
         config
+    }
+
+    pub fn with_auto_multi_core(mut self, enabled: bool) -> Self {
+        self.auto_multi_core = enabled;
+        self
     }
 
     pub fn validate(self) -> Result<(), String> {
@@ -681,6 +691,9 @@ impl EncoderConfig {
     }
 
     fn multi_core_plan(self) -> Option<MultiCorePlan> {
+        if !self.auto_multi_core && self.split_mcus.is_none() {
+            return None;
+        }
         if self.width.saturating_mul(self.height) <= 1280 * 720 {
             return None;
         }
@@ -2060,6 +2073,13 @@ mod tests {
         let plan = rotated.multi_core_plan().unwrap();
         assert_eq!(plan.bands, vec![30, 30, 30, 30]);
         assert_eq!(plan.restart_interval, 68 * 30);
+    }
+
+    #[test]
+    fn object_path_does_not_auto_enable_multicore_split() {
+        let config = EncoderConfig::new(3840, 2160).with_auto_multi_core(false);
+        assert!(config.multi_core_plan().is_none());
+        assert!(config.effective_split_plan().is_none());
     }
 
     #[test]

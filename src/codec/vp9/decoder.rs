@@ -196,9 +196,9 @@ impl Decoder {
             }
             Err(error) => return Err(PacketError::Syntax(error)),
         };
-        if self.output_dmabuf && parsed.header.bit_depth != 8 {
+        if self.output_dmabuf && !matches!(parsed.header.bit_depth, 8 | 10) {
             return Err(PacketError::Capability(format!(
-                "VP9 DMA-BUF output supports only 8-bit NV12, got {}-bit",
+                "VP9 DMA-BUF output supports only 8/10-bit YUV420, got {}-bit",
                 parsed.header.bit_depth
             )));
         }
