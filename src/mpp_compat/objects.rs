@@ -583,6 +583,18 @@ unsafe fn meta_peek_object(meta: MppMeta, key: c_int) -> Option<*mut c_void> {
     }
 }
 
+pub(super) unsafe fn meta_create() -> *mut c_void {
+    new_meta()
+}
+
+pub(super) unsafe fn meta_peek_frame(meta: *mut c_void, key: c_int) -> Option<MppFrame> {
+    unsafe { meta_peek_object(meta, key) }
+}
+
+pub(super) unsafe fn meta_peek_packet(meta: *mut c_void, key: c_int) -> Option<MppPacket> {
+    unsafe { meta_peek_object(meta, key) }
+}
+
 unsafe fn meta_peek_ptr(meta: MppMeta, key: c_int) -> Option<*mut c_void> {
     let object = unsafe { meta_ref(meta) }?;
     match object.entries.get(&key) {

@@ -44,6 +44,12 @@
   逐字节一致；VP9 的 VDPU383 4K 行 stride、参考帧 stride 和 RCB 顺序偏移
   已修正。RK3576 未实现或不适用的 FFmpeg 4K drop-in、H.264/H.265 4K 编码和
   MJPEG 对象编码明确记为 SKIP，不冒充通过。
+- **2026-11-24 4K 全功能回归完成。** RK3588 基础矩阵 **26/26**、
+  `board_4k_features.sh` **25/25**，RK3576 适用矩阵 **17/17**（5 个明确
+  SKIP）。回归同时修复 MJPEG advanced task queue：此前
+  `mpi_dec_test` 的 `poll/dequeue/enqueue` 未实现，MJPEG 会无限打印
+  `mpp input poll failed`；现在 320×240 和 4K MJPEG drop-in 均正常退出，
+  4K 输出与 C 逐字节一致。
 - **4K 扩展功能门禁也已完成。** `scripts/board_4k_features.sh` 在 RK3588
   一次跑完 **25/25** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
   hierarchical QP、ROI、超出 slice FIFO 的 4K split；H.265 RC、ROI、slice、

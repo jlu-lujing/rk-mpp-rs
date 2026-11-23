@@ -4721,3 +4721,11 @@ pipeline uses.
   128-odd-plus-64 stride and sequential RCB region offsets. The skips are
   explicit platform boundaries: RK3576 has no matching Rust 4K encoder/drop-in
   target, and its MJPEG 4K decode is covered by the separate VPU720 matrix.
+- **2026-11-24: 4K full-feature regression closes the MJPEG task queue.**
+  RK3588 passes the base 4K matrix 26/26 and the extended feature matrix
+  25/25; RK3576 passes 17/17 applicable cells with five explicit platform
+  skips. The MJPEG advanced path now implements the synchronous
+  `poll/dequeue/enqueue` state machine over local task meta, so unchanged
+  `mpi_dec_test` completes 320x240 and 3840x2160 MJPEG instead of looping on
+  `mpp input poll failed`. The 4K MJPEG output is 12,441,600 bytes and
+  byte-identical to C.

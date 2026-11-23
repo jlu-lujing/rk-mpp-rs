@@ -936,6 +936,16 @@ VP9 新增 VDPU383 的 `128 odd + 64` 行 stride、缺失参考帧的 coded stri
 分别对应 FFmpeg 4K drop-in、H.264 4K、H.265 4K、MJPEG 对象编码和已由
 JPEG 专项门覆盖的 MJPEG 4K 解码。
 
+同一轮 4K 回归还修复了 MJPEG 的 advanced task queue。`mpi_dec_test` 对
+MJPEG 走 `poll → dequeue → enqueue`，原兼容层三个入口都直接返回 `MPP_NOK`，
+因此输入线程会无限打印 `mpp input poll failed`。现在使用同步单任务状态机，
+通过本地 `MppMeta` 保存 `KEY_INPUT_PACKET`/`KEY_OUTPUT_FRAME`，并在
+`mpp_create/init/reset/destroy` 管理任务生命周期。RK3588 的 320×240 和
+3840×2160 MJPEG 均正常退出；4K 输出 12,441,600 bytes，与 C
+SHA-256 `688559571754a3456ad1bbe99ee24a6e56bd1b20123d65562377f21eb5bd106c`
+逐字节一致。基础矩阵复跑为 **26/26 PASS**；RK3576 适用矩阵仍为
+**17 PASS / 0 FAIL / 5 SKIP**。
+
 复跑 RK3576（使用板上的系统 C oracle，不依赖未构建的 `mpp-develop`）：
 
 ```bash

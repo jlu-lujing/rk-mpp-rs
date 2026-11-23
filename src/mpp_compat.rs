@@ -27,12 +27,25 @@ type MppParam = *mut c_void;
 const MPP_OK: c_int = 0;
 const MPP_NOK: c_int = -1;
 const MPP_ERR_NULL_PTR: c_int = -3;
+const MPP_ERR_MALLOC: c_int = -4;
 const MPP_ERR_VALUE: c_int = -6;
 
 const MPP_CTX_DEC: c_int = 0;
 const MPP_CTX_ENC: c_int = 1;
 const MPP_CTX_ISP: c_int = 2;
 const MPP_CTX_BUTT: c_int = 3;
+const MPP_PORT_INPUT: c_int = 0;
+const MPP_PORT_OUTPUT: c_int = 1;
+const KEY_INPUT_PACKET: c_int = 0x6970_6b74;
+const KEY_OUTPUT_FRAME: c_int = 0x6f66_726d;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompatTaskState {
+    InputReady,
+    OutputReady,
+    OutputTaken,
+    InputCleanup,
+}
 
 const MPP_VIDEO_CODING_MPEG2: c_int = 2;
 const MPP_VIDEO_CODING_H263: c_int = 3;
@@ -156,6 +169,8 @@ struct CompatContext {
     eos_delivered: bool,
     pending_output_frame: MppFrame,
     pending_input_packet: MppPacket,
+    task: MppTask,
+    task_state: CompatTaskState,
     pending_decoded_frame: Option<sdk::Frame>,
     decoder_output_info: Option<(u32, u32, u32)>,
     decoder_info_change_enabled: bool,
@@ -566,6 +581,24 @@ unsafe fn context_mut<'a>(ctx: MppCtx) -> Option<&'a mut CompatContext> {
     (context.magic == CONTEXT_MAGIC).then_some(context)
 }
 
+fn new_task_meta() -> MppTask {
+    unsafe { objects::meta_create() }
+}
+
+unsafe fn reset_task_meta(context: &mut CompatContext) -> c_int {
+    if !context.task.is_null() {
+        let _ = unsafe { objects::mpp_meta_put(context.task) };
+        context.task = std::ptr::null_mut();
+    }
+    let task = new_task_meta();
+    if task.is_null() {
+        return MPP_ERR_MALLOC;
+    }
+    context.task = task;
+    context.task_state = CompatTaskState::InputReady;
+    MPP_OK
+}
+
 fn video_input_into(
     frame: &objects::FrameInputView,
     format: u32,
@@ -692,8 +725,13 @@ unsafe extern "C" fn compat_decode_put_packet(ctx: MppCtx, packet: MppPacket) ->
     let Some((pts, dts, eos)) = (unsafe { objects::packet_metadata(packet) }) else {
         return MPP_ERR_NULL_PTR;
     };
-    let output_frame =
+    let packet_output_frame =
         unsafe { objects::packet_output_frame(packet) }.unwrap_or(std::ptr::null_mut());
+    let output_frame = if packet_output_frame.is_null() {
+        context.pending_output_frame
+    } else {
+        packet_output_frame
+    };
     if !output_frame.is_null() {
         if let Some(buffer) = unsafe { objects::frame_output_dmabuf(output_frame) } {
             if matches!(
@@ -1141,16 +1179,95 @@ unsafe extern "C" fn compat_isp_get_frame(_ctx: MppCtx, _frame: *mut MppFrame) -
     MPP_NOK
 }
 
-unsafe extern "C" fn compat_poll(_ctx: MppCtx, _port: c_int, _timeout: c_int) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_poll(ctx: MppCtx, port: c_int, _timeout: c_int) -> c_int {
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let ready = match port {
+        MPP_PORT_INPUT => matches!(
+            context.task_state,
+            CompatTaskState::InputReady | CompatTaskState::InputCleanup
+        ),
+        MPP_PORT_OUTPUT => context.task_state == CompatTaskState::OutputReady,
+        _ => false,
+    };
+    if ready {
+        MPP_OK
+    } else {
+        MPP_NOK
+    }
 }
 
-unsafe extern "C" fn compat_dequeue(_ctx: MppCtx, _port: c_int, _task: *mut MppTask) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_dequeue(ctx: MppCtx, port: c_int, task: *mut MppTask) -> c_int {
+    if task.is_null() {
+        return MPP_ERR_NULL_PTR;
+    }
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    let ready = match port {
+        MPP_PORT_INPUT => matches!(
+            context.task_state,
+            CompatTaskState::InputReady | CompatTaskState::InputCleanup
+        ),
+        MPP_PORT_OUTPUT => context.task_state == CompatTaskState::OutputReady,
+        _ => false,
+    };
+    if !ready {
+        unsafe { *task = std::ptr::null_mut() };
+        return MPP_NOK;
+    }
+    if port == MPP_PORT_OUTPUT {
+        context.task_state = CompatTaskState::OutputTaken;
+    }
+    unsafe { *task = context.task };
+    MPP_OK
 }
 
-unsafe extern "C" fn compat_enqueue(_ctx: MppCtx, _port: c_int, _task: MppTask) -> c_int {
-    MPP_NOK
+unsafe extern "C" fn compat_enqueue(ctx: MppCtx, port: c_int, task: MppTask) -> c_int {
+    let Some(context) = (unsafe { context_mut(ctx) }) else {
+        return MPP_ERR_NULL_PTR;
+    };
+    if task.is_null() || task != context.task {
+        return MPP_ERR_VALUE;
+    }
+    match port {
+        MPP_PORT_INPUT => match context.task_state {
+            CompatTaskState::InputCleanup => {
+                context.task_state = CompatTaskState::InputReady;
+                MPP_OK
+            }
+            CompatTaskState::InputReady => {
+                let Some(packet) = (unsafe { objects::meta_peek_packet(task, KEY_INPUT_PACKET) })
+                else {
+                    return MPP_NOK;
+                };
+                let Some(frame) = (unsafe { objects::meta_peek_frame(task, KEY_OUTPUT_FRAME) })
+                else {
+                    return MPP_NOK;
+                };
+                context.pending_output_frame = frame;
+                let ret = unsafe { compat_decode_put_packet(ctx, packet) };
+                if ret != MPP_OK {
+                    return ret;
+                }
+                let mut decoded = std::ptr::null_mut();
+                let ret = unsafe { compat_decode_get_frame(ctx, &mut decoded) };
+                if ret != MPP_OK || decoded.is_null() {
+                    return if ret == MPP_OK { MPP_NOK } else { ret };
+                }
+                context.task_state = CompatTaskState::OutputReady;
+                MPP_OK
+            }
+            _ => MPP_NOK,
+        },
+        MPP_PORT_OUTPUT if context.task_state == CompatTaskState::OutputTaken => {
+            context.task_state = CompatTaskState::InputCleanup;
+            MPP_OK
+        }
+        MPP_PORT_OUTPUT => MPP_NOK,
+        _ => MPP_NOK,
+    }
 }
 
 unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
@@ -1167,6 +1284,9 @@ unsafe extern "C" fn compat_reset(ctx: MppCtx) -> c_int {
     context.eos_delivered = false;
     context.pending_output_frame = std::ptr::null_mut();
     context.pending_input_packet = std::ptr::null_mut();
+    if unsafe { reset_task_meta(context) } != MPP_OK {
+        return MPP_ERR_MALLOC;
+    }
     context.pending_decoded_frame = None;
     context.decoder_output_info = None;
     context.pending_packet_motion_info.clear();
@@ -1644,6 +1764,10 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
     unsafe {
         *ctx = std::ptr::null_mut();
         *mpi = std::ptr::null_mut();
+        let task = new_task_meta();
+        if task.is_null() {
+            return MPP_ERR_MALLOC;
+        }
         let context = Box::new(CompatContext {
             magic: CONTEXT_MAGIC,
             ctx_type: MPP_CTX_BUTT,
@@ -1654,6 +1778,8 @@ pub unsafe extern "C" fn mpp_create(ctx: *mut MppCtx, mpi: *mut *mut MppApi) -> 
             eos_delivered: false,
             pending_output_frame: std::ptr::null_mut(),
             pending_input_packet: std::ptr::null_mut(),
+            task,
+            task_state: CompatTaskState::InputReady,
             pending_decoded_frame: None,
             decoder_output_info: None,
             decoder_info_change_enabled: false,
@@ -1765,6 +1891,9 @@ pub unsafe extern "C" fn mpp_init(ctx: MppCtx, ctx_type: c_int, coding: c_int) -
     context.encoder_eos_delivered = false;
     context.encoder_ref_pattern.clear();
     context.encoder_ref_schedule = None;
+    if unsafe { reset_task_meta(context) } != MPP_OK {
+        return MPP_ERR_MALLOC;
+    }
     MPP_OK
 }
 
@@ -1794,6 +1923,32 @@ mod tests {
     fn avs_coding_type_maps_to_the_public_decoder() {
         assert!(coding_supported(MPP_CTX_DEC, MPP_VIDEO_CODING_AVS));
         assert_eq!(sdk_codec(MPP_VIDEO_CODING_AVS), Some(sdk::Codec::Avs));
+    }
+
+    #[test]
+    fn mjpeg_advanced_task_queue_starts_input_ready() {
+        let mut ctx = ptr::null_mut();
+        let mut api = ptr::null_mut();
+        assert_eq!(unsafe { mpp_create(&mut ctx, &mut api) }, MPP_OK);
+        assert_eq!(
+            unsafe { mpp_init(ctx, MPP_CTX_DEC, MPP_VIDEO_CODING_MJPEG) },
+            MPP_OK
+        );
+
+        let mut task = ptr::null_mut();
+        assert_eq!(unsafe { compat_poll(ctx, MPP_PORT_INPUT, 0) }, MPP_OK);
+        assert_eq!(unsafe { compat_poll(ctx, MPP_PORT_OUTPUT, 0) }, MPP_NOK);
+        assert_eq!(
+            unsafe { compat_dequeue(ctx, MPP_PORT_INPUT, &mut task) },
+            MPP_OK
+        );
+        assert!(!task.is_null());
+        assert_eq!(
+            unsafe { compat_enqueue(ctx, MPP_PORT_INPUT, task) },
+            MPP_NOK
+        );
+        assert_eq!(unsafe { compat_poll(ctx, MPP_PORT_INPUT, 0) }, MPP_OK);
+        assert_eq!(unsafe { mpp_destroy(ctx) }, MPP_OK);
     }
 
     fn step(
@@ -2218,6 +2373,10 @@ pub unsafe extern "C" fn mpp_destroy(ctx: MppCtx) -> c_int {
     let context = unsafe { &mut *(ctx.cast::<CompatContext>()) };
     if context.magic != CONTEXT_MAGIC {
         return MPP_ERR_VALUE;
+    }
+    if !context.task.is_null() {
+        let _ = unsafe { objects::mpp_meta_put(context.task) };
+        context.task = std::ptr::null_mut();
     }
     context.magic = 0;
     // SAFETY: ownership is returned to Box exactly once after the magic was
