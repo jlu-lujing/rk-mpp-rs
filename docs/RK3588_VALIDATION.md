@@ -5,10 +5,10 @@ second RK3588 validation system back to the primary RK3588 board.
 
 ## 2026-11-23 4K codec matrix
 
-`scripts/board_4k_matrix.sh` passes **24/24** at 3840×2160. The matrix covers
+`scripts/board_4k_matrix.sh` passes **26/26** at 3840×2160. The matrix covers
 H.264/H.265/VP9 8-bit one- and three-frame decode, H.265 one-frame Main10,
 VP9/AV1 Main10 one- and three-frame decode, AV1 8-bit one/three-frame decode,
-AV1 8/10-bit film grain, H.264/H.265 4K encode, MJPEG
+AV1 8/10-bit film grain at one and three frames, H.264/H.265 4K encode, MJPEG
 1080p/1440p/4K encode, and 4K MJPEG decode. Hardware decode is compared byte
 for byte with both C MPP and an independent software oracle; H.264/H.265/MJPEG
 FFmpeg drop-in encode is byte-identical to vendor.
@@ -41,6 +41,12 @@ same C/Rust/software SHA-256
 AV1 Main10 produces
 `9584a79e5e6250952eee22a08be28f32086bc1f7d48a5ced736cab3ddb1b1bd8`
 across C, Rust and `aomdec`.
+
+Three-frame film-grain streams also pass. The software-grain YUV SHA-256 values
+are `5cca56a98e00a35d7776d36f780b3cf5a9bc70b5c3c0b672efa714b8f5796b1a`
+for 8-bit and
+`1d69dc944d773bafe5bee5061feb8ca65a83b9f4ea73f7952f629808de96629e`
+for 10-bit, including each frame's synthesized grain.
 
 `scripts/board_4k_features.sh` extends the baseline to **25/25** feature-gate
 groups:

@@ -27,12 +27,12 @@
 只对能力矩阵中有板级证据的 block 做保证。**
 
 - **2026-11-23 4K 编解码矩阵通过。** `scripts/board_4k_matrix.sh` 在 RK3588
-  上为 **24/24 PASS**：3840×2160 的 H.264/H.265/VP9 8-bit 单帧与三帧、
+  上为 **26/26 PASS**：3840×2160 的 H.264/H.265/VP9 8-bit 单帧与三帧、
   H.265 单帧 Main10、VP9/AV1 Main10 单帧与三帧、AV1 8-bit 单帧/三帧、
   AV1 10-bit、H.264/H.265 4K
-  编码、AV1 8/10-bit film grain、MJPEG 1080p/1440p/4K 编码和 4K MJPEG
+  编码、AV1 8/10-bit film grain 单帧/三帧、MJPEG 1080p/1440p/4K 编码和 4K MJPEG
   解码。解码像素均与 C MPP 及独立软件 oracle 逐字节一致；AV1 film grain
-  以 `aomdec` 的带 grain 输出为准，Rust 8/10-bit 均逐字节一致。FFmpeg
+  以 `aomdec` 的带 grain 输出为准，Rust 8/10-bit 单帧/三帧均逐字节一致。FFmpeg
   drop-in 的 H.264/H.265/MJPEG 编码也与 vendor 逐字节一致。该矩阵同时修复了 10-bit DMA-BUF 的 MPP
   `YUV420SP_10BIT`/FFmpeg `NV15` 暴露路径，以及 JPEG object path 在
   1080p 以上错误自动启用多核 restart band 的问题。

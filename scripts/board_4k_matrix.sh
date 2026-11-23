@@ -169,11 +169,20 @@ generate_fixtures() {
         --fps=30/1 --cpu-used=8 --passes=1 --end-usage=q --cq-level=32 \
         --profile=0 --film-grain-test=1 --ivf \
         -o "$work/av1-grain-8.ivf" "$work/av1-1.yuv"
+    aomenc --quiet --limit=3 --width="$width" --height="$height" \
+        --fps=30/1 --cpu-used=8 --passes=1 --end-usage=q --cq-level=32 \
+        --profile=0 --film-grain-test=1 --ivf \
+        -o "$work/av1-grain-8-3.ivf" "$work/av1-3.yuv"
     aomenc --quiet --limit=1 --width="$width" --height="$height" \
         --fps=30/1 --cpu-used=8 --passes=1 --end-usage=q --cq-level=32 \
         --profile=0 --bit-depth=10 --input-bit-depth=10 \
         --film-grain-test=1 --ivf \
         -o "$work/av1-grain-10.ivf" "$work/av1-10.yuv"
+    aomenc --quiet --limit=3 --width="$width" --height="$height" \
+        --fps=30/1 --cpu-used=8 --passes=1 --end-usage=q --cq-level=32 \
+        --profile=0 --bit-depth=10 --input-bit-depth=10 \
+        --film-grain-test=1 --ivf \
+        -o "$work/av1-grain-10-3.ivf" "$work/av1-10-3.yuv"
     "$vpxenc_bin" --quiet --codec=vp9 --profile=2 --bit-depth=10 \
         --input-bit-depth=10 --passes=1 --good --cpu-used=8 --threads=4 \
         --lag-in-frames=0 --kf-max-dist=30 --limit=1 --width="$width" \
@@ -297,6 +306,7 @@ av1_grain_exact() {
     local name="$1"
     local input="$2"
     local expected="$3"
+    local frames="$4"
     local rust="$work/${name}-rust.yuv"
     local oracle="$work/${name}-aom.yuv"
 
@@ -305,7 +315,7 @@ av1_grain_exact() {
         fail_case "$name" "Rust av1dec failed"
         return
     fi
-    if ! timeout 120 aomdec --rawvideo --limit=1 \
+    if ! timeout 120 aomdec --rawvideo --limit="$frames" \
         -o "$oracle" "$input" >"$work/${name}-aom.log" 2>&1; then
         fail_case "$name" "aomdec oracle failed"
         return
@@ -313,7 +323,7 @@ av1_grain_exact() {
     size_is "$name" "$rust" "$expected" || return 0
     same_file "$name" "$rust" "$oracle" || return 0
     pass_case "$name" \
-        "Rust/aomdec grain synthesis exact $(sha256sum "$rust" | cut -d' ' -f1)"
+        "$frames frame(s), Rust/aomdec grain synthesis exact $(sha256sum "$rust" | cut -d' ' -f1)"
 }
 
 oracle_dropin_exact() {
@@ -468,8 +478,12 @@ av1_decode_exact av1-4k-1 "$work/av1-1.ivf" 1 8
 av1_decode_exact av1-4k-3 "$work/av1-3.ivf" 3 8
 av1_decode_exact av1-4k-main10 "$work/av1-10.ivf" 1 10
 av1_decode_exact av1-4k-main10-3 "$work/av1-10-3.ivf" 3 10
-av1_grain_exact av1-4k-grain8 "$work/av1-grain-8.ivf" "$frame_bytes"
-av1_grain_exact av1-4k-grain10 "$work/av1-grain-10.ivf" "$frame_bytes_10"
+av1_grain_exact av1-4k-grain8 "$work/av1-grain-8.ivf" "$frame_bytes" 1
+av1_grain_exact av1-4k-grain10 "$work/av1-grain-10.ivf" "$frame_bytes_10" 1
+av1_grain_exact av1-4k-grain8-3 "$work/av1-grain-8-3.ivf" \
+    "$((frame_bytes * 3))" 3
+av1_grain_exact av1-4k-grain10-3 "$work/av1-grain-10-3.ivf" \
+    "$((frame_bytes_10 * 3))" 3
 oracle_dropin_exact av1-dropin-4k-1 "$work/av1-1.ivf" 1 "$frame_bytes"
 oracle_dropin_exact av1-dropin-4k-3 "$work/av1-3.ivf" 3 \
     "$((frame_bytes * 3))"

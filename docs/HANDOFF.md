@@ -918,10 +918,10 @@ GOP 下默认 depth 2，300 帧 720p 为 0.430 s / 698 FPS，C FFmpeg 为
 > 作业；只有打印 `PRE-SUBMIT DETERMINISTIC INPUTS MATCH` 后才恢复板级 AV1 调试。
 
 **2026-11-23 4K 编解码矩阵：** `scripts/board_4k_matrix.sh` 在 RK3588 上
-**24/24 PASS**。矩阵覆盖 3840×2160 的 H.264/H.265/VP9 8-bit 单帧与三帧、
+**26/26 PASS**。矩阵覆盖 3840×2160 的 H.264/H.265/VP9 8-bit 单帧与三帧、
 H.265 单帧 Main10、VP9/AV1 Main10 单帧与三帧、AV1 8-bit 单帧/三帧、
-AV1 10-bit、AV1 8/10-bit
-film grain、H.264/H.265 编码、MJPEG 1080p/1440p/4K 编码和 4K MJPEG 解码；
+AV1 10-bit、AV1 8/10-bit film grain 单帧/三帧、H.264/H.265 编码、
+MJPEG 1080p/1440p/4K 编码和 4K MJPEG 解码；
 普通解码逐字节对齐 C MPP 与软件 oracle，AV1 film grain 逐字节对齐
 `aomdec` 的带 grain 输出，H.264/H.265/MJPEG 编码逐字节对齐 vendor FFmpeg。AV1 的软件 oracle
 固定使用 `aomdec --rawvideo`，因为该板 FFmpeg 构建没有可用的 AV1 软件解码器。
