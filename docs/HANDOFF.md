@@ -945,7 +945,7 @@ VPXENC=/path/to/vpxenc scripts/board_4k_matrix.sh
 FFmpeg 4K 解码必须加 `-fps_mode passthrough`。`-frames:v 1` 会让 vendor 和
 Rust 都可能因 EOF/时间基丢帧而写出 0 字节，这不是 Rust 独有回归。
 
-扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **24/24** 门禁组
+扩展功能面由 `scripts/board_4k_features.sh` 统一回归，当前 **25/25** 门禁组
 通过。它串起 H.264/H.265 的 RC、hier QP、ROI、slice、tiles、GDR、force-IDR、
 custom RC callback、OSD，以及 MJPEG 多核/旋转/RGB。4K H.264 BY_CTU/BY_BYTE 分别为 680/403 NAL，
 H.265 为 260/205 NAL；H.265 4K auto-tile 为 9 NAL，GDR row/column 均为
@@ -976,6 +976,14 @@ SDK DMA-BUF 面也扩到 4K。编码器用同一批 NV12 分别走 copied-input 
 一致；解码器用 C consumer 同时要求 CPU frame 和 DMA frame，H.264/H.265/
 VP9/AV1 三帧输出均为 37,324,800 bytes 且逐字节一致。门禁保留原有
 `F_DUPFD_CLOEXEC` 检查，确认提交期间没有复制调用方 fd。
+
+4K encoder packet meta 新增 H.264/H.265 fixed-QP 2/2 帧严格比较：每包
+block count、SSE、PSKIP、intra 标志、start/avg QP、H.265 motion-info
+摘要以及整条码流均相同；4K JPEG 的 q-factor meta 也一致。这个检查顺带
+修正了 MPI object H.265 CBR 的默认 I→P QP delta：`h265e_api.c` 默认是 4，
+原先 compat 路径误用了 `mpi_enc_test -qc` 的 2，导致 320x240 第二帧出现
+45-byte C 对 75-byte Rust 的码流差异。现在 direct harness 仍保持 2，
+MPI object 路径改为 4，旧 fixed-QP/CBR packet-meta 矩阵恢复通过。
 
 IEP2 的 4K 结果不是可用路径。C `iep2_test` 把尺寸限制为 1920×1088，
 3840×2160 会在参数检查阶段拒绝；直接调用 C 底层 probe 虽然返回成功，但

@@ -2927,7 +2927,7 @@ fn open_h265_vepu580(
                 RateControlMode::Avbr => h265e_session::RcMode::Avbr,
                 RateControlMode::FixedQp => unreachable!(),
             };
-            h265e_session::Vepu580H265::open_rate(
+            h265e_session::Vepu580H265::open_rate_with_i_delta(
                 config.width,
                 config.height,
                 mode,
@@ -2937,6 +2937,7 @@ fn open_h265_vepu580(
                 i32::from(rate_control.initial_qp),
                 u32::from(rate_control.min_qp),
                 u32::from(rate_control.max_qp),
+                if mpi_compat { 4 } else { 2 },
             )
         }
         _ if config.gdr.is_some() => h265e_session::Vepu580H265::open_gop_short_term(

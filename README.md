@@ -39,7 +39,7 @@
   FFmpeg 解码 4K 时必须使用 `-fps_mode passthrough`；`-frames:v 1` 可能让
   vendor 和 Rust 都因 EOF/时间基丢帧而写出 0 字节。
 - **4K 扩展功能门禁也已完成。** `scripts/board_4k_features.sh` 在 RK3588
-  一次跑完 **24/24** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
+  一次跑完 **25/25** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
   hierarchical QP、ROI、超出 slice FIFO 的 4K split；H.265 RC、ROI、slice、
   tiles、GDR、H.264/H.265 强制 IDR/header 模式；自定义 RC callback；4K OSD
   direct/fallback；MJPEG 4K 多核、90° 旋转和 RGB565/ARGB8888/BGRA8888
@@ -50,7 +50,8 @@
   与单路 C/Rust 输出比对，15/15 组无丢帧、无错帧、无输出差异。4K
   CPU/DMA NV12→RGB letterbox 输出一致；SDK 的 copied/DMA 编码输入和
   CPU/DMA 解码输出也为逐字节一致，覆盖 H.264/H.265/VP9/AV1/MJPEG 的现有
-  DMA 能力；IEP2 在 1920×1088 上限与 C
+  DMA 能力；4K fixed-QP H.264/H.265 packet metadata 与 JPEG q-factor meta
+  逐包一致；IEP2 在 1920×1088 上限与 C
   逐字节一致，3840×2160 现在明确拒绝，不再提交后写出半帧。
   该门禁同时修复了 4K 低码率下 H.265 首帧缺少 C 的 RC re-encode：
   QP26 超目标后会按 C 重新提交 QP29，再推进下一帧；H.265 自定义 RC 的
@@ -629,6 +630,10 @@ H.264 与 H.265 两帧 OSD stream/YUV 均与 vendor 逐字节一致。H.265 的�
 编码输出 packet 的 kernel meta 现已按 `set_enc_info_to_packet()` 回填：
 H.264/H.265 的 8 类 inter/intra block count、SSE、PSKIP、帧内标志、
 start/average QP 以及 H.265 `KEY_MOTION_INFO` 均与对应板上的 vendor 一致。
+4K fixed-QP H.264/H.265 的 block count/SSE/QP 与整条码流也已逐包一致；
+4K JPEG 的 start/average q-factor 一致，stream band layout 由直接编码门
+单独覆盖。MPI object 的 H.265 CBR 另修正为 C 默认 `qp_delta_ip=4`，
+不再误用 `mpi_enc_test` direct harness 的 delta 2。
 JPEG 的 start/average quality 也已按 vendor 回填为 q-factor；VEPU2 保持
 vendor 的“无 intra 标志”，VPU720 则回填 `KEY_OUTPUT_INTRA=0`。
 固定 QP 和 CBR 在静止、持续运动各两帧上为 2/2 逐 packet 一致；CBR

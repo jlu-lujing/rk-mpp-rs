@@ -42,7 +42,7 @@ AV1 Main10 produces
 `9584a79e5e6250952eee22a08be28f32086bc1f7d48a5ced736cab3ddb1b1bd8`
 across C, Rust and `aomdec`.
 
-`scripts/board_4k_features.sh` extends the baseline to **24/24** feature-gate
+`scripts/board_4k_features.sh` extends the baseline to **25/25** feature-gate
 groups:
 
 - H.264 Baseline/Main/High at QP26/QP18: 6/6 one-frame streams, five NALs each.
@@ -76,6 +76,10 @@ groups:
 - SDK copied-input and caller DMA-BUF-input encoders are byte-identical at 4K
   for H.264, H.265 and JPEG. The SDK decoder's CPU and DMA-BUF output frames
   are byte-identical at 4K for H.264, H.265, VP9 and AV1, three frames each.
+- 4K fixed-QP H.264/H.265 packet metadata and complete streams match vendor:
+  block counts, SSE, PSKIP, intra flag and QP fields are compared packet by
+  packet. JPEG's 4K q-factor metadata matches; its restart-band stream layout
+  remains covered by the dedicated direct/object encoder gates.
 - IEP2 deinterlace at its 1920x1088 maximum is byte-identical to C. A 4K
   request is rejected by the C test harness and now rejected by Rust before
   session open; a direct C probe otherwise returns success with two all-zero

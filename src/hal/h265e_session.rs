@@ -357,15 +357,35 @@ impl Vepu580H265 {
         qp_min: u32,
         qp_max: u32,
     ) -> Result<Self, String> {
+        Self::open_rate_with_i_delta(
+            width, height, mode, bps_target, bps_min, bps_max, init_qp, qp_min, qp_max, 2,
+        )
+    }
+
+    /// Open a rate-controlled session with an explicit I-to-P QP delta.
+    ///
+    /// `mpi_enc_test -qc` uses 2. The raw `MppEncRcCfg` defaults in
+    /// `h265e_api.c` use 4, so the MPI object compatibility path selects 4.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_rate_with_i_delta(
+        width: usize,
+        height: usize,
+        mode: RcMode,
+        bps_target: i32,
+        bps_min: i32,
+        bps_max: i32,
+        init_qp: i32,
+        qp_min: u32,
+        qp_max: u32,
+        i_quality_delta: i32,
+    ) -> Result<Self, String> {
         let mut session = Self::open_inner(width, height, qp_max, false)?;
         let mb64 = ((width + 63) / 64) * ((height + 63) / 64);
         let mut config = rc_model::Config::cbr(bps_target, bps_min, bps_max, 60);
         config.quality_init = init_qp;
         config.quality_min = qp_min as i32;
         config.quality_max = qp_max as i32;
-        // `mpi_enc_test` sets the I and P quality bands to the same caller range
-        // and uses the harness I delta of two in the strategy SEI.
-        config.i_quality_delta = 2;
+        config.i_quality_delta = i_quality_delta;
         config.total_mb = (mb64 << 6) as i32;
         config.mode = mode.model();
         session.rc_mode = mode;

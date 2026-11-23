@@ -115,6 +115,9 @@ run_remote "4K SDK DMA-BUF encoder input" \
 run_remote "4K SDK DMA-BUF decoder output" \
     "RUN_4K=1 SKIP_BUILD=1 scripts/board_sdk_dmabuf.sh"
 
+run_remote "4K encoder packet metadata" \
+    "RUN_4K=1 SKIP_BUILD=1 scripts/board_mpp_packet_meta.sh"
+
 run_gate "IEP2 maximum 1920x1088 parity" \
     env SKIP_BUILD=1 scripts/board_iep_dei_vs_mpp.sh 1920 1088
 
