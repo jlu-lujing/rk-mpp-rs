@@ -158,6 +158,9 @@ generate_fixtures() {
     "$ffmpeg_bin" -nostdin -hide_banner -loglevel error -y \
         -f lavfi -i "testsrc2=size=${width}x${height}:rate=30" \
         -frames:v 1 -pix_fmt yuv420p10le -f rawvideo "$work/av1-10.yuv"
+    "$ffmpeg_bin" -nostdin -hide_banner -loglevel error -y \
+        -f lavfi -i "testsrc2=size=${width}x${height}:rate=30" \
+        -frames:v 3 -pix_fmt yuv420p10le -f rawvideo "$work/av1-10-3.yuv"
     aomenc --quiet --limit=1 --width="$width" --height="$height" \
         --fps=30/1 --cpu-used=8 --passes=1 --end-usage=q --cq-level=32 \
         --profile=0 --bit-depth=10 --input-bit-depth=10 --ivf \
@@ -176,6 +179,15 @@ generate_fixtures() {
         --lag-in-frames=0 --kf-max-dist=30 --limit=1 --width="$width" \
         --height="$height" --fps=30/1 --ivf \
         -o "$work/vp9-10.ivf" "$work/av1-10.yuv"
+    aomenc --quiet --limit=3 --width="$width" --height="$height" \
+        --fps=30/1 --cpu-used=8 --passes=1 --end-usage=q --cq-level=32 \
+        --profile=0 --bit-depth=10 --input-bit-depth=10 --ivf \
+        -o "$work/av1-10-3.ivf" "$work/av1-10-3.yuv"
+    "$vpxenc_bin" --quiet --codec=vp9 --profile=2 --bit-depth=10 \
+        --input-bit-depth=10 --passes=1 --good --cpu-used=8 --threads=4 \
+        --lag-in-frames=0 --kf-max-dist=30 --limit=3 --width="$width" \
+        --height="$height" --fps=30/1 --ivf \
+        -o "$work/vp9-10-3.ivf" "$work/av1-10-3.yuv"
 
     for frames in 1 3; do
         "$ffprobe_bin" -v error -select_streams v:0 -count_frames \
@@ -447,12 +459,15 @@ ffmpeg_decode_exact vp9-4k-3 vp9 vp9 "$work/vp9-3.ivf" 3 nv12 \
     "$((frame_bytes * 3))"
 ffmpeg_decode_exact vp9-4k-main10 vp9 vp9 "$work/vp9-10.ivf" 1 \
     yuv420p10le "$frame_bytes_10"
+ffmpeg_decode_exact vp9-4k-main10-3 vp9 vp9 "$work/vp9-10-3.ivf" 3 \
+    yuv420p10le "$((frame_bytes_10 * 3))"
 ffmpeg_decode_exact hevc-4k-main10 hevc hevc "$work/hevc-10.265" 1 \
     yuv420p10le "$frame_bytes_10"
 
 av1_decode_exact av1-4k-1 "$work/av1-1.ivf" 1 8
 av1_decode_exact av1-4k-3 "$work/av1-3.ivf" 3 8
 av1_decode_exact av1-4k-main10 "$work/av1-10.ivf" 1 10
+av1_decode_exact av1-4k-main10-3 "$work/av1-10-3.ivf" 3 10
 av1_grain_exact av1-4k-grain8 "$work/av1-grain-8.ivf" "$frame_bytes"
 av1_grain_exact av1-4k-grain10 "$work/av1-grain-10.ivf" "$frame_bytes_10"
 oracle_dropin_exact av1-dropin-4k-1 "$work/av1-1.ivf" 1 "$frame_bytes"

@@ -5,9 +5,10 @@ second RK3588 validation system back to the primary RK3588 board.
 
 ## 2026-11-23 4K codec matrix
 
-`scripts/board_4k_matrix.sh` passes **22/22** at 3840×2160. The matrix covers
-H.264/H.265/VP9 8-bit one- and three-frame decode, H.265/VP9/AV1 Main10,
-AV1 8-bit one/three-frame decode, AV1 8/10-bit film grain, H.264/H.265 4K encode, MJPEG
+`scripts/board_4k_matrix.sh` passes **24/24** at 3840×2160. The matrix covers
+H.264/H.265/VP9 8-bit one- and three-frame decode, H.265 one-frame Main10,
+VP9/AV1 Main10 one- and three-frame decode, AV1 8-bit one/three-frame decode,
+AV1 8/10-bit film grain, H.264/H.265 4K encode, MJPEG
 1080p/1440p/4K encode, and 4K MJPEG decode. Hardware decode is compared byte
 for byte with both C MPP and an independent software oracle; H.264/H.265/MJPEG
 FFmpeg drop-in encode is byte-identical to vendor.
@@ -32,6 +33,14 @@ usable AV1 software decoder. VP9 Main10 generation requires a `vpxenc` built
 with `--enable-vp9-highbitdepth`; pass it through `VPXENC=`. For FFmpeg 4K
 decode, use `-fps_mode passthrough`; `-frames:v 1` can otherwise produce an
 empty output on both vendor and Rust paths.
+
+The three-frame Main10 additions close the temporal-reference gap that a
+single-keyframe test cannot cover. VP9 Main10 produces three frames and the
+same C/Rust/software SHA-256
+`f485a8d83f3d17ed861f0e86512a4f6c907bda0f2e3ca8cb1af3d25d49814709`;
+AV1 Main10 produces
+`9584a79e5e6250952eee22a08be28f32086bc1f7d48a5ced736cab3ddb1b1bd8`
+across C, Rust and `aomdec`.
 
 `scripts/board_4k_features.sh` extends the baseline to **22/22** feature-gate
 groups:
