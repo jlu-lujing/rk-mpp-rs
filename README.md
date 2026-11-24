@@ -1,1008 +1,375 @@
 # rk-mpp-rs
 
-用纯 Rust 重写 Rockchip **MPP**：直接驱动 `/dev/mpp_service`，不链接
-`librockchip_mpp`、不依赖 `librga`。目标是覆盖 `refs/mpp` 的完整表面——
-所有解码器、编码器、后处理与 framework——并保证**与 C MPP 逐字节相同**、
-性能不劣于 C。
+`rk-mpp-rs` 是 Rockchip MPP 的纯 Rust 实现。它直接驱动
+`/dev/mpp_service`、DMA heap 和 Rockchip 硬件块，不链接
+`librockchip_mpp`，也不依赖 `librga`。
 
-起源是 `rknn-fastinfer` 需要一条无 C 依赖的 JPEG 解码 + 缩放链路；现在范围已经是
-整个库。当前进度与逐项证据见 [ROADMAP.md](ROADMAP.md)，接手指南见
-[docs/HANDOFF.md](docs/HANDOFF.md)。
+项目目标不是做一个“接口相似”的封装，而是提供可验证的替代实现：
 
-## 从 C MPP 迁移
+- 与板上 C MPP 逐字节或逐 packet 比较；
+- 提供二进制 drop-in、官方 MPI 源码兼容层、Rust SDK 和 C SDK；
+- 在相同硬件条件下不少于 C 的吞吐，并尽量减少 CPU 拷贝。
 
-三层路径（二进制 drop-in / 官方头文件源码替换 / 新 C API 与 Rust crate）、
-覆盖率检查、已知差异与验证命令见 [docs/MIGRATION.md](docs/MIGRATION.md)。
-官方头文件 297 个声明符号**全部覆盖（297/297）**：核心 API 100%，`sys_cfg`
-与 `vdec_kcfg`/`venc_kcfg` 提供类型化存储/回显，`task_meta` 映射到
-`mpp_meta_*`。`MPP_SET_VENC_INIT_KCFG` 的 type/coding/max dimensions 已映射，
-其余 kernel-only 键保留存储语义；非法句柄 type、未知 canonical name 和
-非 CTRL_CFG flex 操作按 vendor 语义拒绝，审计见 `docs/KCFG.md`。
+当前主验证平台是 **RK3588**，第二平台是 **RK3576**。验证结论只适用于
+[能力矩阵](docs/CAPABILITY.md) 中列出的硬件和调用路径，不外推到其他 SoC、
+内核或产品板。
 
-## 验证范围（重要）
-完整能力矩阵（每条结论的证据与边界）：[docs/CAPABILITY.md](docs/CAPABILITY.md)。
+## 快速导航
 
+- [从 C MPP 迁移](docs/MIGRATION.md)
+- [能力与证据矩阵](docs/CAPABILITY.md)
+- [路线图](ROADMAP.md)
+- [开发与板端交接](docs/HANDOFF.md)
+- [已知差异](docs/DIVERGENCES.md)
+- [C API 头文件](include/rk_mpp_rs.h)
+- [Rust SDK 示例](examples/)
 
-**主验证平台是 RK3588 参考平台；RK3576 作为第二硬件平台，
-只对能力矩阵中有板级证据的 block 做保证。**
+## 特性
 
-- **2026-11-23 4K 编解码矩阵通过。** `scripts/board_4k_matrix.sh` 在 RK3588
-  上为 **26/26 PASS**：3840×2160 的 H.264/H.265/VP9 8-bit 单帧与三帧、
-  H.265 单帧 Main10、VP9/AV1 Main10 单帧与三帧、AV1 8-bit 单帧/三帧、
-  AV1 10-bit、H.264/H.265 4K
-  编码、AV1 8/10-bit film grain 单帧/三帧、MJPEG 1080p/1440p/4K 编码和 4K MJPEG
-  解码。解码像素均与 C MPP 及独立软件 oracle 逐字节一致；AV1 film grain
-  以 `aomdec` 的带 grain 输出为准，Rust 8/10-bit 单帧/三帧均逐字节一致。FFmpeg
-  drop-in 的 H.264/H.265/MJPEG 编码也与 vendor 逐字节一致。该矩阵同时修复了 10-bit DMA-BUF 的 MPP
-  `YUV420SP_10BIT`/FFmpeg `NV15` 暴露路径，以及 JPEG object path 在
-  1080p 以上错误自动启用多核 restart band 的问题。
-  FFmpeg 解码 4K 时必须使用 `-fps_mode passthrough`；`-frames:v 1` 可能让
-  vendor 和 Rust 都因 EOF/时间基丢帧而写出 0 字节。
-- **2026-11-24 RK3576 4K 矩阵通过。** 同一入口在 RK3576 上为
-  **17 PASS / 0 FAIL / 5 SKIP**：H.264/H.265/VP9/AV1 的 8/10-bit 解码、
-  三帧状态、Main10 和 AV1 film-grain 非 grain 基线均与 C 或软件 oracle
-  逐字节一致；VP9 的 VDPU383 4K 行 stride、参考帧 stride 和 RCB 顺序偏移
-  已修正。RK3576 未实现或不适用的 FFmpeg 4K drop-in、H.264/H.265 4K 编码和
-  MJPEG 对象编码明确记为 SKIP，不冒充通过。
-- **2026-11-24 4K 全功能回归完成。** RK3588 基础矩阵 **26/26**、
-  `board_4k_features.sh` **25/25**，RK3576 适用矩阵 **17/17**（5 个明确
-  SKIP）。回归同时修复 MJPEG advanced task queue：此前
-  `mpi_dec_test` 的 `poll/dequeue/enqueue` 未实现，MJPEG 会无限打印
-  `mpp input poll failed`；现在 320×240 和 4K MJPEG drop-in 均正常退出，
-  4K 输出与 C 逐字节一致。
-- **4K 扩展功能门禁也已完成。** `scripts/board_4k_features.sh` 在 RK3588
-  一次跑完 **25/25** 个功能门禁组：H.264 多 profile/QP、CBR/VBR/AVBR/
-  hierarchical QP、ROI、超出 slice FIFO 的 4K split；H.265 RC、ROI、slice、
-  tiles、GDR、H.264/H.265 强制 IDR/header 模式；自定义 RC callback；4K OSD
-  direct/fallback；MJPEG 4K 多核、90° 旋转和 RGB565/ARGB8888/BGRA8888
-  输入；4K `MppEncCfg` 的 NV12/I420/NV21 输入；另有 30 帧
-  H.264/H.265/VP9、H.265 B 帧与 10 帧 Main10 的长 GOP/DPB soak。JPEG 解码补了
-  4K 的 1/1、1/2、1/4、1/8 RGB888/NV12 缩放，输出尺寸、重复哈希和软件
-  参考 PSNR 均通过；H.264/H.265/VP9 另在 1/2/4/8/16 个独立进程下逐路
-  与单路 C/Rust 输出比对，15/15 组无丢帧、无错帧、无输出差异；H.264/H.265
-  的 pipeline 深度 0/1/2/3 也一致，H.264 packed NV12 与 C 相同。4K
-  CPU/DMA NV12→RGB letterbox 输出一致；SDK 的 copied/DMA 编码输入和
-  CPU/DMA 解码输出也为逐字节一致，覆盖 H.264/H.265/VP9/AV1/MJPEG 的现有
-  DMA 能力；4K fixed-QP H.264/H.265 packet metadata 与 JPEG q-factor meta
-  逐包一致；IEP2 在 1920×1088 上限与 C
-  逐字节一致，3840×2160 现在明确拒绝，不再提交后写出半帧。
-  该门禁同时修复了 4K 低码率下 H.265 首帧缺少 C 的 RC re-encode：
-  QP26 超目标后会按 C 重新提交 QP29，再推进下一帧；H.265 自定义 RC 的
-  I-frame band 也恢复为 C 的 `[15:51]`、`delta_ip=4`。
-
-- RK3588 的"完成 / 逐字节一致 / 性能"结论只针对它暴露的硬件块：
-  client 1（vdpu2）、4（av1d）、9（rkvdec）、13（jpegd）、16（rkv-enc）、
-  19（vepu JPEG）、28（IEP）。client 12（AVS+）能绑定，公开流已建立 vendor C oracle，
-  因此**未实现、不宣称**；client 3（vdpu2-pp）会绑定，但本源码里没有任何解码器
-  驱动它（见 ROADMAP 的能力表）。
-- RK3576 已板验 VDPU383、VEPU510、VPU720 与 client 29 VDPP2。各路径的比较样本、
-  C 参考版本和未覆盖边界以 [docs/CAPABILITY.md](docs/CAPABILITY.md) 为准；
-  不能把 RK3588 或 RK3576 的单板结论自动外推到其他 RK3588/RK3576 产品。
-- **RK3576 正在适配，尚不属于完整保证范围。** 已确认
-  VDPU383/VEPU510/VPU720/VDPP2，且 RK3576 H.264 640x480 12 帧已与 C MPP
-  逐字节，720p/B、1080p、PAFF、LTR 和缺失参考边界矩阵 5/5 通过；VDPU383 H.265 初始
-  12/12 矩阵（Main/Main10、B、tiles、真实 WPP、
-  1280x720、JCT-VC DSLICE、SPS/PPS scaling list、500 帧 8-entry LTR
-  SPS 流，以及删 AU 后 11 个输入 access unit 产出 5 帧的缺失参考路径）
-  也已逐字节；VDPU383 VP9
-  初始 7/7 矩阵（profile 0/2、8/10-bit、lossless、tiles）通过，两个既有 C
-  bug 路径由 libvpx 判定；VPU720 JPEG 19/19（NV12 三尺寸+restart，320x240
-  NV16/I420/NV21/YUV422P/NV61/YUYV/YVYU/UYVY/VYUY/NV24/YUV444P/YUV400，
-  以及 400/420/422/444 四种输出）也与 C MPP 逐字节。H.265 随机错误注入、AV1、
-  VPU720 tile input、VEPU510 编码、VDPP2 和 H.264 完整边界矩阵仍在推进。
-  VEPU510 H.264 已生成 6 个写窗口、645 个字段的 Rust 寄存器表，并完成首个
-  320x240 QP26 Baseline IDR、GOP2、6 帧固定 GOP、CBR6、VBR6 与 AVBR6
-  硬件编码，分别与 C MPP **6479 / 8671 / 18225 / 14187 / 15616 / 12313
-  bytes 逐字节一致**；ROI 强制 intra +绝对 QP 的两帧格，以及 BY_CTU=96 /
-  BY_BYTE=256 的整 AU 和 LOWDELAY packet 两档也逐字节。BY_BYTE 低延迟格
-  产生 40 个 packet，跨越 VEPU510 的 8 项 slice FIFO，码流与逐 packet
-  长度均和 C 相同。GDR row=2/GOP4 与 col=4/GOP6 也逐字节；刷新帧抑制
-  IGOP IDR、钳住 CIME 搜索轴，并在 recovery 帧重发 SPS/PPS。
-  VEPU510 H.265 的首个 320x240 QP26 Main IDR 也已与 RK3576 C MPP 逐字节，
-  **4710 bytes**；IDR+P GOP2 与 GOP6 同样逐字节，分别为 **6810 / 16994
-  bytes**；CBR6 / VBR6 / AVBR6 也逐字节，分别为 **11192 / 11795 / 9676
-  bytes**；BY_CTU/BY_BYTE、LOWDELAY packet、row/column GDR 与 ROI 也都
-  逐字节；10-bit 输入与 RK3576 C MPP 一致，在构图前显式拒绝。RK3576 的 C
-  `AUTO_TILE=1` 与普通 IDR 产生同一个 4710-byte 码流，确认 tiles 是该
-  VEPU510 HAL 的平台边界；Rust 对多于 1 列的 tile 请求在 DMA/硬件分配前
-  显式拒绝。VEPU510 H.265 功能/边界矩阵为 **15/15**。
-  VDPU383 AV1 已落下第一层 C ABI：`src/hal/av1d383.rs` 生成的 672-byte
-  global header 与 RK3576 C dump 首帧逐字节一致（FNV
-  `0x8da389d2e180d680`），首 keyframe 的 212-word C register struct image
-  也与 C dump 完全一致；官方 7400×u32 的 29,600-byte default CDF 已生成并
-  固定，首帧 RCB/CDF/segmentation/colmv buffer plan 已对齐。真实 VDPU383
-  首 keyframe 已通过 Rust 提交，320×240 YUV420p 与 C 完全一致
-  (`6f5b544f…b9fe`)。多帧/inter/10-bit 仍未接通。
-  其他 Rockchip SoC 未验证：不同代的 VEPU/VDEC 寄存器布局、STATUS 语义和
-  固件行为都不同，需要各自取证。详见 [docs/rk3576.md](docs/rk3576.md)。
-- **RK3588 FFmpeg H.264 编码已达到并略超 C。** 固定 QP DMA-BUF 路径默认
-  使用 VEPU580 session 内 depth-2 deferred queue；pending job 独立持有
-  batch/STATUS/output，三槽 recon 按 `0→1→2` 轮转，并使用 blocking
-  `POLL_HW_FINISH`。固定 A76 核、11 组交错 300 帧 720p 中位为
-  **0.334 s / 898 FPS**，C FFmpeg 为 `0.349 s / 860 FPS`；60 帧
-  320x240/1280x720 单 GOP 码流逐字节一致。
-  H.265 也默认使用 depth 2，并补上 C 侧 frame-parallel 硬件启动流程中的
-  `reg0193_dual_core` 跨任务握手；300 帧 720p 从同步 **308 FPS** 提升到
-  **676 FPS**，与 C FFmpeg 的 676 FPS 持平。60 帧 320x240/1280x720 单 GOP
-  均逐字节，且 CPU user+sys 为 0.372 s，低于 C 的 0.393 s。120 帧/GOP60 跨第二个
-  IDR 后 C 会因 VEPU580 遗留状态产生多个码流，不能作为逐字节 oracle。
-  外部 DMA-BUF 的 CPU 映射改为按需建立后，300 帧 H.265 的 Rust 指令数为
-  327.4M、C 为 327.3M；task-clock 为 362.9 ms、C 为 402.6 ms。
-- **RK3588 原生文件编码也接入了 VEPU580 硬件队列。** H.265 固定 QP 的
-  `h265-gop` 默认 depth 2，300 帧 720p 为 **0.430 s / 698 FPS**，C FFmpeg
-  为 0.454 s / 661 FPS；320x240/1280x720 的 300 帧与同步路径逐字节。
-- **新版 H.265 object 路径的 scene-tune 已闭合。** 320x240 运动 fixture
-  的 300 帧跨 5 个 GOP，C/Rust 均为 **315 NAL**，整文件 SHA-256 同为
-  `d577adc9…32edea`。状态机在第 107/227 帧切入 row 3、随后回到 row 2；
-  300 个 ioctl job 仅剩 13 个 dma-buf 地址字不同，非地址寄存器差异为 0。
-  `tune:scene_mode` 现已接受 vendor 的 0/1/2；IPC 模式 row 0/1 另用高噪声
-  fixture 验证 160 个 job 的 WGT/RDO/OSD 与 C 逐字一致，row 0 在第 0 帧、
-  row 1 在第 5 帧切入。H.264 的同一配置也已用 60 帧验证，64 NAL 与 C
-  一致，整文件差异仅为 version-SEI 文本。
-  `hw:qbias_en/i/p` 也已接通：H.264 60 帧整码流一致；H.265 的启用/关闭
-  两条路径在 2 帧 trace 中 WGT/RDO 逐字一致。
-  H.265 `tune:vmaf_opt` 同样已接通：只覆盖 pre-intra/ATF row 3 和
-  segment/smear，不影响 row3 的其余 WGT/RDO 字段。
-  原生 `h265-gop` 也支持 `H265_SCENE_MODE`、`H265_QBIAS_EN/I/P` 和
-  `H265_VMAF_OPT`，三条 CLI 路径均有 C trace 门禁。
-  H.264 默认保持同步（depth 1 无有效收益）；显式设置
-  `RKMPP_ENCODER_PIPELINE=1 RKMPP_ENCODER_PIPELINE_DEPTH=2` 可到
-  **0.331 s / 906 FPS**，C 为 0.362 s / 829 FPS。depth 2 的 scene-tune
-  统计晚一帧，码流仍可完整解码，但该高性能模式不等同于同步码流。
-  1/2/4/6/8 路并发测试中，H.264/H.265 聚合吞吐在 4 路后接近硬件上限约
-  1050/1010 FPS；1-2 路 Rust 分别领先 C，更多并发后差距收敛到噪声范围。
-- 本板不存在的硬件按事实记录，不做假装支持：VDPP（client 29）在该 SoC 上不可用；
-  rkvdec 拒收 H.265 4:2:2 / 4:4:4。
-- 未来扩展到其他 SoC 的工作与成本见 [docs/PLAN.md](docs/PLAN.md) 的 W12 与决策 D2；
-  当前决定是 **先只保 RK3588**。
-
-## 现状
-
-| 能力 | 状态 |
+| 领域 | 当前状态 |
 |---|---|
-| `mpp_service` 客户端（全部 `MPP_CMD_*`、MULTI_MSG、RCB、IOVA、poll、probe） | 完成 |
-| JPEG 解码（jpegd，RGB888/NV12，1/2–1/8 缩放） | 完成，比 C 快约 30% |
-| H.264 解码（rkvdec） | 完成：frame/MBAFF/PAFF/长参考/错误路径**逐字节**（含 frame_num 回绕）；提交环默认 3 个 job 在途；IDR 只清 DPB 引用，不再提前销毁仍可复用的帧池；Annex-B start-code 扫描用 `memchr` 跳零候选。在输出与 C **逐字节相同**的流上，RK3588 比 C `h264_rkmpp` 快 81%（1920x800 inter）、58%（1080p）、68%（720p）、30%（全 I 帧） |
-| H.265 解码（rkvdec） | 完成：Main/Main10/tiles/WPP/DSLICE/LTR/scaling list；RK3576 另通过 16 格确定性损坏矩阵（SPS/PPS/SEI、IDR/P slice 起中尾、三种尾部截断）。14 格 C/Rust 输出计数与 YUV 逐字节一致；损坏 SPS 和首个 IDR slice 起点时 C harness 会无限等待，Rust 会立即结束并输出 0 帧。4:2:2/4:4:4 被硬件拒收。提交环默认 3 个 job 在途（`RKMPP_HEVC_PIPELINE=<depth>`），含延迟回收后的错误链传播；reaped job 的 bitstream DMA 映射按槽复用，并共享 H.264 的 start-code/EPB 扫描；整段 AU 定位只扫描 NAL 头，不提前重写 payload，CLI/SDK 可通过 parsed AU 复用这次扫描；RK3588 720p 比 C `hevc_rkmpp` 快 21%、四 IDR 流快 20%，且与阻塞路径、C 逐字节一致 |
-| VP9 解码（rkvdec） | profile 0/2、lossless、tiles、error-resilient 逐字节；720p 分割流经 libvpx 三方判定为 **C 侧 bug**（Rust == libvpx，C 差 213 字节），321x241 亦为 C 丢帧；仅损坏流中止属刻意保留。CLI 改逐包写出，RK3588 720p 比 C `vp9_rkmpp` 快 20%、320x240 快 36% |
-| AV1 解码（av1d） | Main 8/10-bit、film grain 逐字节；96x96 至 1920x1080（含 60 帧长 GOP、多 sequence、320↔640 分辨率切换）三方对齐 C 与 libaom 逐字节，64x64 为硬件不完成（C 输出全黑，已登记 C-bug）；第二台 RK3588 验证机（内核 6.1.141）上的 2x2 tile fixture 已修复 filter-base 缺失，10 帧输出与 C 逐字节一致。新增 global-warped 与 delta-LF 差分：修复 production parser 的 identity 状态和 `swreg5` preskip 覆盖 delta-LF present 位；global-warped 2 帧及两个 delta-LF fixture 均与 C/libaom 逐字节，SHA-256 分别为 `ce1e081f…f6f5`、`55d42329…84d2`、`4fd081ed…da79`。RK3588 新增 320x320 screen-content IntraBC/palette hardware gate：修复 current-frame reference mapping 与 intra CDF 更新覆盖 regular MV CDF，3 帧 460,800 bytes 与 C 逐字节（`5298dbfb…c22ad`）；单色 delta-LF 硬件输出与 `aomdec` 完整 115,200-byte I420 逐字节（`df3a2fe1…e909b`），C harness 因 `PIX_FMT_GRAY` 不支持而超时，已登记 C-BUG；213x240 superres 的 odd-width C harness dump 会生成非法 fractional-pair NV12，已登记 C-BUG；4:4:4 hardware 在 C parser segfault、Rust 曾静默输出 4:2:0，现已显式拒绝，软件参考路径仍与 `aomdec` 9,216,000-byte 4:4:4 逐样本一致。RK3576 VDPU383 已完成 8-bit 10 帧引用序列和 10-bit skip-grain 序列：`show_existing_frame`、八槽 CDF/colmv 生命周期、inter 主参考 coefficient-CDF 继承、704-byte 10-bit stride 与 packed-NV12 → planar u16 均已接通。10-bit 的 10 个显示帧共 2,304,000 bytes，与 C 逐字节，SHA-256 `f3b69b61a06d3967a89b91f11f56883588df53974d4a1b5efb8fbd9e004d49b8`；VDPU383 film grain 的 FGS enable/base 实验会以 STATUS 0 超时并复位，C HAL 也未启用该路径 |
-| MPEG-2 / MPEG-4 / H.263 / VP8 解码（vdpu2） | 渐进 MPEG-2、MPEG-4、H.263、VP8 逐字节；隔行 MPEG-2 使用 FFmpeg 为 oracle（C 会错误回绕输入）；VP8 profile 1/3（板验，语料仅 p0 故派生流）；AVS+ 的 Rust sequence/PB parser、60-word client-12 HAL、两锚 DPB、SDK/CLI 在两个公开流上完成 raw 7/6 帧和完整 C 默认 IEP2 vproc 9/7 帧逐字节输出；另有项目生成的 interlaced-frame 流，raw 8 帧和 vproc 11 帧均与 C 一致；Rust/C SDK 均可用 vproc 标志，并新增派生 profile 0x48、base1 weighted-quant/chroma-delta/model2 四帧门；vproc 源帧改为借用 DMA-BUF fd、打包输出零拷贝，700 帧中位数 Rust 490 ms / C 809 ms；AEC 与独立 field-pair 待做；AVS2 在当前 RK3588 无设备。RK3588 长流测量中所有解码器都已不慢于 C：H.264 +37~78%、H.265 +24%、VP9 +30%、MPEG-2/4、H.263 与 VP8 +13~48%。最新 AV1 三流交错 5 次中位数为 720p 491.0/491.8 FPS（Rust 慢 0.2%）、320x240 751.9/769.2（慢 2.3%）、2×2 tile 1492.5/769.2（快 94%）；Rust 计时包含 NV12→planar，C 计时只写 NV12 |
-| H.264 编码（VEPU580） | 固定 QP 与 CBR / VBR / AVBR 三种码率控制都与 C **逐 NAL 相同**；hier QP 的四层计数器和 1–4 QP 偏移在 CBR/VBR/AVBR 三格均**逐字节**；SMART_P 的 VI 分配、长期 IDR、参考重排和 2-QP delta 在 33 帧 × 三种 RC 下均为 37 NAL **逐字节**；同帧重编、super-frame re-encode、NORMAL drop、CAVLC/CABAC software PSKIP 和 two-pass deflicker 在强制过码格中达到最终码流和全部逐 job STATUS **一致**；level（1.0–5.2 含 bump 规则）、deblock 细调、ROI/QP map（逐块 DMA 表）、auto 起始 QP、场景检测均**板上逐字节**；GDR **板上 4/4 逐字节**（含 `refresh_num == 1` 时 band 起点经 RK_U16 截断成 0xFFF0 的角落）。stock C 的 GDR ROI 结构体含未初始化栈字段，同一输入连跑会产生不同码流；板级脚本只规范化这些未定义位，Rust 使用同一确定性表和 35 NAL 逐项相同。slice split **板上 4/4 逐字节**（BY_CTU 96/8/150 与 BY_BYTE 256；8 块那格 38 个 slice 越过 32 项 slice FIFO，同时钉住 `slc_done_en`）。逐 slice 输出也已接通：`MPP_ENC_SPLIT_OUT_LOWDELAY` 的 BY_CTU 96/150/8、BY_BYTE 256 和 6 帧 IDR+P **5/5** 通过，32 项 FIFO 之外仍是 38 个数据 packet，所有实际 slice 边界逐项相同。>4096 的 CIME 扩展行与 P 帧 **板上逐字节**（4160x64、4608x256）。P 帧另有 11 个尺寸的扫描（`scripts/board_h264_p_size_probe.sh`，含 FBC 阈值两侧）。原生文件编码默认保持同步；显式 depth 2 通过第三输出槽重叠 packet 组装与下一 job 提交，可达 300 帧 720p 906 FPS；因 scene-tune 晚一帧作为高性能 opt-in，不冒充同步逐字节模式。输出 packet 改用 `system-uncached` DMA heap，省掉逐帧 cache-sync ioctl；500 帧 720p A/B 快 **2.53%**，码流不变。 |
-| JPEG 编码（vepu） | baseline 4:2:0（NV12 / YUYV / UYVY）+ restart 间隔、90°/270° 旋转、RGB565/555/444 与 8888 系输入全部板上逐字节；low-delay slices 的 5-packet 与 10-packet 矩阵**逐 packet 一致**。RK3588 默认四 band 多核路径已实现，1920x1080/1288x722、旋转 90/270 以及 322x242/1366x768 stride 矩阵**逐字节** |
-| H.265 编码 | 固定 QP 的 **IDR + P GOP**（最多 5 帧、含动画面）、**CBR/VBR/AVBR**、**GDR/intra-refresh**、**ROI/QP map** 与 **deblock/SAO 细调** 均**板上整条逐字节**；GDR 覆盖 320x240/640x480 × row/column 4/4，ROI 覆盖相对/绝对 QP、force-intra、多 region 与 640x480 4/4，deblock beta/tc、disable、SAO luma/chroma 与 loop-filter 为 4/4。**水平 tiles** 为 **2/2 逐字节**（`auto_tile` 320x240 覆盖 IDR+P 共 9 NAL、4608x64 强制两列共 7 NAL），tile 作业的寄存器镜像与 C trace 除 dma-buf fd 外**无一个非地址字不同**；C 对 tile 首帧没有跨会话稳定结果（同参数连跑两次连解码像素都不同），两侧各先跑一趟丢弃作业后才可比，见 DIVERGENCES。BY_CTU/BY_BYTE slice split 普通整 AU **3/3**；`MPP_ENC_SPLIT_OUT_LOWDELAY` 为 **4/4 逐字节、逐 packet 一致**，覆盖 320x240、640x480 和 6 帧 IDR+P，其中 40-slice 格跨越 32 项 FIFO。吞吐 4/4 不慢于 C：320x240/640x480/720p Rust 快 15.8%/3.6%/13.8%，1080p 为 149 ms vs C 147 ms（慢 1.3%，平手门内）。H.265 session 的 CPU 输入 surface 与 CLI 一致改为 `system-uncached`，并去掉两次无效 sync ioctl；500 帧 720p wall median 2.379s→1.412s（-40.7%），user+sys 1.287s→0.455s（-64.7%），码流 SHA 不变。原生 `h265-gop` 固定 QP 在无 refresh/tiles/low-delay split 时默认 depth 2，300 帧 720p 为 0.430 s / 698 FPS（C FFmpeg 0.452 s / 664 FPS），320x240/1280x720 的 300 帧与同步路径逐字节。10-bit 经 C 探针确认 RK3588 VEPU580 以 `int_sta=0x100` 拒绝、无 packet，Rust 显式拒绝。**WPP、B 帧与多参考在 C 参考里就不存在**（`m_entropyCodingSyncEnabledFlag` 恒为 0、编码层无 `B_FRAME`、`num_ref = 1`），没有可重写的目标；tiles 与逐 slice low-delay 输出的组合被显式拒绝（C 侧行为未证）；harness 的 `-g 60`（解析成 `gop_len=0` 的病态 smart-GOP）按 BY-DESIGN 拒绝，有效 GOP 形式逐字节 |
-| 后处理 | 自研 RGB 缩放/letterbox（比 RGA 快 2.9–3.8×）；strided NV12 直缩直接从 CPU/DMA Frame 读取 Y/UV 并转换 RGB，不生成整帧中间副本。1080p→640 在 RK3588/RK3576 为 4.93/5.95 ms；4K CPU/DMA 两路→640×360 letterbox 逐字节一致。IEP2 PD/DECT、9/9 模式与 6/6 格式矩阵均与 C probe 逐字节；解码 NV12 dma-buf 可通过 `import_src_frame()` 直接进入 IEP2，不经 CPU 拷贝，源/目标分配和 Y/UV 地址现在同时按 horizontal/vertical stride 计算；50×34、H=64/V=48 的 rkvdec padded-frame 与显式 strided source 两路输出逐字节一致。IEP2 的正式上限为 1920×1088，最大值两路输出 6,266,880 字节逐字节一致；4K 输入在 C 测试中直接拒绝，而 C 底层探针会返回成功但输出全 0，Rust 现在也在打开会话/分配缓冲前返回明确错误。`Frame::convert_format()` 完成 NV12/I420↔I420P10 的 8/10-bit 双向转换、chroma 解交织/回打包及元数据保留。RK3576 VDPP2 client 29 已用 Luckfox SDK 250301 的精确 6.1.75 vendor 内核真机验收：板 config 只改成 `CONFIG_ROCKCHIP_MPP_VDPP=y`，`mpp_vdpp 27961000.vdpp` 成功绑定，C/Rust 的 scale-only、默认 enhancement、YUV420 split、YUV444 split 和 10240-byte packed histogram **5/5 逐字节**；histogram 解析为 4096 local + 256 global bin，mean luma U10 为 513。FIT 保留原 FDT/resource、external-data 布局、load/entry、rollback index 和 vendor 签名声明。client 28 只有 deinterlace，legacy `/dev/iep` scale 和 VDPP/HDR/CSC 硬件在 RK3588 不存在 |
-| framework | 同步 submit+poll 之外新增：异步任务队列（回调/等待/事件、排队/执行/端到端耗时与成功/失败/取消累计统计）、引用计数 dma-heap 缓冲池；pooled JPEG 保证先关闭 MPP service 再归还共享 dma-buf，RK3588 连续 3000 jobs 压测通过；VP8 与 H.264/HEVC/AV1/VP9 的 DPB surface 已持有 RAII lease，四类解码边界回归在 RK3588 通过。submit/poll 硬件错误走 close-before-open 会话替换；真实 `int_sta=0` STATUS 注入后，H.265 tile 会话会清空 line buffer、重新丢弃预跑，并把下一帧升级为带参数集的 IDR，最终码流与全新会话逐字节一致。CCU 路径会探测 vdec/venc/jpeg 设备树节点，用 `SET_SESSION_FD` 把最多 8 个独立 session 合成一个提交批次；RK3588 两个 VEPU2 JPEG session、RK3576 两个 VEPU510 H.264 session 的批量输出都与各自单会话逐字节一致，无 CCU/命令时自动回退。`board_framework_recovery.sh` 4/4，`board_framework_ccu.sh` 两板各 3/3；fence/secure 仍受内核/TA 限制（见 docs/framework-m10.md） |
+| 硬件访问 | 直接实现 MPP CMD、IOVA、RCB、poll、DMA heap、batch/CCU 和 SOC probe |
+| 解码 | H.264、H.265、VP9、AV1、VP8、MPEG-2、MPEG-4、H.263、AVS+、JPEG/MJPEG |
+| 编码 | H.264/H.265、JPEG；支持固定 QP、CBR/VBR/AVBR、ROI、GDR、slice、OSD、packet meta |
+| 后处理 | 自研 NV12/RGB 缩放与 letterbox、IEP2 去隔行、RK3576 VDPP2 scale/split/histogram |
+| SDK | Rust SDK、C API V1.14、`rk-mpp-rs-sys`、pkg-config、CMake、动态/静态库 |
+| MPP 兼容 | 官方 `MppApi`、MppFrame/MppPacket/MppBuffer/MppMeta、对象路径和 `mpi_*_test` drop-in |
+| 运行时 | 异步任务队列、DMA-BUF 池、错误恢复、多会话 CCU、显式 EOS/flush/reset |
+| 验证 | C/Rust 逐字节、软件 decoder 独立 oracle、4K/长 GOP/多路/Soak 和板端 ABI 门 |
 
-H.265 aggregate feedback 原先每帧清零完整 180-word STATUS，实际只消费 14
-words。改为只重置并累加 word 0、3 和 64–75 后，500 帧 720p 的 wall median
-从 1.412s 降到 1.318s，user+sys 从 0.455s 降到 0.366s，码流 SHA-256 仍为
-`6fea6748…da157dc`。
+当前 API 和已验证硬件路径已经可用于实际集成；未列在能力矩阵中的 SoC、
+内核版本和厂商 HAL 路径不提供兼容承诺。
 
-整体约完成 91.5%（按 ROADMAP 各里程碑的工作量估加权；M11 软件参考解码器约 90%）。
-ROADMAP 顶层清单当前为
-128 项完成、4 项未完成（含缩进子项为 173 / 7）；未完成项里有硬件不存在、无 conformance
-流和冻结前沿，不宜直接把勾选比例当作代码工作量。M11 自研软件参考解码器已推进到 120 个
-slice（其中 117 个 AV1 slice）。第 110 slice 把 20 帧 B-pyramid 与高级 inter 工具组合起来：保留 global/warped
-motion、OBMC、inter-intra、masked/distance-weighted compound 和 reference-frame MVs，
-20 个显示帧仍全部与 `aomdec` 逐样本一致。第 115 slice 新增 20 帧、10-bit、
-启用 CDEF/LR 的 advanced B 流。该门定位到 `NEW_NEARMV/NEAR_NEWMV` 的
-NEW 分量错误使用 `ref_mv_idx` 而非 `1 + ref_mv_idx`，导致 temporal motion field
-污染并在第 5 个 coded frame 熵失步；修复后 20 个显示帧全部与 `aomdec` 逐样本一致。
-第 116 slice 将 screen-content IntraBC/palette 推到 RK3588 hardware gate：C 在
-`coding.intrabc` 时把七个 reference 都指向 `CurrPicTextureIndex`，Rust 现在也把当前
-frame 放进 hardware reference table；intra 硬件 CDF 更新只写 `cdfs_ndvc`，不再覆盖
-regular MV CDF。320x320 key+P+P 的 460,800 bytes 三帧输出与 C 逐字节一致。
-第 117 slice 关闭单色显示输出：Rust hardware 的 Y 平面已经与 libaom 一致，但未使用
-的 U/V 表面保持 0；现在按 AV1 单色显示契约填充 neutral 128（10-bit 为 512）。
-`aomdec` 与 Rust 的 320x240 I420 均为 115,200 bytes，SHA-256
-`df3a2fe1…e909b`；C `mpi_dec_test` 则因 `PIX_FMT_GRAY` 不支持而超时。
-第 118 slice 完成 H.264 CABAC B-frame deblocking：`DeblockMap` 同时携带 L0/L1 的
-4×4 reference/MV，boundary strength 按 B-slice 双列表规则计算；真实 IDR+P+B
-fixture 的 B 画面混合 direct/skip，开启 loop filter 后三帧仍与 FFmpeg 逐样本一致。
-该 fixture 还暴露并修正了合法的 chroma AC-only residual：DC 缺省时应按零处理，
-不能拒绝整个宏块。
-第 119 slice 接通 implicit weighted B：`weighted_bipred_idc=2` 按当前帧与
-L0/L1 reference 的 POC 距离计算 `w0`、`64-w0`，BI 以 6-bit 分母混合；
-未使用/等距权重保持 32/32。B_BI fixture 通过 PPS 两位改写进入该路径，
-完整显示帧仍与 FFmpeg 逐像素一致；非等距权重公式另有单测。
-第 120 slice 补上 weighted `P_Skip` 的真实码流门：PPS `weighted_pred_flag=1`，
-静态 IDR+P 的 P 帧仍为 100% skip，weight table 走默认 identity 权重。
-P_Skip 头解析、权重应用和整帧输出与 FFmpeg 逐样本一致。
-H.264 P/B-slice CABAC 也已开始闭合：首个 48×32 Main-profile IDR+P 门中 P 帧为
-100% `P_Skip`，验证 P-slice CABAC 上下文初始化、`mb_skip_flag`、slice 终止和
-IDR 参考帧复制；两帧 4,608 bytes 与 FFmpeg 逐样本一致。随后又闭合全 P16x16
-零运动门：六个宏块完整经过 P mb_type、MVD、CBP、QP、inter 4×4 residual 和
-重建，100% I16 IDR + 100% P16 P 帧仍为 4,608 bytes 全样本一致。该门修正了
-inter CBF 不可用邻块规则（按 0，而不是 I-slice 的非零约定）。非零 MV、其他 P
-partition、weighted/deblock 和 B-slice CABAC 仍开放。随后又加入真实 8 像素
-平移流：六个 P16 宏块均使用 `+32` quarter-pel 的整数 MV（luma +8 px、chroma
-+4 px），验证非零 MVD、MVP 传播、luma/chroma 整数运动补偿与边界扩展，并修正
-MVD bypass 的符号方向；P 帧 2,304 bytes 与 FFmpeg 全样本一致。随后用自然
-subpel 搜索流覆盖 quarter-pel luma 六抽头和 1/8-sample chroma 插值，最终
-MVs 含 `(-6,-9)`、`(8,1)`、`(5,1)`、`(-5,-6)`、`(7,1)`，P 帧仍逐样本一致。
-该门还确认 MVD 邻居缓存必须保存绝对幅值。随后两组强制分区门把 P 运动补偿扩到
-`P_L0_L0_16x8` 与 `P_L0_L0_8x16`：每宏块解析两个 MVD，按分区 scan-order 推导
-A/B/C MVP 和 MVD context，分别做上下或左右运动补偿后共享宏块 residual。
-两个 48×32 P 帧均与 FFmpeg 逐样本一致；门还补上了此前未覆盖的
-quarter-pel `(2,2)` 二维半像素插值。随后混合 P 分区门打开 `P_8x8`：在同一个
-48×32 P 帧中覆盖 `8x8`、`8x4`、`4x8`、`4x4` 四种 sub_mb_type，四棵树、
-4×4 MVD 邻居上下文、逐子分区 luma/chroma MC 和共享 residual 全部与 FFmpeg
-逐样本一致。explicit weighted `P_L0_16x16` 门又接通 luma scale/offset 与双色度权重，
-同时修正 weighted slice header 在 bit 71 结束时会多跳一个 CABAC 字节的问题；
-P 帧 luma/U/V 三平面均与 FFmpeg 逐样本一致。P16 deblock 门随后接通基于
-coeff/4×4 MV 的边界强度、QP average、alpha/beta offset 和垂直优先三平面滤波，
-整帧仍与 FFmpeg 逐样本一致。多参考门再覆盖两个 active L0 refs、
-`ref_idx_l0` CABAC unary、逐 4×4 reference cache 和跨参考 MVP 回退，
-最终 P2 的参考索引模式为 `1,0,0,0,1,0` 并逐样本一致。weighted P_Skip
-随后也用 `weightp=1` 的静态 IDR+P 流闭合。B-slice 也从 `B_L0_16x16` 开始闭合：在 IDR+P+B 的真实三帧流中，
-list-0 ref/MVD、B skip/type CABAC 上下文和 forward-only MC 均与 FFmpeg
-逐样本一致；`B_L1_16x16` 和 `B_BI_16x16` 随后也通过双列表 MVD、独立
-方向预测及 `(L0+L1+1)>>1` blending。`B_Direct_16x16`/`B_Skip`
-又接通 spatial direct、skip/type 独立上下文和零 residual skip。
-temporal direct 也已用 POC 0/4/2 的 colocated P 运动图接通 16x16 缩放投影；
-`B_L0_L0_16x8` 与 `B_L0_L0_8x16` 又接通双分区 MVD、共享 residual 和独立 MC。
-`B_8x8` 的四种 L0 8x8 子分区也已接通四个 MVD 和逐象限 MC。
-同一结构下的 L1 与 BI 8x8 子分区也已接通双列表 MVD 和逐象限平均。
-`L0 8x4/4x8/4x4` 混合几何也已覆盖标准 2/2/4 MVD 布局。
-col-zero B reference、Direct 8x8、L1/BI 非 8x8 几何和 explicit weighted B 仍未完成。
-第 114 slice 把高级 B/多参考组合扩到
-10-bit 4:4:4：20 帧 I444P10 共 9,216,000 bytes，Y/U/V 全样本与 `aomdec` 一致。
-第 113 slice 在 10-bit 高级 B/多参考流上
-启用非零 deblock 和 CDEF，20 个显示帧仍逐样本一致；该流没有启用 loop restoration。
-第 112 slice 将高级 B/多参考组合扩到
-10-bit：hidden showable frame、`show_existing_frame`、双参考预测和高级 inter 工具
-同时启用，20 个显示帧的 I420P10 共 4,608,000 bytes 与 stock `aomdec` 逐样本一致。
-第 111 slice 将参考调度扩到 10-bit：
-320×240、12 帧 B-pyramid 的 coded frame 全部 showable，order-hint history
-最多包含 7 个非零 slot，预测仍为单参考并连续验证 10-bit 运动补偿、残差和参考槽轮换；
-12 个显示帧的 Y/U/V 共 2,764,800 bytes 与 stock `aomdec` 逐样本一致。第 109 slice 锁定 20 帧
-B-pyramid/reference schedule：`lag-in-frames=19`
-产生多组隐藏 showable frame、order-hint 重排和 `show_existing_frame`，涉及多个参考槽与
-逐槽 CDF/pixel 轮换；20 个最终显示 YUV 全部与 `aomdec` 逐样本一致。第 108 slice
-完成 screen-content IntraBC：解析独立 `ndvc` CDF 的
-`use_intrabc` 与整数 DV、按 tile 边界校验源块、复用 inter variable-transform tree
-（含 `TXFM_SPLIT`、inter tx type 和 IntraBC 残差），再从当前帧已解码区域复制 Y/U/V。
-默认 aomenc 320×320 key+P+P 流中的 20 个 IntraBC block、4/4 色 Y/UV palette 和三帧
-最终 YUV 均与 `aomdec` 逐样本一致；该门还修复了 palette block 被错误 IntraBC 目标坐标
-覆盖的问题。第 107 slice 补齐单列双行 AV1 tile layout：320×320 key+P+P 的每一帧都走
-`tile_cols_log2=0 / tile_rows_log2=1`，两个独立全宽 row tile 的 CDF 均在 tile 起点
-回到 frame context；三帧 Y/U/V 与 `aomdec` 逐样本一致。该验证也明确 AV1 没有 HEVC
-式 WPP entry-point/context 链，之前的“WPP”缺口实际是这一 tile-row shape 未被锁定。
-第 106 slice 扩大真实像素 conformance：新增 96×96、128×128、192×192
-各 10 帧 inter 流，以及 320×240 4:4:4 key+P+P 流，全部与 libaom 逐样本一致。4:4:4
-门同时抓到并修复两个状态错误：inter-intra 的 block-size 范围误把 `8×32/32×8` 算入；
-单参考 MV stack 扫描 compound 邻块时没有辨认其中的 NEWMV，导致 `newmv_count` 和
-`mode_context` 少一档。现在 one-sided compound、inter-intra、OBMC/warped/NEWMV
-候选混合的 4:4:4 流可从首帧连续解码到末帧。第 105 slice 完成软件参考解码器的
-film grain synthesis：移植 libaom 的
-64×64 luma / 32×32 chroma AR grain 模板、每 32×32 subblock 的 seed-derived 偏移、
-2/1 像素 overlap、luma/chroma scaling LUT、restricted-range clipping 与 8/10/12-bit
-整数路径。参考槽和 `show_existing_frame` 始终保存 post-filter、pre-grain 画面，只在
-显示输出时施加该帧自己的 grain 参数。8-bit 320×240 的 10 个显示帧全部与 libaom
-grain-applied 输出逐样本一致；10-bit 流同时锁定 10 个 clean pre-grain 帧和 10 个
-grain-applied 帧，三十个真实显示帧投影全部通过。第 104 slice 增加
-`SavedFilmGrain` 参考槽持久化：`update_grain=0` 时复制
-引用槽的 scaling points/AR coefficients，只替换 `grain_seed`。真实集成门从现有
-film-grain 流的 inter header 生成 `update_grain=0` 变体，确认短分支只消费 21 bits
-且完整参数继承。第 103 slice 闭合 2×2 多 tile inter：10 帧全部走完四个独立 tile，
-帧级 mi/segment 状态跨 tile 携带而邻块上下文按 tile 裁剪；同时修正 temporal motion-field
-的 intra-cell 清除、base-invalid 时仍执行 extension probes、order-hint sign bias、
-overlapping half-res block 清理和 4:2:0 difference-weighted mask 的 luma 域取样。
-全部显示帧 Y/U/V 与 `aomdec` **逐字节一致**。第 102 slice 把它推进到真正的多 tile：一次 tile group 里每个 tile 都从帧初始
-CDF 重新开始（对应 libaom 的 `tile_data->tctx = *cm->fc`），帧末 CDF 取
-`context_update_tile_id` 那个 tile，而 intra 邻块可用性按 **tile 边界**裁剪
-（`up_available = mi_row > tile->mi_row_start`）。真实 2×2 tile keyframe 的四个 tile 各自
-走完自己的码流（逐 tile `exit_symbol` 校验），三平面与 `aomdec` **逐字节一致**。
-第 101 slice 用真实单色 libaom keyframe 闭合 mono multi-LF：Rust 不再错误
-读取 UV mode/残差，deblock 只建立单平面网格，最终 Y 与 `aomdec` **逐字节一致**。
-第 100 slice 用真实单帧 libaom keyframe 闭合彩色 `delta_lf_multi`：帧头明确为
-`delta_q=1 / delta_lf=1 / multi=1`，Rust 的 pre/deblock/CDEF/LR 三平面与未修改的
-`aomdec` 最终 YUV **逐字节一致**。第 99 slice 将 luma/U/V 四路切换为 libaom 的四行
-`default_delta_lf_multi_cdf`，单色流只消费两路主动 CDF。第 98 slice 修正混合
-intra/inter frame 的 selected tx-size context：相邻 inter
-block 的宽高必须覆盖 transform-context，不能在非 skip 时退回邻居 tx extent。原先卡在
-tile 尾部的 `av1_lr_320x240.ivf` 现已完成 key+P 全熵解码，458 个 footprint block
-中的 356 个 inter block 及两帧 Y/U/V 均与 libaom 逐字节一致。第 97 slice 完成 inter segmentation：key/inter frame 均支持 segment-id
-空间预测、temporal segment-map prediction、segment 强制 reference/skip/global MV，以及
-`ALT_Q` block qindex、`ALT_LF` 和 lossless 传播。三帧隔离流的 key 与 P 帧覆盖 1050 个
-非零 segment block，Y/U/V 与 libaom **逐字节一致**。第 96 slice 完成 temporal MV fields：参考帧保存 8×8 motion field，按 order
-hint 投影到当前帧，并在 spatial nearest/outer scans 之间合并 temporal candidates；
-global-mode context 同步接入。三帧隔离 fixture 覆盖 128 个 inter block，Y/U/V 与 libaom
-**逐字节一致**。第 95 slice 完成 compound global warp：两个 reference 各自保留矩阵/warp
-状态，distance-weighted 与 wedge compound 可分别 warp 或平移，并复用 compound round-1
-中间精度。四帧隔离流含 3 个 `GLOBAL_GLOBALMV` block，Y/U/V 与 libaom **逐字节一致**。
-第 94 slice 完成单参考 global warped motion：按块中心从 `ROTZOOM/AFFINE` 矩阵求
-`GLOBALMV`、复用 affine/shear 与 193-phase warp filter，并处理 AOM 对负 phase 的
-非 signed rounding。两帧 `ROTZOOM` 隔离 fixture 含 756 个 global-warp block，Y/U/V 与
-libaom **逐字节一致**。第 93 slice 完成
-local warped motion：从同参考的单参考邻块中心 MV 收集
-least-squares 样本，按当前 MV 过滤异常点，推导 affine 矩阵与 shear 参数，并用 libaom
-的 193-phase 8-tap warp filter 生成 Y/UV 预测。五帧隔离 fixture 含 10 个
-`WARPED_CAUSAL` block，Y/U/V 与 libaom **逐字节一致**。第 92 slice 完成 OBMC：按 above-first/left-second
-扫描可重叠邻块，读取 `use_obmc_cdf`，用邻块单参考 MV/滤波生成当前块边缘预测，再按
-normative 1–64 长度 mask 做 above/left 顺序混合；五帧 fixture 覆盖 32 个 OBMC block、
-232 个 OBMC mipixel，全部 Y/U/V 与 libaom 逐字节一致。第 91 slice 完成 inter-intra：在单参考 MV 后读取 inter-intra
-标志、DC/V/H/Smooth 模式、可选 wedge 与 index，并用当前帧邻域 intra 预测和 normative
-smooth/wedge mask 与 inter 预测混合；smooth 与 wedge 两组 fixture 合计覆盖 24 个
-inter-intra block，Y/U/V 全部逐字节一致。
-第 90 slice 完成 distance-weighted compound：按 frame order hint 选择
-`quant_dist_weight`/`quant_dist_lookup_table`，复刻 libaom 的 `fwd_offset`/`bck_offset`
-分配与 4-bit 加权、round offset 和最终 4-bit 舍入。新增五帧 320×240 隔离 fixture，
-覆盖 32×16 与 8×8 距离块、权重 `[11,5]` 和 `[13,3]`；全部 Y/U/V 与 libaom **逐字节一致**。
-warp/OBMC、temporal MV 和 inter segmentation 仍未完成。第 89 slice
-完成 wedge compound：六张 64×64 master mask、9 种 block codebook、
-sign flip、luma/chroma 采样和 masked 16-bit blend 均接入；同时补齐
-regular/smooth/sharp/bilinear 四种 switchable interpolation filter。五帧 wedge fixture
-的全部 Y/U/V 与 libaom **逐字节一致**。第 88 slice 接入 compound mode group、masked compound type 和
-difference-weighted prediction：`comp_group_idx` 邻域上下文、`compound_type_cdf`、
-mask type、luma difference mask 及 16-bit masked blend 均按 libaom 实现；可见帧按
-`show_frame`/show-existing 顺序输出。五帧 fixture 的全部 Y/U/V 与 libaom
-**逐字节一致**。第 87 slice
-恢复双参考帧解析，覆盖全部 8 种 compound mode 符号、compound DRL、
-双 MV 赋值和 normative average prediction。新增四帧 320×240 fixture，最终帧同时覆盖
-uni/bidirectional `NearestNearest`、`NearNear` 和 `NewNew`；四帧 Y/U/V 均与 libaom
-**逐字节一致**（frame 3 MD5 `b217ef76fa2e65327d3b4ecfa7ee1f36`）。masked compound、
-warp/OBMC、temporal MV 和 inter segmentation 仍未完成。第 86 slice
-修正 coefficient CDF 必须按帧头 `base_q_idx` 选择，而不是按块级 delta-q；补齐
-4-high inter chroma skip context，并把 MV CDF 纳入 SavedCdf。新增三帧 delta-q fixture，
-其 Y/U/V 均与 libaom **逐字节一致**。第 85 slice
-把 LR 参数网格接入 inter frame，并修正
-`UseWienerCdf` /
-`UseSgrprojCdf` / `RestorationTypeCdf` 从 SavedCdf 的继承；restoration-enabled key+P
-fixture 的 P frame（242 个分区叶块）三平面与 libaom **逐字节一致**
-（MD5 `aabd1f611b39c59fda7d5c7c2877d7ec`）。第 84 slice 接入了
-`TX_MODE_SELECT` inter transform tree、switchable interpolation filter、inter deblock 和
-CDEF；LF+CDEF key+P fixture 的 P frame（255 个 inter block）三平面同样**逐字节一致**。
-单参考 inter 还覆盖 fractional MV 的 16-phase 8-tap 与 4-tap 双阶段插值、inter 残差和
-transform type、frame 内 intra/inter 混合块、skip 的 above/left 系数上下文清零，以及
-sub-8×8 chroma 按四个 luma MV 分象限预测。high-QP 320×240 fixture 的 327 个 P-frame
-block 与 libaom trace 一致（P-frame MD5 `a6cb3249ce923e683934ce85fa5ba0e9`）；更早的
-整数像素 inter fixture 的 20 个 inter block 参考帧/模式/MV 也与 libaom trace 一致。
-此前的 §7.16 normative
-superres：213×240 coded frame 按 denominator 12
-上采样到 320×240 后进入 LR，重建前、去块后、CDEF 后、LR 后四个阶段的 Y/U/V 三平面
-都已与 libaom **逐像素一致**；更早为 palette plane 坐标、左右 upsampled directional phase、
-CDEF、方向预测、反量化和按 plane 去块网格、4×4 `BlockDecoded` 可用性网格、
-inverse-identity 尺寸缩放、帧级 loop restoration、CDEF、去块、Y/U/V 帧级重建、
-palette/filter-intra 单 plane 像素预测、
-`Quant[]` 到逆变换布局的桥接、
-真实 320x240 keyframe 的整 tile 熵解码闭合：palette 颜色/索引图、10-bit
-颜色、CFL alpha、边缘分区、完整系数上下文以及 `exit_symbol()` 尾位校验均通过；
-此前为 intra tile block sink、skip 语义修正、filter-intra、CDEF index、
-stateful coefficient syntax、
-partition/mode/skip/tx_depth、
-可变 CDF 状态、residual transform 布局、
-`ReferenceStream`、块级 transform 选择、
-统一帧内预测入口、帧头参考状态、tile-group 拆包、
-§5.9 完整帧头、§8.1 位流描述符、§5.2 OBU/IVF 解复用与 §5.5 序列头），
-逐项证据见 `docs/CAPABILITY.md` 的 M11 表与 `ROADMAP.md` 尾部；上文的 90% 是按里程碑
-工作量重算的加权估算。
+## 平台覆盖
 
-## 对外 API
+| 平台 | 主要硬件块 | 已验证范围 |
+|---|---|---|
+| RK3588 | VDPU2、AV1D、rkvdec、JPEGD、VEPU580、VEPU2 JPEG、IEP2 | 主验证平台；完整 4K 基础矩阵 26/26，扩展功能矩阵 25/25 |
+| RK3576 | VDPU383、VEPU510、VPU720、VDPP2 | 4K 可执行矩阵 17/17，5 个平台/未实现项明确 SKIP；VPU720 JPEG 4K 专项 21/21 |
 
-当前已有可链接的 **RK MPP Rust V1.14 编解码 SDK**：
+能力边界示例：
 
-- C 头文件：[include/rk_mpp_rs.h](include/rk_mpp_rs.h)
-- Rust 接口：`rk_mpp_rs::sdk`
-- Raw FFI：workspace crate `rk-mpp-rs-sys`
-- 构建产物：`librk_mpp_rs.so`、`librk_mpp_rs.a` 和 `rlib`
-- 优先编解码器：H.264、H.265/HEVC、VP9、AV1、VP8、MPEG-2、MPEG-4、
-  H.263、AVS+ 和 MJPEG/JPEG decode；
-  H.264/H.265 VEPU580/VEPU510 及 JPEG VEPU2/VPU720 encode
+- RK3588 没有 VDPP/client 29，也没有 legacy `/dev/iep` scale；
+- RK3576 没有 VDPU2、VP8 decoder 或 AVS2；
+- IEP2 的最大可用尺寸是 1920×1088，4K 会在提交前明确拒绝；
+- H.265 4:2:2/4:4:4、部分 10-bit DMA-BUF 和部分 RK3576 4K 编码路径仍是平台边界。
 
-接口接受内存中的任意分块码流，不绑定文件路径。一个 decoder handle 可持续
-提交 packet、接收 frame、显式释放 frame，并支持 `flush`、`reset`、
-`recover`、H.264/H.265/VP9/AV1 `status` 和粘性 EOS。H.264 按 POC、H.265 按
-display epoch + POC 有界重排；MJPEG 支持单个 JPEG 被拆成多包，也支持一个
-packet 里包含多个 JPEG。H.264/MJPEG 输出 NV12 或 I420；H.265 8-bit 输出
-NV12/I420，Main10 输出小端 16-bit 的 I420P10；VP9/AV1 8-bit 输出 NV12/I420，
-10-bit 输出 I420P10；VP8 输出 NV12/I420。VP9/VP8 要求每个 submit 是一个
-原始 coded packet（VP9 可为 superframe），AV1 要求一个 temporal unit；
-IVF/WebM 解复用属于调用方。VP8 只在 RK3588 的 vdpu2 提供，RK3576 的
-C MPP 和 Rust 都不存在该 decoder。新的
-V1 接口暂不宣称 RGB888，历史
-`rk_jpeg_open/frame/close` RGB 接口继续保留给 `rknn-fastinfer`。
+完整状态、样本和 C bug 记录见 [CAPABILITY.md](docs/CAPABILITY.md) 和
+[DIVERGENCES.md](docs/DIVERGENCES.md)。
 
-MPEG-2/MPEG-4/H.263/AVS+ 使用同一 handle 接收任意分块 elementary stream。
-AVS+ 增量解析只消费完整 access unit，并跨 packet 保留 sequence、version、
-参考锚点和 `vec_flag`；MPEG-2/MPEG-4/H.263 普通 SDK 仍以完整 stream 为状态
-边界，在 EOS/flush 时统一产出所有待显示帧。未修改 MPP 工具所走的 object
-兼容路径另做增量解析：保留未完成尾部和 MPEG-4 VOL/timing 状态。
+## 选择迁移方式
 
-板级 C/C++ 门：
+| 场景 | 推荐路径 | 入口 |
+|---|---|---|
+| 已有程序直接链接 `librockchip_mpp.so.1` | 二进制 drop-in | [迁移指南 §1](docs/MIGRATION.md) |
+| 保留官方 `rk_mpi.h`，只替换链接库 | 源码兼容层 | [迁移指南 §2](docs/MIGRATION.md) |
+| 新项目使用 Rust | `rk_mpp_rs::sdk` | [Rust 示例](examples/sdk_decode.rs) |
+| 新项目使用 C/C++ | `include/rk_mpp_rs.h` | [C API](#c-api) |
+| 已有 `ffmpeg --enable-rkmpp` | `LD_LIBRARY_PATH` overlay | [FFmpeg drop-in](#ffmpeg-drop-in) |
+
+官方头文件共有 **297 个声明符号，覆盖 297/297**。其中核心对象 API、配置、
+meta、buffer 和测试工具辅助符号均有实现；`sys_cfg`、`vdec_kcfg`、
+`venc_kcfg` 的部分 kernel-only 键保留类型化存储语义。详细覆盖审计见
+[docs/MIGRATION.md](docs/MIGRATION.md)。
+
+## 快速开始
+
+### 前置条件
+
+- Linux aarch64 板卡；
+- 内核提供 `/dev/mpp_service` 和对应 DMA heap 节点；
+- Rust stable 和 Cargo；
+- 运行时除 `libc` 外没有第三方 crate。
+
+### 构建与主机测试
 
 ```bash
-BOARD=my-rk3576-host ./scripts/board_c_api_h264_mjpeg.sh
-BOARD=my-rk3588-host ./scripts/board_c_api_h264_mjpeg.sh
-STREAM_COUNTS="1 2 4 6 8" RUST_DMABUF=1 ./scripts/board_multistream_bench.sh
-./scripts/board_mpp_standalone.sh
-./scripts/board_mpp_standalone_encode.sh
-./scripts/board_ffmpeg_rkmpp.sh
-SAMPLES=7 ./scripts/board_ffmpeg_rkmpp_bench.sh
+git clone https://github.com/jlu-lujing/rk-mpp-rs.git
+cd rk-mpp-rs
+
+cargo build --release
+cargo test --workspace --all-targets
 ```
 
-RK3576 和 RK3588 已验证共享库和静态库链接、全部公开符号、生命周期错误路径，以及 H.264
-7/127/313-byte 分块和整条单包输入；H.265 8-bit 37-byte 分块、整条单包和
-Main10 53-byte 分块输入；VP9 profile 0/2 各 12 个 IVF packet；AV1 8-bit
-2 个 packet、10-bit 10 个 temporal unit；MJPEG 97/211-byte 分块和四帧单包
-输入。除已登记的 AV1 film-grain C bug 外，输出均与板上 oracle 逐字节一致。
+需要硬件设备的测试均标记为 `#[ignore]`，不会在普通 CI 主机上运行。
 
-### 安装 SDK
+### 同步到板卡并构建
+
+```bash
+BOARD=my-rk3588-host
+
+ssh "$BOARD" 'mkdir -p "$HOME/rk-mpp-rs"'
+COPYFILE_DISABLE=1 tar \
+  --no-xattrs \
+  --exclude .git \
+  --exclude target \
+  --exclude .worktrees \
+  --exclude refs \
+  -cf - . |
+  ssh "$BOARD" 'tar -xf - -C "$HOME/rk-mpp-rs"'
+
+ssh "$BOARD" 'cd "$HOME/rk-mpp-rs" && cargo build --release'
+```
+
+### 第一次硬件检查
+
+```bash
+# 无参数会 probe 当前 SoC 和硬件能力
+./target/release/rk-mpp-rs
+
+# H.264 整段解码
+./target/release/rk-mpp-rs h264dec input.264 output.yuv
+
+# 输出 NV12
+RKMPP_DECODE_NV12=1 ./target/release/rk-mpp-rs h264dec input.264 output.nv12
+
+# JPEG 解码到 RGB；最后一个参数是 1/2/4/8 下采样
+./target/release/rk-mpp-rs decode input.jpg output.rgb 1
+```
+
+### 常用 CLI
+
+| 命令 | 用途 |
+|---|---|
+| `rk-mpp-rs h264dec <in.264> <out.yuv>` | H.264 解码 |
+| `rk-mpp-rs hevcdec <in.265> <out.yuv>` | H.265 解码 |
+| `rk-mpp-rs vp9dec <in.ivf> <out.yuv>` | VP9 解码 |
+| `rk-mpp-rs av1dec <in.ivf> <out.yuv>` | AV1 解码 |
+| `rk-mpp-rs decode <in.jpg> <out.rgb> [1\|2\|4\|8]` | JPEG 解码 |
+| `rk-mpp-rs h264-enc <in.nv12> <out.264> <w> <h> ...` | H.264 编码 |
+| `rk-mpp-rs h265-gop <in.nv12> <out.265> ...` | H.265 GOP 编码 |
+| `rk-mpp-rs iep-dei <in.yuv> <out.yuv> <w> <h>` | IEP2 去隔行 |
+| `rk-mpp-rs vdpp-scale ...` | RK3576 VDPP2 缩放/格式转换 |
+
+完整参数、RK3576 VEPU510 专用命令和高级编码选项见
+[docs/HANDOFF.md](docs/HANDOFF.md)。
+
+## Rust SDK
+
+```rust
+use rk_mpp_rs::sdk::{
+    Codec, Decoder, DecoderConfig, Packet, PacketFlags, PixelFormat,
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut decoder = Decoder::new(
+        DecoderConfig::new(Codec::H264).with_output_format(PixelFormat::I420),
+    )?;
+
+    let input = std::fs::read("input.264")?;
+    decoder.submit_packet(
+        Packet::new(&input).with_flags(PacketFlags::EOS),
+    )?;
+
+    while let Some(frame) = decoder.receive_frame() {
+        println!(
+            "{}x{} pts={}",
+            frame.width(),
+            frame.height(),
+            frame.pts()
+        );
+    }
+    decoder.flush()?;
+    Ok(())
+}
+```
+
+可以直接运行完整示例：
+
+```bash
+cargo run --release --example sdk_decode -- h264 input.264 output.yuv
+cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 26 6
+```
+
+SDK 支持任意分块输入、显式 EOS、flush/reset/recover、frame release 和
+可选 DMA-BUF 输出。H.264/H.265 有有界显示重排；VP9/VP8 每次提交一个 coded
+packet，AV1 每次提交一个 temporal unit。IVF/WebM 解复用仍由调用方负责。
+
+## C API
+
+安装库、头文件、pkg-config 和 CMake config：
 
 ```bash
 ./scripts/install_sdk.sh --prefix /usr/local
-
-# 打包/打包机安装时
-./scripts/install_sdk.sh --prefix /usr/local --destdir /tmp/rk-mpp-stage
-```
-
-安装布局：
-
-- `include/rk_mpp_rs.h`
-- `lib/librk_mpp_rs.so.1.14.0`
-- `lib/librk_mpp_rs.so.1 -> librk_mpp_rs.so.1.14.0`
-- `lib/librk_mpp_rs.so -> librk_mpp_rs.so.1`
-- `lib/librk_mpp_rs.a`
-- `lib/pkgconfig/rk-mpp-rs.pc`
-- `lib/cmake/rk-mpp-rs/`
-
-`SONAME` 固定为 ABI major：`librk_mpp_rs.so.1`。
-
-```bash
 gcc app.c $(pkg-config --cflags --libs rk-mpp-rs)
-
-add_executable(app app.cpp)
-target_link_libraries(app PRIVATE rk_mpp_rs::rk_mpp_rs)
-# 或 rk_mpp_rs::rk_mpp_rs_static
 ```
-
-Rust 最小示例：
-
-```bash
-cargo run --example sdk_decode -- h264 input.264 output.yuv
-cargo run --release --example sdk_encode -- h264 input.nv12 output.264 320 240 26 6
-cargo run --release --example sdk_encode_stream -- h265 input.nv12 output.265 320 240 26 6
-rk-mpp-rs h264dec input.264 output.yuv
-RKMPP_DECODE_NV12=1 rk-mpp-rs h264dec input.264 output.nv12
-RKMPP_DECODE_DMABUF=1 rk-mpp-rs h264dec input.264 /dev/null
-RKMPP_DECODE_DMABUF=1 rk-mpp-rs hevcdec input.265 /dev/null
-RKMPP_DECODE_DMABUF=1 rk-mpp-rs vp9dec input.ivf /dev/null
-RKMPP_DECODE_DMABUF=1 rk-mpp-rs av1dec input.ivf /dev/null
-```
-
-`RKMPP_POLL_US` controls the non-blocking hardware poll interval and defaults
-to 20 microseconds. `RKMPP_DECODE_DMABUF=1` is the zero-copy surface mode for
-an in-process consumer. H.264/H.265/VP9/AV1 CLIs only permit it with
-`/dev/null` output; H.265 uses a bounded display-order reorder buffer so
-decoder surfaces return to the pool as each display frame is emitted. VP9/AV1
-10-bit surfaces remain CPU-only.
-
-VDPU383 now uses the same multi-job submission model as VDPU34x. H.264 and
-H.265 default to three in-flight jobs; `RKMPP_H264_PIPELINE=0` and
-`RKMPP_HEVC_PIPELINE=0` restore blocking submission. The ring overlaps hardware
-decode with display reorder and CPU output without a second YUV worker thread.
-Reaped H.265 jobs return their padded bitstream DMA mappings to the decoder for
-the next submission, so steady-state decode no longer performs a dma-heap
-allocation, mmap and munmap per picture. H.264 IDR still drops every DPB frame
-lease, but leaves the now-idle pool storage available for reuse.
-
-`rk-mpp-rs-sys` 暴露 V1.14 的全部 41 个 C 导出、enum、struct 和不透明句柄。
-
-另有进行中的官方 MPP drop-in ABI 基础层：`mpp_create`、`mpp_init`、
-`mpp_destroy`、格式查询和官方 `MppApi` 184-byte 函数表。当前只保证生命周期
-与函数表布局，并提供 `MppFrame`/`MppPacket`/`MppBuffer`、packet/frame
-访问器和 H.264/H.265/MJPEG 的 CPU NV12 `decode_put_packet` /
-`decode_get_frame` 数据面。本地 `MppMeta` 已覆盖 s32/s64/ptr、
-frame/packet/buffer、用户数据深拷贝、duplicate/ref/lifetime，并接入 frame 和
-packet 的惰性持有以及 advanced decode 的 `KEY_OUTPUT_FRAME`/
-`KEY_INPUT_PACKET`；H.264/H.265 VEPU580/VEPU510 的 encoder packet meta 也已接通，
-advanced buffer import 与 standalone 对象层已接入。internal `MppBuffer`
-已使用真实 dma-heap fd，
-external `MppBuffer` 现可通过
-`mpp_buffer_import` 接收 caller pointer/fd，并支持 external group 的
-commit/get、unused recycle 和 usage 统计；fd-only import 会建立独立映射。
-支持的 decoder 现在直接产出 DMA-BUF frame，advanced `KEY_OUTPUT_FRAME`
-可把调用方 dma-buf fd 注入 H.264/H.265/VP9/MJPEG output pool；
-H.264/H.265/VP9/MJPEG 已验证目标 frame 由硬件直接写入，不再创建临时
-MppFrame/整帧 buffer。VP9 会保留硬件的 256-odd stride 和 9/5 帧容量，
-且只让 `show_frame` surface 占用调用方输出，隐藏参考帧不会偷用 packet 的
-`KEY_OUTPUT_FRAME`。AV1 在 VDPU34x 的 display pool 和 VDPU383 的
-output/reference pool 上同样支持注入；coded `show_frame` 直接使用调用方
-surface，`show_existing` 则按参考帧语义复制历史 display surface。
-**未修改的** vendor `mpi_dec_test` 现在可以只把 `librk_mpp_rs.so`
-重命名为 `librockchip_mpp.so.1` 后直接运行，不再加载 vendor MPP。RK3588/RK3576
-的 H.264/H.265/VP9/AV1/MJPEG 输出均与 vendor C 逐字节一致；RK3588 另有两个
-AVS+ vproc 周期。当前
-standalone 解码门在 RK3588 已扩到 **16/16**：新增 VP8 IP/altref、
-MPEG-2、MPEG-4 IP/B 帧、H.263 CIF/QCIF、两个 AVS+ vproc 完整周期和
-interlaced-frame 周期。
-legacy elementary stream 在 MPP object 兼容路径按官方 4 KiB packet 增量解析，
-只消费完整前缀；另有一格不带 `-n` 的 MPEG-2 EOS 路径。普通 SDK 的
-whole-stream/EOS 语义不变。100/96 帧
-相对基准中，新路径比上一版整段重放快约 18–56×，与 vendor C 的差距缩到
-0.02–0.04 s。进一步让 object 层直接写普通 CPU buffer 并在一次拷贝中交织
-UV 后，100 帧 MPEG-2 的 Rust task-clock 为 50.1 ms、instructions 75.4M，
-vendor 为 66.5 ms、80.0M；perf 样本只剩文件写出/启动等公共开销。该结果
-使用 DMC performance 和 CPU 4–7，不代表 80% OPP 绝对性能。
-standalone 日志入口通过 Rust naked ABI trampoline 尾跳到本地 C
-`vfprintf` helper，实际展开 printf 变参；
-未修改的 `mpi_enc_test` 也已可在只加载本库时完成 H.264/H.265/MJPEG
-单帧编码：H.264/H.265 的 NAL 序列与解码重建一致，version SEI 只比较
-framing；MJPEG stream 逐字节一致。
-带 `--enable-rkmpp` 的 FFmpeg 同样可用 `LD_LIBRARY_PATH` 把
-`librockchip_mpp.so.1` 指向本库；RK3588 已通过 H.264/H.265/VP9 解码和
-H.264/H.265/MJPEG 编码 FFmpeg 门，复验见 `scripts/board_ffmpeg_rkmpp.sh`。
-三路径编解码性能见 `docs/FFMPEG_BENCH.md`。
-需要重新编译 FFmpeg 时，使用
-`scripts/install_sdk.sh --prefix PATH --mpp-compat` 安装兼容
-`librockchip_mpp.so{,.1}`、vendor 头和 `rockchip_mpp.pc`。
-`MppEncRefCfg` 的 create/reset/LT/ST add/check 与
-`MPP_ENC_SET_REF_CFG` 已接通，LOG/JSON/TOML 三种 cfg-string
-`apply/apply_file/extract` 也已实现；LOG/JSON 与 vendor 双向通过，TOML 提取
-逐字节相同且 Rust 可回读，而 vendor 对自己导出的 TOML 仍解析失败（C-BUG）。
-`MppEncCfg` 自身的 LOG/JSON/TOML `extract/apply/apply_file` 也已从假成功改为
-真实数值标量/数组往返；RK3588 vendor 与 Rust 可互相读取三种格式。层级 QP 数组、
-自定义 `hw:aq_step_i` 和高级 RC 策略也已从对象配置真实传入编码器。
-vendor 自带的 `mpp_enc_cfg_test` 已可在 Rust standalone 库上通过 **9/9**。
-MPP option trie 现在兼容两种已观测到的 `mpp_opt` ABI：`0x47` 旧路径直接
-返回 `MppOptInfo` 上下文；`0x20` 路径返回 24-byte `MppTrieInfo v0`
-`{name, ctx, index, str_len}`，供三参数 `mpp_trie_add_info` 和静态
-`mpp_opt_parse` 使用。通用 object trie 仍返回当前 packed
-`MppTrieInfo`。`/usr/local/bin/mpi_enc_test` 本身没有 `kmpp_mode` 选项；
-上游 `mpp-develop/build/test/mpi_enc_test` 现在可用 Rust 库启动并完成默认
-MPP 编码。兼容层提供 dual-ABI `kmpp_objdef_get/register`、trie VLA/叶子、
-用户态 `KmppObj` 分配、entry 偏移读写、flag 和 init/deinit callback；
-`-kmpp_mode 0` 的 H.264 单帧输出与新版 vendor 完全一致
-（`e18fe707…14bdbd`，3 NAL）。H.265 补齐新版上游固定 QP 下的
-AQ/ROI/MD/QP-bias 默认值后，整条 4 NAL 输出也完全一致
-（`119bbf79…caa76d5`）。60 帧单 GOP 进一步通过：H.264 62 NAL
-（`6a8cb407…3e3544`）、H.265 63 NAL（`7eed6267…138b42`）均与 vendor
-哈希相同。OSD、ROI 与 `user_data_enable` 也已通过；2 帧 user-data 输出为
-H.264 10 NAL、H.265 11 NAL，全部一致。KMPP mode 1/2 由工具自身因内核没有
-`/dev/vcodec` 或 `/proc/kmpp` 的 `ctrl_cfg` 能力拒绝；buffer/meta 对象路径
-中的 userspace buffer 已实现分配、setup、`KmppShmPtr` 导出和释放；kernel
-buffer group/ioctl 路径仍受平台限制。
-同一套 scalar/array `get/set/extract/apply` 也工作在
-`MPP_VENC_KCFG_TYPE_ST_CFG` 句柄上，且 `mpp_enc_cfg_deinit()` 会按 vendor
-路径释放该句柄。
-`MppEncCfg` 的 `rc:refresh_en/mode/num` 也已映射到 typed
-`EncoderConfig::gdr`；H.264 和 H.265 的对象配置路径都可通过
-`scripts/board_mpp_enc_cfg_gdr.sh` 复验。
-H.264 的 `h264:dblk_disable/alpha/beta`（以及兼容的 `h264:deblock_*`
-名称）同样进入 typed deblock 配置，并由 `board_h264_deblock_vs_mpp.sh`
-同时验证 vendor probe 对象路径。
-`h264:cabac_en/trans8x8/cabac_idc/constraint_set/base_layer_pid` 也已成为 typed H.264 syntax 覆盖，
-`board_mpp_enc_cfg_h264_syntax.sh` 验证 Main-CAVLC、High-no-8x8，以及
-Main-CABAC 的 `cabac_idc=1/2` 与两个 constraint force/value 掩码；全部逐字节一致。
-`base_layer_pid` 的硬件门验证 type-14 prefix 的 `priority_id = base + temporal_id`。
-H.265 的 `h265:dblk_*`、`sao_*`、`lpf_acs_*` 和 `auto_tile` 会进入 typed
-`SyntaxOptions`，由 `board_mpp_enc_cfg_h265_syntax.sh` 验证对象路径。
-兼容编码对象也接受 `prep:format=MPP_FMT_YUV420P/NV21`；I420 会拆包、
-NV21 会交换 V/U 后分别进入 typed I420/NV12 路径。
-`board_mpp_enc_cfg_i420.sh` 对比同一画面的 NV12/I420/NV21 码流。
-H.264 和 H.265 都覆盖这三条对象输入路径。
-当 `encode_put_frame` 收到 internal dma-heap 的 NV12 frame，且没有 OSD、
-custom RC 或 stride/size 不匹配时，兼容层现在直接把现有 fd 交给硬件，
-不再逐帧 `dup/mmap` 或生成 packed CPU staging；I420/NV21、OSD、custom RC
-和几何不匹配仍走原 CPU fallback。`board_mpp_enc_cfg_dma_input.sh` 在 RK3588
-以 120 帧 720p 对比两条路径：H.264 126 NAL、H.265 125 NAL 均一致，码流
-SHA-256 分别为 `2fdcd6ed…bcbb2c3` 和 `1865f014…f7af84b`。9 次交错采样中，
-dma-heap 路径 wall median 273 ms，CPU fallback 为 311 ms（范围 306–449 ms）；
-user+sys median 从 95 ms 降到 59 ms（-37.9%）。
-OSD 的 direct dma-buf 路径已在 VEPU580 H.264/H.265 接通，但
-`mpi_enc_test` 的 cached DRM 输入在 500 帧 OSD 压测中反而双峰变慢，因此
-默认仍走 CPU fallback；确认输入 surface 为非 cached 或已完成 cache 管理时，
-可设置 `RKMPP_COMPAT_OSD_DMABUF=1` opt-in。
-RK3588 VEPU580 的 `-g 1:60` 六帧 TSVC2
-也已闭合：16 个 NAL 中除 version-SEI 文本外逐字节一致，六帧解码重建
-（`fec69971…64f0a4`）与 vendor 相同；扩展到 12 帧后 28 个 NAL 仍同规则
-一致，YUV SHA-256 为 `d9a3ed55…ecad7e63`。TSVC3 的 12 帧同样达到
-28 NAL 一致，YUV 为 `7794eb88…488f8e2`；TSVC4 的 long-term 替换和 MMCO
-路径也达到 28 NAL 一致，YUV 为 `33923dd2…d1186a`。跨 `gop=60` 的
-64 帧双 IGOP 测试再达到 136 NAL 一致，YUV 为 `a3ad1bc6…35a0593`。
-RK3576 VEPU510 的 TSVC2 12 帧也已达到 26 NAL 和 YUV
-`77a92442…fe35ab` 逐字节一致。VEPU510 TSVC2/TSVC3/TSVC4 的 C packet
-assembly 冷启动都不稳定，会出现漏发 type-14 prefix 的变体；TSVC3 的
-一次冷启动甚至只吐出 18 NAL、解码不到画面。稳定 C 输出与 Rust 的
-26 NAL/YUV 完全一致。TSVC4 的 5 次中 3 次与 Rust 的 26 NAL/YUV 完全
-一致，其余两次漏 prefix，其中一次重建也不同。板级回归会重试 C 直到
-取得稳定 oracle。官方 H.264 对象路径的
-`MPP_ENC_SET_IDR_FRAME`、`MPP_ENC_SET_HEADER_MODE` 和
-`MPP_ENC_SET_SEI_CFG` 也已接通：帧 2/4 强制 IDR 在 RK3588/RK3576 均为 12 NAL
-和 YUV 逐字节一致，强制 IDR 会重发 SPS/PPS，`SEI_MODE_DISABLE` 已生效。
-H.265 VEPU580 的同一控制也已接通：三次 IDR 段共 15 NAL 逐字节一致，
-YUV 为 `b2765277…3c56607`，每次 IDR 后的 POC 都重新从 1 开始。
-VEPU510 也已接通同一组控制：RK3576 的 MPP object 路径与 C 的完整
-15 NAL 码流和 YUV 逐字节一致（`7f3d4664…841231`）。这同时闭合了
-`MPP_ENC_GET_HDR_SYNC` 对 direct/mpi template 的选择：未请求 header
-sync 的 probe 和请求它的 `mpi_enc_test` 现在都走正确模板。
-`KEY_MOTION_INFO` 也改为按调用方实际容量回传，
-兼容 RK3576 probe 的 640-byte 与 `mpi_enc_test` 的 1280-byte buffer。
-`MPP_ENC_GET_RC_API_ALL`、`GET_RC_API_BY_TYPE`、`SET_RC_API_CFG`、
-`GET/SET_RC_API_CURRENT` 也已接通：RK3588/RK3576 的 6 个内置策略、编码类型过滤、
-用户策略注册/替换和当前选择输出均与 vendor 逐行一致；同一声明也导出
-`rc_api_add`、`rc_brief_get_all` 和 `rc_brief_get_by_type`。自定义 `RcImplApi`
-的逐帧 `init/frame/hal/end` 回调现已在 RK3588 VEPU580 的 H.264/H.265 中真实
-驱动硬件。RK3588 VEPU580 与 RK3576 VEPU510 的 H.264/H.265 fixed-QP、CBR、
-VBR、AVBR 共 8/8 组两帧码流和 YUV 均与 vendor 逐字节一致；完整
-`init/check_drop/frame_start/hal_start/hal_end/check_reenc/frame_end`
-字段序列、`bit_real/quality_real` 和真实 I/P 帧模式也逐行一致。RK3576 使用
-1.0.11 的 `RcCfg=260 / EncRcTaskInfo=136 / EncRcTask=336` ABI，RK3588
-保留 2024 的 `256 / 112 / 312` 投影。两板另各通过 H.264/H.265 一次
-同帧型 callback 驱动 hardware reencode：首轮输出被丢弃，RC 目标改为
-QP30 后重跑同一输入/参考槽，最终 stream、YUV 和 callback trace 均一致。
-第二帧 P→IDR 的帧型变更也为 4/4：H.265 使用 vendor 的“P syntax +
-INTRA hardware config + IDR NAL”混合模板；H.264 保持原 P slice，
-仅 callback 状态显示帧型变化。该 H.265 请求在 vendor 本身就是 C-BUG：
-三帧流只生成一个可完整播放的前两帧序列，FFmpeg 在第三帧报
-`Could not find ref with POC 1`；Rust 对该 hybrid stream 达到逐字节一致。
-重编与 drop/PSKIP 的组合仍未实现。
-`MPP_ENC_SET/GET_OSD_PLT_CFG` 和 frame `KEY_OSD_DATA` 也已接入 VEPU580：
-H.264 与 H.265 两帧 OSD stream/YUV 均与 vendor 逐字节一致。H.265 的关键
-修复是保留 OSD 的 7 个地址偏移，避免后续 FBC/output offset 构造覆盖它们。
-编码输出 packet 的 kernel meta 现已按 `set_enc_info_to_packet()` 回填：
-H.264/H.265 的 8 类 inter/intra block count、SSE、PSKIP、帧内标志、
-start/average QP 以及 H.265 `KEY_MOTION_INFO` 均与对应板上的 vendor 一致。
-4K fixed-QP H.264/H.265 的 block count/SSE/QP 与整条码流也已逐包一致；
-4K JPEG 的 start/average q-factor 一致，stream band layout 由直接编码门
-单独覆盖。MPI object 的 H.265 CBR 另修正为 C 默认 `qp_delta_ip=4`，
-不再误用 `mpi_enc_test` direct harness 的 delta 2。
-JPEG 的 start/average quality 也已按 vendor 回填为 q-factor；VEPU2 保持
-vendor 的“无 intra 标志”，VPU720 则回填 `KEY_OUTPUT_INTRA=0`。
-固定 QP 和 CBR 在静止、持续运动各两帧上为 2/2 逐 packet 一致；CBR
-还暴露并修正了 H.265 I-QP delta 与 rate-controlled PPS 的两个旧偏差。
-RK3576 VEPU510 的 fixed-QP、CBR、VBR、AVBR 静止/运动矩阵同样全部通过；
-CBR/VBR/AVBR 的 6 帧持续会话也与 vendor stream/YUV/metadata 一致。
-其余高级编码控制仍待继续补齐。
-同一桥接层也已接通 `MppEncCfg`、`encode_put_frame` 和
-`encode_get_packet`：RK3588/RK3576 的 H.264、H.265 和 MJPEG 都已在未修改的
-`mpi_enc_test` 中跑通。H.264 单帧、默认 6 帧、RK3588 TSVC2/TSVC3/TSVC4
-12 帧以及 RK3576 TSVC2 12 帧的
-SPS/PPS、rc-SEI、type-14 prefix、VCL NAL 和解码重建一致，仅 version-SEI
-的构建身份文本长度不同；H.265 单帧和 6 帧的参数集、rc-SEI、VCL NAL 和
-解码重建也一致，version-SEI 同样只比较 framing；MJPEG stream 逐字节一致。
-RK3576 High-profile 的 CABAC/8x8 模板、
-MEIW buffer 和普通 GOP60 现已接入；调用方通过 `KEY_MOTION_INFO` 传入的
-1200-byte H.264 / 1280-byte H.265 结果 buffer 也与原生 C MPP 逐字节一致。
-链接发现支持显式 `RK_MPP_RS_SYS_LIB_DIR`、已安装 pkg-config，以及 workspace
-`target/<profile>`：
-
-```bash
-RK_MPP_RS_SYS_LIB_DIR="$PWD/target/release" \
-LD_LIBRARY_PATH="$PWD/target/release" \
-cargo test --release -p rk-mpp-rs-sys
-
-./scripts/board_sys_crate.sh   # dynamic + static + pkg-config 板级门
-```
-
-ABI 和完整安装 consumer 门：
-
-```bash
-PROFILE=release ./scripts/check_sdk_abi.sh
-BOARD=my-rk3588-host ./scripts/board_sdk_package.sh
-BOARD=my-rk3576-host ./scripts/board_sdk_package.sh
-```
-
-H.264 编码接口接受紧凑的 visible-size NV12/I420，内部复制并补齐 coded
-geometry，再以同步 packet queue 返回 Annex-B。RK3588 VEPU580 支持
-baseline/main/high、level、GOP、QP 和帧率；RK3576 VEPU510 当前只开放已板验的
-320×240 Baseline QP26 GOP6 @30fps 路径。两端都把 6 帧 GOP 与现有 CLI 输出
-逐字节比较，并验证 reset 复用和 packet release。
-
-H.265 编码共享同一套原有 encoder ABI。RK3588 VEPU580 开放 width/height、QP
-和 GOP；RK3576 VEPU510 当前只开放板验过的 320×240 Main QP26 GOP6 @30fps
-路径。H.264/H.265 都接受 NV12 或 I420，packet 带 keyframe/frame_num/POC
-元数据。
-
-V1.9 增加独立的 `rk_mpp_encoder_advanced_config_t` 和
-`rk_mpp_encoder_create_advanced()`，因此原有 68-byte
-`rk_mpp_encoder_config_t` 与 `rk_mpp_encoder_create()` 完全不变。Rust 使用
-`RateControlConfig`/`RateControlMode`；C 使用
-`rk_mpp_encoder_rate_control_t`。RK3588 VEPU580 H.264/H.265 支持 CBR、VBR、
-AVBR、目标/最小/最大码率和初始/最小/最大 QP；C API 六组输出与已验证 CLI
-逐字节相同。RK3576 VEPU510 也支持逐帧 CBR/VBR/AVBR，320×240 六帧矩阵与
-vendor 和 CLI 均一致。
-
-```bash
-./scripts/board_sdk_encoder_rc.sh
-```
-
-V1.10 通过独立的 `rk_mpp_encoder_advanced_config_v2_t` 增加最多 8 个 ROI、
-GDR/intra-refresh、slice split 和 low-delay packet 输出；V1.9 的 104-byte
-config、初始化和 create 函数保持原样。Rust 对应 `RoiConfig`、`GdrConfig`、
-`SliceSplitConfig`。RK3588 上 H.264/H.265 的 ROI、GDR、slice-lowdelay 六组 C API
-输出均与既有 CLI 逐字节相同。
-
-```bash
-./scripts/board_sdk_encoder_controls.sh
-```
-
-V1.11 可选择让 H.264、8-bit 4:2:0 H.265/VP9/AV1 与 MJPEG NV12 解码帧保留硬件
-dma-buf。默认行为仍是连续 CPU frame，以保持 V1 兼容；设置
-`RK_MPP_DECODER_FLAG_DMABUF_OUTPUT` 后不再复制到 CPU `Vec`。调用方可在
-`receive_frame()` 后按 plane 导出私有 fd、offset、size 和 stride，用于
-RKNN/RGA 等 fd consumer：
 
 ```c
-config.flags |= RK_MPP_DECODER_FLAG_DMABUF_OUTPUT;
-/* rk_mpp_decoder_create(...) */
-int fd = -1;
-uint64_t offset, size;
-uint32_t stride;
-rk_mpp_decoder_export_frame_dmabuf(
-    decoder, 0, &fd, &offset, &size, &stride);
-/* use fd */
-close(fd);
+#include <rk_mpp_rs.h>
+
+rk_mpp_decoder_config_t config;
+rk_mpp_decoder_config_init(
+    &config,
+    RK_MPP_CODEC_H264,
+    RK_MPP_PIXEL_FORMAT_I420);
+
+rk_mpp_decoder_t *decoder = NULL;
+rk_mpp_decoder_create(&config, &decoder);
 ```
 
-Rust 对应 `DecoderConfig::with_dmabuf_output(true)`、
-`Frame::dmabuf_plane()` 和 `Frame::duplicate_dmabuf()`。H.264/H.265/VP9/AV1/MJPEG
-已支持该 flag；H.265 Main10/422/444、VP9/AV1 10-bit 以及其他仍未接入 DMA frame 的 codec
-调用导出会返回 `RK_MPP_ERR_UNSUPPORTED`。
+头文件中的 lifetime、线程安全、平面布局和错误码说明是 C API 的契约。
 
-AVS 还可选择 C 默认的 IEP2 后处理。C ABI 设置
-`RK_MPP_DECODER_FLAG_VPROC_OUTPUT`，Rust 使用
-`DecoderConfig::with_vproc_output(true)`；公开的两个流分别输出完整的 9/7 帧
-NV12/I420 cycle，与 C 逐字节一致。该模式当前只支持 AVS，且不能和
-`DMABUF_OUTPUT` 同时使用。
+## 二进制 drop-in
+
+已有程序仍按 `librockchip_mpp.so.1` 链接时，可以让动态链接器优先加载
+本库：
 
 ```bash
-./scripts/board_sdk_dmabuf.sh
+overlay=$(mktemp -d)
+ln -s "$PWD/target/release/librk_mpp_rs.so" \
+  "$overlay/librockchip_mpp.so.1"
+
+LD_LIBRARY_PATH="$overlay" ./mpi_dec_test \
+  -i input.264 -t 7 -o output.yuv
 ```
 
-V1.12 保留原有字节数组输入，同时允许 H.264/H.265/JPEG 直接编码 NV12
-dma-buf。调用方传入 fd、完整 allocation 长度和 coded Y/UV stride；H.264/H.265
-要求 stride 为 16 对齐，JPEG 要求 8×2 对齐。提交是同步的，函数返回后调用方
-即可复用输入 surface：
+RK3588/RK3576 上已验证未修改的 `mpi_dec_test`、`mpi_enc_test` 和 FFmpeg
+RKMPP 前端。当前 MPP 兼容层对 H.264/H.265/VP9/AV1/MJPEG advanced decode
+支持 caller DMA-BUF output；4K MJPEG 的 `poll/dequeue/enqueue` 路径也已闭合。
 
-```c
-rk_mpp_encoder_submit_frame_dmabuf(
-    encoder, fd, allocation_size, hor_stride, ver_stride, pts, dts);
-```
-
-Rust 对应 `DmaBufInput::new(borrowed_fd, ...)` 和
-`Encoder::submit_dmabuf_frame()`；类型上的生命周期保证 fd 在同步提交期间存活，
-既不 dup 也不建立无用 CPU mapping。板级测试确认 dup fd 在 VEPU580 上会导致
-`int_sta=0`，因此所有 Rust/C 路径都直接提交原 fd。C ABI
-`rk_mpp_encoder_submit_frame_dmabuf()` 同样直接借用调用方 fd。
-需要 OSD 的 Rust 调用方可在 `DmaBufInput::with_osd(Config)` 上随帧附带
-VEPU580 OSD 表；不支持的 VEPU510/JPEG backend 会明确返回 unsupported。
-RK3576/RK3588 上 H.264、H.265、JPEG 的 fd 输入输出与 copied-input 输出逐字节一致：
+### FFmpeg drop-in
 
 ```bash
-./scripts/board_sdk_encoder_dmabuf.sh
+overlay=$(mktemp -d)
+ln -s /opt/rk-mpp-rs/lib/librk_mpp_rs.so.1 \
+  "$overlay/librockchip_mpp.so.1"
+
+LD_LIBRARY_PATH="$overlay" ffmpeg \
+  -c:v h264_rkmpp -i input.264 \
+  -fps_mode passthrough -pix_fmt nv12 -f rawvideo output.yuv
 ```
 
-V1.13 新增独立的 `rk_mpp_encoder_advanced_config_v3_t`，不改变旧版 advanced
-config。C 调用方现在可把 H.264 deblock 与 syntax 覆盖传给同一 encoder：
-CABAC、transform-8x8、`cabac_init_idc`、constraint-set force/value 和
-`base_layer_pid`。syntax 使用逐字段 flags；未选择的字段保持 profile 默认值，
-因此只设置 base priority 不会意外改变 Main/High 的 CABAC 或 8x8 默认。
+FFmpeg 4K 解码必须使用 `-fps_mode passthrough`；否则 `-frames:v` 可能因
+EOF/时间基在两侧都写出 0 字节。重新编译带 `--enable-rkmpp` 的 FFmpeg 时，
+使用：
 
 ```bash
-./scripts/board_sdk_encoder_controls.sh
+./scripts/install_sdk.sh --prefix /opt/rk-mpp-ffmpeg --mpp-compat
 ```
 
-V1.14 在不扩大 V3 552-byte layout 的前提下，把末尾 32-byte reserve 升级为
-H.265 syntax descriptor。C 调用方可以逐字段覆盖 SAO luma/chroma、deblock
-disable 与 beta/tc、跨 slice/tile loop-filter 和 auto-tile；未选择项保留
-默认值。V1.13 的 H.264 字段 offset 完全不变。
+## 验证
 
-JPEG 编码沿用同一 encoder handle，支持 NV12/I420、0–10 内置量化档和可选
-restart MCU 间隔。RK3576/RK3588 单帧 JPEG 与现有 `jpeg-enc` CLI 输出逐字节一致。
+### 当前 4K 回归快照
 
-## 怎么验证的
+| 门禁 | 结果 |
+|---|---|
+| RK3588 基础 4K | **26/26 PASS** |
+| RK3588 扩展 4K | **25/25 PASS** |
+| RK3576 适用 4K | **17 PASS / 0 FAIL / 5 SKIP** |
+| RK3576 VPU720 JPEG 4K | **21/21 PASS** |
+| 主机全量测试 | **1427 passed / 0 failed / 47 ignored** |
 
-所有"完成"都对应 RK3588 验证板源码编译的 C MPP：
+RK3588 4K 覆盖 H.264/H.265/VP9/AV1 的 8/10-bit、三帧状态、film grain、
+Main10、H.264/H.265/MJPEG 编码、FFmpeg drop-in、JPEG 缩放、1–16 路并发、
+长 GOP/DPB soak、SDK DMA-BUF、packet meta、IEP2 上限和 VDPP2 边界。
 
-- 解码器：与 `mpi_dec_test` 的输出**逐字节**相同（NV12→planar 换算后）。
-- 编码器：与 C 编码器**逐 NAL**相同。固定 QP 覆盖 4 尺寸 × 3 profile × 2 QP = 24 格，
-  加 6 格 GOP（1 IDR + 1/3/5 P，静止/运动）；CBR 与 VBR 各 6 帧 10/10 NAL 相同。
-- 码率控制：寄存器半边对 C 作业**逐字**相同；位分配与量化控制器对 C **自己打印的内部
-  状态**逐帧相同（`rc_debug=0xf0`）。
-- 性能：同一流、两侧外部计时、交错采样取中位数。
+RK3576 的 5 个 SKIP 是未实现或平台边界，不计作 PASS：FFmpeg 4K drop-in、
+Rust 4K H.264/H.265 编码、MJPEG 对象编码，以及由 VPU720 JPEG 专项门覆盖的
+MJPEG 4K 解码。
 
-复跑：
+### 主机 CI
 
 ```bash
-cargo fmt --all -- --check                   # GitHub host CI
-cargo clippy --workspace --all-targets       # warnings allowed, denied lints must stay clean
-cargo test --workspace --all-targets         # hardware tests are #[ignore]
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
+cargo test --workspace --all-targets
 ```
 
-`.github/workflows/ci.yml` runs the three host commands above on Ubuntu for
-every push and pull request. macOS is also supported for host compilation and
-tests; the Linux-only native dynamic-library smoke test is gated to Linux.
-Board evidence remains a separate gate:
-
-Contribution, security and conduct expectations are documented in
-[`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md) and
-[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+### 板端常用门
 
 ```bash
-cargo test --release --all-targets           # RK3588 当前全量门见 docs/HANDOFF.md
-ONLY=gop  ./scripts/board_h264_qp_vs_mpp.sh  # 固定 QP 6 格
-./scripts/board_h264_cbr_vs_mpp.sh           # CBR + VBR
-./scripts/board_h264_slice_vs_mpp.sh         # 普通整 AU：4/4
-./scripts/board_h264_lowdelay_vs_mpp.sh      # 逐 slice packet：5/5
-./scripts/board_jpege_lowdelay_vs_mpp.sh      # JPEG 逐 band packet：2/2
-./scripts/board_jpege_multicore_vs_mpp.sh     # JPEG 多核：5/5
-./scripts/board_jpege_stride_vs_mpp.sh        # JPEG stride：2/2
-./scripts/board_h265_gdr_vs_mpp.sh           # H.265 GDR：4/4
-./scripts/board_h265_slice_vs_mpp.sh         # H.265 普通整 AU slice：3/3
-./scripts/board_h265_lowdelay_vs_mpp.sh      # H.265 逐 slice packet：4/4
-./scripts/board_h265_roi_vs_mpp.sh           # H.265 ROI/QP map：4/4
-./scripts/board_h265_tile_vs_mpp.sh          # H.265 水平 tiles：2/2
-BOARD=my-rk3576-host ./scripts/board_rk3576_h265_vs_mpp.sh # RK3576 VDPU383：12/12
-BOARD=my-rk3576-host ./scripts/board_rk3576_vp9_vs_mpp.sh  # RK3576 VDPU383 VP9：7/7
-BOARD=my-rk3576-host ./scripts/board_rk3576_h264_edges_vs_mpp.sh # H.264 边界：5/5
-BOARD=my-rk3576-host ./scripts/board_rk3576_h265_corrupt_vs_mpp.sh # H.265 损坏矩阵：16 格
-BOARD=my-rk3576-host ./scripts/board_rk3576_jpege_vs_mpp.sh # VPU720 JPEG：19/19
-BOARD=my-rk3576-host ./scripts/board_rk3576_h264e510_vs_mpp.sh # VEPU510 H.264 固定/CBR/VBR/AVBR/ROI/split/GDR：13/13
-BOARD=my-rk3576-host ./scripts/board_rk3576_h265e510_vs_mpp.sh # VEPU510 H.265 功能/边界矩阵：15/15
-./scripts/board_mpp_custom_rc.sh # RK3588/RK3576 自定义 RC 8/8 + 同帧型/帧型变更 reencode 4/4
-./scripts/board_mpp_osd.sh # RK3588 OSD palette/data；H.264/H.265 stream+YUV 严格
-./scripts/board_mpp_packet_meta.sh # RK3588 H.264/H.265 fixed/CBR × 静止/运动；RK3576 VEPU510 fixed + JPEG
-./scripts/board_framework_recovery.sh # RK3588 会话替换 + 真实 STATUS + H.265 tile recovery：4/4
-./scripts/board_framework_ccu.sh # RK3588 VEPU2 / RK3576 VEPU510 双 session 同批分发：各 3/3
-BOARD=my-rk3576-host ./scripts/board_rk3576_av1_vdpu383_key.sh # VDPU383 AV1 首 keyframe：C == Rust
-BOARD=my-rk3576-host ./scripts/board_rk3576_av1_vdpu383_sequence.sh # VDPU383 AV1 10 帧序列：C == Rust
-BOARD=my-rk3576-host ./scripts/board_rk3576_av1_vdpu383_10bit.sh # VDPU383 AV1 10-bit skip-grain：C == Rust
-./scripts/board_iep_modes_vs_probe.sh        # IEP2 modes + raw slots：9/9
-./scripts/board_iep_formats_vs_probe.sh      # IEP2 420/422 SP/Planar：6/6
-./scripts/board_vdpp2_regs_vs_c.sh           # legacy C fake-service 10 PASS + 1 documented SKIP
-BOARD=my-rk3576-host ./scripts/board_vdpp2_hw_vs_c.sh   # RK3576 VDPP2 scale/hist 真机对比
-BOARD=my-rk3576-host ./scripts/board_enable_vdpp2_overlay.sh status  # VDPP 驱动与 client 29
-# 在 x86_64 Linux 上生成 VDPP boot.img；默认只生成，不写板卡：
-# 官方 SDK 250301 源码：rk/kernel-stable，b16c5d1a69947ec66726165407a8aa75368def53
-./scripts/build_rk3576_vdpp2_kernel.sh <kernel-src> <board-config> <current-boot.img> <output-dir>
-# 默认 dry-run；仅显式 APPLY=1 才写 p3，REBOOT=1 才重启：
-BOARD=my-rk3576-host ./scripts/flash_rk3576_vdpp2_boot.sh <boot.img> <sha256>
-BOARD=my-rk3576-host ./scripts/board_c_api_h264_mjpeg.sh # V1 C/C++ H.264 + MJPEG SDK
-BENCH_FILTER=vp8 ./scripts/board_bench_vs_mpp.sh
+# RK3588 扩展 4K 功能；默认使用板上的 /tmp/mpp-old 编码 oracle
+BOARD=my-rk3588-host ./scripts/board_4k_features.sh
+
+# 在板卡本机运行基础 4K 矩阵
+ssh "$BOARD" 'cd ~/rk-mpp-rs && ./scripts/board_4k_matrix.sh'
+
+# 官方工具 drop-in
+ssh "$BOARD" 'cd ~/rk-mpp-rs && ./scripts/board_mpp_standalone.sh'
+ssh "$BOARD" 'cd ~/rk-mpp-rs && ./scripts/board_mpp_official_dec_test.sh'
+ssh "$BOARD" 'cd ~/rk-mpp-rs && ./scripts/board_mpp_official_enc_test.sh'
 ```
+
+完整回归命令、参考 C 构建和已知坑见
+[docs/HANDOFF.md](docs/HANDOFF.md)。
 
 ## 性能
 
-| 项目 | 结果 |
+性能结论只在固定 CPU/DDR governor、双方交错采样并先校验输出一致的前提下
+报告。代表性结果：
+
+| 路径 | 当前结果 |
 |---|---|
-| 解码 / 编码 | 以固定 governor、80% OPP、C/Rust 交错采样和输出 SHA 为前提；当前逐尺寸结果见 [docs/ENCODE_BENCH.md](docs/ENCODE_BENCH.md) 与 [docs/RK3588_VALIDATION.md](docs/RK3588_VALIDATION.md)。同一二进制的单次结果仍会漂移，未交错采样的旧百分比不作为结论 |
-| 编解码新版 object 路径 | 80% OPP、DDR performance、CPU6 固定，300 帧交错 5 次。H.265：320x240 Rust/C wall 164/164 ms、user+sys 67/69 ms；720p 802/868 ms、226/291 ms。H.264：320x240 157/152 ms（5% 门内）、CPU 持平；720p 769/822 ms、CPU 232/278 ms。两条路径都不以增加 CPU 换吞吐 |
-| 320x240 稳定态 | 1000 帧、7 次交错：H.264 Rust/C wall 448/493 ms、user+sys 138/202 ms；H.265 457/484 ms、140/185 ms。300 帧 H.264 的轻微落后来自进程启动占比，热路径两者均快于 C |
-| RGB letterbox（替换 RGA） | 1080p→640: 0.84 ms vs RGA 3.21 ms；1:1: 0.53 vs 1.50 |
+| H.264 720p 300 帧编码 | Rust 0.334 s / 898 FPS，C FFmpeg 0.349 s / 860 FPS |
+| H.265 720p 300 帧编码 | Rust 与 C 同为 676 FPS；Rust user+sys 0.372 s，C 0.393 s |
+| 320×240 1000 帧稳定态 | H.264 Rust 9.1% faster，CPU -31.7%；H.265 Rust 5.6% faster，CPU -24.3% |
+| H.264 流式解码 | 50 MiB / 742 帧 wall median 1.60 s，峰值 RSS 从约 55.9 MiB 降到约 17 MiB |
+| NV12/RGB 缩放 | 1080p→640 0.84 ms，RGA 3.21 ms |
 
-### H.264 流式播放路径
+这些数字是板卡、内核、输入和 governor 相关的工程结果，不是跨设备 SLA。
+完整方法和样本见：
 
-`h264_stream` 使用 VUI 的 `max_num_reorder_frames` 做有界 POC 重排，不再把整段
-视频收进 `Vec<Picture>`。1080p30 High/B=2 的 90 帧样片上，旧 `h264dec`
-需要约 279 MB RSS，流式路径约 17 MB；输出 planar YUV 与旧全文件排序结果
-逐字节一致。同一测试中解码循环由约 955 ms 降到 545 ms。
+- [ENCODE_BENCH.md](docs/ENCODE_BENCH.md)
+- [FFMPEG_BENCH.md](docs/FFMPEG_BENCH.md)
+- [RK3588_VALIDATION.md](docs/RK3588_VALIDATION.md)
 
-输入本身也不再整文件读取：`h264_stream` 以 4 MiB 块复用增量 Annex-B/AU
-scanner。50 MiB、742 帧的 1920x800 网络流在 RK3588 热态 wall median
-约 1.60 s，与整文件版约 1.58 s 基本持平；峰值 RSS 从约 55.9 MiB 降到
-约 17 MiB，仍输出 742/742 帧。720p planar/NV12 输出哈希与旧路径完全一致。
-主 `h264dec` 也切换到同一切块 scanner，并保留 depth-3 submission ring：
-同一长流 wall median `0.665 -> 0.665 s`，峰值 RSS `59.5 -> 20.4 MiB`。
+## 项目结构
 
-```bash
-# 丢弃输出，测流式解码
-./target/release/h264_stream in.264
-
-# 输出 planar YUV，或向播放器管道输出
-./target/release/h264_stream in.264 out.yuv
-./target/release/h264_stream in.264 - |
-  gst-launch-1.0 -q fdsrc fd=0 ! \
-    rawvideoparse format=i420 width=1920 height=1080 framerate=30/1 ! \
-    waylandsink
-```
-
-这使 1080p30 的 Rust 纯解码上限从 24 路提高到 26 路（C MPP 约 28 路）。
-真实多窗口播放目前支持约 8 路；12 路会被 stdout planar-YUV 管道和 Wayland
-拷贝压垮。下一步应把 decoded frame/DMA-BUF 直接交给 DRM/Wayland sink，避免
-每帧 3.1 MB 的用户态传输。
-
-## 用法
-
-硬件 probe（无参数）：`rk-mpp-rs`
-
-| 子命令 | 说明 |
-|---|---|
-| `decode <jpg> <out.rgb> [1\|2\|4\|8]` | JPEG 解码到 RGB（下采样） |
-| `jpeg-info <jpg>` / `jpeg-enc <in.yuv> <out.jpg> <w> <h> [quant] [fmt] [input] [rst<mcus>] [splitout:lowdelay]` | JPEG 解析 / 编码与逐 restart band packet |
-| `h264 <file>` / `h264dec <in.264> <out.yuv>` | H.264 语法打印 / 解码 |
-| `h264_stream <in.264> [out.yuv|-]` | 有界 POC 重排的流式 H.264 解码与输出 |
-| `hevc` / `hevcdec <in.265> <out.yuv>` / `hevcpps` / `hevcdpb` | H.265 语法、PPS、DPB 打印与解码 |
-| `av1dec <in.ivf> <out.yuv>` / `vp9dec <in.ivf> <out.yuv>` / `vp8dec <in.ivf> <out.yuv>` / `vp8` | AV1、VP9、VP8 |
-| `avsdec <in.avs> <out.yuv> [frames] [i420\|nv12\|vproc]` | AVS/AVS+ I/P/B 解码；默认 1 帧、I420；`vproc` 复现 C 默认 IEP2 输出 |
-| `m2v` / `m2vdec <in.m2v> <out.yuv>` / `mp4dec <in.m4v> <out.yuv>` / `h263dec <in.263> <out.yuv>` | MPEG-2 / MPEG-4 / H.263 |
-| `h264-enc <in.nv12> <out.264> <w> <h> [qp] [profile] [frames] [gop] [cbr:\|vbr:bps:min:max] ... [cabac:0\|1] [trans8x8:0\|1] [splitout:lowdelay]` | H.264 编码；给码率三元组即进入码率控制，syntax 可显式覆盖 profile 默认，低延迟模式逐 slice 输出 packet |
-| `h265-idr ... [roi:x:y:w:h:intra:abs:qp]... [split:ctu:\|split:byte:arg] [splitout:lowdelay]` / `h265-gop ... [shortterm] ...` | H.265 固定 QP IDR/GOP、GDR、ROI/QP map 与逐 slice packet 输出 |
-| `h264e510-split2 <in.2x320x240.nv12> <out.264> <mb:N\|byte:N> [lowdelay]` | RK3576 VEPU510 BY_CTU/BY_BYTE 两帧编码与逐 slice packet 输出 |
-| `h264e510-gdr <in.Nx320x240.nv12> <out.264> <row\|col:num:gop:frames>` | RK3576 VEPU510 固定 QP GDR / intra refresh |
-| `h265e510 <in.320x240.nv12> <out.265>` | RK3576 VEPU510 固定 QP Main IDR |
-| `h265e510-gop2 <in.2x320x240.nv12> <out.265>` | RK3576 VEPU510 固定 QP Main IDR+P |
-| `h265e510-gop6 <in.6x320x240.nv12> <out.265>` | RK3576 VEPU510 固定 QP Main 六帧 GOP |
-| `h265e510-control <in.Nx320x240.nv12> <out.265> <force:frame[,frame...]\|-> <sei:on\|off>` | RK3576 VEPU510 强制 IDR、per-IDR headers 与 SEI 开关 |
-| `h265e510-cbr6 <in.6x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 CBR 六帧 |
-| `h265e510-vbr6 <in.6x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 VBR 六帧 |
-| `h265e510-avbr6 <in.6x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 AVBR 六帧 |
-| `h265e510-split2 <in.2x320x240.nv12> <out.265> <ctu:N\|byte:N> [lowdelay]` | RK3576 VEPU510 H.265 slice split 与逐 packet 输出 |
-| `h265e510-gdr <in.Nx320x240.nv12> <out.265> <row\|col:num:gop:frames>` | RK3576 VEPU510 H.265 GDR |
-| `h265e510-roi2 <in.2x320x240.nv12> <out.265>` | RK3576 VEPU510 H.265 ROI / QP 区 |
-| `h265e510-tiles <unused.nv12> <unused.265> <columns>` | RK3576 VEPU510 H.265 tile 请求边界；多于 1 列必须显式拒绝 |
-| `iep-dei <in.yuv> <out.yuv> <w> <h> [TFF\|BFF] [I5O2\|I5O1T\|I5O1B\|I2O2\|I1O1T\|I1O1B]` | IEP2 去隔行；原始输出保留两个 dst slot |
-| `vdpp-scale <in.nv12> <out.yuv> <src_w> <src_h> <dst_w> <dst_h> [420\|444] [split] [scale-only]` | RK3576 VDPP2 缩放、格式转换、分离 Y/UV 与默认 enhancement 开关 |
-| `vdpp-hist <in.nv12> <out-prefix> <width> <height>` | RK3576 VDPP2 DCI histogram；输出 `.packed`、`.local.bin`、`.global.bin` 和 U10 平均亮度 |
-| `spspps` / `h264dpb` | H.264 参数集与 DPB 打印 |
-| `probe-frame` / `bench-scale` / `bench-decode` / `bench-dma` / `pipeline` | 夹具与基准 |
-| `async-demo <jpg> [jobs] [workers] [out.rgb]` | 异步任务队列 + 缓冲池跑 JPEG 解码，逐帧与同步路径比字节 |
-
-`h265-gop` 在无 refresh、tiles 或 low-delay split 时默认使用
-`RKMPP_ENCODER_PIPELINE_DEPTH=2`。`h264-enc` 默认保持同步；设置
-`RKMPP_ENCODER_PIPELINE=1` 可启用硬件队列，再设置
-`RKMPP_ENCODER_PIPELINE_DEPTH=2` 可开启最高吞吐模式。
-
-## 构建
-
-```bash
-cargo build --release                     # 宿主仅做类型检查
-# 板上（aarch64）
-BOARD=my-rk3588-host
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude .git --exclude target -cf - . |
-  ssh "$BOARD" 'tar -xf - -C ~/rk-mpp-rs'
-ssh "$BOARD" 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/rk-mpp-rs && cargo build --release'
-```
-
-除 `libc` 外无第三方依赖。
-
-## 布局
-
-```
-src/service/      mpp_service ioctl 客户端、dma-heap、batch、poll、probe
-src/codec/        各格式语法解析（h264 hevc vp9 av1 m2v mpg4 h263 vp8 jpeg）
-src/codec/rc/     码率控制移植（MppDataV2 + rc_model_v2 的 CBR/VBR）
-src/hal/          各硬件块寄存器生成（h264d hevc av1d vp9d vp8d jpegd jpege h264e）
-src/scale.rs      RGB 缩放 / letterbox（替代 RGA）
-src/reference/    自研软件参考解码器（M11；CABAC、HEVC 变换、H.264 CAVLC/扫描/反量化/残差/DC）
-scripts/          板上回归、吞吐、取证脚本
-tools/            寄存器字段生成器、ioctl tracer、C 侧探针、diff 工具
-tests/data/       C 侧真实输出构成的 golden / fixture
+```text
+src/service/    mpp_service、dma-heap、batch/CCU、poll、probe
+src/codec/      H.264/H.265/VP9/AV1/MPEG/H.263/VP8/JPEG 语法与码控
+src/hal/        各 Rockchip 硬件块寄存器生成
+src/reference/  自研软件参考解码器
+src/scale.rs    NV12/RGB 缩放与 letterbox
+include/        C API 头文件
+crates/         rk-mpp-rs-sys raw FFI
+examples/       Rust SDK 示例
+scripts/        板端验证、性能和取证脚本
+tools/          寄存器字段生成器、C probe、diff 工具
+tests/data/     真实 C 输出和固定 fixture
 ```
 
 ## 文档
 
-- [ROADMAP.md](ROADMAP.md) —— 逐 capability 的进度台账与证据（权威）
-- [docs/PLAN.md](docs/PLAN.md) —— 完整未来计划：全部剩余工作、阶段出口、依赖与风险
-- [docs/RK3588_VALIDATION.md](docs/RK3588_VALIDATION.md) —— 2026-11-06 的 RK3588 全量测试、板级回归、性能与播放结果
-- [docs/NETWORK_DECODE_BENCH.md](docs/NETWORK_DECODE_BENCH.md) —— 板端网络拉流的 H.264 C/Rust 纯解码基准与 `mpi_dec_test` 喂包陷阱
-- [docs/DIVERGENCES.md](docs/DIVERGENCES.md) —— 已知与 C 的差异登记：必须修 / 已证 C bug / 无 oracle
-- [docs/HANDOFF.md](docs/HANDOFF.md) —— 交接：下一步、板子工具链、易错清单
-- [docs/rk3576.md](docs/rk3576.md) —— RK3576 硬件代际、C MPP 基线与 Rust 适配进度
-- [docs/h264d_hw.md](docs/h264d_hw.md) —— rkvdec H.264 硬件契约（从 C 提取）
-- [docs/superpowers/](docs/superpowers/) —— 历史计划与设计稿（带状态说明）
+| 文档 | 内容 |
+|---|---|
+| [ROADMAP.md](ROADMAP.md) | 逐 capability 的完成项、证据和未完成项 |
+| [CAPABILITY.md](docs/CAPABILITY.md) | 能力矩阵、板级边界和回归入口 |
+| [MIGRATION.md](docs/MIGRATION.md) | drop-in、源码替换、SDK 和 FFmpeg 迁移 |
+| [HANDOFF.md](docs/HANDOFF.md) | 板卡工具链、完整命令和开发交接 |
+| [DIVERGENCES.md](docs/DIVERGENCES.md) | 与 C 的差异、已确认 C bug 和无 oracle 项 |
+| [KCFG.md](docs/KCFG.md) | 官方 kcfg 兼容面和存储语义 |
+| [rk3576.md](docs/rk3576.md) | RK3576 硬件代际与适配进度 |
+| [SECURITY.md](SECURITY.md) | 安全边界和漏洞报告方式 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发规则、证据要求和 PR 流程 |
 
 ## 已知限制
 
-- 板上的 C 参考实现与 tracer 是工作副本（`/tmp/mpp-old`、`/tmp/mpp-develop`、
-  `/tmp/mpp_trace.so`）。RK3588 的 `/tmp` 实测**不是 tmpfs**（根是 overlay，
-  `upperdir=/data/root`），但它归 `systemd-tmpfiles` 管（`D /tmp 1777 root root -`
-  且清理 timer 在跑），属于会被清的位置。权威副本已放在板上的
-  `~/rk-mpp-oracles`（含编解码 oracle、tracer 与 438 个流/参考输出），
-  `scripts/setup_board_refs.sh` 幂等检测并回填（已用"把 tracer 藏起来再跑一次"验证过恢复路径）。
-- rkvenc 同进程多会话已验证：64x64/320x240/640x480 下 1/2/3 线程各产出一条一致码流，且与 C 参考除版本 SEI 文本外逐 NAL 相同。原先“每进程只允许一个活会话”的说法来自过期金样（串行也失败），已撤回。
-- AVS+ 已有公开流、Rust I/P/B parser/HAL、两锚 DPB、raw 与 C 默认 IEP2
-  vproc 的逐字节板端门，以及派生 profile 0x48、weighted-quant 的
-  raw/SDK 门；AEC 和 field picture 尚未验证。AVS2 在当前 RK3588 无设备。
-  损坏码流一致性目前只测了退出码。
-- 只验证 RK3588；其他 SoC、其他内核/固件版本的行为未测（见上文"验证范围"）。
-- 验证本身的坑（已踩过一次）：**"每格只编一张 IDR"的尺寸矩阵看不见任何参考路径上的 bug**。
-  曾经有一段时间 24 格矩阵在四个尺寸（含 1280x720）全绿，而 P 帧在 720p 每帧多花约 38% 位 ——
-  根因是 FBC 体偏移写死 8192，而 `align(w·h/64, 8K)` 在编码面积超过 524288 像素后是 16384，
-  参考面因此被从错误位置读取；IDR 不读参考，所以完全无感。现在 P 的证明在
-  `scripts/board_h264_p_size_probe.sh`（11 个尺寸，阈值两侧各有格子），它应当并进矩阵，而不是与矩阵平行存在。
-- **H.265 编码**的 IDR、P GOP、CBR/VBR/AVBR 与 GDR 都已有板上整条码流逐字节证据。
-- IEP2 去隔行**已逐字节**：720x480 I5O2 TFF 与 C `iep2_test` 的 1,036,800 字节完全相同；1920x1088 上限为 6,266,880 字节。4K 不属于 IEP2 能力范围，C 测试拒绝，C 底层探针会静默全 0，Rust 现在明确拒绝。
-  之前"像素不同"的根因不是场配对，而是提交批次最后一个请求多带了
-  `MPP_FLAGS_REG_OFFSET_ALONE`，驱动没有真正执行作业（`iep2_output` 全 0）；IEP 走
-  `submit_batch_plain`（只带 MULTI_MSG|LAST_MSG）后硬件开始工作，输出立即与 C 一致。
+- 不宣称尚未在能力矩阵中列出的 SoC、内核、固件和厂商 HAL 路径可用。
+- RK3576 仍然只保证有板级证据的 block；4K H.264/H.265 编码尚未实现。
+- AVS+ 的 AEC 和独立 field-pair 仍待验证；AVS2 在 RK3588 无设备。
+- IEP2 上限为 1920×1088；4K 由 C 侧和 Rust 侧一起明确拒绝。
+- 官方 MPP 的 kernel-only storage 键不伪装成硬件能力；KMPP kernel object
+  路径受内核 `/dev/vcodec`、`/proc/kmpp` 和 buffer-group ioctl 支持限制。
+- FFmpeg 验证基于特定的 `--enable-rkmpp` 版本；不同 wrapper 版本可能需要
+  单独对齐调用序列。
+- 自研 AV1 软件参考解码器仍在推进；它不是硬件路径的前置依赖。
+- 性能百分比需要 governor、核绑定和交错采样，不能把单次运行当作稳定结论。
+
+## 贡献与许可
+
+提交代码前请运行：
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
+cargo test --workspace --all-targets
+```
+
+需要真实硬件的测试应保持 `#[ignore]`，并把板卡、内核、命令和输出证据写入
+`scripts/board_*.sh`、`ROADMAP.md` 和 `docs/CAPABILITY.md`。
+
+安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。贡献流程见
+[CONTRIBUTING.md](CONTRIBUTING.md)。
+
+本项目使用 **MIT OR Apache-2.0** 双许可。
